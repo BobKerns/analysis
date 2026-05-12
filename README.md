@@ -15,7 +15,11 @@ This repository is a single top-level Python project. There are no nested repos 
 ## Setup
 1. Install [uv](https://github.com/astral-sh/uv)
 2. Ensure Python 3.14+ is available
-3. Run `uv sync --group dev`
+3. Configure the pre-commit hook (one-time):
+    ```sh
+    git config core.hooksPath .githooks
+    ```
+4. Run `uv sync --group dev`
 
 ## Usage
 - CLI tools: `python -m analysis ...`
@@ -26,3 +30,9 @@ All files in `data/`, `out/`, and `state/` are ignored by git and protected by a
 
 ## Spell Checking
 Spell checking is handled by cspell (see `.github/cspell.json` and `.cspell/project-words.txt`). Only documentation, markdown, and comments are checked.
+
+## Coding Standards
+
+**Tabs are forbidden in all text files.**
+
+Use spaces for all indentation and alignment. Hard tab characters (\t) are not allowed anywhere in the repository, including code, markdown, and documentation. This prevents formatting issues and ensures consistency across all editors and platforms.
