@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+*.egg
+
+# Environments
+.venv/
+venv/
+.env/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Data, output, and state (never commit data artifacts)
+data/**
+out/**
+state/**
+!data/
+!out/
+!state/
+!data/.gitignore
+!out/.gitignore
+!state/.gitignore
+!**/.gitignore
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Block commits if any files in data/, out/, or state/ are staged.
+if git diff --cached --name-only | grep -E '^(data|out|state)/'; then
+  printf '%s\n' 'ERROR: Attempt to commit files in data/, out/, or state/. These directories are reserved for runtime data.'
+  exit 1
+fi

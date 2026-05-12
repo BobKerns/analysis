@@ -1,0 +1,8 @@
+# Project-specific words for cspell
+AMOLED
+autofetch
+huggingface
+nextstrain
+pathoplexus
+pypi
+sidefx

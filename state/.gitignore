@@ -1,0 +1,3 @@
+# Keep directory; ignore all persistent runtime state
+*
+!.gitignore
