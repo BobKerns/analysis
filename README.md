@@ -25,6 +25,29 @@ This repository is a single top-level Python project. There are no nested repos 
 - CLI tools: `python -m analysis ...`
 - Notebooks: Open and run notebooks in `notebooks/`
 
+### Amazon Expense Categorizer
+
+Run the interactive categorizer on a monthly Amazon CSV:
+
+```sh
+uv run python -m analysis amazon-categorize data/amazon_2026_01.csv
+```
+
+Non-interactive mode assigns unknown items to `UNCATEGORIZED`:
+
+```sh
+uv run python -m analysis amazon-categorize data/amazon_2026_01.csv --no-interactive
+```
+
+Outputs:
+- `out/<input_stem>_annotated.csv`
+- `out/<input_stem>_summary.csv`
+
+Persistent memory:
+- `state/categories.json`
+- `state/item_category_map.json`
+- `state/run_history.json`
+
 ## Data Safety
 All files in `data/`, `out/`, and `state/` are ignored by git and protected by a pre-commit hook.
 
