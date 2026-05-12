@@ -1,0 +1,19 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [],
+  "dictionaryDefinitions": [
+    {
+      "name": "project-words",
+      "path": "../.cspell/project-words.txt",
+      "addWords": true
+    }
+  ],
+  "ignorePaths": [
+    "data/**",
+    "out/**",
+    "state/**"
+  ],
+  "dictionaries": ["python", "softwareTerms", "project-words"],
+  "files": ["**/*.md", "**/*.rst", "**/*.txt", "**/*.py"]
+}
