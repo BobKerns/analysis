@@ -93,7 +93,9 @@ def categorize_amazon_csv(
         else:
             if chosen not in categories:
                 categories.append(chosen)
+                store.save_categories(categories)
             known_mapping[item] = chosen
+            store.save_mapping(known_mapping)
 
         assigned_categories.append(chosen)
 

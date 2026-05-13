@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pandas as pd
 
@@ -95,3 +96,41 @@ def test_categorize_amazon_csv_supports_amazon_business_headers(tmp_path: Path) 
     totals = dict(zip(summary["category"], summary["amount_total"], strict=False))
 
     assert totals == {"Groceries": 28.0, "Household": 18.49}
+
+
+def test_categorize_amazon_csv_persists_progress_before_interruption(tmp_path: Path) -> None:
+    input_csv = tmp_path / "amazon_interrupt.csv"
+    frame = pd.DataFrame(
+        {
+            "Description": ["Coffee Pods", "Paper Towels"],
+            "Amount": [14.5, 10.0],
+        }
+    )
+    frame.to_csv(input_csv, index=False)
+
+    def ask_for_category(item: str, _known: list[str]) -> str:
+        if item == "coffee pods":
+            return "Groceries"
+        raise KeyboardInterrupt()
+
+    try:
+        categorize_amazon_csv(
+            input_csv_path=input_csv,
+            state_dir=tmp_path / "state",
+            output_dir=tmp_path / "out",
+            ask_for_category=ask_for_category,
+        )
+    except KeyboardInterrupt:
+        pass
+
+    mapping_path = tmp_path / "state" / "item_category_map.json"
+    categories_path = tmp_path / "state" / "categories.json"
+
+    assert mapping_path.exists()
+    assert categories_path.exists()
+
+    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+    categories = json.loads(categories_path.read_text(encoding="utf-8"))
+
+    assert mapping == {"coffee pods": "Groceries"}
+    assert categories == ["Groceries"]
