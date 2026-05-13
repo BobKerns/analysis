@@ -5,6 +5,7 @@ from pathlib import Path
 import click
 
 from analysis.amazon.categorizer import categorize_amazon_csv
+from analysis.log import configure_logging
 
 
 @click.command(name="amazon-categorize")
@@ -24,6 +25,7 @@ def amazon_categorize_command(
     interactive: bool,
 ) -> None:
     """Categorize Amazon expenses from a CSV file with persistent memory."""
+    configure_logging(state_dir)
 
     def ask_for_category(item: str, categories: list[str]) -> str:
         click.echo("")

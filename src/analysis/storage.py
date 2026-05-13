@@ -13,7 +13,6 @@ class JsonStateStore:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.categories_path = self.state_dir / "categories.json"
         self.mapping_path = self.state_dir / "item_category_map.json"
-        self.history_path = self.state_dir / "run_history.json"
 
     def load_categories(self) -> list[str]:
         data = self._read_json(self.categories_path, default=[])
@@ -34,13 +33,6 @@ class JsonStateStore:
             if key.strip() and value.strip()
         }
         self._write_json(self.mapping_path, clean)
-
-    def append_history(self, entry: dict[str, Any]) -> None:
-        history = self._read_json(self.history_path, default=[])
-        if not isinstance(history, list):
-            history = []
-        history.append(entry)
-        self._write_json(self.history_path, history)
 
     def _read_json(self, path: Path, default: Any) -> Any:
         if not path.exists():

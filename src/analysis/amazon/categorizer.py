@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
@@ -9,8 +9,28 @@ import pandas as pd
 
 from analysis.storage import JsonStateStore
 
-_DESCRIPTION_CANDIDATES = ["description", "item", "item title", "title", "product", "name"]
-_AMOUNT_CANDIDATES = ["amount", "total", "price", "item total", "charge"]
+_log = logging.getLogger(__name__)
+
+_DESCRIPTION_CANDIDATES = [
+    "title",
+    "description",
+    "item",
+    "item title",
+    "product",
+    "name",
+    "asin",
+]
+_AMOUNT_CANDIDATES = [
+    "item net total",
+    "item subtotal",
+    "total amount",
+    "order net total",
+    "amount",
+    "total",
+    "price",
+    "item total",
+    "charge",
+]
 
 
 @dataclass(frozen=True)
@@ -45,6 +65,11 @@ def categorize_amazon_csv(
     categories = store.load_categories()
     known_mapping = store.load_mapping()
 
+    _log.info(
+        "categorize.run.start",
+        extra={"event": "categorize.run.start", "input_csv": str(input_path), "row_count": len(frame)},
+    )
+
     working = frame.copy()
     working["normalized_item"] = working[description_col].map(normalize_item_description)
 
@@ -59,6 +84,7 @@ def categorize_amazon_csv(
 
         chosen = ""
         if ask_for_category is not None:
+            _log.info("item.unknown", extra={"event": "item.unknown", "item": item})
             chosen = ask_for_category(item, categories).strip()
 
         if not chosen:
@@ -91,15 +117,18 @@ def categorize_amazon_csv(
 
     store.save_categories(categories)
     store.save_mapping(known_mapping)
-    store.append_history(
-        {
-            "timestamp_utc": datetime.now(UTC).isoformat(),
+    _log.info(
+        "categorize.run.complete",
+        extra={
+            "event": "categorize.run.complete",
             "input_csv": str(input_path),
             "annotated_csv": str(annotated_path),
             "summary_csv": str(summary_path),
             "row_count": int(len(working)),
             "uncategorized_count": uncategorized,
-        }
+            "categories_count": len(categories),
+            "mapped_items_count": len(known_mapping),
+        },
     )
 
     return CategorizationResult(
