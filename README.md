@@ -76,6 +76,8 @@ Run the interactive categorizer on a monthly Amazon CSV:
 uv run python -m analysis amazon-categorize data/amazon_2026_01.csv
 ```
 
+During interactive category prompts, press `Tab` to complete from known categories.
+
 Non-interactive mode assigns unknown items to `UNCATEGORIZED`:
 
 ```sh
