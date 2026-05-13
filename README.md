@@ -31,7 +31,41 @@ Notebook helper API (same logic as CLI):
 from analysis.amazon.notebook import load_categorization_state, run_amazon_categorization
 
 result, annotated, summary = run_amazon_categorization("data/amazon_2026_01.csv")
-categories, mapping, history = load_categorization_state("state")
+categories, mapping = load_categorization_state("state")
+```
+
+### Shell Autocomplete (Click)
+
+This CLI uses Click shell completion.
+
+One-time for current shell session:
+
+```sh
+eval "$(_ANALYSIS_COMPLETE=zsh_source analysis)"   # zsh
+eval "$(_ANALYSIS_COMPLETE=bash_source analysis)"  # bash
+```
+
+If `analysis` is not on your `PATH`, use `uv run`:
+
+```sh
+eval "$(_ANALYSIS_COMPLETE=zsh_source uv run analysis)"   # zsh
+eval "$(_ANALYSIS_COMPLETE=bash_source uv run analysis)"  # bash
+```
+
+Persist in your shell config:
+
+```sh
+# zsh
+echo 'eval "$(_ANALYSIS_COMPLETE=zsh_source analysis)"' >> ~/.zshrc
+
+# bash
+echo 'eval "$(_ANALYSIS_COMPLETE=bash_source analysis)"' >> ~/.bashrc
+```
+
+Reload your shell after adding it:
+
+```sh
+exec zsh   # or: exec bash
 ```
 
 ### Amazon Expense Categorizer
@@ -55,7 +89,7 @@ Outputs:
 Persistent memory:
 - `state/categories.json`
 - `state/item_category_map.json`
-- `state/run_history.json`
+- `state/events.jsonl`
 
 ## Data Safety
 All files in `data/`, `out/`, and `state/` are ignored by git and protected by a pre-commit hook.
