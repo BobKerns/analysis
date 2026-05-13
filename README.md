@@ -25,6 +25,15 @@ This repository is a single top-level Python project. There are no nested repos 
 - CLI tools: `python -m analysis ...`
 - Notebooks: Open and run notebooks in `notebooks/`
 
+Notebook helper API (same logic as CLI):
+
+```python
+from analysis.amazon.notebook import load_categorization_state, run_amazon_categorization
+
+result, annotated, summary = run_amazon_categorization("data/amazon_2026_01.csv")
+categories, mapping, history = load_categorization_state("state")
+```
+
 ### Amazon Expense Categorizer
 
 Run the interactive categorizer on a monthly Amazon CSV:
