@@ -23,9 +23,7 @@ def _category_completion(categories: list[str]):
     """Temporarily enable tab completion for known categories."""
     if readline is None or not categories:
         yield
-        return
-    
-    log.info("Enabling tab completion for categories: %s", categories)
+        return    
 
     unique = sorted({category for category in categories if category})
     old_completer = readline.get_completer()
@@ -64,7 +62,6 @@ def _readline_binding() -> str:
     "--interactive/--no-interactive",
     default=True,
     show_default=True,
-    help="Prompt for unknown item categories.",
 )
 def amazon_categorize_command(
     input_csv: Path,
