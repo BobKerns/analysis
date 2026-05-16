@@ -8,7 +8,7 @@ import click
 
 from analysis.amazon.categorizer import categorize_amazon_csv
 from analysis.log import configure_logging
-from analysis.storage import JsonStateStore
+from analysis.storage import JsonStateStore, normalize_category_name
 
 log = logging.getLogger(__name__)
 
@@ -81,13 +81,25 @@ def amazon_categorize_command(
                        + ", ".join(sorted(click.style(c, fg="bright_blue") for c in categories)))
             click.secho("Hint: press Tab to complete, or type a unique prefix and press Enter.",
                         fg="bright_black", italic=True)
-        with _category_completion(categories):
-            raw = click.prompt(
-                "Category (leave blank to keep UNCATEGORIZED)",
-                default="",
-                show_default=False,
-            )
-        return _resolve_category_input(raw, categories)
+        while True:
+            with _category_completion(categories):
+                raw = click.prompt(
+                    "Category (leave blank to keep UNCATEGORIZED)",
+                    default="",
+                    show_default=False,
+                )
+
+            if not raw.strip():
+                return ""
+
+            if normalize_category_name(raw) is None:
+                click.secho(
+                    "Invalid category: control or non-printing characters are not allowed.",
+                    fg="red",
+                )
+                continue
+
+            return _resolve_category_input(raw, categories)
 
     callback = ask_for_category if interactive else None
     result = categorize_amazon_csv(
@@ -128,7 +140,10 @@ def amazon_review_mappings_command(state_dir: Path) -> None:
         return
 
     click.echo(f"Reviewing {len(items)} item(s) in category: {source_category}")
-    click.echo("Enter to keep current category, '-' to remove mapping (UNCATEGORIZED), or set a new category.")
+    click.echo(
+        "Enter to keep current category, '-' to remove mapping "
+        "(UNCATEGORIZED), or set a new category."
+    )
 
     changed = 0
     for item in items:
@@ -150,6 +165,12 @@ def amazon_review_mappings_command(state_dir: Path) -> None:
             continue
 
         chosen = _resolve_category_input(cleaned, categories)
+        if not chosen:
+            click.secho(
+                "Invalid category: control or non-printing characters are not allowed.",
+                fg="red",
+            )
+            continue
         if chosen == source_category:
             continue
 
@@ -162,7 +183,8 @@ def amazon_review_mappings_command(state_dir: Path) -> None:
 
     click.echo("")
     click.echo(f"Updated mappings: {changed}")
-    click.echo(f"Remaining in {source_category}: {sum(1 for value in known_mapping.values() if value == source_category)}")
+    remaining = sum(1 for value in known_mapping.values() if value == source_category)
+    click.echo(f"Remaining in {source_category}: {remaining}")
 
 
 @click.command(name="delete")
@@ -202,20 +224,22 @@ def _resolve_category_input(raw: str, categories: list[str]) -> str:
 
     This resolves exact matches and unique prefixes to an existing category.
     """
-    cleaned = raw.strip()
-    if not cleaned:
+    normalized = normalize_category_name(raw)
+    if normalized is None:
         return ""
 
     by_casefold = {category.casefold(): category for category in categories}
-    exact = by_casefold.get(cleaned.casefold())
+    exact = by_casefold.get(normalized.casefold())
     if exact is not None:
         return exact
 
-    prefix_matches = [category for category in categories if category.casefold().startswith(cleaned.casefold())]
+    prefix_matches = [
+        category for category in categories if category.casefold().startswith(normalized.casefold())
+    ]
     if len(prefix_matches) == 1:
         return prefix_matches[0]
 
-    return cleaned
+    return normalized
 
 
 def _choose_source_category(categories: list[str], prompt_label: str) -> str | None:

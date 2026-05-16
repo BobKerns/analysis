@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Structured logging for the analysis package.
 
 Convention
@@ -30,9 +28,13 @@ The file handler is the foundation for a future SQLiteHandler; switching
 backends requires only replacing the handler, not the call sites.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from pathlib import Path
+
+from analysis.storage import JsonStateStore
 
 # Standard LogRecord attributes that should not appear as extra fields in the
 # JSON output.  Any key in __dict__ not in this set is treated as caller-
@@ -67,6 +69,33 @@ class JsonLineFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+class SQLiteEventHandler(logging.Handler):
+    """Persist structured log records into the state SQLite events table."""
+
+    def __init__(self, state_store: JsonStateStore) -> None:
+        super().__init__()
+        self._store = state_store
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            record.message = record.getMessage()
+            timestamp = ""
+            if self.formatter is not None:
+                timestamp = self.formatter.formatTime(record, "%Y-%m-%dT%H:%M:%S")
+            payload: dict = {
+                "ts": timestamp,
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.message,
+            }
+            for key, value in record.__dict__.items():
+                if key not in _RECORD_BUILT_INS:
+                    payload[key] = value
+            self._store.insert_event(payload)
+        except Exception:  # pragma: no cover
+            self.handleError(record)
+
+
 def configure_logging(
     state_dir: Path | str | None = None,
     level: int = logging.INFO,
@@ -88,8 +117,14 @@ def configure_logging(
     logger.addHandler(stream)
 
     if state_dir is not None:
+        state_store = JsonStateStore(state_dir)
+
         log_path = Path(state_dir) / "events.jsonl"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setFormatter(JsonLineFormatter())
         logger.addHandler(file_handler)
+
+        sqlite_handler = SQLiteEventHandler(state_store)
+        sqlite_handler.setFormatter(JsonLineFormatter())
+        logger.addHandler(sqlite_handler)
