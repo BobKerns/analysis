@@ -103,7 +103,6 @@ One row per month and category, with these key columns:
 
 This is for reporting and trend views.
 
-
 ### events
 
 Activity history table. Most useful columns:
