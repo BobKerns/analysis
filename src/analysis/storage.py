@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import unicodedata
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -196,6 +197,57 @@ class JsonStateStore:
                 ),
             )
 
+    def insert_items(self, rows: list[dict[str, Any]], source_file: Path | str) -> None:
+        """Append categorized item rows for later querying."""
+        if not rows:
+            return
+
+        item_column_names = [name for name, _ in ITEM_TABLE_COLUMNS]
+        insert_columns = ["source_file", "normalized_item", "assigned_category", *item_column_names]
+        placeholders = ", ".join("?" for _ in insert_columns)
+
+        values: list[tuple[Any, ...]] = []
+        for row in rows:
+            values.append(
+                (
+                    str(source_file),
+                    _coerce_sql_value(row.get("normalized_item")),
+                    _coerce_sql_value(row.get("category")),
+                    *(_coerce_sql_value(row.get(column)) for column in item_column_names),
+                )
+            )
+
+        with self._conn:
+            self._conn.executemany(
+                f"""
+                INSERT INTO items({", ".join(insert_columns)})
+                VALUES({placeholders})
+                """,
+                values,
+            )
+
+    def upsert_monthly_summaries(
+        self,
+        monthly_totals: list[tuple[str, str, float]],
+    ) -> None:
+        """Upsert month/category summary totals.
+
+        Each tuple is: (summary_month_start, category, amount_total).
+        """
+        if not monthly_totals:
+            return
+
+        with self._conn:
+            self._conn.executemany(
+                """
+                INSERT INTO monthly_summaries(summary_month_start, category, amount_total)
+                VALUES(?, ?, ?)
+                ON CONFLICT(summary_month_start, category)
+                DO UPDATE SET amount_total = excluded.amount_total
+                """,
+                monthly_totals,
+            )
+
     def close(self) -> None:
         self._conn.close()
 
@@ -345,3 +397,20 @@ def normalize_category_name(raw: str) -> str | None:
             return None
 
     return cleaned
+
+
+def month_start_iso(value: Any) -> str:
+    """Return YYYY-MM-01 from date-like input or fallback to current month."""
+    text = str(value or "").strip()
+    if len(text) >= 7:
+        return f"{text[:7]}-01"
+    today = date.today()
+    return f"{today.year:04d}-{today.month:02d}-01"
+
+
+def _coerce_sql_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if value != value:  # NaN
+        return None
+    return value

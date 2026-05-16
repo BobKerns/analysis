@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.amazon.notebook import (
+    summarize_over_all_time,
     load_categorization_state,
     load_events_dataframe,
     run_amazon_categorization,
@@ -41,3 +42,23 @@ def test_run_amazon_categorization_returns_dataframes(tmp_path: Path) -> None:
     assert result.summary_csv_path.exists()
     assert annotated["category"].tolist() == ["UNCATEGORIZED"]
     assert set(summary.columns) == {"category", "amount_total"}
+
+
+def test_summarize_over_all_time_reads_monthly_summaries(tmp_path: Path) -> None:
+    input_csv = tmp_path / "amazon.csv"
+    pd.DataFrame({"Description": ["Coffee Pods", "Paper Towels"], "Amount": [12.0, 8.0]}).to_csv(
+        input_csv,
+        index=False,
+    )
+
+    run_amazon_categorization(
+        input_csv_path=input_csv,
+        state_dir=tmp_path / "state",
+        output_dir=tmp_path / "out",
+        ask_for_category=None,
+    )
+
+    df = summarize_over_all_time(tmp_path / "state")
+
+    assert set(df.columns) == {"category", "amount_total_all_time"}
+    assert "UNCATEGORIZED" in set(df["category"].tolist())
