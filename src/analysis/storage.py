@@ -237,12 +237,23 @@ class JsonStateStore:
                     {item_columns_sql}
                 );
 
+                CREATE TABLE IF NOT EXISTS monthly_summaries (
+                    id INTEGER PRIMARY KEY,
+                    summary_month_start TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    amount_total REAL NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(summary_month_start, category)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);
                 CREATE INDEX IF NOT EXISTS idx_item_map_category_id
                     ON item_category_map(category_id);
                 CREATE INDEX IF NOT EXISTS idx_events_event_ts ON events(event, ts);
                 CREATE INDEX IF NOT EXISTS idx_items_assigned_category ON items(assigned_category);
                 CREATE INDEX IF NOT EXISTS idx_items_title ON items(title);
+                CREATE INDEX IF NOT EXISTS idx_monthly_summaries_month
+                    ON monthly_summaries(summary_month_start);
 
                 DROP VIEW IF EXISTS item_explore;
 
