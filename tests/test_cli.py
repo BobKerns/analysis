@@ -39,6 +39,60 @@ def test_cli_amazon_categorize_non_interactive(tmp_path: Path) -> None:
     assert monthly_summary
 
 
+def test_cli_amazon_categorize_accepts_multiple_input_files(tmp_path: Path) -> None:
+    input_csv_1 = tmp_path / "amazon_1.csv"
+    input_csv_2 = tmp_path / "amazon_2.csv"
+    pd.DataFrame({"Description": ["Coffee Pods"], "Amount": [12.0]}).to_csv(
+        input_csv_1,
+        index=False,
+    )
+    pd.DataFrame({"Description": ["Paper Towels"], "Amount": [8.0]}).to_csv(
+        input_csv_2,
+        index=False,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "amazon",
+            "categorize",
+            str(input_csv_1),
+            str(input_csv_2),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--no-interactive",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert f"Input CSV: {input_csv_1}" in result.output
+    assert f"Input CSV: {input_csv_2}" in result.output
+    assert (tmp_path / "out" / "amazon_1_annotated.csv").exists()
+    assert (tmp_path / "out" / "amazon_2_annotated.csv").exists()
+
+
+def test_cli_amazon_categorize_requires_at_least_one_input_file(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "amazon",
+            "categorize",
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--no-interactive",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Provide at least one input CSV file." in result.output
+
+
 def test_cli_amazon_categorize_accepts_cutoff_day_option(tmp_path: Path) -> None:
     input_csv = tmp_path / "amazon.csv"
     pd.DataFrame({"Description": ["Coffee Pods"], "Amount": [12.0]}).to_csv(input_csv, index=False)

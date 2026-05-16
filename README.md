@@ -70,10 +70,16 @@ exec zsh   # or: exec bash
 
 ### Amazon Expense Categorizer
 
-Run the interactive categorizer on an Amazon CSV covering any date range:
+Run the interactive categorizer on one or more Amazon CSVs covering any date range:
 
 ```sh
 uv run python -m analysis amazon categorize data/amazon_2026_01.csv
+```
+
+Multiple files in one run:
+
+```sh
+uv run python -m analysis amazon categorize data/Amazon-2026-03.csv data/Amazon-2026-04.csv
 ```
 
 During interactive category prompts, press `Tab` to complete from known categories.
@@ -124,6 +130,11 @@ Pending rule details:
 - For month `YYYY-MM`, the billing interval is from `(previous cutoff + 1 day)` through `(this month cutoff)`.
 - A file is marked `_pending` only if today's date falls inside that interval.
 - If there are no rows in the open interval, no `_pending` files are written.
+
+Safe reruns:
+- It is safe to run `analysis amazon categorize` multiple times on the same input data.
+- If the category mapping is unchanged, outputs and stored item assignments remain unchanged.
+- If the category mapping changes, existing rows are updated in place to reflect the new mapping.
 
 Persistent memory:
 - `state/state.sqlite3`
