@@ -30,8 +30,37 @@ def test_cli_amazon_categorize_non_interactive(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "Annotated CSV:" in result.output
+    assert "Monthly output files:" in result.output
     assert (tmp_path / "out" / "amazon_annotated.csv").exists()
     assert (tmp_path / "out" / "amazon_summary.csv").exists()
+    monthly_annotated = list((tmp_path / "out").glob("Amazon-*_annotated.csv"))
+    monthly_summary = list((tmp_path / "out").glob("Amazon-*_summary.csv"))
+    assert monthly_annotated
+    assert monthly_summary
+
+
+def test_cli_amazon_categorize_accepts_cutoff_day_option(tmp_path: Path) -> None:
+    input_csv = tmp_path / "amazon.csv"
+    pd.DataFrame({"Description": ["Coffee Pods"], "Amount": [12.0]}).to_csv(input_csv, index=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "amazon",
+            "categorize",
+            str(input_csv),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--cutoff-day",
+            "3",
+            "--no-interactive",
+        ],
+    )
+
+    assert result.exit_code == 0
 
 
 def test_resolve_category_input_prefers_existing_category() -> None:

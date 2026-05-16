@@ -70,7 +70,7 @@ exec zsh   # or: exec bash
 
 ### Amazon Expense Categorizer
 
-Run the interactive categorizer on a monthly Amazon CSV:
+Run the interactive categorizer on an Amazon CSV covering any date range:
 
 ```sh
 uv run python -m analysis amazon categorize data/amazon_2026_01.csv
@@ -99,8 +99,31 @@ uv run python -m analysis amazon category delete
 Both commands prompt you to select a category (with Tab completion).
 
 Outputs:
-- `out/<input_stem>_annotated.csv`
-- `out/<input_stem>_summary.csv`
+- `out/Amazon-YYYY-MM_annotated.csv`
+- `out/Amazon-YYYY-MM_summary.csv`
+
+Why this exists:
+- These monthly files are designed to align with Amex billing cycles, not strict calendar months.
+- This makes reconciliation and statement matching easier.
+
+Monthly files use a billing cutoff on day 3:
+- Dates on the 1st-3rd are grouped into that month.
+- Dates on the 4th+ are grouped into the next month.
+
+Use `--cutoff-day` to override the boundary (1-28):
+
+```sh
+uv run python -m analysis amazon categorize data/amazon_2026_01.csv --cutoff-day 3
+```
+
+If a generated billing month is still in progress for today, the monthly filenames include `_pending`:
+- `out/Amazon-YYYY-MM_pending_annotated.csv`
+- `out/Amazon-YYYY-MM_pending_summary.csv`
+
+Pending rule details:
+- For month `YYYY-MM`, the billing interval is from `(previous cutoff + 1 day)` through `(this month cutoff)`.
+- A file is marked `_pending` only if today's date falls inside that interval.
+- If there are no rows in the open interval, no `_pending` files are written.
 
 Persistent memory:
 - `state/state.sqlite3`
