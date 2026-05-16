@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import unicodedata
 from datetime import date
@@ -86,6 +87,9 @@ ITEM_TABLE_COLUMNS: list[tuple[str, str]] = [
     ("seller_state", "TEXT"),
     ("seller_zip_code", "TEXT"),
 ]
+
+ITEM_COLUMN_NAMES = [name for name, _ in ITEM_TABLE_COLUMNS]
+ITEM_NON_KEY_COLUMN_NAMES = [name for name in ITEM_COLUMN_NAMES if name != "order_id"]
 
 
 class JsonStateStore:
@@ -198,22 +202,39 @@ class JsonStateStore:
             )
 
     def insert_items(self, rows: list[dict[str, Any]], source_file: Path | str) -> None:
-        """Append categorized item rows for later querying."""
+        """Upsert categorized item rows keyed by order_id."""
         if not rows:
             return
 
-        item_column_names = [name for name, _ in ITEM_TABLE_COLUMNS]
-        insert_columns = ["source_file", "normalized_item", "assigned_category", *item_column_names]
+        insert_columns = [
+            "order_id",
+            "source_file",
+            "normalized_item",
+            "assigned_category",
+            *ITEM_NON_KEY_COLUMN_NAMES,
+        ]
         placeholders = ", ".join("?" for _ in insert_columns)
+        update_columns = [name for name in insert_columns if name != "order_id"]
+        update_assignments = ", ".join(f"{name} = excluded.{name}" for name in update_columns)
 
         values: list[tuple[Any, ...]] = []
-        for row in rows:
+        for index, row in enumerate(rows):
+            normalized_row = {_normalize_item_key(key): value for key, value in row.items()}
+            order_id = _coerce_sql_value(normalized_row.get("order_id"))
+            if not order_id:
+                normalized_item = _coerce_sql_value(normalized_row.get("normalized_item"))
+                order_id = f"__generated__:{source_file}:{index}:{normalized_item or ''}"
+
             values.append(
                 (
+                    str(order_id),
                     str(source_file),
-                    _coerce_sql_value(row.get("normalized_item")),
-                    _coerce_sql_value(row.get("category")),
-                    *(_coerce_sql_value(row.get(column)) for column in item_column_names),
+                    _coerce_sql_value(normalized_row.get("normalized_item")),
+                    _coerce_sql_value(normalized_row.get("category")),
+                    *(
+                        _coerce_sql_value(normalized_row.get(column))
+                        for column in ITEM_NON_KEY_COLUMN_NAMES
+                    ),
                 )
             )
 
@@ -222,6 +243,7 @@ class JsonStateStore:
                 f"""
                 INSERT INTO items({", ".join(insert_columns)})
                 VALUES({placeholders})
+                ON CONFLICT(order_id) DO UPDATE SET {update_assignments}
                 """,
                 values,
             )
@@ -258,8 +280,10 @@ class JsonStateStore:
             pass
 
     def _ensure_schema(self) -> None:
-        item_columns_sql = ",\n                ".join(
-            f"{name} {data_type}" for name, data_type in ITEM_TABLE_COLUMNS
+        item_non_key_columns_sql = ",\n                    ".join(
+            f"{name} {data_type}"
+            for name, data_type in ITEM_TABLE_COLUMNS
+            if name != "order_id"
         )
 
         with self._conn:
@@ -289,11 +313,11 @@ class JsonStateStore:
                 );
 
                 CREATE TABLE IF NOT EXISTS items (
-                    id INTEGER PRIMARY KEY,
+                    order_id TEXT PRIMARY KEY,
                     source_file TEXT,
                     normalized_item TEXT,
                     assigned_category TEXT,
-                    {item_columns_sql}
+                    {item_non_key_columns_sql}
                 );
 
                 CREATE TABLE IF NOT EXISTS monthly_summaries (
@@ -318,7 +342,8 @@ class JsonStateStore:
 
                 CREATE VIEW item_explore AS
                 SELECT
-                    id,
+                    order_id AS id,
+                    order_id,
                     order_date,
                     title,
                     order_status,
@@ -414,3 +439,9 @@ def _coerce_sql_value(value: Any) -> Any:
     if value != value:  # NaN
         return None
     return value
+
+
+def _normalize_item_key(key: Any) -> str:
+    text = str(key).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return text.strip("_")
