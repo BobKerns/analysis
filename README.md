@@ -105,6 +105,9 @@ Outputs:
 Persistent memory:
 - `state/state.sqlite3`
 
+Schema guide:
+- `docs/sqlite-guide.md`
+
 ## Data Safety
 All files in `data/`, `out/`, and `state/` are ignored by git and protected by a pre-commit hook.
 

@@ -1,12 +1,17 @@
 # Project-specific words for cspell
 AMOLED
 autofetch
+dflt
+executemany
+executescript
 huggingface
 msecs
 munknown
 nextstrain
+NOCASE
 pathoplexus
 pypi
 recategorize
 secho
 sidefx
+unspsc
