@@ -103,6 +103,19 @@ One row per month and category, with these key columns:
 
 This is for reporting and trend views.
 
+Important: these months are billing-cycle months (Amex-aligned), not strict calendar months.
+The default cutoff is day 3:
+
+- Dates on day 1-3 stay in that month.
+- Dates on day 4+ roll into the next month.
+
+This helps monthly outputs line up with card statements.
+
+About pending output files:
+
+- A month is marked `_pending` only when today's date falls in that month's open billing interval.
+- If the current open interval has no rows, no `_pending` files are written.
+
 ### events
 
 Activity history table. Most useful columns:

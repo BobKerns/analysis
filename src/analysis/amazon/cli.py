@@ -59,6 +59,13 @@ def _readline_binding() -> str:
 @click.option("--state-dir", default="state", show_default=True, type=click.Path(path_type=Path))
 @click.option("--output-dir", default="out", show_default=True, type=click.Path(path_type=Path))
 @click.option(
+    "--cutoff-day",
+    default=3,
+    show_default=True,
+    type=click.IntRange(1, 28),
+    help="Billing cutoff day for monthly output bucketing.",
+)
+@click.option(
     "--interactive/--no-interactive",
     default=True,
     show_default=True,
@@ -67,6 +74,7 @@ def amazon_categorize_command(
     input_csv: Path,
     state_dir: Path,
     output_dir: Path,
+    cutoff_day: int,
     interactive: bool,
 ) -> None:
     """Categorize Amazon expenses from a CSV file with persistent memory."""
@@ -106,11 +114,17 @@ def amazon_categorize_command(
         input_csv_path=input_csv,
         state_dir=state_dir,
         output_dir=output_dir,
+        cutoff_day=cutoff_day,
         ask_for_category=callback,
     )
 
     click.echo(f"Annotated CSV: {result.annotated_csv_path}")
     click.echo(f"Summary CSV: {result.summary_csv_path}")
+    if result.monthly_outputs:
+        click.echo("Monthly output files:")
+        for monthly in result.monthly_outputs:
+            click.echo(f"  {monthly.month} annotated: {monthly.annotated_csv_path}")
+            click.echo(f"  {monthly.month} summary:   {monthly.summary_csv_path}")
     click.echo(f"Known categories: {result.categories_count}")
     click.echo(f"Mapped items: {result.mapped_items_count}")
     click.echo(f"Uncategorized rows: {result.uncategorized_count}")

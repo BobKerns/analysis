@@ -61,6 +61,7 @@ def run_amazon_categorization(
     input_csv_path: Path | str,
     state_dir: Path | str = "state",
     output_dir: Path | str = "out",
+    cutoff_day: int = 3,
     ask_for_category=None,
 ) -> tuple[CategorizationResult, pd.DataFrame, pd.DataFrame]:
     """Run categorization and return both metadata and resulting output DataFrames."""
@@ -68,6 +69,7 @@ def run_amazon_categorization(
         input_csv_path=input_csv_path,
         state_dir=state_dir,
         output_dir=output_dir,
+        cutoff_day=cutoff_day,
         ask_for_category=ask_for_category,
     )
     annotated = pd.read_csv(result.annotated_csv_path)
