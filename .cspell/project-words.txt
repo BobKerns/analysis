@@ -2,7 +2,9 @@
 AMOLED
 autofetch
 huggingface
+msecs
 nextstrain
 pathoplexus
 pypi
+recategorize
 sidefx
