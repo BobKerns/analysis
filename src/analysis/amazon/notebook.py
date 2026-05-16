@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
 
 from analysis.amazon.categorizer import CategorizationResult, categorize_amazon_csv
-from analysis.storage import JsonStateStore
+from analysis.storage import STATE_DB_FILENAME, JsonStateStore
 
 
 def load_categorization_state(state_dir: Path | str = "state") -> tuple[list[str], dict[str, str]]:
@@ -15,18 +17,26 @@ def load_categorization_state(state_dir: Path | str = "state") -> tuple[list[str
 
 
 def load_events_dataframe(state_dir: Path | str = "state") -> pd.DataFrame:
-    """Load structured run events from events.jsonl as a DataFrame.
+    """Load structured run events from SQLite as a DataFrame.
 
-    Returns an empty DataFrame when no log file exists yet.
+    Returns an empty DataFrame when no state database exists yet.
     Use this to query run history, categorization decisions, and trends::
 
         df = load_events_dataframe("state")
         df[df["event"] == "categorize.run.complete"]
     """
-    log_path = Path(state_dir) / "events.jsonl"
-    if not log_path.exists():
+    db_path = Path(state_dir) / STATE_DB_FILENAME
+    if not db_path.exists():
         return pd.DataFrame()
-    return pd.read_json(log_path, lines=True)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT payload_json FROM events ORDER BY id").fetchall()
+
+    if not rows:
+        return pd.DataFrame()
+
+    payloads = [json.loads(str(row[0])) for row in rows]
+    return pd.DataFrame(payloads)
 
 
 def run_amazon_categorization(

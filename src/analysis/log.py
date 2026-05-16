@@ -15,17 +15,20 @@ call must include an ``"event"`` key naming the event type:
 Two handlers are configured by ``configure_logging``:
 
 - StreamHandler  — human-readable for the terminal
-- FileHandler    — JSON Lines (one JSON object per line) written to
-                   ``<state_dir>/events.jsonl``
+- SQLiteEventHandler — structured event rows written to
+                       ``<state_dir>/state.sqlite3`` (table ``events``)
 
-The JSON-lines file is queryable directly with pandas::
+Events are queryable directly with sqlite::
 
-    import pandas as pd
-    df = pd.read_json("state/events.jsonl", lines=True)
-    runs = df[df["event"] == "categorize.run.complete"]
+    import sqlite3
+    conn = sqlite3.connect("state/state.sqlite3")
+    runs = conn.execute(
+        "select ts, event, message from events where event = ?",
+        ("categorize.run.complete",),
+    ).fetchall()
 
 The file handler is the foundation for a future SQLiteHandler; switching
-backends requires only replacing the handler, not the call sites.
+backends requires only replacing the storage handler, not the call sites.
 """
 
 from __future__ import annotations
@@ -104,7 +107,7 @@ def configure_logging(
 
     Call once at application startup (e.g. in the CLI entry point).  Subsequent
     calls are no-ops.  When *state_dir* is provided, structured events are
-    written to ``<state_dir>/events.jsonl`` in JSON Lines format.
+    written to ``<state_dir>/state.sqlite3``.
     """
     logger = logging.getLogger("analysis")
     if logger.handlers:
@@ -118,12 +121,6 @@ def configure_logging(
 
     if state_dir is not None:
         state_store = JsonStateStore(state_dir)
-
-        log_path = Path(state_dir) / "events.jsonl"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_path, encoding="utf-8")
-        file_handler.setFormatter(JsonLineFormatter())
-        logger.addHandler(file_handler)
 
         sqlite_handler = SQLiteEventHandler(state_store)
         sqlite_handler.setFormatter(JsonLineFormatter())

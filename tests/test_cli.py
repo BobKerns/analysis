@@ -6,6 +6,7 @@ from click.testing import CliRunner
 
 from analysis.amazon.cli import _resolve_category_input
 from analysis.cli import main
+from analysis.storage import JsonStateStore
 
 
 def test_cli_amazon_categorize_non_interactive(tmp_path: Path) -> None:
@@ -60,7 +61,9 @@ def test_cli_interactive_uses_existing_category_after_completion(tmp_path: Path)
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "categories.json").write_text('["Electronics"]\n', encoding="utf-8")
+    store = JsonStateStore(state_dir)
+    store.save_categories(["Electronics"])
+    store.close()
 
     runner = CliRunner()
 
@@ -85,9 +88,11 @@ def test_cli_interactive_uses_existing_category_after_completion(tmp_path: Path)
         )
 
     assert result.exit_code == 0
-    mapping = (state_dir / "item_category_map.json").read_text(encoding="utf-8")
-    categories = (state_dir / "categories.json").read_text(encoding="utf-8")
-    assert "Electronics" in mapping
+    store = JsonStateStore(state_dir)
+    mapping = store.load_mapping()
+    categories = store.load_categories()
+    store.close()
+    assert mapping.get("unknown device") == "Electronics"
     assert "Electronics" in categories
 
 
@@ -99,7 +104,9 @@ def test_cli_interactive_unknown_item_is_green_when_color_enabled(tmp_path: Path
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "categories.json").write_text('["Electronics"]\n', encoding="utf-8")
+    store = JsonStateStore(state_dir)
+    store.save_categories(["Electronics"])
+    store.close()
 
     runner = CliRunner()
 
@@ -137,7 +144,9 @@ def test_cli_interactive_reprompts_for_invalid_category(tmp_path: Path) -> None:
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "categories.json").write_text('[]\n', encoding="utf-8")
+    store = JsonStateStore(state_dir)
+    store.save_categories([])
+    store.close()
 
     runner = CliRunner()
 
@@ -163,8 +172,10 @@ def test_cli_interactive_reprompts_for_invalid_category(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "Invalid category: control or non-printing characters are not allowed." in result.output
-    mapping = (state_dir / "item_category_map.json").read_text(encoding="utf-8")
-    assert '"unknown device": "Electronics"' in mapping
+    store = JsonStateStore(state_dir)
+    mapping = store.load_mapping()
+    store.close()
+    assert mapping.get("unknown device") == "Electronics"
 
 
 def test_readline_binding_switches_for_libedit() -> None:
@@ -178,11 +189,16 @@ def test_readline_binding_switches_for_libedit() -> None:
 def test_cli_review_mappings_interactive_recategorize_and_remove(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "categories.json").write_text('["Groceries", "Household"]\n', encoding="utf-8")
-    (state_dir / "item_category_map.json").write_text(
-        '{"coffee pods": "Groceries", "paper towels": "Household", "tea": "Groceries"}\n',
-        encoding="utf-8",
+    store = JsonStateStore(state_dir)
+    store.save_categories(["Groceries", "Household"])
+    store.save_mapping(
+        {
+            "coffee pods": "Groceries",
+            "paper towels": "Household",
+            "tea": "Groceries",
+        }
     )
+    store.close()
 
     runner = CliRunner()
 
@@ -204,19 +220,20 @@ def test_cli_review_mappings_interactive_recategorize_and_remove(tmp_path: Path)
         )
 
     assert result.exit_code == 0
-    mapping = (state_dir / "item_category_map.json").read_text(encoding="utf-8")
-    assert '"coffee pods": "Household"' in mapping
-    assert '"tea"' not in mapping
+    store = JsonStateStore(state_dir)
+    mapping = store.load_mapping()
+    store.close()
+    assert mapping.get("coffee pods") == "Household"
+    assert "tea" not in mapping
 
 
 def test_cli_review_mappings_rejects_unknown_category(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "categories.json").write_text('["Groceries"]\n', encoding="utf-8")
-    (state_dir / "item_category_map.json").write_text(
-        '{"coffee pods": "Groceries"}\n',
-        encoding="utf-8",
-    )
+    store = JsonStateStore(state_dir)
+    store.save_categories(["Groceries"])
+    store.save_mapping({"coffee pods": "Groceries"})
+    store.close()
 
     runner = CliRunner()
     result = runner.invoke(
@@ -238,11 +255,16 @@ def test_cli_review_mappings_rejects_unknown_category(tmp_path: Path) -> None:
 def test_cli_category_delete_removes_category_and_mappings(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "categories.json").write_text('["Groceries", "Household"]\n', encoding="utf-8")
-    (state_dir / "item_category_map.json").write_text(
-        '{"coffee pods": "Groceries", "paper towels": "Household", "tea": "Groceries"}\n',
-        encoding="utf-8",
+    store = JsonStateStore(state_dir)
+    store.save_categories(["Groceries", "Household"])
+    store.save_mapping(
+        {
+            "coffee pods": "Groceries",
+            "paper towels": "Household",
+            "tea": "Groceries",
+        }
     )
+    store.close()
 
     runner = CliRunner()
 
@@ -264,9 +286,11 @@ def test_cli_category_delete_removes_category_and_mappings(tmp_path: Path) -> No
         )
 
     assert result.exit_code == 0
-    categories = (state_dir / "categories.json").read_text(encoding="utf-8")
-    mapping = (state_dir / "item_category_map.json").read_text(encoding="utf-8")
+    store = JsonStateStore(state_dir)
+    categories = store.load_categories()
+    mapping = store.load_mapping()
+    store.close()
     assert "Groceries" not in categories
-    assert '"paper towels": "Household"' in mapping
-    assert '"coffee pods"' not in mapping
-    assert '"tea"' not in mapping
+    assert mapping.get("paper towels") == "Household"
+    assert "coffee pods" not in mapping
+    assert "tea" not in mapping

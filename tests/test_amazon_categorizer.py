@@ -1,9 +1,9 @@
 from pathlib import Path
-import json
 
 import pandas as pd
 
 from analysis.amazon.categorizer import categorize_amazon_csv
+from analysis.storage import JsonStateStore
 
 
 def test_categorize_amazon_csv_creates_outputs_and_persists_mapping(tmp_path: Path) -> None:
@@ -43,8 +43,10 @@ def test_categorize_amazon_csv_creates_outputs_and_persists_mapping(tmp_path: Pa
     assert totals["Groceries"] == 29.0
     assert totals["Household"] == 10.0
 
-    mapping_path = state_dir / "item_category_map.json"
-    assert mapping_path.exists()
+    store = JsonStateStore(state_dir)
+    mapping = store.load_mapping()
+    store.close()
+    assert mapping == {"coffee pods": "Groceries", "paper towels": "Household"}
 
 
 def test_categorize_amazon_csv_uses_uncategorized_when_non_interactive(tmp_path: Path) -> None:
@@ -123,14 +125,10 @@ def test_categorize_amazon_csv_persists_progress_before_interruption(tmp_path: P
     except KeyboardInterrupt:
         pass
 
-    mapping_path = tmp_path / "state" / "item_category_map.json"
-    categories_path = tmp_path / "state" / "categories.json"
-
-    assert mapping_path.exists()
-    assert categories_path.exists()
-
-    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
-    categories = json.loads(categories_path.read_text(encoding="utf-8"))
+    store = JsonStateStore(tmp_path / "state")
+    mapping = store.load_mapping()
+    categories = store.load_categories()
+    store.close()
 
     assert mapping == {"coffee pods": "Groceries"}
     assert categories == ["Groceries"]

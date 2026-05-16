@@ -87,14 +87,11 @@ ITEM_TABLE_COLUMNS: list[tuple[str, str]] = [
 
 
 class JsonStateStore:
-    """Persist categorization state in SQLite with JSON-file bootstrap compatibility."""
+    """Persist categorization state in SQLite."""
 
     def __init__(self, state_dir: Path | str) -> None:
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.categories_path = self.state_dir / "categories.json"
-        self.mapping_path = self.state_dir / "item_category_map.json"
-        self.events_path = self.state_dir / "events.jsonl"
         self.db_path = self.state_dir / STATE_DB_FILENAME
 
         self._conn = sqlite3.connect(self.db_path)
@@ -102,7 +99,6 @@ class JsonStateStore:
         self._conn.execute("PRAGMA foreign_keys = ON")
 
         self._ensure_schema()
-        self._bootstrap_from_legacy_files()
 
     def load_categories(self) -> list[str]:
         rows = self._conn.execute(
@@ -141,7 +137,6 @@ class JsonStateStore:
             else:
                 self._conn.execute("DELETE FROM item_category_map")
                 self._conn.execute("DELETE FROM categories")
-        self._write_json(self.categories_path, unique)
 
     def load_mapping(self) -> dict[str, str]:
         rows = self._conn.execute(
@@ -177,9 +172,6 @@ class JsonStateStore:
                 """,
                 ((item, category) for item, category in clean.items()),
             )
-
-        self._write_json(self.categories_path, self.load_categories())
-        self._write_json(self.mapping_path, clean)
 
     def insert_event(self, payload: dict[str, Any]) -> None:
         with self._conn:
@@ -267,55 +259,6 @@ class JsonStateStore:
                 FROM items;
                 """
             )
-
-    def _bootstrap_from_legacy_files(self) -> None:
-        categories_count = self._scalar_count("categories")
-        mapping_count = self._scalar_count("item_category_map")
-        events_count = self._scalar_count("events")
-
-        legacy_categories = self._read_json(self.categories_path, default=[])
-        legacy_mapping = self._read_json(self.mapping_path, default={})
-
-        clean_legacy_mapping = {
-            str(key): str(value)
-            for key, value in legacy_mapping.items()
-            if str(key).strip() and str(value).strip()
-        }
-
-        if mapping_count == 0 and self.mapping_path.exists():
-            self.save_mapping(clean_legacy_mapping)
-
-        if categories_count == 0 and self.categories_path.exists():
-            merged_categories = [str(item) for item in legacy_categories]
-            merged_categories.extend(clean_legacy_mapping.values())
-            self.save_categories(merged_categories)
-
-        if events_count == 0 and self.events_path.exists():
-            for payload in self._read_jsonl(self.events_path):
-                self.insert_event(payload)
-
-    def _scalar_count(self, table_name: str) -> int:
-        row = self._conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
-        return int(row["count"]) if row else 0
-
-    def _read_json(self, path: Path, default: Any) -> Any:
-        if not path.exists():
-            return default
-        return json.loads(path.read_text(encoding="utf-8"))
-
-    def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            value = json.loads(stripped)
-            if isinstance(value, dict):
-                rows.append(value)
-        return rows
-
-    def _write_json(self, path: Path, payload: Any) -> None:
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def normalize_category_name(raw: str) -> str | None:

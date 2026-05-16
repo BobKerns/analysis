@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.amazon.notebook import load_categorization_state, load_events_dataframe, run_amazon_categorization
+from analysis.amazon.notebook import (
+    load_categorization_state,
+    load_events_dataframe,
+    run_amazon_categorization,
+)
 from analysis.storage import JsonStateStore
 
 
