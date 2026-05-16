@@ -266,3 +266,45 @@ def test_categorize_amazon_csv_persists_items_and_monthly_summary(tmp_path: Path
         ("2026-03-01", "UNCATEGORIZED", 12.0),
         ("2026-04-01", "UNCATEGORIZED", 13.0),
     ]
+
+
+def test_categorize_amazon_csv_rerun_updates_existing_order_id_rows(tmp_path: Path) -> None:
+    input_csv = tmp_path / "amazon_business.csv"
+    pd.DataFrame(
+        {
+            "Order Date": ["2026-04-02"],
+            "Order ID": ["A-200"],
+            "Title": ["Coffee Pods"],
+            "Item Net Total": [12.0],
+        }
+    ).to_csv(input_csv, index=False)
+
+    categorize_amazon_csv(
+        input_csv_path=input_csv,
+        state_dir=tmp_path / "state",
+        output_dir=tmp_path / "out",
+        ask_for_category=None,
+    )
+
+    pd.DataFrame(
+        {
+            "Order Date": ["2026-04-02"],
+            "Order ID": ["A-200"],
+            "Title": ["Coffee Pods Deluxe"],
+            "Item Net Total": [12.0],
+        }
+    ).to_csv(input_csv, index=False)
+
+    categorize_amazon_csv(
+        input_csv_path=input_csv,
+        state_dir=tmp_path / "state",
+        output_dir=tmp_path / "out",
+        ask_for_category=None,
+    )
+
+    conn = sqlite3.connect(tmp_path / "state" / "state.sqlite3")
+    rows = conn.execute("SELECT order_id, title FROM items WHERE order_id = 'A-200'").fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0][1] == "Coffee Pods Deluxe"

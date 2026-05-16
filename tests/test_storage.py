@@ -44,6 +44,9 @@ def test_state_store_creates_sqlite_schema(tmp_path: Path) -> None:
             "PRAGMA table_info(events)"
         ).fetchall()
     }
+    item_pk = conn.execute(
+        "SELECT name FROM pragma_table_info('items') WHERE pk = 1"
+    ).fetchone()
     user_default = conn.execute(
         "SELECT dflt_value FROM pragma_table_info('events') WHERE name = 'user'"
     ).fetchone()
@@ -56,6 +59,8 @@ def test_state_store_creates_sqlite_schema(tmp_path: Path) -> None:
     assert "monthly_summaries" in tables
     assert "item_explore" in views
     assert "user" in event_columns
+    assert item_pk is not None
+    assert item_pk[0] == "order_id"
     assert user_default is not None
     assert user_default[0] is None
 
@@ -92,3 +97,49 @@ def test_insert_event_uses_user_env_var(tmp_path: Path, monkeypatch) -> None:
     assert row[0] == "test-user"
     payload = json.loads(str(row[1]))
     assert payload["user"] == "test-user"
+
+
+def test_insert_items_upserts_by_order_id_and_populates_columns(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    store = JsonStateStore(state_dir)
+    store.insert_items(
+        [
+            {
+                "Order ID": "A-100",
+                "Order Date": "2026-04-01",
+                "Title": "Coffee Pods",
+                "Item Net Total": "12.34",
+                "normalized_item": "coffee pods",
+                "category": "Food",
+            }
+        ],
+        source_file="data/Amazon-2026-04.csv",
+    )
+    store.insert_items(
+        [
+            {
+                "Order ID": "A-100",
+                "Order Date": "2026-04-01",
+                "Title": "Coffee Pods Updated",
+                "Item Net Total": "12.34",
+                "normalized_item": "coffee pods",
+                "category": "Groceries",
+            }
+        ],
+        source_file="data/Amazon-2026-04.csv",
+    )
+    store.close()
+
+    conn = sqlite3.connect(state_dir / "state.sqlite3")
+    rows = conn.execute(
+        "SELECT order_id, title, assigned_category, order_date, item_net_total FROM items"
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[0] == "A-100"
+    assert row[1] == "Coffee Pods Updated"
+    assert row[2] == "Groceries"
+    assert row[3] == "2026-04-01"
+    assert row[4] == "12.34"
