@@ -55,7 +55,11 @@ def _readline_binding() -> str:
 
 
 @click.command(name="categorize")
-@click.argument("input_csv", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "input_csvs",
+    nargs=-1,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
 @click.option("--state-dir", default="state", show_default=True, type=click.Path(path_type=Path))
 @click.option("--output-dir", default="out", show_default=True, type=click.Path(path_type=Path))
 @click.option(
@@ -71,14 +75,17 @@ def _readline_binding() -> str:
     show_default=True,
 )
 def amazon_categorize_command(
-    input_csv: Path,
+    input_csvs: tuple[Path, ...],
     state_dir: Path,
     output_dir: Path,
     cutoff_day: int,
     interactive: bool,
 ) -> None:
-    """Categorize Amazon expenses from a CSV file with persistent memory."""
+    """Categorize Amazon expenses from one or more CSV files with persistent memory."""
     configure_logging(state_dir)
+
+    if not input_csvs:
+        raise click.UsageError("Provide at least one input CSV file.")
 
     def ask_for_category(item: str, categories: list[str]) -> str:
         click.echo("")
@@ -110,24 +117,26 @@ def amazon_categorize_command(
             return _resolve_category_input(raw, categories)
 
     callback = ask_for_category if interactive else None
-    result = categorize_amazon_csv(
-        input_csv_path=input_csv,
-        state_dir=state_dir,
-        output_dir=output_dir,
-        cutoff_day=cutoff_day,
-        ask_for_category=callback,
-    )
+    for input_csv in input_csvs:
+        result = categorize_amazon_csv(
+            input_csv_path=input_csv,
+            state_dir=state_dir,
+            output_dir=output_dir,
+            cutoff_day=cutoff_day,
+            ask_for_category=callback,
+        )
 
-    click.echo(f"Annotated CSV: {result.annotated_csv_path}")
-    click.echo(f"Summary CSV: {result.summary_csv_path}")
-    if result.monthly_outputs:
-        click.echo("Monthly output files:")
-        for monthly in result.monthly_outputs:
-            click.echo(f"  {monthly.month} annotated: {monthly.annotated_csv_path}")
-            click.echo(f"  {monthly.month} summary:   {monthly.summary_csv_path}")
-    click.echo(f"Known categories: {result.categories_count}")
-    click.echo(f"Mapped items: {result.mapped_items_count}")
-    click.echo(f"Uncategorized rows: {result.uncategorized_count}")
+        click.echo(f"Input CSV: {input_csv}")
+        click.echo(f"Annotated CSV: {result.annotated_csv_path}")
+        click.echo(f"Summary CSV: {result.summary_csv_path}")
+        if result.monthly_outputs:
+            click.echo("Monthly output files:")
+            for monthly in result.monthly_outputs:
+                click.echo(f"  {monthly.month} annotated: {monthly.annotated_csv_path}")
+                click.echo(f"  {monthly.month} summary:   {monthly.summary_csv_path}")
+        click.echo(f"Known categories: {result.categories_count}")
+        click.echo(f"Mapped items: {result.mapped_items_count}")
+        click.echo(f"Uncategorized rows: {result.uncategorized_count}")
 
 
 @click.command(name="review")
