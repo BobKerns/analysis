@@ -43,6 +43,7 @@ def test_state_store_creates_sqlite_schema(tmp_path: Path) -> None:
     assert "item_category_map" in tables
     assert "events" in tables
     assert "items" in tables
+    assert "monthly_summaries" in tables
     assert "item_explore" in views
 
     store.close()
