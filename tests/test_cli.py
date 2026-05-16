@@ -16,7 +16,8 @@ def test_cli_amazon_categorize_non_interactive(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "amazon-categorize",
+            "amazon",
+            "categorize",
             str(input_csv),
             "--state-dir",
             str(tmp_path / "state"),
@@ -63,7 +64,8 @@ def test_cli_interactive_uses_existing_category_after_completion(tmp_path: Path)
         result = runner.invoke(
             main,
             [
-                "amazon-categorize",
+                "amazon",
+                "categorize",
                 str(input_csv),
                 "--state-dir",
                 str(state_dir),
@@ -87,3 +89,97 @@ def test_readline_binding_switches_for_libedit() -> None:
         from analysis.amazon.cli import _readline_binding
 
         assert _readline_binding() == "bind ^I rl_complete"
+
+
+def test_cli_review_mappings_interactive_recategorize_and_remove(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "categories.json").write_text('["Groceries", "Household"]\n', encoding="utf-8")
+    (state_dir / "item_category_map.json").write_text(
+        '{"coffee pods": "Groceries", "paper towels": "Household", "tea": "Groceries"}\n',
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+
+    with patch("analysis.amazon.cli.readline") as mocked_readline:
+        mocked_readline.get_completer.return_value = None
+        mocked_readline.get_completer_delims.return_value = " \t\n-[]~^:/"
+        mocked_readline.__doc__ = "GNU readline"
+
+        result = runner.invoke(
+            main,
+            [
+                "amazon",
+                "category",
+                "review",
+                "--state-dir",
+                str(state_dir),
+            ],
+            input="Groceries\nHousehold\n-\n",
+        )
+
+    assert result.exit_code == 0
+    mapping = (state_dir / "item_category_map.json").read_text(encoding="utf-8")
+    assert '"coffee pods": "Household"' in mapping
+    assert '"tea"' not in mapping
+
+
+def test_cli_review_mappings_rejects_unknown_category(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "categories.json").write_text('["Groceries"]\n', encoding="utf-8")
+    (state_dir / "item_category_map.json").write_text('{"coffee pods": "Groceries"}\n', encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "amazon",
+            "category",
+            "review",
+            "--state-dir",
+            str(state_dir),
+        ],
+        input="Unknown\n",
+    )
+
+    assert result.exit_code == 0
+    assert "No valid category selected." in result.output
+
+
+def test_cli_category_delete_removes_category_and_mappings(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "categories.json").write_text('["Groceries", "Household"]\n', encoding="utf-8")
+    (state_dir / "item_category_map.json").write_text(
+        '{"coffee pods": "Groceries", "paper towels": "Household", "tea": "Groceries"}\n',
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+
+    with patch("analysis.amazon.cli.readline") as mocked_readline:
+        mocked_readline.get_completer.return_value = None
+        mocked_readline.get_completer_delims.return_value = " \t\n-[]~^:/"
+        mocked_readline.__doc__ = "GNU readline"
+
+        result = runner.invoke(
+            main,
+            [
+                "amazon",
+                "category",
+                "delete",
+                "--state-dir",
+                str(state_dir),
+            ],
+            input="Groceries\ny\n",
+        )
+
+    assert result.exit_code == 0
+    categories = (state_dir / "categories.json").read_text(encoding="utf-8")
+    mapping = (state_dir / "item_category_map.json").read_text(encoding="utf-8")
+    assert "Groceries" not in categories
+    assert '"paper towels": "Household"' in mapping
+    assert '"coffee pods"' not in mapping
+    assert '"tea"' not in mapping

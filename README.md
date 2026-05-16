@@ -73,7 +73,7 @@ exec zsh   # or: exec bash
 Run the interactive categorizer on a monthly Amazon CSV:
 
 ```sh
-uv run python -m analysis amazon-categorize data/amazon_2026_01.csv
+uv run python -m analysis amazon categorize data/amazon_2026_01.csv
 ```
 
 During interactive category prompts, press `Tab` to complete from known categories.
@@ -81,8 +81,22 @@ During interactive category prompts, press `Tab` to complete from known categori
 Non-interactive mode assigns unknown items to `UNCATEGORIZED`:
 
 ```sh
-uv run python -m analysis amazon-categorize data/amazon_2026_01.csv --no-interactive
+uv run python -m analysis amazon categorize data/amazon_2026_01.csv --no-interactive
 ```
+
+Review and re-categorize existing mapped items for a category:
+
+```sh
+uv run python -m analysis amazon category review
+```
+
+Delete a category and remove mappings assigned to it:
+
+```sh
+uv run python -m analysis amazon category delete
+```
+
+Both commands prompt you to select a category (with Tab completion).
 
 Outputs:
 - `out/<input_stem>_annotated.csv`
@@ -97,7 +111,7 @@ Persistent memory:
 All files in `data/`, `out/`, and `state/` are ignored by git and protected by a pre-commit hook.
 
 ## Spell Checking
-Spell checking is handled by cspell (see `.github/cspell.json` and `.cspell/project-words.txt`). Only documentation, markdown, and comments are checked.
+Spell checking is handled by cspell (see `cspell.json` and `.cspell/project-words.txt`). Only documentation, markdown, and comments are checked.
 
 ## Coding Standards
 
