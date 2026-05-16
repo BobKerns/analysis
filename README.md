@@ -103,9 +103,7 @@ Outputs:
 - `out/<input_stem>_summary.csv`
 
 Persistent memory:
-- `state/categories.json`
-- `state/item_category_map.json`
-- `state/events.jsonl`
+- `state/state.sqlite3`
 
 ## Data Safety
 All files in `data/`, `out/`, and `state/` are ignored by git and protected by a pre-commit hook.
