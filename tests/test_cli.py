@@ -46,9 +46,17 @@ def test_resolve_category_input_keeps_new_category_when_no_match() -> None:
     assert _resolve_category_input("Groceries", categories) == "Groceries"
 
 
+def test_resolve_category_input_rejects_control_chars() -> None:
+    categories = ["Electronics", "Household"]
+
+    assert _resolve_category_input("El\tctronics", categories) == ""
+
+
 def test_cli_interactive_uses_existing_category_after_completion(tmp_path: Path) -> None:
     input_csv = tmp_path / "amazon.csv"
-    pd.DataFrame({"Description": ["Unknown Device"], "Amount": [12.0]}).to_csv(input_csv, index=False)
+    pd.DataFrame(
+        {"Description": ["Unknown Device"], "Amount": [12.0]}
+    ).to_csv(input_csv, index=False)
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -85,7 +93,9 @@ def test_cli_interactive_uses_existing_category_after_completion(tmp_path: Path)
 
 def test_cli_interactive_unknown_item_is_green_when_color_enabled(tmp_path: Path) -> None:
     input_csv = tmp_path / "amazon.csv"
-    pd.DataFrame({"Description": ["Unknown Device"], "Amount": [12.0]}).to_csv(input_csv, index=False)
+    pd.DataFrame(
+        {"Description": ["Unknown Device"], "Amount": [12.0]}
+    ).to_csv(input_csv, index=False)
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +127,44 @@ def test_cli_interactive_unknown_item_is_green_when_color_enabled(tmp_path: Path
     assert result.exit_code == 0
     assert "Unknown item:" in result.output
     assert "\x1b[32munknown device\x1b[0m" in result.output
+
+
+def test_cli_interactive_reprompts_for_invalid_category(tmp_path: Path) -> None:
+    input_csv = tmp_path / "amazon.csv"
+    pd.DataFrame(
+        {"Description": ["Unknown Device"], "Amount": [12.0]}
+    ).to_csv(input_csv, index=False)
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "categories.json").write_text('[]\n', encoding="utf-8")
+
+    runner = CliRunner()
+
+    with patch("analysis.amazon.cli.readline") as mocked_readline:
+        mocked_readline.get_completer.return_value = None
+        mocked_readline.get_completer_delims.return_value = " \t\n-[]~^:/"
+        mocked_readline.__doc__ = "GNU readline"
+
+        result = runner.invoke(
+            main,
+            [
+                "amazon",
+                "categorize",
+                str(input_csv),
+                "--state-dir",
+                str(state_dir),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--interactive",
+            ],
+            input="El\tctronics\nElectronics\n",
+        )
+
+    assert result.exit_code == 0
+    assert "Invalid category: control or non-printing characters are not allowed." in result.output
+    mapping = (state_dir / "item_category_map.json").read_text(encoding="utf-8")
+    assert '"unknown device": "Electronics"' in mapping
 
 
 def test_readline_binding_switches_for_libedit() -> None:
@@ -165,7 +213,10 @@ def test_cli_review_mappings_rejects_unknown_category(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "categories.json").write_text('["Groceries"]\n', encoding="utf-8")
-    (state_dir / "item_category_map.json").write_text('{"coffee pods": "Groceries"}\n', encoding="utf-8")
+    (state_dir / "item_category_map.json").write_text(
+        '{"coffee pods": "Groceries"}\n',
+        encoding="utf-8",
+    )
 
     runner = CliRunner()
     result = runner.invoke(
