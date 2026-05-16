@@ -7,7 +7,7 @@ from typing import Callable
 
 import pandas as pd
 
-from analysis.storage import JsonStateStore
+from analysis.storage import JsonStateStore, month_start_iso
 
 _log = logging.getLogger(__name__)
 
@@ -30,6 +30,11 @@ _AMOUNT_CANDIDATES = [
     "price",
     "item total",
     "charge",
+]
+_ORDER_DATE_CANDIDATES = [
+    "order date",
+    "date",
+    "transaction date",
 ]
 
 
@@ -60,6 +65,7 @@ def categorize_amazon_csv(
     frame = pd.read_csv(input_path)
     description_col = _find_column(frame.columns.tolist(), _DESCRIPTION_CANDIDATES)
     amount_col = _find_column(frame.columns.tolist(), _AMOUNT_CANDIDATES)
+    order_date_col = _find_optional_column(frame.columns.tolist(), _ORDER_DATE_CANDIDATES)
 
     store = JsonStateStore(state_dir)
     categories = store.load_categories()
@@ -117,6 +123,37 @@ def categorize_amazon_csv(
     working.to_csv(annotated_path, index=False)
     summary.to_csv(summary_path, index=False)
 
+    store.insert_items(working.to_dict(orient="records"), source_file=input_path)
+
+    if order_date_col is None:
+        default_month = month_start_iso(None)
+        monthly_summary = (
+            working.assign(summary_month_start=default_month)
+            .groupby(["summary_month_start", "category"], dropna=False)[amount_col]
+            .sum()
+            .reset_index()
+        )
+    else:
+        monthly_summary = (
+            working.assign(
+                summary_month_start=working[order_date_col].map(month_start_iso),
+            )
+            .groupby(["summary_month_start", "category"], dropna=False)[amount_col]
+            .sum()
+            .reset_index()
+        )
+
+    store.upsert_monthly_summaries(
+        [
+            (
+                str(row["summary_month_start"]),
+                str(row["category"]),
+                float(row[amount_col]),
+            )
+            for _, row in monthly_summary.iterrows()
+        ]
+    )
+
     store.save_categories(categories)
     store.save_mapping(known_mapping)
     _log.info(
@@ -152,3 +189,12 @@ def _find_column(columns: list[str], candidates: list[str]) -> str:
     available = ", ".join(columns)
     expected = ", ".join(candidates)
     raise ValueError(f"Missing required column. Expected one of: {expected}. Found: {available}")
+
+
+def _find_optional_column(columns: list[str], candidates: list[str]) -> str | None:
+    by_casefold = {column.casefold(): column for column in columns}
+    for candidate in candidates:
+        match = by_casefold.get(candidate.casefold())
+        if match:
+            return match
+    return None

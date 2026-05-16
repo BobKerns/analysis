@@ -39,6 +39,24 @@ def load_events_dataframe(state_dir: Path | str = "state") -> pd.DataFrame:
     return pd.DataFrame(payloads)
 
 
+def summarize_over_all_time(state_dir: Path | str = "state") -> pd.DataFrame:
+    """Load all-time category totals from SQLite monthly summaries."""
+    db_path = Path(state_dir) / STATE_DB_FILENAME
+    if not db_path.exists():
+        return pd.DataFrame(columns=["category", "amount_total_all_time"])
+
+    query = """
+        SELECT
+            category,
+            SUM(amount_total) AS amount_total_all_time
+        FROM monthly_summaries
+        GROUP BY category
+        ORDER BY amount_total_all_time DESC, category COLLATE NOCASE
+    """
+    with sqlite3.connect(db_path) as conn:
+        return pd.read_sql_query(query, conn)
+
+
 def run_amazon_categorization(
     input_csv_path: Path | str,
     state_dir: Path | str = "state",

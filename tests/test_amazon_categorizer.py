@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 import pandas as pd
 
@@ -132,3 +133,35 @@ def test_categorize_amazon_csv_persists_progress_before_interruption(tmp_path: P
 
     assert mapping == {"coffee pods": "Groceries"}
     assert categories == ["Groceries"]
+
+
+def test_categorize_amazon_csv_persists_items_and_monthly_summary(tmp_path: Path) -> None:
+    input_csv = tmp_path / "amazon_business.csv"
+    pd.DataFrame(
+        {
+            "Order Date": ["2026-03-02", "2026-03-15", "2026-04-01"],
+            "Title": ["Coffee Pods", "Paper Towels", "Coffee Pods"],
+            "Item Net Total": [12.0, 8.0, 5.0],
+        }
+    ).to_csv(input_csv, index=False)
+
+    categorize_amazon_csv(
+        input_csv_path=input_csv,
+        state_dir=tmp_path / "state",
+        output_dir=tmp_path / "out",
+        ask_for_category=None,
+    )
+
+    conn = sqlite3.connect(tmp_path / "state" / "state.sqlite3")
+    item_rows = conn.execute("SELECT COUNT(*) FROM items").fetchone()
+    summary_rows = conn.execute(
+        "SELECT summary_month_start, category, amount_total FROM monthly_summaries ORDER BY summary_month_start"
+    ).fetchall()
+    conn.close()
+
+    assert item_rows is not None
+    assert item_rows[0] == 3
+    assert summary_rows == [
+        ("2026-03-01", "UNCATEGORIZED", 20.0),
+        ("2026-04-01", "UNCATEGORIZED", 5.0),
+    ]
