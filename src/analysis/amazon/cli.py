@@ -74,10 +74,13 @@ def amazon_categorize_command(
 
     def ask_for_category(item: str, categories: list[str]) -> str:
         click.echo("")
-        click.echo(f"Unknown item: {item}")
+        click.echo("Unknown item: ", nl=False)
+        click.secho(item, fg="green")
         if categories:
-            click.echo("Known categories: " + ", ".join(sorted(categories)))
-            click.echo("Hint: press Tab to complete, or type a unique prefix and press Enter.")
+            click.echo("Known categories: "
+                       + ", ".join(sorted(click.style(c, fg="bright_blue") for c in categories)))
+            click.secho("Hint: press Tab to complete, or type a unique prefix and press Enter.",
+                        fg="bright_black", italic=True)
         with _category_completion(categories):
             raw = click.prompt(
                 "Category (leave blank to keep UNCATEGORIZED)",

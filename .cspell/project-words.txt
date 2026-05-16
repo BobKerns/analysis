@@ -3,8 +3,10 @@ AMOLED
 autofetch
 huggingface
 msecs
+munknown
 nextstrain
 pathoplexus
 pypi
 recategorize
+secho
 sidefx
