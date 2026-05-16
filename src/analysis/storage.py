@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import unicodedata
 from pathlib import Path
@@ -174,19 +175,24 @@ class JsonStateStore:
             )
 
     def insert_event(self, payload: dict[str, Any]) -> None:
+        user = str(payload.get("user") or os.getenv("USER", ""))
+        event_payload = dict(payload)
+        event_payload.setdefault("user", user)
+
         with self._conn:
             self._conn.execute(
                 """
-                INSERT INTO events(ts, level, logger, message, event, payload_json)
-                VALUES(?, ?, ?, ?, ?, ?)
+                INSERT INTO events(ts, level, logger, message, event, user, payload_json)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    str(payload.get("ts", "")),
-                    str(payload.get("level", "")),
-                    str(payload.get("logger", "")),
-                    str(payload.get("message", "")),
-                    str(payload.get("event", "")),
-                    json.dumps(payload, default=str),
+                    str(event_payload.get("ts", "")),
+                    str(event_payload.get("level", "")),
+                    str(event_payload.get("logger", "")),
+                    str(event_payload.get("message", "")),
+                    str(event_payload.get("event", "")),
+                    user,
+                    json.dumps(event_payload, default=str),
                 ),
             )
 
@@ -226,6 +232,7 @@ class JsonStateStore:
                     logger TEXT,
                     message TEXT,
                     event TEXT,
+                    user TEXT NOT NULL,
                     payload_json TEXT NOT NULL
                 );
 
@@ -269,6 +276,61 @@ class JsonStateStore:
                     assigned_category
                 FROM items;
                 """
+            )
+
+            event_columns = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(events)").fetchall()
+            }
+            if "user" not in event_columns:
+                self._conn.execute(
+                    "ALTER TABLE events ADD COLUMN user TEXT NOT NULL DEFAULT ''"
+                )
+
+            user_default = self._conn.execute(
+                "SELECT dflt_value FROM pragma_table_info('events') WHERE name = 'user'"
+            ).fetchone()
+            if user_default and user_default[0] is not None:
+                self._conn.executescript(
+                    """
+                    CREATE TABLE events_new (
+                        id INTEGER PRIMARY KEY,
+                        ts TEXT NOT NULL,
+                        level TEXT,
+                        logger TEXT,
+                        message TEXT,
+                        event TEXT,
+                        user TEXT NOT NULL,
+                        payload_json TEXT NOT NULL
+                    );
+
+                    INSERT INTO events_new(
+                        id, ts, level, logger, message, event, user, payload_json
+                    )
+                    SELECT
+                        id,
+                        ts,
+                        level,
+                        logger,
+                        message,
+                        event,
+                        CASE
+                            WHEN user IS NULL OR TRIM(user) = '' THEN 'rwk'
+                            ELSE user
+                        END,
+                        payload_json
+                    FROM events;
+
+                    DROP TABLE events;
+                    ALTER TABLE events_new RENAME TO events;
+                    """
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_events_event_ts ON events(event, ts)"
+                )
+
+            self._conn.execute(
+                "UPDATE events SET user = 'rwk' WHERE user IS NULL OR TRIM(user) = ''"
             )
 
 
