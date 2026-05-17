@@ -1,10 +1,14 @@
 # Project-specific words for cspell
+affordances
 AMOLED
 autofetch
+birthdates
+calevt
 dflt
 executemany
 executescript
 huggingface
+ltcg
 msecs
 munknown
 nextstrain
@@ -12,6 +16,13 @@ NOCASE
 pathoplexus
 pypi
 recategorize
+recomputable
+reconstructable
 secho
 sidefx
+sourceable
+subkey
+subkind
+taxchar
 unspsc
+xfer
