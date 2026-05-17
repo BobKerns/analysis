@@ -404,15 +404,15 @@ Authors can override by setting `priority` explicitly. The check command (`analy
 - `sell_asset` requires the author to supply `cost_basis_override` whenever `account_state.cost_basis` is NULL (basis was never tracked). The `--check basis` validator surfaces these cases before a run fails.
 - The priors.csv union format saves a file at the cost of two `required`-conditional columns. The error messages on misuse are explicit ("priors.csv row N: prior_kind=tax_activity requires year and bucket").
 
-## ADR-002 follow-ups required by this ADR
+## Amendments applied to ADR-002 alongside this ADR
 
-These amendments to ADR-002 fall out of the §2 invariant; capture them in the next ADR-002 revision:
+These amendments to ADR-002 fall out of the §2 invariant and §1 vocabulary; all five have been rolled into ADR-002:
 
-1. Tighten `transfer_event.reason_kind` CHECK from `('scheduled','calendar','expansion_child','initial')` to `('rule','initial')`.
-2. Update `transfer_event.reason_id` comment: "always `scheduled_transaction.id` when `reason_kind='rule'`; opaque per-account id when `reason_kind='initial'`."
-3. Add `created_by_event_id INTEGER REFERENCES calendar_event(id)` to `scheduled_transaction` (NULL for rows authored in `scheduled.csv`; populated for rules synthesized by calendar-event expansion).
-4. Add an `Income_LoanOrigination` to the standard chart of reserved accounts (or describe it as the conventional naming pattern for `buy_asset` synthesized origination rules).
-5. Add the `account.subkind` CHECK constraints per §1 of this ADR.
+1. Tightened `transfer_event.reason_kind` CHECK from `('scheduled','calendar','expansion_child','initial')` to `('rule','initial')`.
+2. Updated `transfer_event.reason_id` comment: "scheduled_transaction.id when 'rule'; opaque per-account id when 'initial'."
+3. Added `created_by_event_id INTEGER REFERENCES calendar_event(id)` to `scheduled_transaction` (NULL for rows authored in `scheduled.csv`; populated for rules synthesized by calendar-event expansion) plus its supporting index.
+4. Reserved the `Income_LoanOrigination` account name in the Conventions section, used by `buy_asset` synthesized origination rules.
+5. Added the `account.subkind` CHECK enforcing the §1 vocabulary as a single compound constraint keyed off `kind`.
 
 ## Open questions deferred
 
