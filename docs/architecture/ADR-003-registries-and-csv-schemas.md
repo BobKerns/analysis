@@ -61,11 +61,14 @@ CHECK-constrained at load time (the loader validates; the DDL keeps `subkind` as
 | --- | --- |
 | `living` | groceries, entertainment, day-to-day |
 | `healthcare` | premiums, out-of-pocket medical |
-| `housing` | utilities, insurance, maintenance (not mortgage interest, which is its own leg) |
+| `housing` | utilities, insurance, maintenance (a broad category; the v2 ADR will likely split this) |
+| `interest_expense` | mortgage interest, HELOC interest, any deductible/non-deductible interest leg |
 | `taxes_federal` | federal income tax paid |
 | `taxes_state` | state income tax paid |
 | `taxes_property` | real estate tax |
 | `other_expense` | catch-all |
+
+The expense vocabulary intentionally mixes categories (`housing`) with mechanisms (`interest_expense`); a future ADR is expected to refactor `housing` into finer-grained subkinds without disturbing the others.
 
 The `_other` catch-alls are deliberate escape hatches; the `--check` mode (ADR-001 §CLI) flags any account using one so the author can decide whether to extend the vocabulary.
 
@@ -99,8 +102,9 @@ Accrue interest, dividends, appreciation against a source account's balance.
 
 IRS Required Minimum Distribution.
 
-- **Params:** `{ "subject_account": "<traditional_ira / traditional_401k name>", "person": "<person_id>", "factor_table": "rmd_factors" }`.
+- **Params:** `{ "subject_account": "<traditional_ira / traditional_401k name>", "person": "<person_id>", "factor_table": "rmd_factors", "start_age_series": "rmd_start_age" }`.
 - **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state`; for the partial first year it comes from `prior_account_fact(fact_kind='dec31_balance')`.
+- **Start semantics:** the row's `start` column is a lower bound on candidate fire dates. The actual first fire is `max(row.start, year-end of the year person reaches start_age)`. Authors typically set `start = scenario.start` and let the age gate dominate.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
 - **Use:** post-age-73 required distributions for either spouse.
 
@@ -108,9 +112,9 @@ IRS Required Minimum Distribution.
 
 Cover any remaining cash shortfall in a target account by drawing from an ordered list of sources.
 
-- **Params:** `{ "target_account": "<name>", "target_balance": <cents> }` (the minimum acceptable end-of-month balance; usually 0 or a small cushion).
-- **Sources:** rows in `scheduled_transaction_source` ordered by `position`.
-- **Compute:** at fire time, `shortfall = max(0, target_balance - target_balance_after_all_other_rules)`. If `shortfall > 0`, draw `min(shortfall, source_balance)` from sources in order. If still short after all sources, **halt the run** (per ADR-001 principle 7); record `failure_reason = "WaterfallExhausted: <month> short $<amount>"` and persist partial results.
+- **Params:** `{ "target_account": "<name>", "target_balance_cents": <cents> }` (the minimum acceptable end-of-month balance; usually 0 or a small cushion).
+- **Sources:** rows in `scheduled_transaction_source` ordered by `position`. The row's `from_account` column MUST equal the `position = 1` source — a redundancy the loader enforces so a human (or AI) reading `scheduled.csv` alone sees the primary draw without cross-referencing `waterfall_sources.csv`.
+- **Compute:** at fire time, `shortfall = max(0, target_balance_cents - target_balance_after_all_other_rules)`. If `shortfall > 0`, draw `min(shortfall, source_balance)` from sources in order. If still short after all sources, **halt the run** (per ADR-001 principle 7); record `failure_reason = "WaterfallExhausted: <month> short $<amount>"` and persist partial results.
 - **Emits:** zero or more events (one per source actually drawn from). Each event uses `tax_character` from the source's account semantics (taxable brokerage → `ltcg`, IRA → `tax_deferred_out`, etc.) — the `tax_character` column on the scheduled_transaction row is overridden per leg from `account.tax_treatment`.
 - **Use:** the single "fill checking from savings, then brokerage, then traditional IRA" rule that every scenario carries.
 
@@ -118,9 +122,10 @@ Cover any remaining cash shortfall in a target account by drawing from an ordere
 
 Social Security retirement benefit with COLA.
 
-- **Params:** `{ "person": "<person_id>", "claim_age": 67, "base_pia_at_fra": <cents>, "cola_series": "ss_cola" }`.
-- **Compute:** Fires monthly. Adjusts `base_pia_at_fra` by the claim-age multiplier (a lookup based on months early/late vs. FRA, hard-coded) and applies cumulative COLA from claim date to `date`. Zero before the person reaches `claim_age`.
+- **Params:** `{ "person": "<person_id>", "claim_age": 67, "base_pia_at_fra_cents": <cents>, "cola_series": "ss_cola" }`.
+- **Compute:** Fires monthly. Adjusts `base_pia_at_fra_cents` by the claim-age multiplier (a lookup based on months early/late vs. FRA, hard-coded) and applies cumulative COLA from claim date to `date`. Zero before the person reaches `claim_age`.
 - **Emits:** one event, `from_account = Income_SS_<person>`, `to_account = Asset_Checking`, `tax_character = 'ss_benefit'`.
+- **Start semantics:** as with `rmd`, the row's `start` column is a lower bound. The rule emits zero amount in months before the person reaches `claim_age`; that age gate ANDs with the row's `start`.
 - **Use:** each spouse's SS rule. Different scenarios swap `claim_age` to test claim-timing decisions.
 
 #### 2.6 `tax_accumulator` (priority band: 400)
@@ -308,13 +313,14 @@ Exactly one data row (the loader rejects more).
 | `name` | text | ✓ | must match folder name |
 | `description` | text | | |
 | `account_model` | text | ✓ | `account_model.name` |
-| `calendar` | text | ✓ | this scenario's calendar's name (folder-local; convention = scenario name) |
 | `start` | YYYY-MM | ✓ | first simulated month |
 | `end` | YYYY-MM | ✓ | last simulated month (inclusive) |
 | `seed` | int | | reserved for ensembles |
-| `parent_scenario` | text | | provenance only |
+| `parent_scenario` | text | | provenance only in v1 (folder name of the scenario this one was forked from). Reuse/inheritance semantics — add/replace/delete of scheduled/calendar/aux rows from the parent — are deliberately deferred to a later ADR. |
 | `created_by` | text | ✓ | `$ANALYSIS_USER` at authoring time |
 | `meta_json` | json | | default `{}` |
+
+The calendar lives at `scenarios/<name>/calendar.csv` by filename convention — there is no `calendar` column. Calendars are the least-shared file in practice; the `parent_scenario` mechanism is the intended path for reuse once its semantics are settled.
 
 #### 4.6 Per-scenario: `data_repo/scenarios/<name>/scheduled.csv`
 
@@ -330,8 +336,8 @@ Exactly one data row (the loader rejects more).
 | `base_amount` | cents | | required for `fixed_amount`, `mortgage_payment` |
 | `base_date` | YYYY-MM | | required when `inflation_series` is set |
 | `inflation_series` | text | | aux series name, e.g. `cpi`; or `fixed` for no inflation |
-| `tax_character` | enum | ✓ | per ADR-002 |
-| `start` | YYYY-MM | ✓ | first month rule may fire |
+| `tax_character` | enum | ✓ | per ADR-002; set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field — an income-account-sourced transfer can carry `tax_character='none'` (e.g. an inheritance), and an expense-leg can carry any value. `waterfall_fill` is the one exception: per §2.4, the engine overrides each leg's `tax_character` from the source account's `tax_treatment`. |
+| `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |
 | `priority` | int | | defaults per §2's priority band |
 | `description` | text | | |
@@ -413,6 +419,7 @@ These amendments to ADR-002 fall out of the §2 invariant and §1 vocabulary; al
 3. Added `created_by_event_id INTEGER REFERENCES calendar_event(id)` to `scheduled_transaction` (NULL for rows authored in `scheduled.csv`; populated for rules synthesized by calendar-event expansion) plus its supporting index.
 4. Reserved the `Income_LoanOrigination` account name in the Conventions section, used by `buy_asset` synthesized origination rules.
 5. Added the `account.subkind` CHECK enforcing the §1 vocabulary as a single compound constraint keyed off `kind`.
+6. Added `interest_expense` to the expense subkind vocabulary (in the §1 table and the `account` CHECK).
 
 ## Open questions deferred
 

@@ -1,0 +1,1 @@
+name,from_account,to_account,cadence,month_of_year,amount_rule_kind,amount_rule_params_json,base_amount,base_date,inflation_series,tax_character,start,end,priority,description,meta_json

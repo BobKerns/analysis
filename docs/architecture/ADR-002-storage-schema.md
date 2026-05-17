@@ -137,7 +137,8 @@ CREATE TABLE account (
         OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
             'dividend','capital_gain','rental','other_income'))
         OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
-            'taxes_federal','taxes_state','taxes_property','other_expense'))
+            'interest_expense','taxes_federal','taxes_state','taxes_property',
+            'other_expense'))
     )
 );
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);

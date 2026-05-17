@@ -1,0 +1,3 @@
+prior_kind,year,bucket,account_name,fact_kind,as_of,amount,source_note
+account_fact,,,Asset_TraditionalIRA_Alice,dec31_balance,2025-12-31,48000000,FY2025 broker statement
+account_fact,,,Asset_Brokerage_Joint,cost_basis_estimate,2025-12-31,20000000,lot-average estimate
