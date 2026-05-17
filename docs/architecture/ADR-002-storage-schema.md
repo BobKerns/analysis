@@ -80,6 +80,8 @@ state/
 - **No stored computed columns.** Anything derivable (net worth, totals, "is tax-deferred") is a view or query.
 - **No `run_id` in the ledger.** Each run file holds exactly one run, so a `run_id` column on every ledger table would be a constant. `simulation_run` is a single-row manifest; the file itself is the run identifier.
 - **One-row manifest tables** are not enforced by CHECK; convention only. The loader/engine write exactly one row.
+- **Reserved account names.** A small set of names is reserved for synthetic accounts the engine references by string:
+  - `Income_LoanOrigination` — the synthetic income-class account credited by `buy_asset` calendar-event expansions when a new liability appears mid-run (see ADR-003 §3.8). The author lists it once in `accounts.csv` with `kind='income'`, `subkind='other_income'` if any scenario uses `buy_asset` with `new_liability_account`. Additional reserved names may be added in later ADRs.
 
 ### Placement summary
 
@@ -119,13 +121,24 @@ CREATE TABLE account (
     id              INTEGER PRIMARY KEY,
     name            TEXT NOT NULL UNIQUE,
     kind            TEXT NOT NULL CHECK (kind IN ('asset','liability','income','expense')),
-    subkind         TEXT NOT NULL,            -- checking, traditional_ira, real_estate, salary, …
+    subkind         TEXT NOT NULL,            -- see ADR-003 §1
     owner           TEXT REFERENCES person(id),
     tax_treatment   TEXT CHECK (tax_treatment IN
                         ('taxable','tax_deferred','tax_free','none')),
     opened          TEXT,
     closed          TEXT,
-    meta_json       TEXT NOT NULL DEFAULT '{}'
+    meta_json       TEXT NOT NULL DEFAULT '{}',
+    CHECK (
+        (kind = 'asset' AND subkind IN ('checking','savings','brokerage_taxable',
+            'traditional_ira','roth_ira','traditional_401k','roth_401k','hsa',
+            'real_estate','vehicle','other_asset'))
+        OR (kind = 'liability' AND subkind IN ('mortgage','heloc','credit_card',
+            'other_liability'))
+        OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
+            'dividend','capital_gain','rental','other_income'))
+        OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
+            'taxes_federal','taxes_state','taxes_property','other_expense'))
+    )
 );
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
 CREATE INDEX idx_account_owner ON account(owner);
@@ -146,7 +159,9 @@ CREATE TABLE account_model_member (
     PRIMARY KEY (model_id, account_id)
 );
 
--- ScheduledTransaction: a rule that emits transfers on a cadence
+-- ScheduledTransaction: a rule that emits transfers on a cadence.
+-- Authored in scheduled.csv, or synthesized at expansion time by a calendar event
+-- (in which case created_by_event_id points to that event — see ADR-003 §2 invariant).
 CREATE TABLE scheduled_transaction (
     id                      INTEGER PRIMARY KEY,
     model_id                INTEGER NOT NULL REFERENCES account_model(id),
@@ -169,10 +184,14 @@ CREATE TABLE scheduled_transaction (
     "end"                   TEXT,             -- NULL = open-ended
     priority                INTEGER NOT NULL DEFAULT 500,
     description             TEXT,
+    created_by_event_id     INTEGER REFERENCES calendar_event(id),
+                                              -- NULL for authored rows; set for
+                                              -- rules synthesized by calendar-event expansion
     meta_json               TEXT NOT NULL DEFAULT '{}',
     UNIQUE (model_id, name)
 );
 CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
+CREATE INDEX idx_sched_created_by ON scheduled_transaction(created_by_event_id);
 
 -- Ordered source list for waterfall_fill rules (and any future list-of-accounts rule)
 CREATE TABLE scheduled_transaction_source (
@@ -292,21 +311,29 @@ CREATE TABLE simulation_run (
     scenario_name   TEXT NOT NULL,
     schema_version  INTEGER NOT NULL,
     status          TEXT NOT NULL CHECK (status IN
-                        ('running','succeeded','failed')),
+                        ('running','succeeded','failed','halted')),
     started_at      TEXT NOT NULL,
     finished_at     TEXT,
     failure_reason  TEXT,                     -- e.g. 'WaterfallExhausted: 2032-08 short $4,200 …'
     -- reproducibility (see ADR-004)
     code_version    TEXT NOT NULL,
     code_dirty      INTEGER NOT NULL,
+    code_repo_path  TEXT NOT NULL,
     data_version    TEXT NOT NULL,
     data_dirty      INTEGER NOT NULL,
     scenario_tree_id TEXT NOT NULL,           -- copied from intent_manifest at run time
     data_repo_path  TEXT NOT NULL,
     data_repo_name  TEXT NOT NULL,
+    data_mode       TEXT NOT NULL CHECK (data_mode IN ('prototype','live')),
+    allow_dirty_data INTEGER NOT NULL DEFAULT 0,
+    allow_dirty_code INTEGER NOT NULL DEFAULT 0,
     -- identity (audit only; excluded from determinism key)
     run_by          TEXT NOT NULL,
     host            TEXT NOT NULL,
+    python_version  TEXT NOT NULL,
+    -- invocation (for replay)
+    run_args_json     TEXT NOT NULL DEFAULT '{}',
+    engine_options_json TEXT NOT NULL DEFAULT '{}',
     -- forking (reserved, unused in v1)
     parent_run_path TEXT,                     -- path to a previous run file
     fork_month      TEXT
@@ -329,7 +356,10 @@ CREATE TABLE account_state (
 );
 CREATE INDEX idx_state_account ON account_state(account_id, step_id);
 
--- Atomic ledger entries; one row per dollar movement
+-- Atomic ledger entries; one row per dollar movement.
+-- Per ADR-003 §2, every row traces to exactly one rule: reason_kind='rule' with
+-- reason_id = scheduled_transaction.id. The 'initial' kind is reserved for the
+-- synthetic per-account opening-balance rule materialized at run start.
 CREATE TABLE transfer_event (
     id              INTEGER PRIMARY KEY,
     step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
@@ -338,10 +368,10 @@ CREATE TABLE transfer_event (
     to_account      INTEGER NOT NULL REFERENCES account(id),
     amount          INTEGER NOT NULL,         -- cents, always non-negative
     tax_character   TEXT NOT NULL,
-    reason_kind     TEXT NOT NULL CHECK (reason_kind IN
-                        ('scheduled','calendar','expansion_child','initial')),
-    reason_id       INTEGER,                  -- scheduled_transaction.id or calendar_event.id
-    parent_event_id INTEGER REFERENCES transfer_event(id),  -- groups expansion siblings
+    reason_kind     TEXT NOT NULL CHECK (reason_kind IN ('rule','initial')),
+    reason_id       INTEGER,                  -- scheduled_transaction.id when 'rule';
+                                              -- opaque per-account id when 'initial'
+    parent_event_id INTEGER REFERENCES transfer_event(id),  -- groups multi-leg siblings from one rule firing
     from_holding_id INTEGER REFERENCES holding(id),  -- reserved; NULL in v1
     to_holding_id   INTEGER REFERENCES holding(id),  -- reserved; NULL in v1
     meta_json       TEXT NOT NULL DEFAULT '{}'
