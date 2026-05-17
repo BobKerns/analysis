@@ -4,14 +4,17 @@
 if [ -n "${BASH_SOURCE-}" ]; then
     _ANALYSIS_SELF="${BASH_SOURCE[0]}"
 elif [ -n "${ZSH_VERSION-}" ]; then
+    # shellcheck disable=SC2296
     _ANALYSIS_SELF="${(%):-%x}"
 else
     echo "activate: source from bash or zsh" >&2
+    # shellcheck disable=SC2317
     return 1 2>/dev/null || exit 1
 fi
 
 _ANALYSIS_OLD_PS1="${PS1-}"
-export ANALYSIS_DATA_DIR="$(cd "$(dirname "$_ANALYSIS_SELF")" && pwd)"
+export ANALYSIS_DATA_DIR
+ANALYSIS_DATA_DIR="$(cd "$(dirname "$_ANALYSIS_SELF")" && pwd)"
 export ANALYSIS_DATA_REPO_NAME="${ANALYSIS_DATA_REPO_NAME:-$(basename "$ANALYSIS_DATA_DIR")}"
 
 if [ -z "${ANALYSIS_USER-}" ]; then
@@ -22,6 +25,7 @@ fi
 if ! grep -qE "^\[users\.${ANALYSIS_USER}\]" "$ANALYSIS_DATA_DIR/users.toml" 2>/dev/null; then
     echo "activate: ANALYSIS_USER='$ANALYSIS_USER' not found in $ANALYSIS_DATA_DIR/users.toml" >&2
     unset ANALYSIS_USER _ANALYSIS_SELF _ANALYSIS_OLD_PS1
+    # shellcheck disable=SC2317
     return 1 2>/dev/null || exit 1
 fi
 export ANALYSIS_USER
