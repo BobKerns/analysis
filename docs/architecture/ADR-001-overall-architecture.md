@@ -87,7 +87,7 @@ Detail in ADR-004; summary here:
 
 - Code and data live in separate git repos.
 - Every run file's `simulation_run` row stamps `code_version`, `code_dirty`, `data_version`, `data_dirty`, `scenario_tree_id`, `data_repo_path`, `data_repo_name`, `run_by`, `host`. The matching intent file's `intent_manifest` stamps the same data identifiers.
-- Determinism key is `(code_version, scenario_tree_id)` \u2014 the tree id subsumes `data_version` and the dirty-vs-clean distinction since it's the content-addressed git tree object covering the scenario's input files. Identity metadata (`run_by`, `host`) is recorded but excluded from the byte-identical guarantee. Re-runs are compared via a logical diff (timestamps and host vary) rather than file-byte equality.
+- Determinism key is `(code_version, scenario_tree_id)`—the tree id subsumes `data_version` and the dirty-vs-clean distinction since it's the content-addressed git tree object covering the scenario's input files. Identity metadata (`run_by`, `host`) is recorded but excluded from the byte-identical guarantee. Re-runs are compared via a logical diff (timestamps and host vary) rather than file-byte equality.
 - Dirty data is **refused** by default (`--allow-dirty-data` override, stamped).
 - Dirty code is **warned**, allowed.
 
