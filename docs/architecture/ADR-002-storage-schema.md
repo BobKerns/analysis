@@ -3,31 +3,107 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Related:** ADR-001 (overall architecture), ADR-003 (rule and event-kind registries — referenced by `amount_rule_kind` and `calendar_event.kind` values used below), ADR-004 (reproducibility stamps on `simulation_run`).
+- **Related:** ADR-001 (overall architecture), ADR-003 (rule and event-kind registries — referenced by `amount_rule_kind` and `calendar_event.kind` values used below), ADR-004 (reproducibility stamps on the run manifest).
 
 ## Context
 
-The simulator persists both **intent** (what the scenario says) and **ledger** (what the run produced) in a single SQLite database under `state/sim.sqlite3`. The schema must:
+The simulator persists **intent** (what a scenario says) and **ledger** (what one run produced) in **separate SQLite files**: one intent file per scenario and one ledger file per run. This avoids cross-scenario UNIQUE conflicts, keeps file management trivial (`ls`, `rm`, `cp` a single file), and makes individual runs shareable as standalone artifacts.
+
+The schema must:
 
 - Be queryable ad-hoc by both humans and LLMs (long-narrow tables, descriptive names, stable shape).
 - Support `GROUP BY`-driven reporting at any grain: account, subkind, owner, year, reason.
 - Make money operations exact (`INTEGER` cents, no floats).
 - Reserve affordances for features deferred to later phases (holdings/lots, forking) without future migration.
-- Carry enough provenance on every run row to regenerate any chart.
+- Carry enough provenance on every run file to regenerate any chart.
+- Support cross-run comparison via `ATTACH DATABASE` rather than by sharing a database.
 
 ## Decision
+
+### File layout
+
+```text
+data_repo/
+    accounts.csv            # shared base: every Account in the household
+    persons.csv             # shared base: owners with birthdates
+    aux/
+        federal_brackets.csv
+        rmd_factors.csv
+        inflation_series.csv
+        ...                 # one CSV per aux_table.kind
+    account_models/
+        standard.csv        # member rows: account_name, opening_balance, opening_cost_basis
+        pre_house_sale.csv  # alternate
+    scenarios/
+        retire_2030/
+            scenario.csv    # one-row scenario header
+            scheduled.csv   # this scenario's ScheduledTransactions
+            waterfall_sources.csv
+            calendar.csv    # CalendarEvents
+            priors.csv      # PriorTaxActivity + PriorAccountFact rows
+        retire_2032/
+            ...
+    activate, users.toml
+
+state/
+    intent/
+        retire_2030.sqlite3   # built from scenarios/retire_2030/ + shared base
+        retire_2032.sqlite3
+    runs/
+        2026-05-17T193045Z_retire_2030_d4f7a2b.sqlite3
+        2026-05-17T201122Z_retire_2032_d4f7a2b.sqlite3
+```
+
+- **Intent files** (`state/intent/<scenario>.sqlite3`) are derived caches. They share a stem with the scenario folder name. `analysis sim load <scenario>` rebuilds them silently from CSVs when `data_version` or `scenario_tree_id` no longer matches; the file is semantically equivalent to a set of virtual tables over the CSVs. It can be deleted at any time; the engine recreates it on next use.
+- **Run files** (`state/runs/<timestamp>_<scenario>_<dataSHA>.sqlite3`) are produced by `analysis sim run <scenario>` and never modified after `status` reaches a terminal state. Filenames are ISO-Z timestamp + scenario name + short data SHA — sortable, tab-completable, immediately identifiable. To delete a run, `rm` its file.
+- Each run file **embeds a snapshot of the intent it was built from**, with the same row ids the ledger references. The run file is therefore self-contained: shareable as a single attachment, queryable standalone, valid forever even if the intent cache is regenerated or the data repo evolves.
+- Cross-run comparison opens a fresh in-memory DB and `ATTACH`es both run files:
+
+  ```sql
+  ATTACH DATABASE 'runs/A.sqlite3' AS a;
+  ATTACH DATABASE 'runs/B.sqlite3' AS b;
+  SELECT month, a_nw.net_worth AS nw_a, b_nw.net_worth AS nw_b,
+         b_nw.net_worth - a_nw.net_worth AS delta
+  FROM a.net_worth a_nw JOIN b.net_worth b_nw USING (month);
+  ```
+
+  Each run file defines the headline views (`net_worth`, `balance_by_subkind`, …) locally, so attached queries Just Work. SQLite's default `ATTACH` limit is 10 — sufficient for personal comparisons.
 
 ### Conventions
 
 - **Money:** `INTEGER` cents. Negative values only for liability balances and explicitly-signed flows (none expected in v1).
 - **Dates:** `TEXT` in ISO 8601. Month-grain dates are always pinned to the last day of the month at load time (see ADR-001 cross-cutting principle 2).
-- **JSON:** `TEXT` columns named `*_json`, parsed by the application layer. Used for variable-shape payloads (calendar event payloads, amount-rule params, account/event metadata).
-- **Foreign keys:** declared with `REFERENCES … ON DELETE RESTRICT` unless otherwise noted. `PRAGMA foreign_keys = ON` set on every connection.
-- **Identifiers:** integer surrogate `id` primary keys for everything addressable. Authored names are unique-indexed (`account.name`, `scenario.name`) so CSVs can reference by name and the loader resolves to ids.
-- **Append-only ledger:** rows in `simulation_step`, `account_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary` are written once and never updated. Deleting a `simulation_run` cascades through its ledger rows (the only `ON DELETE CASCADE` in the schema).
-- **No stored computed columns.** Anything derivable (net worth, totals, "is tax-deferred") is a view or query, never a stored field.
+- **JSON:** `TEXT` columns named `*_json`, parsed by the application layer.
+- **Foreign keys:** declared with `REFERENCES … ON DELETE RESTRICT`. `PRAGMA foreign_keys = ON` set on every connection. No `ON DELETE CASCADE` is needed — deletion is per-file.
+- **Identifiers:** integer surrogate `id` primary keys for everything addressable. Authored names are unique-indexed (`account.name`) so CSVs can reference by name and the loader resolves to ids. Ids assigned in the intent file are preserved in the run file's snapshot, keeping ledger FKs valid.
+- **Append-only ledger:** ledger rows are written once and never updated.
+- **No stored computed columns.** Anything derivable (net worth, totals, "is tax-deferred") is a view or query.
+- **No `run_id` in the ledger.** Each run file holds exactly one run, so a `run_id` column on every ledger table would be a constant. `simulation_run` is a single-row manifest; the file itself is the run identifier.
+- **One-row manifest tables** are not enforced by CHECK; convention only. The loader/engine write exactly one row.
+
+### Placement summary
+
+| Table | Intent file | Run file |
+| --- | --- | --- |
+| `person`, `account` | ✓ | ✓ (snapshot) |
+| `account_model`, `account_model_member` | ✓ | ✓ (snapshot) |
+| `scheduled_transaction`, `scheduled_transaction_source` | ✓ | ✓ (snapshot) |
+| `calendar`, `calendar_event` | ✓ | ✓ (snapshot) |
+| `aux_table` | ✓ | ✓ (snapshot) |
+| `scenario` (one row) | ✓ | ✓ (snapshot) |
+| `prior_tax_activity`, `prior_account_fact` | ✓ | ✓ (snapshot) |
+| `intent_manifest` (one row) | ✓ | — |
+| `simulation_run` (one row) | — | ✓ |
+| `simulation_step`, `account_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary` | — | ✓ |
+| `holding`, `lot` (reserved) | ✓ | ✓ (snapshot) |
+| `schema_overview` | ✓ | ✓ |
+| Views (`net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
+
+The snapshot in a run file is byte-comparable to the corresponding intent file's tables at run time — and is the audit trail of what intent the run actually used.
 
 ### Intent layer DDL
+
+These tables exist in both intent files and (as snapshot) run files.
 
 ```sql
 -- People (owners of accounts; needed for RMD ages, life transitions)
@@ -54,7 +130,7 @@ CREATE TABLE account (
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
 CREATE INDEX idx_account_owner ON account(owner);
 
--- AccountModel: a named bundle of opening balances
+-- AccountModel: one row per intent file (the model this scenario uses)
 CREATE TABLE account_model (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
@@ -96,19 +172,17 @@ CREATE TABLE scheduled_transaction (
     meta_json               TEXT NOT NULL DEFAULT '{}',
     UNIQUE (model_id, name)
 );
-CREATE INDEX idx_sched_model ON scheduled_transaction(model_id);
 CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
 
 -- Ordered source list for waterfall_fill rules (and any future list-of-accounts rule)
 CREATE TABLE scheduled_transaction_source (
-    scheduled_transaction_id INTEGER NOT NULL
-                                REFERENCES scheduled_transaction(id) ON DELETE CASCADE,
+    scheduled_transaction_id INTEGER NOT NULL REFERENCES scheduled_transaction(id),
     position                 INTEGER NOT NULL,
     account_id               INTEGER NOT NULL REFERENCES account(id),
     PRIMARY KEY (scheduled_transaction_id, position)
 );
 
--- Calendar: ordered patches to a scenario
+-- Calendar: ordered patches to a scenario (one calendar per intent file)
 CREATE TABLE calendar (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
@@ -124,7 +198,7 @@ CREATE TABLE calendar_event (
     payload_json TEXT NOT NULL DEFAULT '{}',
     description  TEXT
 );
-CREATE INDEX idx_calevt_cal_date ON calendar_event(calendar_id, date);
+CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
 
 -- Auxiliary tables: versioned reference data
@@ -143,7 +217,7 @@ CREATE TABLE aux_table (
 );
 CREATE INDEX idx_aux_lookup ON aux_table(kind, series, effective_date);
 
--- Scenario: a comparison-able unit
+-- Scenario: exactly one row per intent file
 CREATE TABLE scenario (
     id                INTEGER PRIMARY KEY,
     name              TEXT NOT NULL UNIQUE,
@@ -153,7 +227,7 @@ CREATE TABLE scenario (
     start             TEXT NOT NULL,
     "end"             TEXT NOT NULL,
     seed              INTEGER,                -- reserved for ensembles; unused in v1
-    parent_id         INTEGER REFERENCES scenario(id),  -- provenance
+    parent_id         INTEGER REFERENCES scenario(id),  -- provenance (cross-file by name in practice)
     created_at        TEXT NOT NULL,
     created_by        TEXT NOT NULL,
     meta_json         TEXT NOT NULL DEFAULT '{}'
@@ -181,46 +255,73 @@ CREATE TABLE prior_account_fact (
 );
 ```
 
-### Ledger layer DDL
+### Intent manifest (intent files only)
+
+Single-row table; the intent file's identity card.
 
 ```sql
+CREATE TABLE intent_manifest (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    scenario_name   TEXT NOT NULL,
+    schema_version  INTEGER NOT NULL,         -- simulator migration version
+    code_version    TEXT NOT NULL,            -- git SHA of code repo at load time
+    data_version    TEXT NOT NULL,            -- git SHA of data repo
+    data_dirty      INTEGER NOT NULL,         -- 0/1
+    scenario_tree_id TEXT NOT NULL,           -- git tree SHA covering the scenario folder + shared base subset; valid even when data_dirty=1
+    data_repo_path  TEXT NOT NULL,
+    data_repo_name  TEXT NOT NULL,
+    loaded_at       TEXT NOT NULL,
+    loaded_by       TEXT NOT NULL,            -- $ANALYSIS_USER
+    host            TEXT NOT NULL
+);
+```
+
+`scenario_tree_id` is a **git tree object SHA** covering the exact set of files the loader reads for this scenario: the scenario folder (`data_repo/scenarios/<name>/**`) plus the shared base paths it consumes (`accounts.csv`, `persons.csv`, `aux/*.csv`, the referenced `account_models/<model>.csv`).
+
+- **Clean** (`data_dirty = 0`): computed by `git ls-tree` against `HEAD` for those paths and combined with `git mktree` into a single tree object, or equivalently by writing them to a temporary index and calling `git write-tree`. Either way the result is a normal git tree SHA, addressable forever.
+- **Dirty** (`data_dirty = 1`): the loader stages the working-tree contents of those paths into a **separate index file** (`GIT_INDEX_FILE=...` env var, never touching the user's index) and runs `git write-tree` against it. The output is a real tree SHA, identical to what a future commit of the same content would produce. Optionally the engine runs `git update-ref refs/analysis-dirty/<tree-id> <tree-id>` so the object is reachable from a ref and won't be garbage-collected before the run is forgotten.
+
+This gives a single uniform identifier for "what intent did this run consume" — a content-addressed git object — with no bespoke hashing scheme. The cache-validity check for an intent file is `intent_manifest.scenario_tree_id == compute_tree_id(scenario)`.
+
+### Ledger layer DDL (run files only)
+
+```sql
+-- The run's identity card; exactly one row.
 CREATE TABLE simulation_run (
-    id              INTEGER PRIMARY KEY,
-    scenario_id     INTEGER NOT NULL REFERENCES scenario(id),
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    scenario_name   TEXT NOT NULL,
+    schema_version  INTEGER NOT NULL,
     status          TEXT NOT NULL CHECK (status IN
                         ('running','succeeded','failed')),
     started_at      TEXT NOT NULL,
     finished_at     TEXT,
     failure_reason  TEXT,                     -- e.g. 'WaterfallExhausted: 2032-08 short $4,200 …'
     -- reproducibility (see ADR-004)
-    code_version    TEXT NOT NULL,            -- git rev-parse HEAD of code repo
-    code_dirty      INTEGER NOT NULL,         -- 0/1
+    code_version    TEXT NOT NULL,
+    code_dirty      INTEGER NOT NULL,
     data_version    TEXT NOT NULL,
     data_dirty      INTEGER NOT NULL,
+    scenario_tree_id TEXT NOT NULL,           -- copied from intent_manifest at run time
     data_repo_path  TEXT NOT NULL,
     data_repo_name  TEXT NOT NULL,
     -- identity (audit only; excluded from determinism key)
-    run_by          TEXT NOT NULL,            -- $ANALYSIS_USER
+    run_by          TEXT NOT NULL,
     host            TEXT NOT NULL,
     -- forking (reserved, unused in v1)
-    parent_run_id   INTEGER REFERENCES simulation_run(id),
+    parent_run_path TEXT,                     -- path to a previous run file
     fork_month      TEXT
 );
-CREATE INDEX idx_run_scenario ON simulation_run(scenario_id);
-CREATE INDEX idx_run_started ON simulation_run(started_at);
 
 CREATE TABLE simulation_step (
     id               INTEGER PRIMARY KEY,
-    run_id           INTEGER NOT NULL REFERENCES simulation_run(id) ON DELETE CASCADE,
-    step_index       INTEGER NOT NULL,        -- 0 = initial state, 1 = first month, …
+    step_index       INTEGER NOT NULL UNIQUE, -- 0 = initial state, 1 = first month, …
     month            TEXT NOT NULL,           -- month-end date
-    previous_step_id INTEGER REFERENCES simulation_step(id),  -- NULL only when step_index=0
-    UNIQUE (run_id, step_index)
+    previous_step_id INTEGER REFERENCES simulation_step(id)  -- NULL only when step_index=0
 );
 CREATE INDEX idx_step_month ON simulation_step(month);
 
 CREATE TABLE account_state (
-    step_id     INTEGER NOT NULL REFERENCES simulation_step(id) ON DELETE CASCADE,
+    step_id     INTEGER NOT NULL REFERENCES simulation_step(id),
     account_id  INTEGER NOT NULL REFERENCES account(id),
     balance     INTEGER NOT NULL,             -- cents
     cost_basis  INTEGER,                      -- cents; NULL when basis is not tracked
@@ -231,48 +332,49 @@ CREATE INDEX idx_state_account ON account_state(account_id, step_id);
 -- Atomic ledger entries; one row per dollar movement
 CREATE TABLE transfer_event (
     id              INTEGER PRIMARY KEY,
-    run_id          INTEGER NOT NULL REFERENCES simulation_run(id) ON DELETE CASCADE,
     step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
     date            TEXT NOT NULL,            -- month-end
     from_account    INTEGER NOT NULL REFERENCES account(id),
     to_account      INTEGER NOT NULL REFERENCES account(id),
     amount          INTEGER NOT NULL,         -- cents, always non-negative
-    tax_character   TEXT NOT NULL,            -- same vocab as scheduled_transaction.tax_character
+    tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
                         ('scheduled','calendar','expansion_child','initial')),
     reason_id       INTEGER,                  -- scheduled_transaction.id or calendar_event.id
     parent_event_id INTEGER REFERENCES transfer_event(id),  -- groups expansion siblings
+    from_holding_id INTEGER REFERENCES holding(id),  -- reserved; NULL in v1
+    to_holding_id   INTEGER REFERENCES holding(id),  -- reserved; NULL in v1
     meta_json       TEXT NOT NULL DEFAULT '{}'
 );
-CREATE INDEX idx_xfer_run_date ON transfer_event(run_id, date);
-CREATE INDEX idx_xfer_run_from ON transfer_event(run_id, from_account);
-CREATE INDEX idx_xfer_run_to   ON transfer_event(run_id, to_account);
+CREATE INDEX idx_xfer_date     ON transfer_event(date);
+CREATE INDEX idx_xfer_from     ON transfer_event(from_account);
+CREATE INDEX idx_xfer_to       ON transfer_event(to_account);
 CREATE INDEX idx_xfer_reason   ON transfer_event(reason_kind, reason_id);
 CREATE INDEX idx_xfer_parent   ON transfer_event(parent_event_id);
-CREATE INDEX idx_xfer_taxchar  ON transfer_event(run_id, tax_character);
+CREATE INDEX idx_xfer_taxchar  ON transfer_event(tax_character);
 
 CREATE TABLE applied_calendar_event (
-    step_id           INTEGER NOT NULL REFERENCES simulation_step(id) ON DELETE CASCADE,
+    step_id           INTEGER NOT NULL REFERENCES simulation_step(id),
     calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
     PRIMARY KEY (step_id, calendar_event_id)
 );
 
 -- Cache + audit trail for the retrospective tax scan
 CREATE TABLE tax_year_summary (
-    run_id        INTEGER NOT NULL REFERENCES simulation_run(id) ON DELETE CASCADE,
     year          INTEGER NOT NULL,
     bucket        TEXT NOT NULL,              -- ordinary, ltcg, ss_benefit_taxable,
                                               -- standard_deduction, federal_tax, state_tax, …
     amount        INTEGER NOT NULL,
     computed_at   TEXT NOT NULL,
-    PRIMARY KEY (run_id, year, bucket)
+    PRIMARY KEY (year, bucket)
 );
 ```
 
-### Reserved schema (v1 unused; populated in later phases)
+### Reserved schema (present in both file kinds; v1 unused)
 
 ```sql
--- Holdings + lots: enable rebalancing analysis later without migration
+-- Holdings + lots: enable rebalancing analysis later without migration.
+-- Defined in both intent and run files so the snapshot stays consistent.
 CREATE TABLE holding (
     id          INTEGER PRIMARY KEY,
     account_id  INTEGER NOT NULL REFERENCES account(id),
@@ -291,85 +393,66 @@ CREATE TABLE lot (
     cost_basis_total  INTEGER NOT NULL,       -- cents
     source_note       TEXT
 );
-
--- transfer_event optionally references holdings/lots; columns left for the
--- holdings phase. Until then they are NULL and the engine doesn't read them.
-ALTER TABLE transfer_event ADD COLUMN from_holding_id INTEGER REFERENCES holding(id);
-ALTER TABLE transfer_event ADD COLUMN to_holding_id   INTEGER REFERENCES holding(id);
 ```
 
-The two `ALTER TABLE`s are stated above for clarity but will be inlined into the
-initial `CREATE TABLE transfer_event` so v1 ships with one migration, not two.
+The `from_holding_id` / `to_holding_id` columns on `transfer_event` are inlined into its `CREATE TABLE` above so v1 ships with no follow-up `ALTER TABLE`s.
 
-### Operational tables
+### Schema priming (both file kinds)
 
 ```sql
--- Reload-skip cache: lets `analysis sim load` no-op when data SHA matches
-CREATE TABLE data_load (
-    id               INTEGER PRIMARY KEY,
-    data_version     TEXT NOT NULL,
-    data_repo_name   TEXT NOT NULL,
-    account_model_id INTEGER REFERENCES account_model(id),
-    calendar_id      INTEGER REFERENCES calendar(id),
-    loaded_at        TEXT NOT NULL,
-    loaded_by        TEXT NOT NULL
-);
-CREATE INDEX idx_dataload_version ON data_load(data_version, data_repo_name);
-
--- Schema priming: one row per table, one sentence, for human + LLM readers
 CREATE TABLE schema_overview (
     table_name  TEXT PRIMARY KEY,
     description TEXT NOT NULL
 );
 ```
 
-Seeded `schema_overview` rows (written by the migration):
+Seeded rows (the loader inserts the subset relevant to that file kind; tables not present in the file get no row):
 
 | table_name | description |
 | --- | --- |
+| `intent_manifest` | One row identifying the intent file: scenario name, code/data SHAs, CSV content hash, who/when loaded. (Intent files only.) |
+| `simulation_run` | One row identifying this run: scenario name, code/data SHAs, status, who/when ran. (Run files only.) |
 | `person` | Account owners; carries birthdate for RMD-age calculations and life-transition events. |
 | `account` | One row per real-world place money sits; `kind` is the bookkeeping root (asset/liability/income/expense), `subkind` carries tax/usage semantics. |
-| `account_model` | A named bundle of accounts with opening balances; shared across scenarios. |
-| `account_model_member` | Opening balance and cost basis for each account in a model. |
+| `account_model` | The account bundle this scenario uses (one row per intent/run file). |
+| `account_model_member` | Opening balance and cost basis for each account in the model. |
 | `scheduled_transaction` | Recurring or one-off rule that emits transfer events on a cadence; `amount_rule_kind` selects the formula. |
 | `scheduled_transaction_source` | Ordered list of source accounts for rules that draw from multiple places (e.g. `waterfall_fill`). |
-| `calendar` | A named sequence of patches a scenario applies to the running model. |
+| `calendar` | The patch sequence this scenario applies to the running model (one row per intent/run file). |
 | `calendar_event` | One patch on one date; `kind` selects the semantics, `payload_json` carries the parameters. |
 | `aux_table` | Versioned reference data: tax brackets, RMD divisors, inflation series, per-account rates, filing status. |
-| `scenario` | A comparable unit: account model + calendar + start/end + creation metadata. |
+| `scenario` | The scenario this file represents (one row). |
 | `prior_tax_activity` | Year-to-date taxable activity preceding a partial-first-year run, so April reconciliation is correct. |
 | `prior_account_fact` | Other partial-period facts: YTD contributions, year-end balances for RMD, cost-basis estimates. |
-| `simulation_run` | One execution of a scenario; carries reproducibility stamps (code/data SHA) and acting-user audit fields. |
-| `simulation_step` | One month inside a run; links to the previous step and to the calendar events that fired in this window. |
+| `simulation_step` | One month inside the run; links to the previous step. |
 | `account_state` | Per-account balance and cost basis at the end of one step; long-narrow for pivoting. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
-| `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (run, year, bucket). |
-| `holding` | Per-account holdings (reserved; unused in v1, populated when rebalancing analysis is added). |
+| `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
+| `holding` | Per-account holdings (reserved; unused in v1). |
 | `lot` | Tax lots within a holding (reserved; unused in v1). |
-| `data_load` | Records which data-repo SHA was last loaded, to support skip-reload on match. |
 | `schema_overview` | This table; one short description per table, for human and LLM readers. |
 
 ### Views
 
-All views are `CREATE VIEW … AS SELECT …` over the ledger; they are the canonical definitions of the headline metrics.
+Defined in run files only. Intent files may define intent-only views in future; none in v1.
 
 ```sql
 -- Net worth = sum of asset balances minus sum of liability balances.
 -- Income/expense flows are excluded (they're flow accounts, not stock).
 CREATE VIEW net_worth AS
-SELECT s.run_id, s.month,
+SELECT s.month,
        SUM(CASE WHEN a.kind = 'asset'     THEN st.balance
                 WHEN a.kind = 'liability' THEN -st.balance
                 ELSE 0 END) AS net_worth
 FROM simulation_step s
 JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
-GROUP BY s.run_id, s.month;
+GROUP BY s.month;
 
 -- Per-account balance over time (asset and liability accounts).
 CREATE VIEW balance_by_account AS
-SELECT s.run_id, s.month, a.id AS account_id, a.name, a.kind, a.subkind,
+SELECT s.month, a.id AS account_id, a.name, a.kind, a.subkind,
        st.balance, st.cost_basis
 FROM simulation_step s
 JOIN account_state st ON st.step_id = s.id
@@ -378,16 +461,16 @@ WHERE a.kind IN ('asset','liability');
 
 -- Aggregated by subkind: "tax-deferred vs. taxable vs. Roth vs. cash vs. real estate".
 CREATE VIEW balance_by_subkind AS
-SELECT run_id, month, kind, subkind,
+SELECT month, kind, subkind,
        SUM(CASE WHEN kind = 'asset' THEN balance
                 WHEN kind = 'liability' THEN -balance
                 ELSE 0 END) AS balance
 FROM balance_by_account
-GROUP BY run_id, month, kind, subkind;
+GROUP BY month, kind, subkind;
 
 -- Aggregated by owner.
 CREATE VIEW balance_by_owner AS
-SELECT s.run_id, s.month, a.owner,
+SELECT s.month, a.owner,
        SUM(CASE WHEN a.kind = 'asset' THEN st.balance
                 WHEN a.kind = 'liability' THEN -st.balance
                 ELSE 0 END) AS balance
@@ -395,74 +478,85 @@ FROM simulation_step s
 JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
 WHERE a.kind IN ('asset','liability')
-GROUP BY s.run_id, s.month, a.owner;
+GROUP BY s.month, a.owner;
 
 -- Annual cashflow per account: in, out, net. Useful for income/expense roots.
 CREATE VIEW flow_by_account AS
-SELECT run_id,
-       CAST(substr(date, 1, 4) AS INTEGER) AS year,
+SELECT CAST(substr(date, 1, 4) AS INTEGER) AS year,
        account_id, kind, subkind,
        inflow, outflow, inflow - outflow AS net
 FROM (
-    SELECT te.run_id, te.date, a.id AS account_id, a.kind, a.subkind,
+    SELECT te.date, a.id AS account_id, a.kind, a.subkind,
            SUM(CASE WHEN te.to_account   = a.id THEN te.amount ELSE 0 END) AS inflow,
            SUM(CASE WHEN te.from_account = a.id THEN te.amount ELSE 0 END) AS outflow
     FROM transfer_event te
     JOIN account a ON a.id IN (te.from_account, te.to_account)
-    GROUP BY te.run_id, te.date, a.id
+    GROUP BY te.date, a.id
 );
 
 -- Annual totals grouped by the rule or event that caused the transfer.
 CREATE VIEW flow_by_reason AS
-SELECT run_id,
-       CAST(substr(date, 1, 4) AS INTEGER) AS year,
+SELECT CAST(substr(date, 1, 4) AS INTEGER) AS year,
        reason_kind, reason_id,
        SUM(amount) AS amount
 FROM transfer_event
-GROUP BY run_id, year, reason_kind, reason_id;
+GROUP BY year, reason_kind, reason_id;
 ```
 
-**No parameterized comparison view.** `net_worth_compare` was considered as a view but SQLite views can't take parameters, and an all-pairs cross-product is wasteful. `analysis sim compare <a> <b>` instead executes a saved query template against `net_worth` filtered to the two run ids.
+Cross-run comparisons access these views as `a.net_worth`, `b.net_worth`, etc. via `ATTACH` — no parameterized "compare" view exists. The `analysis sim compare` command supplies the join.
 
 ### Invariants and integrity rules
 
 Enforced at run end (assertions; failures mark the run `failed`):
 
-- **Bookkeeping zero-sum:** `SELECT SUM(balance × sign) FROM account_state WHERE step_id = LAST` should equal zero, where `sign = +1` for assets, `-1` for liabilities, and income/expense are summed cumulatively over the run with sign matching their flow direction. (Concretely: every `transfer_event` debits one account and credits another by the same amount, so the *total* of all balances — including the cumulative income and expense flow accounts — is always zero. The check is one query.)
-- **No negative asset balances** (per Q13): `SELECT 1 FROM account_state st JOIN account a WHERE a.kind='asset' AND st.balance < 0 LIMIT 1` returns no rows.
-- **Step chain integrity:** every `simulation_step` with `step_index > 0` has a non-NULL `previous_step_id` pointing to `step_index - 1` in the same run.
-- **Transfer/step alignment:** every `transfer_event.step_id` corresponds to a `simulation_step` whose `month` matches `substr(transfer_event.date, 1, 7)`.
+- **Bookkeeping zero-sum:** every `transfer_event` debits one account and credits another by the same amount, so the *total* of all balances — assets, liabilities, and the cumulative income/expense flow accounts with sign — is always zero. One query at the final step.
+- **No negative asset balances** (per Q13): `SELECT 1 FROM account_state st JOIN account a ON a.id=st.account_id WHERE a.kind='asset' AND st.balance < 0 LIMIT 1` returns no rows.
+- **Step chain integrity:** every `simulation_step` with `step_index > 0` has a non-NULL `previous_step_id` pointing to `step_index - 1`.
+- **Transfer/step alignment:** every `transfer_event.step_id` corresponds to a `simulation_step` whose `month` equals `transfer_event.date` (both are month-end).
+- **Manifest singleton:** `SELECT COUNT(*) FROM simulation_run` = 1 (similarly `intent_manifest` in intent files).
 
-A `analysis sim verify <run_id>` subcommand runs these as standalone checks against persisted data.
+`analysis sim verify <runfile>` runs these as standalone checks against a persisted file.
 
 ### Index strategy summary
 
-The indexes above are deliberately conservative — chosen for the queries the views above generate, plus the common ad-hoc patterns ("balance of X over time", "all events from account X", "all events caused by rule Y"). The schema is small enough that adding indexes later in response to slow queries is cheap; this avoids index bloat now.
+Indexes are deliberately conservative — chosen for the queries the views generate plus the common ad-hoc patterns ("balance of X over time", "all events from account X", "all events caused by rule Y"). Adding indexes later in response to slow queries is cheap; this avoids index bloat now.
 
 ### Migrations
 
-v1 ships a single migration `001_init.sql` that creates everything above and seeds `schema_overview`. Migrations live in `src/analysis/sim/migrations/` and are applied in numeric order at engine startup; a `_schema_version` table tracks the highest applied id. Until v1 ships there is no v0 to migrate from — `001_init.sql` is the baseline.
+v1 ships two SQL files in `src/analysis/sim/migrations/`:
+
+- `001_init_intent.sql` — schema for intent files.
+- `001_init_run.sql` — schema for run files (intent tables + ledger tables + views).
+
+Both seed their respective `schema_overview` rows. A `_schema_version` table tracks the highest applied migration per file. Future migrations are paired (`002_*_intent.sql`, `002_*_run.sql`) when they affect both file kinds; single-sided migrations are common too.
+
+**Lazy migration on open.** Run files are read-mostly. When the engine opens an older run file (e.g. for `compare` or `query`), it applies any forward-compatible additive migrations (adding columns, adding views) and bumps `_schema_version`. Destructive migrations (renames, drops) print a warning and refuse to modify the file — the user can re-run the scenario instead.
 
 ## Consequences
 
 ### Positive
 
-- One table per concept; reports are SQL, not application code. AI-assisted querying works out of the box.
-- Every dollar movement is one row; reason-based and account-based grouping are symmetric. Bundled decisions (`sell_asset`, `life_transition`) are reconstructable via `reason_id` and `parent_event_id`.
-- Cost basis tracked at the account level today, holdings/lots reserved for later — same `transfer_event` rows just gain non-NULL `*_holding_id` when that phase arrives. No data migration.
-- Reproducibility stamps live on `simulation_run`, separate from the determinism inputs (`scenario` + intent tables) — clean conceptual split between "what was simulated" and "who/when/where simulated it".
-- All money is `INTEGER` cents; eliminates a whole class of float-drift bugs and makes LLM-generated SQL more reliable.
+- **No cross-scenario conflicts.** Each scenario's intent lives in its own file; UNIQUE constraints can't collide across scenarios.
+- **Lifecycle ops are filesystem ops.** List = `ls`. Delete = `rm`. Share = copy. Archive = move. No central registry to keep consistent.
+- **Self-contained runs.** A run file carries the intent it used. Charts can be regenerated from one file even after the data repo has moved on.
+- **Comparisons via `ATTACH`** are unbounded by schema design and use the same views that single-file queries do.
+- **Ledger tables shrank.** Dropping `run_id` simplifies indexes, views, and queries; less to get wrong in ad-hoc SQL.
+- **One source of truth for provenance.** `intent_manifest` (intent) and `simulation_run` (run) are both single-row, easy to read at a glance, mutually consistent (`simulation_run` snapshots `intent_manifest`'s SHAs at run time).
+- **AI-assisted querying remains the v1 reporting surface.** Long-narrow tables, descriptive names, `schema_overview` priming, predictable views.
 
 ### Negative / accepted
 
-- JSON in `payload_json` / `meta_json` / `amount_rule_params_json` is not queryable with strong typing. SQLite's `json_extract` is available but ergonomically weak. Tradeoff accepted: the variable-shape pieces genuinely vary, and `kind` columns let queries filter before extracting JSON.
-- No row-level CHECK on `payload_json` shape matching `kind`. Validation lives in `loaders.py` and `expansions.py`. If shape drift becomes a problem, JSON Schema validation at load time is the response, not stored constraints.
-- `account_state` writes O(accounts × months) rows per run. For ~40 accounts × 40 years × 12 months that's ~19k rows per run — trivially small. Stated here to document we considered it.
-- The `flow_by_account` view double-counts an account's own internal flows if `from_account = to_account`, which the engine never emits. Documenting rather than guarding.
-- Reserved `parent_run_id`, `fork_month`, `seed`, `holding`, `lot`, and the `*_holding_id` columns are dead weight in v1. Worth it to avoid future migrations of the ledger tables (which will be the biggest by row count).
+- **Snapshot duplication in run files.** Each run file carries a copy of the intent that produced it — a few KB per run. Trivial against the ledger size, and the price of self-containment.
+- **Cross-file `ATTACH` schema skew.** Comparing runs from different schema versions can fail on views that reference dropped/renamed columns. Mitigation: lazy additive migration on open; comparisons across major schema versions are best-effort with a header warning, as already planned in Q12.
+- **JSON columns not strongly queryable.** SQLite's `json_extract` is available but ergonomically weak. The variable-shape pieces genuinely vary; `kind` columns let queries filter before extracting JSON.
+- **No row-level CHECK on `payload_json` shape matching `kind`.** Validation lives in `loaders.py` and `expansions.py`. If shape drift becomes a problem, JSON-Schema validation at load time is the response.
+- **`account_state` writes O(accounts × months) rows per run.** For ~40 accounts × 40 years × 12 months that's ~19k rows — trivially small.
+- **The `flow_by_account` view double-counts an account's own internal flows if `from_account = to_account`**, which the engine never emits. Documenting rather than guarding.
+- **Reserved columns are dead weight in v1.** `parent_run_path`, `fork_month`, `seed`, `holding`/`lot` tables, the `*_holding_id` columns on `transfer_event`. Worth it to avoid future migrations of the ledger tables, which dominate file size.
 
 ## Open questions deferred to later ADRs
 
-- Exact vocabulary of `account.subkind` values — drafted in code, will become a checked list in ADR-003 alongside the rule registry.
+- Exact vocabulary of `account.subkind` values — drafted in code, will become a checked list in ADR-003.
 - Exact vocabulary of `aux_table.kind` — same.
-- Whether `tax_year_summary` should also store the inputs used (bracket-table aux_table id, filing status) for audit. Likely yes; added when the tax scan is implemented.
+- Whether `tax_year_summary` should also store the inputs used (bracket-table aux_table id, filing status). Likely yes; added when the tax scan is implemented.
+- Exact CSV layout for the per-scenario folder (column headers for `scenario.csv`, `scheduled.csv`, `calendar.csv`, `priors.csv`, `waterfall_sources.csv`) — to be specified in ADR-003 alongside the rule and event-kind registries.

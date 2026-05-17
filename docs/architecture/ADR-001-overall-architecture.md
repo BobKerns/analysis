@@ -86,8 +86,8 @@ These are project-wide rules that all subsequent ADRs and code reference:
 Detail in ADR-004; summary here:
 
 - Code and data live in separate git repos.
-- Every `SimulationRun` stamps `code_version`, `code_dirty`, `data_version`, `data_dirty`, `data_repo_path`, `data_repo_name`, `run_by`, `host`.
-- Determinism key is `(code_version, data_version, scenario_id)`; identity metadata (`run_by`, `host`) is recorded but excluded from the byte-identical guarantee.
+- Every run file's `simulation_run` row stamps `code_version`, `code_dirty`, `data_version`, `data_dirty`, `scenario_tree_id`, `data_repo_path`, `data_repo_name`, `run_by`, `host`. The matching intent file's `intent_manifest` stamps the same data identifiers.
+- Determinism key is `(code_version, scenario_tree_id)` \u2014 the tree id subsumes `data_version` and the dirty-vs-clean distinction since it's the content-addressed git tree object covering the scenario's input files. Identity metadata (`run_by`, `host`) is recorded but excluded from the byte-identical guarantee. Re-runs are compared via a logical diff (timestamps and host vary) rather than file-byte equality.
 - Dirty data is **refused** by default (`--allow-dirty-data` override, stamped).
 - Dirty code is **warned**, allowed.
 
@@ -118,8 +118,8 @@ src/analysis/sim/
     expansions.py     # high-level CalendarEvent expanders (sell_asset, life_transition, …)
     state.py          # in-memory AccountState; invariants
     engine.py         # run(scenario) -> SimulationRun
-    storage.py        # sqlite schema + DAOs
-    loaders.py        # CSV → AccountModel / Calendar / Priors / AuxTables
+    storage.py        # per-scenario intent DB + per-run ledger DB, schema, DAOs
+    loaders.py        # CSV → intent DB (built per-scenario; silently rebuilt on staleness)
     activate.py       # env-var validation, ANALYSIS_USER lookup, gating
     tax.py            # retrospective tax scan
     cli.py            # `analysis sim` subcommands
@@ -130,13 +130,14 @@ The existing `analysis.storage` module contains item-import schemas specific to 
 
 ### CLI surface (v1)
 
-- `analysis sim load` — read CSVs from `$ANALYSIS_DATA_DIR`, populate intent tables. Skips reload when `data_version` matches the most recent load; `--force` overrides.
-- `analysis sim run <scenario>` — execute, persist a `SimulationRun`.
-- `analysis sim list` — runs with status, versions, who, when.
-- `analysis sim explain <run_id>` — scenario name, versions, year-end net worth, total taxes per year, life-transitions applied. Sanity dump.
-- `analysis sim compare <run_a> <run_b> [--by subkind|account|owner]` — net worth table + matplotlib chart; flags version skew in the report header.
-- `analysis sim query "<sql>"` — read-only SQL passthrough, pretty-printed. Entry point for AI-assisted exploration.
-- `analysis sim check <scenario> [--life-transitions|--contribution-limits|...]` — soft validators, exit non-zero on findings.
+- `analysis sim load <scenario>` — build/refresh `state/intent/<scenario>.sqlite3` from the data repo. Silently rebuilds when the source CSV hash or `data_version` no longer matches; `--force` always rebuilds. Intent files are a derived cache and may be deleted at any time.
+- `analysis sim run <scenario>` — execute against the (auto-loaded) intent file, write a new run file at `state/runs/<isoZ>_<scenario>_<dataSHA>.sqlite3`.
+- `analysis sim list` — list run files with status, versions, who, when.
+- `analysis sim explain <runfile>` — scenario name, versions, year-end net worth, total taxes per year, life-transitions applied. Sanity dump.
+- `analysis sim compare <runfile_a> <runfile_b> [--by subkind|account|owner]` — `ATTACH`es both files, prints net-worth table + matplotlib chart; flags version skew in the report header.
+- `analysis sim query "<sql>" <runfile>` — read-only SQL passthrough, pretty-printed. Entry point for AI-assisted exploration.
+- `analysis sim check <scenario> [--life-transitions|--contribution-limits|...]` — soft validators against the intent file, exit non-zero on findings.
+- `analysis sim verify <runfile>` — re-check invariants (zero-sum, no-negative-assets, step-chain integrity, manifest singletons) against a persisted run.
 
 ## Consequences
 
