@@ -1,0 +1,13 @@
+name,from_account,to_account,cadence,month_of_year,amount_rule_kind,amount_rule_params_json,base_amount,base_date,inflation_series,tax_character,start,end,priority,description,meta_json
+salary_alice,Income_Salary_Alice,Asset_Checking,monthly,,fixed_amount,{},800000,2026-05-31,cpi,taxable,2026-05-31,,200,Alice W-2 salary,{}
+salary_bob,Income_Salary_Bob,Asset_Checking,monthly,,fixed_amount,{},750000,2026-05-31,cpi,taxable,2026-05-31,,200,Bob W-2 salary,{}
+living,Asset_Checking,Expense_Living,monthly,,fixed_amount,{},450000,2026-05-31,cpi,none,2026-05-31,,200,groceries + discretionary,{}
+housing,Asset_Checking,Expense_Housing,monthly,,fixed_amount,{},80000,2026-05-31,cpi,none,2026-05-31,,200,utilities + property upkeep,{}
+healthcare,Asset_Checking,Expense_Healthcare,monthly,,fixed_amount,{},60000,2026-05-31,cpi,none,2026-05-31,,200,employer plan premium share,{}
+mortgage_pmt,Asset_Checking,Liability_Mortgage,monthly,,mortgage_payment,"{""liability_account"":""Liability_Mortgage"",""annual_rate_micros"":60000,""interest_expense_account"":""Expense_Interest_Mortgage""}",185000,2026-05-31,,none,2026-05-31,,300,30yr fixed 6%,{}
+checking_interest,Income_Interest,Asset_Checking,monthly,,percent_of_balance,"{""source_account"":""Asset_Checking"",""rate_basis"":""opening"",""rate_kind"":""rate"",""rate_series"":""Asset_Checking""}",,,,taxable,2026-05-31,,100,monthly accrual on checking balance,{}
+brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint,monthly,,percent_of_balance,"{""source_account"":""Asset_Brokerage_Joint"",""rate_basis"":""opening"",""rate_kind"":""rate"",""rate_series"":""brokerage_growth""}",,,,taxable,2026-05-31,,100,assumed appreciation on brokerage,{}
+ss_alice,Income_SS_Alice,Asset_Checking,monthly,,ss_benefit,"{""person"":""alice"",""claim_age"":67,""base_pia_at_fra_cents"":300000,""cola_series"":""cpi""}",,,,taxable,2026-05-31,,200,Alice SS at FRA,{}
+ss_bob,Income_SS_Bob,Asset_Checking,monthly,,ss_benefit,"{""person"":""bob"",""claim_age"":70,""base_pia_at_fra_cents"":350000,""cola_series"":""cpi""}",,,,taxable,2026-05-31,,200,Bob SS delayed to 70,{}
+rmd_alice,Asset_TraditionalIRA_Alice,Asset_Checking,annual,12,rmd,"{""subject_account"":""Asset_TraditionalIRA_Alice"",""person"":""alice"",""factor_table"":""rmd_factors"",""start_age_series"":""rmd_start_age""}",,,,taxable,2026-05-31,,500,Alice RMD from IRA,{}
+waterfall_topup,Asset_Savings,Asset_Checking,monthly,,waterfall_fill,"{""target_account"":""Asset_Checking"",""target_balance_cents"":200000}",,,,none,2026-05-31,,900,keep checking >= $2000 at month end (from_account mirrors position-1 source per ADR-003 §2.4),{}
