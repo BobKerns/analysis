@@ -7,8 +7,10 @@ calevt
 dflt
 executemany
 executescript
+heloc
 huggingface
 ltcg
+mktree
 msecs
 munknown
 nextstrain
@@ -18,6 +20,7 @@ pypi
 recategorize
 recomputable
 reconstructable
+runfile
 secho
 sidefx
 sourceable
