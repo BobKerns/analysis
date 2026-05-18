@@ -10,8 +10,7 @@ SQL schema alongside the source CSV.
 ```text
 <data_repo>/
     activate                      # sourced shell script (ADR-004 §4)
-    users.toml                    # validates ANALYSIS_USER
-    persons.csv                   # household owners
+    persons.csv                   # household owners + operator identities ($ANALYSIS_USER)
     accounts.csv                  # chart of accounts
     account_models/<name>.csv     # opening balances per model
     aux/<kind>[__<series>].csv    # aux tables; one per kind/series (ADR-003 §4.4)
@@ -20,7 +19,7 @@ SQL schema alongside the source CSV.
         scheduled.csv             # ScheduledTransactions
         waterfall_sources.csv     # ordered sources per waterfall_fill rule
         calendar.csv              # CalendarEvents
-        priors.csv                # PriorTaxActivity + PriorAccountFact (union table)
+        priors.csv                # PriorTaxActivity rows (tax activity only)
 ```
 
 ## Conventions

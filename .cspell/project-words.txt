@@ -4,6 +4,7 @@ AMOLED
 autofetch
 birthdates
 calevt
+carryforward
 dflt
 executemany
 executescript
@@ -20,6 +21,7 @@ pypi
 recategorize
 recomputable
 reconstructable
+reprompts
 runfile
 secho
 sidefx
@@ -27,5 +29,8 @@ sourceable
 subkey
 subkind
 taxchar
+tctronics
+topup
 unspsc
+upserts
 xfer

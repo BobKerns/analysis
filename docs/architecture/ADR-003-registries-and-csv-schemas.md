@@ -103,7 +103,7 @@ Accrue interest, dividends, appreciation against a source account's balance.
 IRS Required Minimum Distribution.
 
 - **Params:** `{ "subject_account": "<traditional_ira / traditional_401k name>", "person": "<person_id>", "factor_table": "rmd_factors", "start_age_series": "rmd_start_age" }`.
-- **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state`; for the partial first year it comes from `prior_account_fact(fact_kind='dec31_balance')`.
+- **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state`; for the partial first year it comes from `account_model_member.prior_year_end_balance` (which the author must supply for any `traditional_ira` / `traditional_401k` account whose owner reaches RMD age during the scenario's first calendar year).
 - **Start semantics:** the row's `start` column is a lower bound on candidate fire dates. The actual first fire is `max(row.start, year-end of the year person reaches start_age)`. Authors typically set `start = scenario.start` and let the age gate dominate.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
 - **Use:** post-age-73 required distributions for either spouse.
@@ -253,11 +253,14 @@ JSON-typed columns hold a single JSON value as a string; the loader parses and r
 
 #### 4.1 Shared base: `data_repo/persons.csv`
 
+Single identity list for the household: account owners *and* operator identities (`$ANALYSIS_USER`) live in the same table. The two sets typically coincide; the `role` column distinguishes persons-who-can-act from persons-who-only-appear (e.g. deceased ancestors carried for basis, a `joint` household pseudo-row, future heirs).
+
 | column | type | required | notes |
 | --- | --- | --- | --- |
-| `id` | text | ✓ | short identifier, e.g. `rwk` |
+| `id` | text | ✓ | short identifier, e.g. `rwk`; matched against `$ANALYSIS_USER` |
 | `display` | text | ✓ | full or display name |
 | `birthdate` | YYYY-MM-DD | ✓ | for RMD and life-transition computations |
+| `role` | text | | informational; conventional values `primary`, `secondary`; NULL = person-not-operator |
 | `meta_json` | json | | default `{}` |
 
 #### 4.2 Shared base: `data_repo/accounts.csv`
@@ -282,6 +285,7 @@ One file per named model. Filename stem becomes `account_model.name`.
 | `account_name` | text | ✓ | resolves to `account.id` |
 | `opening_balance` | cents | ✓ | balance at the model's effective start |
 | `opening_cost_basis` | cents | | required for accounts with `tax_treatment IN ('taxable')` holding appreciable assets |
+| `prior_year_end_balance` | cents | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` accounts whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
 
 #### 4.4 Shared: `data_repo/aux/<kind>[__<series>].csv`
 
@@ -362,20 +366,16 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 
 #### 4.9 Per-scenario: `data_repo/scenarios/<name>/priors.csv`
 
-A union table for both `prior_tax_activity` and `prior_account_fact`, distinguished by `prior_kind`.
+Tax *activity* preceding a partial-first-year run — typically YTD wages, withholding, and prior-year loss carryforwards. Account-level state facts (Dec-31 balances for RMD, opening cost basis) belong on `account_model_member` (see §4.3), not here.
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
-| `prior_kind` | enum | ✓ | `tax_activity` or `account_fact` |
-| `year` | int | tax_activity | calendar year |
-| `bucket` | text | tax_activity | matches `tax_year_summary.bucket` vocabulary |
-| `account_name` | text | account_fact | |
-| `fact_kind` | text | account_fact | `ytd_401k_contribution`, `dec31_balance`, `cost_basis_estimate`, … |
-| `as_of` | YYYY-MM-DD | account_fact | |
-| `amount` | cents | both | |
+| `year` | int | ✓ | calendar year the activity belongs to |
+| `bucket` | text | ✓ | matches `tax_year_summary.bucket` vocabulary |
+| `amount` | cents | ✓ | can be negative (e.g. loss carryforwards) |
 | `source_note` | text | | free-text provenance |
 
-The loader splits this into the two underlying tables; the union format keeps all "seed" data in one file for the author.
+Writes directly into `prior_tax_activity`. PK is `(scenario_id, year, bucket)` — at most one row per (year, bucket) pair.
 
 ### 5. Default priorities
 
@@ -408,11 +408,11 @@ Authors can override by setting `priority` explicitly. The check command (`analy
 - Free-text `kind`/`subkind` in the DDL with loader-side validation means a hand-written SQL `INSERT` could bypass the registry. The loader is the only sanctioned writer; ad-hoc edits to `state/intent/*.sqlite3` are out of scope (and would be overwritten on next reload anyway).
 - The `life_transition` expansion code is per-transition. Adding a new transition is a code change, not a data change. That's deliberate — these transitions are rare and high-impact enough to want a code review, not a CSV edit.
 - `sell_asset` requires the author to supply `cost_basis_override` whenever `account_state.cost_basis` is NULL (basis was never tracked). The `--check basis` validator surfaces these cases before a run fails.
-- The priors.csv union format saves a file at the cost of two `required`-conditional columns. The error messages on misuse are explicit ("priors.csv row N: prior_kind=tax_activity requires year and bucket").
+- `priors.csv` is intentionally narrow (tax activity only). Account-level state facts that used to live in a union `prior_account_fact` table now live as columns on `account_model_member` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`). This keeps the "what's in the accounts at scenario start" story in one file (`account_models/<name>.csv`) and lets `priors.csv` stay a thin tax-activity feed.
 
 ## Amendments applied to ADR-002 alongside this ADR
 
-These amendments to ADR-002 fall out of the §2 invariant and §1 vocabulary; all five have been rolled into ADR-002:
+These amendments to ADR-002 fall out of the §2 invariant, §1 vocabulary, and the priors-vs-account-state split; all have been rolled into ADR-002:
 
 1. Tightened `transfer_event.reason_kind` CHECK from `('scheduled','calendar','expansion_child','initial')` to `('rule','initial')`.
 2. Updated `transfer_event.reason_id` comment: "scheduled_transaction.id when 'rule'; opaque per-account id when 'initial'."
@@ -420,6 +420,8 @@ These amendments to ADR-002 fall out of the §2 invariant and §1 vocabulary; al
 4. Reserved the `Income_LoanOrigination` account name in the Conventions section, used by `buy_asset` synthesized origination rules.
 5. Added the `account.subkind` CHECK enforcing the §1 vocabulary as a single compound constraint keyed off `kind`.
 6. Added `interest_expense` to the expense subkind vocabulary (in the §1 table and the `account` CHECK).
+7. Dropped the `prior_account_fact` table entirely; added `prior_year_end_balance INTEGER` (nullable) to `account_model_member` to carry the one fact `prior_account_fact` actually drove (partial-first-year RMD's `dec31_prev_year_balance`).
+8. Added `role TEXT` (nullable) to `person`, unifying the former standalone `users.toml` operator list with the persons table. `$ANALYSIS_USER` is now validated against `persons.csv`; `users.toml` is removed from the data-repo layout.
 
 ## Open questions deferred
 

@@ -1,3 +1,4 @@
-prior_kind,year,bucket,account_name,fact_kind,as_of,amount,source_note
-account_fact,,,Asset_TraditionalIRA_Alice,dec31_balance,2025-12-31,48000000,FY2025 broker statement
-account_fact,,,Asset_Brokerage_Joint,cost_basis_estimate,2025-12-31,20000000,lot-average estimate
+year,bucket,amount,source_note
+2026,ordinary,6200000,YTD Jan-Apr 2026 W-2 wages both spouses (pre-scenario)
+2026,federal_tax_withheld,930000,YTD Jan-Apr 2026 federal withholding (pre-scenario)
+2025,ltcg_loss_carryforward,-150000,FY2025 Schedule D unused loss carried into 2026
