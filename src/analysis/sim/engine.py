@@ -34,6 +34,10 @@ SUPPORTED_RULE_KINDS = frozenset(
      "mortgage_payment", "ss_benefit", "rmd"}
 )
 
+SUPPORTED_CALENDAR_KINDS = frozenset(
+    {"set_rate", "set_amount", "retire_scheduled", "one_off_transfer"}
+)
+
 SS_FRA = 67
 
 
@@ -95,29 +99,65 @@ def run_scenario(
             )
         }
 
-        txns = con.execute(
-            'SELECT id, name, from_account, to_account, cadence, month_of_year, '
-            '       amount_rule_kind, amount_rule_params_json, base_amount, '
-            '       tax_character, start, "end", priority '
-            'FROM scheduled_transaction WHERE model_id = ? '
-            'ORDER BY priority, id',
-            (model_id,),
+        txns: list[list[Any]] = [
+            list(r) for r in con.execute(
+                'SELECT id, name, from_account, to_account, cadence, month_of_year, '
+                '       amount_rule_kind, amount_rule_params_json, base_amount, '
+                '       tax_character, start, "end", priority '
+                'FROM scheduled_transaction WHERE model_id = ? '
+                'ORDER BY priority, id',
+                (model_id,),
+            ).fetchall()
+        ]
+        txn_by_name: dict[str, list[Any]] = {
+            r[1]: r for r in txns
+        }
+
+        calendar_events = con.execute(
+            'SELECT id, calendar_id, date, kind, payload_json '
+            'FROM calendar_event ORDER BY date, id'
         ).fetchall()
 
         sources = _load_sources(con)
         aux = _load_aux(con)
 
         skipped_counts: dict[str, int] = {}
+        skipped_calendar: dict[str, int] = {}
+        applied_event_ids: set[int] = set()
 
         previous_step_id: int | None = None
         for step_index, month in enumerate(months):
             month_s = month.isoformat()
+            month_start_s = month.replace(day=1).isoformat()
             cur = con.execute(
                 "INSERT INTO simulation_step(step_index, month, previous_step_id) "
                 "VALUES (?, ?, ?)",
                 (step_index, month_s, previous_step_id),
             )
             step_id = cur.lastrowid
+
+            for ev in calendar_events:
+                ev_id, _cal_id, ev_date, ev_kind, ev_payload_json = ev
+                if ev_id in applied_event_ids:
+                    continue
+                if not (month_start_s <= ev_date <= month_s):
+                    continue
+                if ev_kind not in SUPPORTED_CALENDAR_KINDS:
+                    skipped_calendar[ev_kind] = skipped_calendar.get(ev_kind, 0) + 1
+                    applied_event_ids.add(ev_id)
+                    continue
+                _apply_calendar_event(
+                    con, ev_id, ev_date, ev_kind,
+                    json.loads(ev_payload_json or "{}"),
+                    txns, txn_by_name, aux, account_id_by_name, account_kinds,
+                    balances, step_id, month_s, model_id,
+                )
+                con.execute(
+                    "INSERT INTO applied_calendar_event(step_id, calendar_event_id) "
+                    "VALUES (?, ?)",
+                    (step_id, ev_id),
+                )
+                applied_event_ids.add(ev_id)
 
             opening_balances = dict(balances)
 
@@ -195,6 +235,12 @@ def run_scenario(
                 "UPDATE simulation_run SET run_args_json = json_set("
                 "  run_args_json, '$.skipped_rule_kinds', json(?)) WHERE id = 1",
                 (json.dumps(skipped_counts, sort_keys=True),),
+            )
+        if skipped_calendar:
+            con.execute(
+                "UPDATE simulation_run SET run_args_json = json_set("
+                "  run_args_json, '$.skipped_calendar_kinds', json(?)) WHERE id = 1",
+                (json.dumps(skipped_calendar, sort_keys=True),),
             )
 
         finalize_run(con, status="succeeded")
@@ -567,3 +613,109 @@ def _cadence_fires(
             return month.year == start.year and month.month == start.month
         case _:
             raise EngineError(f"unknown cadence: {cadence}")
+
+
+def _apply_calendar_event(
+    con,
+    ev_id: int, ev_date: str, ev_kind: str, payload: dict[str, Any],
+    txns: list[list[Any]],
+    txn_by_name: dict[str, list[Any]],
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    account_id_by_name: dict[str, int],
+    account_kinds: dict[int, str],
+    balances: dict[int, int],
+    step_id: int, month_s: str, model_id: int,
+) -> None:
+    """Expand one calendar_event per ADR-003 \u00a73."""
+    match ev_kind:
+        case "set_rate":
+            aux_kind = payload.get("aux_kind", "rate")
+            series = payload.get("series")
+            new_value = payload.get("new_value_micros")
+            if series is None or new_value is None:
+                raise EngineError(
+                    f"set_rate event id={ev_id}: requires series and new_value_micros"
+                )
+            row_payload = {"annual_rate_micros": int(new_value)}
+            con.execute(
+                "INSERT INTO aux_table(kind, series, effective_date, payload_json) "
+                "VALUES (?, ?, ?, ?)",
+                (aux_kind, series, ev_date, json.dumps(row_payload)),
+            )
+            bucket = aux.setdefault((aux_kind, series), [])
+            bucket.append((ev_date, row_payload))
+            bucket.sort(key=lambda r: r[0])
+        case "set_amount":
+            name = payload.get("scheduled_name")
+            new_amount = payload.get("new_base_amount")
+            if name is None or new_amount is None:
+                raise EngineError(
+                    f"set_amount event id={ev_id}: requires scheduled_name and "
+                    "new_base_amount"
+                )
+            rec = txn_by_name.get(name)
+            if rec is None:
+                raise EngineError(
+                    f"set_amount event id={ev_id}: unknown scheduled_name {name!r}"
+                )
+            rec[8] = int(new_amount)
+            new_base_date = payload.get("new_base_date")
+            if new_base_date is not None:
+                rec[10] = new_base_date
+            con.execute(
+                "UPDATE scheduled_transaction SET base_amount = ?, "
+                "base_date = COALESCE(?, base_date) WHERE id = ?",
+                (int(new_amount), new_base_date, rec[0]),
+            )
+        case "retire_scheduled":
+            name = payload.get("scheduled_name")
+            if name is None:
+                raise EngineError(
+                    f"retire_scheduled event id={ev_id}: requires scheduled_name"
+                )
+            rec = txn_by_name.get(name)
+            if rec is None:
+                raise EngineError(
+                    f"retire_scheduled event id={ev_id}: unknown scheduled_name "
+                    f"{name!r}"
+                )
+            rec[11] = ev_date
+            con.execute(
+                'UPDATE scheduled_transaction SET "end" = ? WHERE id = ?',
+                (ev_date, rec[0]),
+            )
+        case "one_off_transfer":
+            frm_name = payload.get("from_account")
+            to_name = payload.get("to_account")
+            amount = payload.get("amount")
+            tax_char = payload.get("tax_character", "none")
+            if frm_name is None or to_name is None or amount is None:
+                raise EngineError(
+                    f"one_off_transfer event id={ev_id}: requires from_account, "
+                    "to_account, amount"
+                )
+            from_id = account_id_by_name.get(frm_name)
+            to_id = account_id_by_name.get(to_name)
+            if from_id is None or to_id is None:
+                raise EngineError(
+                    f"one_off_transfer event id={ev_id}: unknown account "
+                    f"({frm_name!r} or {to_name!r})"
+                )
+            cur = con.execute(
+                "INSERT INTO scheduled_transaction("
+                "  model_id, name, from_account, to_account, cadence, "
+                "  amount_rule_kind, base_amount, tax_character, start, \"end\", "
+                "  priority, created_by_event_id, description"
+                ") VALUES (?, ?, ?, ?, 'one_off', 'fixed_amount', ?, ?, ?, ?, "
+                "  200, ?, ?)",
+                (model_id, f"oneoff_evt_{ev_id}", from_id, to_id,
+                 int(amount), tax_char, ev_date, ev_date, ev_id,
+                 payload.get("description")),
+            )
+            new_tid = cur.lastrowid
+            _post_transfer(
+                con, balances, account_kinds, step_id, month_s,
+                from_id, to_id, int(amount), tax_char, new_tid,
+            )
+        case _:  # pragma: no cover
+            raise EngineError(f"supported but unhandled calendar kind: {ev_kind}")
