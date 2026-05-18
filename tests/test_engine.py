@@ -17,6 +17,13 @@ PROTOTYPE = REPO_ROOT / "prototype_data"
 NET_CHECKING_PER_MONTH = 800000 + 750000 - 450000 - 80000 - 60000  # = 960000
 SALARY_ALICE_MONTHLY = 800000
 
+# Asset_Checking annual rate = 30000 micros = 3.0% APR; monthly interest on
+# opening balance is added each step.
+EXPECTED_CHECKING = [500000]
+for _ in range(4):
+    _open = EXPECTED_CHECKING[-1]
+    EXPECTED_CHECKING.append(_open + NET_CHECKING_PER_MONTH + (_open * 30000) // 12_000_000)
+
 
 def _intent(tmp_path: Path) -> Path:
     return load_scenario(
@@ -26,7 +33,7 @@ def _intent(tmp_path: Path) -> Path:
     ).intent_path
 
 
-def test_run_scenario_emits_step_chain_and_applies_fixed_rules(tmp_path: Path) -> None:
+def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None:
     intent_path = _intent(tmp_path)
     run_path = tmp_path / "runs" / "r.sqlite3"
 
@@ -65,8 +72,8 @@ def test_run_scenario_emits_step_chain_and_applies_fixed_rules(tmp_path: Path) -
             "SELECT balance FROM account_state WHERE step_id = ? AND account_id = ?",
             (steps[3]["id"], checking_id),
         ).fetchone()[0]
-        assert bal0 == 500000 + NET_CHECKING_PER_MONTH
-        assert bal3 == 500000 + 4 * NET_CHECKING_PER_MONTH
+        assert bal0 == EXPECTED_CHECKING[1]
+        assert bal3 == EXPECTED_CHECKING[4]
 
         income_id = con.execute(
             "SELECT id FROM account WHERE name = 'Income_Salary_Alice'"
@@ -77,6 +84,16 @@ def test_run_scenario_emits_step_chain_and_applies_fixed_rules(tmp_path: Path) -
         ).fetchone()[0]
         assert inc0 == -SALARY_ALICE_MONTHLY
 
+        mortgage_id = con.execute(
+            "SELECT id FROM account WHERE name = 'Liability_Mortgage'"
+        ).fetchone()[0]
+        for s in (steps[0], steps[10], steps[-1]):
+            bal = con.execute(
+                "SELECT balance FROM account_state WHERE step_id=? AND account_id=?",
+                (s["id"], mortgage_id),
+            ).fetchone()[0]
+            assert bal == 25_000_000
+
         run = con.execute(
             "SELECT status, finished_at, failure_reason, run_args_json "
             "FROM simulation_run"
@@ -84,11 +101,10 @@ def test_run_scenario_emits_step_chain_and_applies_fixed_rules(tmp_path: Path) -
         assert run["status"] == "succeeded"
         assert run["finished_at"] is not None
         skipped = json.loads(run["run_args_json"]).get("skipped_rule_kinds", {})
-        assert skipped.get("percent_of_balance") == 2 * 176
+        assert "percent_of_balance" not in skipped
+        assert "waterfall_fill" not in skipped
         assert skipped.get("mortgage_payment") == 176
         assert skipped.get("ss_benefit") == 2 * 176
-        assert skipped.get("waterfall_fill") == 176
-        # rmd_alice is annual w/ month_of_year=12: 15 firings (2026..2040 December)
         assert skipped.get("rmd") == 15
     finally:
         con.close()
@@ -103,12 +119,18 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
     )
     con = sqlite3.connect(run_path)
     try:
-        # 5 fixed_amount monthly rules × 176 months
-        assert con.execute("SELECT COUNT(*) FROM transfer_event").fetchone()[0] == 5 * 176
+        # 5 fixed_amount + 1 checking_interest + 1 brokerage_growth = 7 monthly
+        # rules. Waterfall never fires (Checking stays above 200_000-cent target).
+        assert con.execute(
+            "SELECT COUNT(*) FROM transfer_event"
+        ).fetchone()[0] == 7 * 176
 
-        # signed sum of every balance per step is constant (= opening total)
+        # Liabilities store debt magnitude; signed ledger sum is the invariant.
         rows = con.execute(
-            "SELECT step_id, SUM(balance) FROM account_state GROUP BY step_id"
+            "SELECT step_id, SUM(CASE WHEN a.kind='liability' "
+            "THEN -ast.balance ELSE ast.balance END) "
+            "FROM account_state ast JOIN account a ON a.id = ast.account_id "
+            "GROUP BY step_id"
         ).fetchall()
         totals = {step: total for step, total in rows}
         opening_total = next(iter(totals.values()))
