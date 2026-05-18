@@ -135,51 +135,52 @@ def run_scenario(
                     continue
                 params = json.loads(params_json or "{}")
 
-                if rule_kind == "fixed_amount":
-                    if base_amount is None:
-                        raise EngineError(
-                            f"scheduled_transaction id={tid} fixed_amount missing base_amount"
-                        )
-                    _post_transfer(
-                        con, balances, account_kinds, step_id, month_s,
-                        frm, to, base_amount, tax_char, tid,
-                    )
-                elif rule_kind == "percent_of_balance":
-                    amount = _amount_percent_of_balance(
-                        params, opening_balances, balances, account_id_by_name, aux,
-                        month_s, tid,
-                    )
-                    if amount > 0:
+                match rule_kind:
+                    case "fixed_amount":
+                        if base_amount is None:
+                            raise EngineError(
+                                f"scheduled_transaction id={tid} fixed_amount missing base_amount"
+                            )
                         _post_transfer(
                             con, balances, account_kinds, step_id, month_s,
-                            frm, to, amount, tax_char, tid,
+                            frm, to, base_amount, tax_char, tid,
                         )
-                elif rule_kind == "waterfall_fill":
-                    _apply_waterfall_fill(
-                        con, balances, account_kinds, step_id, month_s,
-                        params, sources.get(tid, []), account_id_by_name,
-                        tax_char, tid,
-                    )
-                elif rule_kind == "mortgage_payment":
-                    _apply_mortgage_payment(
-                        con, balances, account_kinds, step_id, month_s,
-                        params, base_amount, frm, account_id_by_name,
-                        tax_char, tid,
-                    )
-                elif rule_kind == "ss_benefit":
-                    _apply_ss_benefit(
-                        con, balances, account_kinds, step_id, month_s, month,
-                        params, frm, to, person_birthdates, aux, tax_char, tid,
-                    )
-                elif rule_kind == "rmd":
-                    _apply_rmd(
-                        con, balances, account_kinds, step_id, month_s, month,
-                        params, frm, to, account_id_by_name,
-                        person_birthdates, prior_year_end_balances, aux,
-                        tax_char, tid,
-                    )
-                else:  # pragma: no cover
-                    raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
+                    case "percent_of_balance":
+                        amount = _amount_percent_of_balance(
+                            params, opening_balances, balances, account_id_by_name, aux,
+                            month_s, tid,
+                        )
+                        if amount > 0:
+                            _post_transfer(
+                                con, balances, account_kinds, step_id, month_s,
+                                frm, to, amount, tax_char, tid,
+                            )
+                    case "waterfall_fill":
+                        _apply_waterfall_fill(
+                            con, balances, account_kinds, step_id, month_s,
+                            params, sources.get(tid, []), account_id_by_name,
+                            tax_char, tid,
+                        )
+                    case "mortgage_payment":
+                        _apply_mortgage_payment(
+                            con, balances, account_kinds, step_id, month_s,
+                            params, base_amount, frm, account_id_by_name,
+                            tax_char, tid,
+                        )
+                    case "ss_benefit":
+                        _apply_ss_benefit(
+                            con, balances, account_kinds, step_id, month_s, month,
+                            params, frm, to, person_birthdates, aux, tax_char, tid,
+                        )
+                    case "rmd":
+                        _apply_rmd(
+                            con, balances, account_kinds, step_id, month_s, month,
+                            params, frm, to, account_id_by_name,
+                            person_birthdates, prior_year_end_balances, aux,
+                            tax_char, tid,
+                        )
+                    case _:  # pragma: no cover
+                        raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
 
             con.executemany(
                 "INSERT INTO account_state(step_id, account_id, balance, cost_basis) "
@@ -554,13 +555,15 @@ def _month_ends(start: date, end: date):
 def _cadence_fires(
     cadence: str, month_of_year: int | None, month: date, start: date,
 ) -> bool:
-    if cadence == "monthly":
-        return True
-    if cadence == "quarterly":
-        return ((month.year - start.year) * 12 + (month.month - start.month)) % 3 == 0
-    if cadence == "annual":
-        target = month_of_year if month_of_year is not None else start.month
-        return month.month == target
-    if cadence == "one_off":
-        return month.year == start.year and month.month == start.month
-    raise EngineError(f"unknown cadence: {cadence}")
+    match cadence:
+        case "monthly":
+            return True
+        case "quarterly":
+            return ((month.year - start.year) * 12 + (month.month - start.month)) % 3 == 0
+        case "annual":
+            target = month_of_year if month_of_year is not None else start.month
+            return month.month == target
+        case "one_off":
+            return month.year == start.year and month.month == start.month
+        case _:
+            raise EngineError(f"unknown cadence: {cadence}")
