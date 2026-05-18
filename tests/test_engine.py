@@ -147,7 +147,7 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         assert "waterfall_fill" not in skipped
         assert "mortgage_payment" not in skipped
         assert "ss_benefit" not in skipped
-        assert skipped.get("rmd") == 15
+        assert "rmd" not in skipped
 
         # ADR-003 §2.5: alice (b. 1965-03-15, claim_age=67) first fires at
         # 2032-03-31 (step_idx 70). pia=300000, mult=1.0, factor=1.0 → 300000.
@@ -181,6 +181,44 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
             (steps[135]["id"], ss_bob_id),
         ).fetchone()[0]
         assert bob_135 == 434_000
+
+        # ADR-003 §2.3: alice reaches 73 in 2038 (b. 1965). RMD fires Dec
+        # 2038 (step 151), Dec 2039 (163), Dec 2040 (175). IRA opening
+        # 50_000_000, no growth or withdrawals before 2038.
+        rmd_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='rmd_alice'"
+        ).fetchone()[0]
+        ira_id = con.execute(
+            "SELECT id FROM account WHERE name='Asset_TraditionalIRA_Alice'"
+        ).fetchone()[0]
+        # No RMD before age 73 (Dec 2037 = step 139).
+        assert con.execute(
+            "SELECT COUNT(*) FROM transfer_event WHERE step_id=? AND reason_id=?",
+            (steps[139]["id"], rmd_id),
+        ).fetchone()[0] == 0
+        # Dec 2038: 50_000_000 / 26.5 = 1_886_792 (floor).
+        rmd_2038 = con.execute(
+            "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
+            (steps[151]["id"], rmd_id),
+        ).fetchone()[0]
+        assert rmd_2038 == 1_886_792
+        ira_2038 = con.execute(
+            "SELECT balance FROM account_state WHERE step_id=? AND account_id=?",
+            (steps[151]["id"], ira_id),
+        ).fetchone()[0]
+        assert ira_2038 == 48_113_208
+        # Dec 2039: 48_113_208 / 25.5 = 1_886_792.
+        rmd_2039 = con.execute(
+            "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
+            (steps[163]["id"], rmd_id),
+        ).fetchone()[0]
+        assert rmd_2039 == 1_886_792
+        # Dec 2040: 46_226_416 / 24.6 = 1_879_122.
+        rmd_2040 = con.execute(
+            "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
+            (steps[175]["id"], rmd_id),
+        ).fetchone()[0]
+        assert rmd_2040 == 1_879_122
     finally:
         con.close()
 
@@ -196,10 +234,12 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
     try:
         # 5 fixed_amount + 1 checking_interest + 1 brokerage_growth + 2 mortgage
         # legs = 9 events per month. Waterfall never fires. ss_alice fires from
-        # step 70 (2032-03-31) on; ss_bob from step 135 (2037-08-31) on.
+        # step 70 (2032-03-31) on; ss_bob from step 135 (2037-08-31) on. rmd
+        # fires Dec 2038/2039/2040 (3 events).
         ss_alice_events = 176 - 70  # 106
         ss_bob_events = 176 - 135   # 41
-        expected_events = 9 * 176 + ss_alice_events + ss_bob_events
+        rmd_events = 3
+        expected_events = 9 * 176 + ss_alice_events + ss_bob_events + rmd_events
         assert con.execute(
             "SELECT COUNT(*) FROM transfer_event"
         ).fetchone()[0] == expected_events
