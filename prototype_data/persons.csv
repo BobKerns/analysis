@@ -1,4 +1,4 @@
-id,display,birthdate,meta_json
-alice,Alice (fake),1965-03-15,{}
-bob,Bob (fake),1967-08-20,{}
-joint,Joint household (fake),1970-01-01,{"household":true}
+id,display,birthdate,role,meta_json
+alice,Alice (fake),1965-03-15,primary,{}
+bob,Bob (fake),1967-08-20,primary,{}
+joint,Joint household (fake),1970-01-01,,{"household":true}

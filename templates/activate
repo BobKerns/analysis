@@ -22,8 +22,8 @@ if [ -z "${ANALYSIS_USER-}" ]; then
     read -r ANALYSIS_USER
 fi
 
-if ! grep -qE "^\[users\.${ANALYSIS_USER}\]" "$ANALYSIS_DATA_DIR/users.toml" 2>/dev/null; then
-    echo "activate: ANALYSIS_USER='$ANALYSIS_USER' not found in $ANALYSIS_DATA_DIR/users.toml" >&2
+if ! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null; then
+    echo "activate: ANALYSIS_USER='$ANALYSIS_USER' not found in $ANALYSIS_DATA_DIR/persons.csv" >&2
     unset ANALYSIS_USER _ANALYSIS_SELF _ANALYSIS_OLD_PS1
     # shellcheck disable=SC2317
     return 1 2>/dev/null || exit 1

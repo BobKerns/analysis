@@ -43,7 +43,7 @@ data_repo/
             priors.csv      # PriorTaxActivity + PriorAccountFact rows
         retire_2032/
             ...
-    activate, users.toml
+    activate
 
 state/
     intent/
@@ -93,7 +93,7 @@ state/
 | `calendar`, `calendar_event` | ✓ | ✓ (snapshot) |
 | `aux_table` | ✓ | ✓ (snapshot) |
 | `scenario` (one row) | ✓ | ✓ (snapshot) |
-| `prior_tax_activity`, `prior_account_fact` | ✓ | ✓ (snapshot) |
+| `prior_tax_activity` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
 | `simulation_step`, `account_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary` | — | ✓ |
@@ -108,11 +108,15 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 These tables exist in both intent files and (as snapshot) run files.
 
 ```sql
--- People (owners of accounts; needed for RMD ages, life transitions)
+-- People (owners of accounts; needed for RMD ages, life transitions).
+-- Doubles as the operator-identity list: `$ANALYSIS_USER` must match a row id here.
 CREATE TABLE person (
     id          TEXT PRIMARY KEY,             -- short id, e.g. 'rwk', 'mwk'
     display     TEXT NOT NULL,
     birthdate   TEXT NOT NULL,                -- ISO date
+    role        TEXT,                         -- informational; e.g. 'primary', 'secondary';
+                                              -- NULL for persons-not-operators (deceased
+                                              -- ancestors, household pseudo-rows, future heirs)
     meta_json   TEXT NOT NULL DEFAULT '{}'
 );
 
@@ -153,10 +157,15 @@ CREATE TABLE account_model (
 );
 
 CREATE TABLE account_model_member (
-    model_id            INTEGER NOT NULL REFERENCES account_model(id),
-    account_id          INTEGER NOT NULL REFERENCES account(id),
-    opening_balance     INTEGER NOT NULL,     -- cents
-    opening_cost_basis  INTEGER,              -- cents; NULL when basis is not tracked
+    model_id                INTEGER NOT NULL REFERENCES account_model(id),
+    account_id              INTEGER NOT NULL REFERENCES account(id),
+    opening_balance         INTEGER NOT NULL,     -- cents
+    opening_cost_basis      INTEGER,              -- cents; NULL when basis is not tracked
+    prior_year_end_balance  INTEGER,              -- cents at Dec 31 preceding scenario.start;
+                                                  -- required for traditional_ira / traditional_401k
+                                                  -- so the partial-first-year RMD has a Dec-31
+                                                  -- balance to divide by (after year 1 the engine
+                                                  -- reads it from account_state). NULL otherwise.
     PRIMARY KEY (model_id, account_id)
 );
 
@@ -253,7 +262,9 @@ CREATE TABLE scenario (
     meta_json         TEXT NOT NULL DEFAULT '{}'
 );
 
--- Priors: partial-year/seed facts that the run-start needs
+-- Priors: partial-first-year taxable activity preceding scenario.start.
+-- Account-level state facts (Dec-31 balances, opening cost basis) live on
+-- account_model_member; this table is for tax activity only.
 CREATE TABLE prior_tax_activity (
     scenario_id INTEGER NOT NULL REFERENCES scenario(id),
     year        INTEGER NOT NULL,
@@ -261,17 +272,6 @@ CREATE TABLE prior_tax_activity (
     amount      INTEGER NOT NULL,
     source_note TEXT,
     PRIMARY KEY (scenario_id, year, bucket)
-);
-
-CREATE TABLE prior_account_fact (
-    scenario_id INTEGER NOT NULL REFERENCES scenario(id),
-    account_id  INTEGER NOT NULL REFERENCES account(id),
-    fact_kind   TEXT NOT NULL,                -- ytd_401k_contribution, dec31_balance,
-                                              -- cost_basis_estimate, …
-    value       INTEGER NOT NULL,
-    as_of       TEXT NOT NULL,
-    source_note TEXT,
-    PRIMARY KEY (scenario_id, account_id, fact_kind, as_of)
 );
 ```
 
@@ -446,15 +446,14 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `person` | Account owners; carries birthdate for RMD-age calculations and life-transition events. |
 | `account` | One row per real-world place money sits; `kind` is the bookkeeping root (asset/liability/income/expense), `subkind` carries tax/usage semantics. |
 | `account_model` | The account bundle this scenario uses (one row per intent/run file). |
-| `account_model_member` | Opening balance and cost basis for each account in the model. |
+| `account_model_member` | Opening balance, opening cost basis, and prior-Dec-31 balance (for partial-first-year RMD) for each account in the model. |
 | `scheduled_transaction` | Recurring or one-off rule that emits transfer events on a cadence; `amount_rule_kind` selects the formula. |
 | `scheduled_transaction_source` | Ordered list of source accounts for rules that draw from multiple places (e.g. `waterfall_fill`). |
 | `calendar` | The patch sequence this scenario applies to the running model (one row per intent/run file). |
 | `calendar_event` | One patch on one date; `kind` selects the semantics, `payload_json` carries the parameters. |
 | `aux_table` | Versioned reference data: tax brackets, RMD divisors, inflation series, per-account rates, filing status. |
 | `scenario` | The scenario this file represents (one row). |
-| `prior_tax_activity` | Year-to-date taxable activity preceding a partial-first-year run, so April reconciliation is correct. |
-| `prior_account_fact` | Other partial-period facts: YTD contributions, year-end balances for RMD, cost-basis estimates. |
+| `prior_tax_activity` | Year-to-date taxable activity preceding a partial-first-year run, so April reconciliation is correct. Account-level state facts (Dec-31 balances, cost basis) live on `account_model_member` instead. |
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `account_state` | Per-account balance and cost basis at the end of one step; long-narrow for pivoting. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |

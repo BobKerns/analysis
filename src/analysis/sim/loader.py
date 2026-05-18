@@ -291,25 +291,28 @@ def _validate_waterfall(
 
 
 def _validate_priors(
-    rows: list[dict[str, str]], accounts: list[dict[str, str]], issues: list[str]
+    rows: list[dict[str, str]], _accounts: list[dict[str, str]], issues: list[str]
 ) -> None:
-    account_names = {r["name"] for r in accounts if r.get("name")}
+    seen: set[tuple[str, str]] = set()
     for i, row in enumerate(rows, start=2):
-        pk = row.get("prior_kind", "")
-        if pk not in registries.PRIOR_KINDS:
-            issues.append(f"priors.csv row {i}: unknown prior_kind '{pk}'")
+        year = row.get("year", "")
+        bucket = row.get("bucket", "")
+        amount = row.get("amount", "")
+        if not year or not bucket or amount == "":
+            issues.append(f"priors.csv row {i}: year, bucket, amount are required")
             continue
-        if pk == "tax_activity":
-            if not row.get("year") or not row.get("bucket"):
-                issues.append(f"priors.csv row {i}: tax_activity requires year and bucket")
-        else:
-            an = row.get("account_name", "")
-            if not an or an not in account_names:
-                issues.append(
-                    f"priors.csv row {i}: account_name '{an}' not in accounts.csv"
-                )
-            if not row.get("fact_kind") or not row.get("as_of"):
-                issues.append(f"priors.csv row {i}: account_fact requires fact_kind and as_of")
+        try:
+            int(year)
+            int(amount)
+        except ValueError:
+            issues.append(f"priors.csv row {i}: year and amount must be integers")
+            continue
+        key = (year, bucket)
+        if key in seen:
+            issues.append(
+                f"priors.csv row {i}: duplicate (year={year}, bucket={bucket})"
+            )
+        seen.add(key)
 
 
 # ---------- writers ----------
@@ -333,8 +336,13 @@ def _write_intent(
 
     for p in persons:
         con.execute(
-            "INSERT INTO person(id, display, birthdate, meta_json) VALUES (?,?,?,?)",
-            (p["id"], p["display"], p["birthdate"], p.get("meta_json") or "{}"),
+            "INSERT INTO person(id, display, birthdate, role, meta_json) "
+            "VALUES (?,?,?,?,?)",
+            (
+                p["id"], p["display"], p["birthdate"],
+                p.get("role") or None,
+                p.get("meta_json") or "{}",
+            ),
         )
     counts["person"] = len(persons)
 
@@ -361,13 +369,14 @@ def _write_intent(
     for m in account_model_rows:
         con.execute(
             "INSERT INTO account_model_member("
-            "model_id, account_id, opening_balance, opening_cost_basis) "
-            "VALUES (?,?,?,?)",
+            "model_id, account_id, opening_balance, opening_cost_basis, "
+            "prior_year_end_balance) VALUES (?,?,?,?,?)",
             (
                 model_id,
                 account_ids[m["account_name"]],
                 int(m["opening_balance"]),
                 int(m["opening_cost_basis"]) if m.get("opening_cost_basis") else None,
+                int(m["prior_year_end_balance"]) if m.get("prior_year_end_balance") else None,
             ),
         )
     counts["account_model_member"] = len(account_model_rows)
@@ -456,27 +465,16 @@ def _write_intent(
     counts["scenario"] = 1
 
     for r in priors_rows:
-        if r["prior_kind"] == "tax_activity":
-            con.execute(
-                "INSERT INTO prior_tax_activity("
-                "scenario_id, year, bucket, amount, source_note) "
-                "VALUES (?,?,?,?,?)",
-                (
-                    scenario_id, int(r["year"]), r["bucket"], int(r["amount"]),
-                    r.get("source_note") or None,
-                ),
-            )
-        else:
-            con.execute(
-                "INSERT INTO prior_account_fact("
-                "scenario_id, account_id, fact_kind, value, as_of, source_note) "
-                "VALUES (?,?,?,?,?,?)",
-                (
-                    scenario_id, account_ids[r["account_name"]], r["fact_kind"],
-                    int(r["amount"]), r["as_of"], r.get("source_note") or None,
-                ),
-            )
-    counts["priors"] = len(priors_rows)
+        con.execute(
+            "INSERT INTO prior_tax_activity("
+            "scenario_id, year, bucket, amount, source_note) "
+            "VALUES (?,?,?,?,?)",
+            (
+                scenario_id, int(r["year"]), r["bucket"], int(r["amount"]),
+                r.get("source_note") or None,
+            ),
+        )
+    counts["prior_tax_activity"] = len(priors_rows)
 
     return counts
 

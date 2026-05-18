@@ -37,8 +37,6 @@ TAX_CHARACTERS: set[str] = {
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 
-PRIOR_KINDS: set[str] = {"tax_activity", "account_fact"}
-
 DEFAULT_PRIORITIES: dict[str, int] = {
     "percent_of_balance": 100,
     "ss_benefit": 200,

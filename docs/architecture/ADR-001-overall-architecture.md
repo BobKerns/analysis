@@ -96,7 +96,7 @@ Detail in ADR-004; summary here:
 The data repo provides a sourceable `activate` script (venv-style) that sets:
 
 - `ANALYSIS_DATA_DIR` — absolute path to the data repo. Engine refuses to run if unset.
-- `ANALYSIS_USER` — short identifier (`rwk`, `mwk`, …), validated against `data/users.toml` in the data repo. Refuses to run if unset or unknown.
+- `ANALYSIS_USER` — short identifier (`rwk`, `mwk`, …) matching a row `id` in `persons.csv` in the data repo. Refuses to run if unset or unknown. (Persons and operator identities are the same set: every operator is a person, though not every person needs to be an operator.)
 - `ANALYSIS_DATA_REPO_NAME` — display label, defaults to basename of `ANALYSIS_DATA_DIR`.
 - `ANALYSIS_DATA_MODE` — set to `prototype` if `ANALYSIS_DATA_DIR` is inside the code repo tree; informational, banner-printed.
 

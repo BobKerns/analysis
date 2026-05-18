@@ -9,6 +9,7 @@ CREATE TABLE person (
     id          TEXT PRIMARY KEY,
     display     TEXT NOT NULL,
     birthdate   TEXT NOT NULL,
+    role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}'
 );
 
@@ -47,10 +48,11 @@ CREATE TABLE account_model (
 );
 
 CREATE TABLE account_model_member (
-    model_id            INTEGER NOT NULL REFERENCES account_model(id),
-    account_id          INTEGER NOT NULL REFERENCES account(id),
-    opening_balance     INTEGER NOT NULL,
-    opening_cost_basis  INTEGER,
+    model_id                INTEGER NOT NULL REFERENCES account_model(id),
+    account_id              INTEGER NOT NULL REFERENCES account(id),
+    opening_balance         INTEGER NOT NULL,
+    opening_cost_basis      INTEGER,
+    prior_year_end_balance  INTEGER,
     PRIMARY KEY (model_id, account_id)
 );
 
@@ -140,16 +142,6 @@ CREATE TABLE prior_tax_activity (
     amount      INTEGER NOT NULL,
     source_note TEXT,
     PRIMARY KEY (scenario_id, year, bucket)
-);
-
-CREATE TABLE prior_account_fact (
-    scenario_id INTEGER NOT NULL REFERENCES scenario(id),
-    account_id  INTEGER NOT NULL REFERENCES account(id),
-    fact_kind   TEXT NOT NULL,
-    value       INTEGER NOT NULL,
-    as_of       TEXT NOT NULL,
-    source_note TEXT,
-    PRIMARY KEY (scenario_id, account_id, fact_kind, as_of)
 );
 
 CREATE TABLE intent_manifest (

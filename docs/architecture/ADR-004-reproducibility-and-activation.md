@@ -62,24 +62,20 @@ This means: edit one comment in an unrelated CSV, `scenario_tree_id` doesn't cha
 
 The engine performs these checks in order, before any simulation work:
 
-1. **Activation contract.** `$ANALYSIS_DATA_DIR` must be set and resolve to an existing directory. `$ANALYSIS_USER` must be set and must appear in `$ANALYSIS_DATA_DIR/users.toml`. Failure → exit non-zero with a one-line "run `source activate` first" message.
+1. **Activation contract.** `$ANALYSIS_DATA_DIR` must be set and resolve to an existing directory. `$ANALYSIS_USER` must be set and must appear as a row `id` in `$ANALYSIS_DATA_DIR/persons.csv`. Failure → exit non-zero with a one-line "run `source activate` first" message.
 2. **Code repo discovery.** Compute `code_version`, `code_dirty`. No gating on dirty code, but `code_dirty=1` always prints a one-line stderr banner: `WARNING: code repo dirty (uncommitted changes)`. Recorded as `allow_dirty_code = 1`.
 3. **Data repo discovery.** Compute `data_version`, `data_dirty` scoped to the **scenario's input paths only** (the same path set used for `scenario_tree_id`). Changes elsewhere in the data repo are not considered for gating. A single `git status --porcelain -- <paths>` over the scoped set is the test.
 4. **Dirty-data gate.** If `data_dirty = 1` and `--allow-dirty-data` was **not** passed: exit with `DataDirtyRefused: <list of dirty paths>`. No partial run is created. Suggested remediation message: "commit/stash the changes, or re-run with `--allow-dirty-data` to record an unreproducible run."
 5. **Dirty-data accepted path.** If `data_dirty = 1` and `--allow-dirty-data` *was* passed: compute `scenario_tree_id` via the sidecar-index mechanism, set `allow_dirty_data = 1`, print stderr banner `WARNING: data dirty; run is not reproducible from <data_version> alone`. The run proceeds.
-6. **User validation.** `$ANALYSIS_USER` is checked against the `[users]` table in `$ANALYSIS_DATA_DIR/users.toml`. Unknown → exit `UnknownUser: <name>`. The TOML format:
+6. **User validation.** `$ANALYSIS_USER` is checked against the `id` column of `$ANALYSIS_DATA_DIR/persons.csv`. Unknown → exit `UnknownUser: <name>`. Persons and operator identities live in the same file (see ADR-003 §4.1); a row's `role` column is informational in v1 and is not gated on. Example rows:
 
-   ```toml
-   [users.rwk]
-   display = "RWK"
-   role    = "primary"
-
-   [users.mwk]
-   display = "MWK"
-   role    = "primary"
+   ```csv
+   id,display,birthdate,role,meta_json
+   rwk,RWK,1965-03-15,primary,{}
+   mwk,MWK,1967-08-20,primary,{}
    ```
 
-   `role` is informational in v1; future ADRs may gate write operations by role.
+   Future ADRs may gate write operations by `role`.
 7. **Mode banner.** If `$ANALYSIS_DATA_MODE = prototype` (auto-set by `activate` when `ANALYSIS_DATA_DIR` is inside the code repo tree): print `INFO: data mode = prototype (demo data inside code repo)`. This banner is loud on purpose so a developer doesn't confuse a prototype run with a household run during a demo.
 
 ### 4. The `activate` script
@@ -97,7 +93,7 @@ Required behavior:
 - Set `ANALYSIS_DATA_DIR` to that absolute path.
 - Set `ANALYSIS_DATA_REPO_NAME` to the basename, unless already set by the user.
 - Set `ANALYSIS_DATA_MODE = prototype` iff the resolved data dir is inside the code repo tree (detected by walking up looking for a `pyproject.toml` whose `[project].name == "analysis"`); else `live`.
-- Prompt for `ANALYSIS_USER` if unset: read one line from `/dev/tty`, validate against `users.toml`, re-prompt on miss, abort on EOF.
+- Prompt for `ANALYSIS_USER` if unset: read one line from `/dev/tty`, validate against `persons.csv` (column 1), re-prompt on miss, abort on EOF.
 - Save the pre-activation values of `PS1` and the four env vars in `_ANALYSIS_OLD_*` shell variables.
 - Prefix `PS1` with `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER] `.
 - Define a `deactivate` function that restores all saved values and unsets itself.
@@ -145,7 +141,7 @@ Run filenames embed `<timestamp>_<scenario>_<shortTreeId>` (ADR-002 §File layou
 
 ### 9. Migration / install behavior
 
-- First-time install: `analysis sim load <scenario>` builds the intent file. If `state/` doesn't exist, it's created. If the data repo has no `users.toml`, the engine refuses with a one-line how-to.
+- First-time install: `analysis sim load <scenario>` builds the intent file. If `state/` doesn't exist, it's created. If the data repo has no `persons.csv`, the engine refuses with a one-line how-to.
 - Code upgrade with breaking schema change: the intent file is silently rebuilt (it's a cache; ADR-002 makes this explicit). Run files are read-mostly with lazy additive migration on open; an ADR-bump that introduces a non-additive change requires a new run-file major version, which `verify` and `compare` refuse to cross. This is captured in `intent_manifest.schema_version` and `simulation_run.schema_version` (additive columns to add when the first such migration is needed).
 
 ## Amendments applied to ADR-002 alongside this ADR

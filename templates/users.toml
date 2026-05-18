@@ -1,6 +1,0 @@
-# Validates $ANALYSIS_USER. One [users.<id>] table per household member.
-# `display` is human-readable; `role` is informational in v1 (see ADR-004 §3 step 6).
-
-[users.example_user]
-display = "Example User"
-role = "primary"

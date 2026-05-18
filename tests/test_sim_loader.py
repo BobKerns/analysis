@@ -55,10 +55,20 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         ).fetchone()[0]
         assert rmd_rows >= 6
 
-        priors = con.execute(
-            "SELECT COUNT(*) FROM prior_account_fact"
-        ).fetchone()[0]
-        assert priors == 2
+        tax_priors = con.execute(
+            "SELECT year, bucket, amount FROM prior_tax_activity ORDER BY year, bucket"
+        ).fetchall()
+        assert len(tax_priors) == 3
+        assert (2025, "ltcg_loss_carryforward", -150000) in [tuple(r) for r in tax_priors]
+
+        # Partial-first-year RMD seed lives on account_model_member now.
+        ira_seed = con.execute("""
+            SELECT m.prior_year_end_balance
+            FROM account_model_member m
+            JOIN account a ON a.id = m.account_id
+            WHERE a.name = 'Asset_TraditionalIRA_Alice'
+        """).fetchone()[0]
+        assert ira_seed == 48000000
 
         manifest = con.execute("SELECT * FROM intent_manifest").fetchone()
         assert manifest["scenario_name"] == "retire_alice"
