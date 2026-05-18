@@ -28,7 +28,9 @@ class EngineError(RuntimeError):
     pass
 
 
-SUPPORTED_RULE_KINDS = frozenset({"fixed_amount", "percent_of_balance", "waterfall_fill"})
+SUPPORTED_RULE_KINDS = frozenset(
+    {"fixed_amount", "percent_of_balance", "waterfall_fill", "mortgage_payment"}
+)
 
 
 def run_scenario(
@@ -142,6 +144,12 @@ def run_scenario(
                         params, sources.get(tid, []), account_id_by_name,
                         tax_char, tid,
                     )
+                elif rule_kind == "mortgage_payment":
+                    _apply_mortgage_payment(
+                        con, balances, account_kinds, step_id, month_s,
+                        params, base_amount, frm, account_id_by_name,
+                        tax_char, tid,
+                    )
                 else:  # pragma: no cover
                     raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
 
@@ -173,21 +181,25 @@ def _post_transfer(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str,
     from_id: int, to_id: int, amount: int, tax_char: str, reason_id: int,
-) -> None:
+    parent_event_id: int | None = None,
+) -> int | None:
     """Insert one transfer_event and adjust balances. Liability balances
     store debt magnitude; the sign is inverted when posting against them.
+    Returns the new event's rowid, or None when amount==0 (no insert).
     """
     if amount == 0:
-        return
-    con.execute(
+        return None
+    cur = con.execute(
         "INSERT INTO transfer_event("
         "  step_id, date, from_account, to_account, amount, "
-        "  tax_character, reason_kind, reason_id"
-        ") VALUES (?, ?, ?, ?, ?, ?, 'rule', ?)",
-        (step_id, month_s, from_id, to_id, amount, tax_char, reason_id),
+        "  tax_character, reason_kind, reason_id, parent_event_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, 'rule', ?, ?)",
+        (step_id, month_s, from_id, to_id, amount, tax_char, reason_id,
+         parent_event_id),
     )
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
+    return cur.lastrowid
 
 
 def _delta(kind: str, raw: int) -> int:
@@ -227,6 +239,57 @@ def _amount_percent_of_balance(
         )
     # monthly_rate = annual_micros / 12 / 1_000_000; amount = base * monthly_rate
     return (base * int(annual_micros)) // (12 * 1_000_000)
+
+
+def _apply_mortgage_payment(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str,
+    params: dict[str, Any], base_amount: int | None, from_id: int,
+    account_id_by_name: dict[str, int],
+    tax_char: str, tid: int,
+) -> None:
+    """Multi-leg P&I per ADR-003 §2.7. Interest leg writes first; principal
+    leg's ``parent_event_id`` points at the interest leg.
+    """
+    if base_amount is None:
+        raise EngineError(
+            f"mortgage_payment id={tid}: missing base_amount (payment_amount)"
+        )
+    liab_name = params.get("liability_account")
+    interest_name = params.get("interest_expense_account")
+    annual_micros = params.get("annual_rate_micros")
+    if not (liab_name and interest_name and annual_micros is not None):
+        raise EngineError(
+            f"mortgage_payment id={tid}: requires liability_account, "
+            "interest_expense_account, annual_rate_micros in params"
+        )
+    liab_id = account_id_by_name.get(liab_name)
+    interest_id = account_id_by_name.get(interest_name)
+    if liab_id is None or interest_id is None:
+        raise EngineError(
+            f"mortgage_payment id={tid}: unknown account in params"
+        )
+    outstanding = max(0, balances.get(liab_id, 0))
+    if outstanding == 0:
+        return
+    interest = (outstanding * int(annual_micros)) // (12 * 1_000_000)
+    payment = int(base_amount)
+    principal = payment - interest
+    if principal < 0:
+        raise EngineError(
+            f"mortgage_payment id={tid}: interest {interest} exceeds payment {payment}"
+        )
+    if principal > outstanding:
+        principal = outstanding
+    interest_event_id = _post_transfer(
+        con, balances, account_kinds, step_id, month_s,
+        from_id, interest_id, interest, tax_char, tid,
+    )
+    _post_transfer(
+        con, balances, account_kinds, step_id, month_s,
+        from_id, liab_id, principal, tax_char, tid,
+        parent_event_id=interest_event_id,
+    )
 
 
 def _apply_waterfall_fill(
