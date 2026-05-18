@@ -5,6 +5,7 @@ autofetch
 birthdates
 calevt
 carryforward
+carryforwards
 dflt
 executemany
 executescript

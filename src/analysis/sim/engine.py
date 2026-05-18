@@ -1,10 +1,14 @@
 """Engine loop. Mirrors ADR-001/002.
 
-v1 fires ``amount_rule_kind='fixed_amount'`` scheduled transactions with
-``monthly``/``quarterly``/``annual``/``one_off`` cadence. Other rule kinds
-(percent_of_balance, mortgage_payment, ss_benefit, rmd, waterfall_fill)
-are tallied as ``skipped`` and recorded in ``simulation_run.run_args_json``
-under the ``skipped_rule_kinds`` key; they land in later slices.
+Liability sign convention: account balances for ``kind='liability'`` store
+outstanding-debt magnitude as a non-negative integer; the engine inverts the
+delta sign when posting a ``transfer_event`` against a liability account in
+either direction so that a payment reduces debt and a draw increases it.
+
+v2 rule kinds: ``fixed_amount``, ``percent_of_balance`` (basis='opening',
+rate from aux_table), ``waterfall_fill`` (drain ordered sources to top up a
+target account). Other kinds (mortgage_payment, ss_benefit, rmd) are still
+counted as skipped in ``simulation_run.run_args_json.skipped_rule_kinds``.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ class EngineError(RuntimeError):
     pass
 
 
-SUPPORTED_RULE_KINDS = frozenset({"fixed_amount"})
+SUPPORTED_RULE_KINDS = frozenset({"fixed_amount", "percent_of_balance", "waterfall_fill"})
 
 
 def run_scenario(
@@ -66,14 +70,24 @@ def run_scenario(
         balances: dict[int, int] = {a_id: bal for (a_id, bal, _basis) in accounts}
         cost_bases: dict[int, int | None] = {a_id: cb for (a_id, _b, cb) in accounts}
 
+        account_kinds: dict[int, str] = {
+            r[0]: r[1] for r in con.execute("SELECT id, kind FROM account")
+        }
+        account_id_by_name: dict[str, int] = {
+            r[0]: r[1] for r in con.execute("SELECT name, id FROM account")
+        }
+
         txns = con.execute(
-            'SELECT id, from_account, to_account, cadence, month_of_year, '
-            '       amount_rule_kind, base_amount, tax_character, '
-            '       start, "end", priority '
+            'SELECT id, name, from_account, to_account, cadence, month_of_year, '
+            '       amount_rule_kind, amount_rule_params_json, base_amount, '
+            '       tax_character, start, "end", priority '
             'FROM scheduled_transaction WHERE model_id = ? '
             'ORDER BY priority, id',
             (model_id,),
         ).fetchall()
+
+        sources = _load_sources(con)
+        aux = _load_aux(con)
 
         skipped_counts: dict[str, int] = {}
 
@@ -87,9 +101,11 @@ def run_scenario(
             )
             step_id = cur.lastrowid
 
+            opening_balances = dict(balances)
+
             for txn in txns:
-                (tid, frm, to, cadence, moy, rule_kind, base_amount, tax_char,
-                 t_start, t_end, _prio) = txn
+                (tid, _name, frm, to, cadence, moy, rule_kind, params_json,
+                 base_amount, tax_char, t_start, t_end, _prio) = txn
                 if month_s < t_start:
                     continue
                 if t_end is not None and month_s > t_end:
@@ -99,20 +115,35 @@ def run_scenario(
                 if rule_kind not in SUPPORTED_RULE_KINDS:
                     skipped_counts[rule_kind] = skipped_counts.get(rule_kind, 0) + 1
                     continue
-                amount = base_amount
-                if amount is None:
-                    raise EngineError(
-                        f"scheduled_transaction id={tid} fixed_amount missing base_amount"
+                params = json.loads(params_json or "{}")
+
+                if rule_kind == "fixed_amount":
+                    if base_amount is None:
+                        raise EngineError(
+                            f"scheduled_transaction id={tid} fixed_amount missing base_amount"
+                        )
+                    _post_transfer(
+                        con, balances, account_kinds, step_id, month_s,
+                        frm, to, base_amount, tax_char, tid,
                     )
-                con.execute(
-                    "INSERT INTO transfer_event("
-                    "  step_id, date, from_account, to_account, amount, "
-                    "  tax_character, reason_kind, reason_id"
-                    ") VALUES (?, ?, ?, ?, ?, ?, 'rule', ?)",
-                    (step_id, month_s, frm, to, amount, tax_char, tid),
-                )
-                balances[frm] = balances.get(frm, 0) - amount
-                balances[to] = balances.get(to, 0) + amount
+                elif rule_kind == "percent_of_balance":
+                    amount = _amount_percent_of_balance(
+                        params, opening_balances, balances, account_id_by_name, aux,
+                        month_s, tid,
+                    )
+                    if amount > 0:
+                        _post_transfer(
+                            con, balances, account_kinds, step_id, month_s,
+                            frm, to, amount, tax_char, tid,
+                        )
+                elif rule_kind == "waterfall_fill":
+                    _apply_waterfall_fill(
+                        con, balances, account_kinds, step_id, month_s,
+                        params, sources.get(tid, []), account_id_by_name,
+                        tax_char, tid,
+                    )
+                else:  # pragma: no cover
+                    raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
 
             con.executemany(
                 "INSERT INTO account_state(step_id, account_id, balance, cost_basis) "
@@ -136,6 +167,140 @@ def run_scenario(
     finally:
         con.close()
     return Path(run_path)
+
+
+def _post_transfer(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str,
+    from_id: int, to_id: int, amount: int, tax_char: str, reason_id: int,
+) -> None:
+    """Insert one transfer_event and adjust balances. Liability balances
+    store debt magnitude; the sign is inverted when posting against them.
+    """
+    if amount == 0:
+        return
+    con.execute(
+        "INSERT INTO transfer_event("
+        "  step_id, date, from_account, to_account, amount, "
+        "  tax_character, reason_kind, reason_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, 'rule', ?)",
+        (step_id, month_s, from_id, to_id, amount, tax_char, reason_id),
+    )
+    balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
+    balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
+
+
+def _delta(kind: str, raw: int) -> int:
+    return -raw if kind == "liability" else raw
+
+
+def _amount_percent_of_balance(
+    params: dict[str, Any],
+    opening_balances: dict[int, int],
+    current_balances: dict[int, int],
+    account_id_by_name: dict[str, int],
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    month_s: str, tid: int,
+) -> int:
+    source_name = params.get("source_account")
+    rate_kind = params.get("rate_kind")
+    rate_series = params.get("rate_series")
+    basis = params.get("rate_basis", "opening")
+    if not source_name or not rate_kind:
+        raise EngineError(f"percent_of_balance id={tid}: missing source_account/rate_kind")
+    src_id = account_id_by_name.get(source_name)
+    if src_id is None:
+        raise EngineError(f"percent_of_balance id={tid}: unknown source_account {source_name!r}")
+    base = (opening_balances if basis == "opening" else current_balances).get(src_id, 0)
+    if base <= 0:
+        return 0
+    payload = _lookup_aux(aux, rate_kind, rate_series, month_s)
+    if payload is None:
+        raise EngineError(
+            f"percent_of_balance id={tid}: no aux row for kind={rate_kind!r} "
+            f"series={rate_series!r} effective <= {month_s}"
+        )
+    annual_micros = payload.get("annual_rate_micros")
+    if annual_micros is None:
+        raise EngineError(
+            f"percent_of_balance id={tid}: aux payload missing annual_rate_micros"
+        )
+    # monthly_rate = annual_micros / 12 / 1_000_000; amount = base * monthly_rate
+    return (base * int(annual_micros)) // (12 * 1_000_000)
+
+
+def _apply_waterfall_fill(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str,
+    params: dict[str, Any], source_ids: list[int],
+    account_id_by_name: dict[str, int],
+    tax_char: str, tid: int,
+) -> None:
+    target_name = params.get("target_account")
+    target_balance = params.get("target_balance_cents")
+    if target_name is None or target_balance is None:
+        raise EngineError(
+            f"waterfall_fill id={tid}: missing target_account/target_balance_cents"
+        )
+    target_id = account_id_by_name.get(target_name)
+    if target_id is None:
+        raise EngineError(f"waterfall_fill id={tid}: unknown target {target_name!r}")
+    if not source_ids:
+        raise EngineError(f"waterfall_fill id={tid}: no scheduled_transaction_source rows")
+    deficit = int(target_balance) - balances.get(target_id, 0)
+    if deficit <= 0:
+        return
+    for src_id in source_ids:
+        if deficit <= 0:
+            break
+        available = max(0, balances.get(src_id, 0))
+        take = min(deficit, available)
+        if take <= 0:
+            continue
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            src_id, target_id, take, tax_char, tid,
+        )
+        deficit -= take
+
+
+def _load_sources(con) -> dict[int, list[int]]:
+    out: dict[int, list[int]] = {}
+    for tid, _pos, aid in con.execute(
+        "SELECT scheduled_transaction_id, position, account_id "
+        "FROM scheduled_transaction_source ORDER BY scheduled_transaction_id, position"
+    ):
+        out.setdefault(tid, []).append(aid)
+    return out
+
+
+def _load_aux(con) -> dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]:
+    out: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]] = {}
+    for kind, series, effective, payload_json in con.execute(
+        "SELECT kind, series, effective_date, payload_json FROM aux_table"
+    ):
+        out.setdefault((kind, series), []).append(
+            (effective, json.loads(payload_json or "{}"))
+        )
+    for v in out.values():
+        v.sort(key=lambda row: row[0])
+    return out
+
+
+def _lookup_aux(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    kind: str, series: str | None, month_s: str,
+) -> dict[str, Any] | None:
+    rows = aux.get((kind, series))
+    if not rows:
+        return None
+    chosen: dict[str, Any] | None = None
+    for effective, payload in rows:
+        if effective <= month_s:
+            chosen = payload
+        else:
+            break
+    return chosen
 
 
 def _parse_date(s: str) -> date:
