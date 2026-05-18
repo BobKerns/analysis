@@ -148,6 +148,13 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         assert "mortgage_payment" not in skipped
         assert "ss_benefit" not in skipped
         assert "rmd" not in skipped
+        skipped_cal = json.loads(run["run_args_json"]).get("skipped_calendar_kinds", {})
+        assert skipped_cal == {}
+
+        # ADR-003 §3: all 5 calendar events in retire_alice are supported.
+        assert con.execute(
+            "SELECT COUNT(*) FROM applied_calendar_event"
+        ).fetchone()[0] == 5
 
         # ADR-003 §2.5: alice (b. 1965-03-15, claim_age=67) first fires at
         # 2032-03-31 (step_idx 70). pia=300000, mult=1.0, factor=1.0 → 300000.
@@ -232,14 +239,33 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
     )
     con = sqlite3.connect(run_path)
     try:
-        # 5 fixed_amount + 1 checking_interest + 1 brokerage_growth + 2 mortgage
-        # legs = 9 events per month. Waterfall never fires. ss_alice fires from
-        # step 70 (2032-03-31) on; ss_bob from step 135 (2037-08-31) on. rmd
-        # fires Dec 2038/2039/2040 (3 events).
-        ss_alice_events = 176 - 70  # 106
-        ss_bob_events = 176 - 135   # 41
-        rmd_events = 3
-        expected_events = 9 * 176 + ss_alice_events + ss_bob_events + rmd_events
+        # Per-rule firing counts after calendar events expand:
+        #   salary_alice retires 2028-06-30 (step 25, fires 0..25 = 26)
+        #   salary_bob   retires 2030-12-31 (step 55, fires 0..55 = 56)
+        #   one_off_transfer 2029-03-31 synthesizes 1 fixed_amount rule.
+        # waterfall_topup fires once checking drains post-retirement (62 times).
+        per_rule = dict(con.execute(
+            "SELECT st.name, COUNT(*) FROM transfer_event te "
+            "JOIN scheduled_transaction st ON st.id = te.reason_id "
+            "GROUP BY st.name"
+        ).fetchall())
+        assert per_rule["salary_alice"] == 26
+        assert per_rule["salary_bob"] == 56
+        assert per_rule["mortgage_pmt"] == 2 * 176  # 2 legs
+        assert per_rule["living"] == 176
+        assert per_rule["housing"] == 176
+        assert per_rule["healthcare"] == 176
+        assert per_rule["checking_interest"] == 176
+        assert per_rule["brokerage_growth"] == 176
+        assert per_rule["ss_alice"] == 176 - 70
+        assert per_rule["ss_bob"] == 176 - 135
+        assert per_rule["rmd_alice"] == 3
+        assert per_rule["waterfall_topup"] == 62
+        oneoff_count = sum(
+            v for k, v in per_rule.items() if k.startswith("oneoff_evt_")
+        )
+        assert oneoff_count == 1
+        expected_events = sum(per_rule.values())
         assert con.execute(
             "SELECT COUNT(*) FROM transfer_event"
         ).fetchone()[0] == expected_events
