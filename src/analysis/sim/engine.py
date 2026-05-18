@@ -8,8 +8,8 @@ either direction so that a payment reduces debt and a draw increases it.
 v2 rule kinds: ``fixed_amount``, ``percent_of_balance`` (basis='opening',
 rate from aux_table), ``waterfall_fill`` (drain ordered sources to top up a
 target account), ``mortgage_payment`` (multi-leg P&I), ``ss_benefit``
-(COLA-adjusted, claim-age gated). ``rmd`` is still counted as skipped in
-``simulation_run.run_args_json.skipped_rule_kinds``.
+(COLA-adjusted, claim-age gated), ``rmd`` (annual December, age-gated).
+All v0/v1 rule kinds are now supported.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance", "waterfall_fill",
-     "mortgage_payment", "ss_benefit"}
+     "mortgage_payment", "ss_benefit", "rmd"}
 )
 
 SS_FRA = 67
@@ -85,6 +85,14 @@ def run_scenario(
         person_birthdates: dict[str, date] = {
             r[0]: _parse_date(r[1])
             for r in con.execute("SELECT id, birthdate FROM person")
+        }
+        prior_year_end_balances: dict[int, int] = {
+            r[0]: r[1] for r in con.execute(
+                "SELECT account_id, prior_year_end_balance "
+                "FROM account_model_member WHERE model_id = ? "
+                "AND prior_year_end_balance IS NOT NULL",
+                (model_id,),
+            )
         }
 
         txns = con.execute(
@@ -162,6 +170,13 @@ def run_scenario(
                     _apply_ss_benefit(
                         con, balances, account_kinds, step_id, month_s, month,
                         params, frm, to, person_birthdates, aux, tax_char, tid,
+                    )
+                elif rule_kind == "rmd":
+                    _apply_rmd(
+                        con, balances, account_kinds, step_id, month_s, month,
+                        params, frm, to, account_id_by_name,
+                        person_birthdates, prior_year_end_balances, aux,
+                        tax_char, tid,
                     )
                 else:  # pragma: no cover
                     raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
@@ -360,6 +375,87 @@ def _apply_ss_benefit(
             con, balances, account_kinds, step_id, month_s,
             from_id, to_id, amount, tax_char, tid,
         )
+
+
+def _apply_rmd(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str, month: date,
+    params: dict[str, Any], from_id: int, to_id: int,
+    account_id_by_name: dict[str, int],
+    person_birthdates: dict[str, date],
+    prior_year_end_balances: dict[int, int],
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    tax_char: str, tid: int,
+) -> None:
+    """ADR-003 §2.3. Annual December RMD; age-gated by ``start_age_series``.
+    ``dec31_prev_year_balance`` from prior-year-end ``account_state``, or
+    ``account_model_member.prior_year_end_balance`` when no such step exists.
+    """
+    subject_name = params.get("subject_account")
+    person = params.get("person")
+    factor_table = params.get("factor_table", "rmd_factors")
+    start_age_series = params.get("start_age_series", "rmd_start_age")
+    if not subject_name or not person:
+        raise EngineError(
+            f"rmd id={tid}: requires subject_account and person in params"
+        )
+    bd = person_birthdates.get(person)
+    if bd is None:
+        raise EngineError(f"rmd id={tid}: unknown person {person!r}")
+    subject_id = account_id_by_name.get(subject_name)
+    if subject_id is None:
+        raise EngineError(f"rmd id={tid}: unknown subject_account {subject_name!r}")
+    age_year_end = month.year - bd.year
+    start_payload = _lookup_aux(aux, start_age_series, None, month_s)
+    if start_payload is None or "start_age" not in start_payload:
+        raise EngineError(
+            f"rmd id={tid}: missing {start_age_series!r} aux with start_age"
+        )
+    if age_year_end < int(start_payload["start_age"]):
+        return
+    prev_year = month.year - 1
+    row = con.execute(
+        "SELECT ast.balance FROM account_state ast "
+        "JOIN simulation_step s ON s.id = ast.step_id "
+        "WHERE ast.account_id = ? AND s.month = ?",
+        (subject_id, f"{prev_year}-12-31"),
+    ).fetchone()
+    if row is not None:
+        prev_bal = int(row[0])
+    elif subject_id in prior_year_end_balances:
+        prev_bal = int(prior_year_end_balances[subject_id])
+    else:
+        raise EngineError(
+            f"rmd id={tid}: no Dec-{prev_year} account_state and no "
+            f"prior_year_end_balance for {subject_name!r}"
+        )
+    factor_payload = _lookup_rmd_factor(aux, factor_table, age_year_end, month_s)
+    if factor_payload is None:
+        raise EngineError(
+            f"rmd id={tid}: no {factor_table!r} factor for age {age_year_end} "
+            f"effective <= {month_s}"
+        )
+    factor_micros = int(factor_payload["factor_micros"])
+    amount = prev_bal * 1_000_000 // factor_micros
+    if amount > 0:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            from_id, to_id, amount, tax_char, tid,
+        )
+
+
+def _lookup_rmd_factor(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    kind: str, age: int, month_s: str,
+) -> dict[str, Any] | None:
+    rows = aux.get((kind, None))
+    if not rows:
+        return None
+    chosen: dict[str, Any] | None = None
+    for effective, payload in rows:
+        if effective <= month_s and int(payload.get("age", -1)) == age:
+            chosen = payload
+    return chosen
 
 
 def _apply_waterfall_fill(
