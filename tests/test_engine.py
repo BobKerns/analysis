@@ -13,16 +13,36 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
 
 # Net cents into Asset_Checking per month from fixed_amount rules.
-# (salary_alice + salary_bob) - (living + housing + healthcare)
+# (salary_alice + salary_bob) - (living + housing + healthcare).
+# The mortgage payment is handled by the mortgage_payment rule below.
 NET_CHECKING_PER_MONTH = 800000 + 750000 - 450000 - 80000 - 60000  # = 960000
 SALARY_ALICE_MONTHLY = 800000
 
-# Asset_Checking annual rate = 30000 micros = 3.0% APR; monthly interest on
-# opening balance is added each step.
-EXPECTED_CHECKING = [500000]
-for _ in range(4):
-    _open = EXPECTED_CHECKING[-1]
-    EXPECTED_CHECKING.append(_open + NET_CHECKING_PER_MONTH + (_open * 30000) // 12_000_000)
+# Asset_Checking annual rate = 30000 micros = 3.0% APR; mortgage 6.0% APR on
+# 25_000_000 cents principal, $1,850/mo P&I. Iterate the joint trajectory.
+CHECKING_RATE_MICROS = 30000
+MORTGAGE_RATE_MICROS = 60000
+MORTGAGE_PAYMENT = 185000
+MORTGAGE_OPENING = 25_000_000
+
+
+def _project(steps: int) -> tuple[list[int], list[int]]:
+    checking = [500_000]
+    mortgage = [MORTGAGE_OPENING]
+    for _ in range(steps):
+        c_open = checking[-1]
+        m_open = mortgage[-1]
+        interest = (m_open * MORTGAGE_RATE_MICROS) // 12_000_000
+        principal = min(MORTGAGE_PAYMENT - interest, m_open)
+        c_interest = (c_open * CHECKING_RATE_MICROS) // 12_000_000
+        checking.append(
+            c_open + NET_CHECKING_PER_MONTH - MORTGAGE_PAYMENT + c_interest
+        )
+        mortgage.append(m_open - principal)
+    return checking, mortgage
+
+
+EXPECTED_CHECKING, EXPECTED_MORTGAGE = _project(11)
 
 
 def _intent(tmp_path: Path) -> Path:
@@ -87,12 +107,34 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         mortgage_id = con.execute(
             "SELECT id FROM account WHERE name = 'Liability_Mortgage'"
         ).fetchone()[0]
-        for s in (steps[0], steps[10], steps[-1]):
+        for idx in (0, 1, 10):
             bal = con.execute(
                 "SELECT balance FROM account_state WHERE step_id=? AND account_id=?",
-                (s["id"], mortgage_id),
+                (steps[idx]["id"], mortgage_id),
             ).fetchone()[0]
-            assert bal == 25_000_000
+            assert bal == EXPECTED_MORTGAGE[idx + 1]
+
+        # Multi-leg linkage: each month, the principal leg's parent_event_id
+        # points at the interest leg's id and both share reason_id.
+        mortgage_rule_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='mortgage_pmt'"
+        ).fetchone()[0]
+        legs = con.execute(
+            "SELECT id, to_account, amount, parent_event_id FROM transfer_event "
+            "WHERE step_id=? AND reason_id=? ORDER BY id",
+            (steps[0]["id"], mortgage_rule_id),
+        ).fetchall()
+        assert len(legs) == 2
+        interest_leg, principal_leg = legs
+        assert interest_leg["to_account"] == con.execute(
+            "SELECT id FROM account WHERE name='Expense_Interest_Mortgage'"
+        ).fetchone()[0]
+        assert principal_leg["to_account"] == mortgage_id
+        assert interest_leg["parent_event_id"] is None
+        assert principal_leg["parent_event_id"] == interest_leg["id"]
+        # Step 0: 25M * 6%/12 = 125_000 interest; 185_000 - 125_000 = 60_000 principal
+        assert interest_leg["amount"] == 125_000
+        assert principal_leg["amount"] == 60_000
 
         run = con.execute(
             "SELECT status, finished_at, failure_reason, run_args_json "
@@ -103,7 +145,7 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         skipped = json.loads(run["run_args_json"]).get("skipped_rule_kinds", {})
         assert "percent_of_balance" not in skipped
         assert "waterfall_fill" not in skipped
-        assert skipped.get("mortgage_payment") == 176
+        assert "mortgage_payment" not in skipped
         assert skipped.get("ss_benefit") == 2 * 176
         assert skipped.get("rmd") == 15
     finally:
@@ -119,11 +161,11 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
     )
     con = sqlite3.connect(run_path)
     try:
-        # 5 fixed_amount + 1 checking_interest + 1 brokerage_growth = 7 monthly
-        # rules. Waterfall never fires (Checking stays above 200_000-cent target).
+        # 5 fixed_amount + 1 checking_interest + 1 brokerage_growth + 2 mortgage
+        # legs = 9 events per month. Waterfall never fires.
         assert con.execute(
             "SELECT COUNT(*) FROM transfer_event"
-        ).fetchone()[0] == 7 * 176
+        ).fetchone()[0] == 9 * 176
 
         # Liabilities store debt magnitude; signed ledger sum is the invariant.
         rows = con.execute(

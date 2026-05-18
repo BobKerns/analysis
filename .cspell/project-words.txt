@@ -12,6 +12,8 @@ executescript
 gethostname
 heloc
 huggingface
+lastrowid
+liab
 ltcg
 mktree
 msecs
@@ -20,6 +22,7 @@ munknown
 nextstrain
 NOCASE
 pathoplexus
+prio
 pypi
 recategorize
 recomputable
@@ -36,6 +39,7 @@ subkinds
 taxchar
 tctronics
 topup
+txns
 unsets
 unspsc
 upserts
