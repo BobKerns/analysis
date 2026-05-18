@@ -1,8 +1,7 @@
 """CSV -> intent .sqlite3 loader.
 
 Reads a data repository per ADR-003 layout and writes an intent file per ADR-002.
-This scaffold leaves the git-based ``scenario_tree_id`` and ``data_version`` empty;
-ADR-004 plumbing will populate them.
+Git-based provenance stamps (ADR-004) are computed via ``analysis.sim.provenance``.
 """
 
 from __future__ import annotations
@@ -18,7 +17,18 @@ from pathlib import Path
 from typing import Any
 
 from analysis.sim import registries
+from analysis.sim.provenance import (
+    EMPTY_CODE_STAMPS,
+    EMPTY_DATA_STAMPS,
+    CodeStamps,
+    DataDirtyRefused,
+    DataStamps,
+    code_stamps,
+    data_stamps,
+)
 from analysis.sim.schema import INTENT_DDL, SCHEMA_VERSION
+
+__all__ = ["LoadError", "LoadResult", "DataDirtyRefused", "load_scenario"]
 
 
 @dataclass(frozen=True)
@@ -43,8 +53,16 @@ def load_scenario(
     intent_dir: Path,
     data_repo_name: str | None = None,
     loaded_by: str | None = None,
+    allow_dirty_data: bool = False,
+    compute_stamps: bool = True,
 ) -> LoadResult:
-    """Build ``<intent_dir>/<scenario_name>.sqlite3`` from the data repo."""
+    """Build ``<intent_dir>/<scenario_name>.sqlite3`` from the data repo.
+
+    When ``compute_stamps`` is true (default), git stamps per ADR-004 are
+    computed and written into ``intent_manifest``. If the data repo is dirty
+    within the scenario's scoped paths and ``allow_dirty_data`` is false,
+    raises ``DataDirtyRefused``.
+    """
     data_dir = Path(data_dir).resolve()
     scenario_dir = data_dir / "scenarios" / scenario_name
     if not scenario_dir.is_dir():
@@ -87,6 +105,15 @@ def load_scenario(
     if issues:
         raise LoadError(issues)
 
+    if compute_stamps:
+        ds = data_stamps(data_dir, scenario_name, account_model_name)
+        if ds.dirty and not allow_dirty_data:
+            raise DataDirtyRefused(list(ds.dirty_paths))
+        cs = code_stamps()
+    else:
+        ds = EMPTY_DATA_STAMPS
+        cs = EMPTY_CODE_STAMPS
+
     intent_dir.mkdir(parents=True, exist_ok=True)
     intent_path = intent_dir / f"{scenario_name}.sqlite3"
     if intent_path.exists():
@@ -115,6 +142,8 @@ def load_scenario(
             data_dir=data_dir,
             data_repo_name=data_repo_name or data_dir.name,
             loaded_by=loaded_by or os.environ.get("ANALYSIS_USER", "unknown"),
+            code=cs,
+            data=ds,
         )
         con.commit()
     finally:
@@ -486,16 +515,17 @@ def _write_manifest(
     data_dir: Path,
     data_repo_name: str,
     loaded_by: str,
+    code: CodeStamps,
+    data: DataStamps,
 ) -> None:
-    # code_version / data_version / scenario_tree_id stay empty until ADR-004 git
-    # plumbing is wired in.
     con.execute(
         "INSERT INTO intent_manifest("
         "id, scenario_name, schema_version, code_version, data_version, "
         "data_dirty, scenario_tree_id, data_repo_path, data_repo_name, "
         "loaded_at, loaded_by, host) VALUES (1,?,?,?,?,?,?,?,?,?,?,?)",
         (
-            scenario_name, SCHEMA_VERSION, "", "", 0, "",
+            scenario_name, SCHEMA_VERSION,
+            code.version, data.version, int(data.dirty), data.tree_id,
             str(data_dir), data_repo_name, _now_iso(), loaded_by, socket.gethostname(),
         ),
     )

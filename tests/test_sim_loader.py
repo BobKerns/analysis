@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from analysis.sim.loader import LoadError, load_scenario
+from analysis.sim.loader import DataDirtyRefused, LoadError, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -16,6 +19,7 @@ PROTOTYPE = REPO_ROOT / "prototype_data"
 def test_load_retire_alice(tmp_path: Path) -> None:
     result = load_scenario(
         PROTOTYPE, "retire_alice", intent_dir=tmp_path, loaded_by="test",
+        allow_dirty_data=True,
     )
     assert result.intent_path.exists()
 
@@ -144,3 +148,71 @@ def test_waterfall_from_account_mismatch_rejected(tmp_path: Path) -> None:
     with pytest.raises(LoadError) as ei:
         load_scenario(bad, "x", intent_dir=tmp_path / "out")
     assert any("ADR-003 §2.4" in issue for issue in ei.value.issues)
+
+
+# ---- ADR-004 git provenance ----
+
+
+def _git_init_commit(repo: Path) -> None:
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"],
+        cwd=repo, check=True, env=env,
+    )
+
+
+def test_clean_git_repo_stamps_manifest(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _git_init_commit(repo)
+
+    result = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "out", loaded_by="test")
+    con = sqlite3.connect(result.intent_path)
+    con.row_factory = sqlite3.Row
+    try:
+        m = con.execute("SELECT * FROM intent_manifest").fetchone()
+        assert m["data_dirty"] == 0
+        assert len(m["data_version"]) in (40, 64)
+        assert len(m["scenario_tree_id"]) in (40, 64)
+        assert m["code_version"]
+    finally:
+        con.close()
+
+
+def test_dirty_data_refused(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _git_init_commit(repo)
+    persons = repo / "persons.csv"
+    persons.write_text(persons.read_text() + "# scratch\n")
+
+    with pytest.raises(DataDirtyRefused) as ei:
+        load_scenario(repo, "retire_alice", intent_dir=tmp_path / "out")
+    assert any("persons.csv" in p for p in ei.value.dirty_paths)
+
+
+def test_dirty_data_allowed_records_dirty_flag(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _git_init_commit(repo)
+    persons = repo / "persons.csv"
+    persons.write_text(persons.read_text() + "# scratch\n")
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out",
+        allow_dirty_data=True,
+    )
+    con = sqlite3.connect(result.intent_path)
+    con.row_factory = sqlite3.Row
+    try:
+        m = con.execute("SELECT * FROM intent_manifest").fetchone()
+        assert m["data_dirty"] == 1
+        assert len(m["scenario_tree_id"]) in (40, 64)
+    finally:
+        con.close()

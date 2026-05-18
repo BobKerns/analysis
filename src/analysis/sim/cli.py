@@ -8,7 +8,7 @@ from pathlib import Path
 
 import click
 
-from analysis.sim.loader import LoadError, load_scenario
+from analysis.sim.loader import DataDirtyRefused, LoadError, load_scenario
 
 DEFAULT_INTENT_DIR = Path("state/intent")
 
@@ -32,15 +32,35 @@ def sim_group_command() -> None:
     default=DEFAULT_INTENT_DIR,
     show_default=True,
 )
-def load(scenario_name: str, data_dir: Path | None, intent_dir: Path) -> None:
+@click.option(
+    "--allow-dirty-data",
+    is_flag=True,
+    default=False,
+    help="Allow loading when the data repo has uncommitted changes in the scenario's scoped paths.",
+)
+def load(
+    scenario_name: str,
+    data_dir: Path | None,
+    intent_dir: Path,
+    allow_dirty_data: bool,
+) -> None:
     """Build state/intent/<scenario>.sqlite3 from the data repo."""
     resolved = _resolve_data_dir(data_dir)
+    if not allow_dirty_data and os.environ.get("ANALYSIS_DATA_MODE") == "prototype":
+        allow_dirty_data = True
+        click.echo("info: ANALYSIS_DATA_MODE=prototype; allowing dirty data", err=True)
     try:
-        result = load_scenario(resolved, scenario_name, intent_dir=intent_dir)
+        result = load_scenario(
+            resolved, scenario_name, intent_dir=intent_dir,
+            allow_dirty_data=allow_dirty_data,
+        )
     except LoadError as exc:
         for issue in exc.issues:
             click.echo(f"  error: {issue}", err=True)
         raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+    except DataDirtyRefused as exc:
+        click.echo(str(exc), err=True)
+        raise click.ClickException("data dirty; refusing to load") from None
     click.echo(f"loaded {result.intent_path}")
     for table, n in result.counts.items():
         click.echo(f"  {table}: {n}")
@@ -58,7 +78,9 @@ def check(scenario_name: str, data_dir: Path | None) -> None:
     resolved = _resolve_data_dir(data_dir)
     with tempfile.TemporaryDirectory() as td:
         try:
-            load_scenario(resolved, scenario_name, intent_dir=Path(td))
+            load_scenario(
+                resolved, scenario_name, intent_dir=Path(td), compute_stamps=False,
+            )
         except LoadError as exc:
             for issue in exc.issues:
                 click.echo(f"  error: {issue}", err=True)
