@@ -7,8 +7,9 @@ either direction so that a payment reduces debt and a draw increases it.
 
 v2 rule kinds: ``fixed_amount``, ``percent_of_balance`` (basis='opening',
 rate from aux_table), ``waterfall_fill`` (drain ordered sources to top up a
-target account). Other kinds (mortgage_payment, ss_benefit, rmd) are still
-counted as skipped in ``simulation_run.run_args_json.skipped_rule_kinds``.
+target account), ``mortgage_payment`` (multi-leg P&I), ``ss_benefit``
+(COLA-adjusted, claim-age gated). ``rmd`` is still counted as skipped in
+``simulation_run.run_args_json.skipped_rule_kinds``.
 """
 
 from __future__ import annotations
@@ -29,8 +30,11 @@ class EngineError(RuntimeError):
 
 
 SUPPORTED_RULE_KINDS = frozenset(
-    {"fixed_amount", "percent_of_balance", "waterfall_fill", "mortgage_payment"}
+    {"fixed_amount", "percent_of_balance", "waterfall_fill",
+     "mortgage_payment", "ss_benefit"}
 )
+
+SS_FRA = 67
 
 
 def run_scenario(
@@ -77,6 +81,10 @@ def run_scenario(
         }
         account_id_by_name: dict[str, int] = {
             r[0]: r[1] for r in con.execute("SELECT name, id FROM account")
+        }
+        person_birthdates: dict[str, date] = {
+            r[0]: _parse_date(r[1])
+            for r in con.execute("SELECT id, birthdate FROM person")
         }
 
         txns = con.execute(
@@ -149,6 +157,11 @@ def run_scenario(
                         con, balances, account_kinds, step_id, month_s,
                         params, base_amount, frm, account_id_by_name,
                         tax_char, tid,
+                    )
+                elif rule_kind == "ss_benefit":
+                    _apply_ss_benefit(
+                        con, balances, account_kinds, step_id, month_s, month,
+                        params, frm, to, person_birthdates, aux, tax_char, tid,
                     )
                 else:  # pragma: no cover
                     raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
@@ -290,6 +303,63 @@ def _apply_mortgage_payment(
         from_id, liab_id, principal, tax_char, tid,
         parent_event_id=interest_event_id,
     )
+
+
+def _claim_multiplier_micros(claim_age: int, fra: int = SS_FRA) -> int:
+    months_diff = (claim_age - fra) * 12
+    if months_diff == 0:
+        return 1_000_000
+    if months_diff > 0:
+        months_late = min(months_diff, 36)
+        years_late, rem_months = divmod(months_late, 12)
+        return 1_000_000 + years_late * 80_000 + rem_months * 20_000 // 3
+    months_early = -months_diff
+    first36 = min(36, months_early)
+    over = months_early - first36
+    reduction = first36 * 50_000 // 9 + over * 50_000 // 12
+    return 1_000_000 - reduction
+
+
+def _apply_ss_benefit(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str, month: date,
+    params: dict[str, Any], from_id: int, to_id: int,
+    person_birthdates: dict[str, date],
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    tax_char: str, tid: int,
+) -> None:
+    """ADR-003 §2.5. Claim-age multiplier + annual-January COLA compounding."""
+    person = params.get("person")
+    claim_age = params.get("claim_age")
+    pia = params.get("base_pia_at_fra_cents")
+    cola_series = params.get("cola_series")
+    if not person or claim_age is None or pia is None or not cola_series:
+        raise EngineError(
+            f"ss_benefit id={tid}: requires person, claim_age, "
+            "base_pia_at_fra_cents, cola_series in params"
+        )
+    bd = person_birthdates.get(person)
+    if bd is None:
+        raise EngineError(f"ss_benefit id={tid}: unknown person {person!r}")
+    claim_date = date(bd.year + int(claim_age), bd.month, bd.day)
+    if month < claim_date:
+        return
+    payload = _lookup_aux(aux, "inflation", cola_series, month_s)
+    if payload is None:
+        raise EngineError(
+            f"ss_benefit id={tid}: no inflation aux for series {cola_series!r}"
+        )
+    rate = int(payload.get("annual_rate_micros", 0))
+    mult_micros = _claim_multiplier_micros(int(claim_age))
+    factor_micros = 1_000_000
+    for _ in range(month.year - claim_date.year):
+        factor_micros = factor_micros * (1_000_000 + rate) // 1_000_000
+    amount = int(pia) * mult_micros * factor_micros // (10 ** 12)
+    if amount > 0:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            from_id, to_id, amount, tax_char, tid,
+        )
 
 
 def _apply_waterfall_fill(
