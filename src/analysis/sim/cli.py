@@ -178,3 +178,102 @@ def _read_data_version(intent_path: Path) -> str | None:
     finally:
         con.close()
     return row[0] if row else None
+
+
+@sim_group_command.command(name="list")
+@click.option(
+    "--runs-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=DEFAULT_RUNS_DIR,
+    show_default=True,
+)
+def list_runs(runs_dir: Path) -> None:
+    """List run files in --runs-dir with status, scenario, who, when."""
+    if not runs_dir.exists():
+        click.echo(f"(no runs dir: {runs_dir})")
+        return
+    files = sorted(runs_dir.glob("*.sqlite3"))
+    if not files:
+        click.echo(f"(no run files in {runs_dir})")
+        return
+    header = f"{'status':<10}  {'scenario':<24}  {'finished_at':<20}  {'run_by':<16}  file"
+    click.echo(header)
+    click.echo("-" * len(header))
+    for f in files:
+        try:
+            con = sqlite3.connect(f"file:{f}?mode=ro", uri=True)
+            try:
+                row = con.execute(
+                    "SELECT status, scenario_name, finished_at, run_by "
+                    "FROM simulation_run WHERE id = 1"
+                ).fetchone()
+            finally:
+                con.close()
+        except sqlite3.DatabaseError as exc:
+            click.echo(f"{'unreadable':<10}  {'-':<24}  {'-':<20}  {'-':<16}  {f.name} ({exc})")
+            continue
+        if row is None:
+            click.echo(f"{'empty':<10}  {'-':<24}  {'-':<20}  {'-':<16}  {f.name}")
+            continue
+        status, name, finished, by = row
+        click.echo(
+            f"{status:<10}  {name:<24}  {(finished or '-'):<20}  {(by or '-'):<16}  {f.name}"
+        )
+
+
+@sim_group_command.command()
+@click.argument("runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def explain(runfile: Path) -> None:
+    """Dump scenario name, versions, year-end net worth, counts. Sanity dump."""
+    con = sqlite3.connect(f"file:{runfile}?mode=ro", uri=True)
+    try:
+        run = con.execute(
+            "SELECT scenario_name, status, started_at, finished_at, failure_reason, "
+            "code_version, code_dirty, data_version, data_dirty, data_mode, "
+            "run_by, host, python_version "
+            "FROM simulation_run WHERE id = 1"
+        ).fetchone()
+        if run is None:
+            raise click.ClickException(f"no simulation_run row in {runfile}")
+        (name, status, started, finished, failure, cv, cd, dv, dd, mode,
+         by, host, py) = run
+        click.echo(f"file:           {runfile}")
+        click.echo(f"scenario:       {name}")
+        click.echo(f"status:         {status}" + (f"  ({failure})" if failure else ""))
+        click.echo(f"started:        {started}")
+        click.echo(f"finished:       {finished or '-'}")
+        click.echo(f"code:           {cv[:12]}{' (dirty)' if cd else ''}")
+        click.echo(f"data:           {dv[:12]}{' (dirty)' if dd else ''}  mode={mode}")
+        click.echo(f"run_by:         {by}@{host}  python {py}")
+
+        steps = con.execute("SELECT COUNT(*) FROM simulation_step").fetchone()[0]
+        states = con.execute("SELECT COUNT(*) FROM account_state").fetchone()[0]
+        xfers = con.execute("SELECT COUNT(*) FROM transfer_event").fetchone()[0]
+        click.echo(
+            f"counts:         steps={steps}  account_states={states}  transfers={xfers}"
+        )
+
+        click.echo("")
+        click.echo("year-end net worth:")
+        rows = con.execute(
+            "WITH year_end AS ("
+            "  SELECT substr(month,1,4) AS year, MAX(month) AS m "
+            "  FROM simulation_step GROUP BY substr(month,1,4)"
+            ") "
+            "SELECT y.year, nw.net_worth "
+            "FROM year_end y JOIN net_worth nw ON nw.month = y.m "
+            "ORDER BY y.year"
+        ).fetchall()
+        for year, nw in rows:
+            click.echo(f"  {year}  {_fmt_cents(nw)}")
+    finally:
+        con.close()
+
+
+def _fmt_cents(cents: int | None) -> str:
+    if cents is None:
+        return "-"
+    sign = "-" if cents < 0 else " "
+    n = abs(int(cents))
+    dollars, rem = divmod(n, 100)
+    return f"{sign}${dollars:>14,}.{rem:02d}"
