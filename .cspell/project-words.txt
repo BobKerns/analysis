@@ -18,6 +18,7 @@ ltcg
 mktree
 msecs
 mtimes
+mult
 munknown
 nextstrain
 NOCASE

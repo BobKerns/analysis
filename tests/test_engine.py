@@ -146,8 +146,41 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         assert "percent_of_balance" not in skipped
         assert "waterfall_fill" not in skipped
         assert "mortgage_payment" not in skipped
-        assert skipped.get("ss_benefit") == 2 * 176
+        assert "ss_benefit" not in skipped
         assert skipped.get("rmd") == 15
+
+        # ADR-003 §2.5: alice (b. 1965-03-15, claim_age=67) first fires at
+        # 2032-03-31 (step_idx 70). pia=300000, mult=1.0, factor=1.0 → 300000.
+        ss_alice_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='ss_alice'"
+        ).fetchone()[0]
+        ss_bob_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='ss_bob'"
+        ).fetchone()[0]
+        # step 69 = 2032-02-29: alice has not yet reached 67.
+        n_pre = con.execute(
+            "SELECT COUNT(*) FROM transfer_event WHERE step_id=? AND reason_id=?",
+            (steps[69]["id"], ss_alice_id),
+        ).fetchone()[0]
+        assert n_pre == 0
+        alice_70 = con.execute(
+            "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
+            (steps[70]["id"], ss_alice_id),
+        ).fetchone()[0]
+        assert alice_70 == 300_000
+        # step 80 = 2033-01-31: one COLA bump (years_elapsed=1, rate=2.5%).
+        alice_80 = con.execute(
+            "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
+            (steps[80]["id"], ss_alice_id),
+        ).fetchone()[0]
+        assert alice_80 == 307_500
+        # bob (b. 1967-08-20, claim_age=70) first fires at 2037-08-31 (step 135).
+        # mult = 1.24, factor = 1.0 → 350000 * 1.24 = 434000.
+        bob_135 = con.execute(
+            "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
+            (steps[135]["id"], ss_bob_id),
+        ).fetchone()[0]
+        assert bob_135 == 434_000
     finally:
         con.close()
 
@@ -162,10 +195,14 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
     con = sqlite3.connect(run_path)
     try:
         # 5 fixed_amount + 1 checking_interest + 1 brokerage_growth + 2 mortgage
-        # legs = 9 events per month. Waterfall never fires.
+        # legs = 9 events per month. Waterfall never fires. ss_alice fires from
+        # step 70 (2032-03-31) on; ss_bob from step 135 (2037-08-31) on.
+        ss_alice_events = 176 - 70  # 106
+        ss_bob_events = 176 - 135   # 41
+        expected_events = 9 * 176 + ss_alice_events + ss_bob_events
         assert con.execute(
             "SELECT COUNT(*) FROM transfer_event"
-        ).fetchone()[0] == 9 * 176
+        ).fetchone()[0] == expected_events
 
         # Liabilities store debt magnitude; signed ledger sum is the invariant.
         rows = con.execute(
