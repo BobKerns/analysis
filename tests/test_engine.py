@@ -1,7 +1,8 @@
-"""Tests for analysis.sim.engine v0."""
+"""Tests for analysis.sim.engine."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +11,11 @@ from analysis.sim.loader import load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
+
+# Net cents into Asset_Checking per month from fixed_amount rules.
+# (salary_alice + salary_bob) - (living + housing + healthcare)
+NET_CHECKING_PER_MONTH = 800000 + 750000 - 450000 - 80000 - 60000  # = 960000
+SALARY_ALICE_MONTHLY = 800000
 
 
 def _intent(tmp_path: Path) -> Path:
@@ -20,7 +26,7 @@ def _intent(tmp_path: Path) -> Path:
     ).intent_path
 
 
-def test_run_scenario_emits_step_chain_and_carries_balances(tmp_path: Path) -> None:
+def test_run_scenario_emits_step_chain_and_applies_fixed_rules(tmp_path: Path) -> None:
     intent_path = _intent(tmp_path)
     run_path = tmp_path / "runs" / "r.sqlite3"
 
@@ -33,61 +39,62 @@ def test_run_scenario_emits_step_chain_and_carries_balances(tmp_path: Path) -> N
     con = sqlite3.connect(run_path)
     con.row_factory = sqlite3.Row
     try:
-        # 2026-05-31 .. 2040-12-31 inclusive: 8 + 14*12 = 176 months
         steps = con.execute(
-            "SELECT step_index, month, previous_step_id FROM simulation_step "
+            "SELECT id, step_index, month, previous_step_id FROM simulation_step "
             "ORDER BY step_index"
         ).fetchall()
         assert len(steps) == 176
-        assert steps[0]["step_index"] == 0
         assert steps[0]["month"] == "2026-05-31"
         assert steps[0]["previous_step_id"] is None
         assert steps[-1]["month"] == "2040-12-31"
         for i in range(1, len(steps)):
-            assert steps[i]["previous_step_id"] is not None
-            assert steps[i]["step_index"] == i
+            assert steps[i]["previous_step_id"] == steps[i - 1]["id"]
 
-        account_count = con.execute("SELECT COUNT(*) FROM account").fetchone()[0]
-        state_count = con.execute("SELECT COUNT(*) FROM account_state").fetchone()[0]
-        assert state_count == account_count * len(steps)
+        n_accounts = con.execute("SELECT COUNT(*) FROM account").fetchone()[0]
+        n_states = con.execute("SELECT COUNT(*) FROM account_state").fetchone()[0]
+        assert n_states == n_accounts * len(steps)
 
-        first_step_id = steps[0]["step_index"]
         checking_id = con.execute(
             "SELECT id FROM account WHERE name = 'Asset_Checking'"
         ).fetchone()[0]
-        bal = con.execute(
-            "SELECT balance FROM account_state "
-            "WHERE step_id = (SELECT id FROM simulation_step WHERE step_index = ?) "
-            "  AND account_id = ?",
-            (first_step_id, checking_id),
+        bal0 = con.execute(
+            "SELECT balance FROM account_state WHERE step_id = ? AND account_id = ?",
+            (steps[0]["id"], checking_id),
         ).fetchone()[0]
-        assert bal == 500000  # opening_balance from account_model_member
+        bal3 = con.execute(
+            "SELECT balance FROM account_state WHERE step_id = ? AND account_id = ?",
+            (steps[3]["id"], checking_id),
+        ).fetchone()[0]
+        assert bal0 == 500000 + NET_CHECKING_PER_MONTH
+        assert bal3 == 500000 + 4 * NET_CHECKING_PER_MONTH
 
         income_id = con.execute(
             "SELECT id FROM account WHERE name = 'Income_Salary_Alice'"
         ).fetchone()[0]
-        zero = con.execute(
-            "SELECT balance FROM account_state "
-            "WHERE step_id = (SELECT id FROM simulation_step WHERE step_index = 0) "
-            "  AND account_id = ?",
-            (income_id,),
+        inc0 = con.execute(
+            "SELECT balance FROM account_state WHERE step_id = ? AND account_id = ?",
+            (steps[0]["id"], income_id),
         ).fetchone()[0]
-        assert zero == 0
+        assert inc0 == -SALARY_ALICE_MONTHLY
 
         run = con.execute(
-            "SELECT status, finished_at, failure_reason FROM simulation_run"
+            "SELECT status, finished_at, failure_reason, run_args_json "
+            "FROM simulation_run"
         ).fetchone()
         assert run["status"] == "succeeded"
         assert run["finished_at"] is not None
-        assert run["failure_reason"] is None
-
-        nw_rows = con.execute("SELECT COUNT(*) FROM net_worth").fetchone()[0]
-        assert nw_rows == len(steps)
+        skipped = json.loads(run["run_args_json"]).get("skipped_rule_kinds", {})
+        assert skipped.get("percent_of_balance") == 2 * 176
+        assert skipped.get("mortgage_payment") == 176
+        assert skipped.get("ss_benefit") == 2 * 176
+        assert skipped.get("waterfall_fill") == 176
+        # rmd_alice is annual w/ month_of_year=12: 15 firings (2026..2040 December)
+        assert skipped.get("rmd") == 15
     finally:
         con.close()
 
 
-def test_run_scenario_balance_carries_forward_unchanged(tmp_path: Path) -> None:
+def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
     intent_path = _intent(tmp_path)
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
@@ -96,11 +103,16 @@ def test_run_scenario_balance_carries_forward_unchanged(tmp_path: Path) -> None:
     )
     con = sqlite3.connect(run_path)
     try:
-        distinct_per_account = con.execute(
-            "SELECT account_id, COUNT(DISTINCT balance) FROM account_state "
-            "GROUP BY account_id"
+        # 5 fixed_amount monthly rules × 176 months
+        assert con.execute("SELECT COUNT(*) FROM transfer_event").fetchone()[0] == 5 * 176
+
+        # signed sum of every balance per step is constant (= opening total)
+        rows = con.execute(
+            "SELECT step_id, SUM(balance) FROM account_state GROUP BY step_id"
         ).fetchall()
-        for _, n in distinct_per_account:
-            assert n == 1
+        totals = {step: total for step, total in rows}
+        opening_total = next(iter(totals.values()))
+        for t in totals.values():
+            assert t == opening_total
     finally:
         con.close()
