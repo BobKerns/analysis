@@ -112,7 +112,7 @@ IRS Required Minimum Distribution.
 
 Cover any remaining cash shortfall in a target account by drawing from an ordered list of sources.
 
-- **Params:** `{ "target_account": "<name>", "target_balance_cents": <cents> }` (the minimum acceptable end-of-month balance; usually 0 or a small cushion).
+- **Params:** `{ "target_account": "<name>", "target_balance_cents": <cents> }` (the minimum acceptable end-of-month balance in integer cents; usually 0 or a small cushion). *Note: this JSON field is an internal engine value in cents; the CSV `base_amount` column uses dollars — only `amount_rule_params_json` numeric fields are in cents.*
 - **Sources:** rows in `scheduled_transaction_source` ordered by `position`. The row's `from_account` column MUST equal the `position = 1` source — a redundancy the loader enforces so a human (or AI) reading `scheduled.csv` alone sees the primary draw without cross-referencing `waterfall_sources.csv`.
 - **Compute:** at fire time, `shortfall = max(0, target_balance_cents - target_balance_after_all_other_rules)`. If `shortfall > 0`, draw `min(shortfall, source_balance)` from sources in order. If still short after all sources, **halt the run** (per ADR-001 principle 7); record `failure_reason = "WaterfallExhausted: <month> short $<amount>"` and persist partial results.
 - **Emits:** zero or more events (one per source actually drawn from). Each event uses `tax_character` from the source's account semantics (taxable brokerage → `ltcg`, IRA → `tax_deferred_out`, etc.) — the `tax_character` column on the scheduled_transaction row is overridden per leg from `account.tax_treatment`.
@@ -122,7 +122,7 @@ Cover any remaining cash shortfall in a target account by drawing from an ordere
 
 Social Security retirement benefit with COLA.
 
-- **Params:** `{ "person": "<person_id>", "claim_age": 67, "base_pia_at_fra_cents": <cents>, "cola_series": "ss_cola" }`.
+- **Params:** `{ "person": "<person_id>", "claim_age": 67, "base_pia_at_fra_cents": <cents>, "cola_series": "ss_cola" }`. *`base_pia_at_fra_cents` is in integer cents (it lives inside JSON, not in the `base_amount` CSV column).*
 - **Compute:** Fires monthly. Adjusts `base_pia_at_fra_cents` by the claim-age multiplier (a lookup based on months early/late vs. FRA, hard-coded) and applies cumulative COLA from claim date to `date`. Zero before the person reaches `claim_age`.
 - **Emits:** one event, `from_account = Income_SS_<person>`, `to_account = Asset_Checking`, `tax_character = 'ss_benefit'`.
 - **Start semantics:** as with `rmd`, the row's `start` column is a lower bound. The rule emits zero amount in months before the person reaches `claim_age`; that age gate ANDs with the row's `start`.
@@ -337,7 +337,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `month_of_year` | int 1-12 | | required for `annual`; ignored otherwise |
 | `amount_rule_kind` | enum | ✓ | one of §2 |
 | `amount_rule_params_json` | json | | default `{}`; required when the rule's params §2 are non-empty |
-| `base_amount` | cents | | required for `fixed_amount`, `mortgage_payment` |
+| `base_amount` | dollars | | required for `fixed_amount`, `mortgage_payment`; decimal string e.g. `1234.56`; loader converts to integer cents at load time |
 | `base_date` | YYYY-MM | | required when `inflation_series` is set |
 | `inflation_series` | text | | aux series name, e.g. `cpi`; or `fixed` for no inflation |
 | `tax_character` | enum | ✓ | per ADR-002; set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field — an income-account-sourced transfer can carry `tax_character='none'` (e.g. an inheritance), and an expense-leg can carry any value. `waterfall_fill` is the one exception: per §2.4, the engine overrides each leg's `tax_character` from the source account's `tax_treatment`. |
