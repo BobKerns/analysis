@@ -1,9 +1,9 @@
 account_name,opening_balance,opening_cost_basis,prior_year_end_balance
-Asset_Checking,500000,,
-Asset_Savings,2000000,,
-Asset_Brokerage_Joint,30000000,20000000,
-Asset_TraditionalIRA_Alice,50000000,,48000000
-Asset_Roth_Alice,10000000,,
-Asset_Roth_Bob,8000000,,
-Asset_Home,60000000,40000000,
-Liability_Mortgage,25000000,,
+Asset_Checking,5000.00,,
+Asset_Savings,20000.00,,
+Asset_Brokerage_Joint,300000.00,200000.00,
+Asset_TraditionalIRA_Alice,500000.00,,480000.00
+Asset_Roth_Alice,100000.00,,
+Asset_Roth_Bob,80000.00,,
+Asset_Home,600000.00,400000.00,
+Liability_Mortgage,250000.00,,
