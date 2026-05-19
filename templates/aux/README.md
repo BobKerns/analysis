@@ -102,6 +102,48 @@ Two practical consequences for retirement modeling:
 
 Background: IRS, [Roth IRAs](https://www.irs.gov/retirement-plans/roth-iras).
 
+#### When a Roth conversion can help
+
+A **Roth conversion** moves money from a Traditional IRA / 401(k) into a Roth
+IRA. The converted amount is added to that year's ordinary income and taxed at
+your marginal rate; after that it grows and is withdrawn tax-free, with no
+future RMD on the original owner.
+
+The classic "sweet spot" is the gap between retiring (salary stops) and the
+year Social Security plus RMDs ramp taxable income back up. In that window
+ordinary income can be quite low, so a conversion is taxed in low brackets
+instead of the higher brackets it would otherwise hit later.
+
+Worked example, very rough, using the 2026-effective figures in
+`federal_brackets.csv` and `standard_deduction.csv`, MFJ:
+
+- Retire in 2026; defer Social Security until Full Retirement Age in 2027.
+  No salary, modest brokerage interest/dividends, say $20,000 of ordinary
+  income.
+- 2026 MFJ standard deduction is $31,500, so taxable income before any
+  conversion is already $0.
+- The 12% bracket runs up to $96,950 of taxable income. Converting roughly
+  `$96,950 + $31,500 - $20,000 = $108,450` from Traditional IRA to Roth fills
+  the 10% and 12% brackets exactly, with federal tax of about $11,000 on the
+  conversion. (California taxes the same dollars at its own rates; see
+  `state_brackets__CA.csv`.)
+- Once Social Security starts and RMDs begin at age 73, the same dollars
+  withdrawn from the Traditional IRA would land in the 22% bracket or higher
+  *and* would push more Social Security into the 85%-taxable tier
+  (`ss_taxation_thresholds.csv`). Paying 12% now to avoid 22%+ later is the
+  arbitrage.
+
+Things the simulator should help you check before actually doing this:
+
+- Does the conversion push you over an **IRMAA** Medicare-premium cliff two
+  years later? (Medicare looks back at MAGI from two years prior.)
+- Does it cost you ACA premium subsidies in any pre-Medicare year?
+- Is there enough cash *outside* the IRA to pay the conversion tax? Paying
+  the tax from the IRA itself wipes out most of the benefit.
+
+This is illustrative, not advice — the right amount each year depends on your
+full tax picture and is exactly the kind of thing the scenario engine is for.
+
 ## Updating the tax tables (the easy way)
 
 Once a year — after the IRS publishes the next year's inflation adjustments
