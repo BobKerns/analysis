@@ -24,12 +24,19 @@ SQL schema alongside the source CSV.
 
 ## Conventions
 
-- Money in **integer cents**. `$1,234.56` → `123456`.
+- Scenario CSVs use decimal-dollar input where applicable (for example, `scheduled.csv` `base_amount`): `$1,234.56` is written as `1234.56` and converted to cents by the loader.
+- Aux CSV money columns with `_cents` in the header use **integer cents**: `$1,234.56` → `123456`.
 - Rates in **integer micros** (× 1e6). `5%` → `50000`. `4.25%` → `42500`.
 - Dates: `YYYY-MM` (pinned to month-end at load) or `YYYY-MM-DD` where the column expects a full date.
 - Booleans: `0` / `1`.
 - JSON columns hold a single JSON value as a string. Use CSV quoting for embedded commas/quotes.
 - Empty string means NULL.
+
+## Budget planning
+
+`budget-template.csv` is a template for the core recurring expenses and income that flow into `scenario/scheduled.csv` rows. Fill in the amounts in dollars (e.g., `1234.56` for $1,234.56), then use it as the basis for creating the corresponding `scheduled.csv` entries with the right accounts, cadences, and rules.
+
+For annual items, set `month_of_year` (`1`-`12`) so payments land in the intended month. If you have two annual payments (for example, property tax in April and December), use two rows with the same category and different `month_of_year` values.
 
 ## Aux table filename pattern
 

@@ -1,0 +1,9 @@
+category,description,amount_dollars,cadence,month_of_year,inflation_index,person,tax_character,notes
+Housing - operating,Utilities / HOA / routine maintenance,0.00,monthly,,CPI,household,none,Excludes mortgage P&I (handled by mortgage_payment rule) and property tax (separate line below)
+Health insurance premiums,Medicare B+D+Medigap for you,0.00,monthly,,medical,you,none,Adjust when she stops working and adds coverage
+Health insurance premiums,Long-term disability premium for her,0.00,monthly,,flat,she,none,Keep until retirement / coverage ends
+Insurance,Auto / homeowners / umbrella bundle,0.00,monthly,,flat,household,none,All in one account; one monthly entry
+Healthcare - out-of-pocket,Medicare OOP catastrophic max per CMS,0.00,annual,12,medical,household,none,Treat as budgeted annual ceiling; actual may vary. Deductible portion is silently handled by the tax engine.
+Property tax,Property tax installment (spring),0.00,annual,4,flat,household,property_tax,Maps to taxes_property account; April installment
+Property tax,Property tax installment (winter),0.00,annual,12,flat,household,property_tax,Maps to taxes_property account; December installment
+Social Security income,Monthly SS benefit (inflow),0.00,monthly,,flat,you,ss_benefit,Negative amount for income; maps to ss_benefit account
