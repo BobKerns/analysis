@@ -13,6 +13,7 @@ import socket
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -205,6 +206,21 @@ def _coerce(s: str) -> Any:
         return s
 
 
+def _dollars_to_cents(s: str) -> int:
+    """Parse a human-facing dollar amount (e.g. ``'1234.56'``, ``'-150'``) into
+    integer cents. CSV money columns are kept in dollars-and-cents so they can
+    be hand-edited; the engine continues to work in integer cents.
+    """
+    try:
+        d = Decimal(s)
+    except InvalidOperation as e:
+        raise ValueError(f"invalid money value: {s!r}") from e
+    cents = d * 100
+    if cents != cents.to_integral_value():
+        raise ValueError(f"money value {s!r} has sub-cent precision")
+    return int(cents)
+
+
 # ---------- validation ----------
 
 def _validate_accounts(rows: list[dict[str, str]], issues: list[str]) -> None:
@@ -332,9 +348,11 @@ def _validate_priors(
             continue
         try:
             int(year)
-            int(amount)
+            _dollars_to_cents(amount)
         except ValueError:
-            issues.append(f"priors.csv row {i}: year and amount must be integers")
+            issues.append(
+                f"priors.csv row {i}: year must be int, amount must be dollars"
+            )
             continue
         key = (year, bucket)
         if key in seen:
@@ -403,9 +421,9 @@ def _write_intent(
             (
                 model_id,
                 account_ids[m["account_name"]],
-                int(m["opening_balance"]),
-                int(m["opening_cost_basis"]) if m.get("opening_cost_basis") else None,
-                int(m["prior_year_end_balance"]) if m.get("prior_year_end_balance") else None,
+                _dollars_to_cents(m["opening_balance"]),
+                _dollars_to_cents(m["opening_cost_basis"]) if m.get("opening_cost_basis") else None,
+                _dollars_to_cents(m["prior_year_end_balance"]) if m.get("prior_year_end_balance") else None,
             ),
         )
     counts["account_model_member"] = len(account_model_rows)
@@ -446,7 +464,7 @@ def _write_intent(
                 s["cadence"],
                 int(s["month_of_year"]) if s.get("month_of_year") else None,
                 s["amount_rule_kind"], s.get("amount_rule_params_json") or "{}",
-                int(s["base_amount"]) if s.get("base_amount") else None,
+                _dollars_to_cents(s["base_amount"]) if s.get("base_amount") else None,
                 s.get("base_date") or None, s.get("inflation_series") or None,
                 s["tax_character"], s["start"], s.get("end") or None, prio,
                 s.get("description") or None, s.get("meta_json") or "{}",
@@ -499,7 +517,7 @@ def _write_intent(
             "scenario_id, year, bucket, amount, source_note) "
             "VALUES (?,?,?,?,?)",
             (
-                scenario_id, int(r["year"]), r["bucket"], int(r["amount"]),
+                scenario_id, int(r["year"]), r["bucket"], _dollars_to_cents(r["amount"]),
                 r.get("source_note") or None,
             ),
         )

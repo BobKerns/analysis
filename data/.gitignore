@@ -1,3 +1,4 @@
 # Keep directory; ignore all generated/user data
 *
 !.gitignore
+shared/**

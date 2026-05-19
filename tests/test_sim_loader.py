@@ -127,7 +127,7 @@ def test_waterfall_from_account_mismatch_rejected(tmp_path: Path) -> None:
     )
     (bad / "account_models" / "m.csv").write_text(
         "account_name,opening_balance,opening_cost_basis\n"
-        "Asset_Checking,100000,\nAsset_Savings,500000,\nAsset_Brokerage,1000000,\n"
+        "Asset_Checking,1000.00,\nAsset_Savings,5000.00,\nAsset_Brokerage,10000.00,\n"
     )
     (bad / "scenarios" / "x" / "scenario.csv").write_text(
         "name,description,account_model,start,end,seed,"
