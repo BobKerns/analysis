@@ -178,7 +178,8 @@ def _read_aux_dir(
     for csv_path in sorted(aux_dir.glob("*.csv")):
         stem = csv_path.stem
         if "__" in stem:
-            kind, series = stem.split("__", 1)
+            kind, raw_series = stem.split("__", 1)
+            series = raw_series.replace("_", " ")
         else:
             kind, series = stem, None
         if kind not in registries.AUX_KIND_COLUMNS:
