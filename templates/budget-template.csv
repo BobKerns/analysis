@@ -1,4 +1,4 @@
-category,description,amount_dollars,cadence,month_of_year,inflation_index,person,tax_character,notes
+category,description,amount,cadence,month_of_year,inflation_index,person,tax_character,notes
 Housing - operating,Utilities / HOA / routine maintenance,0.00,monthly,,CPI,household,none,Excludes mortgage P&I (handled by mortgage_payment rule) and property tax (separate line below)
 Health insurance premiums,Medicare B+D+Medigap for you,0.00,monthly,,medical,you,none,Adjust when she stops working and adds coverage
 Health insurance premiums,Long-term disability premium for her,0.00,monthly,,flat,she,none,Keep until retirement / coverage ends

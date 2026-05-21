@@ -103,7 +103,7 @@ def test_invalid_subkind_rejected(tmp_path: Path) -> None:
     )
     (bad / "scenarios" / "x" / "scheduled.csv").write_text(
         "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,"
-        "account_1,account_2,person,series,rate_micros,claim_age,amount_cents,"
+        "account_1,account_2,person,series,rate_micros,claim_age,amount,"
         "base_amount,base_date,inflation_series,"
         "tax_character,start,end,priority,description,meta_json,params_json\n"
     )
@@ -137,7 +137,7 @@ def test_waterfall_from_account_mismatch_rejected(tmp_path: Path) -> None:
     )
     (bad / "scenarios" / "x" / "scheduled.csv").write_text(
         "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,"
-        "account_1,account_2,person,series,rate_micros,claim_age,amount_cents,"
+        "account_1,account_2,person,series,rate_micros,claim_age,amount,"
         "base_amount,base_date,inflation_series,"
         "tax_character,start,end,priority,description,meta_json,params_json\n"
         "wf,Asset_Brokerage,Asset_Checking,monthly,,waterfall_fill,Asset_Checking,,,,,,,,"

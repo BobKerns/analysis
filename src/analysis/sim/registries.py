@@ -48,17 +48,29 @@ DEFAULT_PRIORITIES: dict[str, int] = {
 }
 
 # Aux file kind -> required columns (ADR-003 §4.4).
+# CSV money columns are written in decimal dollars (e.g. ``1234.56``); the loader
+# converts them to integer cents stored under the same column name in the
+# payload JSON.
 AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "federal_brackets":
-        ("effective_date", "filing_status", "bracket_index", "floor_cents", "marginal_rate_micros"),
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
     "state_brackets":
-        ("effective_date", "filing_status", "bracket_index", "floor_cents", "marginal_rate_micros"),
-    "standard_deduction": ("effective_date", "filing_status", "amount_cents"),
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
+    "standard_deduction": ("effective_date", "filing_status", "amount"),
     "ss_taxation_thresholds":
-        ("effective_date", "filing_status", "tier1_floor_cents", "tier2_floor_cents"),
+        ("effective_date", "filing_status", "tier1_floor", "tier2_floor"),
     "rmd_factors": ("effective_date", "age", "factor_micros"),
     "rate": ("effective_date", "annual_rate_micros"),
     "inflation": ("effective_date", "annual_rate_micros"),
     "filing_status": ("effective_date", "filing_status"),
     "rmd_start_age": ("effective_date", "start_age"),
+}
+
+# Per-aux-kind set of column names that hold dollar amounts in the CSV and must
+# be converted to integer cents during load.
+AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
+    "federal_brackets": frozenset({"floor"}),
+    "state_brackets": frozenset({"floor"}),
+    "standard_deduction": frozenset({"amount"}),
+    "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
 }

@@ -239,6 +239,7 @@ def _read_aux_dir(
             issues.append(f"aux/{csv_path.name}: unknown kind '{kind}'")
             continue
         cols = registries.AUX_KIND_COLUMNS[kind]
+        money_cols = registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
         for i, row in enumerate(_read_csv(csv_path, issues), start=2):
             missing = [c for c in cols if c not in row]
             if missing:
@@ -246,7 +247,15 @@ def _read_aux_dir(
                     f"aux/{csv_path.name} row {i}: missing columns {missing}"
                 )
                 continue
-            payload = {c: _coerce(row[c]) for c in cols if c != "effective_date"}
+            payload: dict[str, Any] = {}
+            for c in cols:
+                if c == "effective_date":
+                    continue
+                raw = row[c]
+                if c in money_cols:
+                    payload[c] = _dollars_to_cents(raw) if raw != "" else None
+                else:
+                    payload[c] = _coerce(raw)
             out.append((kind, series, payload, row["effective_date"]))
     return out
 
@@ -543,7 +552,7 @@ def _write_intent(
                 s.get("series") or None,
                 _opt_int(s.get("rate_micros")),
                 _opt_int(s.get("claim_age")),
-                _opt_int(s.get("amount_cents")),
+                _dollars_to_cents(s["amount"]) if s.get("amount") else None,
                 s.get("params_json") or None,
                 _dollars_to_cents(s["base_amount"]) if s.get("base_amount") else None,
                 s.get("base_date") or None, s.get("inflation_series") or None,
