@@ -623,7 +623,12 @@ def _complete_subkind(ctx, param, incomplete):  # noqa: ARG001
     return [s for s in all_subs if s.startswith(incomplete)]
 
 
-@add_group_command.command("account")
+@sim_group_command.group(name="account")
+def account_group_command() -> None:
+    """Inspect or modify accounts in the data repo."""
+
+
+@account_group_command.command("add")
 @click.argument("name", required=False)
 @click.argument("kind", required=False, shell_complete=_complete_kind)
 @click.argument("subkind", required=False, shell_complete=_complete_subkind)
@@ -776,7 +781,7 @@ def _default_tax_treatment(kind: str, subkind: str) -> str:
             return "none"
 
 
-@sim_group_command.command("accounts")
+@account_group_command.command("list")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
