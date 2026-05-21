@@ -142,7 +142,7 @@ def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> 
     result = runner.invoke(
         main,
         [
-            "sim", "add", "fixed",
+            "sim", "transfer", "add", "fixed",
             "2030-06-30", "Asset_Checking", "Asset_Brokerage_Joint", "1500.00",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
@@ -174,7 +174,7 @@ def test_sim_add_scheduled_appends_row_with_defaults_and_check_passes(
     result = runner.invoke(
         main,
         [
-            "sim", "add", "scheduled",
+            "sim", "transfer", "add", "scheduled",
             "2030-01-31", "Asset_Checking", "Asset_Brokerage_Joint", "250.00",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
@@ -203,7 +203,7 @@ def test_sim_add_fixed_rejects_unknown_account(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "sim", "add", "fixed",
+            "sim", "transfer", "add", "fixed",
             "2030-06-30", "NopeAccount", "Asset_Brokerage_Joint", "100.00",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
@@ -218,7 +218,7 @@ def test_sim_add_fixed_prompts_when_args_missing(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["sim", "add", "fixed", "--scenario", "retire_alice",
+        ["sim", "transfer", "add", "fixed", "--scenario", "retire_alice",
          "--data-dir", str(data)],
         input="2030-06-30\nAsset_Checking\nAsset_Brokerage_Joint\n42.00\n",
     )
@@ -286,4 +286,22 @@ def test_sim_accounts_lists_with_balance_and_rate(tmp_path: Path) -> None:
     # opening balance for checking is 5000.00 in prototype
     assert "5,000.00" in out
 
+
+def test_sim_transfer_list_shows_one_off_and_scheduled(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sim", "transfer", "list", "--scenario", "retire_alice",
+         "--data-dir", str(data)],
+        env={"COLUMNS": "240"},
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output
+    # one-off inheritance transfer from calendar.csv
+    assert "Income_Inheritance" in out
+    assert "one-off" in out
+    # recurring scheduled transfer
+    assert "salary_alice" in out
+    assert "monthly" in out
 

@@ -50,3 +50,17 @@ analysis sim check <scenario>     # lints; no run
 analysis sim load <scenario>      # builds the intent cache
 analysis sim run <scenario>       # produces a run file under state/runs/
 ```
+
+## Editing rows
+
+CSVs are the source of truth and can be edited by hand, by an AI assistant given the schemas in ADR-003, or by the built-in CLI commands:
+
+```sh
+analysis sim account list                 # tabular view with balances and rates
+analysis sim account add <name> <kind> <subkind> [--opening-balance ...]
+analysis sim transfer list                # one-off and recurring transfers
+analysis sim transfer add fixed <date> <from> <to> <amount>
+analysis sim transfer add scheduled <start> <from> <to> <amount> [--cadence monthly]
+```
+
+The CLI is interactive (tab completion on account names, prompts when arguments are omitted) and validates against the registries in ADR-003 before writing. Prefer it when you want precise control or want to script the same edit across scenarios; ask the assistant when the change is exploratory or spans many rows.
