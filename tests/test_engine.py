@@ -303,3 +303,27 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
             assert t == opening_total
     finally:
         con.close()
+
+
+def test_biweekly_count_in_month_basic() -> None:
+    from datetime import date
+
+    from analysis.sim.engine import _biweekly_count_in_month
+
+    start = date(2026, 5, 15)
+    end = date(2027, 5, 26)
+    # May 2026: fires on 5/15, 5/29 -> 2
+    assert _biweekly_count_in_month(start, date(2026, 5, 31), end) == 2
+    # June 2026: 6/12, 6/26 -> 2
+    assert _biweekly_count_in_month(start, date(2026, 6, 30), end) == 2
+    # July 2026: 7/10, 7/24 -> 2
+    assert _biweekly_count_in_month(start, date(2026, 7, 31), end) == 2
+    # Oct 2026: 10/2, 10/16, 10/30 -> 3
+    assert _biweekly_count_in_month(start, date(2026, 10, 31), end) == 3
+    # Before start
+    assert _biweekly_count_in_month(start, date(2026, 4, 30), end) == 0
+    # End clipping: end = 2027-05-26; May 2027 occurrences are 5/14 and 5/28,
+    # only 5/14 falls on/before the end.
+    assert _biweekly_count_in_month(start, date(2027, 5, 31), end) == 1
+    # June 2027 (after end): 0
+    assert _biweekly_count_in_month(start, date(2027, 6, 30), end) == 0

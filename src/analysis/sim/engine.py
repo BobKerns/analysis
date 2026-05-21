@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import calendar
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -182,8 +182,18 @@ def run_scenario(
                     continue
                 if t_end is not None and month_s > t_end:
                     continue
-                if not _cadence_fires(cadence, moy, month, _parse_date(t_start)):
+                fire_count = _cadence_count(
+                    cadence, moy, month,
+                    _parse_date(t_start),
+                    _parse_date(t_end) if t_end is not None else None,
+                )
+                if fire_count == 0:
                     continue
+                if cadence == "biweekly" and rule_kind != "fixed_amount":
+                    raise EngineError(
+                        f"scheduled_transaction id={tid}: biweekly cadence is only "
+                        f"supported with fixed_amount (got {rule_kind!r})"
+                    )
                 if rule_kind not in SUPPORTED_RULE_KINDS:
                     skipped_counts[rule_kind] = skipped_counts.get(rule_kind, 0) + 1
                     continue
@@ -213,7 +223,7 @@ def run_scenario(
                             )
                         _post_transfer(
                             con, balances, account_kinds, step_id, month_s,
-                            frm, to, base_amount, tax_char, tid,
+                            frm, to, base_amount * fire_count, tax_char, tid,
                         )
                     case "percent_of_balance":
                         amount = _amount_percent_of_balance(
@@ -705,6 +715,42 @@ def _cadence_fires(
             return month.year == start.year and month.month == start.month
         case _:
             raise EngineError(f"unknown cadence: {cadence}")
+
+
+def _biweekly_count_in_month(start: date, month: date, end: date | None) -> int:
+    """Number of biweekly firings (anchored at ``start``, 14-day stride) in ``month``.
+
+    ``month`` is any date in the target calendar month; ``end`` (inclusive)
+    clips later firings (pass None for unbounded).
+    """
+    first = date(month.year, month.month, 1)
+    next_year = month.year + (1 if month.month == 12 else 0)
+    next_month = 1 if month.month == 12 else month.month + 1
+    last = date(next_year, next_month, 1) - timedelta(days=1)
+    if start > last:
+        return 0
+    if start >= first:
+        d = start
+    else:
+        gap = (first - start).days
+        d = start + timedelta(days=((gap + 13) // 14) * 14)
+    count = 0
+    while d <= last:
+        if end is not None and d > end:
+            break
+        count += 1
+        d += timedelta(days=14)
+    return count
+
+
+def _cadence_count(
+    cadence: str, month_of_year: int | None, month: date,
+    start: date, end: date | None,
+) -> int:
+    """Number of times a scheduled txn fires inside ``month`` (0 = skip)."""
+    if cadence == "biweekly":
+        return _biweekly_count_in_month(start, month, end)
+    return 1 if _cadence_fires(cadence, month_of_year, month, start) else 0
 
 
 def _apply_calendar_event(
