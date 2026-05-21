@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import click
+import pandas as pd
 
 from analysis.sim import registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
@@ -394,12 +395,26 @@ def _validate_iso_date(s: str) -> str:
 
 def _append_csv_row(path: Path, header: tuple[str, ...],
                     row: dict[str, str]) -> None:
-    exists = path.exists() and path.stat().st_size > 0
-    with path.open("a", newline="", encoding="utf-8") as fh:
-        w = _csv.DictWriter(fh, fieldnames=list(header))
-        if not exists:
-            w.writeheader()
-        w.writerow({k: row.get(k, "") for k in header})
+    """Append a row to a CSV, aligning columns by name via pandas.
+
+    If the file exists, its header must match ``header`` exactly; this catches
+    schema drift instead of silently writing misaligned columns.
+    """
+    cols = list(header)
+    if path.exists() and path.stat().st_size > 0:
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        existing = tuple(df.columns)
+        if existing != header:
+            raise click.ClickException(
+                f"CSV header mismatch in {path}\n"
+                f"  expected: {list(header)}\n"
+                f"  found:    {list(existing)}"
+            )
+    else:
+        df = pd.DataFrame(columns=cols)
+    new_row = pd.DataFrame([{c: row.get(c, "") for c in cols}], columns=cols)
+    df = pd.concat([df, new_row], ignore_index=True)
+    df.to_csv(path, index=False)
 
 
 def _prompt_account(label: str, accounts: list[str]) -> str:
