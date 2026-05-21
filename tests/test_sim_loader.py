@@ -103,8 +103,9 @@ def test_invalid_subkind_rejected(tmp_path: Path) -> None:
     )
     (bad / "scenarios" / "x" / "scheduled.csv").write_text(
         "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,"
-        "amount_rule_params_json,base_amount,base_date,inflation_series,"
-        "tax_character,start,end,priority,description,meta_json\n"
+        "account_1,account_2,person,series,rate_micros,claim_age,amount_cents,"
+        "base_amount,base_date,inflation_series,"
+        "tax_character,start,end,priority,description,meta_json,params_json\n"
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(bad, "x", intent_dir=tmp_path / "out")
@@ -136,10 +137,11 @@ def test_waterfall_from_account_mismatch_rejected(tmp_path: Path) -> None:
     )
     (bad / "scenarios" / "x" / "scheduled.csv").write_text(
         "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,"
-        "amount_rule_params_json,base_amount,base_date,inflation_series,"
-        "tax_character,start,end,priority,description,meta_json\n"
-        "wf,Asset_Brokerage,Asset_Checking,monthly,,waterfall_fill,{},,,,none,"
-        "2026-01-31,,900,,{}\n"
+        "account_1,account_2,person,series,rate_micros,claim_age,amount_cents,"
+        "base_amount,base_date,inflation_series,"
+        "tax_character,start,end,priority,description,meta_json,params_json\n"
+        "wf,Asset_Brokerage,Asset_Checking,monthly,,waterfall_fill,Asset_Checking,,,,,,,,"
+        ",,none,2026-01-31,,900,,{},\n"
     )
     (bad / "scenarios" / "x" / "waterfall_sources.csv").write_text(
         "scheduled_name,position,account_name\n"

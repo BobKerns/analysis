@@ -1,1 +1,1 @@
-date,kind,payload_json,description
+date,kind,scheduled_name,account_1,account_2,series,amount,param_date,tax_character,params_json,description
