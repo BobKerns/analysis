@@ -14,6 +14,7 @@ from pathlib import Path
 import click
 
 from analysis.sim import registries
+from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import DataDirtyRefused, LoadError, load_scenario
 
@@ -593,3 +594,211 @@ def add_scheduled(
         f"appended scheduled row '{row_name}' ({cadence}) "
         f"{from_account} -> {to_account} {_fmt_cents(cents).strip()} to {path}"
     )
+
+
+_ACCOUNTS_HEADER: tuple[str, ...] = (
+    "name", "kind", "subkind", "owner", "tax_treatment",
+    "opened", "closed", "meta_json",
+)
+
+_ACCOUNT_MODEL_HEADER: tuple[str, ...] = (
+    "account_name", "opening_balance", "opening_cost_basis", "prior_year_end_balance",
+)
+
+
+def _read_person_ids(data_dir: Path) -> list[str]:
+    p = data_dir / "persons.csv"
+    if not p.exists():
+        return []
+    with p.open(newline="", encoding="utf-8") as fh:
+        return [r["id"] for r in _csv.DictReader(fh) if r.get("id")]
+
+
+def _complete_kind(ctx, param, incomplete):  # noqa: ARG001
+    return [k for k in sorted(registries.ACCOUNT_SUBKINDS) if k.startswith(incomplete)]
+
+
+def _complete_subkind(ctx, param, incomplete):  # noqa: ARG001
+    all_subs = sorted({s for v in registries.ACCOUNT_SUBKINDS.values() for s in v})
+    return [s for s in all_subs if s.startswith(incomplete)]
+
+
+@add_group_command.command("account")
+@click.argument("name", required=False)
+@click.argument("kind", required=False, shell_complete=_complete_kind)
+@click.argument("subkind", required=False, shell_complete=_complete_subkind)
+@click.option("--owner", default=None,
+              help="Person id from persons.csv (default: joint).")
+@click.option("--tax-treatment", default=None,
+              type=click.Choice(sorted(registries.TAX_TREATMENTS)),
+              help="Default inferred from kind.")
+@click.option("--opened", "opened", default="",
+              help="Open date (YYYY-MM-DD).")
+@click.option("--closed", "closed", default="",
+              help="Close date (YYYY-MM-DD), if any.")
+@click.option("--opening-balance", default=None,
+              help="Initial balance in dollars; appended to the scenario's "
+                   "account_model file.")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (for opening-balance lookup).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def add_account(
+    name: str | None,
+    kind: str | None,
+    subkind: str | None,
+    owner: str | None,
+    tax_treatment: str | None,
+    opened: str,
+    closed: str,
+    opening_balance: str | None,
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Append an account to accounts.csv (and opening balance to the model)."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    persons = _read_person_ids(data_dir_p)
+    existing = _read_account_names(data_dir_p)
+
+    if not name:
+        name = _prompt_with_completion("account name").strip()
+    if not name:
+        raise click.ClickException("name required")
+    if name in existing:
+        raise click.ClickException(f"account already exists: {name!r}")
+
+    kinds = sorted(registries.ACCOUNT_SUBKINDS)
+    if not kind:
+        click.echo(f"kinds: {', '.join(kinds)}")
+        kind = _prompt_with_completion("kind", choices=kinds)
+    if kind not in registries.ACCOUNT_SUBKINDS:
+        raise click.ClickException(
+            f"unknown kind: {kind!r}; allowed: {kinds}"
+        )
+
+    subkinds = sorted(registries.ACCOUNT_SUBKINDS[kind])
+    if not subkind:
+        click.echo(f"subkinds for {kind}: {', '.join(subkinds)}")
+        subkind = _prompt_with_completion("subkind", choices=subkinds)
+    if subkind not in registries.ACCOUNT_SUBKINDS[kind]:
+        raise click.ClickException(
+            f"subkind {subkind!r} not allowed for kind {kind!r}; "
+            f"allowed: {subkinds}"
+        )
+
+    if owner is None:
+        choices = (persons or []) + ["joint"]
+        owner = _prompt_with_completion(
+            "owner", choices=choices, default="joint",
+        )
+    if persons and owner not in persons and owner != "joint":
+        raise click.ClickException(
+            f"unknown owner {owner!r}; allowed: {persons + ['joint']}"
+        )
+
+    if tax_treatment is None:
+        tax_treatment = _default_tax_treatment(kind, subkind)
+    if tax_treatment not in registries.TAX_TREATMENTS:
+        raise click.ClickException(
+            f"unknown tax_treatment: {tax_treatment!r}; "
+            f"allowed: {sorted(registries.TAX_TREATMENTS)}"
+        )
+
+    if opened:
+        opened = _validate_iso_date(opened)
+    if closed:
+        closed = _validate_iso_date(closed)
+
+    row = {
+        "name": name, "kind": kind, "subkind": subkind,
+        "owner": owner, "tax_treatment": tax_treatment,
+        "opened": opened, "closed": closed, "meta_json": "{}",
+    }
+    accounts_path = data_dir_p / "accounts.csv"
+    _append_csv_row(accounts_path, _ACCOUNTS_HEADER, row)
+    click.echo(f"appended account '{name}' to {accounts_path}")
+
+    if opening_balance is None and kind in {"asset", "liability"}:
+        if click.confirm("set opening balance now?", default=True):
+            opening_balance = _prompt_with_completion(
+                "opening balance (dollars, e.g. 1234.56)"
+            )
+
+    if opening_balance:
+        cents = _parse_amount_cents(opening_balance)
+        scen_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+        with (scen_dir / "scenario.csv").open(newline="", encoding="utf-8") as fh:
+            srows = list(_csv.DictReader(fh))
+        if not srows:
+            raise click.ClickException(
+                f"scenario.csv empty in {scen_dir}; cannot record opening balance"
+            )
+        model_name = srows[0].get("account_model", "")
+        if not model_name:
+            raise click.ClickException(
+                f"scenario {scen_dir.name} has no account_model; "
+                "cannot record opening balance"
+            )
+        model_path = data_dir_p / "account_models" / f"{model_name}.csv"
+        _append_csv_row(
+            model_path,
+            _ACCOUNT_MODEL_HEADER,
+            {
+                "account_name": name,
+                "opening_balance": f"{cents // 100}.{cents % 100:02d}",
+                "opening_cost_basis": "",
+                "prior_year_end_balance": "",
+            },
+        )
+        click.echo(
+            f"appended opening balance {_fmt_cents(cents).strip()} to {model_path}"
+        )
+
+
+def _default_tax_treatment(kind: str, subkind: str) -> str:
+    match (kind, subkind):
+        case ("asset", "traditional_ira" | "traditional_401k" | "hsa"):
+            return "tax_deferred"
+        case ("asset", "roth_ira" | "roth_401k"):
+            return "tax_free"
+        case ("asset", "real_estate" | "vehicle"):
+            return "none"
+        case ("asset", _):
+            return "taxable"
+        case ("liability", _):
+            return "none"
+        case ("income", _):
+            return "taxable"
+        case ("expense", _):
+            return "none"
+        case _:
+            return "none"
+
+
+@sim_group_command.command("accounts")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--as-of", default=None,
+              help="Resolve rates effective on or before this date (YYYY-MM-DD).")
+def list_accounts(
+    scenario: str | None,
+    data_dir: Path | None,
+    as_of: str | None,
+) -> None:
+    """List accounts with opening balance and applicable rate (rich table)."""
+    from rich.console import Console
+
+    data_dir_p = _resolve_data_dir(data_dir)
+    if as_of:
+        _validate_iso_date(as_of)
+    rows = load_accounts_view(data_dir_p, scenario, as_of=as_of)
+    title = f"accounts ({data_dir_p.name}"
+    if scenario:
+        title += f" / {scenario}"
+    title += ")"
+    Console().print(render_accounts_table(rows, title=title))
+

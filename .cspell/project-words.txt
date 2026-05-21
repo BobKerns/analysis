@@ -32,6 +32,7 @@ recomputable
 reconstructable
 reprompts
 runfile
+sdir
 secho
 sidefx
 sourceable
