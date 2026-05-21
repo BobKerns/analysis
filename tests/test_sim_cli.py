@@ -127,3 +127,103 @@ def test_sim_explain_dumps_provenance_and_yearly_nw(tmp_path: Path) -> None:
     assert "year-end net worth:" in out
     assert "  2026  " in out
     assert "  2040  " in out
+
+
+def _copy_prototype(tmp_path: Path) -> Path:
+    import shutil
+    dest = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, dest)
+    return dest
+
+
+def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "add", "fixed",
+            "2030-06-30", "Asset_Checking", "Asset_Brokerage_Joint", "1500.00",
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+            "--description", "Mid-year top-up",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    cal = (data / "scenarios" / "retire_alice" / "calendar.csv").read_text()
+    last = cal.strip().splitlines()[-1]
+    assert "2030-06-30" in last
+    assert "one_off_transfer" in last
+    assert "Asset_Checking" in last
+    assert "Asset_Brokerage_Joint" in last
+    assert "150000" in last  # cents
+
+    check = runner.invoke(
+        main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
+    )
+    assert check.exit_code == 0, check.output
+    assert "ok" in check.output
+
+
+def test_sim_add_scheduled_appends_row_with_defaults_and_check_passes(
+    tmp_path: Path,
+) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "add", "scheduled",
+            "2030-01-31", "Asset_Checking", "Asset_Brokerage_Joint", "250.00",
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+            "--description", "Recurring sweep",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    sched = (data / "scenarios" / "retire_alice" / "scheduled.csv").read_text()
+    last = sched.strip().splitlines()[-1]
+    assert "xfer_asset_checking_to_asset_brokerage_joint_2030-01-31" in last
+    assert ",monthly," in last
+    assert ",fixed_amount," in last
+    assert ",250.00," in last
+    assert ",2030-01-31," in last
+
+    check = runner.invoke(
+        main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
+    )
+    assert check.exit_code == 0, check.output
+
+
+def test_sim_add_fixed_rejects_unknown_account(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "add", "fixed",
+            "2030-06-30", "NopeAccount", "Asset_Brokerage_Joint", "100.00",
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "unknown from account" in result.output
+
+
+def test_sim_add_fixed_prompts_when_args_missing(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sim", "add", "fixed", "--scenario", "retire_alice",
+         "--data-dir", str(data)],
+        input="2030-06-30\nAsset_Checking\nAsset_Brokerage_Joint\n42.00\n",
+    )
+    assert result.exit_code == 0, result.output
+    cal = (data / "scenarios" / "retire_alice" / "calendar.csv").read_text()
+    assert "2030-06-30" in cal
+    assert "4200" in cal  # 42.00 in cents
+
