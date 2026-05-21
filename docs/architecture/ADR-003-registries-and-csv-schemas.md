@@ -74,11 +74,11 @@ The `_other` catch-alls are deliberate escape hatches; the `--check` mode (ADR-0
 
 ### 2. `amount_rule_kind` registry
 
-Seven rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `base_amount`, `base_date`, `inflation_series` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `account_1`, `account_2`, `person`, `series`, `rate_micros`, `claim_age`, `amount` (see §4.6). Rare or future extension parameters may go in the nullable `params_json` column.
+Seven rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `base_amount`, `base_date`, `inflation_series` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age`, `amount` (see §4.6). Rare or future extension parameters may go in the nullable `params_json` column.
 
 **Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. (ADR-002 follow-up: tighten `transfer_event.reason_kind` CHECK to `('rule','initial')` and add `scheduled_transaction.created_by_event_id INTEGER REFERENCES calendar_event(id)` so synthesized rules trace back to their authoring calendar event.)
 
-**Multi-leg rules** (in v1: only `mortgage_payment`) emit more than one transfer event per fire; all legs share the same `(reason_kind, reason_id)` and are linked by `parent_event_id` for grouping. The `from_account`/`to_account` columns on the scheduled_transaction row are interpreted as the **primary leg**; the second leg's accounts come from `account_1` (liability) and `account_2` (interest-expense). This invariant — "each event traces to one rule, but a rule may emit multiple events per fire" — is the *direction* that matters: it makes audit, `explain`, and `compare` straightforward.
+**Multi-leg rules** (in v1: only `mortgage_payment`) emit more than one transfer event per fire; all legs share the same `(reason_kind, reason_id)` and are linked by `parent_event_id` for grouping. The `from_account`/`to_account` columns on the scheduled_transaction row are interpreted as the **primary leg** (cash → liability principal); the secondary leg (cash → interest expense) targets the account named by `interest_account`. This invariant — "each event traces to one rule, but a rule may emit multiple events per fire" — is the *direction* that matters: it makes audit, `explain`, and `compare` straightforward.
 
 #### 2.1 `fixed_amount` (priority bands: 200, 300, 500)
 
@@ -93,16 +93,16 @@ Constant amount, optionally inflated.
 
 Accrue interest, dividends, appreciation against a source account's balance.
 
-- **Params:** `account_1` = source account, `series` = aux rate-series name (one of `account_1`+`series` must be set). `rate_basis` defaults to `"balance"`.
-- **Compute:** `amount = round(source_balance × monthly_rate)`. Annual rates are converted by `(1 + r)^(1/12) - 1`, computed in fixed-point micros.
-- **Emits:** one event. Typical: `from_account = <income account>` (e.g. `Income_Interest`), `to_account = <source_account>` (interest credits to the asset). For depreciation, swap signs by routing through an expense account.
+- **Params:** the row's `to_account` is the balance-bearing account; `series` names the aux rate-series. `rate_basis` defaults to `"balance"`.
+- **Compute:** `amount = round(to_account_balance × monthly_rate)`. Annual rates are converted by `(1 + r)^(1/12) - 1`, computed in fixed-point micros.
+- **Emits:** one event. Typical: `from_account = <income account>` (e.g. `Income_Interest`), `to_account = <balance-bearing account>` (interest credits to the asset). For depreciation, swap signs by routing through an expense account.
 - **Use:** money-market interest, bond coupon approximations, portfolio appreciation per asset, real-estate appreciation.
 
 #### 2.3 `rmd` (priority band: 200 or 500)
 
 IRS Required Minimum Distribution.
 
-- **Params:** `account_1` = subject IRA/401k account, `person` = person id. Factor table is `rmd_factors`; start-age series is `rmd_start_age` (both fixed aux references).
+- **Params:** the row's `from_account` is the subject IRA/401k account (the one being drawn down); `person` = person id. Factor table is `rmd_factors`; start-age series is `rmd_start_age` (both fixed aux references).
 - **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state`; for the partial first year it comes from `account_model_member.prior_year_end_balance` (which the author must supply for any `traditional_ira` / `traditional_401k` account whose owner reaches RMD age during the scenario's first calendar year).
 - **Start semantics:** the row's `start` column is a lower bound on candidate fire dates. The actual first fire is `max(row.start, year-end of the year person reaches start_age)`. Authors typically set `start = scenario.start` and let the age gate dominate.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
@@ -112,7 +112,7 @@ IRS Required Minimum Distribution.
 
 Cover any remaining cash shortfall in a target account by drawing from an ordered list of sources.
 
-- **Params:** `account_1` = target account, `amount` = minimum acceptable end-of-month balance in dollars (usually 0 or a small cushion).
+- **Params:** the row's `to_account` is the target account being filled; `amount` = minimum acceptable end-of-month balance in dollars (usually 0 or a small cushion).
 - **Sources:** rows in `scheduled_transaction_source` ordered by `position`. The row's `from_account` column MUST equal the `position = 1` source — a redundancy the loader enforces so a human (or AI) reading `scheduled.csv` alone sees the primary draw without cross-referencing `waterfall_sources.csv`.
 - **Compute:** at fire time, `shortfall = max(0, target_balance_cents - target_balance_after_all_other_rules)`. If `shortfall > 0`, draw `min(shortfall, source_balance)` from sources in order. If still short after all sources, **halt the run** (per ADR-001 principle 7); record `failure_reason = "WaterfallExhausted: <month> short $<amount>"` and persist partial results.
 - **Emits:** zero or more events (one per source actually drawn from). Each event uses `tax_character` from the source's account semantics (taxable brokerage → `ltcg`, IRA → `tax_deferred_out`, etc.) — the `tax_character` column on the scheduled_transaction row is overridden per leg from `account.tax_treatment`.
@@ -141,12 +141,11 @@ A placeholder rule that marks "compute taxes for the prior tax year" at a specif
 
 Monthly P&I against a mortgage liability account.
 
-- **Params:** `account_1` = liability account, `account_2` = interest-expense account, `rate_micros` = annual rate as millionths of 1 (e.g. `60000` = 6.0%). Monthly P&I is the row's `base_amount`.
+- **Params:** the row's `to_account` is the mortgage liability; `interest_account` names the interest-expense account; `rate_micros` = annual rate as millionths of 1 (e.g. `60000` = 6.0%). Monthly P&I is the row's `base_amount`.
 - **Compute:** at fire time, `interest = round(liability_balance × annual_rate_micros / 12 / 1_000_000)`; `principal = payment_amount - interest`.
 - **Emits two events:**
-  1. **Interest leg:** `from_account = Asset_Checking` (the row's `from_account` — primary leg), `to_account = interest_expense_account`, amount = `interest`, tax_character = `'none'`.
-  2. **Principal leg:** `from_account = Asset_Checking`, `to_account = liability_account` (reducing the liability balance), amount = `principal`, tax_character = `'none'`.
-- The row's `to_account` is set to `liability_account` (the principal leg target); the interest target is in JSON.
+  1. **Interest leg:** `from_account = Asset_Checking` (the row's `from_account`), `to_account = interest_account`, amount = `interest`, tax_character = `'none'`.
+  2. **Principal leg:** `from_account = Asset_Checking`, `to_account = <liability>` (the row's `to_account`, reducing the liability balance), amount = `principal`, tax_character = `'none'`, `parent_event_id` linked to the interest leg.
 - **Use:** one row per active mortgage. Retired by a `retire_scheduled` calendar event when the home is sold (see §3.4).
 
 ### 3. `calendar_event.kind` registry
@@ -336,8 +335,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `cadence` | enum | ✓ | `monthly`, `quarterly`, `annual`, `one_off` |
 | `month_of_year` | int 1-12 | | required for `annual`; ignored otherwise |
 | `amount_rule_kind` | enum | ✓ | one of §2 |
-| `account_1` | text | | first rule-specific account (e.g. target account for `waterfall_fill`, liability for `mortgage_payment`, subject IRA for `rmd`) |
-| `account_2` | text | | second rule-specific account (e.g. interest-expense account for `mortgage_payment`) |
+| `interest_account` | text | | mortgage_payment only: interest-expense account for the second leg |
 | `person` | text | | person id; required for `ss_benefit` and `rmd` |
 | `series` | text | | aux rate series name (e.g. `Asset Checking`, `cpi`); required for `percent_of_balance`, `ss_benefit` |
 | `rate_micros` | int | | annual rate as millionths of 1; required for `mortgage_payment` (e.g. `60000` = 6.0%) |

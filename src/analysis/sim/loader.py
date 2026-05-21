@@ -535,19 +535,18 @@ def _write_intent(
             "INSERT INTO scheduled_transaction("
             "model_id, name, from_account, to_account, cadence, month_of_year, "
             "amount_rule_kind, "
-            "account_1, account_2, person, series, rate_micros, claim_age, amount_cents, "
+            "interest_account, person, series, rate_micros, claim_age, amount_cents, "
             "params_json, base_amount, base_date, "
             "inflation_series, tax_character, start, \"end\", priority, "
             "description, meta_json"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 model_id, s["name"],
                 account_ids[s["from_account"]], account_ids[s["to_account"]],
                 s["cadence"],
                 int(s["month_of_year"]) if s.get("month_of_year") else None,
                 s["amount_rule_kind"],
-                s.get("account_1") or None,
-                s.get("account_2") or None,
+                s.get("interest_account") or None,
                 s.get("person") or None,
                 s.get("series") or None,
                 _opt_int(s.get("rate_micros")),

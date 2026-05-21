@@ -293,8 +293,8 @@ def _fmt_cents(cents: int | None) -> str:
 
 _SCHEDULED_HEADER: tuple[str, ...] = (
     "name", "from_account", "to_account", "cadence", "month_of_year",
-    "amount_rule_kind", "account_1", "account_2", "person", "series",
-    "rate_micros", "claim_age", "amount_cents", "base_amount", "base_date",
+    "amount_rule_kind", "interest_account", "person", "series",
+    "rate_micros", "claim_age", "amount", "base_amount", "base_date",
     "inflation_series", "tax_character", "start", "end", "priority",
     "description", "meta_json", "params_json",
 )

@@ -102,7 +102,7 @@ def run_scenario(
         txns: list[list[Any]] = [
             list(r) for r in con.execute(
                 'SELECT id, name, from_account, to_account, cadence, month_of_year, '
-                '       amount_rule_kind, account_1, account_2, person, series, '
+                '       amount_rule_kind, interest_account, person, series, '
                 '       rate_micros, claim_age, amount_cents, params_json, base_amount, '
                 '       tax_character, start, "end", priority '
                 'FROM scheduled_transaction WHERE model_id = ? '
@@ -175,7 +175,7 @@ def run_scenario(
 
             for txn in txns:
                 (tid, _name, frm, to, cadence, moy, rule_kind,
-                 p_acct1, p_acct2, p_person, p_series, p_rate_micros,
+                 p_interest_acct, p_person, p_series, p_rate_micros,
                  p_claim_age, p_amount_cents, ext_json, base_amount,
                  tax_char, t_start, t_end, _prio) = txn
                 if month_s < t_start:
@@ -198,10 +198,8 @@ def run_scenario(
                     skipped_counts[rule_kind] = skipped_counts.get(rule_kind, 0) + 1
                     continue
                 params: dict[str, Any] = {}
-                if p_acct1 is not None:
-                    params["account_1"] = p_acct1
-                if p_acct2 is not None:
-                    params["account_2"] = p_acct2
+                if p_interest_acct is not None:
+                    params["interest_account"] = p_interest_acct
                 if p_person is not None:
                     params["person"] = p_person
                 if p_series is not None:
@@ -227,7 +225,7 @@ def run_scenario(
                         )
                     case "percent_of_balance":
                         amount = _amount_percent_of_balance(
-                            params, opening_balances, balances, account_id_by_name, aux,
+                            params, opening_balances, balances, to, aux,
                             month_s, tid,
                         )
                         if amount > 0:
@@ -238,13 +236,13 @@ def run_scenario(
                     case "waterfall_fill":
                         _apply_waterfall_fill(
                             con, balances, account_kinds, step_id, month_s,
-                            params, sources.get(tid, []), account_id_by_name,
+                            params, sources.get(tid, []), to,
                             tax_char, tid,
                         )
                     case "mortgage_payment":
                         _apply_mortgage_payment(
                             con, balances, account_kinds, step_id, month_s,
-                            params, base_amount, frm, account_id_by_name,
+                            params, base_amount, frm, to, account_id_by_name,
                             tax_char, tid,
                         )
                     case "ss_benefit":
@@ -255,7 +253,7 @@ def run_scenario(
                     case "rmd":
                         _apply_rmd(
                             con, balances, account_kinds, step_id, month_s, month,
-                            params, frm, to, account_id_by_name,
+                            params, frm, to,
                             person_birthdates, prior_year_end_balances, aux,
                             tax_char, tid,
                         )
@@ -351,20 +349,14 @@ def _amount_percent_of_balance(
     params: dict[str, Any],
     opening_balances: dict[int, int],
     current_balances: dict[int, int],
-    account_id_by_name: dict[str, int],
+    to_id: int,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     month_s: str, tid: int,
 ) -> int:
-    source_name = params.get("account_1")
     rate_kind = params.get("rate_kind", "rate")
     rate_series = params.get("series")
     basis = params.get("rate_basis", "opening")
-    if not source_name:
-        raise EngineError(f"percent_of_balance id={tid}: missing account_1 (source account)")
-    src_id = account_id_by_name.get(source_name)
-    if src_id is None:
-        raise EngineError(f"percent_of_balance id={tid}: unknown account_1 {source_name!r}")
-    base = (opening_balances if basis == "opening" else current_balances).get(src_id, 0)
+    base = (opening_balances if basis == "opening" else current_balances).get(to_id, 0)
     if base <= 0:
         return 0
     payload = _lookup_aux(aux, rate_kind, rate_series, month_s)
@@ -385,30 +377,30 @@ def _amount_percent_of_balance(
 def _apply_mortgage_payment(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str,
-    params: dict[str, Any], base_amount: int | None, from_id: int,
+    params: dict[str, Any], base_amount: int | None,
+    from_id: int, liab_id: int,
     account_id_by_name: dict[str, int],
     tax_char: str, tid: int,
 ) -> None:
     """Multi-leg P&I per ADR-003 §2.7. Interest leg writes first; principal
-    leg's ``parent_event_id`` points at the interest leg.
+    leg's ``parent_event_id`` points at the interest leg. The liability
+    account is the row's ``to_account``; the interest-expense account is
+    named by ``interest_account``.
     """
     if base_amount is None:
         raise EngineError(
             f"mortgage_payment id={tid}: missing base_amount (payment_amount)"
         )
-    liab_name = params.get("account_1")
-    interest_name = params.get("account_2")
+    interest_name = params.get("interest_account")
     annual_micros = params.get("rate_micros")
-    if not (liab_name and interest_name and annual_micros is not None):
+    if not (interest_name and annual_micros is not None):
         raise EngineError(
-            f"mortgage_payment id={tid}: requires liability_account, "
-            "interest_expense_account, annual_rate_micros (account_1, account_2, rate_micros)"
+            f"mortgage_payment id={tid}: requires interest_account and rate_micros"
         )
-    liab_id = account_id_by_name.get(liab_name)
     interest_id = account_id_by_name.get(interest_name)
-    if liab_id is None or interest_id is None:
+    if interest_id is None:
         raise EngineError(
-            f"mortgage_payment id={tid}: unknown account in params"
+            f"mortgage_payment id={tid}: unknown interest_account {interest_name!r}"
         )
     outstanding = max(0, balances.get(liab_id, 0))
     if outstanding == 0:
@@ -494,30 +486,27 @@ def _apply_rmd(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str, month: date,
     params: dict[str, Any], from_id: int, to_id: int,
-    account_id_by_name: dict[str, int],
     person_birthdates: dict[str, date],
     prior_year_end_balances: dict[int, int],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     tax_char: str, tid: int,
 ) -> None:
     """ADR-003 §2.3. Annual December RMD; age-gated by ``start_age_series``.
+    Subject account is the row's ``from_account`` (the IRA being drawn down).
     ``dec31_prev_year_balance`` from prior-year-end ``account_state``, or
     ``account_model_member.prior_year_end_balance`` when no such step exists.
     """
-    subject_name = params.get("account_1")
     person = params.get("person")
     factor_table = params.get("factor_table", "rmd_factors")
     start_age_series = params.get("start_age_series", "rmd_start_age")
-    if not subject_name or not person:
+    if not person:
         raise EngineError(
-            f"rmd id={tid}: requires subject_account and person (account_1, person)"
+            f"rmd id={tid}: requires person"
         )
     bd = person_birthdates.get(person)
     if bd is None:
         raise EngineError(f"rmd id={tid}: unknown person {person!r}")
-    subject_id = account_id_by_name.get(subject_name)
-    if subject_id is None:
-        raise EngineError(f"rmd id={tid}: unknown subject_account {subject_name!r}")
+    subject_id = from_id
     age_year_end = month.year - bd.year
     start_payload = _lookup_aux(aux, start_age_series, None, month_s)
     if start_payload is None or "start_age" not in start_payload:
@@ -540,7 +529,7 @@ def _apply_rmd(
     else:
         raise EngineError(
             f"rmd id={tid}: no Dec-{prev_year} account_state and no "
-            f"prior_year_end_balance for {subject_name!r}"
+            f"prior_year_end_balance for from_account id={subject_id}"
         )
     factor_payload = _lookup_rmd_factor(aux, factor_table, age_year_end, month_s)
     if factor_payload is None:
@@ -575,18 +564,14 @@ def _apply_waterfall_fill(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str,
     params: dict[str, Any], source_ids: list[int],
-    account_id_by_name: dict[str, int],
+    target_id: int,
     tax_char: str, tid: int,
 ) -> None:
-    target_name = params.get("account_1")
     target_balance = params.get("amount_cents")
-    if target_name is None or target_balance is None:
+    if target_balance is None:
         raise EngineError(
-            f"waterfall_fill id={tid}: missing target account/balance (account_1, amount_cents)"
+            f"waterfall_fill id={tid}: missing target balance (amount_cents)"
         )
-    target_id = account_id_by_name.get(target_name)
-    if target_id is None:
-        raise EngineError(f"waterfall_fill id={tid}: unknown target {target_name!r}")
     if not source_ids:
         raise EngineError(f"waterfall_fill id={tid}: no scheduled_transaction_source rows")
     deficit = int(target_balance) - balances.get(target_id, 0)
@@ -796,7 +781,7 @@ def _apply_calendar_event(
                 raise EngineError(
                     f"set_amount event id={ev_id}: unknown scheduled_name {name!r}"
                 )
-            rec[15] = int(new_amount)
+            rec[14] = int(new_amount)
             new_base_date = payload.get("param_date")
             con.execute(
                 "UPDATE scheduled_transaction SET base_amount = ?, "
@@ -815,7 +800,7 @@ def _apply_calendar_event(
                     f"retire_scheduled event id={ev_id}: unknown scheduled_name "
                     f"{name!r}"
                 )
-            rec[18] = ev_date
+            rec[17] = ev_date
             con.execute(
                 'UPDATE scheduled_transaction SET "end" = ? WHERE id = ?',
                 (ev_date, rec[0]),
