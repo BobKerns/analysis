@@ -1,5 +1,5 @@
 date,kind,payload_json,description
-2027-01-31,set_rate,"{""aux_kind"":""rate"",""series"":""Asset_Checking"",""effective_date"":""2027-01-31"",""new_value_micros"":45000}",fake reserve hikes; checking yield 3% -> 4.5%
+2027-01-31,set_rate,"{""aux_kind"":""rate"",""series"":""Asset Checking"",""effective_date"":""2027-01-31"",""new_value_micros"":45000}",fake reserve hikes; checking yield 3% -> 4.5%
 2028-06-30,retire_scheduled,"{""scheduled_name"":""salary_alice""}",Alice retires
 2028-07-31,set_amount,"{""scheduled_name"":""healthcare"",""new_base_amount"":120000,""new_base_date"":""2028-07-31""}",ACA premium replaces employer share post-retirement
 2029-03-31,one_off_transfer,"{""from_account"":""Income_Inheritance"",""to_account"":""Asset_Brokerage_Joint"",""amount"":5000000,""tax_character"":""none""}",inheritance from fake great-aunt
