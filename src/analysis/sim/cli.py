@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import csv as _csv
+import json
 import os
 import sqlite3
 import tempfile
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import click
 
+from analysis.sim import registries
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import DataDirtyRefused, LoadError, load_scenario
 
@@ -277,3 +281,315 @@ def _fmt_cents(cents: int | None) -> str:
     n = abs(int(cents))
     dollars, rem = divmod(n, 100)
     return f"{sign}${dollars:>14,}.{rem:02d}"
+
+
+# ---------- add: append new rows to a scenario ----------
+
+_SCHEDULED_HEADER: tuple[str, ...] = (
+    "name", "from_account", "to_account", "cadence", "month_of_year",
+    "amount_rule_kind", "account_1", "account_2", "person", "series",
+    "rate_micros", "claim_age", "amount_cents", "base_amount", "base_date",
+    "inflation_series", "tax_character", "start", "end", "priority",
+    "description", "meta_json", "params_json",
+)
+
+_CALENDAR_HEADER: tuple[str, ...] = (
+    "date", "kind", "scheduled_name", "account_1", "account_2", "series",
+    "amount", "param_date", "tax_character", "params_json", "description",
+)
+
+
+def _resolve_scenario_dir(data_dir: Path, scenario: str | None) -> tuple[Path, str]:
+    scenarios = data_dir / "scenarios"
+    if not scenarios.is_dir():
+        raise click.ClickException(f"no scenarios/ in {data_dir}")
+    if scenario:
+        d = scenarios / scenario
+        if not d.is_dir():
+            raise click.ClickException(f"scenario not found: {d}")
+        return d, scenario
+    subs = sorted(p for p in scenarios.iterdir() if p.is_dir())
+    if len(subs) == 1:
+        return subs[0], subs[0].name
+    names = ", ".join(p.name for p in subs) or "(none)"
+    raise click.ClickException(f"multiple scenarios; pass --scenario [{names}]")
+
+
+def _read_account_names(data_dir: Path) -> list[str]:
+    p = data_dir / "accounts.csv"
+    if not p.exists():
+        return []
+    with p.open(newline="", encoding="utf-8") as fh:
+        return [r["name"] for r in _csv.DictReader(fh) if r.get("name")]
+
+
+def _complete_account(ctx, param, incomplete):  # noqa: ARG001
+    env = os.environ.get("ANALYSIS_DATA_DIR")
+    if not env:
+        return []
+    try:
+        names = _read_account_names(Path(env))
+    except OSError:
+        return []
+    return [n for n in names if n.lower().startswith(incomplete.lower())]
+
+
+def _prompt_with_completion(text: str, choices: list[str] | None = None,
+                            default: str | None = None) -> str:
+    """Prompt with readline tab-completion over ``choices``."""
+    try:
+        import readline
+    except ImportError:
+        return click.prompt(text, default=default,
+                            show_default=default is not None)
+    completer_choices = list(choices or [])
+
+    def completer(prefix: str, state: int) -> str | None:
+        opts = [c for c in completer_choices if c.lower().startswith(prefix.lower())]
+        return opts[state] if state < len(opts) else None
+
+    old = readline.get_completer()
+    readline.set_completer(completer)
+    if "libedit" in (readline.__doc__ or ""):
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+    try:
+        return click.prompt(text, default=default,
+                            show_default=default is not None)
+    finally:
+        readline.set_completer(old)
+
+
+def _parse_amount_cents(s: str) -> int:
+    raw = s.strip().lstrip("$").replace(",", "")
+    try:
+        d = Decimal(raw)
+    except InvalidOperation as e:
+        raise click.ClickException(f"invalid amount: {s!r}") from e
+    cents = d * 100
+    if cents != cents.to_integral_value():
+        raise click.ClickException(f"amount has sub-cent precision: {s!r}")
+    return int(cents)
+
+
+def _validate_iso_date(s: str) -> str:
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+    except ValueError as e:
+        raise click.ClickException(f"date must be YYYY-MM-DD: {s!r}") from e
+    return s
+
+
+def _append_csv_row(path: Path, header: tuple[str, ...],
+                    row: dict[str, str]) -> None:
+    exists = path.exists() and path.stat().st_size > 0
+    with path.open("a", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, fieldnames=list(header))
+        if not exists:
+            w.writeheader()
+        w.writerow({k: row.get(k, "") for k in header})
+
+
+def _prompt_account(label: str, accounts: list[str]) -> str:
+    return _prompt_with_completion(f"{label} account", choices=accounts)
+
+
+@sim_group_command.group(name="add")
+def add_group_command() -> None:
+    """Append a transfer to a scenario (one-time or recurring)."""
+
+
+@add_group_command.command("fixed")
+@click.argument("date", required=False)
+@click.argument("from_account", required=False, shell_complete=_complete_account)
+@click.argument("to_account", required=False, shell_complete=_complete_account)
+@click.argument("amount", required=False)
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--tax-character", default="none", show_default=True,
+              help="ADR-003 tax_character (e.g. ordinary, ltcg, none).")
+@click.option("--description", default="", help="Free-text description.")
+@click.option("--series", default="", help="Optional series tag.")
+def add_fixed(
+    date: str | None,
+    from_account: str | None,
+    to_account: str | None,
+    amount: str | None,
+    scenario: str | None,
+    data_dir: Path | None,
+    tax_character: str,
+    description: str,
+    series: str,
+) -> None:
+    """Append a one-time transfer to <scenario>/calendar.csv."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    accounts = _read_account_names(data_dir_p)
+
+    if not date:
+        date = _prompt_with_completion("date (YYYY-MM-DD)")
+    date = _validate_iso_date(date)
+
+    if not from_account:
+        click.echo(f"accounts: {', '.join(accounts)}")
+        from_account = _prompt_account("from", accounts)
+    if from_account not in accounts:
+        raise click.ClickException(f"unknown from account: {from_account!r}")
+
+    if not to_account:
+        to_account = _prompt_account("to", accounts)
+    if to_account not in accounts:
+        raise click.ClickException(f"unknown to account: {to_account!r}")
+
+    if amount is None:
+        amount = _prompt_with_completion("amount (dollars, e.g. 1234.56)")
+    cents = _parse_amount_cents(amount)
+    if cents <= 0:
+        raise click.ClickException("amount must be positive")
+
+    if tax_character not in registries.TAX_CHARACTERS:
+        raise click.ClickException(
+            f"unknown tax_character: {tax_character!r}; "
+            f"allowed: {sorted(registries.TAX_CHARACTERS)}"
+        )
+
+    payload = {
+        "account_1": from_account,
+        "account_2": to_account,
+        "amount": cents,
+        "tax_character": tax_character,
+    }
+    if description:
+        payload["description"] = description
+    row = {
+        "date": date,
+        "kind": "one_off_transfer",
+        "account_1": from_account,
+        "account_2": to_account,
+        "series": series,
+        "amount": str(cents),
+        "tax_character": tax_character,
+        "params_json": json.dumps(payload, separators=(",", ":")),
+        "description": description,
+    }
+    path = scenario_dir / "calendar.csv"
+    _append_csv_row(path, _CALENDAR_HEADER, row)
+    click.echo(
+        f"appended one_off_transfer {from_account} -> {to_account} "
+        f"{_fmt_cents(cents).strip()} on {date} to {path}"
+    )
+
+
+@add_group_command.command("scheduled")
+@click.argument("date", required=False)
+@click.argument("from_account", required=False, shell_complete=_complete_account)
+@click.argument("to_account", required=False, shell_complete=_complete_account)
+@click.argument("amount", required=False)
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--name", "row_name", default=None,
+              help="scheduled.csv name (default: derived from accounts and date).")
+@click.option("--cadence", type=click.Choice(sorted(registries.CADENCES)),
+              default="monthly", show_default=True)
+@click.option("--month-of-year", type=click.IntRange(1, 12), default=None,
+              help="Required for annual cadence; defaults to start month.")
+@click.option("--end", "end_date", default="",
+              help="Optional end date (YYYY-MM-DD).")
+@click.option("--tax-character", default="none", show_default=True)
+@click.option("--inflation-series", default="fixed", show_default=True,
+              help="'fixed' for no inflation, else an inflation series (e.g. cpi).")
+@click.option("--priority", type=int, default=200, show_default=True)
+@click.option("--description", default="")
+@click.option("--series", default="")
+def add_scheduled(
+    date: str | None,
+    from_account: str | None,
+    to_account: str | None,
+    amount: str | None,
+    scenario: str | None,
+    data_dir: Path | None,
+    row_name: str | None,
+    cadence: str,
+    month_of_year: int | None,
+    end_date: str,
+    tax_character: str,
+    inflation_series: str,
+    priority: int,
+    description: str,
+    series: str,
+) -> None:
+    """Append a recurring fixed-amount transfer to <scenario>/scheduled.csv."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    accounts = _read_account_names(data_dir_p)
+
+    if not date:
+        date = _prompt_with_completion("start date (YYYY-MM-DD)")
+    date = _validate_iso_date(date)
+    if end_date:
+        end_date = _validate_iso_date(end_date)
+
+    if not from_account:
+        click.echo(f"accounts: {', '.join(accounts)}")
+        from_account = _prompt_account("from", accounts)
+    if from_account not in accounts:
+        raise click.ClickException(f"unknown from account: {from_account!r}")
+
+    if not to_account:
+        to_account = _prompt_account("to", accounts)
+    if to_account not in accounts:
+        raise click.ClickException(f"unknown to account: {to_account!r}")
+
+    if amount is None:
+        amount = _prompt_with_completion("amount (dollars, e.g. 1234.56)")
+    cents = _parse_amount_cents(amount)
+    if cents <= 0:
+        raise click.ClickException("amount must be positive")
+    base_amount = f"{cents // 100}.{cents % 100:02d}"
+
+    if cadence == "annual" and month_of_year is None:
+        month_of_year = int(date[5:7])
+
+    if tax_character not in registries.TAX_CHARACTERS:
+        raise click.ClickException(
+            f"unknown tax_character: {tax_character!r}; "
+            f"allowed: {sorted(registries.TAX_CHARACTERS)}"
+        )
+
+    if not row_name:
+        slug_from = from_account.lower().replace(" ", "_")
+        slug_to = to_account.lower().replace(" ", "_")
+        row_name = f"xfer_{slug_from}_to_{slug_to}_{date}"
+
+    row = {
+        "name": row_name,
+        "from_account": from_account,
+        "to_account": to_account,
+        "cadence": cadence,
+        "month_of_year": str(month_of_year) if month_of_year else "",
+        "amount_rule_kind": "fixed_amount",
+        "series": series,
+        "base_amount": base_amount,
+        "base_date": date,
+        "inflation_series": inflation_series,
+        "tax_character": tax_character,
+        "start": date,
+        "end": end_date,
+        "priority": str(priority),
+        "description": description,
+        "meta_json": "{}",
+        "params_json": "{}",
+    }
+    path = scenario_dir / "scheduled.csv"
+    _append_csv_row(path, _SCHEDULED_HEADER, row)
+    click.echo(
+        f"appended scheduled row '{row_name}' ({cadence}) "
+        f"{from_account} -> {to_account} {_fmt_cents(cents).strip()} to {path}"
+    )
