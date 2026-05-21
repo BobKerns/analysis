@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -327,3 +328,156 @@ def test_biweekly_count_in_month_basic() -> None:
     assert _biweekly_count_in_month(start, date(2027, 5, 31), end) == 1
     # June 2027 (after end): 0
     assert _biweekly_count_in_month(start, date(2027, 6, 30), end) == 0
+
+
+def _clone_prototype(tmp_path: Path) -> Path:
+    """Copy retire_alice prototype so tests can mutate scheduled.csv."""
+    dst = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, dst)
+    return dst
+
+
+def test_refill_transfer_no_sources_fires_only_when_below_threshold(
+    tmp_path: Path,
+) -> None:
+    """A refill_transfer with no waterfall_sources draws from from_account
+    only when the to_account opening balance is below threshold."""
+    repo = _clone_prototype(tmp_path)
+    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    sched_csv.write_text(
+        sched_csv.read_text()
+        # Threshold 2_000_000 cents = $20,000; refill = $5,000.
+        + (
+            "refill_check,Asset_Savings,Asset_Checking,monthly,,refill_transfer,"
+            ",,,,,5000.00,,,,none,2026-05-31,,800,refill checking,"
+            '{},{"threshold_cents": 2000000}\n'
+        )
+    )
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    try:
+        rid = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='refill_check'"
+        ).fetchone()[0]
+        chk_id = con.execute(
+            "SELECT id FROM account WHERE name='Asset_Checking'"
+        ).fetchone()[0]
+        sav_id = con.execute(
+            "SELECT id FROM account WHERE name='Asset_Savings'"
+        ).fetchone()[0]
+        rows = con.execute(
+            "SELECT amount, from_account, to_account FROM transfer_event "
+            "WHERE reason_id=?", (rid,),
+        ).fetchall()
+        # Every firing must transfer exactly $5,000 from savings to checking.
+        assert rows, "refill_check should fire at least once"
+        for amt, frm, to in rows:
+            assert amt == 500_000
+            assert frm == sav_id
+            assert to == chk_id
+    finally:
+        con.close()
+
+
+def test_refill_transfer_skips_when_above_threshold(tmp_path: Path) -> None:
+    """A refill_transfer with a very negative threshold never fires."""
+    repo = _clone_prototype(tmp_path)
+    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    sched_csv.write_text(
+        sched_csv.read_text()
+        + (
+            "refill_never,Asset_Savings,Asset_Checking,monthly,,refill_transfer,"
+            ",,,,,1000.00,,,,none,2026-05-31,,800,never fires,"
+            '{},{"threshold_cents": -1000000000}\n'
+        )
+    )
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+    con = sqlite3.connect(run_path)
+    try:
+        fires = con.execute(
+            "SELECT COUNT(*) FROM transfer_event te "
+            "JOIN scheduled_transaction st ON st.id=te.reason_id "
+            "WHERE st.name='refill_never'"
+        ).fetchone()[0]
+        assert fires == 0
+    finally:
+        con.close()
+
+
+def test_refill_transfer_with_sources_drains_waterfall(tmp_path: Path) -> None:
+    """When waterfall_sources rows exist, refill_transfer drains them in
+    order until the fixed refill amount is satisfied."""
+    repo = _clone_prototype(tmp_path)
+    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    wf_csv = repo / "scenarios" / "retire_alice" / "waterfall_sources.csv"
+    sched_csv.write_text(
+        sched_csv.read_text()
+        + (
+            "refill_check_wf,Asset_Savings,Asset_Checking,monthly,,refill_transfer,"
+            ",,,,,3000.00,,,,none,2026-05-31,,800,refill via waterfall,"
+            '{},{"threshold_cents": 2000000}\n'
+        )
+    )
+    wf_csv.write_text(
+        wf_csv.read_text()
+        + "refill_check_wf,1,Asset_Savings\n"
+        + "refill_check_wf,2,Asset_Brokerage_Joint\n"
+    )
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    try:
+        rid = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='refill_check_wf'"
+        ).fetchone()[0]
+        sav_id = con.execute(
+            "SELECT id FROM account WHERE name='Asset_Savings'"
+        ).fetchone()[0]
+        # Per-fire totals must equal 300_000 cents regardless of how the
+        # transfer is split across sources.
+        per_step = con.execute(
+            "SELECT step_id, SUM(amount) FROM transfer_event "
+            "WHERE reason_id=? GROUP BY step_id", (rid,),
+        ).fetchall()
+        assert per_step, "refill_check_wf should fire at least once"
+        for _step, total in per_step:
+            assert total == 300_000
+        # Every leg's from_account must be one of the configured sources.
+        legs = con.execute(
+            "SELECT from_account FROM transfer_event WHERE reason_id=?", (rid,),
+        ).fetchall()
+        broker_id = con.execute(
+            "SELECT id FROM account WHERE name='Asset_Brokerage_Joint'"
+        ).fetchone()[0]
+        for (frm,) in legs:
+            assert frm in (sav_id, broker_id)
+    finally:
+        con.close()

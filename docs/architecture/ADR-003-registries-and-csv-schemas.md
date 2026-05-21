@@ -74,7 +74,7 @@ The `_other` catch-alls are deliberate escape hatches; the `--check` mode (ADR-0
 
 ### 2. `amount_rule_kind` registry
 
-Seven rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `base_amount`, `base_date`, `inflation_series` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age`, `amount` (see §4.6). Rare or future extension parameters may go in the nullable `params_json` column.
+Eight rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `base_amount`, `base_date`, `inflation_series` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age`, `amount` (see §4.6). Rare or future extension parameters may go in the nullable `params_json` column.
 
 **Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. (ADR-002 follow-up: tighten `transfer_event.reason_kind` CHECK to `('rule','initial')` and add `scheduled_transaction.created_by_event_id INTEGER REFERENCES calendar_event(id)` so synthesized rules trace back to their authoring calendar event.)
 
@@ -147,6 +147,16 @@ Monthly P&I against a mortgage liability account.
   1. **Interest leg:** `from_account = Asset_Checking` (the row's `from_account`), `to_account = interest_account`, amount = `interest`, tax_character = `'none'`.
   2. **Principal leg:** `from_account = Asset_Checking`, `to_account = <liability>` (the row's `to_account`, reducing the liability balance), amount = `principal`, tax_character = `'none'`, `parent_event_id` linked to the interest leg.
 - **Use:** one row per active mortgage. Retired by a `retire_scheduled` calendar event when the home is sold (see §3.4).
+
+#### 2.8 `refill_transfer` (priority band: 800)
+
+Conditional fixed top-up: when the `to_account` balance is below a threshold at fire time, transfer a fixed amount; otherwise do nothing. Models concrete manual transfers ("top up checking by $5,000 whenever it drops below $20,000") as a more explicit alternative to `waterfall_fill`.
+
+- **Params:** the row's `to_account` is the account being checked and refilled; `amount` = refill size in dollars. `params_json` may set `threshold_cents` (default `0`).
+- **Sources (optional):** if `scheduled_transaction_source` rows exist for the rule, sources are drained in `position` order until the refill is satisfied (same convention as `waterfall_fill`, including the rule that `from_account` must equal the `position = 1` source). If no source rows exist, the entire refill comes from `from_account`.
+- **Compute:** at fire time, if `to_account_balance >= threshold_cents`, emit zero events. Otherwise transfer `amount × fire_count` from the configured source(s) to `to_account`. Unlike `waterfall_fill`, the transfer is a **fixed size** that does not depend on how far below threshold the account is, and sources may end up insufficient (the run does not halt — any unsatisfied remainder is simply not transferred).
+- **Emits:** zero or more events. With no sources: one event. With sources: one event per source actually drawn from. Each event carries the row's `tax_character` (no per-leg override).
+- **Use:** standalone scheduled refills (savings → checking when checking dips); a more explicit alternative to `waterfall_fill` when authors prefer fixed-size top-ups over fill-to-target.
 
 ### 3. `calendar_event.kind` registry
 
@@ -340,7 +350,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `series` | text | | aux rate series name (e.g. `Asset Checking`, `cpi`); required for `percent_of_balance`, `ss_benefit` |
 | `rate_micros` | int | | annual rate as millionths of 1; required for `mortgage_payment` (e.g. `60000` = 6.0%) |
 | `claim_age` | int | | required for `ss_benefit` |
-| `amount` | dollars | | base amount in dollars; required for `ss_benefit` (pia), `waterfall_fill` (target balance); decimal string e.g. `1234.56`; loader converts to integer cents |
+| `amount` | dollars | | base amount in dollars; required for `ss_benefit` (pia), `waterfall_fill` (target balance), `refill_transfer` (refill size); decimal string e.g. `1234.56`; loader converts to integer cents |
 | `base_amount` | dollars | | required for `fixed_amount`, `mortgage_payment`; decimal string e.g. `1234.56`; loader converts to integer cents at load time |
 | `base_date` | YYYY-MM | | required when `inflation_series` is set |
 | `inflation_series` | text | | aux series name, e.g. `cpi`; or `fixed` for no inflation |
@@ -356,7 +366,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
-| `scheduled_name` | text | ✓ | name from `scheduled.csv` with `amount_rule_kind = 'waterfall_fill'` |
+| `scheduled_name` | text | ✓ | name from `scheduled.csv` with `amount_rule_kind` either `waterfall_fill` or `refill_transfer` |
 | `position` | int | ✓ | 1-based, monotonic per `scheduled_name` |
 | `account_name` | text | ✓ | source account |
 
@@ -401,6 +411,7 @@ When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule 
 | `mortgage_payment` | 300 |
 | `tax_accumulator` | 400 |
 | `rmd` | 500 |
+| `refill_transfer` | 800 |
 | `waterfall_fill` | 900 |
 
 Authors can override by setting `priority` explicitly. The check command (`analysis sim check --priorities`) flags rows whose explicit priority crosses a band boundary, since that's almost always a mistake.
