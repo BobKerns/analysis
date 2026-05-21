@@ -189,7 +189,7 @@ CREATE TABLE scheduled_transaction (
     tax_character           TEXT NOT NULL CHECK (tax_character IN
                                 ('ordinary','ltcg','ss_benefit','tax_free',
                                  'tax_deferred_in','tax_deferred_out',
-                                 'return_of_capital','none')),
+                                 'return_of_capital','property_tax','none')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,             -- NULL = open-ended
     priority                INTEGER NOT NULL DEFAULT 500,

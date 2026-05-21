@@ -32,7 +32,7 @@ CADENCES: set[str] = {"monthly", "quarterly", "annual", "one_off"}
 
 TAX_CHARACTERS: set[str] = {
     "ordinary", "ltcg", "ss_benefit", "tax_free",
-    "tax_deferred_in", "tax_deferred_out", "return_of_capital", "none",
+    "tax_deferred_in", "tax_deferred_out", "return_of_capital", "property_tax", "none",
 }
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}

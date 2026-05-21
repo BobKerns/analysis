@@ -346,7 +346,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `base_amount` | dollars | | required for `fixed_amount`, `mortgage_payment`; decimal string e.g. `1234.56`; loader converts to integer cents at load time |
 | `base_date` | YYYY-MM | | required when `inflation_series` is set |
 | `inflation_series` | text | | aux series name, e.g. `cpi`; or `fixed` for no inflation |
-| `tax_character` | enum | ✓ | per ADR-002; set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field — an income-account-sourced transfer can carry `tax_character='none'` (e.g. an inheritance), and an expense-leg can carry any value. `waterfall_fill` is the one exception: per §2.4, the engine overrides each leg's `tax_character` from the source account's `tax_treatment`. |
+| `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field — an income-account-sourced transfer can carry `tax_character='none'` (e.g. an inheritance), and an expense-leg can carry any value. `waterfall_fill` is the one exception: per §2.4, the engine overrides each leg's `tax_character` from the source account's `tax_treatment`. |
 | `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |
 | `priority` | int | | defaults per §2's priority band |
