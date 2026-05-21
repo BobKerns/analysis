@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -94,8 +94,7 @@ CREATE TABLE scheduled_transaction (
                                 ('monthly','biweekly','quarterly','annual','one_off')),
     month_of_year           INTEGER CHECK (month_of_year BETWEEN 1 AND 12),
     amount_rule_kind        TEXT NOT NULL,
-    account_1               TEXT,
-    account_2               TEXT,
+    interest_account        TEXT,
     person                  TEXT REFERENCES person(id),
     series                  TEXT,
     rate_micros             INTEGER,

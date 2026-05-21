@@ -90,14 +90,16 @@ def load_accounts_view(
         }
 
         # Rate series come from percent_of_balance scheduled transactions
-        # keyed by account_1 (the balance-bearing account, per ADR-003).
+        # keyed by to_account (the balance-bearing account, per ADR-003).
         rate_by_name: dict[str, tuple[str, int | None]] = {}
         for r in con.execute(
-            "SELECT account_1, series FROM scheduled_transaction "
-            "WHERE amount_rule_kind = 'percent_of_balance' "
-            "  AND account_1 IS NOT NULL AND series IS NOT NULL"
+            "SELECT a.name AS account_name, s.series AS series "
+            "FROM scheduled_transaction s "
+            "JOIN account a ON a.id = s.to_account "
+            "WHERE s.amount_rule_kind = 'percent_of_balance' "
+            "  AND s.series IS NOT NULL"
         ):
-            rate_by_name[r["account_1"]] = (
+            rate_by_name[r["account_name"]] = (
                 r["series"], _latest_rate_micros(con, r["series"], as_of),
             )
 
