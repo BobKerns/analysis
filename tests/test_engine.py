@@ -77,6 +77,26 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         for i in range(1, len(steps)):
             assert steps[i]["previous_step_id"] == steps[i - 1]["id"]
 
+        # Inflation indexes are persisted monthly for each inflation series.
+        n_inflation = con.execute(
+            "SELECT COUNT(*) FROM inflation_index_state"
+        ).fetchone()[0]
+        assert n_inflation == len(steps)
+        first_cpi = con.execute(
+            "SELECT cumulative_index_micros FROM inflation_index "
+            "WHERE month = ? AND series = 'cpi'",
+            (steps[0]["month"],),
+        ).fetchone()[0]
+        assert first_cpi == 1_002_083
+
+        nw_cpi = con.execute(
+            "SELECT nominal_cents, cumulative_index_micros, constant_cents "
+            "FROM net_worth_constant_cpi WHERE month = ?",
+            (steps[0]["month"],),
+        ).fetchone()
+        assert nw_cpi is not None
+        assert nw_cpi[2] == (nw_cpi[0] * 1_000_000) // nw_cpi[1]
+
         n_accounts = con.execute("SELECT COUNT(*) FROM account").fetchone()[0]
         n_states = con.execute("SELECT COUNT(*) FROM account_state").fetchone()[0]
         assert n_states == n_accounts * len(steps)

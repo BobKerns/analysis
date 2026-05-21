@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -285,6 +285,14 @@ CREATE TABLE tax_year_summary (
     computed_at   TEXT NOT NULL,
     PRIMARY KEY (year, bucket)
 );
+
+CREATE TABLE inflation_index_state (
+    step_id                  INTEGER NOT NULL REFERENCES simulation_step(id),
+    series                   TEXT NOT NULL,
+    cumulative_index_micros  INTEGER NOT NULL,
+    PRIMARY KEY (step_id, series)
+);
+CREATE INDEX idx_inflation_state_series ON inflation_index_state(series, step_id);
 """
 
 # Views (run files only).
@@ -298,6 +306,31 @@ FROM simulation_step s
 JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
 GROUP BY s.month;
+
+CREATE VIEW inflation_index AS
+SELECT s.month,
+       iis.series,
+       iis.cumulative_index_micros,
+       iis.cumulative_index_micros - 1000000 AS cumulative_inflation_micros
+FROM simulation_step s
+JOIN inflation_index_state iis ON iis.step_id = s.id;
+
+CREATE VIEW net_worth_constant_dollars AS
+SELECT nw.month,
+       ii.series AS inflation_series,
+       nw.net_worth AS nominal_cents,
+       ii.cumulative_index_micros,
+       (nw.net_worth * 1000000) / ii.cumulative_index_micros AS constant_cents
+FROM net_worth nw
+JOIN inflation_index ii ON ii.month = nw.month;
+
+CREATE VIEW net_worth_constant_cpi AS
+SELECT month,
+       nominal_cents,
+       cumulative_index_micros,
+       constant_cents
+FROM net_worth_constant_dollars
+WHERE inflation_series = 'cpi';
 
 CREATE VIEW balance_by_account AS
 SELECT s.month, a.id AS account_id, a.name, a.kind, a.subkind,
