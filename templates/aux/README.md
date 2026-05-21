@@ -18,12 +18,12 @@ values; future months pick up the new ones.
 
 ## Units (same as everywhere else in the data repo)
 
-- **Money** is integer **cents**: `$31,500.00` → `3150000`.
+- **Money** is decimal **dollars**: `$31,500.00` → `31500.00`.
 - **Rates** are integer **micros** (millionths): `10%` → `100000`,
   `9.3%` → `93000`, `3.0%` → `30000`.
 - **Dates** are `YYYY-MM-DD`, conventionally month-end (`2026-01-31`).
 
-The column-name suffix (`_cents`, `_micros`) tells you which.
+The column-name suffix (`_micros`) marks rate/factor columns; money columns are plain (decimal dollars).
 
 ## Filename pattern
 

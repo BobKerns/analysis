@@ -74,7 +74,7 @@ The `_other` catch-alls are deliberate escape hatches; the `--check` mode (ADR-0
 
 ### 2. `amount_rule_kind` registry
 
-Seven rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `base_amount`, `base_date`, `inflation_series` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `account_1`, `account_2`, `person`, `series`, `rate_micros`, `claim_age`, `amount_cents` (see §4.6). Rare or future extension parameters may go in the nullable `params_json` column.
+Seven rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `base_amount`, `base_date`, `inflation_series` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `account_1`, `account_2`, `person`, `series`, `rate_micros`, `claim_age`, `amount` (see §4.6). Rare or future extension parameters may go in the nullable `params_json` column.
 
 **Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. (ADR-002 follow-up: tighten `transfer_event.reason_kind` CHECK to `('rule','initial')` and add `scheduled_transaction.created_by_event_id INTEGER REFERENCES calendar_event(id)` so synthesized rules trace back to their authoring calendar event.)
 
@@ -112,7 +112,7 @@ IRS Required Minimum Distribution.
 
 Cover any remaining cash shortfall in a target account by drawing from an ordered list of sources.
 
-- **Params:** `account_1` = target account, `amount_cents` = minimum acceptable end-of-month balance in integer cents (usually 0 or a small cushion).
+- **Params:** `account_1` = target account, `amount` = minimum acceptable end-of-month balance in dollars (usually 0 or a small cushion).
 - **Sources:** rows in `scheduled_transaction_source` ordered by `position`. The row's `from_account` column MUST equal the `position = 1` source — a redundancy the loader enforces so a human (or AI) reading `scheduled.csv` alone sees the primary draw without cross-referencing `waterfall_sources.csv`.
 - **Compute:** at fire time, `shortfall = max(0, target_balance_cents - target_balance_after_all_other_rules)`. If `shortfall > 0`, draw `min(shortfall, source_balance)` from sources in order. If still short after all sources, **halt the run** (per ADR-001 principle 7); record `failure_reason = "WaterfallExhausted: <month> short $<amount>"` and persist partial results.
 - **Emits:** zero or more events (one per source actually drawn from). Each event uses `tax_character` from the source's account semantics (taxable brokerage → `ltcg`, IRA → `tax_deferred_out`, etc.) — the `tax_character` column on the scheduled_transaction row is overridden per leg from `account.tax_treatment`.
@@ -122,7 +122,7 @@ Cover any remaining cash shortfall in a target account by drawing from an ordere
 
 Social Security retirement benefit with COLA.
 
-- **Params:** `person` = person id, `claim_age` = integer claim age, `amount_cents` = PIA at FRA in cents, `series` = COLA aux series name (e.g. `cpi`). `tax_character` on the row should be `ss_benefit`.
+- **Params:** `person` = person id, `claim_age` = integer claim age, `amount` = PIA at FRA in dollars, `series` = COLA aux series name (e.g. `cpi`). `tax_character` on the row should be `ss_benefit`.
 - **Compute:** Fires monthly. Adjusts `base_pia_at_fra_cents` by the claim-age multiplier (a lookup based on months early/late vs. FRA, hard-coded) and applies cumulative COLA from claim date to `date`. Zero before the person reaches `claim_age`.
 - **Emits:** one event, `from_account = Income_SS_<person>`, `to_account = Asset_Checking`, `tax_character = 'ss_benefit'`.
 - **Start semantics:** as with `rmd`, the row's `start` column is a lower bound. The rule emits zero amount in months before the person reaches `claim_age`; that age gate ANDs with the row's `start`.
@@ -247,7 +247,7 @@ Author-named bundle of changes that represent a real-world transition. The `kind
 
 ### 4. CSV file layouts
 
-All files: UTF-8, comma-delimited, one header row. Empty string means NULL. Boolean columns use `0`/`1`. Date columns use `YYYY-MM` (month-grain, pinned to month-end at load) or `YYYY-MM-DD` where specified. Money columns are integer cents (no decimal point).
+All files: UTF-8, comma-delimited, one header row. Empty string means NULL. Boolean columns use `0`/`1`. Date columns use `YYYY-MM` (month-grain, pinned to month-end at load) or `YYYY-MM-DD` where specified. Money columns are decimal dollars (e.g. `1234.56`); the loader converts them to integer cents.
 
 JSON-typed columns hold a single JSON value as a string; the loader parses and revalidates against the rule/event kind. Multi-line JSON in CSV is supported via standard CSV quoting.
 
@@ -292,11 +292,11 @@ One file per named model. Filename stem becomes `account_model.name`.
 One file per (kind) or (kind, series). Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is derived from the filename stem after `__`, with every `_` replaced by a space.** So `rate__Asset_Checking.csv` has series `Asset Checking`, and `rate_series` in `amount_rule_params_json` must use the space form. This lets account names contain spaces while filenames stay underscore-safe.
 
 - **`federal_brackets.csv`**, **`state_brackets__<state>.csv`**:
-  `effective_date`, `filing_status`, `bracket_index`, `floor_cents`, `marginal_rate_micros`
+  `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate_micros`
 - **`standard_deduction.csv`**:
-  `effective_date`, `filing_status`, `amount_cents`
+  `effective_date`, `filing_status`, `amount`
 - **`ss_taxation_thresholds.csv`**:
-  `effective_date`, `filing_status`, `tier1_floor_cents`, `tier2_floor_cents`
+  `effective_date`, `filing_status`, `tier1_floor`, `tier2_floor`
 - **`rmd_factors.csv`**:
   `effective_date`, `age`, `factor_micros`
 - **`rate__<account_name>.csv`**:
@@ -342,7 +342,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `series` | text | | aux rate series name (e.g. `Asset Checking`, `cpi`); required for `percent_of_balance`, `ss_benefit` |
 | `rate_micros` | int | | annual rate as millionths of 1; required for `mortgage_payment` (e.g. `60000` = 6.0%) |
 | `claim_age` | int | | required for `ss_benefit` |
-| `amount_cents` | int | | base amount in cents; required for `ss_benefit` (pia), `waterfall_fill` (target balance) |
+| `amount` | dollars | | base amount in dollars; required for `ss_benefit` (pia), `waterfall_fill` (target balance); decimal string e.g. `1234.56`; loader converts to integer cents |
 | `base_amount` | dollars | | required for `fixed_amount`, `mortgage_payment`; decimal string e.g. `1234.56`; loader converts to integer cents at load time |
 | `base_date` | YYYY-MM | | required when `inflation_series` is set |
 | `inflation_series` | text | | aux series name, e.g. `cpi`; or `fixed` for no inflation |

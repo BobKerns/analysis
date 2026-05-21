@@ -24,8 +24,8 @@ SQL schema alongside the source CSV.
 
 ## Conventions
 
-- Scenario CSVs use decimal-dollar input where applicable (for example, `scheduled.csv` `base_amount`): `$1,234.56` is written as `1234.56` and converted to cents by the loader.
-- Aux CSV money columns with `_cents` in the header use **integer cents**: `$1,234.56` → `123456`.
+- Scenario CSVs use decimal-dollar input where applicable (for example, `scheduled.csv` `base_amount` and `amount`): `$1,234.56` is written as `1234.56`. The loader converts to integer cents.
+- Aux CSV money columns are also decimal dollars (e.g. `floor`, `amount`, `tier1_floor`, `tier2_floor`): `$1,234.56` → `1234.56`.
 - Rates in **integer micros** (× 1e6). `5%` → `50000`. `4.25%` → `42500`.
 - Dates: `YYYY-MM` (pinned to month-end at load) or `YYYY-MM-DD` where the column expects a full date.
 - Booleans: `0` / `1`.
