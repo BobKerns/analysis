@@ -227,3 +227,63 @@ def test_sim_add_fixed_prompts_when_args_missing(tmp_path: Path) -> None:
     assert "2030-06-30" in cal
     assert "4200" in cal  # 42.00 in cents
 
+
+def test_sim_add_account_appends_accounts_and_model(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "add", "account",
+            "Asset_NewBrokerage", "asset", "brokerage_taxable",
+            "--owner", "joint",
+            "--opening-balance", "12345.67",
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    accounts = (data / "accounts.csv").read_text()
+    assert "Asset_NewBrokerage,asset,brokerage_taxable,joint,taxable" in accounts
+
+    model = (data / "account_models" / "standard.csv").read_text()
+    assert "Asset_NewBrokerage,12345.67" in model
+
+    check = runner.invoke(
+        main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
+    )
+    assert check.exit_code == 0, check.output
+
+
+def test_sim_add_account_rejects_duplicate(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "add", "account", "Asset_Checking", "asset", "checking",
+            "--owner", "joint", "--data-dir", str(data),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+
+
+def test_sim_accounts_lists_with_balance_and_rate(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sim", "accounts", "--scenario", "retire_alice",
+         "--data-dir", str(data), "--as-of", "2030-01-01"],
+        env={"COLUMNS": "200"},
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "Asset_Checking" in out
+    assert "Asset_Brokerage_Joint" in out
+    # opening balance for checking is 5000.00 in prototype
+    assert "5,000.00" in out
+
+
