@@ -234,7 +234,7 @@ def test_sim_add_account_appends_accounts_and_model(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "sim", "add", "account",
+            "sim", "account", "add",
             "Asset_NewBrokerage", "asset", "brokerage_taxable",
             "--owner", "joint",
             "--opening-balance", "12345.67",
@@ -262,7 +262,7 @@ def test_sim_add_account_rejects_duplicate(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "sim", "add", "account", "Asset_Checking", "asset", "checking",
+            "sim", "account", "add", "Asset_Checking", "asset", "checking",
             "--owner", "joint", "--data-dir", str(data),
         ],
     )
@@ -275,7 +275,7 @@ def test_sim_accounts_lists_with_balance_and_rate(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["sim", "accounts", "--scenario", "retire_alice",
+        ["sim", "account", "list", "--scenario", "retire_alice",
          "--data-dir", str(data), "--as-of", "2030-01-01"],
         env={"COLUMNS": "200"},
     )
