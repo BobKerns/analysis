@@ -123,6 +123,7 @@ def run_scenario(
 
         sources = _load_sources(con)
         aux = _load_aux(con)
+        inflation_indexes = _initialize_inflation_indexes(aux)
 
         skipped_counts: dict[str, int] = {}
         skipped_calendar: dict[str, int] = {}
@@ -138,6 +139,9 @@ def run_scenario(
                 (step_index, month_s, previous_step_id),
             )
             step_id = cur.lastrowid
+            _advance_inflation_indexes(
+                con, step_id, month_s, aux, inflation_indexes,
+            )
 
             for ev in calendar_events:
                 (ev_id, _cal_id, ev_date, ev_kind,
@@ -613,6 +617,42 @@ def _load_aux(con) -> dict[tuple[str, str | None], list[tuple[str, dict[str, Any
     for v in out.values():
         v.sort(key=lambda row: row[0])
     return out
+
+
+def _initialize_inflation_indexes(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+) -> dict[str, int]:
+    indexes: dict[str, int] = {}
+    for (kind, series), _rows in aux.items():
+        if kind != "inflation" or series is None:
+            continue
+        indexes[series] = 1_000_000
+    return indexes
+
+
+def _advance_inflation_indexes(
+    con,
+    step_id: int,
+    month_s: str,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    indexes: dict[str, int],
+) -> None:
+    for series in sorted(indexes):
+        payload = _lookup_aux(aux, "inflation", series, month_s)
+        if payload is None:
+            raise EngineError(
+                f"missing inflation aux row for series={series!r} effective <= {month_s}"
+            )
+        annual_micros = int(payload.get("annual_rate_micros", 0))
+        indexes[series] = (
+            indexes[series] * (12_000_000 + annual_micros)
+        ) // 12_000_000
+        con.execute(
+            "INSERT INTO inflation_index_state("
+            "step_id, series, cumulative_index_micros"
+            ") VALUES (?, ?, ?)",
+            (step_id, series, indexes[series]),
+        )
 
 
 def _lookup_aux(
