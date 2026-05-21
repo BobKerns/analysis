@@ -7,7 +7,9 @@ either direction so that a payment reduces debt and a draw increases it.
 
 v2 rule kinds: ``fixed_amount``, ``percent_of_balance`` (basis='opening',
 rate from aux_table), ``waterfall_fill`` (drain ordered sources to top up a
-target account), ``mortgage_payment`` (multi-leg P&I), ``ss_benefit``
+target account), ``refill_transfer`` (conditional fixed top-up when a
+target account falls below a threshold; sources optional),
+``mortgage_payment`` (multi-leg P&I), ``ss_benefit``
 (COLA-adjusted, claim-age gated), ``rmd`` (annual December, age-gated).
 All v0/v1 rule kinds are now supported.
 """
@@ -31,6 +33,7 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance", "waterfall_fill",
+     "refill_transfer",
      "mortgage_payment", "ss_benefit", "rmd"}
 )
 
@@ -238,6 +241,12 @@ def run_scenario(
                             con, balances, account_kinds, step_id, month_s,
                             params, sources.get(tid, []), to,
                             tax_char, tid,
+                        )
+                    case "refill_transfer":
+                        _apply_refill_transfer(
+                            con, balances, account_kinds, step_id, month_s,
+                            params, sources.get(tid, []), frm, to,
+                            fire_count, tax_char, tid,
                         )
                     case "mortgage_payment":
                         _apply_mortgage_payment(
@@ -558,6 +567,43 @@ def _lookup_rmd_factor(
         if effective <= month_s and int(payload.get("age", -1)) == age:
             chosen = payload
     return chosen
+
+
+def _apply_refill_transfer(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str,
+    params: dict[str, Any], source_ids: list[int],
+    from_id: int, to_id: int, fire_count: int,
+    tax_char: str, tid: int,
+) -> None:
+    refill_cents = params.get("amount_cents")
+    if refill_cents is None:
+        raise EngineError(
+            f"refill_transfer id={tid}: missing amount (refill size)"
+        )
+    threshold = int(params.get("threshold_cents", 0))
+    if balances.get(to_id, 0) >= threshold:
+        return
+    needed = int(refill_cents) * fire_count
+    if source_ids:
+        remaining = needed
+        for src_id in source_ids:
+            if remaining <= 0:
+                break
+            available = max(0, balances.get(src_id, 0))
+            take = min(remaining, available)
+            if take <= 0:
+                continue
+            _post_transfer(
+                con, balances, account_kinds, step_id, month_s,
+                src_id, to_id, take, tax_char, tid,
+            )
+            remaining -= take
+    else:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            from_id, to_id, needed, tax_char, tid,
+        )
 
 
 def _apply_waterfall_fill(

@@ -384,9 +384,10 @@ def _validate_waterfall(
                 f"waterfall_sources.csv row {i}: scheduled_name '{name}' not in scheduled.csv"
             )
             continue
-        if sched.get("amount_rule_kind") != "waterfall_fill":
+        if sched.get("amount_rule_kind") not in ("waterfall_fill", "refill_transfer"):
             issues.append(
-                f"waterfall_sources.csv row {i}: '{name}' is not a waterfall_fill rule"
+                f"waterfall_sources.csv row {i}: '{name}' is not a waterfall_fill "
+                "or refill_transfer rule"
             )
         by_sched.setdefault(name, []).append(row)
     for name, group in by_sched.items():

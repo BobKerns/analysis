@@ -20,7 +20,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd", "waterfall_fill",
-    "ss_benefit", "tax_accumulator", "mortgage_payment",
+    "refill_transfer", "ss_benefit", "tax_accumulator", "mortgage_payment",
 }
 
 CALENDAR_EVENT_KINDS: set[str] = {
@@ -44,6 +44,7 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     "mortgage_payment": 300,
     "tax_accumulator": 400,
     "rmd": 500,
+    "refill_transfer": 800,
     "waterfall_fill": 900,
 }
 
