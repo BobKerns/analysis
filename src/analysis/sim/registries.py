@@ -28,7 +28,7 @@ CALENDAR_EVENT_KINDS: set[str] = {
     "one_off_transfer", "sell_asset", "buy_asset", "life_transition",
 }
 
-CADENCES: set[str] = {"monthly", "quarterly", "annual", "one_off"}
+CADENCES: set[str] = {"monthly", "biweekly", "quarterly", "annual", "one_off"}
 
 TAX_CHARACTERS: set[str] = {
     "ordinary", "ltcg", "ss_benefit", "tax_free",
