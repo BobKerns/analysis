@@ -138,6 +138,9 @@ The existing `analysis.storage` module contains item-import schemas specific to 
 - `analysis sim query "<sql>" <runfile>` — read-only SQL passthrough, pretty-printed. Entry point for AI-assisted exploration.
 - `analysis sim check <scenario> [--life-transitions|--contribution-limits|...]` — soft validators against the intent file, exit non-zero on findings.
 - `analysis sim verify <runfile>` — re-check invariants (zero-sum, no-negative-assets, step-chain integrity, manifest singletons) against a persisted run.
+- `analysis sim account list|add` and `analysis sim transfer list|add fixed|add scheduled` — inspect and append rows to `accounts.csv` / `calendar.csv` / `scheduled.csv` with tab completion and validation.
+
+These mutating commands are convenience wrappers around the same CSV edits an AI assistant or a human editor would make directly: the AI can be asked in natural language to "add a $2,000 monthly transfer from checking to expenses starting July", and it will produce the equivalent row. The commands exist so the same change can be made deterministically from a shell, scripted in batches, or driven from completion-aware prompts when precise control is wanted.
 
 ## Consequences
 

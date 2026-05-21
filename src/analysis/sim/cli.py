@@ -396,12 +396,17 @@ def _prompt_account(label: str, accounts: list[str]) -> str:
     return _prompt_with_completion(f"{label} account", choices=accounts)
 
 
-@sim_group_command.group(name="add")
-def add_group_command() -> None:
+@sim_group_command.group(name="transfer")
+def transfer_group_command() -> None:
+    """Inspect or modify transfers in a scenario."""
+
+
+@transfer_group_command.group(name="add")
+def transfer_add_group_command() -> None:
     """Append a transfer to a scenario (one-time or recurring)."""
 
 
-@add_group_command.command("fixed")
+@transfer_add_group_command.command("fixed")
 @click.argument("date", required=False)
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
@@ -485,7 +490,7 @@ def add_fixed(
     )
 
 
-@add_group_command.command("scheduled")
+@transfer_add_group_command.command("scheduled")
 @click.argument("date", required=False)
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
@@ -806,4 +811,76 @@ def list_accounts(
         title += f" / {scenario}"
     title += ")"
     Console().print(render_accounts_table(rows, title=title))
+
+
+@transfer_group_command.command("list")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
+    """List one-off (calendar) and recurring (scheduled) transfers."""
+    from rich.console import Console
+    from rich.table import Table
+
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
+
+    table = Table(title=f"transfers ({data_dir_p.name} / {scen_name})")
+    table.add_column("When")
+    table.add_column("Source")
+    table.add_column("From")
+    table.add_column("To")
+    table.add_column("Amount", justify="right")
+    table.add_column("Tax")
+    table.add_column("Description")
+
+    cal_path = scenario_dir / "calendar.csv"
+    if cal_path.exists():
+        with cal_path.open(newline="") as f:
+            for row in _csv.DictReader(f):
+                if row.get("kind") != "one_off_transfer":
+                    continue
+                try:
+                    cents = int(row.get("amount") or 0)
+                    amt = _fmt_cents(cents).strip()
+                except ValueError:
+                    amt = row.get("amount", "")
+                table.add_row(
+                    row.get("date", ""),
+                    "one-off",
+                    row.get("account_1", ""),
+                    row.get("account_2", ""),
+                    amt,
+                    row.get("tax_character", ""),
+                    row.get("description", ""),
+                )
+
+    sch_path = scenario_dir / "scheduled.csv"
+    if sch_path.exists():
+        with sch_path.open(newline="") as f:
+            for row in _csv.DictReader(f):
+                when = row.get("cadence", "") or "scheduled"
+                if row.get("end"):
+                    when = f"{when} until {row['end']}"
+                base = row.get("base_amount") or ""
+                rule = row.get("amount_rule_kind", "")
+                if rule == "fixed_amount":
+                    amt = base
+                elif rule == "percent_of_balance":
+                    amt = "% of bal"
+                else:
+                    amt = rule
+                table.add_row(
+                    f"{when} from {row.get('start','')}",
+                    row.get("name", ""),
+                    row.get("from_account", "") or row.get("account_1", ""),
+                    row.get("to_account", "") or row.get("account_2", ""),
+                    amt,
+                    row.get("tax_character", ""),
+                    row.get("description", ""),
+                )
+
+    Console().print(table)
 
