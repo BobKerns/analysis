@@ -198,6 +198,13 @@ def _read_aux_dir(
     return out
 
 
+def _opt_int(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    v = raw.strip()
+    return int(v) if v != "" else None
+
+
 def _coerce(s: str) -> Any:
     if s == "":
         return None
@@ -437,11 +444,21 @@ def _write_intent(
     for ce in calendar_rows:
         con.execute(
             "INSERT INTO calendar_event("
-            "calendar_id, date, kind, payload_json, description) "
-            "VALUES (?,?,?,?,?)",
+            "calendar_id, date, kind, "
+            "scheduled_name, account_1, account_2, series, amount, "
+            "param_date, tax_character, payload_json, description) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"],
-                ce.get("payload_json") or "{}", ce.get("description") or None,
+                ce.get("scheduled_name") or None,
+                ce.get("account_1") or None,
+                ce.get("account_2") or None,
+                ce.get("series") or None,
+                _opt_int(ce.get("amount")),
+                ce.get("param_date") or None,
+                ce.get("tax_character") or None,
+                ce.get("params_json") or None,
+                ce.get("description") or None,
             ),
         )
     counts["calendar_event"] = len(calendar_rows)
@@ -455,16 +472,26 @@ def _write_intent(
         cur = con.execute(
             "INSERT INTO scheduled_transaction("
             "model_id, name, from_account, to_account, cadence, month_of_year, "
-            "amount_rule_kind, amount_rule_params_json, base_amount, base_date, "
+            "amount_rule_kind, "
+            "account_1, account_2, person, series, rate_micros, claim_age, amount_cents, "
+            "params_json, base_amount, base_date, "
             "inflation_series, tax_character, start, \"end\", priority, "
             "description, meta_json"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 model_id, s["name"],
                 account_ids[s["from_account"]], account_ids[s["to_account"]],
                 s["cadence"],
                 int(s["month_of_year"]) if s.get("month_of_year") else None,
-                s["amount_rule_kind"], s.get("amount_rule_params_json") or "{}",
+                s["amount_rule_kind"],
+                s.get("account_1") or None,
+                s.get("account_2") or None,
+                s.get("person") or None,
+                s.get("series") or None,
+                _opt_int(s.get("rate_micros")),
+                _opt_int(s.get("claim_age")),
+                _opt_int(s.get("amount_cents")),
+                s.get("params_json") or None,
                 _dollars_to_cents(s["base_amount"]) if s.get("base_amount") else None,
                 s.get("base_date") or None, s.get("inflation_series") or None,
                 s["tax_character"], s["start"], s.get("end") or None, prio,

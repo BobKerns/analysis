@@ -74,11 +74,11 @@ The `_other` catch-alls are deliberate escape hatches; the `--check` mode (ADR-0
 
 ### 2. `amount_rule_kind` registry
 
-Seven rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `base_amount`, `base_date`, `inflation_series` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in `amount_rule_params_json`.
+Seven rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `base_amount`, `base_date`, `inflation_series` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `account_1`, `account_2`, `person`, `series`, `rate_micros`, `claim_age`, `amount_cents` (see §4.6). Rare or future extension parameters may go in the nullable `params_json` column.
 
 **Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. (ADR-002 follow-up: tighten `transfer_event.reason_kind` CHECK to `('rule','initial')` and add `scheduled_transaction.created_by_event_id INTEGER REFERENCES calendar_event(id)` so synthesized rules trace back to their authoring calendar event.)
 
-**Multi-leg rules** (in v1: only `mortgage_payment`) emit more than one transfer event per fire; all legs share the same `(reason_kind, reason_id)` and are linked by `parent_event_id` for grouping. The `from_account`/`to_account` columns on the scheduled_transaction row are interpreted as the **primary leg**; additional legs are fully described by `amount_rule_params_json`. This invariant — "each event traces to one rule, but a rule may emit multiple events per fire" — is the *direction* that matters: it makes audit, `explain`, and `compare` straightforward.
+**Multi-leg rules** (in v1: only `mortgage_payment`) emit more than one transfer event per fire; all legs share the same `(reason_kind, reason_id)` and are linked by `parent_event_id` for grouping. The `from_account`/`to_account` columns on the scheduled_transaction row are interpreted as the **primary leg**; the second leg's accounts come from `account_1` (liability) and `account_2` (interest-expense). This invariant — "each event traces to one rule, but a rule may emit multiple events per fire" — is the *direction* that matters: it makes audit, `explain`, and `compare` straightforward.
 
 #### 2.1 `fixed_amount` (priority bands: 200, 300, 500)
 
@@ -93,7 +93,7 @@ Constant amount, optionally inflated.
 
 Accrue interest, dividends, appreciation against a source account's balance.
 
-- **Params:** `{ "source_account": "<name>", "rate_basis": "balance" | "cost_basis", "rate": <int_micros> }` OR `{ ..., "rate_series": "<aux_table series name>" }` (one of the two).
+- **Params:** `account_1` = source account, `series` = aux rate-series name (one of `account_1`+`series` must be set). `rate_basis` defaults to `"balance"`.
 - **Compute:** `amount = round(source_balance × monthly_rate)`. Annual rates are converted by `(1 + r)^(1/12) - 1`, computed in fixed-point micros.
 - **Emits:** one event. Typical: `from_account = <income account>` (e.g. `Income_Interest`), `to_account = <source_account>` (interest credits to the asset). For depreciation, swap signs by routing through an expense account.
 - **Use:** money-market interest, bond coupon approximations, portfolio appreciation per asset, real-estate appreciation.
@@ -102,7 +102,7 @@ Accrue interest, dividends, appreciation against a source account's balance.
 
 IRS Required Minimum Distribution.
 
-- **Params:** `{ "subject_account": "<traditional_ira / traditional_401k name>", "person": "<person_id>", "factor_table": "rmd_factors", "start_age_series": "rmd_start_age" }`.
+- **Params:** `account_1` = subject IRA/401k account, `person` = person id. Factor table is `rmd_factors`; start-age series is `rmd_start_age` (both fixed aux references).
 - **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state`; for the partial first year it comes from `account_model_member.prior_year_end_balance` (which the author must supply for any `traditional_ira` / `traditional_401k` account whose owner reaches RMD age during the scenario's first calendar year).
 - **Start semantics:** the row's `start` column is a lower bound on candidate fire dates. The actual first fire is `max(row.start, year-end of the year person reaches start_age)`. Authors typically set `start = scenario.start` and let the age gate dominate.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
@@ -112,7 +112,7 @@ IRS Required Minimum Distribution.
 
 Cover any remaining cash shortfall in a target account by drawing from an ordered list of sources.
 
-- **Params:** `{ "target_account": "<name>", "target_balance_cents": <cents> }` (the minimum acceptable end-of-month balance in integer cents; usually 0 or a small cushion). *Note: this JSON field is an internal engine value in cents; the CSV `base_amount` column uses dollars — only `amount_rule_params_json` numeric fields are in cents.*
+- **Params:** `account_1` = target account, `amount_cents` = minimum acceptable end-of-month balance in integer cents (usually 0 or a small cushion).
 - **Sources:** rows in `scheduled_transaction_source` ordered by `position`. The row's `from_account` column MUST equal the `position = 1` source — a redundancy the loader enforces so a human (or AI) reading `scheduled.csv` alone sees the primary draw without cross-referencing `waterfall_sources.csv`.
 - **Compute:** at fire time, `shortfall = max(0, target_balance_cents - target_balance_after_all_other_rules)`. If `shortfall > 0`, draw `min(shortfall, source_balance)` from sources in order. If still short after all sources, **halt the run** (per ADR-001 principle 7); record `failure_reason = "WaterfallExhausted: <month> short $<amount>"` and persist partial results.
 - **Emits:** zero or more events (one per source actually drawn from). Each event uses `tax_character` from the source's account semantics (taxable brokerage → `ltcg`, IRA → `tax_deferred_out`, etc.) — the `tax_character` column on the scheduled_transaction row is overridden per leg from `account.tax_treatment`.
@@ -122,7 +122,7 @@ Cover any remaining cash shortfall in a target account by drawing from an ordere
 
 Social Security retirement benefit with COLA.
 
-- **Params:** `{ "person": "<person_id>", "claim_age": 67, "base_pia_at_fra_cents": <cents>, "cola_series": "ss_cola" }`. *`base_pia_at_fra_cents` is in integer cents (it lives inside JSON, not in the `base_amount` CSV column).*
+- **Params:** `person` = person id, `claim_age` = integer claim age, `amount_cents` = PIA at FRA in cents, `series` = COLA aux series name (e.g. `cpi`). `tax_character` on the row should be `ss_benefit`.
 - **Compute:** Fires monthly. Adjusts `base_pia_at_fra_cents` by the claim-age multiplier (a lookup based on months early/late vs. FRA, hard-coded) and applies cumulative COLA from claim date to `date`. Zero before the person reaches `claim_age`.
 - **Emits:** one event, `from_account = Income_SS_<person>`, `to_account = Asset_Checking`, `tax_character = 'ss_benefit'`.
 - **Start semantics:** as with `rmd`, the row's `start` column is a lower bound. The rule emits zero amount in months before the person reaches `claim_age`; that age gate ANDs with the row's `start`.
@@ -141,7 +141,7 @@ A placeholder rule that marks "compute taxes for the prior tax year" at a specif
 
 Monthly P&I against a mortgage liability account.
 
-- **Params:** `{ "liability_account": "<mortgage account name>", "annual_rate_micros": <int>, "interest_expense_account": "<name>", "payment_amount": <cents> }`. `payment_amount` is the fixed total monthly P&I (the row's `base_amount`).
+- **Params:** `account_1` = liability account, `account_2` = interest-expense account, `rate_micros` = annual rate as millionths of 1 (e.g. `60000` = 6.0%). Monthly P&I is the row's `base_amount`.
 - **Compute:** at fire time, `interest = round(liability_balance × annual_rate_micros / 12 / 1_000_000)`; `principal = payment_amount - interest`.
 - **Emits two events:**
   1. **Interest leg:** `from_account = Asset_Checking` (the row's `from_account` — primary leg), `to_account = interest_expense_account`, amount = `interest`, tax_character = `'none'`.
@@ -162,15 +162,15 @@ Where expansions produce multiple synthesized rules, each rule's first (and only
 
 Replace one rate aux-table entry effective from this date forward.
 
-- **Payload:** `{ "aux_kind": "rate", "series": "<account_name or named series>", "new_value_micros": <int> }`.
-- **Expansion:** inserts a new `aux_table` row with `kind = 'rate'`, the given `series`, `effective_date = event.date`, and `payload_json = {"value_micros": ...}`. The original row is **not** deleted; aux lookups use the most-recent-by-`effective_date` row.
+- **Columns:** `series` = rate-series name, `amount` = new value in micros (e.g. `45000` = 4.5%).
+- **Expansion:** inserts a new `aux_table` row with `kind = 'rate'`, the given `series`, `effective_date = event.date`, and `payload_json = {"value_micros": amount}`. The original row is **not** deleted; aux lookups use the most-recent-by-`effective_date` row.
 - **Use:** "checking account starts earning 4% in 2027".
 
 #### 3.2 `set_amount` (primitive)
 
 Mutate a `ScheduledTransaction.base_amount` going forward.
 
-- **Payload:** `{ "scheduled_name": "<name>", "new_base_amount": <cents>, "new_base_date": "<YYYY-MM-DD>" (optional) }`.
+- **Columns:** `scheduled_name` = target rule name, `amount` = new base amount in cents, `param_date` = new base date (optional).
 - **Expansion:** updates the named row's `base_amount` (and `base_date` if given) in the run's in-memory intent. Persisted as an `applied_calendar_event` row; the run's snapshot of `scheduled_transaction` reflects the post-event state.
 - **Use:** "discretionary spending drops to $4,500/mo on retirement".
 
@@ -178,7 +178,7 @@ Mutate a `ScheduledTransaction.base_amount` going forward.
 
 Introduce a new `ScheduledTransaction` from this date forward.
 
-- **Payload:** all required fields of `scheduled_transaction` plus `amount_rule_params_json` and a `sources` array for waterfall rules. `start` defaults to `event.date` if omitted.
+- **Columns:** all required fields of `scheduled_transaction` (using the same named param columns as §4.6) plus a `sources` array for waterfall rules. `start` defaults to `event.date` if omitted.
 - **Expansion:** inserts the row (and any `scheduled_transaction_source` rows) into the in-memory intent.
 - **Use:** "Medicare premium starts at age 65"; "RMD rule activates the year you turn 73".
 
@@ -186,7 +186,7 @@ Introduce a new `ScheduledTransaction` from this date forward.
 
 End an active `ScheduledTransaction`.
 
-- **Payload:** `{ "scheduled_name": "<name>" }`.
+- **Columns:** `scheduled_name` = name of rule to retire.
 - **Expansion:** sets `end = event.date` on the named row.
 - **Use:** "salary stops on retirement"; "mortgage rule retires when home is sold".
 
@@ -194,7 +194,7 @@ End an active `ScheduledTransaction`.
 
 A single one-shot movement, expressed as a synthesized rule so the §2 invariant holds.
 
-- **Payload:** `{ "from_account": "...", "to_account": "...", "amount": <cents>, "tax_character": "...", "description": "..." }`.
+- **Columns:** `account_1` = from account, `account_2` = to account, `amount` = cents, `tax_character` = tax character.
 - **Expansion:** synthesize one `scheduled_transaction` with `amount_rule_kind='fixed_amount'`, `cadence='one_off'`, `start = end = event.date`, `base_amount = amount`, fields from payload, `created_by_event_id = calendar_event.id`. The engine fires it on `event.date`, emitting one `transfer_event` traced to that synthesized rule.
 - **Use:** windfalls, gifts, one-time settlements that have no recurring structure.
 
@@ -336,7 +336,13 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `cadence` | enum | ✓ | `monthly`, `quarterly`, `annual`, `one_off` |
 | `month_of_year` | int 1-12 | | required for `annual`; ignored otherwise |
 | `amount_rule_kind` | enum | ✓ | one of §2 |
-| `amount_rule_params_json` | json | | default `{}`; required when the rule's params §2 are non-empty |
+| `account_1` | text | | first rule-specific account (e.g. target account for `waterfall_fill`, liability for `mortgage_payment`, subject IRA for `rmd`) |
+| `account_2` | text | | second rule-specific account (e.g. interest-expense account for `mortgage_payment`) |
+| `person` | text | | person id; required for `ss_benefit` and `rmd` |
+| `series` | text | | aux rate series name (e.g. `Asset Checking`, `cpi`); required for `percent_of_balance`, `ss_benefit` |
+| `rate_micros` | int | | annual rate as millionths of 1; required for `mortgage_payment` (e.g. `60000` = 6.0%) |
+| `claim_age` | int | | required for `ss_benefit` |
+| `amount_cents` | int | | base amount in cents; required for `ss_benefit` (pia), `waterfall_fill` (target balance) |
 | `base_amount` | dollars | | required for `fixed_amount`, `mortgage_payment`; decimal string e.g. `1234.56`; loader converts to integer cents at load time |
 | `base_date` | YYYY-MM | | required when `inflation_series` is set |
 | `inflation_series` | text | | aux series name, e.g. `cpi`; or `fixed` for no inflation |
@@ -346,6 +352,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `priority` | int | | defaults per §2's priority band |
 | `description` | text | | |
 | `meta_json` | json | | default `{}` |
+| `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
 
 #### 4.7 Per-scenario: `data_repo/scenarios/<name>/waterfall_sources.csv`
 
@@ -361,7 +368,14 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | --- | --- | --- | --- |
 | `date` | YYYY-MM | ✓ | month-end at load |
 | `kind` | enum | ✓ | one of §3 |
-| `payload_json` | json | ✓ | shape per §3 for that kind |
+| `scheduled_name` | text | | name of target scheduled transaction; required for `retire_scheduled`, `set_amount` |
+| `account_1` | text | | first event-specific account (e.g. `from_account` for `one_off_transfer`) |
+| `account_2` | text | | second event-specific account (e.g. `to_account` for `one_off_transfer`) |
+| `series` | text | | rate series name; required for `set_rate` |
+| `amount` | int | | amount in appropriate units (micros for `set_rate`, cents for `one_off_transfer`, cents for `set_amount`) |
+| `param_date` | YYYY-MM | | effective date for `set_amount` new base |
+| `tax_character` | enum | | tax character for `one_off_transfer` |
+| `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
 | `description` | text | | shows up in `explain` output |
 
 #### 4.9 Per-scenario: `data_repo/scenarios/<name>/priors.csv`

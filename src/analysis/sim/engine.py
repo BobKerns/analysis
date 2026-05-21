@@ -102,7 +102,8 @@ def run_scenario(
         txns: list[list[Any]] = [
             list(r) for r in con.execute(
                 'SELECT id, name, from_account, to_account, cadence, month_of_year, '
-                '       amount_rule_kind, amount_rule_params_json, base_amount, '
+                '       amount_rule_kind, account_1, account_2, person, series, '
+                '       rate_micros, claim_age, amount_cents, params_json, base_amount, '
                 '       tax_character, start, "end", priority '
                 'FROM scheduled_transaction WHERE model_id = ? '
                 'ORDER BY priority, id',
@@ -114,7 +115,9 @@ def run_scenario(
         }
 
         calendar_events = con.execute(
-            'SELECT id, calendar_id, date, kind, payload_json '
+            'SELECT id, calendar_id, date, kind, '
+            '       scheduled_name, account_1, account_2, series, amount, '
+            '       param_date, tax_character, payload_json '
             'FROM calendar_event ORDER BY date, id'
         ).fetchall()
 
@@ -137,7 +140,9 @@ def run_scenario(
             step_id = cur.lastrowid
 
             for ev in calendar_events:
-                ev_id, _cal_id, ev_date, ev_kind, ev_payload_json = ev
+                (ev_id, _cal_id, ev_date, ev_kind,
+                 _p_sched_name, _p_acct1, _p_acct2, _p_series, _p_amount,
+                 _p_param_date, _p_tax_char, ev_payload_json) = ev
                 if ev_id in applied_event_ids:
                     continue
                 if not (month_start_s <= ev_date <= month_s):
@@ -148,7 +153,10 @@ def run_scenario(
                     continue
                 _apply_calendar_event(
                     con, ev_id, ev_date, ev_kind,
-                    json.loads(ev_payload_json or "{}"),
+                    _build_cal_payload(
+                        _p_sched_name, _p_acct1, _p_acct2, _p_series, _p_amount,
+                        _p_param_date, _p_tax_char, ev_payload_json,
+                    ),
                     txns, txn_by_name, aux, account_id_by_name, account_kinds,
                     balances, step_id, month_s, model_id,
                 )
@@ -162,8 +170,10 @@ def run_scenario(
             opening_balances = dict(balances)
 
             for txn in txns:
-                (tid, _name, frm, to, cadence, moy, rule_kind, params_json,
-                 base_amount, tax_char, t_start, t_end, _prio) = txn
+                (tid, _name, frm, to, cadence, moy, rule_kind,
+                 p_acct1, p_acct2, p_person, p_series, p_rate_micros,
+                 p_claim_age, p_amount_cents, ext_json, base_amount,
+                 tax_char, t_start, t_end, _prio) = txn
                 if month_s < t_start:
                     continue
                 if t_end is not None and month_s > t_end:
@@ -173,7 +183,23 @@ def run_scenario(
                 if rule_kind not in SUPPORTED_RULE_KINDS:
                     skipped_counts[rule_kind] = skipped_counts.get(rule_kind, 0) + 1
                     continue
-                params = json.loads(params_json or "{}")
+                params: dict[str, Any] = {}
+                if p_acct1 is not None:
+                    params["account_1"] = p_acct1
+                if p_acct2 is not None:
+                    params["account_2"] = p_acct2
+                if p_person is not None:
+                    params["person"] = p_person
+                if p_series is not None:
+                    params["series"] = p_series
+                if p_rate_micros is not None:
+                    params["rate_micros"] = p_rate_micros
+                if p_claim_age is not None:
+                    params["claim_age"] = p_claim_age
+                if p_amount_cents is not None:
+                    params["amount_cents"] = p_amount_cents
+                if ext_json:
+                    params.update(json.loads(ext_json))
 
                 match rule_kind:
                     case "fixed_amount":
@@ -281,6 +307,32 @@ def _delta(kind: str, raw: int) -> int:
     return -raw if kind == "liability" else raw
 
 
+def _build_cal_payload(
+    scheduled_name: str | None, account_1: str | None, account_2: str | None,
+    series: str | None, amount: int | None, param_date: str | None,
+    tax_character: str | None, ext_json: str | None,
+) -> dict[str, Any]:
+    """Build the payload dict for a calendar event from promoted columns + JSON ext."""
+    payload: dict[str, Any] = {}
+    if scheduled_name is not None:
+        payload["scheduled_name"] = scheduled_name
+    if account_1 is not None:
+        payload["account_1"] = account_1
+    if account_2 is not None:
+        payload["account_2"] = account_2
+    if series is not None:
+        payload["series"] = series
+    if amount is not None:
+        payload["amount"] = amount
+    if param_date is not None:
+        payload["param_date"] = param_date
+    if tax_character is not None:
+        payload["tax_character"] = tax_character
+    if ext_json:
+        payload.update(json.loads(ext_json))
+    return payload
+
+
 def _amount_percent_of_balance(
     params: dict[str, Any],
     opening_balances: dict[int, int],
@@ -289,15 +341,15 @@ def _amount_percent_of_balance(
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     month_s: str, tid: int,
 ) -> int:
-    source_name = params.get("source_account")
-    rate_kind = params.get("rate_kind")
-    rate_series = params.get("rate_series")
+    source_name = params.get("account_1")
+    rate_kind = params.get("rate_kind", "rate")
+    rate_series = params.get("series")
     basis = params.get("rate_basis", "opening")
-    if not source_name or not rate_kind:
-        raise EngineError(f"percent_of_balance id={tid}: missing source_account/rate_kind")
+    if not source_name:
+        raise EngineError(f"percent_of_balance id={tid}: missing account_1 (source account)")
     src_id = account_id_by_name.get(source_name)
     if src_id is None:
-        raise EngineError(f"percent_of_balance id={tid}: unknown source_account {source_name!r}")
+        raise EngineError(f"percent_of_balance id={tid}: unknown account_1 {source_name!r}")
     base = (opening_balances if basis == "opening" else current_balances).get(src_id, 0)
     if base <= 0:
         return 0
@@ -330,13 +382,13 @@ def _apply_mortgage_payment(
         raise EngineError(
             f"mortgage_payment id={tid}: missing base_amount (payment_amount)"
         )
-    liab_name = params.get("liability_account")
-    interest_name = params.get("interest_expense_account")
-    annual_micros = params.get("annual_rate_micros")
+    liab_name = params.get("account_1")
+    interest_name = params.get("account_2")
+    annual_micros = params.get("rate_micros")
     if not (liab_name and interest_name and annual_micros is not None):
         raise EngineError(
             f"mortgage_payment id={tid}: requires liability_account, "
-            "interest_expense_account, annual_rate_micros in params"
+            "interest_expense_account, annual_rate_micros (account_1, account_2, rate_micros)"
         )
     liab_id = account_id_by_name.get(liab_name)
     interest_id = account_id_by_name.get(interest_name)
@@ -393,12 +445,12 @@ def _apply_ss_benefit(
     """ADR-003 §2.5. Claim-age multiplier + annual-January COLA compounding."""
     person = params.get("person")
     claim_age = params.get("claim_age")
-    pia = params.get("base_pia_at_fra_cents")
-    cola_series = params.get("cola_series")
+    pia = params.get("amount_cents")
+    cola_series = params.get("series")
     if not person or claim_age is None or pia is None or not cola_series:
         raise EngineError(
             f"ss_benefit id={tid}: requires person, claim_age, "
-            "base_pia_at_fra_cents, cola_series in params"
+            "base_pia_at_fra_cents, cola_series (person, claim_age, amount_cents, series)"
         )
     bd = person_birthdates.get(person)
     if bd is None:
@@ -438,13 +490,13 @@ def _apply_rmd(
     ``dec31_prev_year_balance`` from prior-year-end ``account_state``, or
     ``account_model_member.prior_year_end_balance`` when no such step exists.
     """
-    subject_name = params.get("subject_account")
+    subject_name = params.get("account_1")
     person = params.get("person")
     factor_table = params.get("factor_table", "rmd_factors")
     start_age_series = params.get("start_age_series", "rmd_start_age")
     if not subject_name or not person:
         raise EngineError(
-            f"rmd id={tid}: requires subject_account and person in params"
+            f"rmd id={tid}: requires subject_account and person (account_1, person)"
         )
     bd = person_birthdates.get(person)
     if bd is None:
@@ -512,11 +564,11 @@ def _apply_waterfall_fill(
     account_id_by_name: dict[str, int],
     tax_char: str, tid: int,
 ) -> None:
-    target_name = params.get("target_account")
-    target_balance = params.get("target_balance_cents")
+    target_name = params.get("account_1")
+    target_balance = params.get("amount_cents")
     if target_name is None or target_balance is None:
         raise EngineError(
-            f"waterfall_fill id={tid}: missing target_account/target_balance_cents"
+            f"waterfall_fill id={tid}: missing target account/balance (account_1, amount_cents)"
         )
     target_id = account_id_by_name.get(target_name)
     if target_id is None:
@@ -631,10 +683,10 @@ def _apply_calendar_event(
         case "set_rate":
             aux_kind = payload.get("aux_kind", "rate")
             series = payload.get("series")
-            new_value = payload.get("new_value_micros")
+            new_value = payload.get("amount")
             if series is None or new_value is None:
                 raise EngineError(
-                    f"set_rate event id={ev_id}: requires series and new_value_micros"
+                    f"set_rate event id={ev_id}: requires series and amount (new_value_micros)"
                 )
             row_payload = {"annual_rate_micros": int(new_value)}
             con.execute(
@@ -647,21 +699,19 @@ def _apply_calendar_event(
             bucket.sort(key=lambda r: r[0])
         case "set_amount":
             name = payload.get("scheduled_name")
-            new_amount = payload.get("new_base_amount")
+            new_amount = payload.get("amount")
             if name is None or new_amount is None:
                 raise EngineError(
                     f"set_amount event id={ev_id}: requires scheduled_name and "
-                    "new_base_amount"
+                    "new_base_amount (scheduled_name, amount)"
                 )
             rec = txn_by_name.get(name)
             if rec is None:
                 raise EngineError(
                     f"set_amount event id={ev_id}: unknown scheduled_name {name!r}"
                 )
-            rec[8] = int(new_amount)
-            new_base_date = payload.get("new_base_date")
-            if new_base_date is not None:
-                rec[10] = new_base_date
+            rec[15] = int(new_amount)
+            new_base_date = payload.get("param_date")
             con.execute(
                 "UPDATE scheduled_transaction SET base_amount = ?, "
                 "base_date = COALESCE(?, base_date) WHERE id = ?",
@@ -679,27 +729,27 @@ def _apply_calendar_event(
                     f"retire_scheduled event id={ev_id}: unknown scheduled_name "
                     f"{name!r}"
                 )
-            rec[11] = ev_date
+            rec[18] = ev_date
             con.execute(
                 'UPDATE scheduled_transaction SET "end" = ? WHERE id = ?',
                 (ev_date, rec[0]),
             )
         case "one_off_transfer":
-            frm_name = payload.get("from_account")
-            to_name = payload.get("to_account")
+            frm_name = payload.get("account_1")
+            to_name = payload.get("account_2")
             amount = payload.get("amount")
-            tax_char = payload.get("tax_character", "none")
+            tax_char = payload.get("tax_character") or "none"
             if frm_name is None or to_name is None or amount is None:
                 raise EngineError(
                     f"one_off_transfer event id={ev_id}: requires from_account, "
-                    "to_account, amount"
+                    "to_account, amount (account_1, account_2, amount)"
                 )
             from_id = account_id_by_name.get(frm_name)
             to_id = account_id_by_name.get(to_name)
             if from_id is None or to_id is None:
                 raise EngineError(
                     f"one_off_transfer event id={ev_id}: unknown account "
-                    f"({frm_name!r} or {to_name!r})"
+                    f"(account_1={frm_name!r} or account_2={to_name!r})"
                 )
             cur = con.execute(
                 "INSERT INTO scheduled_transaction("

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -71,8 +71,15 @@ CREATE TABLE calendar_event (
     calendar_id  INTEGER NOT NULL REFERENCES calendar(id),
     date         TEXT NOT NULL,
     kind         TEXT NOT NULL,
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    description  TEXT
+    scheduled_name TEXT,
+    account_1      TEXT,
+    account_2      TEXT,
+    series         TEXT,
+    amount         INTEGER,
+    param_date     TEXT,
+    tax_character  TEXT,
+    payload_json   TEXT,
+    description    TEXT
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
@@ -87,7 +94,14 @@ CREATE TABLE scheduled_transaction (
                                 ('monthly','quarterly','annual','one_off')),
     month_of_year           INTEGER CHECK (month_of_year BETWEEN 1 AND 12),
     amount_rule_kind        TEXT NOT NULL,
-    amount_rule_params_json TEXT NOT NULL DEFAULT '{}',
+    account_1               TEXT,
+    account_2               TEXT,
+    person                  TEXT REFERENCES person(id),
+    series                  TEXT,
+    rate_micros             INTEGER,
+    claim_age               INTEGER,
+    amount_cents            INTEGER,
+    params_json             TEXT,
     base_amount             INTEGER,
     base_date               TEXT,
     inflation_series        TEXT,
