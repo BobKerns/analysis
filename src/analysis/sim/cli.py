@@ -16,7 +16,12 @@ import click
 from analysis.sim import registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.engine import run_scenario
-from analysis.sim.loader import DataDirtyRefused, LoadError, load_scenario
+from analysis.sim.loader import (
+    DataDirtyRefused,
+    LoadError,
+    load_scenario,
+    open_intent_db,
+)
 
 DEFAULT_INTENT_DIR = Path("state/intent")
 DEFAULT_RUNS_DIR = Path("state/runs")
@@ -317,6 +322,11 @@ def _resolve_scenario_dir(data_dir: Path, scenario: str | None) -> tuple[Path, s
 
 
 def _read_account_names(data_dir: Path) -> list[str]:
+    """Cheap CSV-only reader used for shell tab-completion (no scenario context).
+
+    Validation and listing commands go through ``open_intent_db`` instead so
+    the loader stays the single CSV reader.
+    """
     p = data_dir / "accounts.csv"
     if not p.exists():
         return []
@@ -434,7 +444,8 @@ def add_fixed(
     """Append a one-time transfer to <scenario>/calendar.csv."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
-    accounts = _read_account_names(data_dir_p)
+    with open_intent_db(data_dir_p, scenario) as (con, _name):
+        accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
 
     if not date:
         date = _prompt_with_completion("date (YYYY-MM-DD)")
@@ -534,7 +545,11 @@ def add_scheduled(
     """Append a recurring fixed-amount transfer to <scenario>/scheduled.csv."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
-    accounts = _read_account_names(data_dir_p)
+    with open_intent_db(data_dir_p, scenario) as (con, _name):
+        accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
+        existing_names = {
+            r[0] for r in con.execute("SELECT name FROM scheduled_transaction")
+        }
 
     if not date:
         date = _prompt_with_completion("start date (YYYY-MM-DD)")
@@ -573,6 +588,10 @@ def add_scheduled(
         slug_from = from_account.lower().replace(" ", "_")
         slug_to = to_account.lower().replace(" ", "_")
         row_name = f"xfer_{slug_from}_to_{slug_to}_{date}"
+    if row_name in existing_names:
+        raise click.ClickException(
+            f"scheduled transaction already exists: {row_name!r}"
+        )
 
     row = {
         "name": row_name,
@@ -609,14 +628,6 @@ _ACCOUNTS_HEADER: tuple[str, ...] = (
 _ACCOUNT_MODEL_HEADER: tuple[str, ...] = (
     "account_name", "opening_balance", "opening_cost_basis", "prior_year_end_balance",
 )
-
-
-def _read_person_ids(data_dir: Path) -> list[str]:
-    p = data_dir / "persons.csv"
-    if not p.exists():
-        return []
-    with p.open(newline="", encoding="utf-8") as fh:
-        return [r["id"] for r in _csv.DictReader(fh) if r.get("id")]
 
 
 def _complete_kind(ctx, param, incomplete):  # noqa: ARG001
@@ -668,8 +679,14 @@ def add_account(
 ) -> None:
     """Append an account to accounts.csv (and opening balance to the model)."""
     data_dir_p = _resolve_data_dir(data_dir)
-    persons = _read_person_ids(data_dir_p)
-    existing = _read_account_names(data_dir_p)
+    with open_intent_db(data_dir_p, scenario) as (con, scen_name):
+        existing = {r[0] for r in con.execute("SELECT name FROM account")}
+        persons = [r[0] for r in con.execute("SELECT id FROM person ORDER BY id")]
+        model_row = con.execute(
+            "SELECT m.name FROM scenario s "
+            "JOIN account_model m ON m.id = s.account_model_id"
+        ).fetchone()
+    model_name = model_row[0] if model_row else ""
 
     if not name:
         name = _prompt_with_completion("account name").strip()
@@ -737,17 +754,9 @@ def add_account(
 
     if opening_balance:
         cents = _parse_amount_cents(opening_balance)
-        scen_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
-        with (scen_dir / "scenario.csv").open(newline="", encoding="utf-8") as fh:
-            srows = list(_csv.DictReader(fh))
-        if not srows:
-            raise click.ClickException(
-                f"scenario.csv empty in {scen_dir}; cannot record opening balance"
-            )
-        model_name = srows[0].get("account_model", "")
         if not model_name:
             raise click.ClickException(
-                f"scenario {scen_dir.name} has no account_model; "
+                f"scenario {scen_name} has no account_model; "
                 "cannot record opening balance"
             )
         model_path = data_dir_p / "account_models" / f"{model_name}.csv"
@@ -825,62 +834,57 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
     from rich.table import Table
 
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
+    with open_intent_db(data_dir_p, scenario) as (con, scen_name):
+        table = Table(title=f"transfers ({data_dir_p.name} / {scen_name})")
+        table.add_column("When")
+        table.add_column("Source")
+        table.add_column("From")
+        table.add_column("To")
+        table.add_column("Amount", justify="right")
+        table.add_column("Tax")
+        table.add_column("Description")
 
-    table = Table(title=f"transfers ({data_dir_p.name} / {scen_name})")
-    table.add_column("When")
-    table.add_column("Source")
-    table.add_column("From")
-    table.add_column("To")
-    table.add_column("Amount", justify="right")
-    table.add_column("Tax")
-    table.add_column("Description")
+        for row in con.execute(
+            "SELECT date, account_1, account_2, amount, "
+            "       COALESCE(tax_character, '') AS tax_character, "
+            "       COALESCE(description, '') AS description "
+            "FROM calendar_event WHERE kind = 'one_off_transfer' "
+            "ORDER BY date"
+        ):
+            amt = _fmt_cents(row["amount"]).strip() if row["amount"] is not None else ""
+            table.add_row(
+                row["date"], "one-off",
+                row["account_1"] or "", row["account_2"] or "",
+                amt, row["tax_character"], row["description"],
+            )
 
-    cal_path = scenario_dir / "calendar.csv"
-    if cal_path.exists():
-        with cal_path.open(newline="") as f:
-            for row in _csv.DictReader(f):
-                if row.get("kind") != "one_off_transfer":
-                    continue
-                try:
-                    cents = int(row.get("amount") or 0)
-                    amt = _fmt_cents(cents).strip()
-                except ValueError:
-                    amt = row.get("amount", "")
-                table.add_row(
-                    row.get("date", ""),
-                    "one-off",
-                    row.get("account_1", ""),
-                    row.get("account_2", ""),
-                    amt,
-                    row.get("tax_character", ""),
-                    row.get("description", ""),
-                )
-
-    sch_path = scenario_dir / "scheduled.csv"
-    if sch_path.exists():
-        with sch_path.open(newline="") as f:
-            for row in _csv.DictReader(f):
-                when = row.get("cadence", "") or "scheduled"
-                if row.get("end"):
-                    when = f"{when} until {row['end']}"
-                base = row.get("base_amount") or ""
-                rule = row.get("amount_rule_kind", "")
-                if rule == "fixed_amount":
-                    amt = base
-                elif rule == "percent_of_balance":
-                    amt = "% of bal"
-                else:
-                    amt = rule
-                table.add_row(
-                    f"{when} from {row.get('start','')}",
-                    row.get("name", ""),
-                    row.get("from_account", "") or row.get("account_1", ""),
-                    row.get("to_account", "") or row.get("account_2", ""),
-                    amt,
-                    row.get("tax_character", ""),
-                    row.get("description", ""),
-                )
+        for row in con.execute(
+            "SELECT s.name, s.cadence, s.start, s.\"end\" AS end_date, "
+            "       s.amount_rule_kind, s.base_amount, "
+            "       COALESCE(s.tax_character, '') AS tax_character, "
+            "       COALESCE(s.description, '') AS description, "
+            "       fa.name AS from_name, ta.name AS to_name "
+            "FROM scheduled_transaction s "
+            "JOIN account fa ON fa.id = s.from_account "
+            "JOIN account ta ON ta.id = s.to_account "
+            "ORDER BY s.priority, s.name"
+        ):
+            when = row["cadence"]
+            if row["end_date"]:
+                when = f"{when} until {row['end_date']}"
+            when = f"{when} from {row['start']}"
+            rule = row["amount_rule_kind"]
+            if rule == "fixed_amount" and row["base_amount"] is not None:
+                amt = _fmt_cents(row["base_amount"]).strip()
+            elif rule == "percent_of_balance":
+                amt = "% of bal"
+            else:
+                amt = rule
+            table.add_row(
+                when, row["name"], row["from_name"], row["to_name"],
+                amt, row["tax_character"], row["description"],
+            )
 
     Console().print(table)
+
 

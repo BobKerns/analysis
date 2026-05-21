@@ -11,6 +11,9 @@ import json
 import os
 import socket
 import sqlite3
+import tempfile
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -29,7 +32,10 @@ from analysis.sim.provenance import (
 )
 from analysis.sim.schema import INTENT_DDL, SCHEMA_VERSION
 
-__all__ = ["LoadError", "LoadResult", "DataDirtyRefused", "load_scenario"]
+__all__ = [
+    "LoadError", "LoadResult", "DataDirtyRefused", "load_scenario",
+    "open_intent_db", "resolve_scenario_name",
+]
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,53 @@ class LoadError(ValueError):
             f"{len(issues)} issue(s) loading intent:\n  " + "\n  ".join(issues)
         )
         self.issues = issues
+
+
+def resolve_scenario_name(data_dir: Path, scenario: str | None) -> str:
+    """Pick a scenario name from the data repo.
+
+    If ``scenario`` is given, validate it exists. Otherwise, require exactly one
+    scenario folder under ``data_dir/scenarios`` and return its name.
+    """
+    scenarios = Path(data_dir) / "scenarios"
+    if not scenarios.is_dir():
+        raise LoadError([f"no scenarios/ in {data_dir}"])
+    if scenario:
+        if not (scenarios / scenario).is_dir():
+            raise LoadError([f"scenario not found: {scenarios / scenario}"])
+        return scenario
+    subs = sorted(p.name for p in scenarios.iterdir() if p.is_dir())
+    if len(subs) == 1:
+        return subs[0]
+    raise LoadError(
+        [f"multiple scenarios; pass --scenario [{', '.join(subs) or '(none)'}]"]
+    )
+
+
+@contextmanager
+def open_intent_db(
+    data_dir: Path | str,
+    scenario: str | None = None,
+) -> Iterator[tuple[sqlite3.Connection, str]]:
+    """Load a scenario into a temporary intent DB and yield ``(connection, name)``.
+
+    Single source of truth for read-only inspection: CLI ``list`` commands and
+    duplicate checks for ``add`` commands go through the loader instead of
+    re-parsing CSVs.
+    """
+    data_dir = Path(data_dir).resolve()
+    name = resolve_scenario_name(data_dir, scenario)
+    with tempfile.TemporaryDirectory() as td:
+        load_scenario(
+            data_dir, name, intent_dir=Path(td),
+            compute_stamps=False, allow_dirty_data=True,
+        )
+        con = sqlite3.connect(Path(td) / f"{name}.sqlite3")
+        con.row_factory = sqlite3.Row
+        try:
+            yield con, name
+        finally:
+            con.close()
 
 
 def load_scenario(
