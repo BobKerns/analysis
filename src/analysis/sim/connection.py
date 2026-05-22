@@ -266,8 +266,8 @@ def open_run(run_path: Path | str) -> Iterator[RunConnection]:
 
 _TAG_CSV_KEY: dict[ItemType, tuple[str, str]] = {
     # item_type -> (relative-csv-path-template, key column)
-    # accounts.csv lives at data_dir root; scheduled.csv lives in scenarios/<name>/
-    "account": ("accounts.csv", "name"),
+    # All scenario-centric: accounts.csv and scheduled.csv live in scenarios/<name>/
+    "account": ("scenarios/{scenario}/accounts.csv", "name"),
     "scheduled": ("scenarios/{scenario}/scheduled.csv", "name"),
 }
 

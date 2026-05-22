@@ -34,7 +34,7 @@ def test_scenario_connection_tag_add_read_round_trip(tmp_path: Path) -> None:
         assert ("expense", "liquid") in roles
         assert ("notebook", "nw") in roles
 
-        acc = pd.read_csv(data / "accounts.csv", dtype=str, keep_default_na=False)
+        acc = pd.read_csv(data / "scenarios" / "retire_alice" / "accounts.csv", dtype=str, keep_default_na=False)
         tags = acc.loc[acc["name"] == "Asset_Checking", "tags"].iloc[0]
         assert "expense:liquid" in tags
 

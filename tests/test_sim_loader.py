@@ -85,17 +85,14 @@ def test_invalid_subkind_rejected(tmp_path: Path) -> None:
     bad = tmp_path / "repo"
     (bad / "scenarios" / "x").mkdir(parents=True)
     (bad / "aux").mkdir()
-    (bad / "account_models").mkdir()
     (bad / "persons.csv").write_text(
         "id,display,birthdate,meta_json\np1,P1,1970-01-01,{}\n"
     )
-    (bad / "accounts.csv").write_text(
+    (bad / "scenarios" / "x" / "accounts.csv").write_text(
         "name,kind,subkind,owner,tax_treatment,opened,closed,meta_json\n"
         "A,asset,bogus_subkind,,taxable,,,{}\n"
     )
-    (bad / "account_models" / "m.csv").write_text(
-        "account_name,opening_balance,opening_cost_basis\n"
-    )
+
     (bad / "scenarios" / "x" / "scenario.csv").write_text(
         "name,description,account_model,start,end,seed,"
         "parent_scenario,created_by,meta_json\n"
@@ -227,7 +224,7 @@ def test_tags_round_trip(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
 
-    acc = repo / "accounts.csv"
+    acc = repo / "scenarios" / "retire_alice" / "accounts.csv"
     df = pd.read_csv(acc, dtype=str, keep_default_na=False)
     df.loc[df["name"] == "Asset_Checking", "tags"] = "expense:liquid notebook:net_worth"
     df.to_csv(acc, index=False)
@@ -270,7 +267,7 @@ def test_invalid_tag_rejected(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
 
-    acc = repo / "accounts.csv"
+    acc = repo / "scenarios" / "retire_alice" / "accounts.csv"
     df = pd.read_csv(acc, dtype=str, keep_default_na=False)
     df.loc[df["name"] == "Asset_Checking", "tags"] = "no_colon_here"
     df.to_csv(acc, index=False)
