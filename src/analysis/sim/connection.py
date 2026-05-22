@@ -62,10 +62,40 @@ __all__ = [
 
 # ---------- read mixin (shared by Scenario + Run) ----------
 
+_ITEM_SQL: dict[str, str] = {
+    "account": (
+        "SELECT a.*, "
+        "  COALESCE(GROUP_CONCAT(t.role || ':' || t.name, ' '), '') AS tags "
+        "FROM account a "
+        "LEFT JOIN account_tag x ON x.account_id = a.id "
+        "LEFT JOIN tag t ON t.id = x.tag_id "
+        "GROUP BY a.id ORDER BY a.id"
+    ),
+    "scheduled": (
+        "SELECT s.*, "
+        "  COALESCE(GROUP_CONCAT(t.role || ':' || t.name, ' '), '') AS tags "
+        "FROM scheduled_transaction s "
+        "LEFT JOIN scheduled_transaction_tag x "
+        "  ON x.scheduled_transaction_id = s.id "
+        "LEFT JOIN tag t ON t.id = x.tag_id "
+        "GROUP BY s.id ORDER BY s.id"
+    ),
+    "calendar_event": (
+        "SELECT c.*, "
+        "  COALESCE(GROUP_CONCAT(t.role || ':' || t.name, ' '), '') AS tags "
+        "FROM calendar_event c "
+        "LEFT JOIN calendar_event_tag x ON x.calendar_event_id = c.id "
+        "LEFT JOIN tag t ON t.id = x.tag_id "
+        "GROUP BY c.id ORDER BY c.id"
+    ),
+}
+
+
 class _TagReader:
-    """Read-only tag queries against ``self._con``."""
+    """Read API against ``self._con``. Per-item-type DataFrames are cached."""
 
     _con: sqlite3.Connection
+    _item_cache: dict[str, pd.DataFrame]
 
     def list_tags(self, role: str | None = None) -> pd.DataFrame:
         """Return distinct tags with per-item-type usage counts."""
@@ -85,121 +115,50 @@ class _TagReader:
         sql += " ORDER BY t.role, t.name"
         return pd.read_sql_query(sql, self._con, params=params)
 
-    def items_for_tag(
+    def items(
         self,
-        role: str,
-        name: str,
-        item_type: ItemType | None = None,
+        item_type: ItemType,
+        *,
+        tags: str | Iterable[str] | Iterable[tuple[str, str]] | None = None,
+        tags_match: Literal["any", "all"] = "any",
+        **filters,
     ) -> pd.DataFrame:
-        """Return items carrying ``role:name``.
+        """Return rows of ``item_type``, optionally filtered.
 
-        Columns: ``item_type``, ``item_id``, ``label``. ``label`` is the
-        natural identifier per type (account name, scheduled name, or
-        ``date kind [scheduled_name]`` for calendar events).
+        ``**filters`` keys must be columns on the underlying table; scalar
+        values match by equality, iterables (list/tuple/set) by ``isin``.
+        ``tags`` accepts a single ``"role:name"`` string, an iterable of
+        strings, or an iterable of ``(role, name)`` pairs; ``tags_match``
+        is ``"any"`` (default) or ``"all"``.
         """
-        tag_row = self._con.execute(
-            "SELECT id FROM tag WHERE role=? AND name=?", (role, name)
-        ).fetchone()
-        if tag_row is None:
-            return pd.DataFrame(columns=["item_type", "item_id", "label"])
-        tid = tag_row[0] if not isinstance(tag_row, sqlite3.Row) else tag_row["id"]
+        if item_type not in _ITEM_SQL:
+            raise ValueError(f"unknown item_type {item_type!r}")
+        df = self._items_cache(item_type)
+        mask = pd.Series(True, index=df.index)
 
-        queries = {
-            "account": (
-                "SELECT 'account' AS item_type, a.id AS item_id, a.name AS label "
-                "FROM account a JOIN account_tag x ON x.account_id=a.id "
-                "WHERE x.tag_id=? ORDER BY a.name"
-            ),
-            "scheduled": (
-                "SELECT 'scheduled' AS item_type, s.id AS item_id, s.name AS label "
-                "FROM scheduled_transaction s "
-                "JOIN scheduled_transaction_tag x "
-                "  ON x.scheduled_transaction_id=s.id "
-                "WHERE x.tag_id=? ORDER BY s.name"
-            ),
-            "calendar_event": (
-                "SELECT 'calendar_event' AS item_type, c.id AS item_id, "
-                "  c.date || ' ' || c.kind || "
-                "    COALESCE(' '||c.scheduled_name,'') AS label "
-                "FROM calendar_event c "
-                "JOIN calendar_event_tag x ON x.calendar_event_id=c.id "
-                "WHERE x.tag_id=? ORDER BY c.date"
-            ),
-        }
-        if item_type is not None:
-            return pd.read_sql_query(queries[item_type], self._con, params=(tid,))
-        frames = [
-            pd.read_sql_query(q, self._con, params=(tid,)) for q in queries.values()
-        ]
-        return pd.concat(frames, ignore_index=True)
+        for col, val in filters.items():
+            if col not in df.columns:
+                raise KeyError(
+                    f"{col!r} is not a column of {item_type} "
+                    f"(have: {list(df.columns)})"
+                )
+            if isinstance(val, str) or not hasattr(val, "__iter__"):
+                mask &= df[col] == val
+            else:
+                mask &= df[col].isin(list(val))
 
-    def items_with_tags(
-        self,
-        tags: str | Iterable[str] | Iterable[tuple[str, str]],
-        item_type: ItemType | None = None,
-        match: Literal["any", "all"] = "any",
-    ) -> pd.DataFrame:
-        """Items carrying one or more tags.
+        if tags is not None:
+            pairs = _normalize_tag_collection(tags)
+            if not pairs:
+                mask &= False
+            else:
+                wanted = {f"{r}:{n}" for r, n in pairs}
+                if tags_match == "all":
+                    mask &= df["_tag_set"].apply(wanted.issubset)
+                else:
+                    mask &= df["_tag_set"].apply(lambda s: bool(s & wanted))
 
-        ``tags`` may be a single ``"role:name"`` string, an iterable of such
-        strings (whitespace inside a string is also split), or an iterable
-        of ``(role, name)`` pairs. ``match="any"`` (default) returns items
-        carrying at least one of the tags; ``match="all"`` requires every
-        tag. Columns: ``item_type``, ``item_id``, ``label``, ``n_matched``.
-        """
-        pairs = _normalize_tag_collection(tags)
-        if not pairs:
-            return pd.DataFrame(
-                columns=["item_type", "item_id", "label", "n_matched"]
-            )
-        rows = self._con.execute(
-            f"SELECT id, role, name FROM tag WHERE (role, name) IN "
-            f"(VALUES {','.join(['(?, ?)'] * len(pairs))})",
-            [v for p in pairs for v in p],
-        ).fetchall()
-        ids = [r[0] for r in rows]
-        if not ids:
-            return pd.DataFrame(
-                columns=["item_type", "item_id", "label", "n_matched"]
-            )
-        threshold = len(pairs) if match == "all" else 1
-        placeholders = ",".join("?" * len(ids))
-
-        per_type = {
-            "account": (
-                f"SELECT 'account' AS item_type, a.id AS item_id, "
-                f"  a.name AS label, COUNT(*) AS n_matched "
-                f"FROM account a JOIN account_tag x ON x.account_id=a.id "
-                f"WHERE x.tag_id IN ({placeholders}) "
-                f"GROUP BY a.id HAVING n_matched >= ? ORDER BY a.name"
-            ),
-            "scheduled": (
-                f"SELECT 'scheduled' AS item_type, s.id AS item_id, "
-                f"  s.name AS label, COUNT(*) AS n_matched "
-                f"FROM scheduled_transaction s "
-                f"JOIN scheduled_transaction_tag x "
-                f"  ON x.scheduled_transaction_id=s.id "
-                f"WHERE x.tag_id IN ({placeholders}) "
-                f"GROUP BY s.id HAVING n_matched >= ? ORDER BY s.name"
-            ),
-            "calendar_event": (
-                f"SELECT 'calendar_event' AS item_type, c.id AS item_id, "
-                f"  c.date || ' ' || c.kind || "
-                f"    COALESCE(' '||c.scheduled_name,'') AS label, "
-                f"  COUNT(*) AS n_matched "
-                f"FROM calendar_event c "
-                f"JOIN calendar_event_tag x ON x.calendar_event_id=c.id "
-                f"WHERE x.tag_id IN ({placeholders}) "
-                f"GROUP BY c.id HAVING n_matched >= ? ORDER BY c.date"
-            ),
-        }
-        sqls = (
-            [per_type[item_type]] if item_type is not None else list(per_type.values())
-        )
-        frames = [
-            pd.read_sql_query(q, self._con, params=[*ids, threshold]) for q in sqls
-        ]
-        return pd.concat(frames, ignore_index=True)
+        return df.loc[mask].drop(columns=["_tag_set"]).reset_index(drop=True)
 
     def tags_for_item(self, item_type: ItemType, item_id: int) -> pd.DataFrame:
         """Return the tags attached to one item."""
@@ -214,6 +173,25 @@ class _TagReader:
             f"WHERE x.{link[1]}=? ORDER BY t.role, t.name"
         )
         return pd.read_sql_query(sql, self._con, params=(item_id,))
+
+    # -- internal --
+
+    def _items_cache(self, item_type: str) -> pd.DataFrame:
+        cache = getattr(self, "_item_cache", None)
+        if cache is None:
+            cache = {}
+            self._item_cache = cache
+        if item_type not in cache:
+            df = pd.read_sql_query(_ITEM_SQL[item_type], self._con)
+            df["_tag_set"] = df["tags"].apply(
+                lambda s: set(s.split()) if s else set()
+            )
+            cache[item_type] = df
+        return cache[item_type]
+
+    def _invalidate_items_cache(self) -> None:
+        if getattr(self, "_item_cache", None) is not None:
+            self._item_cache.clear()
 
 
 # ---------- run (read-only) ----------
@@ -283,6 +261,7 @@ class ScenarioConnection(_TagReader):
         con = sqlite3.connect(self._intent_dir / f"{self.scenario}.sqlite3")
         con.row_factory = sqlite3.Row
         self._con = con
+        self._invalidate_items_cache()
 
     def close(self) -> None:
         if self._con is not None:
