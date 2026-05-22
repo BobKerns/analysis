@@ -92,3 +92,53 @@ def test_run_connection_reads_tags_from_snapshot(tmp_path: Path) -> None:
         assert (df["name"] == "ok").any()
         items = rc.items_for_tag("run", "ok", item_type="account")
         assert (items["label"] == "Asset_Checking").any()
+
+
+def test_items_with_tags_any_and_all(tmp_path: Path) -> None:
+    data = _copy_data(tmp_path)
+    with open_scenario(data, "retire_alice") as sc:
+        sc.add_tags("account", "Asset_Checking", "expense:liquid notebook:nw")
+        sc.add_tags("account", "Asset_Brokerage_Joint", "notebook:nw")
+
+        # single string token
+        any_one = sc.items_with_tags("notebook:nw", item_type="account")
+        assert set(any_one["label"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
+
+        # collection (list of strings) — ANY match
+        any_two = sc.items_with_tags(
+            ["expense:liquid", "notebook:nw"], item_type="account",
+        )
+        assert set(any_two["label"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
+
+        # collection — ALL match
+        all_two = sc.items_with_tags(
+            {"expense:liquid", "notebook:nw"}, item_type="account", match="all",
+        )
+        assert list(all_two["label"]) == ["Asset_Checking"]
+
+        # tuple of (role, name) pairs
+        pairs = sc.items_with_tags(
+            [("expense", "liquid")], item_type="account",
+        )
+        assert list(pairs["label"]) == ["Asset_Checking"]
+
+        # unknown tags -> empty
+        empty = sc.items_with_tags("missing:tag")
+        assert empty.empty
+
+
+def test_items_with_tags_across_types(tmp_path: Path) -> None:
+    data = _copy_data(tmp_path)
+    with open_scenario(data, "retire_alice") as sc:
+        sc.add_tags("account", "Asset_Checking", "x:y")
+        # tag a scheduled row by its known name
+        sched = pd.read_csv(
+            data / "scenarios" / "retire_alice" / "scheduled.csv",
+            dtype=str, keep_default_na=False,
+        )
+        first = sched.iloc[0]["name"]
+        sc.add_tags("scheduled", first, "x:y")
+
+        df = sc.items_with_tags("x:y")
+        types = set(df["item_type"])
+        assert {"account", "scheduled"} <= types
