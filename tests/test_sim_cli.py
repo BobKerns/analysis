@@ -305,3 +305,62 @@ def test_sim_transfer_list_shows_one_off_and_scheduled(tmp_path: Path) -> None:
     assert "salary_alice" in out
     assert "monthly" in out
 
+
+
+def test_sim_tag_add_rm_round_trip(tmp_path: Path) -> None:
+    """tag add/rm mutates the CSV and load+tag list reflects it."""
+    import pandas as pd
+
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+
+    # Pick a known scheduled name from the prototype.
+    sched_csv = data / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched_csv, dtype=str, keep_default_na=False)
+    target = df.iloc[0]["name"]
+
+    r = runner.invoke(
+        main,
+        ["sim", "tag", "add", "scheduled", target, "demo:test", "owner:alice",
+         "--scenario", "retire_alice", "--data-dir", str(data)],
+    )
+    assert r.exit_code == 0, r.output
+    assert "demo:test" in r.output and "owner:alice" in r.output
+
+    df2 = pd.read_csv(sched_csv, dtype=str, keep_default_na=False)
+    new_tags = df2.loc[df2["name"] == target, "tags"].iloc[0]
+    assert "demo:test" in new_tags and "owner:alice" in new_tags
+
+    # tag list should now show both tags via the loader's intent DB.
+    r = runner.invoke(
+        main,
+        ["sim", "tag", "list", "--scenario", "retire_alice",
+         "--data-dir", str(data)],
+    )
+    assert r.exit_code == 0, r.output
+    assert "demo:test" in r.output
+    assert "owner:alice" in r.output
+
+    # tag rm strips one and leaves the other.
+    r = runner.invoke(
+        main,
+        ["sim", "tag", "rm", "scheduled", target, "demo:test",
+         "--scenario", "retire_alice", "--data-dir", str(data)],
+    )
+    assert r.exit_code == 0, r.output
+    df3 = pd.read_csv(sched_csv, dtype=str, keep_default_na=False)
+    final_tags = df3.loc[df3["name"] == target, "tags"].iloc[0]
+    assert "demo:test" not in final_tags
+    assert "owner:alice" in final_tags
+
+
+def test_sim_tag_add_rejects_bad_token(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    r = runner.invoke(
+        main,
+        ["sim", "tag", "add", "account", "Asset_Checking", "no_colon",
+         "--data-dir", str(data)],
+    )
+    assert r.exit_code != 0
+    assert "invalid tag" in r.output

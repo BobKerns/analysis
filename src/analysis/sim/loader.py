@@ -315,6 +315,7 @@ def _validate_accounts(rows: list[dict[str, str]], issues: list[str]) -> None:
         tt = row.get("tax_treatment", "")
         if tt and tt not in registries.TAX_TREATMENTS:
             issues.append(f"accounts.csv row {i} ({name}): unknown tax_treatment '{tt}'")
+        _validate_tags("accounts.csv", i, name, row.get("tags", ""), issues)
 
 
 def _validate_scheduled(
@@ -352,6 +353,7 @@ def _validate_scheduled(
             issues.append(
                 f"scheduled.csv row {i} ({name}): amount_rule_params_json invalid: {e}"
             )
+        _validate_tags("scheduled.csv", i, name, row.get("tags", ""), issues)
 
 
 def _validate_calendar(rows: list[dict[str, str]], issues: list[str]) -> None:
@@ -364,6 +366,16 @@ def _validate_calendar(rows: list[dict[str, str]], issues: list[str]) -> None:
             json.loads(payload_json)
         except json.JSONDecodeError as e:
             issues.append(f"calendar.csv row {i}: payload_json invalid: {e}")
+        _validate_tags("calendar.csv", i, row.get("scheduled_name") or kind,
+                       row.get("tags", ""), issues)
+
+
+def _validate_tags(file: str, row_i: int, name: str, raw: str,
+                   issues: list[str]) -> None:
+    try:
+        registries.parse_tags(raw)
+    except ValueError as e:
+        issues.append(f"{file} row {row_i} ({name}): {e}")
 
 
 def _validate_waterfall(
@@ -435,6 +447,31 @@ def _validate_priors(
 
 # ---------- writers ----------
 
+def _insert_tags(
+    con: sqlite3.Connection,
+    item_id: int,
+    raw: str,
+    link_table: str,
+    link_col: str,
+    cache: dict[tuple[str, str], int],
+) -> None:
+    for role, name in registries.parse_tags(raw):
+        key = (role, name)
+        tag_id = cache.get(key)
+        if tag_id is None:
+            con.execute(
+                "INSERT OR IGNORE INTO tag(role, name) VALUES (?,?)", (role, name)
+            )
+            tag_id = con.execute(
+                "SELECT id FROM tag WHERE role=? AND name=?", (role, name)
+            ).fetchone()[0]
+            cache[key] = tag_id
+        con.execute(
+            f"INSERT OR IGNORE INTO {link_table}({link_col}, tag_id) VALUES (?,?)",
+            (item_id, tag_id),
+        )
+
+
 def _write_intent(
     con: sqlite3.Connection,
     *,
@@ -451,6 +488,7 @@ def _write_intent(
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     now = _now_iso()
+    tag_cache: dict[tuple[str, str], int] = {}
 
     for p in persons:
         con.execute(
@@ -477,6 +515,8 @@ def _write_intent(
             ),
         )
         account_ids[a["name"]] = cur.lastrowid
+        _insert_tags(con, cur.lastrowid, a.get("tags", ""),
+                     "account_tag", "account_id", tag_cache)
     counts["account"] = len(accounts)
 
     cur = con.execute(
@@ -505,7 +545,7 @@ def _write_intent(
     )
     calendar_id = cur.lastrowid
     for ce in calendar_rows:
-        con.execute(
+        cur = con.execute(
             "INSERT INTO calendar_event("
             "calendar_id, date, kind, "
             "scheduled_name, account_1, account_2, series, amount, "
@@ -524,6 +564,8 @@ def _write_intent(
                 ce.get("description") or None,
             ),
         )
+        _insert_tags(con, cur.lastrowid, ce.get("tags", ""),
+                     "calendar_event_tag", "calendar_event_id", tag_cache)
     counts["calendar_event"] = len(calendar_rows)
 
     sched_ids: dict[str, int] = {}
@@ -561,6 +603,9 @@ def _write_intent(
             ),
         )
         sched_ids[s["name"]] = cur.lastrowid
+        _insert_tags(con, cur.lastrowid, s.get("tags", ""),
+                     "scheduled_transaction_tag", "scheduled_transaction_id",
+                     tag_cache)
     counts["scheduled_transaction"] = len(scheduled_rows)
 
     for w in waterfall_rows:
