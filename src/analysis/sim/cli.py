@@ -1035,12 +1035,16 @@ def tag_items(
         raise click.ClickException(str(e)) from None
     if len(pairs) != 1:
         raise click.ClickException("exactly one tag token expected")
-    role, name = pairs[0]
     data_dir_p = _resolve_data_dir(data_dir)
     with open_scenario(data_dir_p, scenario) as sc:
-        df = sc.items_for_tag(role, name)
-    if df.empty:
-        click.echo(f"(tag {tag_token} not present)")
-        return
-    for r in df.itertuples(index=False):
-        click.echo(f"{r.item_type:<14}  {r.label}")
+        found = False
+        for it in ("account", "scheduled", "calendar_event"):
+            df = sc.items(it, tags=tag_token)  # type: ignore[arg-type]
+            if df.empty:
+                continue
+            found = True
+            label_col = "date" if it == "calendar_event" else "name"
+            for row in df.itertuples(index=False):
+                click.echo(f"{it:<14}  {getattr(row, label_col)}")
+        if not found:
+            click.echo(f"(tag {tag_token} not present)")

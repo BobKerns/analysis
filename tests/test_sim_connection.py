@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -35,22 +34,19 @@ def test_scenario_connection_tag_add_read_round_trip(tmp_path: Path) -> None:
         assert ("expense", "liquid") in roles
         assert ("notebook", "nw") in roles
 
-        # CSV was rewritten.
         acc = pd.read_csv(data / "accounts.csv", dtype=str, keep_default_na=False)
         tags = acc.loc[acc["name"] == "Asset_Checking", "tags"].iloc[0]
         assert "expense:liquid" in tags
 
-        # items_for_tag picks up the account.
-        items = sc.items_for_tag("expense", "liquid")
-        assert (items["item_type"] == "account").any()
-        assert (items["label"] == "Asset_Checking").any()
+        hit = sc.items("account", tags="expense:liquid")
+        assert "Asset_Checking" in set(hit["name"])
 
 
 def test_scenario_connection_add_is_idempotent_and_rm_works(tmp_path: Path) -> None:
     data = _copy_data(tmp_path)
     with open_scenario(data, "retire_alice") as sc:
         sc.add_tags("account", "Asset_Checking", "x:y")
-        sc.add_tags("account", "Asset_Checking", "x:y")  # duplicate
+        sc.add_tags("account", "Asset_Checking", "x:y")
         df = sc.list_tags(role="x")
         row = df.loc[df["name"] == "y"].iloc[0]
         assert row["n_account"] == 1
@@ -76,7 +72,6 @@ def test_scenario_connection_unknown_item_raises(tmp_path: Path) -> None:
 
 def test_run_connection_reads_tags_from_snapshot(tmp_path: Path) -> None:
     data = _copy_data(tmp_path)
-    # Tag via scenario, then build an intent file to mimic a run snapshot.
     with open_scenario(data, "retire_alice") as sc:
         sc.add_tags("account", "Asset_Checking", "run:ok")
 
@@ -90,55 +85,75 @@ def test_run_connection_reads_tags_from_snapshot(tmp_path: Path) -> None:
         assert isinstance(rc, RunConnection)
         df = rc.list_tags(role="run")
         assert (df["name"] == "ok").any()
-        items = rc.items_for_tag("run", "ok", item_type="account")
-        assert (items["label"] == "Asset_Checking").any()
+        hit = rc.items("account", tags="run:ok")
+        assert "Asset_Checking" in set(hit["name"])
 
 
-def test_items_with_tags_any_and_all(tmp_path: Path) -> None:
+def test_items_filters_by_columns(tmp_path: Path) -> None:
+    data = _copy_data(tmp_path)
+    with open_scenario(data, "retire_alice") as sc:
+        all_acc = sc.items("account")
+        assert len(all_acc) > 0
+        assert {"name", "kind", "subkind", "tags"} <= set(all_acc.columns)
+
+        assets = sc.items("account", kind="asset")
+        assert (assets["kind"] == "asset").all()
+        assert len(assets) < len(all_acc)
+
+        kinds = sc.items("account", kind=["asset", "expense"])
+        assert set(kinds["kind"]) <= {"asset", "expense"}
+
+
+def test_items_unknown_column_raises(tmp_path: Path) -> None:
+    data = _copy_data(tmp_path)
+    with open_scenario(data, "retire_alice") as sc:
+        with pytest.raises(KeyError):
+            sc.items("account", not_a_column="x")
+
+
+def test_items_tag_filter_any_and_all(tmp_path: Path) -> None:
     data = _copy_data(tmp_path)
     with open_scenario(data, "retire_alice") as sc:
         sc.add_tags("account", "Asset_Checking", "expense:liquid notebook:nw")
         sc.add_tags("account", "Asset_Brokerage_Joint", "notebook:nw")
 
-        # single string token
-        any_one = sc.items_with_tags("notebook:nw", item_type="account")
-        assert set(any_one["label"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
+        nw = sc.items("account", tags="notebook:nw")
+        assert set(nw["name"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
 
-        # collection (list of strings) — ANY match
-        any_two = sc.items_with_tags(
-            ["expense:liquid", "notebook:nw"], item_type="account",
+        any_two = sc.items("account", tags=["expense:liquid", "notebook:nw"])
+        assert set(any_two["name"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
+
+        all_two = sc.items(
+            "account",
+            tags={"expense:liquid", "notebook:nw"},
+            tags_match="all",
         )
-        assert set(any_two["label"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
+        assert list(all_two["name"]) == ["Asset_Checking"]
 
-        # collection — ALL match
-        all_two = sc.items_with_tags(
-            {"expense:liquid", "notebook:nw"}, item_type="account", match="all",
-        )
-        assert list(all_two["label"]) == ["Asset_Checking"]
+        pairs = sc.items("account", tags=[("expense", "liquid")])
+        assert list(pairs["name"]) == ["Asset_Checking"]
 
-        # tuple of (role, name) pairs
-        pairs = sc.items_with_tags(
-            [("expense", "liquid")], item_type="account",
-        )
-        assert list(pairs["label"]) == ["Asset_Checking"]
+        assert sc.items("account", tags="missing:tag").empty
 
-        # unknown tags -> empty
-        empty = sc.items_with_tags("missing:tag")
-        assert empty.empty
+        combo = sc.items("account", tags="notebook:nw", kind="asset")
+        assert (combo["kind"] == "asset").all()
+        assert "Asset_Checking" in set(combo["name"])
 
 
-def test_items_with_tags_across_types(tmp_path: Path) -> None:
+def test_items_cache_invalidated_on_write(tmp_path: Path) -> None:
     data = _copy_data(tmp_path)
     with open_scenario(data, "retire_alice") as sc:
-        sc.add_tags("account", "Asset_Checking", "x:y")
-        # tag a scheduled row by its known name
-        sched = pd.read_csv(
-            data / "scenarios" / "retire_alice" / "scheduled.csv",
-            dtype=str, keep_default_na=False,
-        )
-        first = sched.iloc[0]["name"]
-        sc.add_tags("scheduled", first, "x:y")
+        before = sc.items("account", tags="x:y")
+        assert before.empty
 
-        df = sc.items_with_tags("x:y")
-        types = set(df["item_type"])
-        assert {"account", "scheduled"} <= types
+        sc.add_tags("account", "Asset_Checking", "x:y")
+
+        after = sc.items("account", tags="x:y")
+        assert "Asset_Checking" in set(after["name"])
+
+
+def test_items_unknown_type(tmp_path: Path) -> None:
+    data = _copy_data(tmp_path)
+    with open_scenario(data, "retire_alice") as sc:
+        with pytest.raises(ValueError):
+            sc.items("bogus")  # type: ignore[arg-type]
