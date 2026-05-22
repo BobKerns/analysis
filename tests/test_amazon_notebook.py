@@ -10,6 +10,8 @@ from analysis.amazon.notebook import (
 )
 from analysis.storage import JsonStateStore
 
+DATA_DIR = Path(__file__).resolve().parent / "data" / "amazon"
+
 
 def test_load_categorization_state_reads_categories_and_mapping(tmp_path: Path) -> None:
     store = JsonStateStore(tmp_path / "state")
@@ -28,8 +30,7 @@ def test_load_events_dataframe_returns_empty_when_no_log(tmp_path: Path) -> None
 
 
 def test_run_amazon_categorization_returns_dataframes(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon.csv"
-    pd.DataFrame({"Description": ["Coffee Pods"], "Amount": [12.0]}).to_csv(input_csv, index=False)
+    input_csv = DATA_DIR / "personal_coffee.csv"
 
     result, annotated, summary = run_amazon_categorization(
         input_csv_path=input_csv,
@@ -45,11 +46,7 @@ def test_run_amazon_categorization_returns_dataframes(tmp_path: Path) -> None:
 
 
 def test_summarize_over_all_time_reads_monthly_summaries(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon.csv"
-    pd.DataFrame({"Description": ["Coffee Pods", "Paper Towels"], "Amount": [12.0, 8.0]}).to_csv(
-        input_csv,
-        index=False,
-    )
+    input_csv = DATA_DIR / "personal_two_items.csv"
 
     run_amazon_categorization(
         input_csv_path=input_csv,

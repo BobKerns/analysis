@@ -1,0 +1,4 @@
+name,kind,subkind,owner,tax_treatment,opened,closed,meta_json
+Asset_Checking,asset,checking,,taxable,,,{}
+Asset_Savings,asset,savings,,taxable,,,{}
+Asset_Brokerage,asset,brokerage_taxable,,taxable,,,{}

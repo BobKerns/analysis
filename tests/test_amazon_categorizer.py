@@ -7,19 +7,13 @@ import pandas as pd
 from analysis.amazon.categorizer import categorize_amazon_csv
 from analysis.storage import JsonStateStore
 
+DATA_DIR = Path(__file__).resolve().parent / "data" / "amazon"
+
 
 def test_categorize_amazon_csv_creates_outputs_and_persists_mapping(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon_jan.csv"
+    input_csv = DATA_DIR / "personal_simple.csv"
     state_dir = tmp_path / "state"
     out_dir = tmp_path / "out"
-
-    frame = pd.DataFrame(
-        {
-            "Description": ["Coffee Pods", "Paper Towels", "Coffee Pods"],
-            "Amount": [14.5, 10.0, 14.5],
-        }
-    )
-    frame.to_csv(input_csv, index=False)
 
     assigned = {"coffee pods": "Groceries", "paper towels": "Household"}
 
@@ -52,9 +46,7 @@ def test_categorize_amazon_csv_creates_outputs_and_persists_mapping(tmp_path: Pa
 
 
 def test_categorize_amazon_csv_uses_uncategorized_when_non_interactive(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon_feb.csv"
-    frame = pd.DataFrame({"Description": ["Unknown Item"], "Amount": [9.99]})
-    frame.to_csv(input_csv, index=False)
+    input_csv = DATA_DIR / "personal_unknown_item.csv"
 
     result = categorize_amazon_csv(
         input_csv_path=input_csv,
@@ -69,17 +61,7 @@ def test_categorize_amazon_csv_uses_uncategorized_when_non_interactive(tmp_path:
 
 
 def test_categorize_amazon_csv_supports_amazon_business_headers(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon_business.csv"
-    frame = pd.DataFrame(
-        {
-            "Order Date": ["2026-05-01", "2026-05-01"],
-            "Order ID": ["123-1234567-1234567", "123-1234567-1234567"],
-            "Title": ["Coffee Pods 36ct", "Paper Towels 12-Pack"],
-            "Item Net Total": [28.00, 18.49],
-            "Total Amount": [46.49, 46.49],
-        }
-    )
-    frame.to_csv(input_csv, index=False)
+    input_csv = DATA_DIR / "business_simple.csv"
 
     assigned = {
         "coffee pods 36ct": "Groceries",
@@ -103,14 +85,7 @@ def test_categorize_amazon_csv_supports_amazon_business_headers(tmp_path: Path) 
 
 
 def test_categorize_amazon_csv_writes_cutoff_monthly_outputs(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon_business_range.csv"
-    pd.DataFrame(
-        {
-            "Order Date": ["2026-03-03", "2026-03-04", "2026-04-02"],
-            "Title": ["Coffee Pods", "Paper Towels", "USB Cable"],
-            "Item Net Total": [10.0, 20.0, 30.0],
-        }
-    ).to_csv(input_csv, index=False)
+    input_csv = DATA_DIR / "business_multimonth.csv"
 
     result = categorize_amazon_csv(
         input_csv_path=input_csv,
@@ -140,14 +115,7 @@ def test_categorize_amazon_csv_marks_open_billing_month_as_pending(
         lambda: date(2026, 5, 15),
     )
 
-    input_csv = tmp_path / "amazon_current.csv"
-    pd.DataFrame(
-        {
-            "Order Date": ["2026-05-05"],
-            "Title": ["Coffee Pods"],
-            "Item Net Total": [12.0],
-        }
-    ).to_csv(input_csv, index=False)
+    input_csv = DATA_DIR / "business_may5.csv"
 
     result = categorize_amazon_csv(
         input_csv_path=input_csv,
@@ -172,14 +140,7 @@ def test_categorize_amazon_csv_does_not_write_pending_when_open_interval_is_empt
 
     monkeypatch.setattr(categorizer_module, "_today_date", lambda: date(2026, 5, 15))
 
-    input_csv = tmp_path / "amazon_closed_only.csv"
-    pd.DataFrame(
-        {
-            "Order Date": ["2026-05-02"],
-            "Title": ["Coffee Pods"],
-            "Item Net Total": [12.0],
-        }
-    ).to_csv(input_csv, index=False)
+    input_csv = DATA_DIR / "business_may2.csv"
 
     result = categorize_amazon_csv(
         input_csv_path=input_csv,
@@ -199,14 +160,7 @@ def test_categorize_amazon_csv_does_not_write_pending_when_open_interval_is_empt
 
 
 def test_categorize_amazon_csv_persists_progress_before_interruption(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon_interrupt.csv"
-    frame = pd.DataFrame(
-        {
-            "Description": ["Coffee Pods", "Paper Towels"],
-            "Amount": [14.5, 10.0],
-        }
-    )
-    frame.to_csv(input_csv, index=False)
+    input_csv = DATA_DIR / "personal_interrupt.csv"
 
     def ask_for_category(item: str, _known: list[str]) -> str:
         if item == "coffee pods":
@@ -233,14 +187,7 @@ def test_categorize_amazon_csv_persists_progress_before_interruption(tmp_path: P
 
 
 def test_categorize_amazon_csv_persists_items_and_monthly_summary(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon_business.csv"
-    pd.DataFrame(
-        {
-            "Order Date": ["2026-03-02", "2026-03-15", "2026-04-01"],
-            "Title": ["Coffee Pods", "Paper Towels", "Coffee Pods"],
-            "Item Net Total": [12.0, 8.0, 5.0],
-        }
-    ).to_csv(input_csv, index=False)
+    input_csv = DATA_DIR / "business_persists.csv"
 
     categorize_amazon_csv(
         input_csv_path=input_csv,

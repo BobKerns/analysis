@@ -1,0 +1,2 @@
+name,kind,subkind,owner,tax_treatment,opened,closed,meta_json
+A,asset,bogus_subkind,,taxable,,,{}
