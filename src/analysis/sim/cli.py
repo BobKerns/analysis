@@ -776,7 +776,7 @@ def add_account(
         "opened": opened, "closed": closed, "meta_json": "{}",
         "tags": tags,
     }
-    accounts_path = data_dir_p / "accounts.csv"
+    accounts_path = data_dir_p / "scenarios" / scen_name / "accounts.csv"
     _append_csv_row(accounts_path, _ACCOUNTS_HEADER, row)
     click.echo(f"appended account '{name}' to {accounts_path}")
 
@@ -788,14 +788,9 @@ def add_account(
 
     if opening_balance:
         cents = _parse_amount_cents(opening_balance)
-        if not model_name:
-            raise click.ClickException(
-                f"scenario {scen_name} has no account_model; "
-                "cannot record opening balance"
-            )
-        model_path = data_dir_p / "account_models" / f"{model_name}.csv"
+        values_path = data_dir_p / "scenarios" / scen_name / "account_values.csv"
         _append_csv_row(
-            model_path,
+            values_path,
             _ACCOUNT_MODEL_HEADER,
             {
                 "account_name": name,
@@ -805,7 +800,7 @@ def add_account(
             },
         )
         click.echo(
-            f"appended opening balance {_fmt_cents(cents).strip()} to {model_path}"
+            f"appended opening balance {_fmt_cents(cents).strip()} to {values_path}"
         )
 
 

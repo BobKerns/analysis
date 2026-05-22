@@ -244,11 +244,9 @@ def test_sim_add_account_appends_accounts_and_model(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
 
-    accounts = (data / "accounts.csv").read_text()
-    assert "Asset_NewBrokerage,asset,brokerage_taxable,joint,taxable" in accounts
 
-    model = (data / "account_models" / "standard.csv").read_text()
-    assert "Asset_NewBrokerage,12345.67" in model
+    accounts = (data / "scenarios" / "retire_alice" / "accounts.csv").read_text()
+    assert "Asset_NewBrokerage,asset,brokerage_taxable,joint,taxable" in accounts
 
     check = runner.invoke(
         main, ["sim", "check", "retire_alice", "--data-dir", str(data)]

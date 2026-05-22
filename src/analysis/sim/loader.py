@@ -123,8 +123,9 @@ def load_scenario(
         raise LoadError([f"scenario folder not found: {scenario_dir}"])
 
     issues: list[str] = []
+
     persons = _read_csv(data_dir / "persons.csv", issues)
-    accounts = _read_csv(data_dir / "accounts.csv", issues)
+    accounts = _read_csv(scenario_dir / "accounts.csv", issues)
     scenario_rows = _read_csv(scenario_dir / "scenario.csv", issues)
     scheduled_rows = _read_csv(scenario_dir / "scheduled.csv", issues)
     waterfall_rows = _read_csv(scenario_dir / "waterfall_sources.csv", issues, optional=True)
@@ -141,12 +142,8 @@ def load_scenario(
             f"scenario.csv name='{scenario_row['name']}' != folder '{scenario_name}'"
         )
 
-    account_model_name = scenario_row.get("account_model", "")
-    model_rows: list[dict[str, str]] = []
-    if account_model_name:
-        model_rows = _read_csv(
-            data_dir / "account_models" / f"{account_model_name}.csv", issues
-        )
+    # Always load account_values.csv from the scenario directory
+    model_rows: list[dict[str, str]] = _read_csv(scenario_dir / "account_values.csv", issues)
 
     aux_rows = _read_aux_dir(data_dir / "aux", issues)
 
@@ -159,8 +156,10 @@ def load_scenario(
     if issues:
         raise LoadError(issues)
 
+
+    # account_model_name is obsolete; pass empty string for compatibility
     if compute_stamps:
-        ds = data_stamps(data_dir, scenario_name, account_model_name)
+        ds = data_stamps(data_dir, scenario_name, "")
         if ds.dirty and not allow_dirty_data:
             raise DataDirtyRefused(list(ds.dirty_paths))
         cs = code_stamps()
@@ -173,6 +172,7 @@ def load_scenario(
     if intent_path.exists():
         intent_path.unlink()
 
+
     con = sqlite3.connect(intent_path)
     try:
         con.execute("PRAGMA locking_mode = EXCLUSIVE")
@@ -182,7 +182,7 @@ def load_scenario(
             con,
             persons=persons,
             accounts=accounts,
-            account_model_name=account_model_name,
+            account_model_name="",  # obsolete
             account_model_rows=model_rows,
             aux_rows=aux_rows,
             scenario_row=scenario_row,
