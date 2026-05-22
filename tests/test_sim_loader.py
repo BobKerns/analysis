@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import sqlite3
-import subprocess
 from pathlib import Path
+
+import git
 
 import pytest
 
@@ -102,17 +102,12 @@ def test_waterfall_from_account_mismatch_rejected(tmp_path: Path) -> None:
 
 
 def _git_init_commit(repo: Path) -> None:
-    env = {
-        **os.environ,
-        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-    }
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, env=env)
-    subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
-    subprocess.run(
-        ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"],
-        cwd=repo, check=True, env=env,
-    )
+    r = git.Repo.init(repo, b="main")
+    r.git.add(A=True)
+    with r.config_writer() as cw:
+        cw.set_value("commit", "gpgsign", "false")
+    actor = git.Actor("t", "t@t")
+    r.index.commit("init", author=actor, committer=actor)
 
 
 def test_clean_git_repo_stamps_manifest(tmp_path: Path) -> None:
