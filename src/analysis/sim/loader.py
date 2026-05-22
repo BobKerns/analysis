@@ -175,6 +175,7 @@ def load_scenario(
 
     con = sqlite3.connect(intent_path)
     try:
+        con.execute("PRAGMA locking_mode = EXCLUSIVE")
         con.execute("PRAGMA foreign_keys = ON")
         con.executescript(INTENT_DDL)
         counts = _write_intent(

@@ -41,6 +41,7 @@ def open_run_file(
         raise FileExistsError(f"run file already exists: {run_path}")
 
     con = sqlite3.connect(run_path)
+    con.execute("PRAGMA locking_mode = EXCLUSIVE")
     con.execute("PRAGMA foreign_keys = ON")
     apply_run_schema(con)
 
