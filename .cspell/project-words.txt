@@ -10,6 +10,7 @@ dflt
 executemany
 executescript
 gethostname
+gpgsign
 heloc
 huggingface
 IRMAA
