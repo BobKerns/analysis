@@ -27,6 +27,30 @@ from .loader import load_scenario, resolve_scenario_name
 
 ItemType = Literal["account", "scheduled", "calendar_event"]
 
+
+def _normalize_tag_collection(
+    tags: str | Iterable[str] | Iterable[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Accept str, iterable of strings, or iterable of (role, name) pairs."""
+    if isinstance(tags, str):
+        return registries.parse_tags(tags)
+    out: list[tuple[str, str]] = []
+    for item in tags:
+        if isinstance(item, str):
+            out.extend(registries.parse_tags(item))
+        else:
+            role, name = item
+            out.extend(registries.parse_tags(f"{role}:{name}"))
+    # de-dupe, preserve order
+    seen: set[tuple[str, str]] = set()
+    deduped: list[tuple[str, str]] = []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    return deduped
+
+
 __all__ = [
     "ItemType",
     "RunConnection",
@@ -106,6 +130,74 @@ class _TagReader:
             return pd.read_sql_query(queries[item_type], self._con, params=(tid,))
         frames = [
             pd.read_sql_query(q, self._con, params=(tid,)) for q in queries.values()
+        ]
+        return pd.concat(frames, ignore_index=True)
+
+    def items_with_tags(
+        self,
+        tags: str | Iterable[str] | Iterable[tuple[str, str]],
+        item_type: ItemType | None = None,
+        match: Literal["any", "all"] = "any",
+    ) -> pd.DataFrame:
+        """Items carrying one or more tags.
+
+        ``tags`` may be a single ``"role:name"`` string, an iterable of such
+        strings (whitespace inside a string is also split), or an iterable
+        of ``(role, name)`` pairs. ``match="any"`` (default) returns items
+        carrying at least one of the tags; ``match="all"`` requires every
+        tag. Columns: ``item_type``, ``item_id``, ``label``, ``n_matched``.
+        """
+        pairs = _normalize_tag_collection(tags)
+        if not pairs:
+            return pd.DataFrame(
+                columns=["item_type", "item_id", "label", "n_matched"]
+            )
+        rows = self._con.execute(
+            f"SELECT id, role, name FROM tag WHERE (role, name) IN "
+            f"(VALUES {','.join(['(?, ?)'] * len(pairs))})",
+            [v for p in pairs for v in p],
+        ).fetchall()
+        ids = [r[0] for r in rows]
+        if not ids:
+            return pd.DataFrame(
+                columns=["item_type", "item_id", "label", "n_matched"]
+            )
+        threshold = len(pairs) if match == "all" else 1
+        placeholders = ",".join("?" * len(ids))
+
+        per_type = {
+            "account": (
+                f"SELECT 'account' AS item_type, a.id AS item_id, "
+                f"  a.name AS label, COUNT(*) AS n_matched "
+                f"FROM account a JOIN account_tag x ON x.account_id=a.id "
+                f"WHERE x.tag_id IN ({placeholders}) "
+                f"GROUP BY a.id HAVING n_matched >= ? ORDER BY a.name"
+            ),
+            "scheduled": (
+                f"SELECT 'scheduled' AS item_type, s.id AS item_id, "
+                f"  s.name AS label, COUNT(*) AS n_matched "
+                f"FROM scheduled_transaction s "
+                f"JOIN scheduled_transaction_tag x "
+                f"  ON x.scheduled_transaction_id=s.id "
+                f"WHERE x.tag_id IN ({placeholders}) "
+                f"GROUP BY s.id HAVING n_matched >= ? ORDER BY s.name"
+            ),
+            "calendar_event": (
+                f"SELECT 'calendar_event' AS item_type, c.id AS item_id, "
+                f"  c.date || ' ' || c.kind || "
+                f"    COALESCE(' '||c.scheduled_name,'') AS label, "
+                f"  COUNT(*) AS n_matched "
+                f"FROM calendar_event c "
+                f"JOIN calendar_event_tag x ON x.calendar_event_id=c.id "
+                f"WHERE x.tag_id IN ({placeholders}) "
+                f"GROUP BY c.id HAVING n_matched >= ? ORDER BY c.date"
+            ),
+        }
+        sqls = (
+            [per_type[item_type]] if item_type is not None else list(per_type.values())
+        )
+        frames = [
+            pd.read_sql_query(q, self._con, params=[*ids, threshold]) for q in sqls
         ]
         return pd.concat(frames, ignore_index=True)
 
