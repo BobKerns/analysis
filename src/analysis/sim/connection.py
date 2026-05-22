@@ -25,7 +25,16 @@ import pandas as pd
 from . import registries
 from .loader import load_scenario, resolve_scenario_name
 
-ItemType = Literal["account", "scheduled", "calendar_event"]
+ItemType = Literal[
+    "account",
+    "scheduled",
+    "calendar_event",
+    "transfer_event",
+    "simulation_run",
+    "net_worth",
+    "net_worth_constant_cpi",
+    "prior_tax_activity",
+]
 
 
 def _normalize_tag_collection(
@@ -49,15 +58,6 @@ def _normalize_tag_collection(
             seen.add(p)
             deduped.append(p)
     return deduped
-
-
-__all__ = [
-    "ItemType",
-    "RunConnection",
-    "ScenarioConnection",
-    "open_run",
-    "open_scenario",
-]
 
 
 # ---------- read mixin (shared by Scenario + Run) ----------
@@ -88,6 +88,27 @@ _ITEM_SQL: dict[str, str] = {
         "LEFT JOIN tag t ON t.id = x.tag_id "
         "GROUP BY c.id ORDER BY c.id"
     ),
+    # Run-file tables/views. No tag join: these aren't user-tagged today.
+    "transfer_event": (
+        "SELECT te.id, te.step_id, s.month, te.date, te.amount, "
+        "       te.tax_character, te.reason_kind, te.reason_id, "
+        "       te.parent_event_id, te.from_account, te.to_account, "
+        "       fa.name AS from_name, fa.kind AS from_kind, "
+        "       fa.subkind AS from_subkind, "
+        "       ta.name AS to_name, ta.kind AS to_kind, "
+        "       ta.subkind AS to_subkind "
+        "FROM transfer_event te "
+        "JOIN simulation_step s ON s.id = te.step_id "
+        "JOIN account fa ON fa.id = te.from_account "
+        "JOIN account ta ON ta.id = te.to_account "
+        "ORDER BY te.id"
+    ),
+    "simulation_run": "SELECT * FROM simulation_run",
+    "net_worth": "SELECT * FROM net_worth ORDER BY month",
+    "net_worth_constant_cpi": (
+        "SELECT * FROM net_worth_constant_cpi ORDER BY month"
+    ),
+    "prior_tax_activity": "SELECT * FROM prior_tax_activity",
 }
 
 
@@ -97,8 +118,12 @@ class _TagReader:
     _con: sqlite3.Connection
     _item_cache: dict[str, pd.DataFrame]
 
+    def _ensure_fresh(self) -> None:
+        """Hook for subclasses; default no-op (run files don't mutate)."""
+
     def list_tags(self, role: str | None = None) -> pd.DataFrame:
         """Return distinct tags with per-item-type usage counts."""
+        self._ensure_fresh()
         sql = (
             "SELECT t.role, t.name, "
             "  (SELECT COUNT(*) FROM account_tag WHERE tag_id=t.id) AS n_account, "
@@ -133,6 +158,7 @@ class _TagReader:
         """
         if item_type not in _ITEM_SQL:
             raise ValueError(f"unknown item_type {item_type!r}")
+        self._ensure_fresh()
         df = self._items_cache(item_type)
         mask = pd.Series(True, index=df.index)
 
@@ -148,6 +174,10 @@ class _TagReader:
                 mask &= df[col].isin(list(val))
 
         if tags is not None:
+            if "_tag_set" not in df.columns:
+                raise ValueError(
+                    f"{item_type!r} does not support tag filtering"
+                )
             pairs = _normalize_tag_collection(tags)
             if not pairs:
                 mask &= False
@@ -158,10 +188,12 @@ class _TagReader:
                 else:
                     mask &= df["_tag_set"].apply(lambda s: bool(s & wanted))
 
-        return df.loc[mask].drop(columns=["_tag_set"]).reset_index(drop=True)
+        drop = ["_tag_set"] if "_tag_set" in df.columns else []
+        return df.loc[mask].drop(columns=drop).reset_index(drop=True)
 
     def tags_for_item(self, item_type: ItemType, item_id: int) -> pd.DataFrame:
         """Return the tags attached to one item."""
+        self._ensure_fresh()
         link = {
             "account": ("account_tag", "account_id"),
             "scheduled": ("scheduled_transaction_tag", "scheduled_transaction_id"),
@@ -183,9 +215,10 @@ class _TagReader:
             self._item_cache = cache
         if item_type not in cache:
             df = pd.read_sql_query(_ITEM_SQL[item_type], self._con)
-            df["_tag_set"] = df["tags"].apply(
-                lambda s: set(s.split()) if s else set()
-            )
+            if "tags" in df.columns:
+                df["_tag_set"] = df["tags"].apply(
+                    lambda s: set(s.split()) if s else set()
+                )
             cache[item_type] = df
         return cache[item_type]
 
@@ -197,7 +230,13 @@ class _TagReader:
 # ---------- run (read-only) ----------
 
 class RunConnection(_TagReader):
-    """Read-only access to a finalized run snapshot DB."""
+    """Read-only access to a finalized run snapshot DB.
+
+    Calling :meth:`close` (or using the context manager) frees the SQLite
+    handle, but is optional: leaking a connection only costs a file handle
+    until interpreter shutdown, so notebooks can construct a bare
+    ``RunConnection(path)`` and use it across cells without ceremony.
+    """
 
     def __init__(self, run_path: Path | str) -> None:
         self.run_path = Path(run_path)
@@ -237,7 +276,13 @@ class ScenarioConnection(_TagReader):
     """Read+write access to a scenario.
 
     Reads run against a freshly built intent DB; writes go to the CSV source
-    of truth and then trigger a reload so subsequent reads see the change.
+    of truth and mark the connection dirty so the next read transparently
+    rebuilds the intent DB.
+
+    Closing is optional. The only resources held are a SQLite handle and a
+    temporary directory for the intent DB; both are reclaimed at interpreter
+    shutdown, so notebooks can keep a bare ``ScenarioConnection(...)`` alive
+    across cells without a ``with`` block.
     """
 
     def __init__(self, data_dir: Path | str, scenario: str | None = None) -> None:
@@ -246,6 +291,7 @@ class ScenarioConnection(_TagReader):
         self._tmp = tempfile.TemporaryDirectory()
         self._intent_dir = Path(self._tmp.name)
         self._con: sqlite3.Connection | None = None  # type: ignore[assignment]
+        self._dirty = False
         self._reload()
 
     # -- lifecycle --
@@ -262,6 +308,11 @@ class ScenarioConnection(_TagReader):
         con.row_factory = sqlite3.Row
         self._con = con
         self._invalidate_items_cache()
+        self._dirty = False
+
+    def _ensure_fresh(self) -> None:
+        if self._dirty:
+            self._reload()
 
     def close(self) -> None:
         if self._con is not None:
@@ -308,7 +359,8 @@ class ScenarioConnection(_TagReader):
         new_val = registries.format_tags(mutate(existing))
         df.at[idx, "tags"] = new_val
         df.to_csv(csv_path, index=False)
-        self._reload()
+        self._dirty = True
+        self._invalidate_items_cache()
         return new_val
 
     def add_tags(
@@ -356,3 +408,12 @@ def open_scenario(
         yield sc
     finally:
         sc.close()
+
+
+__all__ = [
+    "ItemType",
+    "RunConnection",
+    "ScenarioConnection",
+    "open_run",
+    "open_scenario",
+]
