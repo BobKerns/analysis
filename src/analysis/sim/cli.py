@@ -297,12 +297,13 @@ _SCHEDULED_HEADER: tuple[str, ...] = (
     "amount_rule_kind", "interest_account", "person", "series",
     "rate_micros", "claim_age", "amount", "base_amount", "base_date",
     "inflation_series", "tax_character", "start", "end", "priority",
-    "description", "meta_json", "params_json",
+    "description", "meta_json", "params_json", "tags",
 )
 
 _CALENDAR_HEADER: tuple[str, ...] = (
     "date", "kind", "scheduled_name", "account_1", "account_2", "series",
     "amount", "param_date", "tax_character", "params_json", "description",
+    "tags",
 )
 
 
@@ -507,6 +508,7 @@ def add_fixed(
         "tax_character": tax_character,
         "params_json": json.dumps(payload, separators=(",", ":")),
         "description": description,
+        "tags": "",
     }
     path = scenario_dir / "calendar.csv"
     _append_csv_row(path, _CALENDAR_HEADER, row)
@@ -540,6 +542,8 @@ def add_fixed(
 @click.option("--priority", type=int, default=200, show_default=True)
 @click.option("--description", default="")
 @click.option("--series", default="")
+@click.option("--tags", default="",
+              help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary household:rwk').")
 def add_scheduled(
     date: str | None,
     from_account: str | None,
@@ -556,8 +560,13 @@ def add_scheduled(
     priority: int,
     description: str,
     series: str,
+    tags: str,
 ) -> None:
     """Append a recurring fixed-amount transfer to <scenario>/scheduled.csv."""
+    try:
+        registries.parse_tags(tags)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
     with open_intent_db(data_dir_p, scenario) as (con, _name):
@@ -626,6 +635,7 @@ def add_scheduled(
         "description": description,
         "meta_json": "{}",
         "params_json": "{}",
+        "tags": tags,
     }
     path = scenario_dir / "scheduled.csv"
     _append_csv_row(path, _SCHEDULED_HEADER, row)
@@ -637,7 +647,7 @@ def add_scheduled(
 
 _ACCOUNTS_HEADER: tuple[str, ...] = (
     "name", "kind", "subkind", "owner", "tax_treatment",
-    "opened", "closed", "meta_json",
+    "opened", "closed", "meta_json", "tags",
 )
 
 _ACCOUNT_MODEL_HEADER: tuple[str, ...] = (
@@ -680,6 +690,8 @@ def account_group_command() -> None:
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
+@click.option("--tags", default="",
+              help="Space-separated '<role>:<name>' tokens.")
 def add_account(
     name: str | None,
     kind: str | None,
@@ -691,8 +703,13 @@ def add_account(
     opening_balance: str | None,
     scenario: str | None,
     data_dir: Path | None,
+    tags: str,
 ) -> None:
     """Append an account to accounts.csv (and opening balance to the model)."""
+    try:
+        registries.parse_tags(tags)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
     data_dir_p = _resolve_data_dir(data_dir)
     with open_intent_db(data_dir_p, scenario) as (con, scen_name):
         existing = {r[0] for r in con.execute("SELECT name FROM account")}
@@ -756,6 +773,7 @@ def add_account(
         "name": name, "kind": kind, "subkind": subkind,
         "owner": owner, "tax_treatment": tax_treatment,
         "opened": opened, "closed": closed, "meta_json": "{}",
+        "tags": tags,
     }
     accounts_path = data_dir_p / "accounts.csv"
     _append_csv_row(accounts_path, _ACCOUNTS_HEADER, row)
@@ -903,3 +921,195 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
     Console().print(table)
 
 
+
+# ---------- tag: add / remove / list ----------
+
+_TAG_ITEM_TYPES = ("account", "scheduled", "calendar_event")
+
+
+def _resolve_tag_csv(
+    data_dir_p: Path, scenario: str | None, item_type: str,
+) -> tuple[Path, str]:
+    """Return (csv_path, key_column) for the given item type."""
+    if item_type == "account":
+        return data_dir_p / "accounts.csv", "name"
+    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    if item_type == "scheduled":
+        return scenario_dir / "scheduled.csv", "name"
+    if item_type == "calendar_event":
+        # No natural key on calendar.csv yet; CLI tag edits not supported here.
+        raise click.ClickException(
+            "calendar_event tags are managed via CSV directly (no unique key for CLI)"
+        )
+    raise click.ClickException(
+        f"unknown item type {item_type!r}; allowed: account, scheduled"
+    )
+
+
+def _rewrite_tags(csv_path: Path, key_col: str, key: str, mutate) -> str:
+    """Read csv, find row where key_col==key, apply mutate(old_str)->new_str, write back."""
+    if not csv_path.exists():
+        raise click.ClickException(f"CSV not found: {csv_path}")
+    df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+    if "tags" not in df.columns:
+        raise click.ClickException(
+            f"{csv_path} has no 'tags' column; run the v7 migration"
+        )
+    mask = df[key_col] == key
+    if not mask.any():
+        raise click.ClickException(f"no row with {key_col}={key!r} in {csv_path}")
+    if mask.sum() > 1:
+        raise click.ClickException(f"multiple rows with {key_col}={key!r}")
+    idx = df.index[mask][0]
+    new_val = mutate(df.at[idx, "tags"])
+    df.at[idx, "tags"] = new_val
+    df.to_csv(csv_path, index=False)
+    return new_val
+
+
+@sim_group_command.group(name="tag")
+def tag_group_command() -> None:
+    """Add, remove, and inspect ad-hoc tags on accounts and scheduled transactions."""
+
+
+@tag_group_command.command("add")
+@click.argument("item_type", type=click.Choice(["account", "scheduled"]))
+@click.argument("item_name")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def tag_add(
+    item_type: str,
+    item_name: str,
+    tag_tokens: tuple[str, ...],
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Add one or more '<role>:<name>' tags to an item."""
+    try:
+        new_pairs = registries.parse_tags(" ".join(tag_tokens))
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    data_dir_p = _resolve_data_dir(data_dir)
+    csv_path, key_col = _resolve_tag_csv(data_dir_p, scenario, item_type)
+
+    def mutate(old: str) -> str:
+        existing = registries.parse_tags(old)
+        return registries.format_tags(existing + new_pairs)
+
+    new_val = _rewrite_tags(csv_path, key_col, item_name, mutate)
+    click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
+
+
+@tag_group_command.command("rm")
+@click.argument("item_type", type=click.Choice(["account", "scheduled"]))
+@click.argument("item_name")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def tag_rm(
+    item_type: str,
+    item_name: str,
+    tag_tokens: tuple[str, ...],
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Remove one or more '<role>:<name>' tags from an item."""
+    try:
+        drop = set(registries.parse_tags(" ".join(tag_tokens)))
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    data_dir_p = _resolve_data_dir(data_dir)
+    csv_path, key_col = _resolve_tag_csv(data_dir_p, scenario, item_type)
+
+    def mutate(old: str) -> str:
+        existing = registries.parse_tags(old)
+        return registries.format_tags([p for p in existing if p not in drop])
+
+    new_val = _rewrite_tags(csv_path, key_col, item_name, mutate)
+    click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
+
+
+@tag_group_command.command("list")
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--role", default=None, help="Restrict to a single role.")
+def tag_list(
+    scenario: str | None,
+    data_dir: Path | None,
+    role: str | None,
+) -> None:
+    """List distinct tags present in the scenario, with usage counts."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    with open_intent_db(data_dir_p, scenario) as (con, _name):
+        sql = (
+            "SELECT t.role, t.name, "
+            "  (SELECT COUNT(*) FROM account_tag WHERE tag_id = t.id) AS n_acc, "
+            "  (SELECT COUNT(*) FROM scheduled_transaction_tag WHERE tag_id = t.id) AS n_sch, "
+            "  (SELECT COUNT(*) FROM calendar_event_tag WHERE tag_id = t.id) AS n_cal "
+            "FROM tag t"
+        )
+        params: tuple = ()
+        if role:
+            sql += " WHERE t.role = ?"
+            params = (role,)
+        sql += " ORDER BY t.role, t.name"
+        rows = list(con.execute(sql, params))
+    if not rows:
+        click.echo("(no tags)")
+        return
+    click.echo(f"{'tag':<40}  {'accts':>5}  {'sched':>5}  {'cal':>4}")
+    for r in rows:
+        tok = f"{r['role']}:{r['name']}"
+        click.echo(f"{tok:<40}  {r['n_acc']:>5}  {r['n_sch']:>5}  {r['n_cal']:>4}")
+
+
+@tag_group_command.command("items")
+@click.argument("tag_token")
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def tag_items(
+    tag_token: str,
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """List items (accounts, scheduled, calendar events) carrying the given tag."""
+    try:
+        pairs = registries.parse_tags(tag_token)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    if len(pairs) != 1:
+        raise click.ClickException("exactly one tag token expected")
+    role, name = pairs[0]
+    data_dir_p = _resolve_data_dir(data_dir)
+    with open_intent_db(data_dir_p, scenario) as (con, _name):
+        tag_row = con.execute(
+            "SELECT id FROM tag WHERE role=? AND name=?", (role, name)
+        ).fetchone()
+        if tag_row is None:
+            click.echo(f"(tag {tag_token} not present)")
+            return
+        tid = tag_row["id"]
+        for kind, sql in (
+            ("account",
+             "SELECT a.name FROM account a JOIN account_tag x "
+             "ON x.account_id=a.id WHERE x.tag_id=? ORDER BY a.name"),
+            ("scheduled",
+             "SELECT s.name FROM scheduled_transaction s "
+             "JOIN scheduled_transaction_tag x ON x.scheduled_transaction_id=s.id "
+             "WHERE x.tag_id=? ORDER BY s.name"),
+            ("calendar_event",
+             "SELECT c.date || ' ' || c.kind || COALESCE(' '||c.scheduled_name,'') AS d "
+             "FROM calendar_event c JOIN calendar_event_tag x "
+             "ON x.calendar_event_id=c.id WHERE x.tag_id=? ORDER BY c.date"),
+        ):
+            for row in con.execute(sql, (tid,)):
+                click.echo(f"{kind:<14}  {row[0]}")

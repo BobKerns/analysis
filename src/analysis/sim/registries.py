@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     "asset": {
         "checking", "savings", "brokerage_taxable", "traditional_ira", "roth_ira",
@@ -75,3 +77,27 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "standard_deduction": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
 }
+
+# Tag tokens are `<role>:<name>` with lowercase [a-z0-9_] on each side.
+# Role is intentionally an OPEN registry to support ad-hoc exploration.
+TAG_TOKEN_RE = re.compile(r"^[a-z0-9_]+:[a-z0-9_]+$")
+
+
+def parse_tags(raw: str) -> list[tuple[str, str]]:
+    """Split a whitespace-separated ``tags`` cell into ``(role, name)`` pairs.
+
+    Raises ``ValueError`` on any malformed token. Order is preserved; callers
+    de-dupe as needed.
+    """
+    out: list[tuple[str, str]] = []
+    for tok in (raw or "").split():
+        if not TAG_TOKEN_RE.match(tok):
+            raise ValueError(f"invalid tag {tok!r}; expected '<role>:<name>'")
+        role, name = tok.split(":", 1)
+        out.append((role, name))
+    return out
+
+
+def format_tags(tags: list[tuple[str, str]]) -> str:
+    """Inverse of ``parse_tags``: render a sorted, de-duplicated tag string."""
+    return " ".join(f"{r}:{n}" for r, n in sorted(set(tags)))

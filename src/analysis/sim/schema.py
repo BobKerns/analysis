@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -158,6 +158,31 @@ CREATE TABLE prior_tax_activity (
     amount      INTEGER NOT NULL,
     source_note TEXT,
     PRIMARY KEY (scenario_id, year, bucket)
+);
+
+CREATE TABLE tag (
+    id    INTEGER PRIMARY KEY,
+    role  TEXT NOT NULL,
+    name  TEXT NOT NULL,
+    UNIQUE (role, name)
+);
+
+CREATE TABLE account_tag (
+    account_id INTEGER NOT NULL REFERENCES account(id),
+    tag_id     INTEGER NOT NULL REFERENCES tag(id),
+    PRIMARY KEY (account_id, tag_id)
+);
+
+CREATE TABLE scheduled_transaction_tag (
+    scheduled_transaction_id INTEGER NOT NULL REFERENCES scheduled_transaction(id),
+    tag_id                   INTEGER NOT NULL REFERENCES tag(id),
+    PRIMARY KEY (scheduled_transaction_id, tag_id)
+);
+
+CREATE TABLE calendar_event_tag (
+    calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
+    tag_id            INTEGER NOT NULL REFERENCES tag(id),
+    PRIMARY KEY (calendar_event_id, tag_id)
 );
 """
 
@@ -404,6 +429,10 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "aux_table",
     "scenario",
     "prior_tax_activity",
+    "tag",
+    "account_tag",
+    "scheduled_transaction_tag",
+    "calendar_event_tag",
     "holding",
     "lot",
 )

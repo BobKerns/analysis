@@ -218,3 +218,66 @@ def test_dirty_data_allowed_records_dirty_flag(tmp_path: Path) -> None:
         assert len(m["scenario_tree_id"]) in (40, 64)
     finally:
         con.close()
+
+
+def test_tags_round_trip(tmp_path: Path) -> None:
+    """Tags on accounts/scheduled CSVs land in the normalized join tables."""
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    acc = repo / "accounts.csv"
+    df = pd.read_csv(acc, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "Asset_Checking", "tags"] = "expense:liquid notebook:net_worth"
+    df.to_csv(acc, index=False)
+
+    sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched, dtype=str, keep_default_na=False)
+    df.loc[df.index[0], "tags"] = "demo:first"
+    df.to_csv(sched, index=False)
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out",
+        allow_dirty_data=True,
+    )
+    con = sqlite3.connect(result.intent_path)
+    con.row_factory = sqlite3.Row
+    try:
+        tags = {(r["role"], r["name"]) for r in con.execute("SELECT role, name FROM tag")}
+        assert ("expense", "liquid") in tags
+        assert ("notebook", "net_worth") in tags
+        assert ("demo", "first") in tags
+
+        n_acc_tags = con.execute(
+            "SELECT COUNT(*) FROM account_tag t "
+            "JOIN account a ON a.id = t.account_id "
+            "WHERE a.name = 'Asset_Checking'"
+        ).fetchone()[0]
+        assert n_acc_tags == 2
+
+        n_sched_tags = con.execute(
+            "SELECT COUNT(*) FROM scheduled_transaction_tag"
+        ).fetchone()[0]
+        assert n_sched_tags == 1
+    finally:
+        con.close()
+
+
+def test_invalid_tag_rejected(tmp_path: Path) -> None:
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    acc = repo / "accounts.csv"
+    df = pd.read_csv(acc, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "Asset_Checking", "tags"] = "no_colon_here"
+    df.to_csv(acc, index=False)
+
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("no_colon_here" in issue for issue in ei.value.issues)

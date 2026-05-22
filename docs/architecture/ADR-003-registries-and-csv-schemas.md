@@ -416,6 +416,31 @@ When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule 
 
 Authors can override by setting `priority` explicitly. The check command (`analysis sim check --priorities`) flags rows whose explicit priority crosses a band boundary, since that's almost always a mistake.
 
+### 6. Ad-hoc tags (`tags` column)
+
+`accounts.csv`, `scheduled.csv`, and `calendar.csv` carry an optional **`tags`** column
+that holds a whitespace-separated list of `<role>:<name>` tokens. Tags are an
+**open** registry — `role` is not validated against a fixed vocabulary — and are
+intended for low-friction ad-hoc grouping (e.g. `expense:discretionary
+household:rwk`, `tax:itemized`, `notebook:net_worth`).
+
+Token shape: `^[a-z0-9_]+:[a-z0-9_]+$`. Both halves are required; the loader
+rejects malformed tokens.
+
+The loader normalizes tags into three join tables in the intent (and snapshotted
+run) DB:
+
+- `tag(id, role, name)` with `UNIQUE(role, name)`,
+- `account_tag(account_id, tag_id)`,
+- `scheduled_transaction_tag(scheduled_transaction_id, tag_id)`,
+- `calendar_event_tag(calendar_event_id, tag_id)`.
+
+CLI helpers (`analysis sim tag add|rm|list|items`) read/write the underlying
+CSV row's `tags` cell via pandas, preserving the existing header-validation
+contract. Calendar events are tagged via CSV directly (no stable CLI key yet).
+Tags are scenario-scoped today; when scenario inheritance lands they will be
+inherited along the parent chain.
+
 ## Consequences
 
 ### Positive
