@@ -17,6 +17,7 @@ import pandas as pd
 from analysis.sim import registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.engine import run_scenario
+from analysis.sim.connection import open_scenario
 from analysis.sim.loader import (
     DataDirtyRefused,
     LoadError,
@@ -924,52 +925,32 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
 
 # ---------- tag: add / remove / list ----------
 
-_TAG_ITEM_TYPES = ("account", "scheduled", "calendar_event")
-
-
-def _resolve_tag_csv(
-    data_dir_p: Path, scenario: str | None, item_type: str,
-) -> tuple[Path, str]:
-    """Return (csv_path, key_column) for the given item type."""
-    if item_type == "account":
-        return data_dir_p / "accounts.csv", "name"
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
-    if item_type == "scheduled":
-        return scenario_dir / "scheduled.csv", "name"
-    if item_type == "calendar_event":
-        # No natural key on calendar.csv yet; CLI tag edits not supported here.
-        raise click.ClickException(
-            "calendar_event tags are managed via CSV directly (no unique key for CLI)"
-        )
-    raise click.ClickException(
-        f"unknown item type {item_type!r}; allowed: account, scheduled"
-    )
-
-
-def _rewrite_tags(csv_path: Path, key_col: str, key: str, mutate) -> str:
-    """Read csv, find row where key_col==key, apply mutate(old_str)->new_str, write back."""
-    if not csv_path.exists():
-        raise click.ClickException(f"CSV not found: {csv_path}")
-    df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
-    if "tags" not in df.columns:
-        raise click.ClickException(
-            f"{csv_path} has no 'tags' column; run the v7 migration"
-        )
-    mask = df[key_col] == key
-    if not mask.any():
-        raise click.ClickException(f"no row with {key_col}={key!r} in {csv_path}")
-    if mask.sum() > 1:
-        raise click.ClickException(f"multiple rows with {key_col}={key!r}")
-    idx = df.index[mask][0]
-    new_val = mutate(df.at[idx, "tags"])
-    df.at[idx, "tags"] = new_val
-    df.to_csv(csv_path, index=False)
-    return new_val
-
 
 @sim_group_command.group(name="tag")
 def tag_group_command() -> None:
     """Add, remove, and inspect ad-hoc tags on accounts and scheduled transactions."""
+
+
+def _scenario_write(
+    data_dir: Path | None,
+    scenario: str | None,
+    item_type: str,
+    item_name: str,
+    tag_tokens: tuple[str, ...],
+    op: str,  # 'add' | 'rm'
+) -> None:
+    try:
+        registries.parse_tags(" ".join(tag_tokens))
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    data_dir_p = _resolve_data_dir(data_dir)
+    try:
+        with open_scenario(data_dir_p, scenario) as sc:
+            method = sc.add_tags if op == "add" else sc.remove_tags
+            new_val = method(item_type, item_name, tag_tokens)  # type: ignore[arg-type]
+    except (FileNotFoundError, KeyError, ValueError) as e:
+        raise click.ClickException(str(e)) from None
+    click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
 
 
 @tag_group_command.command("add")
@@ -988,19 +969,7 @@ def tag_add(
     data_dir: Path | None,
 ) -> None:
     """Add one or more '<role>:<name>' tags to an item."""
-    try:
-        new_pairs = registries.parse_tags(" ".join(tag_tokens))
-    except ValueError as e:
-        raise click.ClickException(str(e)) from None
-    data_dir_p = _resolve_data_dir(data_dir)
-    csv_path, key_col = _resolve_tag_csv(data_dir_p, scenario, item_type)
-
-    def mutate(old: str) -> str:
-        existing = registries.parse_tags(old)
-        return registries.format_tags(existing + new_pairs)
-
-    new_val = _rewrite_tags(csv_path, key_col, item_name, mutate)
-    click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
+    _scenario_write(data_dir, scenario, item_type, item_name, tag_tokens, "add")
 
 
 @tag_group_command.command("rm")
@@ -1019,19 +988,7 @@ def tag_rm(
     data_dir: Path | None,
 ) -> None:
     """Remove one or more '<role>:<name>' tags from an item."""
-    try:
-        drop = set(registries.parse_tags(" ".join(tag_tokens)))
-    except ValueError as e:
-        raise click.ClickException(str(e)) from None
-    data_dir_p = _resolve_data_dir(data_dir)
-    csv_path, key_col = _resolve_tag_csv(data_dir_p, scenario, item_type)
-
-    def mutate(old: str) -> str:
-        existing = registries.parse_tags(old)
-        return registries.format_tags([p for p in existing if p not in drop])
-
-    new_val = _rewrite_tags(csv_path, key_col, item_name, mutate)
-    click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
+    _scenario_write(data_dir, scenario, item_type, item_name, tag_tokens, "rm")
 
 
 @tag_group_command.command("list")
@@ -1047,27 +1004,17 @@ def tag_list(
 ) -> None:
     """List distinct tags present in the scenario, with usage counts."""
     data_dir_p = _resolve_data_dir(data_dir)
-    with open_intent_db(data_dir_p, scenario) as (con, _name):
-        sql = (
-            "SELECT t.role, t.name, "
-            "  (SELECT COUNT(*) FROM account_tag WHERE tag_id = t.id) AS n_acc, "
-            "  (SELECT COUNT(*) FROM scheduled_transaction_tag WHERE tag_id = t.id) AS n_sch, "
-            "  (SELECT COUNT(*) FROM calendar_event_tag WHERE tag_id = t.id) AS n_cal "
-            "FROM tag t"
-        )
-        params: tuple = ()
-        if role:
-            sql += " WHERE t.role = ?"
-            params = (role,)
-        sql += " ORDER BY t.role, t.name"
-        rows = list(con.execute(sql, params))
-    if not rows:
+    with open_scenario(data_dir_p, scenario) as sc:
+        df = sc.list_tags(role=role)
+    if df.empty:
         click.echo("(no tags)")
         return
     click.echo(f"{'tag':<40}  {'accts':>5}  {'sched':>5}  {'cal':>4}")
-    for r in rows:
-        tok = f"{r['role']}:{r['name']}"
-        click.echo(f"{tok:<40}  {r['n_acc']:>5}  {r['n_sch']:>5}  {r['n_cal']:>4}")
+    for r in df.itertuples(index=False):
+        tok = f"{r.role}:{r.name}"
+        click.echo(
+            f"{tok:<40}  {r.n_account:>5}  {r.n_scheduled:>5}  {r.n_calendar_event:>4}"
+        )
 
 
 @tag_group_command.command("items")
@@ -1090,26 +1037,10 @@ def tag_items(
         raise click.ClickException("exactly one tag token expected")
     role, name = pairs[0]
     data_dir_p = _resolve_data_dir(data_dir)
-    with open_intent_db(data_dir_p, scenario) as (con, _name):
-        tag_row = con.execute(
-            "SELECT id FROM tag WHERE role=? AND name=?", (role, name)
-        ).fetchone()
-        if tag_row is None:
-            click.echo(f"(tag {tag_token} not present)")
-            return
-        tid = tag_row["id"]
-        for kind, sql in (
-            ("account",
-             "SELECT a.name FROM account a JOIN account_tag x "
-             "ON x.account_id=a.id WHERE x.tag_id=? ORDER BY a.name"),
-            ("scheduled",
-             "SELECT s.name FROM scheduled_transaction s "
-             "JOIN scheduled_transaction_tag x ON x.scheduled_transaction_id=s.id "
-             "WHERE x.tag_id=? ORDER BY s.name"),
-            ("calendar_event",
-             "SELECT c.date || ' ' || c.kind || COALESCE(' '||c.scheduled_name,'') AS d "
-             "FROM calendar_event c JOIN calendar_event_tag x "
-             "ON x.calendar_event_id=c.id WHERE x.tag_id=? ORDER BY c.date"),
-        ):
-            for row in con.execute(sql, (tid,)):
-                click.echo(f"{kind:<14}  {row[0]}")
+    with open_scenario(data_dir_p, scenario) as sc:
+        df = sc.items_for_tag(role, name)
+    if df.empty:
+        click.echo(f"(tag {tag_token} not present)")
+        return
+    for r in df.itertuples(index=False):
+        click.echo(f"{r.item_type:<14}  {r.label}")
