@@ -14,6 +14,7 @@ from analysis.sim.loader import DataDirtyRefused, LoadError, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
+FIXTURE_DATA = Path(__file__).resolve().parent / "data" / "sim"
 
 
 def test_load_retire_alice(tmp_path: Path) -> None:
@@ -83,27 +84,7 @@ def test_load_retire_alice(tmp_path: Path) -> None:
 
 def test_invalid_subkind_rejected(tmp_path: Path) -> None:
     bad = tmp_path / "repo"
-    (bad / "scenarios" / "x").mkdir(parents=True)
-    (bad / "aux").mkdir()
-    (bad / "persons.csv").write_text(
-        "id,display,birthdate,meta_json\np1,P1,1970-01-01,{}\n"
-    )
-    (bad / "scenarios" / "x" / "accounts.csv").write_text(
-        "name,kind,subkind,owner,tax_treatment,opened,closed,meta_json\n"
-        "A,asset,bogus_subkind,,taxable,,,{}\n"
-    )
-
-    (bad / "scenarios" / "x" / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,"
-        "parent_scenario,created_by,meta_json\n"
-        "x,,m,2026-01-31,2026-12-31,,,test,{}\n"
-    )
-    (bad / "scenarios" / "x" / "scheduled.csv").write_text(
-        "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,"
-        "interest_account,person,series,rate_micros,claim_age,amount,"
-        "base_amount,base_date,inflation_series,"
-        "tax_character,start,end,priority,description,meta_json,params_json\n"
-    )
+    shutil.copytree(FIXTURE_DATA / "bad_subkind", bad)
     with pytest.raises(LoadError) as ei:
         load_scenario(bad, "x", intent_dir=tmp_path / "out")
     assert any("bogus_subkind" in issue for issue in ei.value.issues)
@@ -111,39 +92,7 @@ def test_invalid_subkind_rejected(tmp_path: Path) -> None:
 
 def test_waterfall_from_account_mismatch_rejected(tmp_path: Path) -> None:
     bad = tmp_path / "repo"
-    (bad / "scenarios" / "x").mkdir(parents=True)
-    (bad / "aux").mkdir()
-    (bad / "account_models").mkdir()
-    (bad / "persons.csv").write_text(
-        "id,display,birthdate,meta_json\np1,P1,1970-01-01,{}\n"
-    )
-    (bad / "accounts.csv").write_text(
-        "name,kind,subkind,owner,tax_treatment,opened,closed,meta_json\n"
-        "Asset_Checking,asset,checking,,taxable,,,{}\n"
-        "Asset_Savings,asset,savings,,taxable,,,{}\n"
-        "Asset_Brokerage,asset,brokerage_taxable,,taxable,,,{}\n"
-    )
-    (bad / "account_models" / "m.csv").write_text(
-        "account_name,opening_balance,opening_cost_basis\n"
-        "Asset_Checking,1000.00,\nAsset_Savings,5000.00,\nAsset_Brokerage,10000.00,\n"
-    )
-    (bad / "scenarios" / "x" / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,"
-        "parent_scenario,created_by,meta_json\n"
-        "x,,m,2026-01-31,2026-12-31,,,test,{}\n"
-    )
-    (bad / "scenarios" / "x" / "scheduled.csv").write_text(
-        "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,"
-        "interest_account,person,series,rate_micros,claim_age,amount,"
-        "base_amount,base_date,inflation_series,"
-        "tax_character,start,end,priority,description,meta_json,params_json\n"
-        "wf,Asset_Brokerage,Asset_Checking,monthly,,waterfall_fill,,,,,,,"
-        ",,,none,2026-01-31,,900,,{},\n"
-    )
-    (bad / "scenarios" / "x" / "waterfall_sources.csv").write_text(
-        "scheduled_name,position,account_name\n"
-        "wf,1,Asset_Savings\nwf,2,Asset_Brokerage\n"
-    )
+    shutil.copytree(FIXTURE_DATA / "bad_waterfall", bad)
     with pytest.raises(LoadError) as ei:
         load_scenario(bad, "x", intent_dir=tmp_path / "out")
     assert any("ADR-003 §2.4" in issue for issue in ei.value.issues)

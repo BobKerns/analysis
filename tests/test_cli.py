@@ -1,17 +1,18 @@
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
-import pandas as pd
 from click.testing import CliRunner
 
 from analysis.amazon.cli import _resolve_category_input
 from analysis.cli import main
 from analysis.storage import JsonStateStore
 
+DATA_DIR = Path(__file__).resolve().parent / "data" / "amazon"
+
 
 def test_cli_amazon_categorize_non_interactive(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon.csv"
-    pd.DataFrame({"Description": ["Coffee Pods"], "Amount": [12.0]}).to_csv(input_csv, index=False)
+    input_csv = shutil.copy(DATA_DIR / "personal_coffee.csv", tmp_path / "amazon.csv")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -40,16 +41,8 @@ def test_cli_amazon_categorize_non_interactive(tmp_path: Path) -> None:
 
 
 def test_cli_amazon_categorize_accepts_multiple_input_files(tmp_path: Path) -> None:
-    input_csv_1 = tmp_path / "amazon_1.csv"
-    input_csv_2 = tmp_path / "amazon_2.csv"
-    pd.DataFrame({"Description": ["Coffee Pods"], "Amount": [12.0]}).to_csv(
-        input_csv_1,
-        index=False,
-    )
-    pd.DataFrame({"Description": ["Paper Towels"], "Amount": [8.0]}).to_csv(
-        input_csv_2,
-        index=False,
-    )
+    input_csv_1 = shutil.copy(DATA_DIR / "personal_coffee.csv", tmp_path / "amazon_1.csv")
+    input_csv_2 = shutil.copy(DATA_DIR / "personal_paper_towels.csv", tmp_path / "amazon_2.csv")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -94,8 +87,7 @@ def test_cli_amazon_categorize_requires_at_least_one_input_file(tmp_path: Path) 
 
 
 def test_cli_amazon_categorize_accepts_cutoff_day_option(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon.csv"
-    pd.DataFrame({"Description": ["Coffee Pods"], "Amount": [12.0]}).to_csv(input_csv, index=False)
+    input_csv = shutil.copy(DATA_DIR / "personal_coffee.csv", tmp_path / "amazon.csv")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -137,10 +129,7 @@ def test_resolve_category_input_rejects_control_chars() -> None:
 
 
 def test_cli_interactive_uses_existing_category_after_completion(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon.csv"
-    pd.DataFrame(
-        {"Description": ["Unknown Device"], "Amount": [12.0]}
-    ).to_csv(input_csv, index=False)
+    input_csv = shutil.copy(DATA_DIR / "personal_unknown_device.csv", tmp_path / "amazon.csv")
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -180,10 +169,7 @@ def test_cli_interactive_uses_existing_category_after_completion(tmp_path: Path)
 
 
 def test_cli_interactive_unknown_item_is_green_when_color_enabled(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon.csv"
-    pd.DataFrame(
-        {"Description": ["Unknown Device"], "Amount": [12.0]}
-    ).to_csv(input_csv, index=False)
+    input_csv = shutil.copy(DATA_DIR / "personal_unknown_device.csv", tmp_path / "amazon.csv")
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -220,10 +206,7 @@ def test_cli_interactive_unknown_item_is_green_when_color_enabled(tmp_path: Path
 
 
 def test_cli_interactive_reprompts_for_invalid_category(tmp_path: Path) -> None:
-    input_csv = tmp_path / "amazon.csv"
-    pd.DataFrame(
-        {"Description": ["Unknown Device"], "Amount": [12.0]}
-    ).to_csv(input_csv, index=False)
+    input_csv = shutil.copy(DATA_DIR / "personal_unknown_device.csv", tmp_path / "amazon.csv")
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
