@@ -53,6 +53,54 @@ class LoadError(ValueError):
         self.issues = issues
 
 
+class _MoneyReferenceResolver:
+    """Resolve ``@name`` monetary references from ``itemizations/name.csv``.
+
+    The referenced CSV must include a ``Value`` column containing decimal-dollar
+    amounts that are summed into integer cents.
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        self.data_dir = data_dir
+        self._cache: dict[str, int] = {}
+        self._resolving: set[str] = set()
+
+    def resolve(self, token: str) -> int:
+        if token in self._cache:
+            return self._cache[token]
+        if token in self._resolving:
+            raise ValueError(f"cyclic money reference '@{token}'")
+
+        path = self.data_dir / "itemizations" / f"{token}.csv"
+        if not path.exists():
+            raise ValueError(
+                f"money reference '@{token}' not found; expected {path}"
+            )
+
+        self._resolving.add(token)
+        try:
+            total = 0
+            with path.open(newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                if not reader.fieldnames or "Value" not in reader.fieldnames:
+                    raise ValueError(
+                        f"{path}: expected a 'Value' column for '@{token}'"
+                    )
+                for i, row in enumerate(reader, start=2):
+                    if not any((v or "").strip() for v in row.values()):
+                        continue
+                    raw = (row.get("Value") or "").strip()
+                    if raw == "":
+                        raise ValueError(
+                            f"{path} row {i}: missing Value for '@{token}'"
+                        )
+                    total += _dollars_to_cents(raw, resolver=self)
+            self._cache[token] = total
+            return total
+        finally:
+            self._resolving.discard(token)
+
+
 def resolve_scenario_name(data_dir: Path, scenario: str | None) -> str:
     """Pick a scenario name from the data repo.
 
@@ -122,6 +170,8 @@ def load_scenario(
     if not scenario_dir.is_dir():
         raise LoadError([f"scenario folder not found: {scenario_dir}"])
 
+    money_resolver = _MoneyReferenceResolver(data_dir)
+
     issues: list[str] = []
 
     persons = _read_csv(data_dir / "persons.csv", issues)
@@ -145,13 +195,15 @@ def load_scenario(
     # Always load account_values.csv from the scenario directory
     model_rows: list[dict[str, str]] = _read_csv(scenario_dir / "account_values.csv", issues)
 
-    aux_rows = _read_aux_dir(data_dir / "aux", issues)
+    aux_rows = _read_aux_dir(data_dir / "aux", issues, money_resolver=money_resolver)
 
     _validate_accounts(accounts, issues)
+    _validate_account_model_money(model_rows, issues, money_resolver=money_resolver)
+    _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, accounts, issues)
     _validate_calendar(calendar_rows, issues)
     _validate_waterfall(waterfall_rows, scheduled_rows, issues)
-    _validate_priors(priors_rows, accounts, issues)
+    _validate_priors(priors_rows, accounts, issues, money_resolver=money_resolver)
 
     if issues:
         raise LoadError(issues)
@@ -190,6 +242,7 @@ def load_scenario(
             waterfall_rows=waterfall_rows,
             calendar_rows=calendar_rows,
             priors_rows=priors_rows,
+            money_resolver=money_resolver,
         )
         _write_manifest(
             con,
@@ -224,7 +277,10 @@ def _read_csv(
 
 
 def _read_aux_dir(
-    aux_dir: Path, issues: list[str]
+    aux_dir: Path,
+    issues: list[str],
+    *,
+    money_resolver: _MoneyReferenceResolver,
 ) -> list[tuple[str, str | None, dict[str, Any], str]]:
     out: list[tuple[str, str | None, dict[str, Any], str]] = []
     if not aux_dir.is_dir():
@@ -249,15 +305,27 @@ def _read_aux_dir(
                 )
                 continue
             payload: dict[str, Any] = {}
+            row_ok = True
             for c in cols:
                 if c == "effective_date":
                     continue
                 raw = row[c]
                 if c in money_cols:
-                    payload[c] = _dollars_to_cents(raw) if raw != "" else None
+                    if raw != "":
+                        try:
+                            payload[c] = _dollars_to_cents(raw, resolver=money_resolver)
+                        except ValueError as e:
+                            issues.append(
+                                f"aux/{csv_path.name} row {i} ({c}): {e}"
+                            )
+                            row_ok = False
+                            break
+                    else:
+                        payload[c] = None
                 else:
                     payload[c] = _coerce(raw)
-            out.append((kind, series, payload, row["effective_date"]))
+            if row_ok:
+                out.append((kind, series, payload, row["effective_date"]))
     return out
 
 
@@ -277,13 +345,25 @@ def _coerce(s: str) -> Any:
         return s
 
 
-def _dollars_to_cents(s: str) -> int:
+def _dollars_to_cents(
+    s: str,
+    *,
+    resolver: _MoneyReferenceResolver | None = None,
+) -> int:
     """Parse a human-facing dollar amount (e.g. ``'1234.56'``, ``'-150'``) into
     integer cents. CSV money columns are kept in dollars-and-cents so they can
     be hand-edited; the engine continues to work in integer cents.
     """
+    raw = s.strip()
+    if raw.startswith("@"):
+        if resolver is None:
+            raise ValueError(f"money reference {raw!r} requires a data-dir resolver")
+        token = raw[1:].strip()
+        if not token:
+            raise ValueError("money reference '@' missing token (e.g. '@home_basis')")
+        return resolver.resolve(token)
     try:
-        d = Decimal(s)
+        d = Decimal(raw)
     except InvalidOperation as e:
         raise ValueError(f"invalid money value: {s!r}") from e
     cents = d * 100
@@ -357,6 +437,66 @@ def _validate_scheduled(
         _validate_tags("scheduled.csv", i, name, row.get("tags", ""), issues)
 
 
+def _validate_account_model_money(
+    rows: list[dict[str, str]],
+    issues: list[str],
+    *,
+    money_resolver: _MoneyReferenceResolver,
+) -> None:
+    for i, row in enumerate(rows, start=2):
+        name = row.get("account_name", "")
+        ob = row.get("opening_balance", "")
+        if ob == "":
+            issues.append(
+                f"account_values.csv row {i} ({name}): opening_balance is required"
+            )
+        else:
+            try:
+                _dollars_to_cents(ob, resolver=money_resolver)
+            except ValueError as e:
+                issues.append(
+                    f"account_values.csv row {i} ({name}): opening_balance {e}"
+                )
+        ocb = row.get("opening_cost_basis", "")
+        if ocb != "":
+            try:
+                _dollars_to_cents(ocb, resolver=money_resolver)
+            except ValueError as e:
+                issues.append(
+                    f"account_values.csv row {i} ({name}): opening_cost_basis {e}"
+                )
+        pyeb = row.get("prior_year_end_balance", "")
+        if pyeb != "":
+            try:
+                _dollars_to_cents(pyeb, resolver=money_resolver)
+            except ValueError as e:
+                issues.append(
+                    f"account_values.csv row {i} ({name}): prior_year_end_balance {e}"
+                )
+
+
+def _validate_scheduled_money(
+    rows: list[dict[str, str]],
+    issues: list[str],
+    *,
+    money_resolver: _MoneyReferenceResolver,
+) -> None:
+    for i, row in enumerate(rows, start=2):
+        name = row.get("name", "")
+        amount = row.get("amount", "")
+        if amount != "":
+            try:
+                _dollars_to_cents(amount, resolver=money_resolver)
+            except ValueError as e:
+                issues.append(f"scheduled.csv row {i} ({name}): amount {e}")
+        base_amount = row.get("base_amount", "")
+        if base_amount != "":
+            try:
+                _dollars_to_cents(base_amount, resolver=money_resolver)
+            except ValueError as e:
+                issues.append(f"scheduled.csv row {i} ({name}): base_amount {e}")
+
+
 def _validate_calendar(rows: list[dict[str, str]], issues: list[str]) -> None:
     for i, row in enumerate(rows, start=2):
         kind = row.get("kind", "")
@@ -420,7 +560,11 @@ def _validate_waterfall(
 
 
 def _validate_priors(
-    rows: list[dict[str, str]], _accounts: list[dict[str, str]], issues: list[str]
+    rows: list[dict[str, str]],
+    _accounts: list[dict[str, str]],
+    issues: list[str],
+    *,
+    money_resolver: _MoneyReferenceResolver,
 ) -> None:
     seen: set[tuple[str, str]] = set()
     for i, row in enumerate(rows, start=2):
@@ -432,10 +576,10 @@ def _validate_priors(
             continue
         try:
             int(year)
-            _dollars_to_cents(amount)
+            _dollars_to_cents(amount, resolver=money_resolver)
         except ValueError:
             issues.append(
-                f"priors.csv row {i}: year must be int, amount must be dollars"
+                f"priors.csv row {i}: year must be int, amount must be dollars or @reference"
             )
             continue
         key = (year, bucket)
@@ -486,6 +630,7 @@ def _write_intent(
     waterfall_rows: list[dict[str, str]],
     calendar_rows: list[dict[str, str]],
     priors_rows: list[dict[str, str]],
+    money_resolver: _MoneyReferenceResolver,
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     now = _now_iso()
@@ -533,9 +678,11 @@ def _write_intent(
             (
                 model_id,
                 account_ids[m["account_name"]],
-                _dollars_to_cents(m["opening_balance"]),
-                _dollars_to_cents(m["opening_cost_basis"]) if m.get("opening_cost_basis") else None,
-                _dollars_to_cents(m["prior_year_end_balance"]) if m.get("prior_year_end_balance") else None,
+                _dollars_to_cents(m["opening_balance"], resolver=money_resolver),
+                _dollars_to_cents(m["opening_cost_basis"], resolver=money_resolver)
+                if m.get("opening_cost_basis") else None,
+                _dollars_to_cents(m["prior_year_end_balance"], resolver=money_resolver)
+                if m.get("prior_year_end_balance") else None,
             ),
         )
     counts["account_model_member"] = len(account_model_rows)
@@ -595,9 +742,11 @@ def _write_intent(
                 s.get("series") or None,
                 _opt_int(s.get("rate_micros")),
                 _opt_int(s.get("claim_age")),
-                _dollars_to_cents(s["amount"]) if s.get("amount") else None,
+                _dollars_to_cents(s["amount"], resolver=money_resolver)
+                if s.get("amount") else None,
                 s.get("params_json") or None,
-                _dollars_to_cents(s["base_amount"]) if s.get("base_amount") else None,
+                _dollars_to_cents(s["base_amount"], resolver=money_resolver)
+                if s.get("base_amount") else None,
                 s.get("base_date") or None, s.get("inflation_series") or None,
                 s["tax_character"], s["start"], s.get("end") or None, prio,
                 s.get("description") or None, s.get("meta_json") or "{}",
@@ -653,7 +802,8 @@ def _write_intent(
             "scenario_id, year, bucket, amount, source_note) "
             "VALUES (?,?,?,?,?)",
             (
-                scenario_id, int(r["year"]), r["bucket"], _dollars_to_cents(r["amount"]),
+                scenario_id, int(r["year"]), r["bucket"],
+                _dollars_to_cents(r["amount"], resolver=money_resolver),
                 r.get("source_note") or None,
             ),
         )

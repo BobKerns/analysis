@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import shutil
 import sqlite3
 from pathlib import Path
@@ -222,3 +223,79 @@ def test_invalid_tag_rejected(tmp_path: Path) -> None:
             allow_dirty_data=True,
         )
     assert any("no_colon_here" in issue for issue in ei.value.issues)
+
+
+def test_money_reference_in_account_values_resolves_itemization_sum(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    itemizations = repo / "itemizations"
+    itemizations.mkdir(parents=True, exist_ok=True)
+    with (itemizations / "home_basis.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["Item", "Value", "Note"])
+        w.writeheader()
+        w.writerow({"Item": "purchase", "Value": "300000.00", "Note": ""})
+        w.writerow({"Item": "improvements", "Value": "100000.00", "Note": ""})
+
+    av = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    with av.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+        fields = list(rows[0].keys())
+    for row in rows:
+        if row.get("account_name") == "Asset_Home":
+            row["opening_cost_basis"] = "@home_basis"
+    with av.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out",
+        allow_dirty_data=True,
+    )
+    con = sqlite3.connect(result.intent_path)
+    try:
+        got = con.execute(
+            "SELECT m.opening_cost_basis "
+            "FROM account_model_member m "
+            "JOIN account a ON a.id = m.account_id "
+            "WHERE a.name = 'Asset_Home'"
+        ).fetchone()[0]
+        assert got == 40_000_000
+    finally:
+        con.close()
+
+
+def test_money_reference_rejects_itemization_missing_value_column(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    itemizations = repo / "itemizations"
+    itemizations.mkdir(parents=True, exist_ok=True)
+    with (itemizations / "home_basis.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["Item", "Amount"])
+        w.writeheader()
+        w.writerow({"Item": "purchase", "Amount": "300000.00"})
+
+    av = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    with av.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+        fields = list(rows[0].keys())
+    for row in rows:
+        if row.get("account_name") == "Asset_Home":
+            row["opening_cost_basis"] = "@home_basis"
+    with av.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("expected a 'Value' column" in issue for issue in ei.value.issues)

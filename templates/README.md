@@ -13,6 +13,7 @@ SQL schema alongside the source CSV.
     persons.csv                   # household owners + operator identities ($ANALYSIS_USER)
     accounts.csv                  # chart of accounts
     account_models/<name>.csv     # opening balances per model
+    itemizations/<name>.csv       # optional money rollups referenced as @<name>
     aux/<kind>[__<series>].csv    # aux tables; one per kind/series (ADR-003 §4.4)
     scenarios/<name>/
         scenario.csv              # one-row scenario header
@@ -31,6 +32,8 @@ SQL schema alongside the source CSV.
 - Booleans: `0` / `1`.
 - JSON columns hold a single JSON value as a string. Use CSV quoting for embedded commas/quotes.
 - Empty string means NULL.
+- Monetary fields may reference an itemization CSV using `@name` (for example, `@home_basis`).
+    The loader reads `itemizations/name.csv`, sums the `Value` column, and uses that total.
 
 ## Budget planning
 
