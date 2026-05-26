@@ -13,7 +13,7 @@ dependencies = [
   "rich>=15.0.0",
   "ipykernel>=7.2.0",
   "jupyterlab>=4.5.7",
-  "git-python>=1.0.3",
+  "git-python>=1.1.1",
 ]
 
 [project.scripts]
