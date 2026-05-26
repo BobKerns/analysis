@@ -13,11 +13,12 @@ dependencies = [
   "rich>=15.0.0",
   "ipykernel>=7.2.0",
   "jupyterlab>=4.5.7",
-  "git-python>=1.1.1",
 ]
 
 [project.scripts]
 analysis = "analysis.cli:main"
+amazon = "analysis.amazon.cli:amazon_group_command"
+sim = "analysis.sim.cli:sim_group_command"
 
 [dependency-groups]
 dev = [
