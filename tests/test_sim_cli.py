@@ -142,7 +142,7 @@ def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> 
     result = runner.invoke(
         main,
         [
-            "sim", "transfer", "add", "fixed",
+            "sim", "transfer", "add",
             "2030-06-30", "Asset_Checking", "Asset_Brokerage_Joint", "1500.00",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
@@ -174,7 +174,7 @@ def test_sim_add_scheduled_appends_row_with_defaults_and_check_passes(
     result = runner.invoke(
         main,
         [
-            "sim", "transfer", "add", "scheduled",
+            "sim", "scheduled", "add",
             "2030-01-31", "Asset_Checking", "Asset_Brokerage_Joint", "250.00",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
@@ -203,7 +203,7 @@ def test_sim_add_fixed_rejects_unknown_account(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "sim", "transfer", "add", "fixed",
+            "sim", "transfer", "add",
             "2030-06-30", "NopeAccount", "Asset_Brokerage_Joint", "100.00",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
@@ -218,7 +218,7 @@ def test_sim_add_fixed_prompts_when_args_missing(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["sim", "transfer", "add", "fixed", "--scenario", "retire_alice",
+        ["sim", "transfer", "add", "--scenario", "retire_alice",
          "--data-dir", str(data)],
         input="2030-06-30\nAsset_Checking\nAsset_Brokerage_Joint\n42.00\n",
     )
@@ -285,7 +285,7 @@ def test_sim_accounts_lists_with_balance_and_rate(tmp_path: Path) -> None:
     assert "5,000.00" in out
 
 
-def test_sim_transfer_list_shows_one_off_and_scheduled(tmp_path: Path) -> None:
+def test_sim_transfer_list_shows_one_off(tmp_path: Path) -> None:
     data = _copy_prototype(tmp_path)
     runner = CliRunner()
     result = runner.invoke(
@@ -298,8 +298,21 @@ def test_sim_transfer_list_shows_one_off_and_scheduled(tmp_path: Path) -> None:
     out = result.output
     # one-off inheritance transfer from calendar.csv
     assert "Income_Inheritance" in out
-    assert "one-off" in out
-    # recurring scheduled transfer
+    # scheduled transactions are NOT shown here
+    assert "salary_alice" not in out
+
+
+def test_sim_scheduled_list_shows_recurring(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sim", "scheduled", "list", "--scenario", "retire_alice",
+         "--data-dir", str(data)],
+        env={"COLUMNS": "240"},
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output
     assert "salary_alice" in out
     assert "monthly" in out
 
@@ -319,7 +332,7 @@ def test_sim_tag_add_rm_round_trip(tmp_path: Path) -> None:
 
     r = runner.invoke(
         main,
-        ["sim", "tag", "add", "scheduled", target, "demo:test", "owner:alice",
+        ["sim", "scheduled", "tag", "add", target, "demo:test", "owner:alice",
          "--scenario", "retire_alice", "--data-dir", str(data)],
     )
     assert r.exit_code == 0, r.output
@@ -329,20 +342,20 @@ def test_sim_tag_add_rm_round_trip(tmp_path: Path) -> None:
     new_tags = df2.loc[df2["name"] == target, "tags"].iloc[0]
     assert "demo:test" in new_tags and "owner:alice" in new_tags
 
-    # tag list should now show both tags via the loader's intent DB.
+    # tags should now show both tags via the loader's intent DB.
     r = runner.invoke(
         main,
-        ["sim", "tag", "list", "--scenario", "retire_alice",
+        ["sim", "tags", "--scenario", "retire_alice",
          "--data-dir", str(data)],
     )
     assert r.exit_code == 0, r.output
     assert "demo:test" in r.output
     assert "owner:alice" in r.output
 
-    # tag rm strips one and leaves the other.
+    # scheduled tag rm strips one and leaves the other.
     r = runner.invoke(
         main,
-        ["sim", "tag", "rm", "scheduled", target, "demo:test",
+        ["sim", "scheduled", "tag", "rm", target, "demo:test",
          "--scenario", "retire_alice", "--data-dir", str(data)],
     )
     assert r.exit_code == 0, r.output
@@ -357,7 +370,7 @@ def test_sim_tag_add_rejects_bad_token(tmp_path: Path) -> None:
     runner = CliRunner()
     r = runner.invoke(
         main,
-        ["sim", "tag", "add", "account", "Asset_Checking", "no_colon",
+        ["sim", "account", "tag", "add", "Asset_Checking", "no_colon",
          "--data-dir", str(data)],
     )
     assert r.exit_code != 0

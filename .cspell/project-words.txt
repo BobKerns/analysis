@@ -33,6 +33,7 @@ recomputable
 reconstructable
 reprompts
 runfile
+scen
 sdir
 secho
 sidefx
