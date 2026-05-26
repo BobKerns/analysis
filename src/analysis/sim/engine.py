@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import calendar
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,7 @@ class EngineError(RuntimeError):
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance", "waterfall_fill",
      "refill_transfer",
-     "mortgage_payment", "ss_benefit", "rmd"}
+    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator"}
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
@@ -265,6 +265,16 @@ def run_scenario(
                             params, frm, to,
                             person_birthdates, prior_year_end_balances, aux,
                             tax_char, tid,
+                        )
+                    case "tax_accumulator":
+                        if cadence != "annual":
+                            raise EngineError(
+                                f"tax_accumulator id={tid}: cadence must be 'annual'"
+                            )
+                        _apply_tax_accumulator(
+                            con, balances, account_kinds, step_id, month_s, month,
+                            params, from_id=frm, to_id=to, aux=aux,
+                            tax_char=tax_char, tid=tid,
                         )
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
@@ -637,6 +647,277 @@ def _apply_waterfall_fill(
         deficit -= take
 
 
+def _apply_tax_accumulator(
+    con,
+    balances: dict[int, int],
+    account_kinds: dict[int, str],
+    step_id: int,
+    month_s: str,
+    month: date,
+    params: dict[str, Any],
+    *,
+    from_id: int,
+    to_id: int,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    tax_char: str,
+    tid: int,
+) -> None:
+    """Compute and optionally pay forecasted income tax for a target year.
+
+    Supported params:
+    - year: "previous" (default), "current", or explicit year integer
+    - scope: "federal" (default) or "state"
+    - filing_status_aux: defaults to "filing_status"
+    - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
+    - bracket_series: optional, required when state_brackets has multiple series
+    - standard_deduction_aux: defaults to "standard_deduction"
+    - ss_threshold_aux: defaults to "ss_taxation_thresholds" (federal only)
+    """
+    year_mode = str(params.get("year", "previous"))
+    scope = str(params.get("scope", "federal"))
+    if scope not in {"federal", "state"}:
+        raise EngineError(
+            f"tax_accumulator id={tid}: scope must be 'federal' or 'state' (got {scope!r})"
+        )
+
+    if year_mode == "previous":
+        tax_year = month.year - 1
+    elif year_mode == "current":
+        tax_year = month.year
+    else:
+        try:
+            tax_year = int(year_mode)
+        except ValueError as e:
+            raise EngineError(
+                f"tax_accumulator id={tid}: invalid year={year_mode!r}"
+            ) from e
+
+    filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
+    standard_deduction_aux = str(params.get("standard_deduction_aux", "standard_deduction"))
+    ss_threshold_aux = str(params.get("ss_threshold_aux", "ss_taxation_thresholds"))
+    bracket_aux = str(
+        params.get(
+            "bracket_aux",
+            "federal_brackets" if scope == "federal" else "state_brackets",
+        )
+    )
+    bracket_series = params.get("bracket_series")
+
+    as_of = f"{tax_year}-12-31"
+    filing_status = _active_filing_status(aux, filing_status_aux, as_of, tid)
+
+    if bracket_aux == "state_brackets" and bracket_series is None:
+        # If exactly one state bracket series exists, default to it.
+        state_series = sorted(
+            series for (kind, series) in aux if kind == "state_brackets" and series is not None
+        )
+        if len(state_series) == 1:
+            bracket_series = state_series[0]
+        elif len(state_series) > 1:
+            raise EngineError(
+                f"tax_accumulator id={tid}: bracket_series required for state_brackets"
+            )
+
+    ordinary_income, ltcg_income, ss_income = _tax_year_income_buckets(
+        con, tax_year=tax_year,
+    )
+    ordinary_prior, ltcg_prior, ss_prior = _tax_year_prior_buckets(
+        con, tax_year=tax_year,
+    )
+    ordinary_income += ordinary_prior
+    ltcg_income += ltcg_prior
+    ss_income += ss_prior
+
+    taxable_ss = 0
+    if scope == "federal" and ss_income > 0:
+        thresholds = _active_aux_rows(aux, ss_threshold_aux, None, as_of)
+        thresholds = [r for r in thresholds if r.get("filing_status") == filing_status]
+        if not thresholds:
+            raise EngineError(
+                f"tax_accumulator id={tid}: missing ss thresholds for filing_status={filing_status!r}"
+            )
+        tier1 = int(thresholds[0]["tier1_floor"])
+        tier2 = int(thresholds[0]["tier2_floor"])
+        taxable_ss = _taxable_social_security_cents(
+            ordinary_income=ordinary_income,
+            ltcg_income=ltcg_income,
+            ss_income=ss_income,
+            tier1=tier1,
+            tier2=tier2,
+        )
+
+    deduction_rows = _active_aux_rows(aux, standard_deduction_aux, None, as_of)
+    deduction_rows = [r for r in deduction_rows if r.get("filing_status") == filing_status]
+    if not deduction_rows:
+        raise EngineError(
+            f"tax_accumulator id={tid}: missing standard deduction for filing_status={filing_status!r}"
+        )
+    standard_deduction = int(deduction_rows[0]["amount"])
+
+    taxable_income = max(0, ordinary_income + ltcg_income + taxable_ss - standard_deduction)
+
+    bracket_rows = _active_aux_rows(aux, bracket_aux, bracket_series, as_of)
+    bracket_rows = [r for r in bracket_rows if r.get("filing_status") == filing_status]
+    if not bracket_rows:
+        raise EngineError(
+            f"tax_accumulator id={tid}: missing brackets kind={bracket_aux!r} "
+            f"series={bracket_series!r} filing_status={filing_status!r}"
+        )
+    brackets: list[tuple[int, int]] = sorted(
+        (int(r["floor"]), int(r["marginal_rate_micros"]))
+        for r in bracket_rows
+    )
+    tax_liability = _progressive_tax_cents(taxable_income, brackets)
+
+    paid_transfers = con.execute(
+        "SELECT COALESCE(SUM(amount), 0) "
+        "FROM transfer_event "
+        "WHERE substr(date, 1, 4) = ? "
+        "  AND to_account = ?",
+        (str(tax_year), to_id),
+    ).fetchone()[0]
+    paid_priors = _tax_year_prior_paid(con, tax_year=tax_year, scope=scope)
+    already_paid = int(paid_transfers or 0) + paid_priors
+    tax_due = max(0, tax_liability - already_paid)
+    tax_overpaid = max(0, already_paid - tax_liability)
+
+    if tax_due > 0:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            from_id, to_id, tax_due, tax_char, tid,
+        )
+
+    computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    summary_rows = {
+        f"{scope}_ordinary_income": ordinary_income,
+        f"{scope}_ltcg_income": ltcg_income,
+        f"{scope}_ss_income": ss_income,
+        f"{scope}_taxable_ss": taxable_ss,
+        f"{scope}_adjusted_gross_income": ordinary_income + ltcg_income + taxable_ss,
+        f"{scope}_standard_deduction": standard_deduction,
+        f"{scope}_taxable_income": taxable_income,
+        f"{scope}_tax_liability": tax_liability,
+        f"{scope}_tax_paid": already_paid,
+        f"{scope}_tax_due": tax_due,
+        f"{scope}_tax_overpaid": tax_overpaid,
+    }
+
+    for bucket, amount in summary_rows.items():
+        con.execute(
+            "INSERT OR REPLACE INTO tax_year_summary(year, bucket, amount, computed_at) "
+            "VALUES (?, ?, ?, ?)",
+            (tax_year, bucket, int(amount), computed_at),
+        )
+
+
+def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
+    rows = con.execute(
+        "SELECT tax_character, COALESCE(SUM(amount), 0) "
+        "FROM transfer_event "
+        "WHERE substr(date, 1, 4) = ? "
+        "GROUP BY tax_character",
+        (str(tax_year),),
+    ).fetchall()
+    by_char = {k: int(v or 0) for k, v in rows}
+    ordinary = by_char.get("ordinary", 0) + by_char.get("tax_deferred_out", 0)
+    ltcg = by_char.get("ltcg", 0)
+    ss = by_char.get("ss_benefit", 0)
+    return ordinary, ltcg, ss
+
+
+def _tax_year_prior_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
+    rows = con.execute(
+        "SELECT bucket, amount FROM prior_tax_activity WHERE year = ?",
+        (tax_year,),
+    ).fetchall()
+    ordinary = 0
+    ltcg = 0
+    ss = 0
+    for bucket, amount in rows:
+        b = str(bucket)
+        a = int(amount)
+        match b:
+            case "ordinary":
+                ordinary += a
+            case "ltcg" | "ltcg_gain" | "ltcg_loss_carryforward":
+                ltcg += a
+            case "ss_benefit":
+                ss += a
+            case _:
+                continue
+    return ordinary, ltcg, ss
+
+
+def _tax_year_prior_paid(con, *, tax_year: int, scope: str) -> int:
+    rows = con.execute(
+        "SELECT bucket, amount FROM prior_tax_activity WHERE year = ?",
+        (tax_year,),
+    ).fetchall()
+    paid = 0
+    for bucket, amount in rows:
+        b = str(bucket)
+        if b in {
+            f"{scope}_tax_withheld",
+            f"{scope}_tax_paid",
+            f"{scope}_estimated_paid",
+        }:
+            paid += int(amount)
+    return paid
+
+
+def _active_filing_status(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    filing_status_aux: str,
+    as_of: str,
+    tid: int,
+) -> str:
+    rows = _active_aux_rows(aux, filing_status_aux, None, as_of)
+    if not rows:
+        raise EngineError(
+            f"tax_accumulator id={tid}: no filing_status row effective <= {as_of}"
+        )
+    status = rows[0].get("filing_status")
+    if not status:
+        raise EngineError(
+            f"tax_accumulator id={tid}: filing_status payload missing filing_status"
+        )
+    return str(status)
+
+
+def _taxable_social_security_cents(
+    *,
+    ordinary_income: int,
+    ltcg_income: int,
+    ss_income: int,
+    tier1: int,
+    tier2: int,
+) -> int:
+    """Approximate taxable Social Security amount under provisional-income rules."""
+    provisional = ordinary_income + ltcg_income + (ss_income // 2)
+    if provisional <= tier1:
+        return 0
+    if provisional <= tier2:
+        return min(ss_income // 2, (provisional - tier1) // 2)
+    base = min(ss_income // 2, (tier2 - tier1) // 2)
+    addl = ((provisional - tier2) * 85) // 100
+    return min((ss_income * 85) // 100, base + addl)
+
+
+def _progressive_tax_cents(taxable_income: int, brackets: list[tuple[int, int]]) -> int:
+    if taxable_income <= 0 or not brackets:
+        return 0
+    tax = 0
+    for i, (floor, rate_micros) in enumerate(brackets):
+        if taxable_income <= floor:
+            continue
+        next_floor = brackets[i + 1][0] if i + 1 < len(brackets) else None
+        upper = taxable_income if next_floor is None else min(taxable_income, next_floor)
+        taxable_slice = max(0, upper - floor)
+        if taxable_slice > 0:
+            tax += (taxable_slice * rate_micros) // 1_000_000
+    return tax
+
+
 def _load_sources(con) -> dict[int, list[int]]:
     out: dict[int, list[int]] = {}
     for tid, _pos, aid in con.execute(
@@ -710,6 +991,22 @@ def _lookup_aux(
         else:
             break
     return chosen
+
+
+def _active_aux_rows(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    kind: str,
+    series: str | None,
+    month_s: str,
+) -> list[dict[str, Any]]:
+    rows = aux.get((kind, series))
+    if not rows:
+        return []
+    effective_dates = [effective for effective, _ in rows if effective <= month_s]
+    if not effective_dates:
+        return []
+    active_effective = max(effective_dates)
+    return [payload for effective, payload in rows if effective == active_effective]
 
 
 def _parse_date(s: str) -> date:
