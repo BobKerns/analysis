@@ -425,15 +425,10 @@ def _prompt_account(label: str, accounts: list[str]) -> str:
 
 @sim_group_command.group(name="transfer")
 def transfer_group_command() -> None:
-    """Inspect or modify transfers in a scenario."""
+    """Inspect or modify one-time calendar transfers in a scenario."""
 
 
-@transfer_group_command.group(name="add")
-def transfer_add_group_command() -> None:
-    """Append a transfer to a scenario (one-time or recurring)."""
-
-
-@transfer_add_group_command.command("fixed")
+@transfer_group_command.command("add")
 @click.argument("date", required=False)
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
@@ -447,7 +442,7 @@ def transfer_add_group_command() -> None:
               help="ADR-003 tax_character (e.g. ordinary, ltcg, none).")
 @click.option("--description", default="", help="Free-text description.")
 @click.option("--series", default="", help="Optional series tag.")
-def add_fixed(
+def transfer_add(
     date: str | None,
     from_account: str | None,
     to_account: str | None,
@@ -519,7 +514,15 @@ def add_fixed(
     )
 
 
-@transfer_add_group_command.command("scheduled")
+# ---------- scheduled ----------
+
+
+@sim_group_command.group(name="scheduled")
+def scheduled_group_command() -> None:
+    """Inspect or modify recurring scheduled transactions."""
+
+
+@scheduled_group_command.command("add")
 @click.argument("date", required=False)
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
@@ -545,7 +548,7 @@ def add_fixed(
 @click.option("--series", default="")
 @click.option("--tags", default="",
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary household:rwk').")
-def add_scheduled(
+def scheduled_add(
     date: str | None,
     from_account: str | None,
     to_account: str | None,
@@ -644,6 +647,90 @@ def add_scheduled(
         f"appended scheduled row '{row_name}' ({cadence}) "
         f"{from_account} -> {to_account} {_fmt_cents(cents).strip()} to {path}"
     )
+
+
+@scheduled_group_command.command("list")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def scheduled_list(scenario: str | None, data_dir: Path | None) -> None:
+    """List recurring scheduled transactions."""
+    from rich.console import Console
+    from rich.table import Table
+
+    data_dir_p = _resolve_data_dir(data_dir)
+    with open_intent_db(data_dir_p, scenario) as (con, scen_name):
+        table = Table(title=f"scheduled ({data_dir_p.name} / {scen_name})")
+        table.add_column("Name")
+        table.add_column("Cadence")
+        table.add_column("From")
+        table.add_column("To")
+        table.add_column("Amount", justify="right")
+        table.add_column("Start")
+        table.add_column("End")
+        for row in con.execute(
+            "SELECT s.name, s.cadence, s.start, s.\"end\" AS end_date, "
+            "       s.amount_rule_kind, s.base_amount, "
+            "       fa.name AS from_name, ta.name AS to_name "
+            "FROM scheduled_transaction s "
+            "JOIN account fa ON fa.id = s.from_account "
+            "JOIN account ta ON ta.id = s.to_account "
+            "ORDER BY s.priority, s.name"
+        ):
+            rule = row["amount_rule_kind"]
+            if rule == "fixed_amount" and row["base_amount"] is not None:
+                amt = _fmt_cents(row["base_amount"]).strip()
+            elif rule == "percent_of_balance":
+                amt = "% of bal"
+            else:
+                amt = rule
+            table.add_row(
+                row["name"], row["cadence"],
+                row["from_name"], row["to_name"],
+                amt, row["start"], row["end_date"] or "",
+            )
+    Console().print(table)
+
+
+@scheduled_group_command.group(name="tag")
+def scheduled_tag_group() -> None:
+    """Add or remove tags on a scheduled transaction."""
+
+
+@scheduled_tag_group.command("add")
+@click.argument("name")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def scheduled_tag_add(
+    name: str,
+    tag_tokens: tuple[str, ...],
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Add one or more '<role>:<name>' tags to a scheduled transaction."""
+    _scenario_write(data_dir, scenario, "scheduled", name, tag_tokens, "add")
+
+
+@scheduled_tag_group.command("rm")
+@click.argument("name")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def scheduled_tag_rm(
+    name: str,
+    tag_tokens: tuple[str, ...],
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Remove one or more '<role>:<name>' tags from a scheduled transaction."""
+    _scenario_write(data_dir, scenario, "scheduled", name, tag_tokens, "rm")
 
 
 _ACCOUNTS_HEADER: tuple[str, ...] = (
@@ -851,6 +938,45 @@ def list_accounts(
     Console().print(render_accounts_table(rows, title=title))
 
 
+@account_group_command.group(name="tag")
+def account_tag_group() -> None:
+    """Add or remove tags on an account."""
+
+
+@account_tag_group.command("add")
+@click.argument("name")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def account_tag_add(
+    name: str,
+    tag_tokens: tuple[str, ...],
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Add one or more '<role>:<name>' tags to an account."""
+    _scenario_write(data_dir, scenario, "account", name, tag_tokens, "add")
+
+
+@account_tag_group.command("rm")
+@click.argument("name")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def account_tag_rm(
+    name: str,
+    tag_tokens: tuple[str, ...],
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Remove one or more '<role>:<name>' tags from an account."""
+    _scenario_write(data_dir, scenario, "account", name, tag_tokens, "rm")
+
+
 @transfer_group_command.command("list")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
@@ -858,15 +984,14 @@ def list_accounts(
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
-    """List one-off (calendar) and recurring (scheduled) transfers."""
+    """List one-off (calendar) transfers."""
     from rich.console import Console
     from rich.table import Table
 
     data_dir_p = _resolve_data_dir(data_dir)
     with open_intent_db(data_dir_p, scenario) as (con, scen_name):
         table = Table(title=f"transfers ({data_dir_p.name} / {scen_name})")
-        table.add_column("When")
-        table.add_column("Source")
+        table.add_column("Date")
         table.add_column("From")
         table.add_column("To")
         table.add_column("Amount", justify="right")
@@ -882,35 +1007,8 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
         ):
             amt = _fmt_cents(row["amount"]).strip() if row["amount"] is not None else ""
             table.add_row(
-                row["date"], "one-off",
+                row["date"],
                 row["account_1"] or "", row["account_2"] or "",
-                amt, row["tax_character"], row["description"],
-            )
-
-        for row in con.execute(
-            "SELECT s.name, s.cadence, s.start, s.\"end\" AS end_date, "
-            "       s.amount_rule_kind, s.base_amount, "
-            "       COALESCE(s.tax_character, '') AS tax_character, "
-            "       COALESCE(s.description, '') AS description, "
-            "       fa.name AS from_name, ta.name AS to_name "
-            "FROM scheduled_transaction s "
-            "JOIN account fa ON fa.id = s.from_account "
-            "JOIN account ta ON ta.id = s.to_account "
-            "ORDER BY s.priority, s.name"
-        ):
-            when = row["cadence"]
-            if row["end_date"]:
-                when = f"{when} until {row['end_date']}"
-            when = f"{when} from {row['start']}"
-            rule = row["amount_rule_kind"]
-            if rule == "fixed_amount" and row["base_amount"] is not None:
-                amt = _fmt_cents(row["base_amount"]).strip()
-            elif rule == "percent_of_balance":
-                amt = "% of bal"
-            else:
-                amt = rule
-            table.add_row(
-                when, row["name"], row["from_name"], row["to_name"],
                 amt, row["tax_character"], row["description"],
             )
 
@@ -918,12 +1016,7 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
 
 
 
-# ---------- tag: add / remove / list ----------
-
-
-@sim_group_command.group(name="tag")
-def tag_group_command() -> None:
-    """Add, remove, and inspect ad-hoc tags on accounts and scheduled transactions."""
+# ---------- tags: cross-type listing ----------
 
 
 def _scenario_write(
@@ -948,56 +1041,22 @@ def _scenario_write(
     click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
 
 
-@tag_group_command.command("add")
-@click.argument("item_type", type=click.Choice(["account", "scheduled"]))
-@click.argument("item_name")
-@click.argument("tag_tokens", nargs=-1, required=True)
-@click.option("--scenario", default=None)
-@click.option("--data-dir",
-              type=click.Path(exists=True, file_okay=False, path_type=Path),
-              default=None)
-def tag_add(
-    item_type: str,
-    item_name: str,
-    tag_tokens: tuple[str, ...],
-    scenario: str | None,
-    data_dir: Path | None,
-) -> None:
-    """Add one or more '<role>:<name>' tags to an item."""
-    _scenario_write(data_dir, scenario, item_type, item_name, tag_tokens, "add")
-
-
-@tag_group_command.command("rm")
-@click.argument("item_type", type=click.Choice(["account", "scheduled"]))
-@click.argument("item_name")
-@click.argument("tag_tokens", nargs=-1, required=True)
-@click.option("--scenario", default=None)
-@click.option("--data-dir",
-              type=click.Path(exists=True, file_okay=False, path_type=Path),
-              default=None)
-def tag_rm(
-    item_type: str,
-    item_name: str,
-    tag_tokens: tuple[str, ...],
-    scenario: str | None,
-    data_dir: Path | None,
-) -> None:
-    """Remove one or more '<role>:<name>' tags from an item."""
-    _scenario_write(data_dir, scenario, item_type, item_name, tag_tokens, "rm")
-
-
-@tag_group_command.command("list")
+@sim_group_command.group(name="tags", invoke_without_command=True)
+@click.pass_context
 @click.option("--scenario", default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 @click.option("--role", default=None, help="Restrict to a single role.")
-def tag_list(
+def tags_group_command(
+    ctx: click.Context,
     scenario: str | None,
     data_dir: Path | None,
     role: str | None,
 ) -> None:
-    """List distinct tags present in the scenario, with usage counts."""
+    """List tags across all types (accounts, scheduled, calendar), or run a sub-command."""
+    if ctx.invoked_subcommand is not None:
+        return
     data_dir_p = _resolve_data_dir(data_dir)
     with open_scenario(data_dir_p, scenario) as sc:
         df = sc.list_tags(role=role)
@@ -1012,13 +1071,13 @@ def tag_list(
         )
 
 
-@tag_group_command.command("items")
+@tags_group_command.command("items")
 @click.argument("tag_token")
 @click.option("--scenario", default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-def tag_items(
+def tags_items(
     tag_token: str,
     scenario: str | None,
     data_dir: Path | None,
