@@ -6,6 +6,7 @@ birthdates
 calevt
 carryforward
 carryforwards
+categoriser
 dflt
 executemany
 executescript

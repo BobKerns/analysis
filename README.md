@@ -25,6 +25,16 @@ This repository is a single top-level Python project. There are no nested repos 
 - CLI tools: `python -m analysis ...`
 - Notebooks: Open and run notebooks in `notebooks/`
 
+Three CLI entry points are installed:
+
+| Script | Equivalent | Purpose |
+| -------- | ------------ | --------- |
+| `analysis` | — | Top-level; all subcommands |
+| `amazon` | `analysis amazon` | Amazon expense categoriser |
+| `sim` | `analysis sim` | Scenario simulator |
+
+All examples below use the short scripts (`amazon ...`, `sim ...`). You can also use `analysis amazon ...` / `analysis sim ...`, or `uv run amazon ...` if the venv is not on your `PATH`.
+
 Notebook helper API (same logic as CLI):
 
 ```python
@@ -36,20 +46,22 @@ categories, mapping = load_categorization_state("state")
 
 ### Shell Autocomplete (Click)
 
-This CLI uses Click shell completion.
+This CLI uses Click shell completion. Completions are available for all three scripts.
 
 One-time for current shell session:
 
 ```sh
 eval "$(_ANALYSIS_COMPLETE=zsh_source analysis)"   # zsh
-eval "$(_ANALYSIS_COMPLETE=bash_source analysis)"  # bash
+eval "$(_AMAZON_COMPLETE=zsh_source amazon)"        # zsh
+eval "$(_SIM_COMPLETE=zsh_source sim)"              # zsh
 ```
 
-If `analysis` is not on your `PATH`, use `uv run`:
+If the scripts are not on your `PATH`, use `uv run`:
 
 ```sh
 eval "$(_ANALYSIS_COMPLETE=zsh_source uv run analysis)"   # zsh
-eval "$(_ANALYSIS_COMPLETE=bash_source uv run analysis)"  # bash
+eval "$(_AMAZON_COMPLETE=zsh_source uv run amazon)"        # zsh
+eval "$(_SIM_COMPLETE=zsh_source uv run sim)"              # zsh
 ```
 
 Persist in your shell config:
@@ -57,9 +69,10 @@ Persist in your shell config:
 ```sh
 # zsh
 echo 'eval "$(_ANALYSIS_COMPLETE=zsh_source analysis)"' >> ~/.zshrc
+echo 'eval "$(_AMAZON_COMPLETE=zsh_source amazon)"' >> ~/.zshrc
+echo 'eval "$(_SIM_COMPLETE=zsh_source sim)"' >> ~/.zshrc
 
-# bash
-echo 'eval "$(_ANALYSIS_COMPLETE=bash_source analysis)"' >> ~/.bashrc
+# bash — replace zsh_source with bash_source above
 ```
 
 Reload your shell after adding it:
@@ -73,13 +86,13 @@ exec zsh   # or: exec bash
 Run the interactive categorizer on one or more Amazon CSVs covering any date range:
 
 ```sh
-uv run python -m analysis amazon categorize data/amazon_2026_01.csv
+amazon categorize data/amazon_2026_01.csv
 ```
 
 Multiple files in one run:
 
 ```sh
-uv run python -m analysis amazon categorize data/Amazon-2026-03.csv data/Amazon-2026-04.csv
+amazon categorize data/Amazon-2026-03.csv data/Amazon-2026-04.csv
 ```
 
 During interactive category prompts, press `Tab` to complete from known categories.
@@ -87,19 +100,19 @@ During interactive category prompts, press `Tab` to complete from known categori
 Non-interactive mode assigns unknown items to `UNCATEGORIZED`:
 
 ```sh
-uv run python -m analysis amazon categorize data/amazon_2026_01.csv --no-interactive
+amazon categorize data/amazon_2026_01.csv --no-interactive
 ```
 
 Review and re-categorize existing mapped items for a category:
 
 ```sh
-uv run python -m analysis amazon category review
+amazon category review
 ```
 
 Delete a category and remove mappings assigned to it:
 
 ```sh
-uv run python -m analysis amazon category delete
+amazon category delete
 ```
 
 Both commands prompt you to select a category (with Tab completion).
@@ -119,7 +132,7 @@ Monthly files use a billing cutoff on day 3:
 Use `--cutoff-day` to override the boundary (1-28):
 
 ```sh
-uv run python -m analysis amazon categorize data/amazon_2026_01.csv --cutoff-day 3
+amazon categorize data/amazon_2026_01.csv --cutoff-day 3
 ```
 
 If a generated billing month is still in progress for today, the monthly filenames include `_pending`:
