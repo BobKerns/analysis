@@ -9,7 +9,7 @@ SQL schema alongside the source CSV.
 
 ```text
 <data_repo>/
-    activate                      # sourced shell script (ADR-004 §4)
+    activate-analysis             # sourced shell script (ADR-004 §4)
     persons.csv                   # household owners + operator identities ($ANALYSIS_USER)
     accounts.csv                  # chart of accounts
     account_models/<name>.csv     # opening balances per model
@@ -45,22 +45,31 @@ For annual items, set `month_of_year` (`1`-`12`) so payments land in the intende
 ## After editing
 
 ```sh
-source ./activate
-analysis sim check <scenario>     # lints; no run
-analysis sim load <scenario>      # builds the intent cache
-analysis sim run <scenario>       # produces a run file under state/runs/
+source ./activate-analysis
+sim check <scenario>              # lints; no run
+sim load <scenario>               # builds the intent cache
+sim run <scenario>                # produces a run file under state/runs/
 ```
+
+When sourced, `activate-analysis` will:
+
+- Discover the analysis program repo from `$ANALYSIS_DATA_DIR/.analysis`.
+- Prompt for the repo path if missing/invalid, validate it, and persist it.
+- Ensure `.analysis` is ignored in the data repo's `.gitignore`.
+- Create `.venv` with `uv sync --group dev` if needed, then activate it.
+- Enable shell completion for `analysis`, `amazon`, and `sim`.
 
 ## Editing rows
 
 CSVs are the source of truth and can be edited by hand, by an AI assistant given the schemas in ADR-003, or by the built-in CLI commands:
 
 ```sh
-analysis sim account list                 # tabular view with balances and rates
-analysis sim account add <name> <kind> <subkind> [--opening-balance ...]
-analysis sim transfer list                # one-off and recurring transfers
-analysis sim transfer add fixed <date> <from> <to> <amount>
-analysis sim transfer add scheduled <start> <from> <to> <amount> [--cadence monthly]
+sim account list                          # tabular view with balances and rates
+sim account add <name> <kind> <subkind> [--opening-balance ...]
+sim transfer list                         # one-off calendar transfers
+sim transfer add <date> <from> <to> <amount>
+sim scheduled list                        # recurring scheduled transfers
+sim scheduled add <start> <from> <to> <amount> [--cadence monthly]
 ```
 
 The CLI is interactive (tab completion on account names, prompts when arguments are omitted) and validates against the registries in ADR-003 before writing. Prefer it when you want precise control or want to script the same edit across scenarios; ask the assistant when the change is exploratory or spans many rows.

@@ -12,10 +12,78 @@ else
 	return 1 2>/dev/null || exit 1
 fi
 
+_analysis_fail() {
+	echo "activate-analysis: $*" >&2
+	# shellcheck disable=SC2317
+	return 1 2>/dev/null || exit 1
+}
+
+_analysis_validate_repo_dir() {
+	[ -n "$1" ] || return 1
+	[ -d "$1" ] || return 1
+	[ -f "$1/pyproject.toml" ] || return 1
+	[ -f "$1/src/analysis/cli.py" ] || return 1
+	[ -f "$1/src/analysis/amazon/cli.py" ] || return 1
+	[ -f "$1/src/analysis/sim/cli.py" ] || return 1
+	return 0
+}
+
+_analysis_enable_completion() {
+	# Click completion env var differs by command name.
+	_analysis_shell_mode="$1"
+	eval "$(_ANALYSIS_COMPLETE=${_analysis_shell_mode} analysis)" 2>/dev/null || true
+	eval "$(_AMAZON_COMPLETE=${_analysis_shell_mode} amazon)" 2>/dev/null || true
+	eval "$(_SIM_COMPLETE=${_analysis_shell_mode} sim)" 2>/dev/null || true
+	unset _analysis_shell_mode
+}
+
 _ANALYSIS_OLD_PS1="${PS1-}"
 export ANALYSIS_DATA_DIR
 ANALYSIS_DATA_DIR="$(cd "$(dirname "$_ANALYSIS_SELF")" && pwd)"
 export ANALYSIS_DATA_REPO_NAME="${ANALYSIS_DATA_REPO_NAME:-$(basename "$ANALYSIS_DATA_DIR")}"
+
+_ANALYSIS_POINTER_FILE="$ANALYSIS_DATA_DIR/.analysis"
+_ANALYSIS_REPO_CANDIDATE="${ANALYSIS_REPO_DIR-}"
+
+if [ -z "$_ANALYSIS_REPO_CANDIDATE" ] && [ -f "$_ANALYSIS_POINTER_FILE" ]; then
+	IFS= read -r _ANALYSIS_REPO_CANDIDATE < "$_ANALYSIS_POINTER_FILE"
+fi
+
+if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
+	echo "activate-analysis: analysis program repo path not configured." >&2
+	printf "ANALYSIS_REPO_DIR: " >&2
+	read -r _ANALYSIS_REPO_CANDIDATE
+fi
+
+if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
+	_analysis_fail "invalid repo path: '$_ANALYSIS_REPO_CANDIDATE' (expected pyproject.toml and src/analysis/*/cli.py)"
+fi
+
+export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
+
+# Persist pointer and ensure it is ignored by the data repo.
+printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
+	_analysis_fail "unable to write $_ANALYSIS_POINTER_FILE"
+
+if [ ! -f "$ANALYSIS_DATA_DIR/.gitignore" ]; then
+	printf '.analysis\n' > "$ANALYSIS_DATA_DIR/.gitignore" || \
+		_analysis_fail "unable to write $ANALYSIS_DATA_DIR/.gitignore"
+elif ! grep -qxF ".analysis" "$ANALYSIS_DATA_DIR/.gitignore"; then
+	printf '\n.analysis\n' >> "$ANALYSIS_DATA_DIR/.gitignore" || \
+		_analysis_fail "unable to update $ANALYSIS_DATA_DIR/.gitignore"
+fi
+
+if [ ! -f "$ANALYSIS_REPO_DIR/.venv/bin/activate" ]; then
+	command -v uv >/dev/null 2>&1 || _analysis_fail "uv not found; install uv to bootstrap .venv"
+	(
+		cd "$ANALYSIS_REPO_DIR" || exit 1
+		uv sync --group dev
+	) || _analysis_fail "uv sync failed while creating $ANALYSIS_REPO_DIR/.venv"
+fi
+
+# Activate the project virtual environment.
+# shellcheck disable=SC1090
+. "$ANALYSIS_REPO_DIR/.venv/bin/activate" || _analysis_fail "failed to activate .venv"
 
 if [ -z "${ANALYSIS_USER-}" ]; then
 	printf "ANALYSIS_USER: " >&2
@@ -23,18 +91,27 @@ if [ -z "${ANALYSIS_USER-}" ]; then
 fi
 
 if ! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null; then
-	echo "activate-analysis: ANALYSIS_USER='$ANALYSIS_USER' not found in $ANALYSIS_DATA_DIR/persons.csv" >&2
-	unset ANALYSIS_USER _ANALYSIS_SELF _ANALYSIS_OLD_PS1
-	# shellcheck disable=SC2317
-	return 1 2>/dev/null || exit 1
+	unset ANALYSIS_USER
+	_analysis_fail "ANALYSIS_USER not found in $ANALYSIS_DATA_DIR/persons.csv"
 fi
 export ANALYSIS_USER
+
+if [ -n "${ZSH_VERSION-}" ]; then
+	_analysis_enable_completion "zsh_source"
+elif [ -n "${BASH_VERSION-}" ]; then
+	_analysis_enable_completion "bash_source"
+fi
 
 export PS1="[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER] ${_ANALYSIS_OLD_PS1}"
 
 deactivate-analysis() {
 	export PS1="$_ANALYSIS_OLD_PS1"
-	unset ANALYSIS_DATA_DIR ANALYSIS_USER ANALYSIS_DATA_REPO_NAME
+	if [ "$(type -t deactivate 2>/dev/null)" = "function" ]; then
+		deactivate
+	fi
+	unset ANALYSIS_DATA_DIR ANALYSIS_USER ANALYSIS_DATA_REPO_NAME ANALYSIS_REPO_DIR
 	unset _ANALYSIS_OLD_PS1 _ANALYSIS_SELF
+	unset _ANALYSIS_POINTER_FILE _ANALYSIS_REPO_CANDIDATE
+	unset -f _analysis_fail _analysis_validate_repo_dir _analysis_enable_completion
 	unset -f deactivate-analysis
 }
