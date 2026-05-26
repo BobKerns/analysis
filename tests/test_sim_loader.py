@@ -225,6 +225,35 @@ def test_invalid_tag_rejected(tmp_path: Path) -> None:
     assert any("no_colon_here" in issue for issue in ei.value.issues)
 
 
+def test_account_values_unknown_account_rejected(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    av = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    with av.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+        fields = list(rows[0].keys())
+    rows.append(
+        {
+            "account_name": "NotAnAccount",
+            "opening_balance": "100.00",
+            "opening_cost_basis": "",
+            "prior_year_end_balance": "",
+        }
+    )
+    with av.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("account_name not in accounts.csv" in issue for issue in ei.value.issues)
+
+
 def test_money_reference_in_account_values_resolves_itemization_sum(
     tmp_path: Path,
 ) -> None:

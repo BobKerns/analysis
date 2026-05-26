@@ -198,7 +198,12 @@ def load_scenario(
     aux_rows = _read_aux_dir(data_dir / "aux", issues, money_resolver=money_resolver)
 
     _validate_accounts(accounts, issues)
-    _validate_account_model_money(model_rows, issues, money_resolver=money_resolver)
+    _validate_account_model_money(
+        model_rows,
+        issues,
+        money_resolver=money_resolver,
+        accounts=accounts,
+    )
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, accounts, issues)
     _validate_calendar(calendar_rows, issues)
@@ -442,9 +447,24 @@ def _validate_account_model_money(
     issues: list[str],
     *,
     money_resolver: _MoneyReferenceResolver,
+    accounts: list[dict[str, str]],
 ) -> None:
+    account_names = {r.get("name", "") for r in accounts}
+    seen: set[str] = set()
     for i, row in enumerate(rows, start=2):
         name = row.get("account_name", "")
+        if not name:
+            issues.append(f"account_values.csv row {i}: missing account_name")
+            continue
+        if name in seen:
+            issues.append(
+                f"account_values.csv row {i} ({name}): duplicate account_name"
+            )
+        seen.add(name)
+        if name not in account_names:
+            issues.append(
+                f"account_values.csv row {i} ({name}): account_name not in accounts.csv"
+            )
         ob = row.get("opening_balance", "")
         if ob == "":
             issues.append(
