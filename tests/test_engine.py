@@ -481,3 +481,72 @@ def test_refill_transfer_with_sources_drains_waterfall(tmp_path: Path) -> None:
             assert frm in (sav_id, broker_id)
     finally:
         con.close()
+
+
+def test_tax_accumulator_computes_federal_and_writes_summary(tmp_path: Path) -> None:
+    """tax_accumulator computes prior-year federal tax and writes summary rows.
+
+    It emits a payment transfer only when computed due is positive.
+    """
+    repo = _clone_prototype(tmp_path)
+    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    sched_csv.write_text(
+        sched_csv.read_text()
+        + (
+            "tax_federal_prev_year,Asset_Checking,Expense_Taxes_Federal,annual,4,"
+            "tax_accumulator,,,,,,,,,,none,2027-04-30,,400,"
+            "federal income tax forecast,{},"
+            '"{""year"":""previous"",""scope"":""federal""}",\n'
+        )
+    )
+
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    con.row_factory = sqlite3.Row
+    try:
+        tax_rule_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='tax_federal_prev_year'"
+        ).fetchone()[0]
+
+        liability = con.execute(
+            "SELECT amount FROM tax_year_summary "
+            "WHERE year = 2026 AND bucket = 'federal_tax_liability'"
+        ).fetchone()
+        due = con.execute(
+            "SELECT amount FROM tax_year_summary "
+            "WHERE year = 2026 AND bucket = 'federal_tax_due'"
+        ).fetchone()
+        paid = con.execute(
+            "SELECT amount FROM tax_year_summary "
+            "WHERE year = 2026 AND bucket = 'federal_tax_paid'"
+        ).fetchone()
+
+        assert liability is not None
+        assert due is not None
+        assert paid is not None
+        assert liability[0] > 0
+        assert due[0] >= 0
+        assert paid[0] >= 0
+
+        emitted = con.execute(
+            "SELECT amount FROM transfer_event "
+            "WHERE reason_id = ? AND date = '2027-04-30'",
+            (tax_rule_id,),
+        ).fetchall()
+        if due[0] > 0:
+            assert len(emitted) == 1
+            assert emitted[0][0] == due[0]
+        else:
+            assert len(emitted) == 0
+    finally:
+        con.close()
