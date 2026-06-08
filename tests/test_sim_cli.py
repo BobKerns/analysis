@@ -375,3 +375,108 @@ def test_sim_tag_add_rejects_bad_token(tmp_path: Path) -> None:
     )
     assert r.exit_code != 0
     assert "invalid tag" in r.output
+
+
+def test_sim_account_check_detects_missing_rows(tmp_path: Path) -> None:
+    """account check reports accounts missing from account_values.csv."""
+    import csv
+
+    data = _copy_prototype(tmp_path)
+    accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
+    values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
+
+    # Add a new account to accounts.csv using pandas to avoid line-ending issues
+    import pandas as pd
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    new_row = pd.DataFrame([{
+        "name": "Asset_NewAccount",
+        "kind": "asset",
+        "subkind": "checking",
+        "owner": "joint",
+        "tax_treatment": "taxable",
+        "opened": "",
+        "closed": "",
+        "meta_json": "{}",
+        "tags": "",
+    }])
+    df = pd.concat([df, new_row], ignore_index=True)
+    df.to_csv(accounts_path, index=False)
+
+    # Check should detect the missing row
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sim", "account", "check", "--scenario", "retire_alice",
+         "--data-dir", str(data)],
+    )
+    assert result.exit_code == 0
+    assert "missing account_values rows for:" in result.output
+    # Verify our new account is in the missing list
+    assert "Asset_NewAccount" in result.output
+
+
+def test_sim_account_sync_creates_missing_rows(tmp_path: Path) -> None:
+    """account sync creates account_values rows for accounts missing them."""
+    import pandas as pd
+
+    data = _copy_prototype(tmp_path)
+    accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
+    values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
+
+    # Add a new account to accounts.csv using pandas
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    new_row = pd.DataFrame([{
+        "name": "Asset_NewAccount",
+        "kind": "asset",
+        "subkind": "brokerage_taxable",
+        "owner": "joint",
+        "tax_treatment": "taxable",
+        "opened": "",
+        "closed": "",
+        "meta_json": "{}",
+        "tags": "",
+    }])
+    df = pd.concat([df, new_row], ignore_index=True)
+    df.to_csv(accounts_path, index=False)
+
+    # Sync should create the missing rows
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sim", "account", "sync", "--scenario", "retire_alice",
+         "--data-dir", str(data)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "synced" in result.output and "missing account" in result.output
+    assert "Asset_NewAccount" in result.output
+
+    # Verify the row was added to account_values.csv
+    import csv as csv_mod
+    with values_path.open(newline="", encoding="utf-8") as f:
+        reader = csv_mod.DictReader(f)
+        rows = {r["account_name"]: r for r in reader}
+    assert "Asset_NewAccount" in rows
+    assert rows["Asset_NewAccount"]["opening_balance"] == "0.00"
+
+
+def test_sim_account_sync_is_idempotent(tmp_path: Path) -> None:
+    """account sync can be run multiple times safely."""
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+
+    # First sync
+    result1 = runner.invoke(
+        main,
+        ["sim", "account", "sync", "--scenario", "retire_alice",
+         "--data-dir", str(data)],
+    )
+    assert result1.exit_code == 0
+
+    # Second sync should say no missing accounts now
+    result2 = runner.invoke(
+        main,
+        ["sim", "account", "sync", "--scenario", "retire_alice",
+         "--data-dir", str(data)],
+    )
+    assert result2.exit_code == 0
+    assert "no missing accounts" in result2.output

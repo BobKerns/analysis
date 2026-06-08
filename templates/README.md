@@ -69,6 +69,8 @@ CSVs are the source of truth and can be edited by hand, by an AI assistant given
 ```sh
 sim account list                          # tabular view with balances and rates
 sim account add <name> <kind> <subkind> [--opening-balance ...]
+sim account check                         # report missing/duplicate/unknown account_values rows
+sim account sync                          # scaffold missing account_values rows with zero balance
 sim transfer list                         # one-off calendar transfers
 sim transfer add <date> <from> <to> <amount>
 sim scheduled list                        # recurring scheduled transfers
@@ -76,3 +78,13 @@ sim scheduled add <start> <from> <to> <amount> [--cadence monthly]
 ```
 
 The CLI is interactive (tab completion on account names, prompts when arguments are omitted) and validates against the registries in ADR-003 before writing. Prefer it when you want precise control or want to script the same edit across scenarios; ask the assistant when the change is exploratory or spans many rows.
+
+### account_values.csv data hygiene
+
+`accounts.csv` defines your chart of accounts; `account_values.csv` holds scenario-specific opening balances and prior year balances. To keep them in sync:
+
+- **Check first**: `sim account check` reports any missing, duplicate, or unknown accounts.
+- **Sync**: `sim account sync` creates missing account_values rows (with `opening_balance = 0.00`).
+- **Edit balances**: After syncing, use your editor or `sim account add` to set opening balances as needed.
+
+The loader enforces referential integrity (strict join validation), so missing or mismatched account names will raise a clear error before the scenario loads.

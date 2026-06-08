@@ -977,6 +977,131 @@ def account_tag_rm(
     _scenario_write(data_dir, scenario, "account", name, tag_tokens, "rm")
 
 
+@account_group_command.command("check")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def check_account_values(
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Check for account_values alignment issues (missing, duplicate, unknown accounts)."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
+
+    accounts_path = scenario_dir / "accounts.csv"
+    values_path = scenario_dir / "account_values.csv"
+
+    if not accounts_path.exists():
+        raise click.ClickException(f"accounts.csv not found: {accounts_path}")
+    if not values_path.exists():
+        raise click.ClickException(f"account_values.csv not found: {values_path}")
+
+    # Read accounts
+    account_names = set()
+    with accounts_path.open(newline="", encoding="utf-8") as f:
+        reader = _csv.DictReader(f)
+        if reader.fieldnames is None or "name" not in reader.fieldnames:
+            raise click.ClickException("accounts.csv missing 'name' column")
+        for row in reader:
+            if row.get("name"):
+                account_names.add(row["name"])
+
+    # Read account_values
+    values_accounts = {}
+    with values_path.open(newline="", encoding="utf-8") as f:
+        reader = _csv.DictReader(f)
+        if reader.fieldnames is None or "account_name" not in reader.fieldnames:
+            raise click.ClickException("account_values.csv missing 'account_name' column")
+        for i, row in enumerate(reader, start=2):
+            acct = row.get("account_name", "")
+            if acct in values_accounts:
+                click.echo(f"  warning: duplicate account_name '{acct}' at row {i}", err=True)
+            else:
+                values_accounts[acct] = i
+            if acct and acct not in account_names:
+                click.echo(f"  warning: unknown account_name '{acct}' at row {i}", err=True)
+
+    missing = account_names - set(values_accounts.keys())
+    if missing:
+        click.echo(f"missing account_values rows for: {', '.join(sorted(missing))}", err=True)
+    if not missing and not any(v for k, v in values_accounts.items() if k not in account_names):
+        click.echo("ok")
+
+
+@account_group_command.command("sync")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def sync_account_values(
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Sync account_values.csv: create missing rows for accounts (with zero opening_balance)."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
+
+    accounts_path = scenario_dir / "accounts.csv"
+    values_path = scenario_dir / "account_values.csv"
+
+    if not accounts_path.exists():
+        raise click.ClickException(f"accounts.csv not found: {accounts_path}")
+    if not values_path.exists():
+        raise click.ClickException(f"account_values.csv not found: {values_path}")
+
+    # Read accounts
+    account_names = []
+    with accounts_path.open(newline="", encoding="utf-8") as f:
+        reader = _csv.DictReader(f)
+        if reader.fieldnames is None or "name" not in reader.fieldnames:
+            raise click.ClickException("accounts.csv missing 'name' column")
+        for row in reader:
+            if row.get("name"):
+                account_names.append(row["name"])
+
+    # Read existing account_values
+    values_accounts = set()
+    values_rows = []
+    with values_path.open(newline="", encoding="utf-8") as f:
+        reader = _csv.DictReader(f)
+        if reader.fieldnames is None or "account_name" not in reader.fieldnames:
+            raise click.ClickException("account_values.csv missing 'account_name' column")
+        values_header = list(reader.fieldnames)
+        for row in reader:
+            values_rows.append(row)
+            if row.get("account_name"):
+                values_accounts.add(row["account_name"])
+
+    # Find missing
+    missing = [name for name in account_names if name not in values_accounts]
+    if not missing:
+        click.echo("ok (no missing accounts)")
+        return
+
+    # Create rows for missing accounts
+    for name in missing:
+        values_rows.append({
+            "account_name": name,
+            "opening_balance": "0.00",
+            "opening_cost_basis": "",
+            "prior_year_end_balance": "",
+        })
+
+    # Write back
+    with values_path.open("w", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(f, fieldnames=values_header)
+        writer.writeheader()
+        writer.writerows(values_rows)
+
+    click.echo(f"synced {len(missing)} missing account(s) to {values_path}")
+    for name in missing:
+        click.echo(f"  + {name}")
+
+
 @transfer_group_command.command("list")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
@@ -1102,3 +1227,17 @@ def tags_items(
                 click.echo(f"{it:<14}  {getattr(row, label_col)}")
         if not found:
             click.echo(f"(tag {tag_token} not present)")
+
+
+# ---------- Silent alias: accounts -> account ----------
+
+# Create silent alias for backwards compatibility
+@sim_group_command.group(name="accounts", hidden=True)
+def accounts_group_command() -> None:
+    """Alias for 'account' (silent)."""
+    pass
+
+
+# Dynamically copy all commands from account_group to accounts_group
+for cmd_name, cmd in account_group_command.commands.items():
+    accounts_group_command.add_command(cmd, name=cmd_name)
