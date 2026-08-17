@@ -8,9 +8,21 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.sim.cli import DEFAULT_INTENT_DIR, DEFAULT_RUNS_DIR, _resolve_state_dir
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
+
+
+def test_default_state_dirs_use_analysis_data_dir(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("ANALYSIS_DATA_DIR", raising=False)
+    assert _resolve_state_dir(None, DEFAULT_INTENT_DIR) == DEFAULT_INTENT_DIR
+
+    data_dir = tmp_path / "sim"
+    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(data_dir))
+    assert _resolve_state_dir(None, DEFAULT_INTENT_DIR) == tmp_path / DEFAULT_INTENT_DIR
+    assert _resolve_state_dir(None, DEFAULT_RUNS_DIR) == tmp_path / DEFAULT_RUNS_DIR
+    assert _resolve_state_dir(Path("custom"), DEFAULT_RUNS_DIR) == Path("custom")
 
 
 def _load(tmp_path: Path) -> Path:

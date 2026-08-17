@@ -29,6 +29,15 @@ DEFAULT_INTENT_DIR = Path("state/intent")
 DEFAULT_RUNS_DIR = Path("state/runs")
 
 
+def _resolve_state_dir(directory: Path | None, default: Path) -> Path:
+    if directory is not None:
+        return directory
+    data_dir = os.environ.get("ANALYSIS_DATA_DIR")
+    if data_dir:
+        return Path(data_dir).resolve().parent / default
+    return default
+
+
 @click.group(name="sim")
 def sim_group_command() -> None:
     """Scenario-based finance simulator."""
@@ -45,8 +54,8 @@ def sim_group_command() -> None:
 @click.option(
     "--intent-dir",
     type=click.Path(file_okay=False, path_type=Path),
-    default=DEFAULT_INTENT_DIR,
-    show_default=True,
+    default=None,
+    help="Default: data-repo state/intent when activated, else state/intent.",
 )
 @click.option(
     "--allow-dirty-data",
@@ -57,17 +66,18 @@ def sim_group_command() -> None:
 def load(
     scenario_name: str,
     data_dir: Path | None,
-    intent_dir: Path,
+    intent_dir: Path | None,
     allow_dirty_data: bool,
 ) -> None:
     """Build state/intent/<scenario>.sqlite3 from the data repo."""
     resolved = _resolve_data_dir(data_dir)
+    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
     if not allow_dirty_data and os.environ.get("ANALYSIS_DATA_MODE") == "prototype":
         allow_dirty_data = True
         click.echo("info: ANALYSIS_DATA_MODE=prototype; allowing dirty data", err=True)
     try:
         result = load_scenario(
-            resolved, scenario_name, intent_dir=intent_dir,
+            resolved, scenario_name, intent_dir=resolved_intent_dir,
             allow_dirty_data=allow_dirty_data,
         )
     except LoadError as exc:
@@ -120,14 +130,14 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 @click.option(
     "--intent-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
-    default=DEFAULT_INTENT_DIR,
-    show_default=True,
+    default=None,
+    help="Default: data-repo state/intent when activated, else state/intent.",
 )
 @click.option(
     "--runs-dir",
     type=click.Path(file_okay=False, path_type=Path),
-    default=DEFAULT_RUNS_DIR,
-    show_default=True,
+    default=None,
+    help="Default: data-repo state/runs when activated, else state/runs.",
 )
 @click.option(
     "--data-mode",
@@ -143,15 +153,17 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 @click.option("--allow-dirty-code", is_flag=True, default=False)
 def run(
     scenario_name: str,
-    intent_dir: Path,
-    runs_dir: Path,
+    intent_dir: Path | None,
+    runs_dir: Path | None,
     data_mode: str | None,
     run_by: str | None,
     allow_dirty_data: bool,
     allow_dirty_code: bool,
 ) -> None:
     """Execute <scenario> against its intent file and write a new run file."""
-    intent_path = intent_dir / f"{scenario_name}.sqlite3"
+    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
+    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR)
+    intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
     if not intent_path.exists():
         raise click.ClickException(
             f"intent file not found: {intent_path}\n"
@@ -166,7 +178,7 @@ def run(
     data_version = _read_data_version(intent_path)
     short = data_version[:7] if data_version else "nodata"
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-    run_path = runs_dir / f"{stamp}_{scenario_name}_{short}.sqlite3"
+    run_path = resolved_runs_dir / f"{stamp}_{scenario_name}_{short}.sqlite3"
 
     try:
         out = run_scenario(
@@ -196,17 +208,18 @@ def _read_data_version(intent_path: Path) -> str | None:
 @click.option(
     "--runs-dir",
     type=click.Path(file_okay=False, path_type=Path),
-    default=DEFAULT_RUNS_DIR,
-    show_default=True,
+    default=None,
+    help="Default: data-repo state/runs when activated, else state/runs.",
 )
-def list_runs(runs_dir: Path) -> None:
+def list_runs(runs_dir: Path | None) -> None:
     """List run files in --runs-dir with status, scenario, who, when."""
-    if not runs_dir.exists():
-        click.echo(f"(no runs dir: {runs_dir})")
+    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR)
+    if not resolved_runs_dir.exists():
+        click.echo(f"(no runs dir: {resolved_runs_dir})")
         return
-    files = sorted(runs_dir.glob("*.sqlite3"))
+    files = sorted(resolved_runs_dir.glob("*.sqlite3"))
     if not files:
-        click.echo(f"(no run files in {runs_dir})")
+        click.echo(f"(no run files in {resolved_runs_dir})")
         return
     header = f"{'status':<10}  {'scenario':<24}  {'finished_at':<20}  {'run_by':<16}  file"
     click.echo(header)
