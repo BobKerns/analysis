@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../../kerns-ono/.finance"
+		}
+	],
+	"settings": {
+		"explorerExclude.backup": {},
+		"explorerExcludeManager.backup": {}
+	}
+}
