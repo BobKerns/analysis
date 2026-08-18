@@ -904,6 +904,69 @@ def add_account(
         )
 
 
+def _rename_account_row_values(path: Path, field_names: tuple[str, ...], old_name: str, new_name: str) -> bool:
+    """Rename a CSV field value across one scenario file if the column exists."""
+    if not path.exists():
+        return False
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    changed = False
+    for field in field_names:
+        if field not in df.columns:
+            continue
+        before = df[field].copy()
+        df[field] = df[field].map(lambda v: new_name if v == old_name else v)
+        changed = changed or not before.equals(df[field])
+    if changed:
+        df.to_csv(path, index=False)
+    return changed
+
+
+@account_group_command.command("rename")
+@click.argument("old_name")
+@click.argument("new_name")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def rename_account(
+    old_name: str,
+    new_name: str,
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Rename an account and update references across the scenario CSVs."""
+    old_name = old_name.strip()
+    new_name = new_name.strip()
+    if not old_name:
+        raise click.ClickException("old account name required")
+    if not new_name:
+        raise click.ClickException("new account name required")
+
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    with open_intent_db(data_dir_p, scenario) as (con, _name):
+        existing = {r[0] for r in con.execute("SELECT name FROM account")}
+
+    if old_name not in existing:
+        raise click.ClickException(f"unknown account: {old_name!r}")
+    if new_name in existing and old_name != new_name:
+        raise click.ClickException(f"account already exists: {new_name!r}")
+
+    changed = False
+    accounts_path = scenario_dir / "accounts.csv"
+    changed |= _rename_account_row_values(accounts_path, ("name",), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "account_values.csv", ("account_name",), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "scheduled.csv", ("from_account", "to_account", "interest_account"), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "calendar.csv", ("account_1", "account_2"), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "waterfall_sources.csv", ("account_name",), old_name, new_name)
+
+    if not changed:
+        raise click.ClickException(f"account not found in scenario files: {old_name!r}")
+
+    click.echo(f"renamed account '{old_name}' to '{new_name}' in {scenario_dir}")
+
+
 def _default_tax_treatment(kind: str, subkind: str) -> str:
     match (kind, subkind):
         case ("asset", "traditional_ira" | "traditional_401k" | "hsa"):

@@ -280,6 +280,53 @@ def test_sim_add_account_rejects_duplicate(tmp_path: Path) -> None:
     assert "already exists" in result.output
 
 
+def test_sim_account_rename_updates_references(tmp_path: Path) -> None:
+    import csv
+
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "rename",
+            "Asset_Checking",
+            "Asset_Checking_Updated",
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "renamed account 'Asset_Checking'" in result.output
+
+    with (data / "scenarios" / "retire_alice" / "accounts.csv").open(
+        newline="", encoding="utf-8"
+    ) as fh:
+        accounts = list(csv.DictReader(fh))
+    renamed = {r["name"] for r in accounts}
+    assert "Asset_Checking_Updated" in renamed
+    assert "Asset_Checking" not in renamed
+
+    with (data / "scenarios" / "retire_alice" / "account_values.csv").open(
+        newline="", encoding="utf-8"
+    ) as fh:
+        values = list(csv.DictReader(fh))
+    names = {r["account_name"] for r in values}
+    assert "Asset_Checking_Updated" in names
+    assert "Asset_Checking" not in names
+
+    with (data / "scenarios" / "retire_alice" / "scheduled.csv").open(
+        newline="", encoding="utf-8"
+    ) as fh:
+        scheduled = list(csv.DictReader(fh))
+    assert any(r["from_account"] == "Asset_Checking_Updated" or r["to_account"] == "Asset_Checking_Updated" for r in scheduled)
+    assert not any(r["from_account"] == "Asset_Checking" or r["to_account"] == "Asset_Checking" for r in scheduled)
+
+    check = runner.invoke(
+        main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
+    )
+    assert check.exit_code == 0, check.output
+
+
 def test_sim_accounts_lists_with_balance_and_rate(tmp_path: Path) -> None:
     data = _copy_prototype(tmp_path)
     runner = CliRunner()
