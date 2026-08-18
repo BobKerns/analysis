@@ -921,6 +921,180 @@ def _rename_account_row_values(path: Path, field_names: tuple[str, ...], old_nam
     return changed
 
 
+def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: str, new_name: str) -> None:
+    """Rename an account and update references across scenario CSV files."""
+    scenario_dir, _ = _resolve_scenario_dir(data_dir, scenario)
+    with open_intent_db(data_dir, scenario) as (con, _name):
+        existing = {r[0] for r in con.execute("SELECT name FROM account")}
+
+    if old_name not in existing:
+        raise click.ClickException(f"unknown account: {old_name!r}")
+    if new_name in existing and old_name != new_name:
+        raise click.ClickException(f"account already exists: {new_name!r}")
+
+    changed = False
+    accounts_path = scenario_dir / "accounts.csv"
+    changed |= _rename_account_row_values(accounts_path, ("name",), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "account_values.csv", ("account_name",), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "scheduled.csv", ("from_account", "to_account", "interest_account"), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "calendar.csv", ("account_1", "account_2"), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "waterfall_sources.csv", ("account_name",), old_name, new_name)
+
+    if not changed:
+        raise click.ClickException(f"account not found in scenario files: {old_name!r}")
+
+    click.echo(f"renamed account '{old_name}' to '{new_name}' in {scenario_dir}")
+
+
+@account_group_command.command("edit")
+@click.argument("name")
+@click.option("--new-name", default=None, help="Update the account name.")
+@click.option("--kind", default=None, help="New account kind.")
+@click.option("--subkind", default=None, help="New account subkind.")
+@click.option("--owner", default=None, help="New owner (person id or 'joint').")
+@click.option("--tax-treatment", default=None, help="New tax treatment.")
+@click.option("--opened", default=None, help="Open date (YYYY-MM-DD).")
+@click.option("--closed", default=None, help="Close date (YYYY-MM-DD).")
+@click.option("--meta-json", default=None, help="JSON payload for the account metadata.")
+@click.option("--tags", default=None, help="Space-separated '<role>:<name>' tokens.")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def edit_account(
+    name: str,
+    new_name: str | None,
+    kind: str | None,
+    subkind: str | None,
+    owner: str | None,
+    tax_treatment: str | None,
+    opened: str | None,
+    closed: str | None,
+    meta_json: str | None,
+    tags: str | None,
+    scenario: str | None,
+    data_dir: Path | None,
+) -> None:
+    """Edit an account's fields, prompting with current values as defaults when needed."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    accounts_path = scenario_dir / "accounts.csv"
+    if not accounts_path.exists():
+        raise click.ClickException(f"accounts.csv not found: {accounts_path}")
+
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    if "name" not in df.columns:
+        raise click.ClickException(f"accounts.csv missing 'name' column: {accounts_path}")
+    matches = df.index[df["name"] == name].tolist()
+    if not matches:
+        raise click.ClickException(f"unknown account: {name!r}")
+    idx = matches[0]
+    current = df.loc[idx].to_dict()
+
+    with open_intent_db(data_dir_p, scenario) as (con, _name):
+        persons = [r[0] for r in con.execute("SELECT id FROM person ORDER BY id")]
+
+    direct_values = (
+        new_name, kind, subkind, owner, tax_treatment,
+        opened, closed, meta_json, tags,
+    )
+    if any(v is not None for v in direct_values):
+        new_name = new_name or current.get("name", "")
+        kind = kind or current.get("kind", "")
+        subkind = subkind or current.get("subkind", "")
+        owner = owner or current.get("owner") or "joint"
+        tax_treatment = tax_treatment or current.get("tax_treatment", "")
+        opened = opened if opened is not None else current.get("opened", "")
+        closed = closed if closed is not None else current.get("closed", "")
+        meta_json = meta_json if meta_json is not None else current.get("meta_json", "{}")
+        tags = tags if tags is not None else current.get("tags", "")
+    else:
+        new_name = click.prompt("name", default=current.get("name", ""), show_default=True)
+        kind = click.prompt(
+            "kind",
+            default=current.get("kind", ""),
+            show_default=True,
+            type=click.Choice(sorted(registries.ACCOUNT_SUBKINDS), case_sensitive=False),
+        )
+        kind = kind.lower() if kind else kind
+        allowed_subkinds = sorted(registries.ACCOUNT_SUBKINDS.get(kind, {current.get("subkind", "")}))
+        subkind = click.prompt(
+            "subkind",
+            default=current.get("subkind", ""),
+            show_default=True,
+            type=click.Choice(allowed_subkinds, case_sensitive=False),
+        )
+        subkind = subkind.lower() if subkind else subkind
+        owner = click.prompt(
+            "owner",
+            default=current.get("owner") or "joint",
+            show_default=True,
+        )
+        owner = owner.strip() or "joint"
+        tax_treatment = click.prompt(
+            "tax_treatment",
+            default=current.get("tax_treatment", ""),
+            show_default=True,
+            type=click.Choice(sorted(registries.TAX_TREATMENTS), case_sensitive=False),
+        )
+        opened = click.prompt("opened", default=current.get("opened", ""), show_default=True)
+        if opened:
+            opened = _validate_iso_date(opened)
+        closed = click.prompt("closed", default=current.get("closed", ""), show_default=True)
+        if closed:
+            closed = _validate_iso_date(closed)
+        meta_json = click.prompt("meta_json", default=current.get("meta_json", "{}"), show_default=True)
+        if meta_json:
+            try:
+                json.loads(meta_json)
+            except json.JSONDecodeError as exc:
+                raise click.ClickException(f"invalid meta_json: {meta_json!r}") from exc
+        tags = click.prompt("tags", default=current.get("tags", ""), show_default=True)
+        if tags:
+            registries.parse_tags(tags)
+
+    if kind not in registries.ACCOUNT_SUBKINDS:
+        raise click.ClickException(f"unknown kind: {kind!r}; allowed: {sorted(registries.ACCOUNT_SUBKINDS)}")
+    if subkind not in registries.ACCOUNT_SUBKINDS.get(kind, set()):
+        raise click.ClickException(
+            f"subkind {subkind!r} not allowed for kind {kind!r}; allowed: {sorted(registries.ACCOUNT_SUBKINDS[kind])}"
+        )
+    if owner not in persons and owner != "joint":
+        raise click.ClickException(
+            f"unknown owner {owner!r}; allowed: {persons + ['joint']}"
+        )
+    if tax_treatment and tax_treatment not in registries.TAX_TREATMENTS:
+        raise click.ClickException(
+            f"unknown tax_treatment: {tax_treatment!r}; allowed: {sorted(registries.TAX_TREATMENTS)}"
+        )
+    if opened:
+        opened = _validate_iso_date(opened)
+    if closed:
+        closed = _validate_iso_date(closed)
+    if meta_json:
+        try:
+            json.loads(meta_json)
+        except json.JSONDecodeError as exc:
+            raise click.ClickException(f"invalid meta_json: {meta_json!r}") from exc
+    if tags:
+        registries.parse_tags(tags)
+
+    df.loc[idx, [
+        "name", "kind", "subkind", "owner", "tax_treatment",
+        "opened", "closed", "meta_json", "tags",
+    ]] = [
+        new_name, kind, subkind, owner, tax_treatment,
+        opened, closed, meta_json, tags,
+    ]
+    df.to_csv(accounts_path, index=False)
+
+    if new_name != name:
+        _rename_account_in_scenario(data_dir_p, scenario, name, new_name)
+
+    click.echo(f"updated account '{new_name}' in {accounts_path}")
+
+
 @account_group_command.command("rename")
 @click.argument("old_name")
 @click.argument("new_name")
@@ -944,27 +1118,7 @@ def rename_account(
         raise click.ClickException("new account name required")
 
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
-    with open_intent_db(data_dir_p, scenario) as (con, _name):
-        existing = {r[0] for r in con.execute("SELECT name FROM account")}
-
-    if old_name not in existing:
-        raise click.ClickException(f"unknown account: {old_name!r}")
-    if new_name in existing and old_name != new_name:
-        raise click.ClickException(f"account already exists: {new_name!r}")
-
-    changed = False
-    accounts_path = scenario_dir / "accounts.csv"
-    changed |= _rename_account_row_values(accounts_path, ("name",), old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "account_values.csv", ("account_name",), old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "scheduled.csv", ("from_account", "to_account", "interest_account"), old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "calendar.csv", ("account_1", "account_2"), old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "waterfall_sources.csv", ("account_name",), old_name, new_name)
-
-    if not changed:
-        raise click.ClickException(f"account not found in scenario files: {old_name!r}")
-
-    click.echo(f"renamed account '{old_name}' to '{new_name}' in {scenario_dir}")
+    _rename_account_in_scenario(data_dir_p, scenario, old_name, new_name)
 
 
 def _default_tax_treatment(kind: str, subkind: str) -> str:
@@ -995,10 +1149,16 @@ def _default_tax_treatment(kind: str, subkind: str) -> str:
               default=None)
 @click.option("--as-of", default=None,
               help="Resolve rates effective on or before this date (YYYY-MM-DD).")
+@click.option("--kind", default=None,
+              help="Filter to accounts of this kind (e.g. asset, liability).")
+@click.option("--owner", default=None,
+              help="Filter to accounts owned by this person or 'joint'.")
 def list_accounts(
     scenario: str | None,
     data_dir: Path | None,
     as_of: str | None,
+    kind: str | None,
+    owner: str | None,
 ) -> None:
     """List accounts with opening balance and applicable rate (rich table)."""
     from rich.console import Console
@@ -1007,9 +1167,18 @@ def list_accounts(
     if as_of:
         _validate_iso_date(as_of)
     rows = load_accounts_view(data_dir_p, scenario, as_of=as_of)
+    if kind is not None:
+        rows = [r for r in rows if r.kind == kind]
+    if owner is not None:
+        rows = [r for r in rows if r.owner == owner]
+    rows.sort(key=lambda r: (r.kind, r.owner, r.name))
     title = f"accounts ({data_dir_p.name}"
     if scenario:
         title += f" / {scenario}"
+    if kind:
+        title += f" / kind={kind}"
+    if owner:
+        title += f" / owner={owner}"
     title += ")"
     Console().print(render_accounts_table(rows, title=title))
 

@@ -280,6 +280,30 @@ def test_sim_add_account_rejects_duplicate(tmp_path: Path) -> None:
     assert "already exists" in result.output
 
 
+def test_sim_account_edit_updates_owner_with_prompt_defaults(tmp_path: Path) -> None:
+    import csv
+
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "edit",
+            "Asset_Checking",
+            "--owner", "alice",
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    with (data / "scenarios" / "retire_alice" / "accounts.csv").open(
+        newline="", encoding="utf-8"
+    ) as fh:
+        rows = {r["name"]: r for r in csv.DictReader(fh)}
+    assert rows["Asset_Checking"]["owner"] == "alice"
+
+
 def test_sim_account_rename_updates_references(tmp_path: Path) -> None:
     import csv
 
@@ -342,6 +366,32 @@ def test_sim_accounts_lists_with_balance_and_rate(tmp_path: Path) -> None:
     assert "Asset_Brokerage_Joint" in out
     # opening balance for checking is 5000.00 in prototype
     assert "5,000.00" in out
+
+
+def test_sim_account_list_sorts_and_filters(tmp_path: Path) -> None:
+    import re
+
+    data = _copy_prototype(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "list",
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+            "--kind", "asset",
+            "--owner", "joint",
+        ],
+        env={"COLUMNS": "300"},
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output
+    names = re.findall(r"Asset_[A-Za-z0-9_]+", out)
+    assert names
+    assert names[0] == "Asset_Brokerage_Joint"
+    assert "Asset_Checking" in names
+    assert "Asset_Savings" in names
+    assert "Income_Salary_Alice" not in out
 
 
 def test_sim_transfer_list_shows_one_off(tmp_path: Path) -> None:
