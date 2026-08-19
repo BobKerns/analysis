@@ -35,6 +35,8 @@ ItemType = Literal[
     "net_worth_constant_cpi",
     "prior_tax_activity",
     "account_balance",
+    "account_model_member",
+    "aux_table",
 ]
 
 
@@ -89,6 +91,15 @@ _ITEM_SQL: dict[str, str] = {
         "LEFT JOIN tag t ON t.id = x.tag_id "
         "GROUP BY c.id ORDER BY c.id"
     ),
+    "account_model_member": (
+        "SELECT a.name AS account, a.kind, a.subkind, a.tax_treatment, "
+        "       m.opening_balance, m.opening_cost_basis, "
+        "       m.prior_year_end_balance "
+        "FROM account_model_member m "
+        "JOIN account a ON a.id = m.account_id "
+        "ORDER BY a.name"
+    ),
+    "scenario": "SELECT * FROM scenario",
     # Run-file tables/views. No tag join: these aren't user-tagged today.
     "transfer_event": (
         "SELECT te.id, te.step_id, s.month, te.date, te.amount, "
@@ -110,6 +121,7 @@ _ITEM_SQL: dict[str, str] = {
         "SELECT * FROM net_worth_constant_cpi ORDER BY month"
     ),
     "prior_tax_activity": "SELECT * FROM prior_tax_activity",
+    "tax_year_summary": "SELECT * FROM tax_year_summary ORDER BY year, bucket",
     "account_balance": (
         "SELECT s.month, a.id AS account_id, a.name AS account, "
         "       a.kind, a.subkind, ast.balance "
@@ -118,6 +130,13 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account a         ON a.id = ast.account_id "
         "ORDER BY s.month, a.name"
     ),
+    "account_model_member": (
+        "SELECT m.*, a.name AS account, a.kind, a.subkind "
+        "FROM account_model_member m "
+        "JOIN account a ON a.id = m.account_id "
+        "ORDER BY a.name"
+    ),
+    "aux_table": "SELECT * FROM aux_table ORDER BY kind, series, effective_date",
 }
 
 

@@ -139,6 +139,23 @@ def test_run_connection_account_balance_item_type(tmp_path: Path) -> None:
         assert "Asset_Checking" in set(df["account"])
 
 
+def test_run_connection_tax_year_summary_item_type(tmp_path: Path) -> None:
+    data = _copy_data(tmp_path)
+    intent_path = load_scenario(
+        data, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = run_scenario(
+        intent_path, tmp_path / "runs" / "r.sqlite3",
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    with open_run(run_path) as rc:
+        df = rc.items("tax_year_summary")
+        assert {"year", "bucket", "amount"} <= set(df.columns)
+
+
 def test_items_unknown_column_raises(tmp_path: Path) -> None:
     data = _copy_data(tmp_path)
     with open_scenario(data, "retire_alice") as sc:
