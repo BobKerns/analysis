@@ -26,6 +26,13 @@ SCHEDULED_HEADER = (
     "params_json", "tags",
 )
 
+type SourceCategory = str
+type CanonicalCategory = str
+type ExpenseAccountName = str
+type AccountName = str
+type CategoryCanonicalization = Mapping[SourceCategory, CanonicalCategory]
+type CategoryAccountMap = Mapping[CanonicalCategory, ExpenseAccountName]
+
 
 @dataclass(frozen=True)
 class BaselineResult:
@@ -37,14 +44,16 @@ class BaselineResult:
     category_totals: pd.DataFrame
 
 
-def load_category_map(path: Path | str) -> tuple[dict[str, str], set[str]]:
+def load_category_map(
+    path: Path | str,
+) -> tuple[dict[SourceCategory, CanonicalCategory], set[CanonicalCategory]]:
     """Load Quicken category merges and exclusions from a two-column CSV.
 
     A blank or ``-`` target excludes the source category. All other targets
     merge the source category into that target category.
     """
-    merges: dict[str, str] = {}
-    exclusions: set[str] = set()
+    merges: dict[SourceCategory, CanonicalCategory] = {}
+    exclusions: set[CanonicalCategory] = set()
     with Path(path).open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if tuple(reader.fieldnames or ()) != _CATEGORY_MAP_HEADER:
@@ -66,9 +75,9 @@ def load_category_map(path: Path | str) -> tuple[dict[str, str], set[str]]:
     return merges, exclusions
 
 
-def load_expense_account_map(path: Path | str) -> dict[str, str]:
+def load_expense_account_map(path: Path | str) -> dict[CanonicalCategory, ExpenseAccountName]:
     """Load optional canonical category to expense-account mappings."""
-    mappings: dict[str, str] = {}
+    mappings: dict[CanonicalCategory, ExpenseAccountName] = {}
     with Path(path).open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if tuple(reader.fieldnames or ()) != _EXPENSE_ACCOUNT_MAP_HEADER:
@@ -157,8 +166,8 @@ def load_quicken_transactions(path: Path | str) -> pd.DataFrame:
 def build_expense_baseline(
     quicken_path: Path | str,
     amazon_monthly_summaries: pd.DataFrame,
-    category_merges: Mapping[str, str] | None = None,
-    excluded_categories: Collection[str] | None = None,
+    category_merges: CategoryCanonicalization | None = None,
+    excluded_categories: Collection[CanonicalCategory] | None = None,
 ) -> BaselineResult:
     """Build baseline expenses, substituting Amazon summaries for Amazon rows.
 
@@ -235,10 +244,10 @@ def build_expense_baseline(
 
 def build_scheduled_baseline_rows(
     baseline: BaselineResult,
-    account_map: Mapping[str, str],
+    account_map: CategoryAccountMap,
     start: str,
-    from_account: str,
-    ignored_categories: Collection[str] = (),
+    from_account: AccountName,
+    ignored_categories: Collection[CanonicalCategory] = (),
     *,
     inflation_series: str = "cpi",
     priority: int = 200,

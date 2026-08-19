@@ -2,7 +2,13 @@
 
 from analysis.expenses.baseline import (
     BASELINE_GENERATED_TAG,
+    AccountName,
     BaselineResult,
+    CanonicalCategory,
+    CategoryAccountMap,
+    CategoryCanonicalization,
+    ExpenseAccountName,
+    SourceCategory,
     build_expense_baseline,
     build_scheduled_baseline_rows,
     load_category_map,
@@ -14,6 +20,12 @@ from analysis.expenses.baseline import (
 __all__ = [
     "BaselineResult",
     "BASELINE_GENERATED_TAG",
+    "AccountName",
+    "CanonicalCategory",
+    "CategoryAccountMap",
+    "CategoryCanonicalization",
+    "ExpenseAccountName",
+    "SourceCategory",
     "build_expense_baseline",
     "build_scheduled_baseline_rows",
     "load_category_map",
