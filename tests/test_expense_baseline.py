@@ -1,11 +1,17 @@
+import csv
 from pathlib import Path
 
 import pandas as pd
 
 from analysis.expenses.baseline import (
+    BASELINE_GENERATED_TAG,
+    SCHEDULED_HEADER,
     build_expense_baseline,
+    build_scheduled_baseline_rows,
     load_category_map,
+    load_expense_account_map,
     load_quicken_transactions,
+    replace_generated_scheduled_rows,
 )
 
 
@@ -107,3 +113,99 @@ def test_load_category_map_reads_merges_and_blank_or_dash_exclusions(tmp_path: P
 
     assert merges == {"Coffee Shops": "Dining"}
     assert exclusions == {"Uncategorized", "Federal Tax"}
+
+
+def test_load_expense_account_map_reads_category_accounts(tmp_path: Path) -> None:
+    path = tmp_path / "expense_account_map.csv"
+    path.write_text(
+        "category,from_account,to_account\n"
+        "Food,Family WF PMA,food\n",
+        encoding="utf-8",
+    )
+
+    assert load_expense_account_map(path) == {"Food": ("Family WF PMA", "food")}
+
+
+def test_build_expense_baseline_canonicalizes_and_combines_amazon_categories(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quicken.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n'
+        ',,"2026-01-02","2026-01-03","2026-01-02","","Cafe","Coffee Shops","","","","-5.00"\n',
+        encoding="utf-8",
+    )
+    amazon = pd.DataFrame(
+        {
+            "summary_month_start": ["2026-01-01", "2026-01-01"],
+            "category": ["Coffee Shops", "Uncategorized"],
+            "amount_total": [7.00, 9.00],
+        }
+    )
+
+    result = build_expense_baseline(
+        path,
+        amazon,
+        category_merges={"Coffee Shops": "Dining"},
+        excluded_categories={"Uncategorized"},
+    )
+
+    assert result.monthly.to_dict("records") == [
+        {
+            "summary_month_start": pd.Timestamp("2026-01-01"),
+            "category": "Dining",
+            "amount": 7.0,
+            "source": "Amazon summary",
+        },
+        {
+            "summary_month_start": pd.Timestamp("2026-01-01"),
+            "category": "Dining",
+            "amount": 5.0,
+            "source": "Quicken",
+        },
+    ]
+    assert result.category_totals.to_dict("records") == [
+        {"category": "Dining", "amount_total": 12.0},
+    ]
+
+
+def test_scheduled_baseline_rows_are_rerunnable_and_remove_stale_rows(tmp_path: Path) -> None:
+    path = tmp_path / "quicken.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n'
+        ',,"2026-01-02","2026-01-03","2026-01-02","","Market","Food","","","","-12.00"\n',
+        encoding="utf-8",
+    )
+    baseline = build_expense_baseline(
+        path,
+        pd.DataFrame(
+            {
+                "summary_month_start": ["2026-01-01"],
+                "category": ["Food"],
+                "amount_total": [24.00],
+            }
+        ),
+    )
+    rows = build_scheduled_baseline_rows(
+        baseline,
+        {"Food": ("Family WF PMA", "food")},
+        "2026-05-31",
+    )
+    assert rows[0]["base_amount"] == "36.00"
+    assert rows[0]["tags"] == BASELINE_GENERATED_TAG
+    assert '"generated_by":"expense_baseline"' in rows[0]["meta_json"]
+
+    scheduled = tmp_path / "scheduled.csv"
+    keep = dict.fromkeys(SCHEDULED_HEADER, "")
+    keep.update(name="keep_me", tags="manual:keep")
+    stale = dict(rows[0])
+    stale["base_amount"] = "99.00"
+    replace_generated_scheduled_rows(scheduled, [stale])
+    replace_generated_scheduled_rows(scheduled, rows)
+
+    with scheduled.open(newline="", encoding="utf-8") as handle:
+        written = list(csv.DictReader(handle))
+    assert [row["name"] for row in written] == ["baseline_expense_food"]
+    assert written[0]["base_amount"] == "36.00"

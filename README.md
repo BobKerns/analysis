@@ -153,6 +153,24 @@ Safe reruns:
 Persistent memory:
 - `state/state.sqlite3`
 
+### Importing the Expense Baseline
+
+The baseline importer combines canonicalized Quicken expenses with Amazon
+monthly summaries and replaces only rows it previously generated:
+
+```sh
+sim scheduled import-baseline --scenario current --dry-run
+sim scheduled import-baseline --scenario current
+```
+
+Generated rows are tagged `generated:expense_baseline` and carry provenance in
+`meta_json`, so rerunning removes stale generated categories after the private
+category maps change while preserving manually authored scheduled rows.
+
+The command expects `quicken/expense_account_map.csv` with columns
+`category,from_account,to_account`. Amounts are monthly averages over the
+observed baseline months and use the scenario start date by default.
+
 Schema guide:
 - `docs/sqlite-guide.md`
 

@@ -14,6 +14,14 @@ from pathlib import Path
 import click
 import pandas as pd
 
+from analysis.amazon.notebook import load_monthly_summaries
+from analysis.expenses.baseline import (
+    build_expense_baseline,
+    build_scheduled_baseline_rows,
+    load_category_map,
+    load_expense_account_map,
+    replace_generated_scheduled_rows,
+)
 from analysis.sim import registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.engine import run_scenario
@@ -662,6 +670,89 @@ def scheduled_add(
     click.echo(
         f"appended scheduled row '{row_name}' ({cadence}) "
         f"{from_account} -> {to_account} {_fmt_cents(cents).strip()} to {path}"
+    )
+
+
+@scheduled_group_command.command("import-baseline")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--quicken-file", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None,
+              help="Quicken export (default: <data-dir>/quicken/Transaction Export.csv).")
+@click.option("--amazon-state-dir", type=click.Path(file_okay=False, path_type=Path),
+              default=None,
+              help="Amazon state directory (default: <data-dir>/state).")
+@click.option("--category-map", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None,
+              help="Category map (default: <data-dir>/quicken/expense_category_map.csv).")
+@click.option("--account-map", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None,
+              help="Category account map (default: <data-dir>/quicken/expense_account_map.csv).")
+@click.option("--start", default=None,
+              help="First scheduled month YYYY-MM-DD (default: scenario start).")
+@click.option("--inflation-series", default="cpi", show_default=True)
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show generated rows without rewriting scheduled.csv.")
+def scheduled_import_baseline(
+    scenario: str | None,
+    data_dir: Path | None,
+    quicken_file: Path | None,
+    amazon_state_dir: Path | None,
+    category_map: Path | None,
+    account_map: Path | None,
+    start: str | None,
+    inflation_series: str,
+    dry_run: bool,
+) -> None:
+    """Replace generated baseline expense rows in scheduled.csv."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    quicken_path = quicken_file or data_dir_p / "quicken" / "Transaction Export.csv"
+    amazon_state_path = amazon_state_dir or data_dir_p / "state"
+    category_map_path = category_map or data_dir_p / "quicken" / "expense_category_map.csv"
+    account_map_path = account_map or data_dir_p / "quicken" / "expense_account_map.csv"
+
+    for path, label in (
+        (quicken_path, "Quicken export"),
+        (category_map_path, "category map"),
+        (account_map_path, "category account map"),
+    ):
+        if not path.exists():
+            raise click.ClickException(f"{label} not found: {path}")
+
+    if start is None:
+        scenario_path = scenario_dir / "scenario.csv"
+        with scenario_path.open(newline="", encoding="utf-8-sig") as handle:
+            start = next(_csv.DictReader(handle))["start"]
+    start = _validate_iso_date(start)
+
+    merges, exclusions = load_category_map(category_map_path)
+    baseline = build_expense_baseline(
+        quicken_path,
+        load_monthly_summaries(amazon_state_path),
+        category_merges=merges,
+        excluded_categories=exclusions,
+    )
+    mappings = load_expense_account_map(account_map_path)
+    rows = build_scheduled_baseline_rows(
+        baseline,
+        mappings,
+        start,
+        inflation_series=inflation_series,
+    )
+    scheduled_path = scenario_dir / "scheduled.csv"
+    if dry_run:
+        click.echo(f"(dry run) would replace {len(rows)} generated row(s) in {scheduled_path}")
+        for row in rows:
+            click.echo(f"  {row['name']}: {row['base_amount']} -> {row['to_account']}")
+        return
+    replace_generated_scheduled_rows(scheduled_path, rows)
+    click.echo(
+        f"replaced {len(rows)} generated baseline row(s) in {scheduled_path} "
+        f"for scenario {scenario_name}"
     )
 
 
