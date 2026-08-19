@@ -34,6 +34,7 @@ ItemType = Literal[
     "net_worth",
     "net_worth_constant_cpi",
     "prior_tax_activity",
+    "account_balance",
 ]
 
 
@@ -109,6 +110,14 @@ _ITEM_SQL: dict[str, str] = {
         "SELECT * FROM net_worth_constant_cpi ORDER BY month"
     ),
     "prior_tax_activity": "SELECT * FROM prior_tax_activity",
+    "account_balance": (
+        "SELECT s.month, a.id AS account_id, a.name AS account, "
+        "       a.kind, a.subkind, ast.balance "
+        "FROM account_state ast "
+        "JOIN simulation_step s ON s.id = ast.step_id "
+        "JOIN account a         ON a.id = ast.account_id "
+        "ORDER BY s.month, a.name"
+    ),
 }
 
 
@@ -260,6 +269,19 @@ def open_run(run_path: Path | str) -> Iterator[RunConnection]:
         yield rc
     finally:
         rc.close()
+
+
+def find_latest_run(runs_dir: Path | str) -> Path:
+    """Return the most recent run snapshot file under ``runs_dir``.
+
+    Run filenames are timestamp-prefixed, so they sort chronologically;
+    raises ``FileNotFoundError`` if no ``*.sqlite3`` files are present.
+    """
+    runs_dir = Path(runs_dir)
+    run_files = sorted(runs_dir.glob("*.sqlite3"))
+    if not run_files:
+        raise FileNotFoundError(f"no run files under {runs_dir}")
+    return run_files[-1]
 
 
 # ---------- scenario (read + write through CSVs) ----------

@@ -57,6 +57,51 @@ def summarize_over_all_time(state_dir: Path | str = "state") -> pd.DataFrame:
         return pd.read_sql_query(query, conn)
 
 
+def load_monthly_summaries(state_dir: Path | str = "state") -> pd.DataFrame:
+    """Load monthly category summaries as a tidy DataFrame.
+
+    Returns an empty DataFrame (with the expected columns) when no state
+    database exists yet.
+    """
+    db_path = Path(state_dir) / STATE_DB_FILENAME
+    columns = ["summary_month_start", "category", "amount_total"]
+    if not db_path.exists():
+        return pd.DataFrame(columns=columns)
+
+    query = (
+        "SELECT summary_month_start, category, amount_total "
+        "FROM monthly_summaries "
+        "ORDER BY summary_month_start, category"
+    )
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql_query(query, conn)
+    if not df.empty:
+        df["summary_month_start"] = pd.to_datetime(df["summary_month_start"])
+    return df
+
+
+def top_category_trend(monthly_summaries: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
+    """Pivot ``monthly_summaries`` to a month x category matrix for the
+    ``top_n`` categories by all-time total."""
+    if monthly_summaries.empty:
+        return pd.DataFrame()
+
+    top_categories = (
+        monthly_summaries.groupby("category")["amount_total"].sum()
+        .sort_values(ascending=False)
+        .head(top_n)
+        .index.tolist()
+    )
+    return (
+        monthly_summaries[monthly_summaries["category"].isin(top_categories)]
+        .pivot_table(
+            index="summary_month_start", columns="category",
+            values="amount_total", aggfunc="sum", fill_value=0.0,
+        )
+        .sort_index()
+    )
+
+
 def run_amazon_categorization(
     input_csv_path: Path | str,
     state_dir: Path | str = "state",

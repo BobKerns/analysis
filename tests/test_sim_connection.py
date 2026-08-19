@@ -8,7 +8,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.connection import RunConnection, open_run, open_scenario
+from analysis.sim.connection import RunConnection, find_latest_run, open_run, open_scenario
+from analysis.sim.engine import run_scenario
 from analysis.sim.loader import load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +103,40 @@ def test_items_filters_by_columns(tmp_path: Path) -> None:
 
         kinds = sc.items("account", kind=["asset", "expense"])
         assert set(kinds["kind"]) <= {"asset", "expense"}
+
+
+def test_find_latest_run_picks_lexicographically_last_file(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    for name in ["2026-01-01T000000Z_a.sqlite3", "2026-06-01T000000Z_b.sqlite3"]:
+        (runs_dir / name).touch()
+
+    assert find_latest_run(runs_dir).name == "2026-06-01T000000Z_b.sqlite3"
+
+
+def test_find_latest_run_raises_when_empty(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    with pytest.raises(FileNotFoundError):
+        find_latest_run(runs_dir)
+
+
+def test_run_connection_account_balance_item_type(tmp_path: Path) -> None:
+    data = _copy_data(tmp_path)
+    intent_path = load_scenario(
+        data, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = run_scenario(
+        intent_path, tmp_path / "runs" / "r.sqlite3",
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    with open_run(run_path) as rc:
+        df = rc.items("account_balance")
+        assert {"month", "account", "kind", "balance"} <= set(df.columns)
+        assert "Asset_Checking" in set(df["account"])
 
 
 def test_items_unknown_column_raises(tmp_path: Path) -> None:
