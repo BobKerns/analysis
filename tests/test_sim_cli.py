@@ -626,6 +626,9 @@ def _write_quicken_export(path: Path) -> None:
         ',"Checking",\n'
         ',"  - Asset_Checking","1,234.56"\n'
         ',"  - Total Checking","1,234.56"\n'
+        ',"Investments",\n'
+        ',"  - Asset_Brokerage_Joint","310,000.00"\n'
+        ',"  - Asset_TraditionalIRA_Alice","510,000.00"\n'
         '"Liabilities",,\n'
         ',"Loan",\n'
         ',"  - Liability_Mortgage","-240,000.00"\n'
@@ -638,6 +641,8 @@ def _write_quicken_map(path: Path) -> None:
     path.write_text(
         "quicken_name,account_name,action,note\n"
         "Asset_Checking,Asset_Checking,map,\n"
+        "Asset_Brokerage_Joint,Asset_Brokerage_Joint,map,\n"
+        "Asset_TraditionalIRA_Alice,Asset_TraditionalIRA_Alice,map,\n"
         "Liability_Mortgage,Liability_Mortgage,map,\n",
         encoding="utf-8",
     )
@@ -668,14 +673,58 @@ def test_sim_account_import_quicken_updates_balances(tmp_path: Path) -> None:
     ) as f:
         rows = {r["account_name"]: r for r in _csv.DictReader(f)}
     assert rows["Asset_Checking"]["opening_balance"] == "1234.56"
-    assert rows["Asset_Checking"]["prior_year_end_balance"] == "1234.56"
+    # non-investment asset: prior_year_end_balance is never touched
+    assert rows["Asset_Checking"]["prior_year_end_balance"] == ""
+    # investment asset with no existing prior_year_end_balance: seeded from opening
+    assert rows["Asset_Brokerage_Joint"]["opening_balance"] == "310000.00"
+    assert rows["Asset_Brokerage_Joint"]["prior_year_end_balance"] == "310000.00"
+    # investment asset that already has a prior_year_end_balance: left alone
+    assert rows["Asset_TraditionalIRA_Alice"]["opening_balance"] == "510000.00"
+    assert rows["Asset_TraditionalIRA_Alice"]["prior_year_end_balance"] == "480000.00"
     # liability magnitude is stored positive even though Quicken shows it negative
     assert rows["Liability_Mortgage"]["opening_balance"] == "240000.00"
+    assert rows["Liability_Mortgage"]["prior_year_end_balance"] == ""
 
     check = runner.invoke(
         main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
     )
     assert check.exit_code == 0, check.output
+
+
+def test_sim_account_import_quicken_year_end_sets_prior_year_only(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    export = tmp_path / "year_end.csv"
+    _write_quicken_export(export)
+    map_file = tmp_path / "map.csv"
+    _write_quicken_map(map_file)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "import-quicken", str(export),
+            "--map-file", str(map_file),
+            "--year-end",
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "2 ineligible" in result.output  # Asset_Checking, Liability_Mortgage
+
+    import csv as _csv
+    with (data / "scenarios" / "retire_alice" / "account_values.csv").open(
+        newline="", encoding="utf-8"
+    ) as f:
+        rows = {r["account_name"]: r for r in _csv.DictReader(f)}
+    # opening_balance is untouched by --year-end
+    assert rows["Asset_Brokerage_Joint"]["opening_balance"] == "300000.00"
+    assert rows["Asset_Brokerage_Joint"]["prior_year_end_balance"] == "310000.00"
+    # --year-end always overwrites, even if already present
+    assert rows["Asset_TraditionalIRA_Alice"]["prior_year_end_balance"] == "510000.00"
+    # non-investment accounts are left untouched entirely
+    assert rows["Asset_Checking"]["opening_balance"] == "5000.00"
+    assert rows["Liability_Mortgage"]["prior_year_end_balance"] == ""
 
 
 def test_sim_account_import_quicken_rejects_unmapped_account(tmp_path: Path) -> None:

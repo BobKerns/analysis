@@ -1,8 +1,10 @@
-"""Parse Quicken "Net Worth" report exports and map them onto this system's accounts.
+"""Parse Quicken account-tree report exports and map them onto this system's accounts.
 
-Quicken's own account names rarely match ``accounts.csv`` exactly (and we don't
-rename Quicken's accounts for clarity reasons), so imports go through an
-explicit, versioned mapping CSV rather than fuzzy name matching.
+Covers both the "Net Worth Export" and "Year End Export" reports (My Reports),
+which share the same indented-category CSV shape. Quicken's own account names
+rarely match ``accounts.csv`` exactly (and we don't rename Quicken's accounts
+for clarity reasons), so imports go through an explicit, versioned mapping CSV
+rather than fuzzy name matching.
 """
 
 from __future__ import annotations
@@ -15,7 +17,20 @@ from pathlib import Path
 __all__ = [
     "QuickenBalance", "AccountMapEntry",
     "parse_net_worth_export", "load_account_map", "format_dollars",
+    "is_investment_asset",
 ]
+
+# subkinds eligible for prior_year_end_balance (the RMD-relevant investment
+# holdings); checking/savings/vehicle/real_estate/other_asset are excluded.
+INVESTMENT_ASSET_SUBKINDS = frozenset({
+    "brokerage_taxable", "traditional_ira", "roth_ira",
+    "traditional_401k", "roth_401k", "hsa",
+})
+
+
+def is_investment_asset(kind: str, subkind: str) -> bool:
+    """Whether an account's ``prior_year_end_balance`` is meaningful to set."""
+    return kind == "asset" and subkind in INVESTMENT_ASSET_SUBKINDS
 
 
 @dataclass(frozen=True)

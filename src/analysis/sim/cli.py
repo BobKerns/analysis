@@ -18,7 +18,9 @@ from analysis.sim import registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.engine import run_scenario
 from analysis.sim.connection import open_scenario
-from analysis.sim.quicken import format_dollars, load_account_map, parse_net_worth_export
+from analysis.sim.quicken import (
+    format_dollars, is_investment_asset, load_account_map, parse_net_worth_export,
+)
 from analysis.sim.loader import (
     DataDirtyRefused,
     LoadError,
@@ -1357,6 +1359,10 @@ def sync_account_values(
               default=None,
               help="quicken_name -> account_name mapping CSV "
                    "(default: <scenario>/quicken_account_map.csv).")
+@click.option("--year-end", is_flag=True, default=False,
+              help="Treat quicken_file as a Quicken \"Year End Export\" and write "
+                   "prior_year_end_balance instead of opening_balance, for "
+                   "investment asset accounts only.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -1367,16 +1373,22 @@ def sync_account_values(
 def import_quicken(
     quicken_file: Path,
     map_file: Path | None,
+    year_end: bool,
     scenario: str | None,
     data_dir: Path | None,
     dry_run: bool,
 ) -> None:
-    """Update account_values.csv from a Quicken "Net Worth" report export.
+    """Update account_values.csv from a Quicken account-tree report export.
 
-    Sets both ``opening_balance`` and ``prior_year_end_balance`` from the
-    export's balances. Every account in ``quicken_file`` must appear in the
-    mapping CSV, either mapped to an ``account_name`` or marked ``skip`` --
-    this catches new/renamed Quicken accounts instead of silently ignoring them.
+    Without ``--year-end``, sets ``opening_balance`` from a "Net Worth Export"
+    (and seeds ``prior_year_end_balance`` only when it's still blank, and only
+    for investment asset accounts). With ``--year-end``, treats the file as a
+    "Year End Export" and always overwrites ``prior_year_end_balance`` for
+    investment asset accounts, leaving ``opening_balance`` untouched.
+
+    Every account in ``quicken_file`` must appear in the mapping CSV, either
+    mapped to an ``account_name`` or marked ``skip`` -- this catches
+    new/renamed Quicken accounts instead of silently ignoring them.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
@@ -1392,11 +1404,11 @@ def import_quicken(
     if not values_path.exists():
         raise click.ClickException(f"account_values.csv not found: {values_path}")
 
-    account_kind = {}
+    account_info: dict[str, tuple[str, str]] = {}
     with accounts_path.open(newline="", encoding="utf-8") as f:
         for row in _csv.DictReader(f):
             if row.get("name"):
-                account_kind[row["name"]] = row.get("kind", "")
+                account_info[row["name"]] = (row.get("kind", ""), row.get("subkind", ""))
 
     try:
         balances = parse_net_worth_export(quicken_file)
@@ -1407,6 +1419,7 @@ def import_quicken(
     unmapped: list[str] = []
     unknown_target: list[str] = []
     skipped: list[str] = []
+    ineligible: list[str] = []
     updates: dict[str, int] = {}
 
     for bal in balances:
@@ -1417,10 +1430,19 @@ def import_quicken(
         if entry.action == "skip":
             skipped.append(bal.quicken_name)
             continue
-        kind = account_kind.get(entry.account_name)
-        if kind is None:
+        info = account_info.get(entry.account_name)
+        if info is None:
             unknown_target.append(f"{bal.quicken_name} -> {entry.account_name}")
             continue
+        kind, subkind = info
+
+        if year_end:
+            if not is_investment_asset(kind, subkind):
+                ineligible.append(entry.account_name)
+                continue
+            updates[entry.account_name] = bal.cents
+            continue
+
         magnitude = -bal.cents if kind == "liability" else bal.cents
         if kind == "liability" and magnitude < 0:
             click.echo(
@@ -1454,24 +1476,39 @@ def import_quicken(
             )
         dollars = format_dollars(cents)
         idx = df.index[df["account_name"] == name][0]
+
+        if year_end:
+            old = df.at[idx, "prior_year_end_balance"]
+            if old != dollars:
+                click.echo(f"  {name}: prior_year_end_balance {old or '(none)'} -> {dollars}")
+                changed += 1
+            df.at[idx, "prior_year_end_balance"] = dollars
+            continue
+
         old = df.at[idx, "opening_balance"]
         if old != dollars:
-            click.echo(f"  {name}: {old or '(none)'} -> {dollars}")
+            click.echo(f"  {name}: opening_balance {old or '(none)'} -> {dollars}")
             changed += 1
         df.at[idx, "opening_balance"] = dollars
-        df.at[idx, "prior_year_end_balance"] = dollars
+
+        kind, subkind = account_info[name]
+        if is_investment_asset(kind, subkind) and not df.at[idx, "prior_year_end_balance"]:
+            df.at[idx, "prior_year_end_balance"] = dollars
+            click.echo(f"  {name}: prior_year_end_balance (none) -> {dollars} [seeded from opening]")
 
     if dry_run:
         click.echo(
             f"(dry run) {changed} account(s) would change, "
-            f"{len(skipped)} skipped, {len(updates) - changed} unchanged"
+            f"{len(skipped)} skipped, {len(ineligible)} ineligible, "
+            f"{len(updates) - changed} unchanged"
         )
         return
 
     df.to_csv(values_path, index=False)
     click.echo(
         f"updated {changed} account(s) in {values_path} "
-        f"({len(skipped)} skipped, {len(updates) - changed} unchanged)"
+        f"({len(skipped)} skipped, {len(ineligible)} ineligible, "
+        f"{len(updates) - changed} unchanged)"
     )
 
 
