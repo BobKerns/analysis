@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.expenses.baseline import build_expense_baseline, load_quicken_transactions
+from analysis.expenses.baseline import (
+    build_expense_baseline,
+    load_category_map,
+    load_quicken_transactions,
+)
 
 
 def _write_export(path: Path) -> None:
@@ -55,3 +59,51 @@ def test_build_expense_baseline_excludes_modeled_rows_and_adds_amazon_summary(
         {"category": "Household", "amount_total": 20.0},
         {"category": "Groceries", "amount_total": 12.34},
     ]
+
+
+def test_build_expense_baseline_merges_and_excludes_quicken_categories(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quicken.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n'
+        ',,"2026-01-02","2026-01-03","2026-01-02","","Market","Groceries","","","","-12.34"\n'
+        ',,"2026-01-03","2026-01-04","2026-01-03","","Cafe","Coffee Shops","","","","-5.00"\n'
+        ',,"2026-01-04","2026-01-05","2026-01-04","","Gym","Gym","","","","-25.00"\n',
+        encoding="utf-8",
+    )
+
+    result = build_expense_baseline(
+        path,
+        pd.DataFrame(columns=["summary_month_start", "category", "amount_total"]),
+        category_merges={"Coffee Shops": "Dining"},
+        excluded_categories={"Gym"},
+    )
+
+    assert result.transactions["category"].tolist() == ["Groceries", "Dining"]
+    assert result.transactions["category_raw"].tolist() == ["Groceries", "Coffee Shops"]
+    excluded_reason = result.excluded.loc[
+        result.excluded["payee"].eq("Gym"), "exclude_reason"
+    ].iloc[0]
+    assert excluded_reason == "category_excluded"
+    assert result.category_totals.to_dict("records") == [
+        {"category": "Groceries", "amount_total": 12.34},
+        {"category": "Dining", "amount_total": 5.0},
+    ]
+
+
+def test_load_category_map_reads_merges_and_blank_or_dash_exclusions(tmp_path: Path) -> None:
+    path = tmp_path / "expense_category_map.csv"
+    path.write_text(
+        "quicken_category,target_category\n"
+        "Coffee Shops,Dining\n"
+        "Uncategorized,\n"
+        "Federal Tax,-\n",
+        encoding="utf-8",
+    )
+
+    merges, exclusions = load_category_map(path)
+
+    assert merges == {"Coffee Shops": "Dining"}
+    assert exclusions == {"Uncategorized", "Federal Tax"}

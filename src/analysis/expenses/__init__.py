@@ -3,11 +3,13 @@
 from analysis.expenses.baseline import (
     BaselineResult,
     build_expense_baseline,
+    load_category_map,
     load_quicken_transactions,
 )
 
 __all__ = [
     "BaselineResult",
     "build_expense_baseline",
+    "load_category_map",
     "load_quicken_transactions",
 ]

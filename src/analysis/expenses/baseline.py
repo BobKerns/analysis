@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import re
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +14,7 @@ import pandas as pd
 _DATE_FORMAT = "%Y-%m-%d"
 _EXCLUDED_PAYEE_RE = re.compile(r"amazon|state\s+farm|mortgage|paylease", re.IGNORECASE)
 _EXCLUDED_CATEGORY_RE = re.compile(r"mortgage", re.IGNORECASE)
+_CATEGORY_MAP_HEADER = ("quicken_category", "target_category")
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,35 @@ class BaselineResult:
     excluded: pd.DataFrame
     monthly: pd.DataFrame
     category_totals: pd.DataFrame
+
+
+def load_category_map(path: Path | str) -> tuple[dict[str, str], set[str]]:
+    """Load Quicken category merges and exclusions from a two-column CSV.
+
+    A blank or ``-`` target excludes the source category. All other targets
+    merge the source category into that target category.
+    """
+    merges: dict[str, str] = {}
+    exclusions: set[str] = set()
+    with Path(path).open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != _CATEGORY_MAP_HEADER:
+            raise ValueError(
+                f"{path}: expected header {list(_CATEGORY_MAP_HEADER)}, "
+                f"got {list(reader.fieldnames or [])}"
+            )
+        for row_number, row in enumerate(reader, start=2):
+            source = row["quicken_category"].strip()
+            target = row["target_category"].strip()
+            if not source:
+                continue
+            if source in merges or source in exclusions:
+                raise ValueError(f"{path} row {row_number}: duplicate category {source!r}")
+            if not target or target == "-":
+                exclusions.add(source)
+            else:
+                merges[source] = target
+    return merges, exclusions
 
 
 def load_quicken_transactions(path: Path | str) -> pd.DataFrame:
@@ -93,15 +124,24 @@ def load_quicken_transactions(path: Path | str) -> pd.DataFrame:
 def build_expense_baseline(
     quicken_path: Path | str,
     amazon_monthly_summaries: pd.DataFrame,
+    category_merges: Mapping[str, str] | None = None,
+    excluded_categories: Collection[str] | None = None,
 ) -> BaselineResult:
     """Build baseline expenses, substituting Amazon summaries for Amazon rows.
 
-    Quicken rows are retained only when they are negative, non-transfer
+    ``category_merges`` maps exact Quicken category names to the desired
+    baseline category. ``excluded_categories`` contains category names to
+    remove after merges are applied. Quicken rows are retained only when they
+    are negative, non-transfer
     transactions outside the explicitly modeled mortgage, State Farm, and
     Amazon exclusions. Amazon summaries must contain ``summary_month_start``,
     ``category``, and ``amount_total`` columns and use positive expense totals.
     """
     raw = load_quicken_transactions(quicken_path).copy()
+    raw["category_raw"] = raw["category"]
+    merges = {str(source): str(target) for source, target in (category_merges or {}).items()}
+    raw["category"] = raw["category"].replace(merges)
+    categories_to_exclude = {str(category) for category in (excluded_categories or ())}
     raw["exclude_reason"] = ""
     raw.loc[raw["amount_cents"] >= 0, "exclude_reason"] = "non_expense"
     raw.loc[raw["transfer"].ne(""), "exclude_reason"] = "transfer"
@@ -113,6 +153,10 @@ def build_expense_baseline(
         raw["category"].str.contains(_EXCLUDED_CATEGORY_RE, na=False),
         "exclude_reason",
     ] = "modeled_separately"
+    raw.loc[
+        raw["category"].isin(categories_to_exclude),
+        "exclude_reason",
+    ] = "category_excluded"
 
     included = raw.loc[raw["exclude_reason"].eq("")].copy()
     excluded = raw.loc[raw["exclude_reason"].ne("")].copy()
