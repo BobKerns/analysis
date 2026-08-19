@@ -15,5 +15,5 @@
     "state/**"
   ],
   "dictionaries": ["python", "softwareTerms", "project-words"],
-  "files": ["**/*.md", "**/*.rst", "**/*.txt", "**/*.py"]
+  "files": ["**/*.md", "**/*.rst", "**/*.txt", "**/*.py", "**/.gitignore", "**/*.csv", "**/*.toml", "**/.gitattributes"]
 }
