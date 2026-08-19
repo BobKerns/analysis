@@ -338,6 +338,35 @@ def test_sim_account_rename_updates_references(tmp_path: Path) -> None:
     assert "Asset_Checking_Updated" in names
     assert "Asset_Checking" not in names
 
+
+def test_sim_account_rename_updates_quicken_map(tmp_path: Path) -> None:
+    import csv
+
+    data = _copy_prototype(tmp_path)
+    map_path = data / "scenarios" / "retire_alice" / "quicken_account_map.csv"
+    map_path.write_text(
+        "quicken_name,account_name,action,note\n"
+        "Checking,Asset_Checking,map,\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "rename",
+            "Asset_Checking",
+            "Asset_Checking_Updated",
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    with map_path.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows[0]["account_name"] == "Asset_Checking_Updated"
+
     with (data / "scenarios" / "retire_alice" / "scheduled.csv").open(
         newline="", encoding="utf-8"
     ) as fh:
@@ -589,3 +618,113 @@ def test_sim_account_sync_is_idempotent(tmp_path: Path) -> None:
     )
     assert result2.exit_code == 0
     assert "no missing accounts" in result2.output
+
+
+def _write_quicken_export(path: Path) -> None:
+    path.write_text(
+        '"",,"2026-08-18"\n'
+        ',"Checking",\n'
+        ',"  - Asset_Checking","1,234.56"\n'
+        ',"  - Total Checking","1,234.56"\n'
+        '"Liabilities",,\n'
+        ',"Loan",\n'
+        ',"  - Liability_Mortgage","-240,000.00"\n'
+        'Net Worth,,"0.00"\n',
+        encoding="utf-8",
+    )
+
+
+def _write_quicken_map(path: Path) -> None:
+    path.write_text(
+        "quicken_name,account_name,action,note\n"
+        "Asset_Checking,Asset_Checking,map,\n"
+        "Liability_Mortgage,Liability_Mortgage,map,\n",
+        encoding="utf-8",
+    )
+
+
+def test_sim_account_import_quicken_updates_balances(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    export = tmp_path / "export.csv"
+    _write_quicken_export(export)
+    map_file = tmp_path / "map.csv"
+    _write_quicken_map(map_file)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "import-quicken", str(export),
+            "--map-file", str(map_file),
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    import csv as _csv
+    with (data / "scenarios" / "retire_alice" / "account_values.csv").open(
+        newline="", encoding="utf-8"
+    ) as f:
+        rows = {r["account_name"]: r for r in _csv.DictReader(f)}
+    assert rows["Asset_Checking"]["opening_balance"] == "1234.56"
+    assert rows["Asset_Checking"]["prior_year_end_balance"] == "1234.56"
+    # liability magnitude is stored positive even though Quicken shows it negative
+    assert rows["Liability_Mortgage"]["opening_balance"] == "240000.00"
+
+    check = runner.invoke(
+        main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
+    )
+    assert check.exit_code == 0, check.output
+
+
+def test_sim_account_import_quicken_rejects_unmapped_account(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    export = tmp_path / "export.csv"
+    _write_quicken_export(export)
+    map_file = tmp_path / "map.csv"
+    map_file.write_text(
+        "quicken_name,account_name,action,note\n"
+        "Asset_Checking,Asset_Checking,map,\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "import-quicken", str(export),
+            "--map-file", str(map_file),
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "unmapped" in result.output
+    assert "Liability_Mortgage" in result.output
+
+
+def test_sim_account_import_quicken_dry_run_does_not_write(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    export = tmp_path / "export.csv"
+    _write_quicken_export(export)
+    map_file = tmp_path / "map.csv"
+    _write_quicken_map(map_file)
+
+    values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
+    before = values_path.read_text(encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "import-quicken", str(export),
+            "--map-file", str(map_file),
+            "--scenario", "retire_alice",
+            "--data-dir", str(data),
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "dry run" in result.output
+    assert values_path.read_text(encoding="utf-8") == before

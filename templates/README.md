@@ -88,3 +88,33 @@ The CLI is interactive (tab completion on account names, prompts when arguments 
 - **Edit balances**: After syncing, use your editor or `sim account add` to set opening balances as needed.
 
 The loader enforces referential integrity (strict join validation), so missing or mismatched account names will raise a clear error before the scenario loads.
+
+### Importing balances from Quicken
+
+`sim account import-quicken` updates `opening_balance` and `prior_year_end_balance` in
+`account_values.csv` from a Quicken **Net Worth** report export, without ever renaming
+Quicken's own account names.
+
+1. In Quicken, open **My Reports → Net Worth Export** (a saved report; re-run it "as of"
+   today before each export). Export it as CSV.
+2. `scenarios/<name>/quicken_account_map.csv` maps `quicken_name -> account_name`
+   (columns: `quicken_name, account_name, action, note`; `action` is `map` or `skip`).
+   Every account row present in the Quicken export must appear here — new or renamed
+   Quicken accounts are reported as errors instead of silently skipped.
+3. Run:
+
+   ```sh
+   sim account import-quicken <export.csv> --scenario <name> --dry-run   # preview
+   sim account import-quicken <export.csv> --scenario <name>             # apply
+   ```
+
+Liability balances are stored as a non-negative debt magnitude (per the engine's sign
+convention), so the importer negates Quicken's signed liability values automatically.
+
+**Bookkeeping:** `sim account rename` and `sim account edit --new-name` already update
+`quicken_account_map.csv`'s `account_name` column alongside `accounts.csv`,
+`account_values.csv`, `scheduled.csv`, `calendar.csv`, and `waterfall_sources.csv` — no
+manual edit of the map is needed after a rename. If you add a new account, add its
+`quicken_account_map.csv` row (or a `skip` row with a `note` explaining why) before the
+next import.
+

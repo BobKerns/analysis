@@ -18,6 +18,7 @@ from analysis.sim import registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.engine import run_scenario
 from analysis.sim.connection import open_scenario
+from analysis.sim.quicken import format_dollars, load_account_map, parse_net_worth_export
 from analysis.sim.loader import (
     DataDirtyRefused,
     LoadError,
@@ -939,6 +940,7 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
     changed |= _rename_account_row_values(scenario_dir / "scheduled.csv", ("from_account", "to_account", "interest_account"), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "calendar.csv", ("account_1", "account_2"), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "waterfall_sources.csv", ("account_name",), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "quicken_account_map.csv", ("account_name",), old_name, new_name)
 
     if not changed:
         raise click.ClickException(f"account not found in scenario files: {old_name!r}")
@@ -1345,6 +1347,132 @@ def sync_account_values(
     click.echo(f"synced {len(missing)} missing account(s) to {values_path}")
     for name in missing:
         click.echo(f"  + {name}")
+
+
+@account_group_command.command("import-quicken")
+@click.argument("quicken_file",
+                type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--map-file", "map_file",
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None,
+              help="quicken_name -> account_name mapping CSV "
+                   "(default: <scenario>/quicken_account_map.csv).")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show what would change without writing.")
+def import_quicken(
+    quicken_file: Path,
+    map_file: Path | None,
+    scenario: str | None,
+    data_dir: Path | None,
+    dry_run: bool,
+) -> None:
+    """Update account_values.csv from a Quicken "Net Worth" report export.
+
+    Sets both ``opening_balance`` and ``prior_year_end_balance`` from the
+    export's balances. Every account in ``quicken_file`` must appear in the
+    mapping CSV, either mapped to an ``account_name`` or marked ``skip`` --
+    this catches new/renamed Quicken accounts instead of silently ignoring them.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
+
+    map_path = map_file or (scenario_dir / "quicken_account_map.csv")
+    if not map_path.exists():
+        raise click.ClickException(f"mapping file not found: {map_path}")
+
+    accounts_path = scenario_dir / "accounts.csv"
+    values_path = scenario_dir / "account_values.csv"
+    if not accounts_path.exists():
+        raise click.ClickException(f"accounts.csv not found: {accounts_path}")
+    if not values_path.exists():
+        raise click.ClickException(f"account_values.csv not found: {values_path}")
+
+    account_kind = {}
+    with accounts_path.open(newline="", encoding="utf-8") as f:
+        for row in _csv.DictReader(f):
+            if row.get("name"):
+                account_kind[row["name"]] = row.get("kind", "")
+
+    try:
+        balances = parse_net_worth_export(quicken_file)
+        account_map = load_account_map(map_path)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+
+    unmapped: list[str] = []
+    unknown_target: list[str] = []
+    skipped: list[str] = []
+    updates: dict[str, int] = {}
+
+    for bal in balances:
+        entry = account_map.get(bal.quicken_name)
+        if entry is None:
+            unmapped.append(bal.quicken_name)
+            continue
+        if entry.action == "skip":
+            skipped.append(bal.quicken_name)
+            continue
+        kind = account_kind.get(entry.account_name)
+        if kind is None:
+            unknown_target.append(f"{bal.quicken_name} -> {entry.account_name}")
+            continue
+        magnitude = -bal.cents if kind == "liability" else bal.cents
+        if kind == "liability" and magnitude < 0:
+            click.echo(
+                f"warning: {entry.account_name!r} has an unusual credit balance "
+                "in Quicken; storing magnitude only", err=True,
+            )
+            magnitude = abs(magnitude)
+        updates[entry.account_name] = magnitude
+
+    if unmapped:
+        raise click.ClickException(
+            f"unmapped Quicken account(s); add to {map_path}:\n  "
+            + "\n  ".join(sorted(unmapped))
+        )
+    if unknown_target:
+        raise click.ClickException(
+            "mapping target(s) not found in accounts.csv:\n  "
+            + "\n  ".join(sorted(unknown_target))
+        )
+
+    df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+    if "account_name" not in df.columns:
+        raise click.ClickException(f"account_values.csv missing 'account_name' column: {values_path}")
+    known = set(df["account_name"])
+
+    changed = 0
+    for name, cents in updates.items():
+        if name not in known:
+            raise click.ClickException(
+                f"mapped account not found in account_values.csv: {name!r}"
+            )
+        dollars = format_dollars(cents)
+        idx = df.index[df["account_name"] == name][0]
+        old = df.at[idx, "opening_balance"]
+        if old != dollars:
+            click.echo(f"  {name}: {old or '(none)'} -> {dollars}")
+            changed += 1
+        df.at[idx, "opening_balance"] = dollars
+        df.at[idx, "prior_year_end_balance"] = dollars
+
+    if dry_run:
+        click.echo(
+            f"(dry run) {changed} account(s) would change, "
+            f"{len(skipped)} skipped, {len(updates) - changed} unchanged"
+        )
+        return
+
+    df.to_csv(values_path, index=False)
+    click.echo(
+        f"updated {changed} account(s) in {values_path} "
+        f"({len(skipped)} skipped, {len(updates) - changed} unchanged)"
+    )
 
 
 @transfer_group_command.command("list")
