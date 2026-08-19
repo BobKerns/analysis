@@ -137,7 +137,7 @@ def categorize_amazon_csv(
     summary_path = out_dir / f"{stem}_summary.csv"
 
     working.to_csv(annotated_path, index=False)
-    summary.to_csv(summary_path, index=False)
+    summary.to_csv(summary_path, index=False, float_format="%.2f")
 
     monthly_outputs = _write_monthly_outputs(
         working=working,
@@ -276,7 +276,7 @@ def _write_monthly_outputs(
         annotated_path = output_dir / f"{name_prefix}_annotated.csv"
         summary_path = output_dir / f"{name_prefix}_summary.csv"
         month_rows.to_csv(annotated_path, index=False)
-        month_summary.to_csv(summary_path, index=False)
+        month_summary.to_csv(summary_path, index=False, float_format="%.2f")
         outputs.append(
             MonthlyOutput(
                 month=month,

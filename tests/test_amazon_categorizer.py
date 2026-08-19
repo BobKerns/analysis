@@ -60,6 +60,27 @@ def test_categorize_amazon_csv_uses_uncategorized_when_non_interactive(tmp_path:
     assert annotated["category"].tolist() == ["UNCATEGORIZED"]
 
 
+def test_categorize_amazon_csv_formats_summary_totals_as_cents(tmp_path: Path) -> None:
+    input_csv = tmp_path / "amazon.csv"
+    pd.DataFrame(
+        {
+            "Title": ["First item", "Second item"],
+            "Amount": [0.1, 0.2],
+        }
+    ).to_csv(input_csv, index=False)
+
+    result = categorize_amazon_csv(
+        input_csv_path=input_csv,
+        state_dir=tmp_path / "state",
+        output_dir=tmp_path / "out",
+        ask_for_category=None,
+    )
+
+    expected_summary = "category,amount_total\nUNCATEGORIZED,0.30\n"
+    assert result.summary_csv_path.read_text(encoding="utf-8") == expected_summary
+    assert result.monthly_outputs[0].summary_csv_path.read_text(encoding="utf-8") == expected_summary
+
+
 def test_categorize_amazon_csv_supports_amazon_business_headers(tmp_path: Path) -> None:
     input_csv = DATA_DIR / "business_simple.csv"
 
