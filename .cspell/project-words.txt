@@ -37,6 +37,7 @@ nextstrain
 NOCASE
 oneoff
 pathoplexus
+paylease
 prio
 pyeb
 pypi
