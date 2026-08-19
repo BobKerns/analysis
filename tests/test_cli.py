@@ -67,6 +67,20 @@ def test_cli_amazon_categorize_accepts_multiple_input_files(tmp_path: Path) -> N
     assert (tmp_path / "out" / "amazon_2_annotated.csv").exists()
 
 
+def test_cli_amazon_categorize_defaults_output_to_input_out_directory(tmp_path: Path) -> None:
+    input_csv = shutil.copy(DATA_DIR / "personal_coffee.csv", tmp_path / "amazon.csv")
+
+    result = CliRunner().invoke(
+        main,
+        ["amazon", "categorize", str(input_csv), "--no-interactive"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "out" / "amazon_annotated.csv").exists()
+    assert (tmp_path / "out" / "amazon_summary.csv").exists()
+    assert list((tmp_path / "out").glob("Amazon-*_summary.csv"))
+
+
 def test_cli_amazon_categorize_requires_at_least_one_input_file(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(

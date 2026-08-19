@@ -61,7 +61,15 @@ def _readline_binding() -> str:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
 @click.option("--state-dir", default="state", show_default=True, type=click.Path(path_type=Path))
-@click.option("--output-dir", default="out", show_default=True, type=click.Path(path_type=Path))
+@click.option(
+    "--output-dir",
+    default=None,
+    type=click.Path(path_type=Path),
+    help=(
+        "Directory for generated files (default: an out/ subdirectory of the "
+        "first input file's directory)."
+    ),
+)
 @click.option(
     "--cutoff-day",
     default=3,
@@ -77,7 +85,7 @@ def _readline_binding() -> str:
 def amazon_categorize_command(
     input_csvs: tuple[Path, ...],
     state_dir: Path,
-    output_dir: Path,
+    output_dir: Path | None,
     cutoff_day: int,
     interactive: bool,
 ) -> None:
@@ -86,6 +94,8 @@ def amazon_categorize_command(
 
     if not input_csvs:
         raise click.UsageError("Provide at least one input CSV file.")
+
+    resolved_output_dir = output_dir or input_csvs[0].parent / "out"
 
     def ask_for_category(item: str, categories: list[str]) -> str:
         click.echo("")
@@ -121,7 +131,7 @@ def amazon_categorize_command(
         result = categorize_amazon_csv(
             input_csv_path=input_csv,
             state_dir=state_dir,
-            output_dir=output_dir,
+            output_dir=resolved_output_dir,
             cutoff_day=cutoff_day,
             ask_for_category=callback,
         )

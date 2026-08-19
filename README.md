@@ -118,8 +118,9 @@ amazon category delete
 Both commands prompt you to select a category (with Tab completion).
 
 Outputs:
-- `out/Amazon-YYYY-MM_annotated.csv`
-- `out/Amazon-YYYY-MM_summary.csv`
+- `out/Amazon-YYYY-MM_annotated.csv` in an `out/` subdirectory of the input directory by default
+- `out/Amazon-YYYY-MM_summary.csv` in an `out/` subdirectory of the input directory by default
+- Use `--output-dir` to choose another directory.
 
 Why this exists:
 - These monthly files are designed to align with Amex billing cycles, not strict calendar months.
