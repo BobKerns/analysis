@@ -16,7 +16,7 @@ _DATE_FORMAT = "%Y-%m-%d"
 _EXCLUDED_PAYEE_RE = re.compile(r"amazon|state\s+farm|mortgage|paylease", re.IGNORECASE)
 _EXCLUDED_CATEGORY_RE = re.compile(r"mortgage", re.IGNORECASE)
 _CATEGORY_MAP_HEADER = ("quicken_category", "target_category")
-_EXPENSE_ACCOUNT_MAP_HEADER = ("category", "from_account", "to_account")
+_EXPENSE_ACCOUNT_MAP_HEADER = ("category", "target_account")
 BASELINE_GENERATED_TAG = "generated:expense_baseline"
 SCHEDULED_HEADER = (
     "name", "from_account", "to_account", "cadence", "month_of_year",
@@ -66,9 +66,9 @@ def load_category_map(path: Path | str) -> tuple[dict[str, str], set[str]]:
     return merges, exclusions
 
 
-def load_expense_account_map(path: Path | str) -> dict[str, tuple[str, str]]:
-    """Load canonical category to source and expense-account mappings."""
-    mappings: dict[str, tuple[str, str]] = {}
+def load_expense_account_map(path: Path | str) -> dict[str, str]:
+    """Load optional canonical category to expense-account mappings."""
+    mappings: dict[str, str] = {}
     with Path(path).open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if tuple(reader.fieldnames or ()) != _EXPENSE_ACCOUNT_MAP_HEADER:
@@ -78,15 +78,14 @@ def load_expense_account_map(path: Path | str) -> dict[str, tuple[str, str]]:
             )
         for row_number, row in enumerate(reader, start=2):
             category = row["category"].strip()
-            from_account = row["from_account"].strip()
-            to_account = row["to_account"].strip()
+            target_account = row["target_account"].strip()
             if not category:
                 continue
             if category in mappings:
                 raise ValueError(f"{path} row {row_number}: duplicate category {category!r}")
-            if not from_account or not to_account:
-                raise ValueError(f"{path} row {row_number}: accounts are required")
-            mappings[category] = (from_account, to_account)
+            if not target_account:
+                raise ValueError(f"{path} row {row_number}: target account is required")
+            mappings[category] = target_account
     return mappings
 
 
@@ -236,8 +235,10 @@ def build_expense_baseline(
 
 def build_scheduled_baseline_rows(
     baseline: BaselineResult,
-    account_map: Mapping[str, tuple[str, str]],
+    account_map: Mapping[str, str],
     start: str,
+    from_account: str,
+    ignored_categories: Collection[str] = (),
     *,
     inflation_series: str = "cpi",
     priority: int = 200,
@@ -247,18 +248,21 @@ def build_scheduled_baseline_rows(
         return []
     observed_months = baseline.monthly["summary_month_start"].nunique()
     rows: list[dict[str, str]] = []
+    ignored = set(ignored_categories)
     for record in baseline.category_totals.to_dict("records"):
         category = str(record["category"])
-        accounts = account_map.get(category)
-        if accounts is None:
+        if category in ignored:
+            continue
+        to_account = account_map.get(category)
+        if to_account is None:
             raise ValueError(f"no scheduled account mapping for category {category!r}")
         amount = round(float(record["amount_total"]) / observed_months, 2)
         slug = re.sub(r"[^a-z0-9]+", "_", category.casefold()).strip("_")
         metadata = {"generated_by": "expense_baseline", "category": category}
         rows.append({
             "name": f"baseline_expense_{slug}",
-            "from_account": accounts[0],
-            "to_account": accounts[1],
+            "from_account": from_account,
+            "to_account": to_account,
             "cadence": "monthly",
             "month_of_year": "",
             "amount_rule_kind": "fixed_amount",

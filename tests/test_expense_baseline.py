@@ -118,12 +118,12 @@ def test_load_category_map_reads_merges_and_blank_or_dash_exclusions(tmp_path: P
 def test_load_expense_account_map_reads_category_accounts(tmp_path: Path) -> None:
     path = tmp_path / "expense_account_map.csv"
     path.write_text(
-        "category,from_account,to_account\n"
-        "Food,Family WF PMA,food\n",
+        "category,target_account\n"
+        "Food,food\n",
         encoding="utf-8",
     )
 
-    assert load_expense_account_map(path) == {"Food": ("Family WF PMA", "food")}
+    assert load_expense_account_map(path) == {"Food": "food"}
 
 
 def test_build_expense_baseline_canonicalizes_and_combines_amazon_categories(
@@ -190,8 +190,9 @@ def test_scheduled_baseline_rows_are_rerunnable_and_remove_stale_rows(tmp_path: 
     )
     rows = build_scheduled_baseline_rows(
         baseline,
-        {"Food": ("Family WF PMA", "food")},
+        {"Food": "food"},
         "2026-05-31",
+        "Family WF PMA",
     )
     assert rows[0]["base_amount"] == "36.00"
     assert rows[0]["tags"] == BASELINE_GENERATED_TAG

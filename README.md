@@ -167,9 +167,12 @@ Generated rows are tagged `generated:expense_baseline` and carry provenance in
 `meta_json`, so rerunning removes stale generated categories after the private
 category maps change while preserving manually authored scheduled rows.
 
-The command expects `quicken/expense_account_map.csv` with columns
-`category,from_account,to_account`. Amounts are monthly averages over the
-observed baseline months and use the scenario start date by default.
+The command expects an optional `quicken/expense_account_map.csv` with columns
+`category,target_account`. If a canonical category already matches a scenario
+expense account, no map row is needed. Supply the funding account explicitly
+with `--from-account`. Invalid target accounts are warned about and skipped.
+Amounts are monthly averages over the observed baseline months and use the
+scenario start date by default.
 
 Schema guide:
 - `docs/sqlite-guide.md`

@@ -688,9 +688,11 @@ def scheduled_add(
 @click.option("--category-map", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None,
               help="Category map (default: <data-dir>/quicken/expense_category_map.csv).")
-@click.option("--account-map", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+@click.option("--account-map", type=click.Path(dir_okay=False, path_type=Path),
               default=None,
-              help="Category account map (default: <data-dir>/quicken/expense_account_map.csv).")
+              help="Optional category account map (default: <data-dir>/quicken/expense_account_map.csv).")
+@click.option("--from-account", required=True,
+              help="Scenario account that funds all generated expense rows.")
 @click.option("--start", default=None,
               help="First scheduled month YYYY-MM-DD (default: scenario start).")
 @click.option("--inflation-series", default="cpi", show_default=True)
@@ -703,6 +705,7 @@ def scheduled_import_baseline(
     amazon_state_dir: Path | None,
     category_map: Path | None,
     account_map: Path | None,
+    from_account: str,
     start: str | None,
     inflation_series: str,
     dry_run: bool,
@@ -718,7 +721,6 @@ def scheduled_import_baseline(
     for path, label in (
         (quicken_path, "Quicken export"),
         (category_map_path, "category map"),
-        (account_map_path, "category account map"),
     ):
         if not path.exists():
             raise click.ClickException(f"{label} not found: {path}")
@@ -736,11 +738,41 @@ def scheduled_import_baseline(
         category_merges=merges,
         excluded_categories=exclusions,
     )
-    mappings = load_expense_account_map(account_map_path)
+    mappings = (
+        load_expense_account_map(account_map_path)
+        if account_map_path.exists()
+        else {}
+    )
+    with open_intent_db(data_dir_p, scenario_name) as (con, _):
+        scenario_accounts = {
+            row[0] for row in con.execute("SELECT name FROM account")
+        }
+    if from_account not in scenario_accounts:
+        raise click.ClickException(f"unknown from account: {from_account!r}")
+    invalid_targets = {
+        category: target for category, target in mappings.items()
+        if target not in scenario_accounts
+    }
+    for category, target in sorted(invalid_targets.items()):
+        click.echo(
+            f"warning: ignoring category {category!r}; "
+            f"target account {target!r} does not exist",
+            err=True,
+        )
+    mappings = {
+        category: target for category, target in mappings.items()
+        if target in scenario_accounts
+    }
+    mappings.update({
+        category: category for category in baseline.category_totals["category"]
+        if category in scenario_accounts and category not in mappings
+    })
     rows = build_scheduled_baseline_rows(
         baseline,
         mappings,
         start,
+        from_account,
+        ignored_categories=invalid_targets,
         inflation_series=inflation_series,
     )
     scheduled_path = scenario_dir / "scheduled.csv"
