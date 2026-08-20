@@ -17,6 +17,7 @@ dflt
 executemany
 executescript
 figsize
+fontsize
 gethostname
 gpgsign
 heloc
@@ -38,6 +39,7 @@ NOCASE
 oneoff
 pathoplexus
 paylease
+plottable
 prio
 pyeb
 pypi

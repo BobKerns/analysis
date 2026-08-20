@@ -10,14 +10,17 @@ from io import BytesIO
 
 import pandas as pd
 
-PLOTTABLE_KINDS = {"asset", "liability"}
+ASSET_LIABILITY_KINDS = {"asset", "liability"}
+INCOME_EXPENSE_KINDS = {"income", "expense"}
 
 
-def plottable_accounts(balance_pivot: pd.DataFrame, account_kinds: pd.Series) -> list[str]:
-    """Account names eligible for plotting, sorted by latest |balance| descending."""
+def plottable_accounts(
+    balance_pivot: pd.DataFrame, account_kinds: pd.Series, kinds: set[str]
+) -> list[str]:
+    """Account names of the given kinds, sorted by latest |balance| descending."""
     names = [
         name for name in balance_pivot.columns
-        if account_kinds.get(name) in PLOTTABLE_KINDS
+        if account_kinds.get(name) in kinds
     ]
     names.sort(key=lambda name: abs(balance_pivot[name].iloc[-1] or 0), reverse=True)
     return names
@@ -54,16 +57,19 @@ def account_balance_history_widget(
     balance_pivot: pd.DataFrame,
     account_kinds: pd.Series,
     title: str,
+    kinds: set[str] = ASSET_LIABILITY_KINDS,
     initial_count: int = 1,
 ):
     """Build a SelectMultiple + Output widget pair that plots on selection change.
 
+    ``kinds`` restricts the picker to accounts of those kinds (e.g. assets and
+    liabilities vs. income and expenses, which are on very different scales).
     Returns the combined ``ipywidgets.VBox`` ready to ``display()``.
     """
     import ipywidgets as widgets
     from IPython.display import Image, clear_output, display
 
-    plottable = plottable_accounts(balance_pivot, account_kinds)
+    plottable = plottable_accounts(balance_pivot, account_kinds, kinds)
 
     picker = widgets.SelectMultiple(
         options=plottable,
