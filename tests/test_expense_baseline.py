@@ -170,6 +170,27 @@ def test_build_expense_baseline_canonicalizes_and_combines_amazon_categories(
     ]
 
 
+def test_build_expense_baseline_defaults_unmapped_categories_to_other(tmp_path: Path) -> None:
+    path = tmp_path / "quicken.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n'
+        ',,"2026-01-02","2026-01-03","2026-01-02","","Cafe","Coffee Shops","","","","-5.00"\n'
+        ',,"2026-01-03","2026-01-04","2026-01-03","","Store","Mystery","","","","-7.00"\n',
+        encoding="utf-8",
+    )
+
+    result = build_expense_baseline(
+        path,
+        pd.DataFrame(columns=["summary_month_start", "category", "amount_total"]),
+        category_merges={"Coffee Shops": "Dining"},
+        default_category="Other",
+    )
+
+    assert result.categories_defaulted_to_other == ("Mystery",)
+    assert set(result.transactions["category"]) == {"Dining", "Other"}
+
+
 def test_scheduled_baseline_rows_are_rerunnable_and_remove_stale_rows(tmp_path: Path) -> None:
     path = tmp_path / "quicken.csv"
     path.write_text(

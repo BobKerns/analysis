@@ -681,16 +681,16 @@ def scheduled_add(
               default=None)
 @click.option("--quicken-file", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None,
-              help="Quicken export (default: <data-dir>/quicken/Transaction Export.csv).")
+              help="Quicken export (default: sibling data-repo/quicken/Transaction Export.csv).")
 @click.option("--amazon-state-dir", type=click.Path(file_okay=False, path_type=Path),
               default=None,
-              help="Amazon state directory (default: <data-dir>/state).")
+              help="Amazon state directory (default: sibling data-repo/state).")
 @click.option("--category-map", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None,
-              help="Category map (default: <data-dir>/quicken/expense_category_map.csv).")
+              help="Category map (default: sibling data-repo/quicken/expense_category_map.csv).")
 @click.option("--account-map", type=click.Path(dir_okay=False, path_type=Path),
               default=None,
-              help="Optional category account map (default: <data-dir>/quicken/expense_account_map.csv).")
+              help="Optional category account map (default: sibling data-repo/quicken/expense_account_map.csv).")
 @click.option("--from-account", required=True,
               help="Scenario account that funds all generated expense rows.")
 @click.option("--start", default=None,
@@ -713,10 +713,11 @@ def scheduled_import_baseline(
     """Replace generated baseline expense rows in scheduled.csv."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    quicken_path = quicken_file or data_dir_p / "quicken" / "Transaction Export.csv"
-    amazon_state_path = amazon_state_dir or data_dir_p / "state"
-    category_map_path = category_map or data_dir_p / "quicken" / "expense_category_map.csv"
-    account_map_path = account_map or data_dir_p / "quicken" / "expense_account_map.csv"
+    data_repo_root = data_dir_p.parent
+    quicken_path = quicken_file or data_repo_root / "quicken" / "Transaction Export.csv"
+    amazon_state_path = amazon_state_dir or data_repo_root / "state"
+    category_map_path = category_map or data_repo_root / "quicken" / "expense_category_map.csv"
+    account_map_path = account_map or data_repo_root / "quicken" / "expense_account_map.csv"
 
     for path, label in (
         (quicken_path, "Quicken export"),

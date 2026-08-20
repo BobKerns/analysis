@@ -167,7 +167,10 @@ Generated rows are tagged `generated:expense_baseline` and carry provenance in
 `meta_json`, so rerunning removes stale generated categories after the private
 category maps change while preserving manually authored scheduled rows.
 
-The command expects an optional `quicken/expense_account_map.csv` with columns
+When `ANALYSIS_DATA_DIR` points to the simulator data directory, the command
+reads Quicken and Amazon inputs from sibling top-level data-repo directories:
+`../quicken/` and `../state/`. The command expects an optional
+`quicken/expense_account_map.csv` with columns
 `category,target_account`. If a canonical category already matches a scenario
 expense account, no map row is needed. Supply the funding account explicitly
 with `--from-account`. Invalid target accounts are warned about and skipped.

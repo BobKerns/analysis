@@ -42,6 +42,7 @@ class BaselineResult:
     excluded: pd.DataFrame
     monthly: pd.DataFrame
     category_totals: pd.DataFrame
+    categories_defaulted_to_other: tuple[SourceCategory, ...]
 
 
 def load_category_map(
@@ -168,6 +169,7 @@ def build_expense_baseline(
     amazon_monthly_summaries: pd.DataFrame,
     category_merges: CategoryCanonicalization | None = None,
     excluded_categories: Collection[CanonicalCategory] | None = None,
+    default_category: CanonicalCategory | None = None,
 ) -> BaselineResult:
     """Build baseline expenses, substituting Amazon summaries for Amazon rows.
 
@@ -213,6 +215,18 @@ def build_expense_baseline(
     amazon = amazon.loc[:, ["summary_month_start", "category", "amount_total"]].copy()
     amazon["category"] = amazon["category"].replace(merges)
     amazon = amazon.loc[~amazon["category"].isin(categories_to_exclude)].copy()
+    observed_categories = set(included["category_raw"]) | set(amazon["category"])
+    explicitly_mapped = set(merges) | categories_to_exclude
+    defaulted_categories = tuple(sorted(
+        category for category in observed_categories
+        if category not in explicitly_mapped and category not in {default_category, ""}
+    ))
+    if default_category is not None:
+        raw.loc[raw["category_raw"].isin(defaulted_categories), "category"] = default_category
+        included.loc[
+            included["category_raw"].isin(defaulted_categories), "category"
+        ] = default_category
+        amazon.loc[amazon["category"].isin(defaulted_categories), "category"] = default_category
     amazon["summary_month_start"] = pd.to_datetime(amazon["summary_month_start"])
     amazon["amount"] = pd.to_numeric(amazon["amount_total"], errors="raise")
     amazon["source"] = "Amazon summary"
@@ -239,6 +253,7 @@ def build_expense_baseline(
         excluded=excluded,
         monthly=monthly.reset_index(drop=True),
         category_totals=category_totals.reset_index(drop=True),
+        categories_defaulted_to_other=defaulted_categories,
     )
 
 
