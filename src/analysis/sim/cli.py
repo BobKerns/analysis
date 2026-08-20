@@ -738,6 +738,7 @@ def scheduled_import_baseline(
         load_monthly_summaries(amazon_state_path),
         category_merges=merges,
         excluded_categories=exclusions,
+        default_category="Other",
     )
     mappings = (
         load_expense_account_map(account_map_path)
@@ -750,6 +751,11 @@ def scheduled_import_baseline(
         }
     if from_account not in scenario_accounts:
         raise click.ClickException(f"unknown from account: {from_account!r}")
+    baseline_categories = set(baseline.category_totals["category"])
+    mappings = {
+        category: target for category, target in mappings.items()
+        if category in baseline_categories
+    }
     invalid_targets = {
         category: target for category, target in mappings.items()
         if target not in scenario_accounts
@@ -768,12 +774,22 @@ def scheduled_import_baseline(
         category: category for category in baseline.category_totals["category"]
         if category in scenario_accounts and category not in mappings
     })
+    missing_mappings = {
+        category for category in baseline_categories
+        if category not in mappings and category not in invalid_targets
+    }
+    for category in sorted(missing_mappings):
+        click.echo(
+            f"warning: ignoring category {category!r}; "
+            "no target expense account mapping exists",
+            err=True,
+        )
     rows = build_scheduled_baseline_rows(
         baseline,
         mappings,
         start,
         from_account,
-        ignored_categories=invalid_targets,
+        ignored_categories=set(invalid_targets) | missing_mappings,
         inflation_series=inflation_series,
     )
     scheduled_path = scenario_dir / "scheduled.csv"
