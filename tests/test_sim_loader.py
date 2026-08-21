@@ -83,6 +83,42 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         con.close()
 
 
+def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    parent = repo / "scenarios" / "retire_alice"
+    child = repo / "scenarios" / "tight"
+    child.mkdir()
+    (child / "scenario.csv").write_text(
+        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
+        "tight,,,,,,retire_alice,,\n",
+        encoding="utf-8",
+    )
+    for filename in (
+        "accounts.csv", "account_values.csv", "scheduled.csv",
+        "waterfall_sources.csv", "calendar.csv", "priors.csv",
+    ):
+        header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
+        (child / filename).write_text(header + "\n", encoding="utf-8")
+
+    current = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "current", allow_dirty_data=True,
+    )
+    tight = load_scenario(
+        repo, "tight", intent_dir=tmp_path / "tight", allow_dirty_data=True,
+    )
+    tables = (
+        "account", "account_model_member", "scheduled_transaction",
+        "scheduled_transaction_source", "calendar_event", "prior_tax_activity",
+    )
+    with sqlite3.connect(current.intent_path) as current_con, \
+            sqlite3.connect(tight.intent_path) as tight_con:
+        for table in tables:
+            current_count = current_con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            tight_count = tight_con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            assert tight_count == current_count
+
+
 def test_invalid_subkind_rejected(tmp_path: Path) -> None:
     bad = tmp_path / "repo"
     shutil.copytree(FIXTURE_DATA / "bad_subkind", bad)

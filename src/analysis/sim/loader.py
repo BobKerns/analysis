@@ -122,6 +122,106 @@ def resolve_scenario_name(data_dir: Path, scenario: str | None) -> str:
     )
 
 
+def _merge_scenario_rows(
+    parent_rows: list[dict[str, str]],
+    child_rows: list[dict[str, str]],
+    key_columns: tuple[str, ...],
+    *,
+    require_key: bool = True,
+) -> list[dict[str, str]]:
+    """Overlay child CSV rows on parent rows using the table's natural key."""
+    merged = {tuple(row.get(column, "") for column in key_columns): dict(row)
+              for row in parent_rows}
+    order = list(merged)
+    for row in child_rows:
+        key = tuple(row.get(column, "") for column in key_columns)
+        if require_key and not all(key):
+            raise LoadError([
+                f"derived scenario override missing key {key_columns}: {row}"
+            ])
+        if key not in merged:
+            order.append(key)
+            merged[key] = dict(row)
+        else:
+            merged[key].update(row)
+    return [merged[key] for key in order]
+
+
+def _read_scenario_inputs(
+    data_dir: Path,
+    scenario_name: str,
+    issues: list[str],
+    *,
+    stack: tuple[str, ...] = (),
+) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]],
+           list[dict[str, str]], list[dict[str, str]], list[dict[str, str]],
+           list[dict[str, str]]]:
+    """Read a scenario and recursively overlay any declared parent."""
+    scenario_dir = data_dir / "scenarios" / scenario_name
+    if scenario_name in stack:
+        raise LoadError([f"scenario inheritance cycle: {' -> '.join((*stack, scenario_name))}"])
+    if not scenario_dir.is_dir():
+        raise LoadError([f"scenario folder not found: {scenario_dir}"])
+
+    scenario_rows = _read_csv(scenario_dir / "scenario.csv", issues)
+    if len(scenario_rows) != 1:
+        issues.append(
+            f"scenario.csv must have exactly one data row (got {len(scenario_rows)})"
+        )
+    child_scenario = scenario_rows[0] if scenario_rows else {}
+    if child_scenario.get("name") and child_scenario["name"] != scenario_name:
+        issues.append(
+            f"scenario.csv name='{child_scenario['name']}' != folder '{scenario_name}'"
+        )
+    parent_name = child_scenario.get("parent_scenario", "")
+    if parent_name:
+        parent = _read_scenario_inputs(
+            data_dir, parent_name, issues, stack=(*stack, scenario_name)
+        )
+        parent_scenario, parent_accounts, parent_models, parent_scheduled, \
+            parent_waterfall, parent_calendar, parent_priors = parent
+    else:
+        parent_scenario = {}
+        parent_accounts = parent_models = parent_scheduled = []
+        parent_waterfall = parent_calendar = parent_priors = []
+
+    def read_overlay(filename: str, *, required: bool = False) -> list[dict[str, str]]:
+        return _read_csv(
+            scenario_dir / filename,
+            issues,
+            optional=bool(parent_name) or not required,
+        )
+
+    scenario_row = dict(parent_scenario)
+    scenario_row.update({k: v for k, v in child_scenario.items() if v != ""})
+    scenario_row["name"] = scenario_name
+    accounts = _merge_scenario_rows(
+        parent_accounts, read_overlay("accounts.csv", required=True), ("name",)
+    )
+    model_rows = _merge_scenario_rows(
+        parent_models, read_overlay("account_values.csv", required=True), ("account_name",)
+    )
+    scheduled_rows = _merge_scenario_rows(
+        parent_scheduled, read_overlay("scheduled.csv", required=True), ("name",)
+    )
+    waterfall_rows = _merge_scenario_rows(
+        parent_waterfall, read_overlay("waterfall_sources.csv"),
+        ("scheduled_name", "position"),
+    )
+    calendar_rows = _merge_scenario_rows(
+        parent_calendar, read_overlay("calendar.csv"),
+        ("date", "kind", "scheduled_name", "account_1", "account_2", "series", "amount"),
+        require_key=False,
+    )
+    priors_rows = _merge_scenario_rows(
+        parent_priors, read_overlay("priors.csv"), ("year", "bucket"),
+    )
+    return (
+        scenario_row, accounts, model_rows, scheduled_rows,
+        waterfall_rows, calendar_rows, priors_rows,
+    )
+
+
 @contextmanager
 def open_intent_db(
     data_dir: Path | str,
@@ -175,25 +275,11 @@ def load_scenario(
     issues: list[str] = []
 
     persons = _read_csv(data_dir / "persons.csv", issues)
-    accounts = _read_csv(scenario_dir / "accounts.csv", issues)
-    scenario_rows = _read_csv(scenario_dir / "scenario.csv", issues)
-    scheduled_rows = _read_csv(scenario_dir / "scheduled.csv", issues)
-    waterfall_rows = _read_csv(scenario_dir / "waterfall_sources.csv", issues, optional=True)
-    calendar_rows = _read_csv(scenario_dir / "calendar.csv", issues, optional=True)
-    priors_rows = _read_csv(scenario_dir / "priors.csv", issues, optional=True)
+    (
+        scenario_row, accounts, model_rows, scheduled_rows,
+        waterfall_rows, calendar_rows, priors_rows,
+    ) = _read_scenario_inputs(data_dir, scenario_name, issues)
 
-    if len(scenario_rows) != 1:
-        issues.append(
-            f"scenario.csv must have exactly one data row (got {len(scenario_rows)})"
-        )
-    scenario_row = scenario_rows[0] if scenario_rows else {}
-    if scenario_row.get("name") and scenario_row["name"] != scenario_name:
-        issues.append(
-            f"scenario.csv name='{scenario_row['name']}' != folder '{scenario_name}'"
-        )
-
-    # Always load account_values.csv from the scenario directory
-    model_rows: list[dict[str, str]] = _read_csv(scenario_dir / "account_values.csv", issues)
 
     aux_rows = _read_aux_dir(data_dir / "aux", issues, money_resolver=money_resolver)
 
