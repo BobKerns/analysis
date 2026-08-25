@@ -669,6 +669,51 @@ def test_fixed_amount_applies_cpi_inflation(tmp_path: Path) -> None:
         con.close()
 
 
+def test_fixed_amount_annual_inflation_cadence_steps_once_per_year(tmp_path: Path) -> None:
+    """ADR-003 §2.1: inflation_cadence='annual' holds flat within a calendar
+    year and jumps once at each January crossing, unlike the default monthly
+    compounding (e.g. Social Security COLA modeled as fixed_amount)."""
+    import pandas as pd
+
+    repo = _clone_prototype(tmp_path)
+    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched_csv, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "salary_alice", "inflation_cadence"] = "annual"
+    df.to_csv(sched_csv, index=False)
+
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            "SELECT te.date, te.amount FROM transfer_event te "
+            "JOIN scheduled_transaction st ON st.id = te.reason_id "
+            "WHERE st.name = 'salary_alice' AND te.reason_kind = 'rule' "
+            "ORDER BY te.date"
+        ).fetchall()
+        by_date = {r["date"]: r["amount"] for r in rows}
+        # Flat for the rest of 2026 (base_date == scenario start, same year).
+        assert by_date["2026-05-31"] == SALARY_ALICE_MONTHLY
+        assert by_date["2026-12-31"] == SALARY_ALICE_MONTHLY
+        # Steps up once at the January 2027 crossing, then flat through 2027.
+        assert by_date["2027-01-31"] > SALARY_ALICE_MONTHLY
+        assert by_date["2027-01-31"] == by_date["2027-12-31"]
+        # A second annual step by January 2028.
+        assert by_date["2028-01-31"] > by_date["2027-01-31"]
+    finally:
+        con.close()
+
+
 def test_ytd_preroll_posts_balance_neutral_catchup(tmp_path: Path) -> None:
     """ADR-003 §4.11: ytd_preroll on a fixed_amount/monthly row posts a single
     balance-neutral transfer_event at step 0, dated before scenario.start."""

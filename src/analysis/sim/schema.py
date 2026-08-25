@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -116,6 +116,7 @@ CREATE TABLE scheduled_transaction (
     meta_json               TEXT NOT NULL DEFAULT '{}',
     ytd_amount              INTEGER,
     ytd_preroll             INTEGER NOT NULL DEFAULT 0,
+    inflation_cadence       TEXT CHECK (inflation_cadence IN ('monthly','annual')),
     UNIQUE (model_id, name)
 );
 CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);

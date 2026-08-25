@@ -84,10 +84,10 @@ Eight rule kinds in v1. Each rule's `compute(state, aux, date) → list[Transfer
 
 Constant amount, optionally inflated.
 
-- **Params:** none in JSON. Uses `base_amount` (required, cents), `base_date` (optional), `inflation_series` (optional aux series).
-- **Compute:** `amount = base_amount` if `inflation_series` is NULL else `base_amount × cumulative_inflation(base_date → date, series)`.
+- **Params:** none in JSON. Uses `base_amount` (required, cents), `base_date` (optional), `inflation_series` (optional aux series), `inflation_cadence` (optional; `monthly` default or `annual`).
+- **Compute:** `amount = base_amount` if `inflation_series` is NULL else `base_amount × cumulative_inflation(base_date → date, series, cadence)`. With `cadence='monthly'` (default), the annual rate compounds every month. With `cadence='annual'`, it steps once per calendar year crossed (each January) — flat within a year, then a single jump, matching how real COLA-style adjustments actually apply.
 - **Emits:** one event, `from_account → to_account`, amount as above, tax_character from the row.
-- **Use:** salary, SS post-FRA (without COLA series), pensions, recurring fixed expenses, lump-sum one-offs.
+- **Use:** salary, SS post-FRA (without COLA series), pensions, recurring fixed expenses, lump-sum one-offs. `inflation_cadence='annual'` in particular suits SS-like benefits modeled as `fixed_amount` rather than the dedicated `ss_benefit` rule.
 
 #### 2.2 `percent_of_balance` (priority band: 100)
 
@@ -354,6 +354,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `base_amount` | dollars | | required for `fixed_amount`, `mortgage_payment`; decimal string e.g. `1234.56`; loader converts to integer cents at load time |
 | `base_date` | YYYY-MM | | required when `inflation_series` is set |
 | `inflation_series` | text | | aux series name, e.g. `cpi`; or `fixed` for no inflation |
+| `inflation_cadence` | enum | | `monthly` (default) compounds every month; `annual` steps once per calendar year crossed (each January) instead of drifting smoothly — use for COLA-style adjustments (e.g. Social Security) that jump once a year rather than continuously; requires `inflation_series` to be set |
 | `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field — an income-account-sourced transfer can carry `tax_character='none'` (e.g. an inheritance), and an expense-leg can carry any value. `waterfall_fill` is the one exception: per §2.4, the engine overrides each leg's `tax_character` from the source account's `tax_treatment`. |
 | `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |

@@ -116,7 +116,7 @@ def run_scenario(
                 '       amount_rule_kind, interest_account, person, series, '
                 '       rate_micros, claim_age, amount_cents, params_json, base_amount, '
                 '       tax_character, start, "end", priority, base_date, inflation_series, '
-                '       ytd_amount, ytd_preroll '
+                '       ytd_amount, ytd_preroll, inflation_cadence '
                 'FROM scheduled_transaction WHERE model_id = ? '
                 'ORDER BY priority, id',
                 (model_id,),
@@ -141,7 +141,7 @@ def run_scenario(
         sources = _load_sources(con)
         aux = _load_aux(con)
         inflation_indexes = _initialize_inflation_indexes(aux)
-        inflation_factor_cache: dict[tuple[str, date, date], int] = {}
+        inflation_factor_cache: dict[tuple[str, date, date, str], int] = {}
 
         skipped_counts: dict[str, int] = {}
         skipped_calendar: dict[str, int] = {}
@@ -199,7 +199,7 @@ def run_scenario(
                  p_interest_acct, p_person, p_series, p_rate_micros,
                  p_claim_age, p_amount_cents, ext_json, base_amount,
                  tax_char, t_start, t_end, _prio, t_base_date, t_inflation_series,
-                 _t_ytd_amount, _t_ytd_preroll) = txn
+                 _t_ytd_amount, _t_ytd_preroll, t_inflation_cadence) = txn
                 if month_s < t_start:
                     continue
                 if t_end is not None and month_s > t_end:
@@ -255,6 +255,7 @@ def run_scenario(
                             factor = _cumulative_inflation_factor(
                                 aux, t_inflation_series, _parse_date(t_base_date), month,
                                 inflation_factor_cache,
+                                cadence=t_inflation_cadence or "monthly",
                             )
                             amount = amount * factor // 1_000_000
                         _post_transfer(
@@ -431,7 +432,7 @@ def _apply_ytd_catchups(
          _p_interest_acct, _p_person, _p_series, _p_rate_micros,
          _p_claim_age, _p_amount_cents, _ext_json, base_amount,
          tax_char, _t_start, _t_end, _prio, _t_base_date, _t_inflation_series,
-         ytd_amount, ytd_preroll) = txn
+         ytd_amount, ytd_preroll, _t_inflation_cadence) = txn
         if ytd_amount is not None:
             amount = ytd_amount
         elif ytd_preroll:
@@ -1062,33 +1063,54 @@ def _advance_inflation_indexes(
 def _cumulative_inflation_factor(
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     series: str, from_date: date, to_date: date,
-    cache: dict[tuple[str, date, date], int],
+    cache: dict[tuple[str, date, date, str], int],
+    cadence: str = "monthly",
 ) -> int:
-    """ADR-003 §2.1: cumulative monthly-compounded inflation factor (micros;
-    1_000_000 = 1.0x) from ``from_date`` (exclusive) through ``to_date``
-    (inclusive). Returns the inverse factor if ``to_date`` precedes
-    ``from_date``.
+    """ADR-003 §2.1: cumulative inflation factor (micros; 1_000_000 = 1.0x)
+    from ``from_date`` (exclusive) through ``to_date`` (inclusive). Returns
+    the inverse factor if ``to_date`` precedes ``from_date``.
+
+    ``cadence='monthly'`` (default) compounds every month -- appropriate for
+    things that genuinely drift smoothly (rent, salaries). ``cadence='annual'``
+    steps once per calendar year crossed (each January), matching how real
+    COLA-style adjustments (e.g. Social Security) actually apply: flat within
+    a year, then a single jump.
     """
     if to_date == from_date:
         return 1_000_000
-    key = (series, from_date, to_date)
+    key = (series, from_date, to_date, cadence)
     cached = cache.get(key)
     if cached is not None:
         return cached
     lo, hi = (from_date, to_date) if from_date < to_date else (to_date, from_date)
     factor = 1_000_000
-    for month in _month_ends(lo, hi):
-        if month <= lo:
-            continue
-        month_s = month.isoformat()
-        payload = _lookup_aux(aux, "inflation", series, month_s)
-        if payload is None:
-            raise EngineError(
-                f"fixed_amount inflation: no aux row for series={series!r} "
-                f"effective <= {month_s}"
-            )
-        annual_micros = int(payload.get("annual_rate_micros", 0))
-        factor = factor * (12_000_000 + annual_micros) // 12_000_000
+    match cadence:
+        case "monthly":
+            for month in _month_ends(lo, hi):
+                if month <= lo:
+                    continue
+                month_s = month.isoformat()
+                payload = _lookup_aux(aux, "inflation", series, month_s)
+                if payload is None:
+                    raise EngineError(
+                        f"fixed_amount inflation: no aux row for series={series!r} "
+                        f"effective <= {month_s}"
+                    )
+                annual_micros = int(payload.get("annual_rate_micros", 0))
+                factor = factor * (12_000_000 + annual_micros) // 12_000_000
+        case "annual":
+            for year in range(lo.year + 1, hi.year + 1):
+                jan_s = f"{year}-01-31"
+                payload = _lookup_aux(aux, "inflation", series, jan_s)
+                if payload is None:
+                    raise EngineError(
+                        f"fixed_amount inflation: no aux row for series={series!r} "
+                        f"effective <= {jan_s}"
+                    )
+                annual_micros = int(payload.get("annual_rate_micros", 0))
+                factor = factor * (1_000_000 + annual_micros) // 1_000_000
+        case _:
+            raise EngineError(f"unknown inflation_cadence: {cadence!r}")
     if from_date > to_date:
         factor = (1_000_000 * 1_000_000) // factor
     cache[key] = factor

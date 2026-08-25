@@ -548,6 +548,17 @@ def _validate_scheduled(
             issues.append(
                 f"scheduled.csv row {i} ({name}): ytd_preroll must be 0 or 1"
             )
+        inflation_cadence = row.get("inflation_cadence", "")
+        if inflation_cadence not in ("", "monthly", "annual"):
+            issues.append(
+                f"scheduled.csv row {i} ({name}): inflation_cadence must be "
+                "'monthly' or 'annual'"
+            )
+        if inflation_cadence and not row.get("inflation_series"):
+            issues.append(
+                f"scheduled.csv row {i} ({name}): inflation_cadence set without "
+                "inflation_series"
+            )
         _validate_tags("scheduled.csv", i, name, row.get("tags", ""), issues)
 
 
@@ -896,8 +907,8 @@ def _write_intent(
             "interest_account, person, series, rate_micros, claim_age, amount_cents, "
             "params_json, base_amount, base_date, "
             "inflation_series, tax_character, start, \"end\", priority, "
-            "description, meta_json, ytd_amount, ytd_preroll"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "description, meta_json, ytd_amount, ytd_preroll, inflation_cadence"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 model_id, s["name"],
                 account_ids[s["from_account"]], account_ids[s["to_account"]],
@@ -920,6 +931,7 @@ def _write_intent(
                 _dollars_to_cents(s["ytd_amount"], resolver=money_resolver)
                 if s.get("ytd_amount") else None,
                 int(s.get("ytd_preroll") or 0),
+                s.get("inflation_cadence") or None,
             ),
         )
         sched_ids[s["name"]] = cur.lastrowid
