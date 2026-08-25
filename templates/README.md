@@ -22,6 +22,7 @@ SQL schema alongside the source CSV.
         calendar.csv              # CalendarEvents
         priors.csv                # PriorTaxActivity rows (tax activity only)
         lifespan.csv              # optional per-person final_month override (ADR-003 §4.10)
+        year_to_date.csv          # optional partial-first-year catch-up facts (ADR-003 §4.11)
 ```
 
 ## Conventions

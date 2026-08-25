@@ -279,6 +279,94 @@ def test_lifespan_unknown_person_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_year_to_date_csv_round_trip(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    ytd = repo / "scenarios" / "retire_alice" / "year_to_date.csv"
+    ytd.write_text(
+        "name,from_account,to_account,amount,tax_character,description\n"
+        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint,"
+        "1234.56,ltcg,pre-simulation brokerage appreciation\n"
+    )
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out",
+        allow_dirty_data=True,
+    )
+    con = sqlite3.connect(result.intent_path)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT y.name, y.amount, y.tax_character, fa.name AS from_name, "
+            "ta.name AS to_name FROM year_to_date y "
+            "JOIN account fa ON fa.id = y.from_account "
+            "JOIN account ta ON ta.id = y.to_account"
+        ).fetchone()
+        assert row["name"] == "prior_brokerage_growth"
+        assert row["amount"] == 123456
+        assert row["tax_character"] == "ltcg"
+        assert row["from_name"] == "Income_CapitalGain"
+        assert row["to_name"] == "Asset_Brokerage_Joint"
+    finally:
+        con.close()
+
+
+def test_year_to_date_unknown_account_rejected(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    ytd = repo / "scenarios" / "retire_alice" / "year_to_date.csv"
+    ytd.write_text(
+        "name,from_account,to_account,amount,tax_character,description\n"
+        "bogus,Nonexistent_Account,Asset_Checking,100.00,none,\n"
+    )
+
+    with pytest.raises(LoadError, match="not in accounts.csv"):
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+
+
+def test_scheduled_ytd_amount_and_preroll_validated(tmp_path: Path) -> None:
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched, dtype=str, keep_default_na=False)
+    # mortgage_pmt is amount_rule_kind='mortgage_payment', not fixed_amount+monthly.
+    df.loc[df["name"] == "mortgage_pmt", "ytd_preroll"] = "1"
+    df.to_csv(sched, index=False)
+
+    with pytest.raises(LoadError, match="only valid for amount_rule_kind='fixed_amount'"):
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+
+
+def test_scheduled_ytd_amount_and_preroll_mutually_exclusive(tmp_path: Path) -> None:
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "salary_alice", "ytd_amount"] = "3000.00"
+    df.loc[df["name"] == "salary_alice", "ytd_preroll"] = "1"
+    df.to_csv(sched, index=False)
+
+    with pytest.raises(LoadError, match="mutually exclusive"):
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+
+
 def test_invalid_tag_rejected(tmp_path: Path) -> None:
     import pandas as pd
 

@@ -155,7 +155,7 @@ def _read_scenario_inputs(
     stack: tuple[str, ...] = (),
 ) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]], list[dict[str, str]],
-           list[dict[str, str]], list[dict[str, str]]]:
+           list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
     """Read a scenario and recursively overlay any declared parent."""
     scenario_dir = data_dir / "scenarios" / scenario_name
     if scenario_name in stack:
@@ -179,11 +179,13 @@ def _read_scenario_inputs(
             data_dir, parent_name, issues, stack=(*stack, scenario_name)
         )
         parent_scenario, parent_accounts, parent_models, parent_scheduled, \
-            parent_waterfall, parent_calendar, parent_priors, parent_lifespan = parent
+            parent_waterfall, parent_calendar, parent_priors, parent_lifespan, \
+            parent_ytd = parent
     else:
         parent_scenario = {}
         parent_accounts = parent_models = parent_scheduled = []
         parent_waterfall = parent_calendar = parent_priors = parent_lifespan = []
+        parent_ytd = []
 
     def read_overlay(filename: str, *, required: bool = False) -> list[dict[str, str]]:
         return _read_csv(
@@ -219,9 +221,12 @@ def _read_scenario_inputs(
     lifespan_rows = _merge_scenario_rows(
         parent_lifespan, read_overlay("lifespan.csv"), ("person",),
     )
+    ytd_rows = _merge_scenario_rows(
+        parent_ytd, read_overlay("year_to_date.csv"), ("name",),
+    )
     return (
         scenario_row, accounts, model_rows, scheduled_rows,
-        waterfall_rows, calendar_rows, priors_rows, lifespan_rows,
+        waterfall_rows, calendar_rows, priors_rows, lifespan_rows, ytd_rows,
     )
 
 
@@ -280,7 +285,7 @@ def load_scenario(
     persons = _read_csv(data_dir / "persons.csv", issues)
     (
         scenario_row, accounts, model_rows, scheduled_rows,
-        waterfall_rows, calendar_rows, priors_rows, lifespan_rows,
+        waterfall_rows, calendar_rows, priors_rows, lifespan_rows, ytd_rows,
     ) = _read_scenario_inputs(data_dir, scenario_name, issues)
 
 
@@ -299,6 +304,7 @@ def load_scenario(
     _validate_waterfall(waterfall_rows, scheduled_rows, issues)
     _validate_priors(priors_rows, accounts, issues, money_resolver=money_resolver)
     _validate_lifespan(lifespan_rows, persons, issues)
+    _validate_year_to_date(ytd_rows, accounts, issues, money_resolver=money_resolver)
 
     if issues:
         raise LoadError(issues)
@@ -338,6 +344,7 @@ def load_scenario(
             calendar_rows=calendar_rows,
             priors_rows=priors_rows,
             lifespan_rows=lifespan_rows,
+            ytd_rows=ytd_rows,
             money_resolver=money_resolver,
         )
         _write_manifest(
@@ -530,6 +537,23 @@ def _validate_scheduled(
             issues.append(
                 f"scheduled.csv row {i} ({name}): amount_rule_params_json invalid: {e}"
             )
+        ytd_amount = row.get("ytd_amount", "")
+        ytd_preroll = row.get("ytd_preroll", "")
+        if ytd_amount != "" or ytd_preroll not in ("", "0"):
+            if kind != "fixed_amount" or cad != "monthly":
+                issues.append(
+                    f"scheduled.csv row {i} ({name}): ytd_amount/ytd_preroll only "
+                    "valid for amount_rule_kind='fixed_amount' with cadence='monthly'"
+                )
+            if ytd_amount != "" and ytd_preroll not in ("", "0"):
+                issues.append(
+                    f"scheduled.csv row {i} ({name}): ytd_amount and ytd_preroll "
+                    "are mutually exclusive"
+                )
+        if ytd_preroll not in ("", "0", "1"):
+            issues.append(
+                f"scheduled.csv row {i} ({name}): ytd_preroll must be 0 or 1"
+            )
         _validate_tags("scheduled.csv", i, name, row.get("tags", ""), issues)
 
 
@@ -606,6 +630,48 @@ def _validate_scheduled_money(
                 _dollars_to_cents(base_amount, resolver=money_resolver)
             except ValueError as e:
                 issues.append(f"scheduled.csv row {i} ({name}): base_amount {e}")
+        ytd_amount = row.get("ytd_amount", "")
+        if ytd_amount != "":
+            try:
+                _dollars_to_cents(ytd_amount, resolver=money_resolver)
+            except ValueError as e:
+                issues.append(f"scheduled.csv row {i} ({name}): ytd_amount {e}")
+
+
+def _validate_year_to_date(
+    rows: list[dict[str, str]],
+    accounts: list[dict[str, str]],
+    issues: list[str],
+    *,
+    money_resolver: _MoneyReferenceResolver,
+) -> None:
+    account_names = {r["name"] for r in accounts if r.get("name")}
+    seen: set[str] = set()
+    for i, row in enumerate(rows, start=2):
+        name = row.get("name", "")
+        if not name:
+            issues.append(f"year_to_date.csv row {i}: missing name")
+            continue
+        if name in seen:
+            issues.append(f"year_to_date.csv row {i} ({name}): duplicate name")
+        seen.add(name)
+        for col in ("from_account", "to_account"):
+            ref = row.get(col, "")
+            if not ref or ref not in account_names:
+                issues.append(
+                    f"year_to_date.csv row {i} ({name}): {col} '{ref}' not in accounts.csv"
+                )
+        tc = row.get("tax_character", "")
+        if tc not in registries.TAX_CHARACTERS:
+            issues.append(f"year_to_date.csv row {i} ({name}): unknown tax_character '{tc}'")
+        amount = row.get("amount", "")
+        if amount == "":
+            issues.append(f"year_to_date.csv row {i} ({name}): amount is required")
+        else:
+            try:
+                _dollars_to_cents(amount, resolver=money_resolver)
+            except ValueError as e:
+                issues.append(f"year_to_date.csv row {i} ({name}): amount {e}")
 
 
 def _validate_calendar(rows: list[dict[str, str]], issues: list[str]) -> None:
@@ -762,6 +828,7 @@ def _write_intent(
     calendar_rows: list[dict[str, str]],
     priors_rows: list[dict[str, str]],
     lifespan_rows: list[dict[str, str]],
+    ytd_rows: list[dict[str, str]],
     money_resolver: _MoneyReferenceResolver,
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -861,8 +928,8 @@ def _write_intent(
             "interest_account, person, series, rate_micros, claim_age, amount_cents, "
             "params_json, base_amount, base_date, "
             "inflation_series, tax_character, start, \"end\", priority, "
-            "description, meta_json"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "description, meta_json, ytd_amount, ytd_preroll"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 model_id, s["name"],
                 account_ids[s["from_account"]], account_ids[s["to_account"]],
@@ -882,6 +949,9 @@ def _write_intent(
                 s.get("base_date") or None, s.get("inflation_series") or None,
                 s["tax_character"], s["start"], s.get("end") or None, prio,
                 s.get("description") or None, s.get("meta_json") or "{}",
+                _dollars_to_cents(s["ytd_amount"], resolver=money_resolver)
+                if s.get("ytd_amount") else None,
+                int(s.get("ytd_preroll") or 0),
             ),
         )
         sched_ids[s["name"]] = cur.lastrowid
@@ -948,6 +1018,20 @@ def _write_intent(
             (scenario_id, lf["person"], lf["final_month"]),
         )
     counts["person_lifespan"] = len(lifespan_rows)
+
+    for y in ytd_rows:
+        con.execute(
+            "INSERT INTO year_to_date("
+            "scenario_id, name, from_account, to_account, amount, "
+            "tax_character, description) VALUES (?,?,?,?,?,?,?)",
+            (
+                scenario_id, y["name"],
+                account_ids[y["from_account"]], account_ids[y["to_account"]],
+                _dollars_to_cents(y["amount"], resolver=money_resolver),
+                y["tax_character"], y.get("description") or None,
+            ),
+        )
+    counts["year_to_date"] = len(ytd_rows)
 
     return counts
 

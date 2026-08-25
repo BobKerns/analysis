@@ -37,6 +37,7 @@ ItemType = Literal[
     "account_balance",
     "account_model_member",
     "aux_table",
+    "year_to_date",
 ]
 
 
@@ -121,6 +122,12 @@ _ITEM_SQL: dict[str, str] = {
         "SELECT * FROM net_worth_constant_cpi ORDER BY month"
     ),
     "prior_tax_activity": "SELECT * FROM prior_tax_activity",
+    "year_to_date": (
+        "SELECT y.*, fa.name AS from_name, ta.name AS to_name "
+        "FROM year_to_date y "
+        "JOIN account fa ON fa.id = y.from_account "
+        "JOIN account ta ON ta.id = y.to_account"
+    ),
     "tax_year_summary": "SELECT * FROM tax_year_summary ORDER BY year, bucket",
     "account_balance": (
         "SELECT s.month, a.id AS account_id, a.name AS account, "

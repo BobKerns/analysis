@@ -115,7 +115,8 @@ def run_scenario(
                 'SELECT id, name, from_account, to_account, cadence, month_of_year, '
                 '       amount_rule_kind, interest_account, person, series, '
                 '       rate_micros, claim_age, amount_cents, params_json, base_amount, '
-                '       tax_character, start, "end", priority, base_date, inflation_series '
+                '       tax_character, start, "end", priority, base_date, inflation_series, '
+                '       ytd_amount, ytd_preroll '
                 'FROM scheduled_transaction WHERE model_id = ? '
                 'ORDER BY priority, id',
                 (model_id,),
@@ -124,6 +125,11 @@ def run_scenario(
         txn_by_name: dict[str, list[Any]] = {
             r[1]: r for r in txns
         }
+
+        year_to_date_rows = con.execute(
+            "SELECT id, from_account, to_account, amount, tax_character "
+            "FROM year_to_date"
+        ).fetchall()
 
         calendar_events = con.execute(
             'SELECT id, calendar_id, date, kind, '
@@ -154,6 +160,9 @@ def run_scenario(
             _advance_inflation_indexes(
                 con, step_id, month_s, aux, inflation_indexes,
             )
+
+            if step_index == 0:
+                _apply_ytd_catchups(con, step_id, month, txns, year_to_date_rows)
 
             for ev in calendar_events:
                 (ev_id, _cal_id, ev_date, ev_kind,
@@ -189,7 +198,8 @@ def run_scenario(
                 (tid, _name, frm, to, cadence, moy, rule_kind,
                  p_interest_acct, p_person, p_series, p_rate_micros,
                  p_claim_age, p_amount_cents, ext_json, base_amount,
-                 tax_char, t_start, t_end, _prio, t_base_date, t_inflation_series) = txn
+                 tax_char, t_start, t_end, _prio, t_base_date, t_inflation_series,
+                 _t_ytd_amount, _t_ytd_preroll) = txn
                 if month_s < t_start:
                     continue
                 if t_end is not None and month_s > t_end:
@@ -361,6 +371,62 @@ def _post_transfer(
 
 def _delta(kind: str, raw: int) -> int:
     return -raw if kind == "liability" else raw
+
+
+def _ytd_catchup_date(start: date) -> date:
+    """ADR-003 §4.11: date stamped on partial-first-year catch-up transfers --
+    the last day of the month before ``start``, so they land in the same
+    calendar year without colliding with ``start``'s own first-month flows.
+    Degenerates to ``start`` itself when the scenario starts in January.
+    """
+    if start.month == 1:
+        return start
+    prev_month = start.month - 1
+    last_day = calendar.monthrange(start.year, prev_month)[1]
+    return date(start.year, prev_month, last_day)
+
+
+def _post_ytd_transfer(
+    con, step_id: int, date_s: str,
+    from_id: int, to_id: int, amount: int, tax_char: str, reason_id: int,
+) -> None:
+    """ADR-003 §4.11: balance-neutral catch-up entry. Visible to income/expense/
+    tax reporting like any other transfer_event, but does not mutate account
+    balances -- those already reflect the post-receipt state via opening_balance.
+    """
+    if amount == 0:
+        return
+    con.execute(
+        "INSERT INTO transfer_event("
+        "  step_id, date, from_account, to_account, amount, "
+        "  tax_character, reason_kind, reason_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, 'ytd', ?)",
+        (step_id, date_s, from_id, to_id, amount, tax_char, reason_id),
+    )
+
+
+def _apply_ytd_catchups(
+    con, step_id: int, start: date,
+    txns: list[list[Any]],
+    year_to_date_rows: list[tuple[int, int, int, int, str]],
+) -> None:
+    """Fire partial-first-year catch-up transfers once, at step 0."""
+    date_s = _ytd_catchup_date(start).isoformat()
+    for txn in txns:
+        (tid, _name, frm, to, _cadence, _moy, _rule_kind,
+         _p_interest_acct, _p_person, _p_series, _p_rate_micros,
+         _p_claim_age, _p_amount_cents, _ext_json, base_amount,
+         tax_char, _t_start, _t_end, _prio, _t_base_date, _t_inflation_series,
+         ytd_amount, ytd_preroll) = txn
+        if ytd_amount is not None:
+            amount = ytd_amount
+        elif ytd_preroll:
+            amount = (base_amount or 0) * (start.month - 1)
+        else:
+            continue
+        _post_ytd_transfer(con, step_id, date_s, frm, to, amount, tax_char, tid)
+    for yid, y_from, y_to, y_amount, y_tax_char in year_to_date_rows:
+        _post_ytd_transfer(con, step_id, date_s, y_from, y_to, y_amount, y_tax_char, yid)
 
 
 def _past_person_lifespan(

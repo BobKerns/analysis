@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -114,6 +114,8 @@ CREATE TABLE scheduled_transaction (
     description             TEXT,
     created_by_event_id     INTEGER REFERENCES calendar_event(id),
     meta_json               TEXT NOT NULL DEFAULT '{}',
+    ytd_amount              INTEGER,
+    ytd_preroll             INTEGER NOT NULL DEFAULT 0,
     UNIQUE (model_id, name)
 );
 CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
@@ -169,6 +171,26 @@ CREATE TABLE person_lifespan (
     person      TEXT NOT NULL REFERENCES person(id),
     final_month TEXT NOT NULL,
     PRIMARY KEY (scenario_id, person)
+);
+
+-- Partial-first-year catch-up facts (ADR-003 §4.11) not tied to any single
+-- scheduled_transaction's own base_amount (e.g. investment growth, SS already
+-- received). Posted at run start as balance-neutral transfer_event rows
+-- (reason_kind='ytd') so tax/reporting queries see them without double-
+-- counting against account_model_member.opening_balance.
+CREATE TABLE year_to_date (
+    id            INTEGER PRIMARY KEY,
+    scenario_id   INTEGER NOT NULL REFERENCES scenario(id),
+    name          TEXT NOT NULL,
+    from_account  INTEGER NOT NULL REFERENCES account(id),
+    to_account    INTEGER NOT NULL REFERENCES account(id),
+    amount        INTEGER NOT NULL,
+    tax_character TEXT NOT NULL CHECK (tax_character IN
+                        ('ordinary','ltcg','ss_benefit','tax_free',
+                         'tax_deferred_in','tax_deferred_out',
+                         'return_of_capital','property_tax','none')),
+    description   TEXT,
+    UNIQUE (scenario_id, name)
 );
 
 CREATE TABLE tag (
@@ -293,7 +315,7 @@ CREATE TABLE transfer_event (
     to_account      INTEGER NOT NULL REFERENCES account(id),
     amount          INTEGER NOT NULL,
     tax_character   TEXT NOT NULL,
-    reason_kind     TEXT NOT NULL CHECK (reason_kind IN ('rule','initial')),
+    reason_kind     TEXT NOT NULL CHECK (reason_kind IN ('rule','initial','ytd')),
     reason_id       INTEGER,
     parent_event_id INTEGER REFERENCES transfer_event(id),
     from_holding_id INTEGER REFERENCES holding(id),
@@ -441,6 +463,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "scenario",
     "prior_tax_activity",
     "person_lifespan",
+    "year_to_date",
     "tag",
     "account_tag",
     "scheduled_transaction_tag",

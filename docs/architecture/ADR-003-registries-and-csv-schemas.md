@@ -361,6 +361,8 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `description` | text | | |
 | `meta_json` | json | | default `{}` |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
+| `ytd_amount` | dollars | | partial-first-year catch-up (§4.11); only valid when `amount_rule_kind='fixed_amount'` and `cadence='monthly'`; mutually exclusive with `ytd_preroll` |
+| `ytd_preroll` | `0`/`1` | | if `1`, catch-up amount = `base_amount × (scenario.start.month − 1)`; same restrictions as `ytd_amount` |
 
 #### 4.7 Per-scenario: `data_repo/scenarios/<name>/waterfall_sources.csv`
 
@@ -409,6 +411,29 @@ Lets a scenario play with a person's lifespan without touching the shared `perso
 | `final_month` | YYYY-MM-DD | ✓ | last month this person is alive; month-end date |
 
 Writes directly into `person_lifespan` (PK `(scenario_id, person)`). At `date > final_month`, the engine stops firing every `scheduled_transaction` **associated with that person** — the row's explicit `person` column (`ss_benefit`, `rmd`), or a row whose `from_account`/`to_account` owner is that person (`salary`, per-person expenses, etc.). Jointly-owned accounts (`owner` blank) are unaffected, so shared expenses and joint-account interest continue for a surviving spouse. This is a lighter-weight alternative to a `life_transition: predecease` calendar event — it stops the deceased person's own transfers but does **not** merge accounts, adjust survivor SS benefits, or switch filing status; use `life_transition` when those effects matter.
+
+#### 4.11 Partial-first-year catch-up (`ytd_amount`/`ytd_preroll` on scheduled.csv; `year_to_date.csv`)
+
+A scenario's first simulated month is rarely January 1: the author needs the run's first (partial) calendar year to report correctly (annual totals, tax accrual) as if the elapsed months had actually been simulated. Two mechanisms cover this, both posting **balance-neutral** `transfer_event` rows — visible to income/expense/tax queries exactly like any other flow, but never mutating account balances, since `account_model_member.opening_balance` already reflects the true, post-receipt balance as of `scenario.start`. Both fire once, at step 0 (`step_index=0`), dated the last day of the month before `scenario.start` (degenerates to `scenario.start` itself when it falls in January) with `reason_kind='ytd'`.
+
+**On `scheduled.csv`** (§4.6), for a single `fixed_amount` + `cadence='monthly'` row's own catch-up, since the amount is directly derived from that row's `base_amount`:
+
+- `ytd_amount` (dollars) — hard actual total already paid/received this calendar year before `scenario.start`. `reason_id` = the row's own `scheduled_transaction.id`.
+- `ytd_preroll` (`0`/`1`) — auto-computed as `base_amount × (scenario.start.month − 1)`, i.e. one full month's amount per elapsed month, unadjusted for inflation (a same-order approximation, not a substitute for real records).
+- Mutually exclusive; loader rejects both set together, or either set on a non-`fixed_amount`/non-`monthly` row.
+
+**`data_repo/scenarios/<name>/year_to_date.csv`** (optional) — for everything else needing a partial-first-year catch-up that isn't one `fixed_amount` monthly rule's own amount (investment growth, Social Security already received, etc.). No `cadence`/`inflation_series`/`base_date`: each row is one flat historical fact, not a recurring rule.
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `name` | text | ✓ | unique within scenario; identifies the row for `reason_id` provenance |
+| `from_account` | text | ✓ | mirrors `one_off_transfer`'s `account_1` |
+| `to_account` | text | ✓ | mirrors `one_off_transfer`'s `account_2` |
+| `amount` | dollars | ✓ | decimal string; loader converts to integer cents |
+| `tax_character` | enum | ✓ | per ADR-002 |
+| `description` | text | | |
+
+Writes directly into `year_to_date` (`UNIQUE (scenario_id, name)`); `reason_id` on the emitted `transfer_event` is the `year_to_date.id`.
 
 ### 5. Default priorities
 

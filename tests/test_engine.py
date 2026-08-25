@@ -661,3 +661,118 @@ def test_fixed_amount_applies_cpi_inflation(tmp_path: Path) -> None:
         assert amounts[-1] > amounts[1]
     finally:
         con.close()
+
+
+def test_ytd_preroll_posts_balance_neutral_catchup(tmp_path: Path) -> None:
+    """ADR-003 §4.11: ytd_preroll on a fixed_amount/monthly row posts a single
+    balance-neutral transfer_event at step 0, dated before scenario.start."""
+    import pandas as pd
+
+    repo = _clone_prototype(tmp_path)
+    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched_csv, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "salary_alice", "ytd_preroll"] = "1"
+    df.to_csv(sched_csv, index=False)
+
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    con.row_factory = sqlite3.Row
+    try:
+        checking_id = con.execute(
+            "SELECT id FROM account WHERE name='Asset_Checking'"
+        ).fetchone()[0]
+        opening_checking = con.execute(
+            "SELECT balance FROM account_state ast "
+            "JOIN simulation_step s ON s.id = ast.step_id "
+            "WHERE s.step_index = 0 AND ast.account_id = ?", (checking_id,),
+        ).fetchone()[0]
+
+        rows = con.execute(
+            "SELECT date, amount, reason_kind FROM transfer_event "
+            "WHERE reason_kind = 'ytd'"
+        ).fetchall()
+        assert len(rows) == 1
+        # scenario start = 2026-05-31 -> 4 elapsed months (Jan-Apr), dated 2026-04-30.
+        assert rows[0]["date"] == "2026-04-30"
+        assert rows[0]["amount"] == SALARY_ALICE_MONTHLY * 4
+
+        # Balance-neutral: checking's step-0 balance is unaffected by the catch-up.
+        assert opening_checking == EXPECTED_CHECKING[1]
+    finally:
+        con.close()
+
+
+def test_year_to_date_csv_posts_balance_neutral_catchup(tmp_path: Path) -> None:
+    """ADR-003 §4.11: year_to_date.csv rows post balance-neutral transfer_event
+    rows at step 0, queryable by tax_character/account like any other flow."""
+    repo = _clone_prototype(tmp_path)
+
+    intent_path_base = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent_base", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path_base = tmp_path / "base.sqlite3"
+    run_scenario(
+        intent_path_base, run_path_base,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    ytd_csv = repo / "scenarios" / "retire_alice" / "year_to_date.csv"
+    ytd_csv.write_text(
+        "name,from_account,to_account,amount,tax_character,description\n"
+        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint,"
+        "1500.00,ltcg,pre-simulation appreciation\n"
+    )
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con_base = sqlite3.connect(run_path_base)
+    con = sqlite3.connect(run_path)
+    con.row_factory = sqlite3.Row
+    try:
+        brokerage_id = con.execute(
+            "SELECT id FROM account WHERE name='Asset_Brokerage_Joint'"
+        ).fetchone()[0]
+        opening_brokerage = con.execute(
+            "SELECT balance FROM account_state ast "
+            "JOIN simulation_step s ON s.id = ast.step_id "
+            "WHERE s.step_index = 0 AND ast.account_id = ?", (brokerage_id,),
+        ).fetchone()[0]
+        opening_brokerage_base = con_base.execute(
+            "SELECT balance FROM account_state ast "
+            "JOIN simulation_step s ON s.id = ast.step_id "
+            "WHERE s.step_index = 0 AND ast.account_id = ?", (brokerage_id,),
+        ).fetchone()[0]
+
+        row = con.execute(
+            "SELECT date, amount, tax_character FROM transfer_event "
+            "WHERE reason_kind = 'ytd'"
+        ).fetchone()
+        assert row["date"] == "2026-04-30"
+        assert row["amount"] == 150_000
+        assert row["tax_character"] == "ltcg"
+
+        # Balance-neutral: identical to the run without year_to_date.csv.
+        assert opening_brokerage == opening_brokerage_base
+    finally:
+        con.close()
+        con_base.close()
