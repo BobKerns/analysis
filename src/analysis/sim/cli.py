@@ -34,6 +34,8 @@ from analysis.sim.loader import (
     LoadError,
     load_scenario,
     open_intent_db,
+    resolve_scenario_name,
+    write_current_scenario,
 )
 
 DEFAULT_INTENT_DIR = Path("state/intent")
@@ -55,7 +57,7 @@ def sim_group_command() -> None:
 
 
 @sim_group_command.command()
-@click.argument("scenario_name")
+@click.argument("scenario_name", required=False)
 @click.option(
     "--data-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -75,13 +77,19 @@ def sim_group_command() -> None:
     help="Allow loading when the data repo has uncommitted changes in the scenario's scoped paths.",
 )
 def load(
-    scenario_name: str,
+    scenario_name: str | None,
     data_dir: Path | None,
     intent_dir: Path | None,
     allow_dirty_data: bool,
 ) -> None:
-    """Build state/intent/<scenario>.sqlite3 from the data repo."""
+    """Build state/intent/<scenario>.sqlite3 from the data repo.
+
+    Naming a scenario also records it as the data repo's current scenario;
+    omitting it reuses that recorded scenario.
+    """
     resolved = _resolve_data_dir(data_dir)
+    explicit = scenario_name is not None
+    scenario_name = _resolve_scenario_name(resolved, scenario_name)
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
     if not allow_dirty_data and os.environ.get("ANALYSIS_DATA_MODE") == "prototype":
         allow_dirty_data = True
@@ -98,21 +106,25 @@ def load(
     except DataDirtyRefused as exc:
         click.echo(str(exc), err=True)
         raise click.ClickException("data dirty; refusing to load") from None
+    if explicit:
+        write_current_scenario(resolved, scenario_name)
     click.echo(f"loaded {result.intent_path}")
+    click.echo(f"  current scenario: {scenario_name}")
     for table, n in result.counts.items():
         click.echo(f"  {table}: {n}")
 
 
 @sim_group_command.command()
-@click.argument("scenario_name")
+@click.argument("scenario_name", required=False)
 @click.option(
     "--data-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     default=None,
 )
-def check(scenario_name: str, data_dir: Path | None) -> None:
+def check(scenario_name: str | None, data_dir: Path | None) -> None:
     """Validate the scenario's CSVs without producing a persistent intent file."""
     resolved = _resolve_data_dir(data_dir)
+    scenario_name = _resolve_scenario_name(resolved, scenario_name)
     with tempfile.TemporaryDirectory() as td:
         try:
             load_scenario(
@@ -123,6 +135,14 @@ def check(scenario_name: str, data_dir: Path | None) -> None:
                 click.echo(f"  error: {issue}", err=True)
             raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
     click.echo("ok")
+
+
+def _resolve_scenario_name(data_dir: Path, scenario: str | None) -> str:
+    """Scenario resolution shared with the notebooks (see loader)."""
+    try:
+        return resolve_scenario_name(data_dir, scenario)
+    except LoadError as exc:
+        raise click.ClickException("; ".join(exc.issues)) from None
 
 
 def _resolve_data_dir(data_dir: Path | None) -> Path:
@@ -137,7 +157,7 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 
 
 @sim_group_command.command()
-@click.argument("scenario_name")
+@click.argument("scenario_name", required=False)
 @click.option(
     "--intent-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -163,7 +183,7 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 @click.option("--allow-dirty-data", is_flag=True, default=False)
 @click.option("--allow-dirty-code", is_flag=True, default=False)
 def run(
-    scenario_name: str,
+    scenario_name: str | None,
     intent_dir: Path | None,
     runs_dir: Path | None,
     data_mode: str | None,
@@ -172,6 +192,8 @@ def run(
     allow_dirty_code: bool,
 ) -> None:
     """Execute <scenario> against its intent file and write a new run file."""
+    if scenario_name is None:
+        scenario_name = _resolve_scenario_name(_resolve_data_dir(None), None)
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
@@ -333,19 +355,8 @@ _CALENDAR_HEADER: tuple[str, ...] = (
 
 
 def _resolve_scenario_dir(data_dir: Path, scenario: str | None) -> tuple[Path, str]:
-    scenarios = data_dir / "scenarios"
-    if not scenarios.is_dir():
-        raise click.ClickException(f"no scenarios/ in {data_dir}")
-    if scenario:
-        d = scenarios / scenario
-        if not d.is_dir():
-            raise click.ClickException(f"scenario not found: {d}")
-        return d, scenario
-    subs = sorted(p for p in scenarios.iterdir() if p.is_dir())
-    if len(subs) == 1:
-        return subs[0], subs[0].name
-    names = ", ".join(p.name for p in subs) or "(none)"
-    raise click.ClickException(f"multiple scenarios; pass --scenario [{names}]")
+    name = _resolve_scenario_name(data_dir, scenario)
+    return data_dir / "scenarios" / name, name
 
 
 def _read_account_names(data_dir: Path) -> list[str]:

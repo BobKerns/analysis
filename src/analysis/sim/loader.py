@@ -33,9 +33,14 @@ from analysis.sim.provenance import (
 from analysis.sim.schema import INTENT_DDL, SCHEMA_VERSION
 
 __all__ = [
+    "CURRENT_SCENARIO_FILE", "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "load_scenario",
-    "open_intent_db", "resolve_scenario_name",
+    "open_intent_db", "read_current_scenario", "resolve_scenario_name",
+    "write_current_scenario",
 ]
+
+CURRENT_SCENARIO_FILE = ".current_scenario"
+DEFAULT_SCENARIO_NAME = "current"
 
 
 @dataclass(frozen=True)
@@ -101,11 +106,32 @@ class _MoneyReferenceResolver:
             self._resolving.discard(token)
 
 
+def current_scenario_path(data_dir: Path | str) -> Path:
+    """Path of the file recording the data repo's most recently loaded scenario."""
+    return Path(data_dir) / CURRENT_SCENARIO_FILE
+
+
+def read_current_scenario(data_dir: Path | str) -> str | None:
+    """Return the recorded scenario name, or ``None`` if nothing is recorded."""
+    path = current_scenario_path(data_dir)
+    try:
+        name = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return name or None
+
+
+def write_current_scenario(data_dir: Path | str, scenario: str) -> None:
+    """Record ``scenario`` as the data repo's current scenario."""
+    current_scenario_path(data_dir).write_text(f"{scenario}\n", encoding="utf-8")
+
+
 def resolve_scenario_name(data_dir: Path, scenario: str | None) -> str:
     """Pick a scenario name from the data repo.
 
-    If ``scenario`` is given, validate it exists. Otherwise, require exactly one
-    scenario folder under ``data_dir/scenarios`` and return its name.
+    If ``scenario`` is given, validate it exists. Otherwise fall back, in order,
+    to the name recorded in ``.current_scenario``, the sole scenario folder if
+    there is only one, and finally ``current``.
     """
     scenarios = Path(data_dir) / "scenarios"
     if not scenarios.is_dir():
@@ -114,9 +140,19 @@ def resolve_scenario_name(data_dir: Path, scenario: str | None) -> str:
         if not (scenarios / scenario).is_dir():
             raise LoadError([f"scenario not found: {scenarios / scenario}"])
         return scenario
+    recorded = read_current_scenario(data_dir)
+    if recorded:
+        if not (scenarios / recorded).is_dir():
+            raise LoadError([
+                f"{current_scenario_path(data_dir)} names a missing scenario: "
+                f"{recorded!r}"
+            ])
+        return recorded
     subs = sorted(p.name for p in scenarios.iterdir() if p.is_dir())
     if len(subs) == 1:
         return subs[0]
+    if DEFAULT_SCENARIO_NAME in subs:
+        return DEFAULT_SCENARIO_NAME
     raise LoadError(
         [f"multiple scenarios; pass --scenario [{', '.join(subs) or '(none)'}]"]
     )

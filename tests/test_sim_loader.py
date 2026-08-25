@@ -11,7 +11,15 @@ import git
 
 import pytest
 
-from analysis.sim.loader import DataDirtyRefused, LoadError, load_scenario
+from analysis.sim.loader import (
+    DEFAULT_SCENARIO_NAME,
+    DataDirtyRefused,
+    LoadError,
+    load_scenario,
+    read_current_scenario,
+    resolve_scenario_name,
+    write_current_scenario,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -119,6 +127,32 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
             current_count = current_con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             tight_count = tight_con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             assert tight_count == current_count
+
+
+def test_current_scenario_file_drives_default_resolution(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    (repo / "scenarios" / "current").mkdir(parents=True)
+    (repo / "scenarios" / "tight").mkdir()
+
+    assert read_current_scenario(repo) is None
+    assert resolve_scenario_name(repo, None) == DEFAULT_SCENARIO_NAME
+    assert resolve_scenario_name(repo, "tight") == "tight"
+
+    write_current_scenario(repo, "tight")
+    assert read_current_scenario(repo) == "tight"
+    assert resolve_scenario_name(repo, None) == "tight"
+    assert resolve_scenario_name(repo, "current") == "current"
+
+    write_current_scenario(repo, "gone")
+    with pytest.raises(LoadError) as ei:
+        resolve_scenario_name(repo, None)
+    assert any("missing scenario" in issue for issue in ei.value.issues)
+
+
+def test_sole_scenario_wins_over_current_default(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    (repo / "scenarios" / "only_one").mkdir(parents=True)
+    assert resolve_scenario_name(repo, None) == "only_one"
 
 
 def test_invalid_subkind_rejected(tmp_path: Path) -> None:

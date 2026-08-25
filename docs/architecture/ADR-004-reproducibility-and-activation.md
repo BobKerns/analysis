@@ -102,6 +102,17 @@ The script is shell-agnostic at the user-visible level (works in bash and zsh); 
 
 A Python equivalent `src/analysis/activate.py` is **not** sourceable but performs the same validations when called from `analysis sim`'s entry — so direct CLI use with manually-set env vars works without sourcing.
 
+### 4a. The current scenario (`.current_scenario`)
+
+The data repo records the scenario the user is currently working on in a `.current_scenario` file at its root (one line, the scenario folder name). It is per-user working state, not data: `activate` adds it to the data repo's `.gitignore`, and it is outside the scenario's scoped paths, so it never affects `data_version`/`scenario_tree_id` or dirty gating.
+
+`analysis sim load <scenario>` writes the file; any command (or notebook) that takes an optional scenario resolves an omitted one via `analysis.sim.loader.resolve_scenario_name`, in this order:
+
+1. the explicitly supplied name (validated against `scenarios/`),
+2. the name recorded in `.current_scenario` (error if it names a missing scenario),
+3. the sole scenario folder, if there is exactly one,
+4. `current`.
+
 ### 5. The `verify` command
 
 `analysis sim verify <runfile>` attempts to reproduce a run file and report deviation:

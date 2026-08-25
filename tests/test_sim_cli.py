@@ -148,6 +148,33 @@ def _copy_prototype(tmp_path: Path) -> Path:
     return dest
 
 
+def test_sim_load_records_current_scenario_and_defaults_to_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data = _copy_prototype(tmp_path)
+    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(data))
+    intent_dir = tmp_path / "intent"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        ["sim", "load", "retire_alice", "--intent-dir", str(intent_dir),
+         "--allow-dirty-data"],
+    )
+    assert result.exit_code == 0, result.output
+    assert (data / ".current_scenario").read_text().strip() == "retire_alice"
+
+    # No scenario argument: falls back to the recorded one.
+    again = runner.invoke(
+        main, ["sim", "load", "--intent-dir", str(intent_dir), "--allow-dirty-data"]
+    )
+    assert again.exit_code == 0, again.output
+    assert "current scenario: retire_alice" in again.output
+
+    check = runner.invoke(main, ["sim", "check"])
+    assert check.exit_code == 0, check.output
+
+
 def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> None:
     data = _copy_prototype(tmp_path)
     runner = CliRunner()

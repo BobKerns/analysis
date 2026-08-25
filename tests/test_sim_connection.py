@@ -121,6 +121,21 @@ def test_find_latest_run_raises_when_empty(tmp_path: Path) -> None:
         find_latest_run(runs_dir)
 
 
+def test_find_latest_run_filters_by_scenario(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    for name in [
+        "2026-01-01T000000Z_current_abc1234.sqlite3",
+        "2026-06-01T000000Z_tight_abc1234.sqlite3",
+    ]:
+        (runs_dir / name).touch()
+
+    latest = find_latest_run(runs_dir, "current")
+    assert latest.name == "2026-01-01T000000Z_current_abc1234.sqlite3"
+    with pytest.raises(FileNotFoundError):
+        find_latest_run(runs_dir, "nope")
+
+
 def test_run_connection_account_balance_item_type(tmp_path: Path) -> None:
     data = _copy_data(tmp_path)
     intent_path = load_scenario(
