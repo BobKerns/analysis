@@ -135,7 +135,7 @@ def run_scenario(
         sources = _load_sources(con)
         aux = _load_aux(con)
         inflation_indexes = _initialize_inflation_indexes(aux)
-        inflation_factor_cache: dict[tuple[str, str, str], int] = {}
+        inflation_factor_cache: dict[tuple[str, date, date], int] = {}
 
         skipped_counts: dict[str, int] = {}
         skipped_calendar: dict[str, int] = {}
@@ -243,7 +243,7 @@ def run_scenario(
                                     "without base_date"
                                 )
                             factor = _cumulative_inflation_factor(
-                                aux, t_inflation_series, t_base_date, month_s,
+                                aux, t_inflation_series, _parse_date(t_base_date), month,
                                 inflation_factor_cache,
                             )
                             amount = amount * factor // 1_000_000
@@ -1025,26 +1025,26 @@ def _advance_inflation_indexes(
 
 def _cumulative_inflation_factor(
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    series: str, from_date_s: str, to_date_s: str,
-    cache: dict[tuple[str, str, str], int],
+    series: str, from_date: date, to_date: date,
+    cache: dict[tuple[str, date, date], int],
 ) -> int:
     """ADR-003 §2.1: cumulative monthly-compounded inflation factor (micros;
-    1_000_000 = 1.0x) from ``from_date_s`` (exclusive) through ``to_date_s``
-    (inclusive). Returns the inverse factor if ``to_date_s`` precedes
-    ``from_date_s``.
+    1_000_000 = 1.0x) from ``from_date`` (exclusive) through ``to_date``
+    (inclusive). Returns the inverse factor if ``to_date`` precedes
+    ``from_date``.
     """
-    if to_date_s == from_date_s:
+    if to_date == from_date:
         return 1_000_000
-    key = (series, from_date_s, to_date_s)
+    key = (series, from_date, to_date)
     cached = cache.get(key)
     if cached is not None:
         return cached
-    lo, hi = (from_date_s, to_date_s) if from_date_s < to_date_s else (to_date_s, from_date_s)
+    lo, hi = (from_date, to_date) if from_date < to_date else (to_date, from_date)
     factor = 1_000_000
-    for month in _month_ends(_parse_date(lo), _parse_date(hi)):
-        month_s = month.isoformat()
-        if month_s <= lo:
+    for month in _month_ends(lo, hi):
+        if month <= lo:
             continue
+        month_s = month.isoformat()
         payload = _lookup_aux(aux, "inflation", series, month_s)
         if payload is None:
             raise EngineError(
@@ -1053,7 +1053,7 @@ def _cumulative_inflation_factor(
             )
         annual_micros = int(payload.get("annual_rate_micros", 0))
         factor = factor * (12_000_000 + annual_micros) // 12_000_000
-    if from_date_s > to_date_s:
+    if from_date > to_date:
         factor = (1_000_000 * 1_000_000) // factor
     cache[key] = factor
     return factor
