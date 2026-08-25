@@ -13,11 +13,17 @@ from analysis.sim.loader import load_scenario
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
 
-# Net cents into Asset_Checking per month from fixed_amount rules.
-# (salary_alice + salary_bob) - (living + housing + healthcare).
-# The mortgage payment is handled by the mortgage_payment rule below.
-NET_CHECKING_PER_MONTH = 800000 + 750000 - 450000 - 80000 - 60000  # = 960000
+# Net cents into Asset_Checking per month from fixed_amount rules, before CPI
+# growth (salary_alice + salary_bob) - (living + housing + healthcare). All
+# five rows share base_date = scenario start and inflation_series = cpi
+# (prototype_data/aux/inflation__cpi.csv: flat 2.5% APR), so each grows by the
+# same monthly-compounded factor. The mortgage payment isn't inflated.
 SALARY_ALICE_MONTHLY = 800000
+SALARY_BOB_MONTHLY = 750000
+LIVING_MONTHLY = 450000
+HOUSING_MONTHLY = 80000
+HEALTHCARE_MONTHLY = 60000
+CPI_ANNUAL_MICROS = 25000
 
 # Asset_Checking annual rate = 30000 micros = 3.0% APR; mortgage 6.0% APR on
 # 25_000_000 cents principal, $1,850/mo P&I. Iterate the joint trajectory.
@@ -27,17 +33,34 @@ MORTGAGE_PAYMENT = 185000
 MORTGAGE_OPENING = 25_000_000
 
 
+def _cpi_factor(n: int) -> int:
+    """Cumulative monthly-compounded CPI factor n months after base_date,
+    mirroring engine._cumulative_inflation_factor's integer arithmetic."""
+    factor = 1_000_000
+    for _ in range(n):
+        factor = factor * (12_000_000 + CPI_ANNUAL_MICROS) // 12_000_000
+    return factor
+
+
 def _project(steps: int) -> tuple[list[int], list[int]]:
     checking = [500_000]
     mortgage = [MORTGAGE_OPENING]
-    for _ in range(steps):
+    for i in range(steps):
         c_open = checking[-1]
         m_open = mortgage[-1]
         interest = (m_open * MORTGAGE_RATE_MICROS) // 12_000_000
         principal = min(MORTGAGE_PAYMENT - interest, m_open)
         c_interest = (c_open * CHECKING_RATE_MICROS) // 12_000_000
+        factor = _cpi_factor(i)
+        net_checking = (
+            SALARY_ALICE_MONTHLY * factor // 1_000_000
+            + SALARY_BOB_MONTHLY * factor // 1_000_000
+            - LIVING_MONTHLY * factor // 1_000_000
+            - HOUSING_MONTHLY * factor // 1_000_000
+            - HEALTHCARE_MONTHLY * factor // 1_000_000
+        )
         checking.append(
-            c_open + NET_CHECKING_PER_MONTH - MORTGAGE_PAYMENT + c_interest
+            c_open + net_checking - MORTGAGE_PAYMENT + c_interest
         )
         mortgage.append(m_open - principal)
     return checking, mortgage
@@ -264,7 +287,9 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         #   salary_alice retires 2028-06-30 (step 25, fires 0..25 = 26)
         #   salary_bob   retires 2030-12-31 (step 55, fires 0..55 = 56)
         #   one_off_transfer 2029-03-31 synthesizes 1 fixed_amount rule.
-        # waterfall_topup fires once checking drains post-retirement (62 times).
+        # waterfall_topup fires whenever checking drains post-retirement (75
+        # times; CPI-inflated salary/living/housing/healthcare shift the exact
+        # count vs. flat amounts).
         per_rule = dict(con.execute(
             "SELECT st.name, COUNT(*) FROM transfer_event te "
             "JOIN scheduled_transaction st ON st.id = te.reason_id "
@@ -281,7 +306,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         assert per_rule["ss_alice"] == 176 - 70
         assert per_rule["ss_bob"] == 176 - 135
         assert per_rule["rmd_alice"] == 3
-        assert per_rule["waterfall_topup"] == 62
+        assert per_rule["waterfall_topup"] == 75
         oneoff_count = sum(
             v for k, v in per_rule.items() if k.startswith("oneoff_evt_")
         )
@@ -605,5 +630,34 @@ def test_person_lifespan_stops_associated_transfers(tmp_path: Path) -> None:
             "WHERE reason_id=? AND date > '2027-01-31'", (checking_interest_id,),
         ).fetchone()[0]
         assert interest_after > 0
+    finally:
+        con.close()
+
+
+def test_fixed_amount_applies_cpi_inflation(tmp_path: Path) -> None:
+    """ADR-003 §2.1: fixed_amount grows with inflation_series/base_date, not
+    a flat amount for the life of the run."""
+    intent_path = _intent(tmp_path)
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    try:
+        amounts = [
+            row[0] for row in con.execute(
+                "SELECT te.amount FROM transfer_event te "
+                "JOIN scheduled_transaction st ON st.id = te.reason_id "
+                "WHERE st.name = 'salary_alice' ORDER BY te.date"
+            ).fetchall()
+        ]
+        # First fire (base_date == scenario start) is unadjusted.
+        assert amounts[0] == SALARY_ALICE_MONTHLY
+        # Second fire, one month later, has grown by one month of CPI.
+        assert amounts[1] == SALARY_ALICE_MONTHLY * _cpi_factor(1) // 1_000_000
+        # No plateau: it keeps growing, not stuck at the base amount.
+        assert amounts[-1] > amounts[1]
     finally:
         con.close()

@@ -115,7 +115,7 @@ def run_scenario(
                 'SELECT id, name, from_account, to_account, cadence, month_of_year, '
                 '       amount_rule_kind, interest_account, person, series, '
                 '       rate_micros, claim_age, amount_cents, params_json, base_amount, '
-                '       tax_character, start, "end", priority '
+                '       tax_character, start, "end", priority, base_date, inflation_series '
                 'FROM scheduled_transaction WHERE model_id = ? '
                 'ORDER BY priority, id',
                 (model_id,),
@@ -135,6 +135,7 @@ def run_scenario(
         sources = _load_sources(con)
         aux = _load_aux(con)
         inflation_indexes = _initialize_inflation_indexes(aux)
+        inflation_factor_cache: dict[tuple[str, str, str], int] = {}
 
         skipped_counts: dict[str, int] = {}
         skipped_calendar: dict[str, int] = {}
@@ -188,7 +189,7 @@ def run_scenario(
                 (tid, _name, frm, to, cadence, moy, rule_kind,
                  p_interest_acct, p_person, p_series, p_rate_micros,
                  p_claim_age, p_amount_cents, ext_json, base_amount,
-                 tax_char, t_start, t_end, _prio) = txn
+                 tax_char, t_start, t_end, _prio, t_base_date, t_inflation_series) = txn
                 if month_s < t_start:
                     continue
                 if t_end is not None and month_s > t_end:
@@ -234,9 +235,21 @@ def run_scenario(
                             raise EngineError(
                                 f"scheduled_transaction id={tid} fixed_amount missing base_amount"
                             )
+                        amount = base_amount
+                        if t_inflation_series and t_inflation_series != "fixed":
+                            if not t_base_date:
+                                raise EngineError(
+                                    f"scheduled_transaction id={tid}: inflation_series set "
+                                    "without base_date"
+                                )
+                            factor = _cumulative_inflation_factor(
+                                aux, t_inflation_series, t_base_date, month_s,
+                                inflation_factor_cache,
+                            )
+                            amount = amount * factor // 1_000_000
                         _post_transfer(
                             con, balances, account_kinds, step_id, month_s,
-                            frm, to, base_amount * fire_count, tax_char, tid,
+                            frm, to, amount * fire_count, tax_char, tid,
                         )
                     case "percent_of_balance":
                         amount = _amount_percent_of_balance(
@@ -1010,6 +1023,42 @@ def _advance_inflation_indexes(
         )
 
 
+def _cumulative_inflation_factor(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    series: str, from_date_s: str, to_date_s: str,
+    cache: dict[tuple[str, str, str], int],
+) -> int:
+    """ADR-003 §2.1: cumulative monthly-compounded inflation factor (micros;
+    1_000_000 = 1.0x) from ``from_date_s`` (exclusive) through ``to_date_s``
+    (inclusive). Returns the inverse factor if ``to_date_s`` precedes
+    ``from_date_s``.
+    """
+    if to_date_s == from_date_s:
+        return 1_000_000
+    key = (series, from_date_s, to_date_s)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    lo, hi = (from_date_s, to_date_s) if from_date_s < to_date_s else (to_date_s, from_date_s)
+    factor = 1_000_000
+    for month in _month_ends(_parse_date(lo), _parse_date(hi)):
+        month_s = month.isoformat()
+        if month_s <= lo:
+            continue
+        payload = _lookup_aux(aux, "inflation", series, month_s)
+        if payload is None:
+            raise EngineError(
+                f"fixed_amount inflation: no aux row for series={series!r} "
+                f"effective <= {month_s}"
+            )
+        annual_micros = int(payload.get("annual_rate_micros", 0))
+        factor = factor * (12_000_000 + annual_micros) // 12_000_000
+    if from_date_s > to_date_s:
+        factor = (1_000_000 * 1_000_000) // factor
+    cache[key] = factor
+    return factor
+
+
 def _lookup_aux(
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     kind: str, series: str | None, month_s: str,
@@ -1159,6 +1208,8 @@ def _apply_calendar_event(
                 )
             rec[14] = int(new_amount)
             new_base_date = payload.get("param_date")
+            if new_base_date:
+                rec[19] = new_base_date
             con.execute(
                 "UPDATE scheduled_transaction SET base_amount = ?, "
                 "base_date = COALESCE(?, base_date) WHERE id = ?",
