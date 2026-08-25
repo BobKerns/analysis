@@ -30,25 +30,21 @@ from analysis.sim.quicken import (
     format_dollars, is_investment_asset, load_account_map, parse_net_worth_export,
 )
 from analysis.sim.loader import (
+    DEFAULT_INTENT_DIR,
+    DEFAULT_RUNS_DIR,
     DataDirtyRefused,
     LoadError,
+    ScenarioRef,
     load_scenario,
     open_intent_db,
     resolve_scenario_name,
+    state_dir,
     write_current_scenario,
 )
 
-DEFAULT_INTENT_DIR = Path("state/intent")
-DEFAULT_RUNS_DIR = Path("state/runs")
-
 
 def _resolve_state_dir(directory: Path | None, default: Path) -> Path:
-    if directory is not None:
-        return directory
-    data_dir = os.environ.get("ANALYSIS_DATA_DIR")
-    if data_dir:
-        return Path(data_dir).resolve().parent / default
-    return default
+    return directory if directory is not None else state_dir(None, default)
 
 
 @click.group(name="sim")
@@ -89,14 +85,14 @@ def load(
     """
     resolved = _resolve_data_dir(data_dir)
     explicit = scenario_name is not None
-    scenario_name = _resolve_scenario_name(resolved, scenario_name)
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
+    ref = _resolve_scenario(resolved, scenario_name, intent_dir=resolved_intent_dir)
     if not allow_dirty_data and os.environ.get("ANALYSIS_DATA_MODE") == "prototype":
         allow_dirty_data = True
         click.echo("info: ANALYSIS_DATA_MODE=prototype; allowing dirty data", err=True)
     try:
         result = load_scenario(
-            resolved, scenario_name, intent_dir=resolved_intent_dir,
+            resolved, ref.name, intent_dir=resolved_intent_dir,
             allow_dirty_data=allow_dirty_data,
         )
     except LoadError as exc:
@@ -107,9 +103,9 @@ def load(
         click.echo(str(exc), err=True)
         raise click.ClickException("data dirty; refusing to load") from None
     if explicit:
-        write_current_scenario(resolved, scenario_name)
+        write_current_scenario(resolved, ref.name)
     click.echo(f"loaded {result.intent_path}")
-    click.echo(f"  current scenario: {scenario_name}")
+    click.echo(f"  current scenario: {ref.name}")
     for table, n in result.counts.items():
         click.echo(f"  {table}: {n}")
 
@@ -124,11 +120,11 @@ def load(
 def check(scenario_name: str | None, data_dir: Path | None) -> None:
     """Validate the scenario's CSVs without producing a persistent intent file."""
     resolved = _resolve_data_dir(data_dir)
-    scenario_name = _resolve_scenario_name(resolved, scenario_name)
+    ref = _resolve_scenario(resolved, scenario_name)
     with tempfile.TemporaryDirectory() as td:
         try:
             load_scenario(
-                resolved, scenario_name, intent_dir=Path(td), compute_stamps=False,
+                resolved, ref.name, intent_dir=Path(td), compute_stamps=False,
             )
         except LoadError as exc:
             for issue in exc.issues:
@@ -137,10 +133,12 @@ def check(scenario_name: str | None, data_dir: Path | None) -> None:
     click.echo("ok")
 
 
-def _resolve_scenario_name(data_dir: Path, scenario: str | None) -> str:
+def _resolve_scenario(
+    data_dir: Path, scenario: str | None, *, intent_dir: Path | None = None,
+) -> ScenarioRef:
     """Scenario resolution shared with the notebooks (see loader)."""
     try:
-        return resolve_scenario_name(data_dir, scenario)
+        return resolve_scenario_name(data_dir, scenario, intent_dir=intent_dir)
     except LoadError as exc:
         raise click.ClickException("; ".join(exc.issues)) from None
 
@@ -193,7 +191,7 @@ def run(
 ) -> None:
     """Execute <scenario> against its intent file and write a new run file."""
     if scenario_name is None:
-        scenario_name = _resolve_scenario_name(_resolve_data_dir(None), None)
+        scenario_name = _resolve_scenario(_resolve_data_dir(None), None).name
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
@@ -355,8 +353,8 @@ _CALENDAR_HEADER: tuple[str, ...] = (
 
 
 def _resolve_scenario_dir(data_dir: Path, scenario: str | None) -> tuple[Path, str]:
-    name = _resolve_scenario_name(data_dir, scenario)
-    return data_dir / "scenarios" / name, name
+    ref = _resolve_scenario(data_dir, scenario)
+    return ref.path, ref.name
 
 
 def _read_account_names(data_dir: Path) -> list[str]:

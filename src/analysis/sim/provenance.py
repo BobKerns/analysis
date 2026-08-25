@@ -109,6 +109,36 @@ def _compute_tree_id(repo: Repo, scoped_abs: list[str]) -> str:
             return repo.git.write_tree()
 
 
+@dataclass(frozen=True)
+class RepoHead:
+    """Where a working tree currently sits: commit, branch, dirtiness."""
+
+    commit: str | None
+    branch: str | None
+    dirty: bool
+
+
+NO_REPO_HEAD = RepoHead(commit=None, branch=None, dirty=False)
+
+
+def repo_head(path: Path) -> RepoHead:
+    """Describe the git checkout containing ``path``.
+
+    Returns ``NO_REPO_HEAD`` when the path is not in a git repo; ``branch`` is
+    ``None`` for a detached HEAD, and ``commit`` is ``None`` for a repo with no
+    commits yet.
+    """
+    repo = _open_repo(Path(path))
+    if repo is None:
+        return NO_REPO_HEAD
+    try:
+        commit = repo.head.commit.hexsha
+    except ValueError:
+        commit = None
+    branch = None if repo.head.is_detached else repo.active_branch.name
+    return RepoHead(commit=commit, branch=branch, dirty=repo.is_dirty())
+
+
 def _open_repo(start: Path) -> Repo | None:
     try:
         return Repo(start, search_parent_directories=True)

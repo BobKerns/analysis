@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from analysis.sim import registries
 from analysis.sim.provenance import (
@@ -29,18 +29,22 @@ from analysis.sim.provenance import (
     DataStamps,
     code_stamps,
     data_stamps,
+    repo_head,
 )
 from analysis.sim.schema import INTENT_DDL, SCHEMA_VERSION
 
 __all__ = [
-    "CURRENT_SCENARIO_FILE", "DEFAULT_SCENARIO_NAME",
-    "LoadError", "LoadResult", "DataDirtyRefused", "load_scenario",
-    "open_intent_db", "read_current_scenario", "resolve_scenario_name",
-    "write_current_scenario",
+    "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
+    "DEFAULT_SCENARIO_NAME",
+    "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
+    "load_scenario", "open_intent_db", "read_current_scenario",
+    "resolve_scenario_name", "state_dir", "write_current_scenario",
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
 DEFAULT_SCENARIO_NAME = "current"
+DEFAULT_INTENT_DIR = Path("state/intent")
+DEFAULT_RUNS_DIR = Path("state/runs")
 
 
 @dataclass(frozen=True)
@@ -126,20 +130,106 @@ def write_current_scenario(data_dir: Path | str, scenario: str) -> None:
     current_scenario_path(data_dir).write_text(f"{scenario}\n", encoding="utf-8")
 
 
-def resolve_scenario_name(data_dir: Path, scenario: str | None) -> str:
-    """Pick a scenario name from the data repo.
+def state_dir(data_dir: Path | str | None, default: Path) -> Path:
+    """Resolve a data repo's ``state/intent`` or ``state/runs`` dir (ADR-004 §4).
+
+    State lives beside the data dir, not inside it. Falls back to
+    ``$ANALYSIS_DATA_DIR`` and then to ``default`` relative to the cwd.
+    """
+    if data_dir is None:
+        data_dir = os.environ.get("ANALYSIS_DATA_DIR")
+        if not data_dir:
+            return default
+    return Path(data_dir).resolve().parent / default
+
+
+class ScenarioRef(NamedTuple):
+    """A resolved scenario: what it is called, where it lives, what state it is in."""
+
+    name: str
+    data_dir: Path
+    path: Path
+    intent_path: Path
+    commit: str | None
+    branch: str | None
+    dirty: bool
+
+    @property
+    def loaded(self) -> bool:
+        """True once ``sim load`` has built this scenario's intent file."""
+        return self.intent_path.exists()
+
+    def describe(self) -> str:
+        """Markdown summary of the scenario, its data repo, and its intent file."""
+        if self.commit:
+            where = f"`{self.commit[:12]}`"
+            if self.branch:
+                where += f" on `{self.branch}`"
+            if self.dirty:
+                where += " *(uncommitted changes)*"
+        else:
+            where = "*(not a git repo)*"
+        intent = f"`{self.intent_path}`"
+        if self.loaded:
+            when = datetime.fromtimestamp(self.intent_path.stat().st_mtime)
+            intent += f" — loaded {when:%Y-%m-%d %H:%M}"
+        else:
+            intent += " — *not loaded; run `sim load`*"
+        return (
+            f"**scenario `{self.name}`**\n\n"
+            f"| | |\n|---|---|\n"
+            f"| scenario | `{self.path}` |\n"
+            f"| data repo | `{self.data_dir}` {where} |\n"
+            f"| intent db | {intent} |\n"
+        )
+
+    def _repr_markdown_(self) -> str:
+        return self.describe()
+
+    def __str__(self) -> str:
+        version = f"@{self.commit[:12]}" if self.commit else "@unversioned"
+        return f"{self.name} ({self.data_dir}{version}{'+dirty' if self.dirty else ''})"
+
+
+def resolve_scenario_name(
+    data_dir: Path | str,
+    scenario: str | None = None,
+    *,
+    intent_dir: Path | None = None,
+) -> ScenarioRef:
+    """Pick a scenario from the data repo and describe where it lives.
 
     If ``scenario`` is given, validate it exists. Otherwise fall back, in order,
     to the name recorded in ``.current_scenario``, the sole scenario folder if
     there is only one, and finally ``current``.
     """
-    scenarios = Path(data_dir) / "scenarios"
+    data_dir = Path(data_dir).resolve()
+    scenarios = data_dir / "scenarios"
     if not scenarios.is_dir():
         raise LoadError([f"no scenarios/ in {data_dir}"])
     if scenario:
         if not (scenarios / scenario).is_dir():
             raise LoadError([f"scenario not found: {scenarios / scenario}"])
-        return scenario
+        name = scenario
+    else:
+        name = _default_scenario_name(data_dir, scenarios)
+    head = repo_head(data_dir)
+    resolved_intent_dir = (
+        Path(intent_dir) if intent_dir is not None
+        else state_dir(data_dir, DEFAULT_INTENT_DIR)
+    )
+    return ScenarioRef(
+        name=name,
+        data_dir=data_dir,
+        path=scenarios / name,
+        intent_path=resolved_intent_dir / f"{name}.sqlite3",
+        commit=head.commit,
+        branch=head.branch,
+        dirty=head.dirty,
+    )
+
+
+def _default_scenario_name(data_dir: Path, scenarios: Path) -> str:
     recorded = read_current_scenario(data_dir)
     if recorded:
         if not (scenarios / recorded).is_dir():
@@ -274,7 +364,7 @@ def open_intent_db(
     re-parsing CSVs.
     """
     data_dir = Path(data_dir).resolve()
-    name = resolve_scenario_name(data_dir, scenario)
+    name = resolve_scenario_name(data_dir, scenario).name
     with tempfile.TemporaryDirectory() as td:
         load_scenario(
             data_dir, name, intent_dir=Path(td),

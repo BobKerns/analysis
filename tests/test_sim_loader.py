@@ -135,13 +135,13 @@ def test_current_scenario_file_drives_default_resolution(tmp_path: Path) -> None
     (repo / "scenarios" / "tight").mkdir()
 
     assert read_current_scenario(repo) is None
-    assert resolve_scenario_name(repo, None) == DEFAULT_SCENARIO_NAME
-    assert resolve_scenario_name(repo, "tight") == "tight"
+    assert resolve_scenario_name(repo, None).name == DEFAULT_SCENARIO_NAME
+    assert resolve_scenario_name(repo, "tight").name == "tight"
 
     write_current_scenario(repo, "tight")
     assert read_current_scenario(repo) == "tight"
-    assert resolve_scenario_name(repo, None) == "tight"
-    assert resolve_scenario_name(repo, "current") == "current"
+    assert resolve_scenario_name(repo, None).name == "tight"
+    assert resolve_scenario_name(repo, "current").name == "current"
 
     write_current_scenario(repo, "gone")
     with pytest.raises(LoadError) as ei:
@@ -152,7 +152,33 @@ def test_current_scenario_file_drives_default_resolution(tmp_path: Path) -> None
 def test_sole_scenario_wins_over_current_default(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     (repo / "scenarios" / "only_one").mkdir(parents=True)
-    assert resolve_scenario_name(repo, None) == "only_one"
+    assert resolve_scenario_name(repo, None).name == "only_one"
+
+
+def test_scenario_ref_locates_paths_and_git_head(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _git_init_commit(repo)
+
+    ref = resolve_scenario_name(repo, "retire_alice")
+    assert ref.path == repo / "scenarios" / "retire_alice"
+    assert ref.intent_path == tmp_path / "state" / "intent" / "retire_alice.sqlite3"
+    assert not ref.loaded
+    assert ref.commit is not None and len(ref.commit) in (40, 64)
+    assert ref.branch == "main"
+    assert ref.dirty is False
+    assert "retire_alice" in ref.describe()
+    assert ref.describe() == ref._repr_markdown_()
+
+    load_scenario(repo, "retire_alice", intent_dir=ref.intent_path.parent)
+    assert resolve_scenario_name(repo, "retire_alice").loaded
+
+
+def test_scenario_ref_intent_dir_override(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    ref = resolve_scenario_name(repo, "retire_alice", intent_dir=tmp_path / "elsewhere")
+    assert ref.intent_path == tmp_path / "elsewhere" / "retire_alice.sqlite3"
 
 
 def test_invalid_subkind_rejected(tmp_path: Path) -> None:

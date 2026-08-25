@@ -336,7 +336,8 @@ class ScenarioConnection(_TagReader):
 
     def __init__(self, data_dir: Path | str, scenario: str | None = None) -> None:
         self.data_dir = Path(data_dir).resolve()
-        self.scenario = resolve_scenario_name(self.data_dir, scenario)
+        self.ref = resolve_scenario_name(self.data_dir, scenario)
+        self.scenario = self.ref.name
         self._tmp = tempfile.TemporaryDirectory()
         self._intent_dir = Path(self._tmp.name)
         self._con: sqlite3.Connection | None = None  # type: ignore[assignment]

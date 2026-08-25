@@ -113,6 +113,8 @@ The data repo records the scenario the user is currently working on in a `.curre
 3. the sole scenario folder, if there is exactly one,
 4. `current`.
 
+`resolve_scenario_name` returns a `ScenarioRef` named tuple — `name`, `data_dir`, `path` (the scenario folder), `intent_path` (its `state/intent` DB, overridable), and the data repo's `commit` / `branch` / `dirty` — so callers can report exactly which inputs they are working with. `ScenarioRef.describe()` renders that as markdown, and `_repr_markdown_` makes a bare `display(ref)` in a notebook show the same summary.
+
 ### 5. The `verify` command
 
 `analysis sim verify <runfile>` attempts to reproduce a run file and report deviation:
