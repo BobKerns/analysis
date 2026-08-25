@@ -41,6 +41,12 @@ SUPPORTED_CALENDAR_KINDS = frozenset(
     {"set_rate", "set_amount", "retire_scheduled", "one_off_transfer"}
 )
 
+# Positions in the `txns` rows loaded by run_scenario, for the fields that
+# calendar events mutate in place.
+_SCHED_AMOUNT_CENTS = 12
+_SCHED_END = 16
+_SCHED_BASE_DATE = 18
+
 SS_FRA = 67
 
 
@@ -114,8 +120,8 @@ def run_scenario(
             list(r) for r in con.execute(
                 'SELECT id, name, from_account, to_account, cadence, month_of_year, '
                 '       amount_rule_kind, interest_account, person, series, '
-                '       rate_micros, claim_age, amount_cents, params_json, base_amount, '
-                '       tax_character, start, "end", priority, base_date, inflation_series, '
+                '       rate_micros, claim_age, amount_cents, params_json, '
+                '       tax_character, start, "end", priority, base_date, '
                 '       ytd_amount, ytd_preroll, inflation_cadence '
                 'FROM scheduled_transaction WHERE model_id = ? '
                 'ORDER BY priority, id',
@@ -197,8 +203,8 @@ def run_scenario(
             for txn in txns:
                 (tid, _name, frm, to, cadence, moy, rule_kind,
                  p_interest_acct, p_person, p_series, p_rate_micros,
-                 p_claim_age, p_amount_cents, ext_json, base_amount,
-                 tax_char, t_start, t_end, _prio, t_base_date, t_inflation_series,
+                 p_claim_age, p_amount_cents, ext_json,
+                 tax_char, t_start, t_end, _prio, t_base_date,
                  _t_ytd_amount, _t_ytd_preroll, t_inflation_cadence) = txn
                 if month_s < t_start:
                     continue
@@ -241,19 +247,19 @@ def run_scenario(
 
                 match rule_kind:
                     case "fixed_amount":
-                        if base_amount is None:
+                        if p_amount_cents is None:
                             raise EngineError(
-                                f"scheduled_transaction id={tid} fixed_amount missing base_amount"
+                                f"scheduled_transaction id={tid} fixed_amount missing amount"
                             )
-                        amount = base_amount
-                        if t_inflation_series and t_inflation_series != "fixed":
+                        amount = p_amount_cents
+                        if p_series and p_series != "fixed":
                             if not t_base_date:
                                 raise EngineError(
-                                    f"scheduled_transaction id={tid}: inflation_series set "
+                                    f"scheduled_transaction id={tid}: series set "
                                     "without base_date"
                                 )
                             factor = _cumulative_inflation_factor(
-                                aux, t_inflation_series, _parse_date(t_base_date), month,
+                                aux, p_series, _parse_date(t_base_date), month,
                                 inflation_factor_cache,
                                 cadence=t_inflation_cadence or "monthly",
                             )
@@ -287,7 +293,7 @@ def run_scenario(
                     case "mortgage_payment":
                         _apply_mortgage_payment(
                             con, balances, account_kinds, step_id, month_s,
-                            params, base_amount, frm, to, account_id_by_name,
+                            params, p_amount_cents, frm, to, account_id_by_name,
                             tax_char, tid,
                         )
                     case "ss_benefit":
@@ -338,8 +344,8 @@ def run_scenario(
             for txn in txns:
                 (tid, _name, frm, to, cadence, moy, rule_kind,
                  _p_interest_acct, _p_person, _p_series, _p_rate_micros,
-                 _p_claim_age, _p_amount_cents, ext_json, _base_amount,
-                 tax_char, t_start, t_end, _prio, _t_base_date, _t_inflation_series,
+                 _p_claim_age, _p_amount_cents, ext_json,
+                 tax_char, t_start, t_end, _prio, _t_base_date,
                  _t_ytd_amount, _t_ytd_preroll, _t_inflation_cadence) = txn
                 if rule_kind != "tax_accumulator":
                     continue
@@ -469,13 +475,13 @@ def _apply_ytd_catchups(
     for txn in txns:
         (tid, _name, frm, to, _cadence, _moy, _rule_kind,
          _p_interest_acct, _p_person, _p_series, _p_rate_micros,
-         _p_claim_age, _p_amount_cents, _ext_json, base_amount,
-         tax_char, _t_start, _t_end, _prio, _t_base_date, _t_inflation_series,
+         _p_claim_age, amount_cents, _ext_json,
+         tax_char, _t_start, _t_end, _prio, _t_base_date,
          ytd_amount, ytd_preroll, _t_inflation_cadence) = txn
         if ytd_amount is not None:
             amount = ytd_amount
         elif ytd_preroll:
-            amount = (base_amount or 0) * (start.month - 1)
+            amount = (amount_cents or 0) * (start.month - 1)
         else:
             continue
         _post_ytd_transfer(con, step_id, date_s, frm, to, amount, tax_char, "ytd_rule", tid)
@@ -565,7 +571,7 @@ def _amount_percent_of_balance(
 def _apply_mortgage_payment(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str,
-    params: dict[str, Any], base_amount: int | None,
+    params: dict[str, Any], amount_cents: int | None,
     from_id: int, liab_id: int,
     account_id_by_name: dict[str, int],
     tax_char: str, tid: int,
@@ -575,9 +581,9 @@ def _apply_mortgage_payment(
     account is the row's ``to_account``; the interest-expense account is
     named by ``interest_account``.
     """
-    if base_amount is None:
+    if amount_cents is None:
         raise EngineError(
-            f"mortgage_payment id={tid}: missing base_amount (payment_amount)"
+            f"mortgage_payment id={tid}: missing amount (monthly P&I payment)"
         )
     interest_name = params.get("interest_account")
     annual_micros = params.get("rate_micros")
@@ -594,7 +600,7 @@ def _apply_mortgage_payment(
     if outstanding == 0:
         return
     interest = (outstanding * int(annual_micros)) // (12 * 1_000_000)
-    payment = int(base_amount)
+    payment = int(amount_cents)
     principal = payment - interest
     if principal < 0:
         raise EngineError(
@@ -1302,19 +1308,19 @@ def _apply_calendar_event(
             if name is None or new_amount is None:
                 raise EngineError(
                     f"set_amount event id={ev_id}: requires scheduled_name and "
-                    "new_base_amount (scheduled_name, amount)"
+                    "a new amount (scheduled_name, amount)"
                 )
             rec = txn_by_name.get(name)
             if rec is None:
                 raise EngineError(
                     f"set_amount event id={ev_id}: unknown scheduled_name {name!r}"
                 )
-            rec[14] = int(new_amount)
+            rec[_SCHED_AMOUNT_CENTS] = int(new_amount)
             new_base_date = payload.get("param_date")
             if new_base_date:
-                rec[19] = new_base_date
+                rec[_SCHED_BASE_DATE] = new_base_date
             con.execute(
-                "UPDATE scheduled_transaction SET base_amount = ?, "
+                "UPDATE scheduled_transaction SET amount_cents = ?, "
                 "base_date = COALESCE(?, base_date) WHERE id = ?",
                 (int(new_amount), new_base_date, rec[0]),
             )
@@ -1330,7 +1336,7 @@ def _apply_calendar_event(
                     f"retire_scheduled event id={ev_id}: unknown scheduled_name "
                     f"{name!r}"
                 )
-            rec[17] = ev_date
+            rec[_SCHED_END] = ev_date
             con.execute(
                 'UPDATE scheduled_transaction SET "end" = ? WHERE id = ?',
                 (ev_date, rec[0]),
@@ -1355,7 +1361,7 @@ def _apply_calendar_event(
             cur = con.execute(
                 "INSERT INTO scheduled_transaction("
                 "  model_id, name, from_account, to_account, cadence, "
-                "  amount_rule_kind, base_amount, tax_character, start, \"end\", "
+                "  amount_rule_kind, amount_cents, tax_character, start, \"end\", "
                 "  priority, created_by_event_id, description"
                 ") VALUES (?, ?, ?, ?, 'one_off', 'fixed_amount', ?, ?, ?, ?, "
                 "  200, ?, ?)",

@@ -672,6 +672,18 @@ def _validate_scheduled(
         tc = row.get("tax_character", "")
         if tc not in registries.TAX_CHARACTERS:
             issues.append(f"scheduled.csv row {i} ({name}): unknown tax_character '{tc}'")
+        for retired, merged in (("base_amount", "amount"), ("inflation_series", "series")):
+            if row.get(retired, "") != "":
+                issues.append(
+                    f"scheduled.csv row {i} ({name}): '{retired}' was merged into "
+                    f"'{merged}' (schema v12); move the value and drop the column"
+                )
+        if row.get("series", "") != "" and kind not in registries.SERIES_RULE_KINDS:
+            issues.append(
+                f"scheduled.csv row {i} ({name}): amount_rule_kind '{kind}' does not "
+                f"use 'series'; it is only read by "
+                f"{', '.join(sorted(registries.SERIES_RULE_KINDS))}"
+            )
         for col in ("from_account", "to_account"):
             ref = row.get(col, "")
             if not ref or ref not in account_names:
@@ -708,10 +720,10 @@ def _validate_scheduled(
                 f"scheduled.csv row {i} ({name}): inflation_cadence must be "
                 "'monthly' or 'annual'"
             )
-        if inflation_cadence and not row.get("inflation_series"):
+        if inflation_cadence and not row.get("series"):
             issues.append(
                 f"scheduled.csv row {i} ({name}): inflation_cadence set without "
-                "inflation_series"
+                "series"
             )
         _validate_tags("scheduled.csv", i, name, row.get("tags", ""), issues)
 
@@ -783,12 +795,6 @@ def _validate_scheduled_money(
                 _dollars_to_cents(amount, resolver=money_resolver)
             except ValueError as e:
                 issues.append(f"scheduled.csv row {i} ({name}): amount {e}")
-        base_amount = row.get("base_amount", "")
-        if base_amount != "":
-            try:
-                _dollars_to_cents(base_amount, resolver=money_resolver)
-            except ValueError as e:
-                issues.append(f"scheduled.csv row {i} ({name}): base_amount {e}")
         ytd_amount = row.get("ytd_amount", "")
         if ytd_amount != "":
             try:
@@ -1059,10 +1065,10 @@ def _write_intent(
             "model_id, name, from_account, to_account, cadence, month_of_year, "
             "amount_rule_kind, "
             "interest_account, person, series, rate_micros, claim_age, amount_cents, "
-            "params_json, base_amount, base_date, "
-            "inflation_series, tax_character, start, \"end\", priority, "
+            "params_json, base_date, "
+            "tax_character, start, \"end\", priority, "
             "description, meta_json, ytd_amount, ytd_preroll, inflation_cadence"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 model_id, s["name"],
                 account_ids[s["from_account"]], account_ids[s["to_account"]],
@@ -1077,9 +1083,7 @@ def _write_intent(
                 _dollars_to_cents(s["amount"], resolver=money_resolver)
                 if s.get("amount") else None,
                 s.get("params_json") or None,
-                _dollars_to_cents(s["base_amount"], resolver=money_resolver)
-                if s.get("base_amount") else None,
-                s.get("base_date") or None, s.get("inflation_series") or None,
+                s.get("base_date") or None,
                 s["tax_character"], s["start"], s.get("end") or None, prio,
                 s.get("description") or None, s.get("meta_json") or "{}",
                 _dollars_to_cents(s["ytd_amount"], resolver=money_resolver)

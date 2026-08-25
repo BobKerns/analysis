@@ -215,7 +215,7 @@ def test_scheduled_baseline_rows_are_rerunnable_and_remove_stale_rows(tmp_path: 
         "2026-05-31",
         "Family WF PMA",
     )
-    assert rows[0]["base_amount"] == "36.00"
+    assert rows[0]["amount"] == "36.00"
     assert rows[0]["tags"] == BASELINE_GENERATED_TAG
     assert '"generated_by":"expense_baseline"' in rows[0]["meta_json"]
 
@@ -223,11 +223,11 @@ def test_scheduled_baseline_rows_are_rerunnable_and_remove_stale_rows(tmp_path: 
     keep = dict.fromkeys(SCHEDULED_HEADER, "")
     keep.update(name="keep_me", tags="manual:keep")
     stale = dict(rows[0])
-    stale["base_amount"] = "99.00"
+    stale["amount"] = "99.00"
     replace_generated_scheduled_rows(scheduled, [stale])
     replace_generated_scheduled_rows(scheduled, rows)
 
     with scheduled.open(newline="", encoding="utf-8") as handle:
         written = list(csv.DictReader(handle))
     assert [row["name"] for row in written] == ["baseline_expense_food"]
-    assert written[0]["base_amount"] == "36.00"
+    assert written[0]["amount"] == "36.00"

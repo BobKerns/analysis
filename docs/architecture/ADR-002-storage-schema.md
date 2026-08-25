@@ -184,9 +184,9 @@ CREATE TABLE scheduled_transaction (
     month_of_year           INTEGER CHECK (month_of_year BETWEEN 1 AND 12),
     amount_rule_kind        TEXT NOT NULL,    -- see ADR-003
     amount_rule_params_json TEXT NOT NULL DEFAULT '{}',
-    base_amount             INTEGER,          -- cents in DB; CSV column uses decimal dollars (loader converts)
+    amount_cents            INTEGER,          -- cents in DB; CSV `amount` uses decimal dollars (loader converts). Meaning per amount_rule_kind
     base_date               TEXT,             -- for inflated rules
-    inflation_series        TEXT,             -- 'fixed', 'cpi', 'cpi_medical', …
+    series                  TEXT,             -- inflation/rate/COLA series per amount_rule_kind; 'fixed' = no inflation
     tax_character           TEXT NOT NULL CHECK (tax_character IN
                                 ('ordinary','ltcg','ss_benefit','tax_free',
                                  'tax_deferred_in','tax_deferred_out',

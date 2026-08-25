@@ -74,7 +74,7 @@ The `_other` catch-alls are deliberate escape hatches; the `--check` mode (ADR-0
 
 ### 2. `amount_rule_kind` registry
 
-Eight rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `base_amount`, `base_date`, `inflation_series` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age`, `amount` (see §4.6). Rare or future extension parameters may go in the nullable `params_json` column.
+Eight rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
 
 **Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. (ADR-002 follow-up: tighten `transfer_event.reason_kind` CHECK to `('rule','initial')` and add `scheduled_transaction.created_by_event_id INTEGER REFERENCES calendar_event(id)` so synthesized rules trace back to their authoring calendar event.)
 
@@ -84,8 +84,8 @@ Eight rule kinds in v1. Each rule's `compute(state, aux, date) → list[Transfer
 
 Constant amount, optionally inflated.
 
-- **Params:** none in JSON. Uses `base_amount` (required, cents), `base_date` (optional), `inflation_series` (optional aux series), `inflation_cadence` (optional; `monthly` default or `annual`).
-- **Compute:** `amount = base_amount` if `inflation_series` is NULL else `base_amount × cumulative_inflation(base_date → date, series, cadence)`. With `cadence='monthly'` (default), the annual rate compounds every month. With `cadence='annual'`, it steps once per calendar year crossed (each January) — flat within a year, then a single jump, matching how real COLA-style adjustments actually apply.
+- **Params:** none in JSON. Uses `amount` (required, cents in the DB), `base_date` (optional), `series` (optional inflation aux series; `fixed` means none), `inflation_cadence` (optional; `monthly` default or `annual`).
+- **Compute:** `amount` as authored if `series` is NULL or `fixed`, else `amount × cumulative_inflation(base_date → date, series, cadence)`. With `cadence='monthly'` (default), the annual rate compounds every month. With `cadence='annual'`, it steps once per calendar year crossed (each January) — flat within a year, then a single jump, matching how real COLA-style adjustments actually apply.
 - **Emits:** one event, `from_account → to_account`, amount as above, tax_character from the row.
 - **Use:** salary, SS post-FRA (without COLA series), pensions, recurring fixed expenses, lump-sum one-offs. `inflation_cadence='annual'` in particular suits SS-like benefits modeled as `fixed_amount` rather than the dedicated `ss_benefit` rule.
 
@@ -141,7 +141,7 @@ A placeholder rule that marks "compute taxes for the prior tax year" at a specif
 
 Monthly P&I against a mortgage liability account.
 
-- **Params:** the row's `to_account` is the mortgage liability; `interest_account` names the interest-expense account; `rate_micros` = annual rate as millionths of 1 (e.g. `60000` = 6.0%). Monthly P&I is the row's `base_amount`.
+- **Params:** the row's `to_account` is the mortgage liability; `interest_account` names the interest-expense account; `rate_micros` = annual rate as millionths of 1 (e.g. `60000` = 6.0%). Monthly P&I is the row's `amount`.
 - **Compute:** at fire time, `interest = round(liability_balance × annual_rate_micros / 12 / 1_000_000)`; `principal = payment_amount - interest`.
 - **Emits two events:**
   1. **Interest leg:** `from_account = Asset_Checking` (the row's `from_account`), `to_account = interest_account`, amount = `interest`, tax_character = `'none'`.
@@ -177,10 +177,10 @@ Replace one rate aux-table entry effective from this date forward.
 
 #### 3.2 `set_amount` (primitive)
 
-Mutate a `ScheduledTransaction.base_amount` going forward.
+Mutate a `ScheduledTransaction.amount` going forward.
 
 - **Columns:** `scheduled_name` = target rule name, `amount` = new base amount in cents, `param_date` = new base date (optional).
-- **Expansion:** updates the named row's `base_amount` (and `base_date` if given) in the run's in-memory intent. Persisted as an `applied_calendar_event` row; the run's snapshot of `scheduled_transaction` reflects the post-event state.
+- **Expansion:** updates the named row's `amount` (and `base_date` if given) in the run's in-memory intent. Persisted as an `applied_calendar_event` row; the run's snapshot of `scheduled_transaction` reflects the post-event state.
 - **Use:** "discretionary spending drops to $4,500/mo on retirement".
 
 #### 3.3 `add_scheduled` (primitive)
@@ -204,7 +204,7 @@ End an active `ScheduledTransaction`.
 A single one-shot movement, expressed as a synthesized rule so the §2 invariant holds.
 
 - **Columns:** `account_1` = from account, `account_2` = to account, `amount` = cents, `tax_character` = tax character.
-- **Expansion:** synthesize one `scheduled_transaction` with `amount_rule_kind='fixed_amount'`, `cadence='one_off'`, `start = end = event.date`, `base_amount = amount`, fields from payload, `created_by_event_id = calendar_event.id`. The engine fires it on `event.date`, emitting one `transfer_event` traced to that synthesized rule.
+- **Expansion:** synthesize one `scheduled_transaction` with `amount_rule_kind='fixed_amount'`, `cadence='one_off'`, `start = end = event.date`, `amount` from the payload, fields from payload, `created_by_event_id = calendar_event.id`. The engine fires it on `event.date`, emitting one `transfer_event` traced to that synthesized rule.
 - **Use:** windfalls, gifts, one-time settlements that have no recurring structure.
 
 #### 3.6 `swap_aux_table` (primitive)
@@ -221,10 +221,10 @@ Realize a sale. Each sub-step below is a separately synthesized `cadence='one_of
 
 - **Payload:** `{ "asset_account": "<real_estate or brokerage account>", "sale_price": <cents>, "cost_basis_override": <cents (optional)>, "proceeds_account": "<asset account>", "selling_costs": <cents>, "associated_liability_account": "<mortgage account (optional)>", "associated_liability_payoff": <cents (optional)>, "tax_character": "ltcg" | "ordinary" | "none" }`.
 - **Expansion** (each item is a synthesized rule; firing order set by `priority`):
-  1. **Basis recognition rule** — `fixed_amount`, `asset_account → proceeds_account`, `base_amount = cost_basis` (or `cost_basis_override`), `tax_character='return_of_capital'`.
-  2. **Gain/loss rule** — `fixed_amount`, `Income_CapitalGain → proceeds_account` (or `Expense_CapitalLoss` reversed for a loss), `base_amount = sale_price - cost_basis - selling_costs`, `tax_character` from payload.
-  3. **Selling-costs rule** — `fixed_amount`, `proceeds_account → Expense_Housing` (or appropriate expense), `base_amount = selling_costs`.
-  4. **Liability-payoff rule** (only if `associated_liability_account` is set) — `fixed_amount`, `proceeds_account → associated_liability_account`, `base_amount = associated_liability_payoff`, `tax_character='none'`.
+  1. **Basis recognition rule** — `fixed_amount`, `asset_account → proceeds_account`, `amount = cost_basis` (or `cost_basis_override`), `tax_character='return_of_capital'`.
+  2. **Gain/loss rule** — `fixed_amount`, `Income_CapitalGain → proceeds_account` (or `Expense_CapitalLoss` reversed for a loss), `amount = sale_price - cost_basis - selling_costs`, `tax_character` from payload.
+  3. **Selling-costs rule** — `fixed_amount`, `proceeds_account → Expense_Housing` (or appropriate expense), `amount = selling_costs`.
+  4. **Liability-payoff rule** (only if `associated_liability_account` is set) — `fixed_amount`, `proceeds_account → associated_liability_account`, `amount = associated_liability_payoff`, `tax_character='none'`.
   5. **Asset zero-out** is the side-effect of step 1 (the basis transfer empties the asset) — no extra rule.
   6. If `associated_liability_account` is set: also emit an intent-mutating side-action equivalent to `retire_scheduled` against the mortgage_payment rule referencing it (recorded as a secondary `applied_calendar_event`).
 - **Use:** home sale; large brokerage liquidation.
@@ -235,9 +235,9 @@ Acquire an asset. As with §3.7, each money-moving sub-step is a synthesized `ca
 
 - **Payload:** `{ "asset_account": "<name, must exist>", "purchase_price": <cents>, "from_account": "<asset account>", "fees": <cents>, "new_liability_account": "<name (optional)>", "new_liability_principal": <cents (optional)>, "starts_scheduled": ["mortgage_<name>", "property_tax_<name>", ...] }`.
 - **Expansion:**
-  1. **Down-payment rule** — `fixed_amount`, `from_account → asset_account`, `base_amount = purchase_price - new_liability_principal`, `tax_character='none'`. Sets `asset_account.cost_basis = purchase_price + fees` as a state side-effect at firing time.
-  2. **Fees rule** — `fixed_amount`, `from_account → Expense_Housing`, `base_amount = fees`.
-  3. **Loan-origination rule** (only if `new_liability_account`) — `fixed_amount`, `Income_LoanOrigination → new_liability_account`, `base_amount = new_liability_principal`, `tax_character='none'`. (`Income_LoanOrigination` is a synthetic income-class account in the standard chart; reserved name.) This preserves the bookkeeping zero-sum invariant from ADR-002 when a new liability appears mid-run.
+  1. **Down-payment rule** — `fixed_amount`, `from_account → asset_account`, `amount = purchase_price - new_liability_principal`, `tax_character='none'`. Sets `asset_account.cost_basis = purchase_price + fees` as a state side-effect at firing time.
+  2. **Fees rule** — `fixed_amount`, `from_account → Expense_Housing`, `amount = fees`.
+  3. **Loan-origination rule** (only if `new_liability_account`) — `fixed_amount`, `Income_LoanOrigination → new_liability_account`, `amount = new_liability_principal`, `tax_character='none'`. (`Income_LoanOrigination` is a synthetic income-class account in the standard chart; reserved name.) This preserves the bookkeeping zero-sum invariant from ADR-002 when a new liability appears mid-run.
   4. **Activate scheduled rules** — for each name in `starts_scheduled`: an intent-mutating side-action equivalent to `add_scheduled` referencing a prototype row in `scheduled.csv` (prototype rows are flagged `start = NULL` so they don't fire on their own). Not money-moving in itself.
 - **Use:** downsize-to-condo scenario; investment property purchase.
 
@@ -347,14 +347,12 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `amount_rule_kind` | enum | ✓ | one of §2 |
 | `interest_account` | text | | mortgage_payment only: interest-expense account for the second leg |
 | `person` | text | | person id; required for `ss_benefit` and `rmd` |
-| `series` | text | | aux rate series name (e.g. `Asset Checking`, `cpi`); required for `percent_of_balance`, `ss_benefit` |
+| `series` | text | | interpreted per `amount_rule_kind`: inflation series for `fixed_amount` (or `fixed` for none), rate series for `percent_of_balance`, COLA series for `ss_benefit`; rejected for any other rule kind |
 | `rate_micros` | int | | annual rate as millionths of 1; required for `mortgage_payment` (e.g. `60000` = 6.0%) |
 | `claim_age` | int | | required for `ss_benefit` |
-| `amount` | dollars | | base amount in dollars; required for `ss_benefit` (pia), `waterfall_fill` (target balance), `refill_transfer` (refill size); decimal string e.g. `1234.56`; loader converts to integer cents |
-| `base_amount` | dollars | | required for `fixed_amount`, `mortgage_payment`; decimal string e.g. `1234.56`; loader converts to integer cents at load time |
-| `base_date` | YYYY-MM | | required when `inflation_series` is set |
-| `inflation_series` | text | | aux series name, e.g. `cpi`; or `fixed` for no inflation |
-| `inflation_cadence` | enum | | `monthly` (default) compounds every month; `annual` steps once per calendar year crossed (each January) instead of drifting smoothly — use for COLA-style adjustments (e.g. Social Security) that jump once a year rather than continuously; requires `inflation_series` to be set |
+| `amount` | dollars | | interpreted per `amount_rule_kind`: base amount for `fixed_amount`, monthly P&I for `mortgage_payment`, PIA at FRA for `ss_benefit`, target balance for `waterfall_fill`, refill size for `refill_transfer`; decimal string e.g. `1234.56`; loader converts to integer cents |
+| `base_date` | YYYY-MM | | required when `series` names an inflation series |
+| `inflation_cadence` | enum | | `monthly` (default) compounds every month; `annual` steps once per calendar year crossed (each January) instead of drifting smoothly — use for COLA-style adjustments (e.g. Social Security) that jump once a year rather than continuously; requires `series` to be set |
 | `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field — an income-account-sourced transfer can carry `tax_character='none'` (e.g. an inheritance), and an expense-leg can carry any value. `waterfall_fill` is the one exception: per §2.4, the engine overrides each leg's `tax_character` from the source account's `tax_treatment`. |
 | `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |
@@ -363,7 +361,9 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `meta_json` | json | | default `{}` |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
 | `ytd_amount` | dollars | | partial-first-year catch-up (§4.10); only valid when `amount_rule_kind='fixed_amount'` and `cadence='monthly'`; mutually exclusive with `ytd_preroll` |
-| `ytd_preroll` | `0`/`1` | | if `1`, catch-up amount = `base_amount × (scenario.start.month − 1)`; same restrictions as `ytd_amount` |
+| `ytd_preroll` | `0`/`1` | | if `1`, catch-up amount = `amount × (scenario.start.month − 1)`; same restrictions as `ytd_amount` |
+
+Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` into `series`, and `base_amount` into `amount`. Each is now read per `amount_rule_kind` (see the rows above); the loader rejects a row that still carries a retired column, and rejects `series` on a rule kind that does not read it.
 
 #### 4.7 Per-scenario: `data_repo/scenarios/<name>/waterfall_sources.csv`
 
@@ -406,14 +406,14 @@ A scenario's first simulated month is rarely January 1: the author needs the run
 
 Two mechanisms cover this, both posting **balance-neutral** `transfer_event` rows — visible to income/expense/tax queries exactly like any other flow, but never mutating account balances, since `account_model_member.opening_balance` already reflects the true, post-receipt balance as of `scenario.start`. Both fire once, at step 0 (`step_index=0`).
 
-**On `scheduled.csv`** (§4.6), for a single `fixed_amount` + `cadence='monthly'` row's own catch-up, since the amount is directly derived from that row's `base_amount`:
+**On `scheduled.csv`** (§4.6), for a single `fixed_amount` + `cadence='monthly'` row's own catch-up, since the catch-up is directly derived from that row's `amount`:
 
 - `ytd_amount` (dollars) — hard actual total already paid/received this calendar year before `scenario.start`. Posted with `reason_kind='ytd_rule'`, `reason_id` = the row's own `scheduled_transaction.id`.
-- `ytd_preroll` (`0`/`1`) — auto-computed as `base_amount × (scenario.start.month − 1)`, i.e. one full month's amount per elapsed month, unadjusted for inflation (a same-order approximation, not a substitute for real records).
+- `ytd_preroll` (`0`/`1`) — auto-computed as `amount × (scenario.start.month − 1)`, i.e. one full month's amount per elapsed month, unadjusted for inflation (a same-order approximation, not a substitute for real records).
 - Mutually exclusive; loader rejects both set together, or either set on a non-`fixed_amount`/non-`monthly` row.
 - Dated the last day of the month before `scenario.start` (degenerates to `scenario.start` itself when it falls in January).
 
-**`data_repo/scenarios/<name>/year_to_date.csv`** (optional) — for everything else needing a partial-first-year catch-up that isn't one `fixed_amount` monthly rule's own amount (investment growth, Social Security already received, prior withholding, fully-prior-year loss carryforwards, etc.). No `cadence`/`inflation_series`/`base_date`: each row is one flat historical fact, not a recurring rule. Posted with `reason_kind='ytd'`, `reason_id` = the row's `year_to_date.id` (a distinct id space from `scheduled_transaction.id`, hence the different `reason_kind`).
+**`data_repo/scenarios/<name>/year_to_date.csv`** (optional) — for everything else needing a partial-first-year catch-up that isn't one `fixed_amount` monthly rule's own amount (investment growth, Social Security already received, prior withholding, fully-prior-year loss carryforwards, etc.). No `cadence`/`series`/`base_date`: each row is one flat historical fact, not a recurring rule. Posted with `reason_kind='ytd'`, `reason_id` = the row's `year_to_date.id` (a distinct id space from `scheduled_transaction.id`, hence the different `reason_kind`).
 
 | column | type | required | notes |
 | --- | --- | --- | --- |

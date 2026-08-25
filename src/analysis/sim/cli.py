@@ -337,13 +337,7 @@ def _fmt_cents(cents: int | None) -> str:
 
 # ---------- add: append new rows to a scenario ----------
 
-_SCHEDULED_HEADER: tuple[str, ...] = (
-    "name", "from_account", "to_account", "cadence", "month_of_year",
-    "amount_rule_kind", "interest_account", "person", "series",
-    "rate_micros", "claim_age", "amount", "base_amount", "base_date",
-    "inflation_series", "tax_character", "start", "end", "priority",
-    "description", "meta_json", "params_json", "tags",
-)
+_SCHEDULED_HEADER: tuple[str, ...] = registries.SCHEDULED_CSV_HEADER
 
 _CALENDAR_HEADER: tuple[str, ...] = (
     "date", "kind", "scheduled_name", "account_1", "account_2", "series",
@@ -574,11 +568,10 @@ def scheduled_group_command() -> None:
 @click.option("--end", "end_date", default="",
               help="Optional end date (YYYY-MM-DD).")
 @click.option("--tax-character", default="none", show_default=True)
-@click.option("--inflation-series", default="fixed", show_default=True,
+@click.option("--series", default="fixed", show_default=True,
               help="'fixed' for no inflation, else an inflation series (e.g. cpi).")
 @click.option("--priority", type=int, default=200, show_default=True)
 @click.option("--description", default="")
-@click.option("--series", default="")
 @click.option("--tags", default="",
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary household:rwk').")
 def scheduled_add(
@@ -593,10 +586,9 @@ def scheduled_add(
     month_of_year: int | None,
     end_date: str,
     tax_character: str,
-    inflation_series: str,
+    series: str,
     priority: int,
     description: str,
-    series: str,
     tags: str,
 ) -> None:
     """Append a recurring fixed-amount transfer to <scenario>/scheduled.csv."""
@@ -634,7 +626,7 @@ def scheduled_add(
     cents = _parse_amount_cents(amount)
     if cents <= 0:
         raise click.ClickException("amount must be positive")
-    base_amount = f"{cents // 100}.{cents % 100:02d}"
+    amount_dollars = f"{cents // 100}.{cents % 100:02d}"
 
     if cadence == "annual" and month_of_year is None:
         month_of_year = int(date[5:7])
@@ -662,9 +654,8 @@ def scheduled_add(
         "month_of_year": str(month_of_year) if month_of_year else "",
         "amount_rule_kind": "fixed_amount",
         "series": series,
-        "base_amount": base_amount,
+        "amount": amount_dollars,
         "base_date": date,
-        "inflation_series": inflation_series,
         "tax_character": tax_character,
         "start": date,
         "end": end_date,
@@ -704,7 +695,8 @@ def scheduled_add(
               help="Scenario account that funds all generated expense rows.")
 @click.option("--start", default=None,
               help="First scheduled month YYYY-MM-DD (default: scenario start).")
-@click.option("--inflation-series", default="cpi", show_default=True)
+@click.option("--series", default="cpi", show_default=True,
+              help="Inflation series applied to generated rows ('fixed' for none).")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show generated rows without rewriting scheduled.csv.")
 def scheduled_import_baseline(
@@ -716,7 +708,7 @@ def scheduled_import_baseline(
     account_map: Path | None,
     from_account: str,
     start: str | None,
-    inflation_series: str,
+    series: str,
     dry_run: bool,
 ) -> None:
     """Replace generated baseline expense rows in scheduled.csv."""
@@ -799,13 +791,13 @@ def scheduled_import_baseline(
         start,
         from_account,
         ignored_categories=set(invalid_targets) | missing_mappings,
-        inflation_series=inflation_series,
+        series=series,
     )
     scheduled_path = scenario_dir / "scheduled.csv"
     if dry_run:
         click.echo(f"(dry run) would replace {len(rows)} generated row(s) in {scheduled_path}")
         for row in rows:
-            click.echo(f"  {row['name']}: {row['base_amount']} -> {row['to_account']}")
+            click.echo(f"  {row['name']}: {row['amount']} -> {row['to_account']}")
         return
     replace_generated_scheduled_rows(scheduled_path, rows)
     click.echo(
@@ -837,7 +829,7 @@ def scheduled_list(scenario: str | None, data_dir: Path | None) -> None:
         table.add_column("End")
         for row in con.execute(
             "SELECT s.name, s.cadence, s.start, s.\"end\" AS end_date, "
-            "       s.amount_rule_kind, s.base_amount, "
+            "       s.amount_rule_kind, s.amount_cents, "
             "       fa.name AS from_name, ta.name AS to_name "
             "FROM scheduled_transaction s "
             "JOIN account fa ON fa.id = s.from_account "
@@ -845,8 +837,8 @@ def scheduled_list(scenario: str | None, data_dir: Path | None) -> None:
             "ORDER BY s.priority, s.name"
         ):
             rule = row["amount_rule_kind"]
-            if rule == "fixed_amount" and row["base_amount"] is not None:
-                amt = _fmt_cents(row["base_amount"]).strip()
+            if rule == "fixed_amount" and row["amount_cents"] is not None:
+                amt = _fmt_cents(row["amount_cents"]).strip()
             elif rule == "percent_of_balance":
                 amt = "% of bal"
             else:

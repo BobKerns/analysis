@@ -12,19 +12,15 @@ from pathlib import Path
 
 import pandas as pd
 
+from analysis.sim.registries import SCHEDULED_CSV_HEADER
+
 _DATE_FORMAT = "%Y-%m-%d"
 _EXCLUDED_PAYEE_RE = re.compile(r"amazon|state\s+farm|mortgage|paylease", re.IGNORECASE)
 _EXCLUDED_CATEGORY_RE = re.compile(r"mortgage", re.IGNORECASE)
 _CATEGORY_MAP_HEADER = ("quicken_category", "target_category")
 _EXPENSE_ACCOUNT_MAP_HEADER = ("category", "target_account")
 BASELINE_GENERATED_TAG = "generated:expense_baseline"
-SCHEDULED_HEADER = (
-    "name", "from_account", "to_account", "cadence", "month_of_year",
-    "amount_rule_kind", "interest_account", "person", "series", "rate_micros",
-    "claim_age", "amount", "base_amount", "base_date", "inflation_series",
-    "tax_character", "start", "end", "priority", "description", "meta_json",
-    "params_json", "tags",
-)
+SCHEDULED_HEADER = SCHEDULED_CSV_HEADER
 
 type SourceCategory = str
 type CanonicalCategory = str
@@ -264,7 +260,7 @@ def build_scheduled_baseline_rows(
     from_account: AccountName,
     ignored_categories: Collection[CanonicalCategory] = (),
     *,
-    inflation_series: str = "cpi",
+    series: str = "cpi",
     priority: int = 200,
 ) -> list[dict[str, str]]:
     """Create monthly fixed-amount scheduled rows from baseline category totals."""
@@ -292,17 +288,18 @@ def build_scheduled_baseline_rows(
             "amount_rule_kind": "fixed_amount",
             "interest_account": "",
             "person": "",
-            "series": "",
+            "series": series,
             "rate_micros": "",
             "claim_age": "",
-            "amount": "",
-            "base_amount": f"{amount:.2f}",
+            "amount": f"{amount:.2f}",
             "base_date": start,
-            "inflation_series": inflation_series,
+            "inflation_cadence": "",
             "tax_character": "none",
             "start": start,
             "end": "",
             "priority": str(priority),
+            "ytd_amount": "",
+            "ytd_preroll": "",
             "description": f"Generated expense baseline: {category}",
             "meta_json": json.dumps(metadata, separators=(",", ":")),
             "params_json": "{}",

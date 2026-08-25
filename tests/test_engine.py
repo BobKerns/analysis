@@ -15,7 +15,7 @@ PROTOTYPE = REPO_ROOT / "prototype_data"
 
 # Net cents into Asset_Checking per month from fixed_amount rules, before CPI
 # growth (salary_alice + salary_bob) - (living + housing + healthcare). All
-# five rows share base_date = scenario start and inflation_series = cpi
+# five rows share base_date = scenario start and series = cpi
 # (prototype_data/aux/inflation__cpi.csv: flat 2.5% APR), so each grows by the
 # same monthly-compounded factor. The mortgage payment isn't inflated.
 SALARY_ALICE_MONTHLY = 800000
@@ -367,6 +367,19 @@ def _clone_prototype(tmp_path: Path) -> Path:
     return dst
 
 
+def _append_scheduled(path: Path, **fields: str) -> None:
+    """Append one scheduled.csv row, addressing columns by name."""
+    import pandas as pd
+
+    from analysis.sim.registries import SCHEDULED_CSV_HEADER
+
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    unknown = set(fields) - set(SCHEDULED_CSV_HEADER)
+    assert not unknown, f"unknown scheduled.csv columns: {sorted(unknown)}"
+    df.loc[len(df)] = [fields.get(column, "") for column in SCHEDULED_CSV_HEADER]
+    df.to_csv(path, index=False)
+
+
 def test_refill_transfer_no_sources_fires_only_when_below_threshold(
     tmp_path: Path,
 ) -> None:
@@ -374,14 +387,21 @@ def test_refill_transfer_no_sources_fires_only_when_below_threshold(
     only when the to_account opening balance is below threshold."""
     repo = _clone_prototype(tmp_path)
     sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    sched_csv.write_text(
-        sched_csv.read_text()
-        # Threshold 2_000_000 cents = $20,000; refill = $5,000.
-        + (
-            "refill_check,Asset_Savings,Asset_Checking,monthly,,refill_transfer,"
-            ",,,,,5000.00,,,,none,2026-05-31,,800,refill checking,"
-            '{},{"threshold_cents": 2000000}\n'
-        )
+    # Threshold 2_000_000 cents = $20,000; refill = $5,000.
+    _append_scheduled(
+        sched_csv,
+        name="refill_check",
+        from_account="Asset_Savings",
+        to_account="Asset_Checking",
+        cadence="monthly",
+        amount_rule_kind="refill_transfer",
+        amount="5000.00",
+        tax_character="none",
+        start="2026-05-31",
+        priority="800",
+        description="refill checking",
+        meta_json="{}",
+        params_json='{"threshold_cents": 2000000}',
     )
     intent_path = load_scenario(
         repo, "retire_alice",
@@ -423,13 +443,20 @@ def test_refill_transfer_skips_when_above_threshold(tmp_path: Path) -> None:
     """A refill_transfer with a very negative threshold never fires."""
     repo = _clone_prototype(tmp_path)
     sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    sched_csv.write_text(
-        sched_csv.read_text()
-        + (
-            "refill_never,Asset_Savings,Asset_Checking,monthly,,refill_transfer,"
-            ",,,,,1000.00,,,,none,2026-05-31,,800,never fires,"
-            '{},{"threshold_cents": -1000000000}\n'
-        )
+    _append_scheduled(
+        sched_csv,
+        name="refill_never",
+        from_account="Asset_Savings",
+        to_account="Asset_Checking",
+        cadence="monthly",
+        amount_rule_kind="refill_transfer",
+        amount="1000.00",
+        tax_character="none",
+        start="2026-05-31",
+        priority="800",
+        description="never fires",
+        meta_json="{}",
+        params_json='{"threshold_cents": -1000000000}',
     )
     intent_path = load_scenario(
         repo, "retire_alice",
@@ -459,13 +486,20 @@ def test_refill_transfer_with_sources_drains_waterfall(tmp_path: Path) -> None:
     repo = _clone_prototype(tmp_path)
     sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
     wf_csv = repo / "scenarios" / "retire_alice" / "waterfall_sources.csv"
-    sched_csv.write_text(
-        sched_csv.read_text()
-        + (
-            "refill_check_wf,Asset_Savings,Asset_Checking,monthly,,refill_transfer,"
-            ",,,,,3000.00,,,,none,2026-05-31,,800,refill via waterfall,"
-            '{},{"threshold_cents": 2000000}\n'
-        )
+    _append_scheduled(
+        sched_csv,
+        name="refill_check_wf",
+        from_account="Asset_Savings",
+        to_account="Asset_Checking",
+        cadence="monthly",
+        amount_rule_kind="refill_transfer",
+        amount="3000.00",
+        tax_character="none",
+        start="2026-05-31",
+        priority="800",
+        description="refill via waterfall",
+        meta_json="{}",
+        params_json='{"threshold_cents": 2000000}',
     )
     wf_csv.write_text(
         wf_csv.read_text()
@@ -520,14 +554,20 @@ def test_tax_accumulator_computes_federal_and_writes_summary(tmp_path: Path) -> 
     """
     repo = _clone_prototype(tmp_path)
     sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    sched_csv.write_text(
-        sched_csv.read_text()
-        + (
-            "tax_federal_prev_year,Asset_Checking,Expense_Taxes_Federal,annual,4,"
-            "tax_accumulator,,,,,,,,,,none,2027-04-30,,400,"
-            "federal income tax forecast,{},"
-            '"{""year"":""previous"",""scope"":""federal""}",\n'
-        )
+    _append_scheduled(
+        sched_csv,
+        name="tax_federal_prev_year",
+        from_account="Asset_Checking",
+        to_account="Expense_Taxes_Federal",
+        cadence="annual",
+        month_of_year="4",
+        amount_rule_kind="tax_accumulator",
+        tax_character="none",
+        start="2027-04-30",
+        priority="400",
+        description="federal income tax forecast",
+        meta_json="{}",
+        params_json='{"year":"previous","scope":"federal"}',
     )
 
     intent_path = load_scenario(
@@ -640,7 +680,7 @@ def test_person_lifespan_stops_associated_transfers(tmp_path: Path) -> None:
 
 
 def test_fixed_amount_applies_cpi_inflation(tmp_path: Path) -> None:
-    """ADR-003 §2.1: fixed_amount grows with inflation_series/base_date, not
+    """ADR-003 §2.1: fixed_amount grows with series/base_date, not
     a flat amount for the life of the run."""
     intent_path = _intent(tmp_path)
     run_path = tmp_path / "r.sqlite3"
@@ -841,14 +881,20 @@ def test_tax_tail_reconciles_final_year_without_extending_simulation_data(
     are written past scenario.end -- the tail is invisible to simulation data."""
     repo = _clone_prototype(tmp_path)
     sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    sched_csv.write_text(
-        sched_csv.read_text()
-        + (
-            "tax_federal_prev_year,Asset_Checking,Expense_Taxes_Federal,annual,4,"
-            "tax_accumulator,,,,,,,,,,none,2027-04-30,,400,"
-            "federal income tax forecast,{},"
-            '"{""year"":""previous"",""scope"":""federal""}",\n'
-        )
+    _append_scheduled(
+        sched_csv,
+        name="tax_federal_prev_year",
+        from_account="Asset_Checking",
+        to_account="Expense_Taxes_Federal",
+        cadence="annual",
+        month_of_year="4",
+        amount_rule_kind="tax_accumulator",
+        tax_character="none",
+        start="2027-04-30",
+        priority="400",
+        description="federal income tax forecast",
+        meta_json="{}",
+        params_json='{"year":"previous","scope":"federal"}',
     )
 
     intent_path = load_scenario(

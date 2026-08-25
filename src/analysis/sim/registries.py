@@ -25,6 +25,23 @@ AMOUNT_RULE_KINDS: set[str] = {
     "refill_transfer", "ss_benefit", "tax_accumulator", "mortgage_payment",
 }
 
+# Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
+# each interpreted per amount_rule_kind; see SERIES_RULE_KINDS below.
+SCHEDULED_CSV_HEADER: tuple[str, ...] = (
+    "name", "from_account", "to_account", "cadence", "month_of_year",
+    "amount_rule_kind", "interest_account", "person", "series",
+    "rate_micros", "claim_age", "amount", "base_date", "inflation_cadence",
+    "tax_character", "start", "end", "priority", "ytd_amount", "ytd_preroll",
+    "description", "meta_json", "params_json", "tags",
+)
+
+# Rules that read the `series` column, and what it names for each.
+SERIES_RULE_KINDS: dict[str, str] = {
+    "fixed_amount": "inflation series",
+    "percent_of_balance": "rate series",
+    "ss_benefit": "COLA series",
+}
+
 CALENDAR_EVENT_KINDS: set[str] = {
     "set_rate", "set_amount", "add_scheduled", "retire_scheduled", "swap_aux_table",
     "one_off_transfer", "sell_asset", "buy_asset", "life_transition",

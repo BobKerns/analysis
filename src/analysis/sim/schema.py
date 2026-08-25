@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -96,14 +96,14 @@ CREATE TABLE scheduled_transaction (
     amount_rule_kind        TEXT NOT NULL,
     interest_account        TEXT,
     person                  TEXT REFERENCES person(id),
+    -- `series` and `amount_cents` are interpreted per amount_rule_kind:
+    -- inflation/rate/COLA series, and base amount/PIA/threshold respectively.
     series                  TEXT,
     rate_micros             INTEGER,
     claim_age               INTEGER,
     amount_cents            INTEGER,
     params_json             TEXT,
-    base_amount             INTEGER,
     base_date               TEXT,
-    inflation_series        TEXT,
     tax_character           TEXT NOT NULL CHECK (tax_character IN
                                 ('ordinary','ltcg','ss_benefit','tax_free',
                                  'tax_deferred_in','tax_deferred_out',
@@ -167,7 +167,7 @@ CREATE TABLE person_lifespan (
 
 -- Partial-first-year catch-up facts (ADR-003 §4.10) -- consolidates what used
 -- to be split across two mechanisms: a single row's own YTD amount (not tied
--- to any one scheduled_transaction's own base_amount, e.g. investment growth,
+-- to any one scheduled_transaction's own amount, e.g. investment growth,
 -- SS already received) and prior tax-year activity (superseded
 -- `prior_tax_activity`: wages/withholding YTD, loss carryforwards from a
 -- fully-prior tax year). Posted as balance-neutral transfer_event rows
