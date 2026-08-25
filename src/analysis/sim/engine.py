@@ -127,7 +127,7 @@ def run_scenario(
         }
 
         year_to_date_rows = con.execute(
-            "SELECT id, from_account, to_account, amount, tax_character "
+            "SELECT id, from_account, to_account, amount, tax_character, year "
             "FROM year_to_date"
         ).fetchall()
 
@@ -374,8 +374,8 @@ def _delta(kind: str, raw: int) -> int:
 
 
 def _ytd_catchup_date(start: date) -> date:
-    """ADR-003 §4.11: date stamped on partial-first-year catch-up transfers --
-    the last day of the month before ``start``, so they land in the same
+    """ADR-003 §4.10: date stamped on a partial-first-year catch-up transfer --
+    the last day of the month before ``start``, so it lands in the same
     calendar year without colliding with ``start``'s own first-month flows.
     Degenerates to ``start`` itself when the scenario starts in January.
     """
@@ -386,13 +386,27 @@ def _ytd_catchup_date(start: date) -> date:
     return date(start.year, prev_month, last_day)
 
 
+def _year_to_date_row_date(start: date, year: int | None) -> date:
+    """ADR-003 §4.10: a year_to_date.csv row's date. Defaults (``year`` unset
+    or equal to ``start.year``) to ``_ytd_catchup_date``; an explicit
+    different (fully prior) year is dated that year's Dec 31.
+    """
+    if year is None or year == start.year:
+        return _ytd_catchup_date(start)
+    return date(year, 12, 31)
+
+
 def _post_ytd_transfer(
     con, step_id: int, date_s: str,
-    from_id: int, to_id: int, amount: int, tax_char: str, reason_id: int,
+    from_id: int, to_id: int, amount: int, tax_char: str,
+    reason_kind: str, reason_id: int,
 ) -> None:
-    """ADR-003 §4.11: balance-neutral catch-up entry. Visible to income/expense/
+    """ADR-003 §4.10: balance-neutral catch-up entry. Visible to income/expense/
     tax reporting like any other transfer_event, but does not mutate account
     balances -- those already reflect the post-receipt state via opening_balance.
+    ``reason_kind`` distinguishes the two YTD sources ('ytd_rule' vs 'ytd')
+    since their ``reason_id`` values come from separate id spaces
+    (scheduled_transaction.id vs year_to_date.id) that can otherwise collide.
     """
     if amount == 0:
         return
@@ -400,15 +414,15 @@ def _post_ytd_transfer(
         "INSERT INTO transfer_event("
         "  step_id, date, from_account, to_account, amount, "
         "  tax_character, reason_kind, reason_id"
-        ") VALUES (?, ?, ?, ?, ?, ?, 'ytd', ?)",
-        (step_id, date_s, from_id, to_id, amount, tax_char, reason_id),
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, date_s, from_id, to_id, amount, tax_char, reason_kind, reason_id),
     )
 
 
 def _apply_ytd_catchups(
     con, step_id: int, start: date,
     txns: list[list[Any]],
-    year_to_date_rows: list[tuple[int, int, int, int, str]],
+    year_to_date_rows: list[tuple[int, int, int, int, str, int | None]],
 ) -> None:
     """Fire partial-first-year catch-up transfers once, at step 0."""
     date_s = _ytd_catchup_date(start).isoformat()
@@ -424,9 +438,12 @@ def _apply_ytd_catchups(
             amount = (base_amount or 0) * (start.month - 1)
         else:
             continue
-        _post_ytd_transfer(con, step_id, date_s, frm, to, amount, tax_char, tid)
-    for yid, y_from, y_to, y_amount, y_tax_char in year_to_date_rows:
-        _post_ytd_transfer(con, step_id, date_s, y_from, y_to, y_amount, y_tax_char, yid)
+        _post_ytd_transfer(con, step_id, date_s, frm, to, amount, tax_char, "ytd_rule", tid)
+    for yid, y_from, y_to, y_amount, y_tax_char, y_year in year_to_date_rows:
+        row_date_s = _year_to_date_row_date(start, y_year).isoformat()
+        _post_ytd_transfer(
+            con, step_id, row_date_s, y_from, y_to, y_amount, y_tax_char, "ytd", yid,
+        )
 
 
 def _past_person_lifespan(
@@ -438,7 +455,7 @@ def _past_person_lifespan(
     person_lifespan: dict[str, str],
 ) -> bool:
     """True if this rule is associated with a person whose final_month has
-    passed (ADR-003 §4.10): the rule's explicit ``person`` param, or the
+    passed (ADR-003 §4.9): the rule's explicit ``person`` param, or the
     owner of either leg's account.
     """
     associated = {p_person, account_owner.get(from_id), account_owner.get(to_id)}
@@ -833,12 +850,6 @@ def _apply_tax_accumulator(
     ordinary_income, ltcg_income, ss_income = _tax_year_income_buckets(
         con, tax_year=tax_year,
     )
-    ordinary_prior, ltcg_prior, ss_prior = _tax_year_prior_buckets(
-        con, tax_year=tax_year,
-    )
-    ordinary_income += ordinary_prior
-    ltcg_income += ltcg_prior
-    ss_income += ss_prior
 
     taxable_ss = 0
     if scope == "federal" and ss_income > 0:
@@ -888,8 +899,7 @@ def _apply_tax_accumulator(
         "  AND to_account = ?",
         (str(tax_year), to_id),
     ).fetchone()[0]
-    paid_priors = _tax_year_prior_paid(con, tax_year=tax_year, scope=scope)
-    already_paid = int(paid_transfers or 0) + paid_priors
+    already_paid = int(paid_transfers or 0)
     tax_due = max(0, tax_liability - already_paid)
     tax_overpaid = max(0, already_paid - tax_liability)
 
@@ -935,46 +945,6 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
     ltcg = by_char.get("ltcg", 0)
     ss = by_char.get("ss_benefit", 0)
     return ordinary, ltcg, ss
-
-
-def _tax_year_prior_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
-    rows = con.execute(
-        "SELECT bucket, amount FROM prior_tax_activity WHERE year = ?",
-        (tax_year,),
-    ).fetchall()
-    ordinary = 0
-    ltcg = 0
-    ss = 0
-    for bucket, amount in rows:
-        b = str(bucket)
-        a = int(amount)
-        match b:
-            case "ordinary":
-                ordinary += a
-            case "ltcg" | "ltcg_gain" | "ltcg_loss_carryforward":
-                ltcg += a
-            case "ss_benefit":
-                ss += a
-            case _:
-                continue
-    return ordinary, ltcg, ss
-
-
-def _tax_year_prior_paid(con, *, tax_year: int, scope: str) -> int:
-    rows = con.execute(
-        "SELECT bucket, amount FROM prior_tax_activity WHERE year = ?",
-        (tax_year,),
-    ).fetchall()
-    paid = 0
-    for bucket, amount in rows:
-        b = str(bucket)
-        if b in {
-            f"{scope}_tax_withheld",
-            f"{scope}_tax_paid",
-            f"{scope}_estimated_paid",
-        }:
-            paid += int(amount)
-    return paid
 
 
 def _active_filing_status(

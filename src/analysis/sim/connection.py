@@ -33,7 +33,6 @@ ItemType = Literal[
     "simulation_run",
     "net_worth",
     "net_worth_constant_cpi",
-    "prior_tax_activity",
     "account_balance",
     "account_model_member",
     "aux_table",
@@ -121,7 +120,6 @@ _ITEM_SQL: dict[str, str] = {
     "net_worth_constant_cpi": (
         "SELECT * FROM net_worth_constant_cpi ORDER BY month"
     ),
-    "prior_tax_activity": "SELECT * FROM prior_tax_activity",
     "year_to_date": (
         "SELECT y.*, fa.name AS from_name, ta.name AS to_name "
         "FROM year_to_date y "

@@ -361,7 +361,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `description` | text | | |
 | `meta_json` | json | | default `{}` |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
-| `ytd_amount` | dollars | | partial-first-year catch-up (§4.11); only valid when `amount_rule_kind='fixed_amount'` and `cadence='monthly'`; mutually exclusive with `ytd_preroll` |
+| `ytd_amount` | dollars | | partial-first-year catch-up (§4.10); only valid when `amount_rule_kind='fixed_amount'` and `cadence='monthly'`; mutually exclusive with `ytd_preroll` |
 | `ytd_preroll` | `0`/`1` | | if `1`, catch-up amount = `base_amount × (scenario.start.month − 1)`; same restrictions as `ytd_amount` |
 
 #### 4.7 Per-scenario: `data_repo/scenarios/<name>/waterfall_sources.csv`
@@ -388,20 +388,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
 | `description` | text | | shows up in `explain` output |
 
-#### 4.9 Per-scenario: `data_repo/scenarios/<name>/priors.csv`
-
-Tax *activity* preceding a partial-first-year run — typically YTD wages, withholding, and prior-year loss carryforwards. Account-level state facts (Dec-31 balances for RMD, opening cost basis) belong on `account_model_member` (see §4.3), not here.
-
-| column | type | required | notes |
-| --- | --- | --- | --- |
-| `year` | int | ✓ | calendar year the activity belongs to |
-| `bucket` | text | ✓ | matches `tax_year_summary.bucket` vocabulary |
-| `amount` | cents | ✓ | can be negative (e.g. loss carryforwards) |
-| `source_note` | text | | free-text provenance |
-
-Writes directly into `prior_tax_activity`. PK is `(scenario_id, year, bucket)` — at most one row per (year, bucket) pair.
-
-#### 4.10 Per-scenario: `data_repo/scenarios/<name>/lifespan.csv` (optional)
+#### 4.9 Per-scenario: `data_repo/scenarios/<name>/lifespan.csv` (optional)
 
 Lets a scenario play with a person's lifespan without touching the shared `persons.csv` (birthdate lives there; death is a per-comparison assumption). File may be omitted entirely — no rows means no lifespan overrides.
 
@@ -412,28 +399,32 @@ Lets a scenario play with a person's lifespan without touching the shared `perso
 
 Writes directly into `person_lifespan` (PK `(scenario_id, person)`). At `date > final_month`, the engine stops firing every `scheduled_transaction` **associated with that person** — the row's explicit `person` column (`ss_benefit`, `rmd`), or a row whose `from_account`/`to_account` owner is that person (`salary`, per-person expenses, etc.). Jointly-owned accounts (`owner` blank) are unaffected, so shared expenses and joint-account interest continue for a surviving spouse. This is a lighter-weight alternative to a `life_transition: predecease` calendar event — it stops the deceased person's own transfers but does **not** merge accounts, adjust survivor SS benefits, or switch filing status; use `life_transition` when those effects matter.
 
-#### 4.11 Partial-first-year catch-up (`ytd_amount`/`ytd_preroll` on scheduled.csv; `year_to_date.csv`)
+#### 4.10 Partial-first-year catch-up (`ytd_amount`/`ytd_preroll` on scheduled.csv; `year_to_date.csv`)
 
-A scenario's first simulated month is rarely January 1: the author needs the run's first (partial) calendar year to report correctly (annual totals, tax accrual) as if the elapsed months had actually been simulated. Two mechanisms cover this, both posting **balance-neutral** `transfer_event` rows — visible to income/expense/tax queries exactly like any other flow, but never mutating account balances, since `account_model_member.opening_balance` already reflects the true, post-receipt balance as of `scenario.start`. Both fire once, at step 0 (`step_index=0`), dated the last day of the month before `scenario.start` (degenerates to `scenario.start` itself when it falls in January) with `reason_kind='ytd'`.
+A scenario's first simulated month is rarely January 1: the author needs the run's first (partial) calendar year to report correctly (annual totals, tax accrual) as if the elapsed months had actually been simulated. This also covers what an earlier revision called `priors.csv`/`prior_tax_activity` (tax-bucket-only YTD facts and fully-prior-year activity like loss carryforwards) — consolidated here since `year_to_date.csv`'s account-based model is strictly more general and lets these facts show up in ordinary income/expense reporting queries, not just tax computation.
+
+Two mechanisms cover this, both posting **balance-neutral** `transfer_event` rows — visible to income/expense/tax queries exactly like any other flow, but never mutating account balances, since `account_model_member.opening_balance` already reflects the true, post-receipt balance as of `scenario.start`. Both fire once, at step 0 (`step_index=0`).
 
 **On `scheduled.csv`** (§4.6), for a single `fixed_amount` + `cadence='monthly'` row's own catch-up, since the amount is directly derived from that row's `base_amount`:
 
-- `ytd_amount` (dollars) — hard actual total already paid/received this calendar year before `scenario.start`. `reason_id` = the row's own `scheduled_transaction.id`.
+- `ytd_amount` (dollars) — hard actual total already paid/received this calendar year before `scenario.start`. Posted with `reason_kind='ytd_rule'`, `reason_id` = the row's own `scheduled_transaction.id`.
 - `ytd_preroll` (`0`/`1`) — auto-computed as `base_amount × (scenario.start.month − 1)`, i.e. one full month's amount per elapsed month, unadjusted for inflation (a same-order approximation, not a substitute for real records).
 - Mutually exclusive; loader rejects both set together, or either set on a non-`fixed_amount`/non-`monthly` row.
+- Dated the last day of the month before `scenario.start` (degenerates to `scenario.start` itself when it falls in January).
 
-**`data_repo/scenarios/<name>/year_to_date.csv`** (optional) — for everything else needing a partial-first-year catch-up that isn't one `fixed_amount` monthly rule's own amount (investment growth, Social Security already received, etc.). No `cadence`/`inflation_series`/`base_date`: each row is one flat historical fact, not a recurring rule.
+**`data_repo/scenarios/<name>/year_to_date.csv`** (optional) — for everything else needing a partial-first-year catch-up that isn't one `fixed_amount` monthly rule's own amount (investment growth, Social Security already received, prior withholding, fully-prior-year loss carryforwards, etc.). No `cadence`/`inflation_series`/`base_date`: each row is one flat historical fact, not a recurring rule. Posted with `reason_kind='ytd'`, `reason_id` = the row's `year_to_date.id` (a distinct id space from `scheduled_transaction.id`, hence the different `reason_kind`).
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `name` | text | ✓ | unique within scenario; identifies the row for `reason_id` provenance |
-| `from_account` | text | ✓ | mirrors `one_off_transfer`'s `account_1` |
+| `from_account` | text | ✓ | mirrors `one_off_transfer`'s `account_1`. For a pure tax-bucket adjustment with no natural real-world transfer (e.g. a loss carryforward), use the same account for `from_account` and `to_account` — self-canceling, contributes only to the tax_character sum |
 | `to_account` | text | ✓ | mirrors `one_off_transfer`'s `account_2` |
-| `amount` | dollars | ✓ | decimal string; loader converts to integer cents |
+| `amount` | dollars | ✓ | decimal string; loader converts to integer cents. May be negative (e.g. a loss carryforward reducing that year's `ltcg` bucket) |
 | `tax_character` | enum | ✓ | per ADR-002 |
+| `year` | int | | defaults to `scenario.start`'s year (dated the month before start, as above). An explicit different year is dated that year's Dec 31 — for facts belonging to a fully-prior tax year (not the scenario's own partial first year) |
 | `description` | text | | |
 
-Writes directly into `year_to_date` (`UNIQUE (scenario_id, name)`); `reason_id` on the emitted `transfer_event` is the `year_to_date.id`.
+Writes directly into `year_to_date` (`UNIQUE (scenario_id, name)`).
 
 ### 5. Default priorities
 
@@ -492,7 +483,7 @@ inherited along the parent chain.
 - Free-text `kind`/`subkind` in the DDL with loader-side validation means a hand-written SQL `INSERT` could bypass the registry. The loader is the only sanctioned writer; ad-hoc edits to `state/intent/*.sqlite3` are out of scope (and would be overwritten on next reload anyway).
 - The `life_transition` expansion code is per-transition. Adding a new transition is a code change, not a data change. That's deliberate — these transitions are rare and high-impact enough to want a code review, not a CSV edit.
 - `sell_asset` requires the author to supply `cost_basis_override` whenever `account_state.cost_basis` is NULL (basis was never tracked). The `--check basis` validator surfaces these cases before a run fails.
-- `priors.csv` is intentionally narrow (tax activity only). Account-level state facts that used to live in a union `prior_account_fact` table now live as columns on `account_model_member` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`). This keeps the "what's in the accounts at scenario start" story in one file (`account_models/<name>.csv`) and lets `priors.csv` stay a thin tax-activity feed.
+- `priors.csv` is intentionally narrow (tax activity only). Account-level state facts that used to live in a union `prior_account_fact` table now live as columns on `account_model_member` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`). This keeps the "what's in the accounts at scenario start" story in one file (`account_models/<name>.csv`) and lets `priors.csv` stay a thin tax-activity feed. (Superseded: `priors.csv`/`prior_tax_activity` were later folded into `year_to_date.csv` — see §4.10.)
 
 ## Amendments applied to ADR-002 alongside this ADR
 

@@ -62,10 +62,12 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         assert rmd_rows >= 6
 
         tax_priors = con.execute(
-            "SELECT year, bucket, amount FROM prior_tax_activity ORDER BY year, bucket"
+            "SELECT name, amount, tax_character, year FROM year_to_date ORDER BY name"
         ).fetchall()
         assert len(tax_priors) == 3
-        assert (2025, "ltcg_loss_carryforward", -150000) in [tuple(r) for r in tax_priors]
+        assert (
+            "prior_ltcg_loss_carryforward", -150000, "ltcg", 2025
+        ) in [tuple(r) for r in tax_priors]
 
         # Partial-first-year RMD seed lives on account_model_member now.
         ira_seed = con.execute("""
@@ -96,7 +98,7 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
     )
     for filename in (
         "accounts.csv", "account_values.csv", "scheduled.csv",
-        "waterfall_sources.csv", "calendar.csv", "priors.csv",
+        "waterfall_sources.csv", "calendar.csv", "year_to_date.csv",
     ):
         header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
         (child / filename).write_text(header + "\n", encoding="utf-8")
@@ -109,7 +111,7 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
     )
     tables = (
         "account", "account_model_member", "scheduled_transaction",
-        "scheduled_transaction_source", "calendar_event", "prior_tax_activity",
+        "scheduled_transaction_source", "calendar_event", "year_to_date",
     )
     with sqlite3.connect(current.intent_path) as current_con, \
             sqlite3.connect(tight.intent_path) as tight_con:

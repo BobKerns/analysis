@@ -1,0 +1,4 @@
+name,from_account,to_account,amount,tax_character,year,description
+prior_ordinary_wages,Income_Salary_Alice,Asset_Checking,62000.00,ordinary,,YTD Jan-Apr 2026 W-2 wages both spouses (pre-scenario)
+prior_federal_withholding,Asset_Checking,Expense_Taxes_Federal,9300.00,none,,YTD Jan-Apr 2026 federal withholding (pre-scenario)
+prior_ltcg_loss_carryforward,Income_CapitalGain,Income_CapitalGain,-1500.00,ltcg,2025,FY2025 Schedule D unused loss carried into 2026

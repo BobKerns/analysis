@@ -155,7 +155,7 @@ def _read_scenario_inputs(
     stack: tuple[str, ...] = (),
 ) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]], list[dict[str, str]],
-           list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
+           list[dict[str, str]], list[dict[str, str]]]:
     """Read a scenario and recursively overlay any declared parent."""
     scenario_dir = data_dir / "scenarios" / scenario_name
     if scenario_name in stack:
@@ -179,12 +179,11 @@ def _read_scenario_inputs(
             data_dir, parent_name, issues, stack=(*stack, scenario_name)
         )
         parent_scenario, parent_accounts, parent_models, parent_scheduled, \
-            parent_waterfall, parent_calendar, parent_priors, parent_lifespan, \
-            parent_ytd = parent
+            parent_waterfall, parent_calendar, parent_lifespan, parent_ytd = parent
     else:
         parent_scenario = {}
         parent_accounts = parent_models = parent_scheduled = []
-        parent_waterfall = parent_calendar = parent_priors = parent_lifespan = []
+        parent_waterfall = parent_calendar = parent_lifespan = []
         parent_ytd = []
 
     def read_overlay(filename: str, *, required: bool = False) -> list[dict[str, str]]:
@@ -215,9 +214,6 @@ def _read_scenario_inputs(
         ("date", "kind", "scheduled_name", "account_1", "account_2", "series", "amount"),
         require_key=False,
     )
-    priors_rows = _merge_scenario_rows(
-        parent_priors, read_overlay("priors.csv"), ("year", "bucket"),
-    )
     lifespan_rows = _merge_scenario_rows(
         parent_lifespan, read_overlay("lifespan.csv"), ("person",),
     )
@@ -226,7 +222,7 @@ def _read_scenario_inputs(
     )
     return (
         scenario_row, accounts, model_rows, scheduled_rows,
-        waterfall_rows, calendar_rows, priors_rows, lifespan_rows, ytd_rows,
+        waterfall_rows, calendar_rows, lifespan_rows, ytd_rows,
     )
 
 
@@ -285,7 +281,7 @@ def load_scenario(
     persons = _read_csv(data_dir / "persons.csv", issues)
     (
         scenario_row, accounts, model_rows, scheduled_rows,
-        waterfall_rows, calendar_rows, priors_rows, lifespan_rows, ytd_rows,
+        waterfall_rows, calendar_rows, lifespan_rows, ytd_rows,
     ) = _read_scenario_inputs(data_dir, scenario_name, issues)
 
 
@@ -302,7 +298,6 @@ def load_scenario(
     _validate_scheduled(scheduled_rows, accounts, issues)
     _validate_calendar(calendar_rows, issues)
     _validate_waterfall(waterfall_rows, scheduled_rows, issues)
-    _validate_priors(priors_rows, accounts, issues, money_resolver=money_resolver)
     _validate_lifespan(lifespan_rows, persons, issues)
     _validate_year_to_date(ytd_rows, accounts, issues, money_resolver=money_resolver)
 
@@ -342,7 +337,6 @@ def load_scenario(
             scheduled_rows=scheduled_rows,
             waterfall_rows=waterfall_rows,
             calendar_rows=calendar_rows,
-            priors_rows=priors_rows,
             lifespan_rows=lifespan_rows,
             ytd_rows=ytd_rows,
             money_resolver=money_resolver,
@@ -664,6 +658,12 @@ def _validate_year_to_date(
         tc = row.get("tax_character", "")
         if tc not in registries.TAX_CHARACTERS:
             issues.append(f"year_to_date.csv row {i} ({name}): unknown tax_character '{tc}'")
+        year = row.get("year", "")
+        if year != "":
+            try:
+                int(year)
+            except ValueError:
+                issues.append(f"year_to_date.csv row {i} ({name}): year must be an int")
         amount = row.get("amount", "")
         if amount == "":
             issues.append(f"year_to_date.csv row {i} ({name}): amount is required")
@@ -736,37 +736,6 @@ def _validate_waterfall(
             )
 
 
-def _validate_priors(
-    rows: list[dict[str, str]],
-    _accounts: list[dict[str, str]],
-    issues: list[str],
-    *,
-    money_resolver: _MoneyReferenceResolver,
-) -> None:
-    seen: set[tuple[str, str]] = set()
-    for i, row in enumerate(rows, start=2):
-        year = row.get("year", "")
-        bucket = row.get("bucket", "")
-        amount = row.get("amount", "")
-        if not year or not bucket or amount == "":
-            issues.append(f"priors.csv row {i}: year, bucket, amount are required")
-            continue
-        try:
-            int(year)
-            _dollars_to_cents(amount, resolver=money_resolver)
-        except ValueError:
-            issues.append(
-                f"priors.csv row {i}: year must be int, amount must be dollars or @reference"
-            )
-            continue
-        key = (year, bucket)
-        if key in seen:
-            issues.append(
-                f"priors.csv row {i}: duplicate (year={year}, bucket={bucket})"
-            )
-        seen.add(key)
-
-
 def _validate_lifespan(
     rows: list[dict[str, str]],
     persons: list[dict[str, str]],
@@ -826,7 +795,6 @@ def _write_intent(
     scheduled_rows: list[dict[str, str]],
     waterfall_rows: list[dict[str, str]],
     calendar_rows: list[dict[str, str]],
-    priors_rows: list[dict[str, str]],
     lifespan_rows: list[dict[str, str]],
     ytd_rows: list[dict[str, str]],
     money_resolver: _MoneyReferenceResolver,
@@ -998,19 +966,6 @@ def _write_intent(
     scenario_id = cur.lastrowid
     counts["scenario"] = 1
 
-    for r in priors_rows:
-        con.execute(
-            "INSERT INTO prior_tax_activity("
-            "scenario_id, year, bucket, amount, source_note) "
-            "VALUES (?,?,?,?,?)",
-            (
-                scenario_id, int(r["year"]), r["bucket"],
-                _dollars_to_cents(r["amount"], resolver=money_resolver),
-                r.get("source_note") or None,
-            ),
-        )
-    counts["prior_tax_activity"] = len(priors_rows)
-
     for lf in lifespan_rows:
         con.execute(
             "INSERT INTO person_lifespan(scenario_id, person, final_month) "
@@ -1023,12 +978,12 @@ def _write_intent(
         con.execute(
             "INSERT INTO year_to_date("
             "scenario_id, name, from_account, to_account, amount, "
-            "tax_character, description) VALUES (?,?,?,?,?,?,?)",
+            "tax_character, year, description) VALUES (?,?,?,?,?,?,?,?)",
             (
                 scenario_id, y["name"],
                 account_ids[y["from_account"]], account_ids[y["to_account"]],
                 _dollars_to_cents(y["amount"], resolver=money_resolver),
-                y["tax_character"], y.get("description") or None,
+                y["tax_character"], _opt_int(y.get("year")), y.get("description") or None,
             ),
         )
     counts["year_to_date"] = len(ytd_rows)

@@ -40,7 +40,7 @@ data_repo/
             scheduled.csv   # this scenario's ScheduledTransactions
             waterfall_sources.csv
             calendar.csv    # CalendarEvents
-            priors.csv      # PriorTaxActivity + PriorAccountFact rows
+            year_to_date.csv # partial-first-year catch-up facts (ADR-003 §4.10)
         retire_2032/
             ...
     activate
@@ -93,7 +93,8 @@ state/
 | `calendar`, `calendar_event` | ✓ | ✓ (snapshot) |
 | `aux_table` | ✓ | ✓ (snapshot) |
 | `scenario` (one row) | ✓ | ✓ (snapshot) |
-| `prior_tax_activity` | ✓ | ✓ (snapshot) |
+| `person_lifespan` | ✓ | ✓ (snapshot) |
+| `year_to_date` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
 | `simulation_step`, `account_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary` | — | ✓ |
@@ -260,18 +261,6 @@ CREATE TABLE scenario (
     created_at        TEXT NOT NULL,
     created_by        TEXT NOT NULL,
     meta_json         TEXT NOT NULL DEFAULT '{}'
-);
-
--- Priors: partial-first-year taxable activity preceding scenario.start.
--- Account-level state facts (Dec-31 balances, opening cost basis) live on
--- account_model_member; this table is for tax activity only.
-CREATE TABLE prior_tax_activity (
-    scenario_id INTEGER NOT NULL REFERENCES scenario(id),
-    year        INTEGER NOT NULL,
-    bucket      TEXT NOT NULL,                -- same vocab as tax_year_summary.bucket
-    amount      INTEGER NOT NULL,
-    source_note TEXT,
-    PRIMARY KEY (scenario_id, year, bucket)
 );
 ```
 
@@ -453,7 +442,8 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `calendar_event` | One patch on one date; `kind` selects the semantics, `payload_json` carries the parameters. |
 | `aux_table` | Versioned reference data: tax brackets, RMD divisors, inflation series, per-account rates, filing status. |
 | `scenario` | The scenario this file represents (one row). |
-| `prior_tax_activity` | Year-to-date taxable activity preceding a partial-first-year run, so April reconciliation is correct. Account-level state facts (Dec-31 balances, cost basis) live on `account_model_member` instead. |
+| `person_lifespan` | Optional per-person final_month override for a scenario (ADR-003 §4.9). |
+| `year_to_date` | Partial-first-year catch-up facts (ADR-003 §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `account_state` | Per-account balance and cost basis at the end of one step; long-narrow for pivoting. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
@@ -589,4 +579,4 @@ Both seed their respective `schema_overview` rows. A `_schema_version` table tra
 - Exact vocabulary of `account.subkind` values — drafted in code, will become a checked list in ADR-003.
 - Exact vocabulary of `aux_table.kind` — same.
 - Whether `tax_year_summary` should also store the inputs used (bracket-table aux_table id, filing status). Likely yes; added when the tax scan is implemented.
-- Exact CSV layout for the per-scenario folder (column headers for `scenario.csv`, `scheduled.csv`, `calendar.csv`, `priors.csv`, `waterfall_sources.csv`) — to be specified in ADR-003 alongside the rule and event-kind registries.
+- Exact CSV layout for the per-scenario folder (column headers for `scenario.csv`, `scheduled.csv`, `calendar.csv`, `year_to_date.csv`, `waterfall_sources.csv`) — to be specified in ADR-003 alongside the rule and event-kind registries.

@@ -293,6 +293,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         per_rule = dict(con.execute(
             "SELECT st.name, COUNT(*) FROM transfer_event te "
             "JOIN scheduled_transaction st ON st.id = te.reason_id "
+            "WHERE te.reason_kind = 'rule' "
             "GROUP BY st.name"
         ).fetchall())
         assert per_rule["salary_alice"] == 26
@@ -311,10 +312,14 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
             v for k, v in per_rule.items() if k.startswith("oneoff_evt_")
         )
         assert oneoff_count == 1
-        expected_events = sum(per_rule.values())
+        expected_rule_events = sum(per_rule.values())
         assert con.execute(
-            "SELECT COUNT(*) FROM transfer_event"
-        ).fetchone()[0] == expected_events
+            "SELECT COUNT(*) FROM transfer_event WHERE reason_kind = 'rule'"
+        ).fetchone()[0] == expected_rule_events
+        # Fixture's year_to_date.csv (3 rows) posts once, balance-neutral.
+        assert con.execute(
+            "SELECT COUNT(*) FROM transfer_event WHERE reason_kind = 'ytd'"
+        ).fetchone()[0] == 3
 
         # Liabilities store debt magnitude; signed ledger sum is the invariant.
         rows = con.execute(
@@ -650,7 +655,8 @@ def test_fixed_amount_applies_cpi_inflation(tmp_path: Path) -> None:
             row[0] for row in con.execute(
                 "SELECT te.amount FROM transfer_event te "
                 "JOIN scheduled_transaction st ON st.id = te.reason_id "
-                "WHERE st.name = 'salary_alice' ORDER BY te.date"
+                "WHERE st.name = 'salary_alice' AND te.reason_kind = 'rule' "
+                "ORDER BY te.date"
             ).fetchall()
         ]
         # First fire (base_date == scenario start) is unadjusted.
@@ -697,9 +703,12 @@ def test_ytd_preroll_posts_balance_neutral_catchup(tmp_path: Path) -> None:
             "WHERE s.step_index = 0 AND ast.account_id = ?", (checking_id,),
         ).fetchone()[0]
 
+        salary_alice_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='salary_alice'"
+        ).fetchone()[0]
         rows = con.execute(
             "SELECT date, amount, reason_kind FROM transfer_event "
-            "WHERE reason_kind = 'ytd'"
+            "WHERE reason_kind = 'ytd_rule' AND reason_id = ?", (salary_alice_id,),
         ).fetchall()
         assert len(rows) == 1
         # scenario start = 2026-05-31 -> 4 elapsed months (Jan-Apr), dated 2026-04-30.

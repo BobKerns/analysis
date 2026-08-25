@@ -21,7 +21,7 @@ A monthly simulation step is sufficient resolution. Stochastic analysis is defer
 
 The architecture has exactly two layers, and the separation is load-bearing:
 
-1. **Intent layer** — what was *decided*. Authored content: `AccountModel`, `ScheduledTransaction`, `Calendar`, `CalendarEvent`, `AuxiliaryTable`, `Scenario`, `Priors`.
+1. **Intent layer** — what was *decided*. Authored content: `AccountModel`, `ScheduledTransaction`, `Calendar`, `CalendarEvent`, `AuxiliaryTable`, `Scenario`, `YearToDate`.
 2. **Ledger layer** — what *happened*. Run output: `SimulationRun`, `SimulationStep`, `AccountState`, `TransferEvent`, `TaxYearSummary`.
 
 Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to-account, amount, tax character, reason). Bundled high-level decisions (`sell_asset`, `life_transition`) live in the intent layer and **expand at run-time** into multiple primitive `TransferEvent`s, all linked via `reason_id` so reports can group at either level. Nothing in the ledger is "virtual" or "derived on the fly" — what's in the table is the truth.
@@ -37,8 +37,8 @@ Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to
 | `Calendar` | Intent | Per-scenario | An ordered list of `CalendarEvent`s. Represents the assumptions being compared. |
 | `CalendarEvent` | Intent | Per-scenario | A *patch* to the running scenario on a given date: change a rate, add/retire a scheduled transaction, swap an aux table, sell an asset, apply a life transition, etc. Bounded set of kinds; see ADR-003. |
 | `AuxiliaryTable` | Intent | Mostly shared | Versioned reference data: tax brackets, RMD divisors, SS taxation thresholds, inflation series, per-account return rates, filing status. Calendars can swap these by date. |
-| `Scenario` | Intent | Per-comparison | `(AccountModel, Calendar, AuxTables, Priors, start, end)`. Identified by name; runs are reproducible from it. |
-| `Priors` | Intent | Per-scenario | YTD/prior-period facts that seed a partial first year: prior tax activity, prior account facts (YTD contributions, year-end balances for RMD, cost-basis estimates). |
+| `Scenario` | Intent | Per-comparison | `(AccountModel, Calendar, AuxTables, YearToDate, start, end)`. Identified by name; runs are reproducible from it. |
+| `YearToDate` | Intent | Per-scenario | Partial-first-year catch-up facts (ADR-003 §4.10): YTD wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (e.g. loss carryforwards). Posted as balance-neutral `TransferEvent`s at run start. Account-level state facts (year-end balances for RMD, cost-basis estimates) live on `AccountModel` instead. |
 | `SimulationRun` | Ledger | — | One execution. Stamps code/data versions, acting user, host, status. |
 | `SimulationStep` | Ledger | — | One month. Links to previous step (nullable for initial state), to applied `CalendarEvent`s, and owns the `AccountState` snapshot and `TransferEvent`s emitted in its window. |
 | `AccountState` | Ledger | — | `(step_id, account_id) → balance, cost_basis`. Long-and-narrow for pivoting. |
@@ -48,7 +48,7 @@ Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to
 ### Monthly step algorithm
 
 ```text
-load initial AccountState from AccountModel + Priors → step 0 (previous_step_id = NULL)
+load initial AccountState from AccountModel → step 0 (previous_step_id = NULL); post YearToDate catch-ups as balance-neutral TransferEvents
 for each month m in [start..end]:
     apply Calendar events dated within m (in calendar order)
         → expand high-level events into primitive TransferEvents and rule mutations
@@ -73,7 +73,7 @@ Within-month ordering is **strictly by rule priority**, never by date. Priority 
 
 These are project-wide rules that all subsequent ADRs and code reference:
 
-1. **Deterministic engine.** Pure function of `(AccountModel, Calendar, AuxTables, Priors, start, end)`. No `datetime.now()` in engine paths, no RNG, no dict-iteration-order dependence, no floats for money. Money is `INTEGER` cents end-to-end.
+1. **Deterministic engine.** Pure function of `(AccountModel, Calendar, AuxTables, YearToDate, start, end)`. No `datetime.now()` in engine paths, no RNG, no dict-iteration-order dependence, no floats for money. Money is `INTEGER` cents end-to-end.
 2. **Month-granularity authoring; month-end dates internally.** CSVs use `YYYY-MM`. Loader pins to last day of month. No within-month sequencing semantics.
 3. **Intent vs. ledger separation.** If a real-world decision has multiple legs and any leg depends on run-time state, it earns a `CalendarEvent` kind. Otherwise it's a primitive `one_off_transfer`. The set of kinds is bounded and reviewed (see ADR-003).
 4. **Visible approximation beats invisible omission.** Zero-valued accounts for assets we choose not to model (ISOs, potential JPY inheritance); basis-with-sources lists for the home; `data/known_exclusions.md` for things deliberately out of scope.

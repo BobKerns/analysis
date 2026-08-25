@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -153,16 +153,7 @@ CREATE TABLE scenario (
     meta_json         TEXT NOT NULL DEFAULT '{}'
 );
 
-CREATE TABLE prior_tax_activity (
-    scenario_id INTEGER NOT NULL REFERENCES scenario(id),
-    year        INTEGER NOT NULL,
-    bucket      TEXT NOT NULL,
-    amount      INTEGER NOT NULL,
-    source_note TEXT,
-    PRIMARY KEY (scenario_id, year, bucket)
-);
-
--- Optional per-scenario lifespan override (ADR-003 §4.10). When the
+-- Optional per-scenario lifespan override (ADR-003 §4.9). When the
 -- simulated month exceeds final_month, every scheduled_transaction
 -- associated with this person (explicit `person` column, or owner of
 -- from_account/to_account) stops firing for the remainder of the run.
@@ -173,11 +164,16 @@ CREATE TABLE person_lifespan (
     PRIMARY KEY (scenario_id, person)
 );
 
--- Partial-first-year catch-up facts (ADR-003 §4.11) not tied to any single
--- scheduled_transaction's own base_amount (e.g. investment growth, SS already
--- received). Posted at run start as balance-neutral transfer_event rows
+-- Partial-first-year catch-up facts (ADR-003 §4.10) -- consolidates what used
+-- to be split across two mechanisms: a single row's own YTD amount (not tied
+-- to any one scheduled_transaction's own base_amount, e.g. investment growth,
+-- SS already received) and prior tax-year activity (superseded
+-- `prior_tax_activity`: wages/withholding YTD, loss carryforwards from a
+-- fully-prior tax year). Posted as balance-neutral transfer_event rows
 -- (reason_kind='ytd') so tax/reporting queries see them without double-
--- counting against account_model_member.opening_balance.
+-- counting against account_model_member.opening_balance. `year` defaults to
+-- scenario.start's year (dated the month before start); an explicit
+-- different year is dated that year's Dec 31.
 CREATE TABLE year_to_date (
     id            INTEGER PRIMARY KEY,
     scenario_id   INTEGER NOT NULL REFERENCES scenario(id),
@@ -189,6 +185,7 @@ CREATE TABLE year_to_date (
                         ('ordinary','ltcg','ss_benefit','tax_free',
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none')),
+    year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)
 );
@@ -315,7 +312,7 @@ CREATE TABLE transfer_event (
     to_account      INTEGER NOT NULL REFERENCES account(id),
     amount          INTEGER NOT NULL,
     tax_character   TEXT NOT NULL,
-    reason_kind     TEXT NOT NULL CHECK (reason_kind IN ('rule','initial','ytd')),
+    reason_kind     TEXT NOT NULL CHECK (reason_kind IN ('rule','initial','ytd','ytd_rule')),
     reason_id       INTEGER,
     parent_event_id INTEGER REFERENCES transfer_event(id),
     from_holding_id INTEGER REFERENCES holding(id),
@@ -461,7 +458,6 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "scheduled_transaction_source",
     "aux_table",
     "scenario",
-    "prior_tax_activity",
     "person_lifespan",
     "year_to_date",
     "tag",

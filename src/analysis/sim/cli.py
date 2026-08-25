@@ -1083,6 +1083,7 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
     changed |= _rename_account_row_values(scenario_dir / "calendar.csv", ("account_1", "account_2"), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "waterfall_sources.csv", ("account_name",), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "quicken_account_map.csv", ("account_name",), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "year_to_date.csv", ("from_account", "to_account"), old_name, new_name)
 
     if not changed:
         raise click.ClickException(f"account not found in scenario files: {old_name!r}")
