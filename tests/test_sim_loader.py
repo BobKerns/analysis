@@ -242,6 +242,43 @@ def test_tags_round_trip(tmp_path: Path) -> None:
         con.close()
 
 
+def test_lifespan_csv_round_trip(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    lifespan = repo / "scenarios" / "retire_alice" / "lifespan.csv"
+    lifespan.write_text("person,final_month\nalice,2033-06-30\n")
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out",
+        allow_dirty_data=True,
+    )
+    con = sqlite3.connect(result.intent_path)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT person, final_month FROM person_lifespan"
+        ).fetchone()
+        assert row["person"] == "alice"
+        assert row["final_month"] == "2033-06-30"
+    finally:
+        con.close()
+
+
+def test_lifespan_unknown_person_rejected(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    lifespan = repo / "scenarios" / "retire_alice" / "lifespan.csv"
+    lifespan.write_text("person,final_month\ncarol,2033-06-30\n")
+
+    with pytest.raises(LoadError, match="not in persons.csv"):
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+
+
 def test_invalid_tag_rejected(tmp_path: Path) -> None:
     import pandas as pd
 

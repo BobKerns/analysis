@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -158,6 +158,17 @@ CREATE TABLE prior_tax_activity (
     amount      INTEGER NOT NULL,
     source_note TEXT,
     PRIMARY KEY (scenario_id, year, bucket)
+);
+
+-- Optional per-scenario lifespan override (ADR-003 §4.10). When the
+-- simulated month exceeds final_month, every scheduled_transaction
+-- associated with this person (explicit `person` column, or owner of
+-- from_account/to_account) stops firing for the remainder of the run.
+CREATE TABLE person_lifespan (
+    scenario_id INTEGER NOT NULL REFERENCES scenario(id),
+    person      TEXT NOT NULL REFERENCES person(id),
+    final_month TEXT NOT NULL,
+    PRIMARY KEY (scenario_id, person)
 );
 
 CREATE TABLE tag (
@@ -429,6 +440,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "aux_table",
     "scenario",
     "prior_tax_activity",
+    "person_lifespan",
     "tag",
     "account_tag",
     "scheduled_transaction_tag",

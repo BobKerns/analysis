@@ -550,3 +550,60 @@ def test_tax_accumulator_computes_federal_and_writes_summary(tmp_path: Path) -> 
             assert len(emitted) == 0
     finally:
         con.close()
+
+
+def test_person_lifespan_stops_associated_transfers(tmp_path: Path) -> None:
+    """A person's final_month stops transfers tied to them (via explicit
+    `person` column or account owner) but leaves joint-account transfers
+    running for the survivor (ADR-003 §4.10)."""
+    repo = _clone_prototype(tmp_path)
+    lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
+    lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
+
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    try:
+        salary_alice_id, ss_alice_id, checking_interest_id = (
+            con.execute(
+                "SELECT id FROM scheduled_transaction WHERE name=?", (name,)
+            ).fetchone()[0]
+            for name in ("salary_alice", "ss_alice", "checking_interest")
+        )
+
+        # Alice-owned rule: nothing fires after her final_month.
+        after = con.execute(
+            "SELECT COUNT(*) FROM transfer_event "
+            "WHERE reason_id=? AND date > '2027-01-31'", (salary_alice_id,),
+        ).fetchone()[0]
+        assert after == 0
+        before = con.execute(
+            "SELECT COUNT(*) FROM transfer_event "
+            "WHERE reason_id=? AND date <= '2027-01-31'", (salary_alice_id,),
+        ).fetchone()[0]
+        assert before > 0
+
+        # ss_benefit is explicitly gated by `person`='alice' too.
+        ss_after = con.execute(
+            "SELECT COUNT(*) FROM transfer_event "
+            "WHERE reason_id=? AND date > '2027-01-31'", (ss_alice_id,),
+        ).fetchone()[0]
+        assert ss_after == 0
+
+        # Joint checking interest is unaffected by Alice's lifespan.
+        interest_after = con.execute(
+            "SELECT COUNT(*) FROM transfer_event "
+            "WHERE reason_id=? AND date > '2027-01-31'", (checking_interest_id,),
+        ).fetchone()[0]
+        assert interest_after > 0
+    finally:
+        con.close()

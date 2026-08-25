@@ -399,6 +399,17 @@ Tax *activity* preceding a partial-first-year run — typically YTD wages, withh
 
 Writes directly into `prior_tax_activity`. PK is `(scenario_id, year, bucket)` — at most one row per (year, bucket) pair.
 
+#### 4.10 Per-scenario: `data_repo/scenarios/<name>/lifespan.csv` (optional)
+
+Lets a scenario play with a person's lifespan without touching the shared `persons.csv` (birthdate lives there; death is a per-comparison assumption). File may be omitted entirely — no rows means no lifespan overrides.
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `person` | text | ✓ | `person.id`; at most one row per person |
+| `final_month` | YYYY-MM-DD | ✓ | last month this person is alive; month-end date |
+
+Writes directly into `person_lifespan` (PK `(scenario_id, person)`). At `date > final_month`, the engine stops firing every `scheduled_transaction` **associated with that person** — the row's explicit `person` column (`ss_benefit`, `rmd`), or a row whose `from_account`/`to_account` owner is that person (`salary`, per-person expenses, etc.). Jointly-owned accounts (`owner` blank) are unaffected, so shared expenses and joint-account interest continue for a surviving spouse. This is a lighter-weight alternative to a `life_transition: predecease` calendar event — it stops the deceased person's own transfers but does **not** merge accounts, adjust survivor SS benefits, or switch filing status; use `life_transition` when those effects matter.
+
 ### 5. Default priorities
 
 When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule kind's band:

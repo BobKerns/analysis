@@ -47,6 +47,7 @@ recategorize
 recomputable
 reconstructable
 reprompts
+rollups
 rootdir
 roundtrips
 runfile

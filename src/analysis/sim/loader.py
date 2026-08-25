@@ -155,7 +155,7 @@ def _read_scenario_inputs(
     stack: tuple[str, ...] = (),
 ) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]], list[dict[str, str]],
-           list[dict[str, str]]]:
+           list[dict[str, str]], list[dict[str, str]]]:
     """Read a scenario and recursively overlay any declared parent."""
     scenario_dir = data_dir / "scenarios" / scenario_name
     if scenario_name in stack:
@@ -179,11 +179,11 @@ def _read_scenario_inputs(
             data_dir, parent_name, issues, stack=(*stack, scenario_name)
         )
         parent_scenario, parent_accounts, parent_models, parent_scheduled, \
-            parent_waterfall, parent_calendar, parent_priors = parent
+            parent_waterfall, parent_calendar, parent_priors, parent_lifespan = parent
     else:
         parent_scenario = {}
         parent_accounts = parent_models = parent_scheduled = []
-        parent_waterfall = parent_calendar = parent_priors = []
+        parent_waterfall = parent_calendar = parent_priors = parent_lifespan = []
 
     def read_overlay(filename: str, *, required: bool = False) -> list[dict[str, str]]:
         return _read_csv(
@@ -216,9 +216,12 @@ def _read_scenario_inputs(
     priors_rows = _merge_scenario_rows(
         parent_priors, read_overlay("priors.csv"), ("year", "bucket"),
     )
+    lifespan_rows = _merge_scenario_rows(
+        parent_lifespan, read_overlay("lifespan.csv"), ("person",),
+    )
     return (
         scenario_row, accounts, model_rows, scheduled_rows,
-        waterfall_rows, calendar_rows, priors_rows,
+        waterfall_rows, calendar_rows, priors_rows, lifespan_rows,
     )
 
 
@@ -277,7 +280,7 @@ def load_scenario(
     persons = _read_csv(data_dir / "persons.csv", issues)
     (
         scenario_row, accounts, model_rows, scheduled_rows,
-        waterfall_rows, calendar_rows, priors_rows,
+        waterfall_rows, calendar_rows, priors_rows, lifespan_rows,
     ) = _read_scenario_inputs(data_dir, scenario_name, issues)
 
 
@@ -295,6 +298,7 @@ def load_scenario(
     _validate_calendar(calendar_rows, issues)
     _validate_waterfall(waterfall_rows, scheduled_rows, issues)
     _validate_priors(priors_rows, accounts, issues, money_resolver=money_resolver)
+    _validate_lifespan(lifespan_rows, persons, issues)
 
     if issues:
         raise LoadError(issues)
@@ -333,6 +337,7 @@ def load_scenario(
             waterfall_rows=waterfall_rows,
             calendar_rows=calendar_rows,
             priors_rows=priors_rows,
+            lifespan_rows=lifespan_rows,
             money_resolver=money_resolver,
         )
         _write_manifest(
@@ -696,6 +701,26 @@ def _validate_priors(
         seen.add(key)
 
 
+def _validate_lifespan(
+    rows: list[dict[str, str]],
+    persons: list[dict[str, str]],
+    issues: list[str],
+) -> None:
+    person_ids = {p["id"] for p in persons if p.get("id")}
+    seen: set[str] = set()
+    for i, row in enumerate(rows, start=2):
+        person = row.get("person", "")
+        final_month = row.get("final_month", "")
+        if not person or not final_month:
+            issues.append(f"lifespan.csv row {i}: person and final_month are required")
+            continue
+        if person not in person_ids:
+            issues.append(f"lifespan.csv row {i}: person '{person}' not in persons.csv")
+        if person in seen:
+            issues.append(f"lifespan.csv row {i}: duplicate person '{person}'")
+        seen.add(person)
+
+
 # ---------- writers ----------
 
 def _insert_tags(
@@ -736,6 +761,7 @@ def _write_intent(
     waterfall_rows: list[dict[str, str]],
     calendar_rows: list[dict[str, str]],
     priors_rows: list[dict[str, str]],
+    lifespan_rows: list[dict[str, str]],
     money_resolver: _MoneyReferenceResolver,
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -914,6 +940,14 @@ def _write_intent(
             ),
         )
     counts["prior_tax_activity"] = len(priors_rows)
+
+    for lf in lifespan_rows:
+        con.execute(
+            "INSERT INTO person_lifespan(scenario_id, person, final_month) "
+            "VALUES (?,?,?)",
+            (scenario_id, lf["person"], lf["final_month"]),
+        )
+    counts["person_lifespan"] = len(lifespan_rows)
 
     return counts
 

@@ -86,8 +86,16 @@ def run_scenario(
         account_kinds: dict[int, str] = {
             r[0]: r[1] for r in con.execute("SELECT id, kind FROM account")
         }
+        account_owner: dict[int, str | None] = {
+            r[0]: r[1] for r in con.execute("SELECT id, owner FROM account")
+        }
         account_id_by_name: dict[str, int] = {
             r[0]: r[1] for r in con.execute("SELECT name, id FROM account")
+        }
+        person_lifespan: dict[str, str] = {
+            r[0]: r[1] for r in con.execute(
+                "SELECT person, final_month FROM person_lifespan"
+            )
         }
         person_birthdates: dict[str, date] = {
             r[0]: _parse_date(r[1])
@@ -184,6 +192,10 @@ def run_scenario(
                 if month_s < t_start:
                     continue
                 if t_end is not None and month_s > t_end:
+                    continue
+                if person_lifespan and _past_person_lifespan(
+                    month_s, p_person, frm, to, account_owner, person_lifespan,
+                ):
                     continue
                 fire_count = _cadence_count(
                     cadence, moy, month,
@@ -336,6 +348,27 @@ def _post_transfer(
 
 def _delta(kind: str, raw: int) -> int:
     return -raw if kind == "liability" else raw
+
+
+def _past_person_lifespan(
+    month_s: str,
+    p_person: str | None,
+    from_id: int,
+    to_id: int,
+    account_owner: dict[int, str | None],
+    person_lifespan: dict[str, str],
+) -> bool:
+    """True if this rule is associated with a person whose final_month has
+    passed (ADR-003 §4.10): the rule's explicit ``person`` param, or the
+    owner of either leg's account.
+    """
+    associated = {p_person, account_owner.get(from_id), account_owner.get(to_id)}
+    associated.discard(None)
+    return any(
+        month_s > person_lifespan[person]
+        for person in associated
+        if person in person_lifespan
+    )
 
 
 def _build_cal_payload(

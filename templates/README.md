@@ -21,6 +21,7 @@ SQL schema alongside the source CSV.
         waterfall_sources.csv     # ordered sources per waterfall_fill rule
         calendar.csv              # CalendarEvents
         priors.csv                # PriorTaxActivity rows (tax activity only)
+        lifespan.csv              # optional per-person final_month override (ADR-003 §4.10)
 ```
 
 ## Conventions
@@ -132,5 +133,3 @@ investment-asset restriction.
 manual edit of the map is needed after a rename. If you add a new account, add its
 `quicken_account_map.csv` row (or a `skip` row with a `note` explaining why) before the
 next import.
-
-
