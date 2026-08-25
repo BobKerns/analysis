@@ -163,6 +163,8 @@ def test_scenario_ref_locates_paths_and_git_head(tmp_path: Path) -> None:
     ref = resolve_scenario_name(repo, "retire_alice")
     assert ref.path == repo / "scenarios" / "retire_alice"
     assert ref.intent_path == tmp_path / "state" / "intent" / "retire_alice.sqlite3"
+    assert ref.runs_dir == tmp_path / "state" / "runs"
+    assert ref.run_path is None
     assert not ref.loaded
     assert ref.commit is not None and len(ref.commit) in (40, 64)
     assert ref.branch == "main"
@@ -171,14 +173,26 @@ def test_scenario_ref_locates_paths_and_git_head(tmp_path: Path) -> None:
     assert ref.describe() == ref._repr_markdown_()
 
     load_scenario(repo, "retire_alice", intent_dir=ref.intent_path.parent)
-    assert resolve_scenario_name(repo, "retire_alice").loaded
+    ref.runs_dir.mkdir(parents=True)
+    for name in ["2026-01-01T000000Z_retire_alice_abc1234.sqlite3",
+                 "2026-06-01T000000Z_other_abc1234.sqlite3"]:
+        (ref.runs_dir / name).touch()
+
+    reloaded = resolve_scenario_name(repo, "retire_alice")
+    assert reloaded.loaded
+    assert reloaded.run_path is not None
+    assert reloaded.run_path.name == "2026-01-01T000000Z_retire_alice_abc1234.sqlite3"
 
 
 def test_scenario_ref_intent_dir_override(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
-    ref = resolve_scenario_name(repo, "retire_alice", intent_dir=tmp_path / "elsewhere")
+    ref = resolve_scenario_name(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "elsewhere", runs_dir=tmp_path / "other_runs",
+    )
     assert ref.intent_path == tmp_path / "elsewhere" / "retire_alice.sqlite3"
+    assert ref.runs_dir == tmp_path / "other_runs"
 
 
 def test_invalid_subkind_rejected(tmp_path: Path) -> None:

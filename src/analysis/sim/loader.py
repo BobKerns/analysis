@@ -37,7 +37,7 @@ __all__ = [
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
-    "load_scenario", "open_intent_db", "read_current_scenario",
+    "latest_run_path", "load_scenario", "open_intent_db", "read_current_scenario",
     "resolve_scenario_name", "state_dir", "write_current_scenario",
 ]
 
@@ -143,6 +143,17 @@ def state_dir(data_dir: Path | str | None, default: Path) -> Path:
     return Path(data_dir).resolve().parent / default
 
 
+def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path | None:
+    """Most recent run file under ``runs_dir``, or ``None`` if there is none.
+
+    Run filenames are ``<timestamp>_<scenario>_<data-version>.sqlite3``, so they
+    sort chronologically and can be filtered by scenario by name alone.
+    """
+    pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
+    runs = sorted(Path(runs_dir).glob(pattern))
+    return runs[-1] if runs else None
+
+
 class ScenarioRef(NamedTuple):
     """A resolved scenario: what it is called, where it lives, what state it is in."""
 
@@ -150,6 +161,8 @@ class ScenarioRef(NamedTuple):
     data_dir: Path
     path: Path
     intent_path: Path
+    runs_dir: Path
+    run_path: Path | None
     commit: str | None
     branch: str | None
     dirty: bool
@@ -160,7 +173,7 @@ class ScenarioRef(NamedTuple):
         return self.intent_path.exists()
 
     def describe(self) -> str:
-        """Markdown summary of the scenario, its data repo, and its intent file."""
+        """Markdown summary of the scenario, its data repo, and its DBs."""
         if self.commit:
             where = f"`{self.commit[:12]}`"
             if self.branch:
@@ -171,16 +184,20 @@ class ScenarioRef(NamedTuple):
             where = "*(not a git repo)*"
         intent = f"`{self.intent_path}`"
         if self.loaded:
-            when = datetime.fromtimestamp(self.intent_path.stat().st_mtime)
-            intent += f" — loaded {when:%Y-%m-%d %H:%M}"
+            intent += f" — loaded {_mtime(self.intent_path)}"
         else:
             intent += " — *not loaded; run `sim load`*"
+        if self.run_path is None:
+            run = f"*no runs in `{self.runs_dir}`; run `sim run`*"
+        else:
+            run = f"`{self.run_path}` — {_mtime(self.run_path)}"
         return (
             f"**scenario `{self.name}`**\n\n"
             f"| | |\n|---|---|\n"
             f"| scenario | `{self.path}` |\n"
             f"| data repo | `{self.data_dir}` {where} |\n"
             f"| intent db | {intent} |\n"
+            f"| latest run | {run} |\n"
         )
 
     def _repr_markdown_(self) -> str:
@@ -191,11 +208,16 @@ class ScenarioRef(NamedTuple):
         return f"{self.name} ({self.data_dir}{version}{'+dirty' if self.dirty else ''})"
 
 
+def _mtime(path: Path) -> str:
+    return f"{datetime.fromtimestamp(path.stat().st_mtime):%Y-%m-%d %H:%M}"
+
+
 def resolve_scenario_name(
     data_dir: Path | str,
     scenario: str | None = None,
     *,
     intent_dir: Path | None = None,
+    runs_dir: Path | None = None,
 ) -> ScenarioRef:
     """Pick a scenario from the data repo and describe where it lives.
 
@@ -218,11 +240,17 @@ def resolve_scenario_name(
         Path(intent_dir) if intent_dir is not None
         else state_dir(data_dir, DEFAULT_INTENT_DIR)
     )
+    resolved_runs_dir = (
+        Path(runs_dir) if runs_dir is not None
+        else state_dir(data_dir, DEFAULT_RUNS_DIR)
+    )
     return ScenarioRef(
         name=name,
         data_dir=data_dir,
         path=scenarios / name,
         intent_path=resolved_intent_dir / f"{name}.sqlite3",
+        runs_dir=resolved_runs_dir,
+        run_path=latest_run_path(resolved_runs_dir, name),
         commit=head.commit,
         branch=head.branch,
         dirty=head.dirty,

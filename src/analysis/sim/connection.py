@@ -23,7 +23,7 @@ from typing import Literal
 import pandas as pd
 
 from . import registries
-from .loader import load_scenario, resolve_scenario_name
+from .loader import latest_run_path, load_scenario, resolve_scenario_name
 
 ItemType = Literal[
     "account",
@@ -298,17 +298,14 @@ def open_run(run_path: Path | str) -> Iterator[RunConnection]:
 def find_latest_run(runs_dir: Path | str, scenario: str | None = None) -> Path:
     """Return the most recent run snapshot file under ``runs_dir``.
 
-    Run filenames are timestamp-prefixed, so they sort chronologically;
-    raises ``FileNotFoundError`` if no ``*.sqlite3`` files are present.
-    When ``scenario`` is given, only that scenario's runs are considered.
+    Raises ``FileNotFoundError`` if there is none; when ``scenario`` is given,
+    only that scenario's runs are considered.
     """
-    runs_dir = Path(runs_dir)
-    pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
-    run_files = sorted(runs_dir.glob(pattern))
-    if not run_files:
+    run_file = latest_run_path(runs_dir, scenario)
+    if run_file is None:
         where = f"{runs_dir} for scenario {scenario!r}" if scenario else str(runs_dir)
         raise FileNotFoundError(f"no run files under {where}")
-    return run_files[-1]
+    return run_file
 
 
 # ---------- scenario (read + write through CSVs) ----------
