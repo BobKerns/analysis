@@ -323,6 +323,45 @@ def run_scenario(
             )
             previous_step_id = step_id
 
+        # Tax tail: the scenario's declared end year deserves a correct
+        # reconciliation too, but that only fires the following April. Run
+        # tax_accumulator rules one extra year past scenario.end purely to
+        # compute tax_year_summary for the final year -- no simulation_step,
+        # account_state, or transfer_event rows are written, so "simulation
+        # data" queries stay bounded to <= scenario.end as usual.
+        end_date = _parse_date(end_s)
+        tail_last_step_id = previous_step_id
+        for tail_month in _month_ends(
+            date(end_date.year + 1, 1, 1), date(end_date.year + 1, 12, 31),
+        ):
+            tail_month_s = tail_month.isoformat()
+            for txn in txns:
+                (tid, _name, frm, to, cadence, moy, rule_kind,
+                 _p_interest_acct, _p_person, _p_series, _p_rate_micros,
+                 _p_claim_age, _p_amount_cents, ext_json, _base_amount,
+                 tax_char, t_start, t_end, _prio, _t_base_date, _t_inflation_series,
+                 _t_ytd_amount, _t_ytd_preroll, _t_inflation_cadence) = txn
+                if rule_kind != "tax_accumulator":
+                    continue
+                if tail_month_s < t_start:
+                    continue
+                if t_end is not None and tail_month_s > t_end:
+                    continue
+                fire_count = _cadence_count(
+                    cadence, moy, tail_month,
+                    _parse_date(t_start),
+                    _parse_date(t_end) if t_end is not None else None,
+                )
+                if fire_count == 0:
+                    continue
+                params = json.loads(ext_json) if ext_json else {}
+                _apply_tax_accumulator(
+                    con, balances, account_kinds, tail_last_step_id,
+                    tail_month_s, tail_month,
+                    params, from_id=frm, to_id=to, aux=aux,
+                    tax_char=tax_char, tid=tid, post_transfer=False,
+                )
+
         if skipped_counts:
             con.execute(
                 "UPDATE simulation_run SET run_args_json = json_set("
@@ -791,6 +830,7 @@ def _apply_tax_accumulator(
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     tax_char: str,
     tid: int,
+    post_transfer: bool = True,
 ) -> None:
     """Compute and optionally pay forecasted income tax for a target year.
 
@@ -802,6 +842,11 @@ def _apply_tax_accumulator(
     - bracket_series: optional, required when state_brackets has multiple series
     - standard_deduction_aux: defaults to "standard_deduction"
     - ss_threshold_aux: defaults to "ss_taxation_thresholds" (federal only)
+
+    ``post_transfer=False`` (used for the trailing-year tax tail; see
+    ``run_scenario``) computes and writes ``tax_year_summary`` as normal but
+    skips actually moving money -- the tail exists only to let the final
+    scenario year's reconciliation compute, not to simulate a real month.
     """
     year_mode = str(params.get("year", "previous"))
     scope = str(params.get("scope", "federal"))
@@ -904,7 +949,7 @@ def _apply_tax_accumulator(
     tax_due = max(0, tax_liability - already_paid)
     tax_overpaid = max(0, already_paid - tax_liability)
 
-    if tax_due > 0:
+    if post_transfer and tax_due > 0:
         _post_transfer(
             con, balances, account_kinds, step_id, month_s,
             from_id, to_id, tax_due, tax_char, tid,

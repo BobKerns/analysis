@@ -830,3 +830,59 @@ def test_year_to_date_csv_posts_balance_neutral_catchup(tmp_path: Path) -> None:
     finally:
         con.close()
         con_base.close()
+
+
+def test_tax_tail_reconciles_final_year_without_extending_simulation_data(
+    tmp_path: Path,
+) -> None:
+    """The scenario's declared final year (2040) gets a real tax_year_summary
+    reconciliation (which normally fires the following April, past the
+    scenario's end), but no simulation_step/account_state/transfer_event rows
+    are written past scenario.end -- the tail is invisible to simulation data."""
+    repo = _clone_prototype(tmp_path)
+    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    sched_csv.write_text(
+        sched_csv.read_text()
+        + (
+            "tax_federal_prev_year,Asset_Checking,Expense_Taxes_Federal,annual,4,"
+            "tax_accumulator,,,,,,,,,,none,2027-04-30,,400,"
+            "federal income tax forecast,{},"
+            '"{""year"":""previous"",""scope"":""federal""}",\n'
+        )
+    )
+
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    try:
+        # retire_alice's scenario.csv ends 2040-12-31: its own reconciliation
+        # would normally fire 2041-04-30, past the scenario end.
+        liability_2040 = con.execute(
+            "SELECT amount FROM tax_year_summary "
+            "WHERE year = 2040 AND bucket = 'federal_tax_liability'"
+        ).fetchone()
+        assert liability_2040 is not None
+        assert liability_2040[0] > 0
+
+        # No simulation data leaks past scenario.end.
+        assert con.execute(
+            "SELECT COUNT(*) FROM simulation_step WHERE month > '2040-12-31'"
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM transfer_event WHERE date > '2040-12-31'"
+        ).fetchone()[0] == 0
+        last_step_month = con.execute(
+            "SELECT MAX(month) FROM simulation_step"
+        ).fetchone()[0]
+        assert last_step_month == "2040-12-31"
+    finally:
+        con.close()
