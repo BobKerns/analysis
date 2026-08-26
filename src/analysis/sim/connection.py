@@ -36,6 +36,8 @@ ItemType = Literal[
     "account_balance",
     "account_model_member",
     "aux_table",
+    "scenario",
+    "tax_year_summary",
     "year_to_date",
 ]
 
