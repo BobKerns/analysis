@@ -38,3 +38,5 @@ state/**
 Thumbs.db
 
 *_cache
+
+.scratch_*

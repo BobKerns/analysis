@@ -141,6 +141,24 @@ Social Security retirement benefit with COLA.
 - **Start semantics:** as with `rmd`, the row's `start` column is a lower bound. The rule emits zero amount in months before the person reaches `claim_age`; that age gate ANDs with the row's `start`.
 - **Use:** each spouse's SS rule. Different scenarios swap `claim_age` to test claim-timing decisions.
 
+##### 2.5.1 Benefit withholding (Medicare Part B/D)
+
+Medicare Part B and Part D premiums are withheld from the Social Security payment: the beneficiary never receives them, but they are part of the **gross** benefit that the provisional-income test taxes. Modeling only the net deposit understates taxable income; routing the premium out of checking overstates the deposit.
+
+Author it as an extra leg out of the *income* account:
+
+| leg | from | to | `tax_character` |
+| --- | --- | --- | --- |
+| net deposit | `<SS income account>` | checking | `ss_benefit` |
+| Part B premium | `<SS income account>` | `<healthcare expense account>` | `ss_benefit` |
+| Part D premium | `<SS income account>` | `<healthcare expense account>` | `ss_benefit` |
+
+`_tax_year_income_buckets` sums `ss_benefit` by tax character regardless of destination, so gross = the sum of all three legs and the deposit leg alone is what reaches cash. Both legs are gated by the same person (via the accounts' `owner`), so a lifespan end retires them together. When a rule carries `ytd_preroll`/`ytd_amount` for a partial first year, the premium legs need it too, or that year's gross is understated.
+
+Medigap (Part G) is **not** withheld — it is billed directly, so it stays an ordinary expense funded from checking. Likewise, premiums are only withheld while a benefit is actually being paid: someone on Medicare before claiming Social Security is billed directly, and the premium becomes a withheld leg only from the claim date.
+
+Premiums are authored flat (grown by an inflation series). The income-related surcharge (IRMAA), which keys off MAGI from two tax years prior, is **not** modeled; a future rule kind could read it from `tax_year_summary`, which already stores per-year MAGI inputs.
+
 #### 2.6 `tax_accumulator` (priority band: 400)
 
 A placeholder rule that marks "compute taxes for the prior tax year" at a specific calendar point. Fires at year-end (December) for accrual and in April for reconciliation.
