@@ -367,11 +367,29 @@ Exactly one data row (the loader rejects more).
 | `start` | YYYY-MM | ✓ | first simulated month |
 | `end` | YYYY-MM | ✓ | last simulated month (inclusive) |
 | `seed` | int | | reserved for ensembles |
-| `parent_scenario` | text | | provenance only in v1 (folder name of the scenario this one was forked from). Reuse/inheritance semantics — add/replace/delete of scheduled/calendar/aux rows from the parent — are deliberately deferred to a later ADR. |
+| `parent_scenario` | text | | folder name of the scenario this one derives from; see "Derived scenarios" below |
 | `created_by` | text | ✓ | `$ANALYSIS_USER` at authoring time |
 | `meta_json` | json | | default `{}` |
 
-The calendar lives at `scenarios/<name>/calendar.csv` by filename convention — there is no `calendar` column. Calendars are the least-shared file in practice; the `parent_scenario` mechanism is the intended path for reuse once its semantics are settled.
+The calendar lives at `scenarios/<name>/calendar.csv` by filename convention — there is no `calendar` column. Calendars are the least-shared file in practice; a derived scenario overlays its parent's calendar.
+
+##### Derived scenarios (`parent_scenario`)
+
+A scenario naming a `parent_scenario` inherits the parent's rows and overlays its own on top; chains are followed recursively and a cycle is rejected. `scenario.csv` merges field-by-field (a blank child field inherits the parent's), while the row-bearing CSVs merge by natural key:
+
+| file | key |
+| --- | --- |
+| `accounts.csv` | `name` |
+| `account_values.csv` | `account_name` |
+| `scheduled.csv` | `name` |
+| `waterfall_sources.csv` | (`scheduled_name`, `position`) |
+| `calendar.csv` | (`date`, `kind`, `scheduled_name`, `account_1`, `account_2`, `series`, `amount`) |
+| `lifespan.csv` | `person` |
+| `year_to_date.csv` | `name` |
+
+A child row with a new key is appended; one whose key matches the parent replaces that row **entirely**, so an override must repeat every column it wants to keep, not just the changed ones. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits.
+
+`analysis sim scenario create <name> <parent>` creates one: it writes `scenario.csv` with the parent link and header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, verifies the result loads, and records it as the current scenario (ADR-004 §4a).
 
 #### 4.6 Per-scenario: `data_repo/scenarios/<name>/scheduled.csv`
 

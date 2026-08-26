@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim.cli import DEFAULT_INTENT_DIR, DEFAULT_RUNS_DIR, _resolve_state_dir
+from analysis.sim.loader import load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -173,6 +174,69 @@ def test_sim_load_records_current_scenario_and_defaults_to_it(
 
     check = runner.invoke(main, ["sim", "check"])
     assert check.exit_code == 0, check.output
+
+
+def test_sim_scenario_create_derives_and_activates(tmp_path: Path, monkeypatch) -> None:
+    data = _copy_prototype(tmp_path)
+    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(data))
+    runner = CliRunner()
+    result = runner.invoke(main, ["sim", "scenario", "create", "late", "retire_alice"])
+    assert result.exit_code == 0, result.output
+
+    scenario_dir = data / "scenarios" / "late"
+    assert (data / ".current_scenario").read_text().strip() == "late"
+
+    def header_of(name: str) -> list[str]:
+        return (scenario_dir / name).read_text(encoding="utf-8").splitlines()
+
+    scenario_rows = header_of("scenario.csv")
+    assert scenario_rows[0].startswith("name,description,account_model")
+    assert scenario_rows[1].startswith("late,Derived from retire_alice")
+    assert "retire_alice" in scenario_rows[1]
+
+    # Overlay files exist, header-only.
+    for name in ("accounts.csv", "account_values.csv", "scheduled.csv", "calendar.csv"):
+        lines = header_of(name)
+        assert len(lines) == 1, f"{name} should be a header-only skeleton"
+    assert header_of("accounts.csv")[0].split(",")[:3] == ["name", "kind", "subkind"]
+
+    # Everything is inherited: the derived scenario loads with the parent's rows.
+    parent = load_scenario(
+        data, "retire_alice", intent_dir=tmp_path / "p", allow_dirty_data=True,
+    )
+    child = load_scenario(
+        data, "late", intent_dir=tmp_path / "c", allow_dirty_data=True,
+    )
+    for table in ("account", "scheduled_transaction", "account_model_member"):
+        with sqlite3.connect(parent.intent_path) as pcon, \
+                sqlite3.connect(child.intent_path) as ccon:
+            assert (
+                ccon.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                == pcon.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            )
+
+
+def test_sim_scenario_create_rejects_bad_input(tmp_path: Path, monkeypatch) -> None:
+    data = _copy_prototype(tmp_path)
+    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(data))
+    runner = CliRunner()
+
+    dup = runner.invoke(
+        main, ["sim", "scenario", "create", "retire_alice", "retire_alice"]
+    )
+    assert dup.exit_code != 0
+    assert "already exists" in dup.output
+
+    unknown = runner.invoke(main, ["sim", "scenario", "create", "ok_name", "nope"])
+    assert unknown.exit_code != 0
+    assert "scenario not found" in unknown.output
+
+    bad_name = runner.invoke(
+        main, ["sim", "scenario", "create", "Has Spaces", "retire_alice"]
+    )
+    assert bad_name.exit_code != 0
+    assert "invalid scenario name" in bad_name.output
+    assert not (data / "scenarios" / "Has Spaces").exists()
 
 
 def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> None:

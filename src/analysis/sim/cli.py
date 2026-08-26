@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv as _csv
 import json
 import os
+import re
 import sqlite3
 import tempfile
 from datetime import UTC, datetime
@@ -1729,6 +1730,97 @@ def _scenario_write(
     except (FileNotFoundError, KeyError, ValueError) as e:
         raise click.ClickException(str(e)) from None
     click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
+
+
+# ---------- scenario: create derived scenarios ----------
+
+_SCENARIO_HEADER: tuple[str, ...] = (
+    "name", "description", "account_model", "start", "end", "seed",
+    "parent_scenario", "created_by", "meta_json",
+)
+
+_SCENARIO_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+@sim_group_command.group(name="scenario")
+def scenario_group_command() -> None:
+    """Create scenarios."""
+
+
+@scenario_group_command.command("create")
+@click.argument("name")
+@click.argument("parent")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--description", default=None,
+              help="Default: 'Derived from <parent>'.")
+def scenario_create(
+    name: str,
+    parent: str,
+    data_dir: Path | None,
+    description: str | None,
+) -> None:
+    """Create scenario NAME deriving from PARENT, and make it current.
+
+    The new scenario inherits everything from PARENT; only the rows you add to
+    its (empty) overlay CSVs differ. See ADR-003 §4.5 for merge semantics.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    if not _SCENARIO_NAME_RE.match(name):
+        raise click.ClickException(
+            f"invalid scenario name {name!r}; use lowercase letters, digits, "
+            "'_' and '-' (it becomes a folder name)"
+        )
+    parent_ref = _resolve_scenario(data_dir_p, parent)
+    target = data_dir_p / "scenarios" / name
+    if target.exists():
+        raise click.ClickException(f"scenario already exists: {target}")
+
+    skeletons: dict[str, tuple[str, ...]] = {
+        "accounts.csv": registries.ACCOUNTS_CSV_HEADER,
+        "account_values.csv": _ACCOUNT_MODEL_HEADER,
+        "scheduled.csv": _SCHEDULED_HEADER,
+        "calendar.csv": _CALENDAR_HEADER,
+    }
+
+    target.mkdir(parents=True)
+    _append_csv_row(
+        target / "scenario.csv",
+        _SCENARIO_HEADER,
+        {
+            "name": name,
+            "description": description or f"Derived from {parent_ref.name}",
+            "parent_scenario": parent_ref.name,
+            "created_by": os.environ.get("ANALYSIS_USER")
+            or os.environ.get("USER")
+            or "unknown",
+            "meta_json": "{}",
+        },
+    )
+    for filename, header in skeletons.items():
+        pd.DataFrame(columns=list(header)).to_csv(target / filename, index=False)
+
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            load_scenario(
+                data_dir_p, name, intent_dir=Path(td), compute_stamps=False,
+                allow_dirty_data=True,
+            )
+        except LoadError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(
+                f"created {target}, but it does not load; leaving it in place "
+                "for inspection"
+            ) from None
+
+    write_current_scenario(data_dir_p, name)
+    click.echo(f"created {target}")
+    click.echo(f"  inherits: {parent_ref.name}")
+    for filename in ("scenario.csv", *skeletons):
+        click.echo(f"  {filename}")
+    click.echo(f"  current scenario: {name}")
 
 
 @sim_group_command.group(name="tags", invoke_without_command=True)
