@@ -63,6 +63,28 @@ def _normalize_tag_collection(
     return deduped
 
 
+def _split_tag_selectors(
+    tags: str | Iterable[str] | Iterable[tuple[str, str]],
+) -> tuple[set[str], set[str]]:
+    """Split selectors into exact ``role:name`` tokens and wildcard roles.
+
+    ``"estimate:*"`` (or ``("estimate", "*")``) selects every tag in that role,
+    so a review pass can ask for all estimates without naming each one.
+    """
+    tokens = [tags] if isinstance(tags, str) else list(tags)
+    roles: set[str] = set()
+    exact: list[str] = []
+    for token in tokens:
+        raw = token if isinstance(token, str) else f"{token[0]}:{token[1]}"
+        role, _, name = raw.partition(":")
+        if name == "*":
+            roles.add(role)
+        else:
+            exact.append(raw)
+    pairs = _normalize_tag_collection(exact) if exact else []
+    return {f"{role}:{name}" for role, name in pairs}, roles
+
+
 # ---------- read mixin (shared by Scenario + Run) ----------
 
 _ITEM_SQL: dict[str, str] = {
@@ -186,8 +208,9 @@ class _TagReader:
         ``**filters`` keys must be columns on the underlying table; scalar
         values match by equality, iterables (list/tuple/set) by ``isin``.
         ``tags`` accepts a single ``"role:name"`` string, an iterable of
-        strings, or an iterable of ``(role, name)`` pairs; ``tags_match``
-        is ``"any"`` (default) or ``"all"``.
+        strings, or an iterable of ``(role, name)`` pairs; ``"role:*"`` matches
+        every tag in that role. ``tags_match`` is ``"any"`` (default) or
+        ``"all"``.
         """
         if item_type not in _ITEM_SQL:
             raise ValueError(f"unknown item_type {item_type!r}")
@@ -211,16 +234,22 @@ class _TagReader:
                 raise ValueError(
                     f"{item_type!r} does not support tag filtering"
                 )
-            pairs = _normalize_tag_collection(tags)
-            if not pairs:
+            wanted, roles = _split_tag_selectors(tags)
+            if not wanted and not roles:
                 mask &= False
             else:
-                wanted = {f"{r}:{n}" for r, n in pairs}
-                if tags_match == "all":
-                    mask &= df["_tag_set"].apply(wanted.issubset)
-                else:
-                    mask &= df["_tag_set"].apply(lambda s: bool(s & wanted))
+                def has_role(tag_set: set[str]) -> bool:
+                    return {t.partition(":")[0] for t in tag_set} >= roles
 
+                if tags_match == "all":
+                    mask &= df["_tag_set"].apply(
+                        lambda s: wanted.issubset(s) and has_role(s)
+                    )
+                else:
+                    mask &= df["_tag_set"].apply(
+                        lambda s: bool(s & wanted)
+                        or bool({t.partition(":")[0] for t in s} & roles)
+                    )
         drop = ["_tag_set"] if "_tag_set" in df.columns else []
         return df.loc[mask].drop(columns=drop).reset_index(drop=True)
 

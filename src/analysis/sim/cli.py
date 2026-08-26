@@ -1772,13 +1772,20 @@ def tags_items(
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """List items (accounts, scheduled, calendar events) carrying the given tag."""
-    try:
-        pairs = registries.parse_tags(tag_token)
-    except ValueError as e:
-        raise click.ClickException(str(e)) from None
-    if len(pairs) != 1:
-        raise click.ClickException("exactly one tag token expected")
+    """List items (accounts, scheduled, calendar events) carrying the given tag.
+
+    ``<role>:*`` lists everything in a role (e.g. ``estimate:*``).
+    """
+    role, _, name = tag_token.partition(":")
+    if name != "*":
+        try:
+            pairs = registries.parse_tags(tag_token)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from None
+        if len(pairs) != 1:
+            raise click.ClickException("exactly one tag token expected")
+    elif not role:
+        raise click.ClickException("wildcard needs a role, e.g. 'estimate:*'")
     data_dir_p = _resolve_data_dir(data_dir)
     with open_scenario(data_dir_p, scenario) as sc:
         found = False

@@ -488,6 +488,18 @@ household:rwk`, `tax:itemized`, `notebook:net_worth`).
 Token shape: `^[a-z0-9_]+:[a-z0-9_]+$`. Both halves are required; the loader
 rejects malformed tokens.
 
+**Reserved-by-convention roles.** Two roles carry meaning beyond grouping:
+
+- `estimate:<subject>` — the row holds a value that is a guess rather than a
+  recorded fact (e.g. `estimate:pia` on a Social Security row whose PIA has not
+  been read off an SSA statement). The row's `meta_json` should carry the
+  derivation; the tag is what makes the guess *findable*.
+- `generated:<producer>` — the row is machine-written and will be overwritten
+  (e.g. `generated:expense_baseline`); hand edits to those rows do not survive.
+
+Selectors accept `role:*` to match an entire role, so a review pass is
+`rc.items("scheduled", tags="estimate:*")` — no need to know each subject.
+
 The loader normalizes tags into three join tables in the intent (and snapshotted
 run) DB:
 

@@ -57,6 +57,34 @@ def test_scenario_connection_add_is_idempotent_and_rm_works(tmp_path: Path) -> N
         assert sc.list_tags(role="x").empty
 
 
+def test_items_matches_a_whole_tag_role_with_a_wildcard(tmp_path: Path) -> None:
+    """`role:*` selects every tag in that role, so review passes can ask for
+    e.g. all `estimate:` rows without naming each subject."""
+    data = _copy_data(tmp_path)
+    with open_scenario(data, "retire_alice") as sc:
+        sc.add_tags("account", "Asset_Checking", "estimate:balance")
+        sc.add_tags("account", "Asset_Savings", "estimate:rate")
+        sc.add_tags("account", "Asset_Brokerage_Joint", "other:thing")
+
+        hit = set(sc.items("account", tags="estimate:*")["name"])
+        assert hit == {"Asset_Checking", "Asset_Savings"}
+
+        assert set(sc.items("account", tags=[("estimate", "*")])["name"]) == hit
+
+        # Mixed selectors, and "all" requires the role to be present too.
+        both = sc.items("account", tags=["estimate:*", "other:thing"])
+        assert len(both) == 3
+        assert sc.items(
+            "account", tags=["estimate:*", "other:thing"], tags_match="all",
+        ).empty
+        sc.add_tags("account", "Asset_Checking", "other:thing")
+        assert set(
+            sc.items(
+                "account", tags=["estimate:*", "other:thing"], tags_match="all",
+            )["name"]
+        ) == {"Asset_Checking"}
+
+
 def test_scenario_connection_rejects_bad_token(tmp_path: Path) -> None:
     data = _copy_data(tmp_path)
     with open_scenario(data, "retire_alice") as sc:
