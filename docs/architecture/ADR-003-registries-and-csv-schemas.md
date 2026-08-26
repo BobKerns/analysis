@@ -95,8 +95,21 @@ Accrue interest, dividends, appreciation against a source account's balance.
 
 - **Params:** the row's `to_account` is the balance-bearing account; `series` names the aux rate-series. `rate_basis` defaults to `"balance"`.
 - **Compute:** `amount = round(to_account_balance × monthly_rate)`. Annual rates are converted by `(1 + r)^(1/12) - 1`, computed in fixed-point micros.
-- **Emits:** one event. Typical: `from_account = <income account>` (e.g. `Income_Interest`), `to_account = <balance-bearing account>` (interest credits to the asset). For depreciation, swap signs by routing through an expense account.
+- **Emits:** one event. Typical: `from_account = <income account>` (e.g. `interest_income`), `to_account = <balance-bearing account>` (interest credits to the asset). For depreciation, swap signs by routing through an expense account.
 - **Use:** money-market interest, bond coupon approximations, portfolio appreciation per asset, real-estate appreciation.
+
+**Authored on the account, not in `scheduled.csv`.** An asset account's growth is a property of the account, so it is declared by the `series` + `tax_character` columns on `accounts.csv` (§4.2) and the loader synthesizes the rule: `cadence='monthly'`, priority 100, `start = scenario.start`, `to_account` = the account itself, and `name = growth_<account name slug>`. Hand-writing an equivalent `percent_of_balance` row is still legal, but the loader rejects one whose name collides with a synthesized rule.
+
+The income side is **not** author-supplied. Each growth `tax_character` has one reserved income account, created on first use so a scenario cannot mis-wire or omit it:
+
+| `tax_character` | income account | subkind | `tax_treatment` | meaning |
+| --- | --- | --- | --- | --- |
+| `ordinary` | `interest_income` | `interest` | `taxable` | taxable interest and dividends |
+| `gains` | `capital_gains` | `capital_gain` | `taxable` | unrealized gains in a taxable account |
+| `deferred` | `deferred_gains` | `capital_gain` | `tax_deferred` | unrealized gains in a tax-deferred account |
+| `tax_free` | `tax_free_gains` | `capital_gain` | `tax_free` | unrealized gains in a Roth/HSA account |
+
+`gains` and `deferred` are tax characters in their own right (§2 registry): unlike `ltcg`, they are *unrealized*, so the retrospective tax scan ignores them until a sale or distribution converts them into `ltcg`/`tax_deferred_out`.
 
 #### 2.3 `rmd` (priority band: 200 or 500)
 
@@ -281,6 +294,8 @@ Single identity list for the household: account owners *and* operator identities
 | `subkind` | enum | ✓ | per §1 |
 | `owner` | text | | `person.id`; NULL for jointly-held |
 | `tax_treatment` | enum | | `taxable`, `tax_deferred`, `tax_free`, `none` |
+| `series` | text | | asset accounts only: aux rate-series driving monthly growth; synthesizes a `percent_of_balance` rule (§2.2) |
+| `tax_character` | enum | | required with `series`, and only meaningful with it: `ordinary`, `gains`, `deferred`, `tax_free` — selects the built-in income account that funds the growth (§2.2) |
 | `opened` | YYYY-MM | | informational |
 | `closed` | YYYY-MM | | informational |
 | `meta_json` | json | | default `{}` |
@@ -353,7 +368,7 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 | `amount` | dollars | | interpreted per `amount_rule_kind`: base amount for `fixed_amount`, monthly P&I for `mortgage_payment`, PIA at FRA for `ss_benefit`, target balance for `waterfall_fill`, refill size for `refill_transfer`; decimal string e.g. `1234.56`; loader converts to integer cents |
 | `base_date` | YYYY-MM | | required when `series` names an inflation series |
 | `inflation_cadence` | enum | | `monthly` (default) compounds every month; `annual` steps once per calendar year crossed (each January) instead of drifting smoothly — use for COLA-style adjustments (e.g. Social Security) that jump once a year rather than continuously; requires `series` to be set |
-| `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field — an income-account-sourced transfer can carry `tax_character='none'` (e.g. an inheritance), and an expense-leg can carry any value. `waterfall_fill` is the one exception: per §2.4, the engine overrides each leg's `tax_character` from the source account's `tax_treatment`. |
+| `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `gains`, `deferred`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field — an income-account-sourced transfer can carry `tax_character='none'` (e.g. an inheritance), and an expense-leg can carry any value. `waterfall_fill` is the one exception: per §2.4, the engine overrides each leg's `tax_character` from the source account's `tax_treatment`. |
 | `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |
 | `priority` | int | | defaults per §2's priority band |

@@ -890,10 +890,7 @@ def scheduled_tag_rm(
     _scenario_write(data_dir, scenario, "scheduled", name, tag_tokens, "rm")
 
 
-_ACCOUNTS_HEADER: tuple[str, ...] = (
-    "name", "kind", "subkind", "owner", "tax_treatment",
-    "opened", "closed", "meta_json", "tags",
-)
+_ACCOUNTS_HEADER: tuple[str, ...] = registries.ACCOUNTS_CSV_HEADER
 
 _ACCOUNT_MODEL_HEADER: tuple[str, ...] = (
     "account_name", "opening_balance", "opening_cost_basis", "prior_year_end_balance",
@@ -923,6 +920,11 @@ def account_group_command() -> None:
 @click.option("--tax-treatment", default=None,
               type=click.Choice(sorted(registries.TAX_TREATMENTS)),
               help="Default inferred from kind.")
+@click.option("--series", default="",
+              help="Aux rate series; gives an asset account monthly growth.")
+@click.option("--tax-character", default="",
+              type=click.Choice(["", *sorted(registries.GROWTH_INCOME_ACCOUNTS)]),
+              help="Character of the growth flow; required with --series.")
 @click.option("--opened", "opened", default="",
               help="Open date (YYYY-MM-DD).")
 @click.option("--closed", "closed", default="",
@@ -943,6 +945,8 @@ def add_account(
     subkind: str | None,
     owner: str | None,
     tax_treatment: str | None,
+    series: str,
+    tax_character: str,
     opened: str,
     closed: str,
     opening_balance: str | None,
@@ -1014,9 +1018,18 @@ def add_account(
     if closed:
         closed = _validate_iso_date(closed)
 
+    if series and not tax_character:
+        raise click.ClickException(
+            "--series requires --tax-character "
+            f"({', '.join(sorted(registries.GROWTH_INCOME_ACCOUNTS))})"
+        )
+    if series and kind != "asset":
+        raise click.ClickException("--series is only supported for asset accounts")
+
     row = {
         "name": name, "kind": kind, "subkind": subkind,
         "owner": owner, "tax_treatment": tax_treatment,
+        "series": series, "tax_character": tax_character,
         "opened": opened, "closed": closed, "meta_json": "{}",
         "tags": tags,
     }

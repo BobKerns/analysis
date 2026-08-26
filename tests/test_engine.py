@@ -302,8 +302,8 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         assert per_rule["living"] == 176
         assert per_rule["housing"] == 176
         assert per_rule["healthcare"] == 176
-        assert per_rule["checking_interest"] == 176
-        assert per_rule["brokerage_growth"] == 176
+        assert per_rule["growth_asset_checking"] == 176
+        assert per_rule["growth_asset_brokerage_joint"] == 176
         assert per_rule["ss_alice"] == 176 - 70
         assert per_rule["ss_bob"] == 176 - 135
         assert per_rule["rmd_alice"] == 3
@@ -647,7 +647,7 @@ def test_person_lifespan_stops_associated_transfers(tmp_path: Path) -> None:
             con.execute(
                 "SELECT id FROM scheduled_transaction WHERE name=?", (name,)
             ).fetchone()[0]
-            for name in ("salary_alice", "ss_alice", "checking_interest")
+            for name in ("salary_alice", "ss_alice", "growth_asset_checking")
         )
 
         # Alice-owned rule: nothing fires after her final_month.

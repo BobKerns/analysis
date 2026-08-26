@@ -5,8 +5,6 @@ living,Asset_Checking,Expense_Living,monthly,,fixed_amount,,,cpi,,,4500.00,2026-
 housing,Asset_Checking,Expense_Housing,monthly,,fixed_amount,,,cpi,,,800.00,2026-05-31,,none,2026-05-31,,200,,,utilities + property upkeep,{},,
 healthcare,Asset_Checking,Expense_Healthcare,monthly,,fixed_amount,,,cpi,,,600.00,2026-05-31,,none,2026-05-31,,200,,,employer plan premium share,{},,
 mortgage_pmt,Asset_Checking,Liability_Mortgage,monthly,,mortgage_payment,Expense_Interest_Mortgage,,,60000,,1850.00,2026-05-31,,none,2026-05-31,,300,,,30yr fixed 6%,{},,
-checking_interest,Income_Interest,Asset_Checking,monthly,,percent_of_balance,,,Asset Checking,,,,,,ordinary,2026-05-31,,100,,,monthly accrual on checking balance,{},,
-brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint,monthly,,percent_of_balance,,,brokerage growth,,,,,,ltcg,2026-05-31,,100,,,assumed appreciation on brokerage,{},,
 ss_alice,Income_SS_Alice,Asset_Checking,monthly,,ss_benefit,,alice,cpi,,67,3000.00,,,ss_benefit,2026-05-31,,200,,,Alice SS at FRA,{},,
 ss_bob,Income_SS_Bob,Asset_Checking,monthly,,ss_benefit,,bob,cpi,,70,3500.00,,,ss_benefit,2026-05-31,,200,,,Bob SS delayed to 70,{},,
 rmd_alice,Asset_TraditionalIRA_Alice,Asset_Checking,annual,12,rmd,,alice,,,,,,,tax_deferred_out,2026-05-31,,500,,,Alice RMD from IRA,{},,

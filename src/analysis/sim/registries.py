@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     "asset": {
@@ -50,11 +51,49 @@ CALENDAR_EVENT_KINDS: set[str] = {
 CADENCES: set[str] = {"monthly", "biweekly", "quarterly", "annual", "one_off"}
 
 TAX_CHARACTERS: set[str] = {
-    "ordinary", "ltcg", "ss_benefit", "tax_free",
+    "ordinary", "ltcg", "gains", "deferred", "ss_benefit", "tax_free",
     "tax_deferred_in", "tax_deferred_out", "return_of_capital", "property_tax", "none",
 }
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
+
+# Canonical accounts.csv column order (ADR-003 §4.5).
+ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
+    "name", "kind", "subkind", "owner", "tax_treatment", "series",
+    "tax_character", "opened", "closed", "meta_json", "tags",
+)
+
+
+class GrowthIncomeAccount(NamedTuple):
+    """A reserved income account that funds accounts.csv-declared growth."""
+
+    name: str
+    subkind: str
+    tax_treatment: str
+    description: str
+
+
+# accounts.csv `tax_character` -> the built-in income account the loader draws
+# growth from (ADR-003 §2.2). Reserved names; created on demand at load time so
+# authors never wire up (or mis-wire) the income side by hand.
+GROWTH_INCOME_ACCOUNTS: dict[str, GrowthIncomeAccount] = {
+    "ordinary": GrowthIncomeAccount(
+        "interest_income", "interest", "taxable",
+        "Built-in: taxable interest and dividends",
+    ),
+    "gains": GrowthIncomeAccount(
+        "capital_gains", "capital_gain", "taxable",
+        "Built-in: unrealized gains in taxable accounts",
+    ),
+    "deferred": GrowthIncomeAccount(
+        "deferred_gains", "capital_gain", "tax_deferred",
+        "Built-in: unrealized gains in tax-deferred accounts",
+    ),
+    "tax_free": GrowthIncomeAccount(
+        "tax_free_gains", "capital_gain", "tax_free",
+        "Built-in: unrealized gains in tax-free accounts (Roth, HSA)",
+    ),
+}
 
 DEFAULT_PRIORITIES: dict[str, int] = {
     "percent_of_balance": 100,

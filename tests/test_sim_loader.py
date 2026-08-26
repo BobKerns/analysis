@@ -195,6 +195,105 @@ def test_scenario_ref_intent_dir_override(tmp_path: Path) -> None:
     assert ref.runs_dir == tmp_path / "other_runs"
 
 
+def test_account_series_synthesizes_growth_rule_and_income_account(
+    tmp_path: Path,
+) -> None:
+    """ADR-003 §2.2: an asset account's `series` becomes a percent_of_balance
+    rule funded by the built-in income account for its tax_character."""
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    ira = df["name"] == "Asset_TraditionalIRA_Alice"
+    df.loc[ira, "series"] = "Brokerage Growth"
+    df.loc[ira, "tax_character"] = "deferred"
+    df.to_csv(accounts_path, index=False)
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out", allow_dirty_data=True,
+    )
+    con = sqlite3.connect(result.intent_path)
+    con.row_factory = sqlite3.Row
+    try:
+        rule = con.execute(
+            "SELECT s.amount_rule_kind, s.series, s.tax_character, s.priority, "
+            "       s.cadence, s.start, fa.name AS from_name, ta.name AS to_name "
+            "FROM scheduled_transaction s "
+            "JOIN account fa ON fa.id = s.from_account "
+            "JOIN account ta ON ta.id = s.to_account "
+            "WHERE s.name = 'growth_asset_traditionalira_alice'"
+        ).fetchone()
+        assert rule["amount_rule_kind"] == "percent_of_balance"
+        assert rule["series"] == "Brokerage Growth"
+        assert rule["tax_character"] == "deferred"
+        assert rule["cadence"] == "monthly"
+        assert rule["priority"] == 100
+        assert rule["to_name"] == "Asset_TraditionalIRA_Alice"
+        assert rule["from_name"] == "deferred_gains"
+
+        income = con.execute(
+            "SELECT kind, subkind, tax_treatment FROM account WHERE name = 'deferred_gains'"
+        ).fetchone()
+        assert (income["kind"], income["subkind"], income["tax_treatment"]) == (
+            "income", "capital_gain", "tax_deferred",
+        )
+        opening = con.execute(
+            "SELECT m.opening_balance FROM account_model_member m "
+            "JOIN account a ON a.id = m.account_id WHERE a.name = 'deferred_gains'"
+        ).fetchone()[0]
+        assert opening == 0
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize(
+    ("column_values", "expected"),
+    [
+        ({"series": "cpi", "tax_character": "ltcg"}, "requires tax_character in"),
+        ({"series": "", "tax_character": "gains"}, "without series"),
+    ],
+)
+def test_account_growth_rejects_bad_columns(
+    tmp_path: Path, column_values: dict[str, str], expected: str,
+) -> None:
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    for column, value in column_values.items():
+        df.loc[df["name"] == "Asset_Savings", column] = value
+    df.to_csv(accounts_path, index=False)
+
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out", allow_dirty_data=True,
+        )
+    assert any(expected in issue for issue in ei.value.issues)
+
+
+def test_account_series_rejected_for_non_asset(tmp_path: Path) -> None:
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    expense = df.index[df["kind"] == "expense"][0]
+    df.at[expense, "series"] = "cpi"
+    df.at[expense, "tax_character"] = "ordinary"
+    df.to_csv(accounts_path, index=False)
+
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out", allow_dirty_data=True,
+        )
+    assert any("only supported for asset accounts" in issue for issue in ei.value.issues)
+
+
 def test_invalid_subkind_rejected(tmp_path: Path) -> None:
     bad = tmp_path / "repo"
     shutil.copytree(FIXTURE_DATA / "bad_subkind", bad)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import socket
 import sqlite3
 import tempfile
@@ -441,6 +442,10 @@ def load_scenario(
 
     aux_rows = _read_aux_dir(data_dir / "aux", issues, money_resolver=money_resolver)
 
+    _expand_account_growth(
+        accounts, model_rows, scheduled_rows, scenario_row, issues,
+    )
+
     _validate_accounts(accounts, issues)
     _validate_account_model_money(
         model_rows,
@@ -621,6 +626,87 @@ def _dollars_to_cents(
     if cents != cents.to_integral_value():
         raise ValueError(f"money value {s!r} has sub-cent precision")
     return int(cents)
+
+
+# ---------- account-declared growth ----------
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
+
+
+def _expand_account_growth(
+    accounts: list[dict[str, str]],
+    model_rows: list[dict[str, str]],
+    scheduled_rows: list[dict[str, str]],
+    scenario_row: dict[str, str],
+    issues: list[str],
+) -> None:
+    """Turn an asset account's ``series`` into a ``percent_of_balance`` rule.
+
+    The income side is the built-in account for the row's ``tax_character``
+    (ADR-003 §2.2), created here on first use so scenarios never wire it up by
+    hand. Rules are named ``growth_<account slug>``.
+    """
+    account_names = {row.get("name", "") for row in accounts}
+    rule_names = {row.get("name", "") for row in scheduled_rows}
+    start = scenario_row.get("start", "")
+    for i, row in enumerate(accounts, start=2):
+        name = row.get("name", "")
+        series = row.get("series", "")
+        character = row.get("tax_character", "")
+        if not series:
+            if character:
+                issues.append(
+                    f"accounts.csv row {i} ({name}): tax_character without series "
+                    "has no effect"
+                )
+            continue
+        if row.get("kind") != "asset":
+            issues.append(
+                f"accounts.csv row {i} ({name}): series is only supported for "
+                "asset accounts"
+            )
+            continue
+        income = registries.GROWTH_INCOME_ACCOUNTS.get(character)
+        if income is None:
+            issues.append(
+                f"accounts.csv row {i} ({name}): series requires tax_character in "
+                f"{sorted(registries.GROWTH_INCOME_ACCOUNTS)}, got '{character}'"
+            )
+            continue
+        if income.name not in account_names:
+            account_names.add(income.name)
+            accounts.append({
+                "name": income.name, "kind": "income", "subkind": income.subkind,
+                "owner": "", "tax_treatment": income.tax_treatment,
+                "opened": "", "closed": "", "tags": "",
+                "meta_json": json.dumps(
+                    {"builtin": "growth_income", "description": income.description},
+                    separators=(",", ":"),
+                ),
+            })
+            model_rows.append({
+                "account_name": income.name, "opening_balance": "0.00",
+            })
+        rule_name = f"growth_{_slug(name)}"
+        if rule_name in rule_names:
+            issues.append(
+                f"accounts.csv row {i} ({name}): series would synthesize rule "
+                f"'{rule_name}', which scheduled.csv already defines"
+            )
+            continue
+        rule_names.add(rule_name)
+        scheduled_rows.append({
+            "name": rule_name,
+            "from_account": income.name,
+            "to_account": name,
+            "cadence": "monthly",
+            "amount_rule_kind": "percent_of_balance",
+            "series": series,
+            "tax_character": character,
+            "start": start,
+            "description": f"Growth on {name} ({series})",
+        })
 
 
 # ---------- validation ----------
