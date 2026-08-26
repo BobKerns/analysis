@@ -547,6 +547,79 @@ def test_refill_transfer_with_sources_drains_waterfall(tmp_path: Path) -> None:
         con.close()
 
 
+def test_negative_rate_depreciates_asset_into_expense(tmp_path: Path) -> None:
+    """ADR-003 §2.2: a negative rate series swaps the legs, so value leaves the
+    asset for the built-in `depreciation` expense account, declining-balance."""
+    import pandas as pd
+
+    repo = _clone_prototype(tmp_path)
+    (repo / "aux" / "rate__jalopy.csv").write_text(
+        "effective_date,annual_rate_micros\n2020-01-31,-120000\n", encoding="utf-8"
+    )
+    accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    row = dict.fromkeys(df.columns, "")
+    row.update(
+        name="Asset_Car", kind="asset", subkind="vehicle", owner="joint",
+        tax_treatment="none", series="jalopy", tax_character="depreciation",
+        meta_json="{}",
+    )
+    df = pd.concat([df, pd.DataFrame([row], columns=df.columns)], ignore_index=True)
+    df.to_csv(accounts_path, index=False)
+
+    values_path = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    vdf = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+    vrow = dict.fromkeys(vdf.columns, "")
+    vrow.update(account_name="Asset_Car", opening_balance="30000.00")
+    vdf = pd.concat([vdf, pd.DataFrame([vrow], columns=vdf.columns)], ignore_index=True)
+    vdf.to_csv(values_path, index=False)
+
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test", allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    con.row_factory = sqlite3.Row
+    try:
+        legs = con.execute(
+            "SELECT fa.name AS frm, ta.name AS dest, te.amount, te.tax_character "
+            "FROM transfer_event te "
+            "JOIN account fa ON fa.id = te.from_account "
+            "JOIN account ta ON ta.id = te.to_account "
+            "JOIN scheduled_transaction st ON st.id = te.reason_id "
+            "WHERE st.name = 'growth_asset_car' AND te.reason_kind = 'rule' "
+            "ORDER BY te.date"
+        ).fetchall()
+        assert legs, "depreciation should post transfers"
+        # Value leaves the asset for the expense account, not the reverse.
+        assert legs[0]["frm"] == "Asset_Car"
+        assert legs[0]["dest"] == "depreciation"
+        assert legs[0]["tax_character"] == "none"
+        assert legs[0]["amount"] == 30_000_00 * 120_000 // (12 * 1_000_000)
+        # Declining balance: each month's charge is smaller than the last.
+        assert legs[1]["amount"] < legs[0]["amount"]
+
+        balances = [
+            r[0] for r in con.execute(
+                "SELECT ast.balance FROM account_state ast "
+                "JOIN account a ON a.id = ast.account_id "
+                "JOIN simulation_step s ON s.id = ast.step_id "
+                "WHERE a.name = 'Asset_Car' ORDER BY s.step_index"
+            )
+        ]
+        assert balances[0] < 30_000_00
+        assert balances[-1] < balances[0]
+        assert balances[-1] > 0, "declining balance never reaches zero"
+    finally:
+        con.close()
+
+
 def test_tax_accumulator_computes_federal_and_writes_summary(tmp_path: Path) -> None:
     """tax_accumulator computes prior-year federal tax and writes summary rows.
 

@@ -667,26 +667,27 @@ def _expand_account_growth(
                 "asset accounts"
             )
             continue
-        income = registries.GROWTH_INCOME_ACCOUNTS.get(character)
-        if income is None:
+        counterparty = registries.GROWTH_COUNTERPARTY_ACCOUNTS.get(character)
+        if counterparty is None:
             issues.append(
                 f"accounts.csv row {i} ({name}): series requires tax_character in "
-                f"{sorted(registries.GROWTH_INCOME_ACCOUNTS)}, got '{character}'"
+                f"{sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)}, got '{character}'"
             )
             continue
-        if income.name not in account_names:
-            account_names.add(income.name)
+        if counterparty.name not in account_names:
+            account_names.add(counterparty.name)
             accounts.append({
-                "name": income.name, "kind": "income", "subkind": income.subkind,
-                "owner": "", "tax_treatment": income.tax_treatment,
+                "name": counterparty.name, "kind": counterparty.kind,
+                "subkind": counterparty.subkind,
+                "owner": "", "tax_treatment": counterparty.tax_treatment,
                 "opened": "", "closed": "", "tags": "",
                 "meta_json": json.dumps(
-                    {"builtin": "growth_income", "description": income.description},
+                    {"builtin": "growth", "description": counterparty.description},
                     separators=(",", ":"),
                 ),
             })
             model_rows.append({
-                "account_name": income.name, "opening_balance": "0.00",
+                "account_name": counterparty.name, "opening_balance": "0.00",
             })
         rule_name = f"growth_{_slug(name)}"
         if rule_name in rule_names:
@@ -698,12 +699,12 @@ def _expand_account_growth(
         rule_names.add(rule_name)
         scheduled_rows.append({
             "name": rule_name,
-            "from_account": income.name,
+            "from_account": counterparty.name,
             "to_account": name,
             "cadence": "monthly",
             "amount_rule_kind": "percent_of_balance",
             "series": series,
-            "tax_character": character,
+            "tax_character": counterparty.tax_character,
             "start": start,
             "description": f"Growth on {name} ({series})",
         })

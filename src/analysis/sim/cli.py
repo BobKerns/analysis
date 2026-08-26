@@ -923,7 +923,7 @@ def account_group_command() -> None:
 @click.option("--series", default="",
               help="Aux rate series; gives an asset account monthly growth.")
 @click.option("--tax-character", default="",
-              type=click.Choice(["", *sorted(registries.GROWTH_INCOME_ACCOUNTS)]),
+              type=click.Choice(["", *sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)]),
               help="Character of the growth flow; required with --series.")
 @click.option("--opened", "opened", default="",
               help="Open date (YYYY-MM-DD).")
@@ -1021,7 +1021,7 @@ def add_account(
     if series and not tax_character:
         raise click.ClickException(
             "--series requires --tax-character "
-            f"({', '.join(sorted(registries.GROWTH_INCOME_ACCOUNTS))})"
+            f"({', '.join(sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS))})"
         )
     if series and kind != "asset":
         raise click.ClickException("--series is only supported for asset accounts")

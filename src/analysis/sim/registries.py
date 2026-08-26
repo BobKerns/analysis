@@ -64,34 +64,42 @@ ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
 )
 
 
-class GrowthIncomeAccount(NamedTuple):
-    """A reserved income account that funds accounts.csv-declared growth."""
+class GrowthCounterparty(NamedTuple):
+    """A reserved account on the far side of accounts.csv-declared growth."""
 
     name: str
+    kind: str
     subkind: str
     tax_treatment: str
+    tax_character: str
     description: str
 
 
-# accounts.csv `tax_character` -> the built-in income account the loader draws
-# growth from (ADR-003 §2.2). Reserved names; created on demand at load time so
-# authors never wire up (or mis-wire) the income side by hand.
-GROWTH_INCOME_ACCOUNTS: dict[str, GrowthIncomeAccount] = {
-    "ordinary": GrowthIncomeAccount(
-        "interest_income", "interest", "taxable",
+# accounts.csv `tax_character` -> the built-in account on the other side of the
+# growth flow (ADR-003 §2.2). Reserved names; created on demand at load time so
+# authors never wire up (or mis-wire) that side by hand. A negative rate series
+# makes the flow run the other way (asset -> expense), which is what the
+# `depreciation` entry is for.
+GROWTH_COUNTERPARTY_ACCOUNTS: dict[str, GrowthCounterparty] = {
+    "ordinary": GrowthCounterparty(
+        "interest_income", "income", "interest", "taxable", "ordinary",
         "Built-in: taxable interest and dividends",
     ),
-    "gains": GrowthIncomeAccount(
-        "capital_gains", "capital_gain", "taxable",
+    "gains": GrowthCounterparty(
+        "capital_gains", "income", "capital_gain", "taxable", "gains",
         "Built-in: unrealized gains in taxable accounts",
     ),
-    "deferred": GrowthIncomeAccount(
-        "deferred_gains", "capital_gain", "tax_deferred",
+    "deferred": GrowthCounterparty(
+        "deferred_gains", "income", "capital_gain", "tax_deferred", "deferred",
         "Built-in: unrealized gains in tax-deferred accounts",
     ),
-    "tax_free": GrowthIncomeAccount(
-        "tax_free_gains", "capital_gain", "tax_free",
+    "tax_free": GrowthCounterparty(
+        "tax_free_gains", "income", "capital_gain", "tax_free", "tax_free",
         "Built-in: unrealized gains in tax-free accounts (Roth, HSA)",
+    ),
+    "depreciation": GrowthCounterparty(
+        "depreciation", "expense", "other_expense", "none", "none",
+        "Built-in: depreciation of vehicles and other wasting assets",
     ),
 }
 

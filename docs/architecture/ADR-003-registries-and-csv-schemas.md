@@ -100,16 +100,21 @@ Accrue interest, dividends, appreciation against a source account's balance.
 
 **Authored on the account, not in `scheduled.csv`.** An asset account's growth is a property of the account, so it is declared by the `series` + `tax_character` columns on `accounts.csv` (§4.2) and the loader synthesizes the rule: `cadence='monthly'`, priority 100, `start = scenario.start`, `to_account` = the account itself, and `name = growth_<account name slug>`. Hand-writing an equivalent `percent_of_balance` row is still legal, but the loader rejects one whose name collides with a synthesized rule.
 
-The income side is **not** author-supplied. Each growth `tax_character` has one reserved income account, created on first use so a scenario cannot mis-wire or omit it:
+The income side is **not** author-supplied. Each growth `tax_character` has one reserved counterparty account, created on first use so a scenario cannot mis-wire or omit it:
 
-| `tax_character` | income account | subkind | `tax_treatment` | meaning |
+| `tax_character` | account | kind / subkind | `tax_treatment` | meaning |
 | --- | --- | --- | --- | --- |
-| `ordinary` | `interest_income` | `interest` | `taxable` | taxable interest and dividends |
-| `gains` | `capital_gains` | `capital_gain` | `taxable` | unrealized gains in a taxable account |
-| `deferred` | `deferred_gains` | `capital_gain` | `tax_deferred` | unrealized gains in a tax-deferred account |
-| `tax_free` | `tax_free_gains` | `capital_gain` | `tax_free` | unrealized gains in a Roth/HSA account |
+| `ordinary` | `interest_income` | income / `interest` | `taxable` | taxable interest and dividends |
+| `gains` | `capital_gains` | income / `capital_gain` | `taxable` | unrealized gains in a taxable account |
+| `deferred` | `deferred_gains` | income / `capital_gain` | `tax_deferred` | unrealized gains in a tax-deferred account |
+| `tax_free` | `tax_free_gains` | income / `capital_gain` | `tax_free` | unrealized gains in a Roth/HSA account |
+| `depreciation` | `depreciation` | expense / `other_expense` | `none` | value lost by a wasting asset |
 
-`gains` and `deferred` are tax characters in their own right (§2 registry): unlike `ltcg`, they are *unrealized*, so the retrospective tax scan ignores them until a sale or distribution converts them into `ltcg`/`tax_deferred_out`.
+`gains` and `deferred` are tax characters in their own right (§2 registry): unlike `ltcg`, they are *unrealized*, so the retrospective tax scan ignores them until a sale or distribution converts them into `ltcg`/`tax_deferred_out`. Rules synthesized for `depreciation` record `tax_character='none'` — personal-use depreciation is not deductible.
+
+**Negative rates (depreciation).** The rate series may be negative. `to_account` remains the balance-bearing account and `from_account` remains the counterparty, but when the computed amount is negative the two legs swap at post time, so value flows *out* of the asset and into the expense account. Declining-balance decay follows automatically from `rate_basis='balance'` (the default), and the asset asymptotically approaches — without reaching — zero, which is roughly how a vehicle's scrap value behaves.
+
+Depreciation is a book entry, not spending. Reporting that totals cash outflows should exclude the `depreciation` account (see `notebooks/net_worth.ipynb`).
 
 #### 2.3 `rmd` (priority band: 200 or 500)
 

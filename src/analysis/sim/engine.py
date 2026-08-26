@@ -278,6 +278,13 @@ def run_scenario(
                                 con, balances, account_kinds, step_id, month_s,
                                 frm, to, amount, tax_char, tid,
                             )
+                        elif amount < 0:
+                            # Negative rate = depreciation: the legs swap, so
+                            # value leaves the asset for the counterparty.
+                            _post_transfer(
+                                con, balances, account_kinds, step_id, month_s,
+                                to, frm, -amount, tax_char, tid,
+                            )
                     case "waterfall_fill":
                         _apply_waterfall_fill(
                             con, balances, account_kinds, step_id, month_s,
