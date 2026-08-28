@@ -225,6 +225,12 @@ def run_scenario(
                     _parse_scheduled_date(t_end, tid, _name, "end")
                     if t_end is not None else None
                 )
+                from_account = chain_graph.leaf_account.get(frm)
+                if from_account is None and rule_kind != "fixed_amount":
+                    raise EngineError(
+                        f"scheduled_transaction id={tid} ({_name!r}): interior chain "
+                        "source is only supported for fixed_amount rules"
+                    )
                 to = chain_graph.leaf_account.get(to_chain)
                 if to is None and rule_kind != "fixed_amount":
                     raise EngineError(
@@ -236,7 +242,7 @@ def run_scenario(
                 if t_end is not None and month_s > t_end:
                     continue
                 if person_lifespan and _past_person_lifespan(
-                    month_s, p_person, frm, to, account_owner, person_lifespan,
+                    month_s, p_person, from_account or frm, to, account_owner, person_lifespan,
                 ):
                     continue
                 fire_count = _cadence_count(
@@ -289,19 +295,32 @@ def run_scenario(
                             )
                             amount = amount * factor // 1_000_000
                         total_amount = amount * fire_count
-                        if to is not None:
+                        if from_account is not None and to is not None:
                             _post_transfer(
                                 con, balances, account_kinds, step_id, month_s,
-                                frm, to, total_amount, tax_char, tid,
+                                from_account, to, total_amount, tax_char, tid,
                             )
-                        else:
+                        elif from_account is not None:
                             _chain_sweep(
                                 con, balances, account_kinds, account_tax_treatment,
                                 account_subkind, account_name, step_id, month_s,
-                                chain_graph, to_chain, total_amount, frm,
+                                chain_graph, to_chain, total_amount, from_account,
                                 aux=aux, chain_base_date=_parse_date(start_s),
                                 inflation_factor_cache=inflation_factor_cache,
                                 source_tax_character=tax_char,
+                            )
+                        elif to is not None:
+                            _chain_draw(
+                                con, balances, account_kinds, account_tax_treatment,
+                                account_subkind, account_name, step_id, month_s,
+                                chain_graph, frm, total_amount, to,
+                                threshold_cents=0,
+                            )
+                        else:
+                            raise EngineError(
+                                f"scheduled_transaction id={tid} ({_name!r}): "
+                                "interior source and destination chains are not "
+                                "supported together"
                             )
                     case "percent_of_balance":
                         amount = _amount_percent_of_balance(

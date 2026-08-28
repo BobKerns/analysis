@@ -794,7 +794,7 @@ def _validate_scheduled(
             )
         for col in ("from_account", "to_account"):
             ref = row.get(col, "")
-            valid = ref in account_names if col == "from_account" else ref in account_names | chain_names
+            valid = ref in account_names | chain_names
             if not ref or not valid:
                 issues.append(
                     f"scheduled.csv row {i} ({name}): {col} '{ref}' not in accounts.csv or chains/"
@@ -1369,7 +1369,7 @@ def _write_intent(
             ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 model_id, s["name"],
-                account_ids[s["from_account"]],
+                chain_ids[s["from_account"]],
                 chain_ids[s["to_account"]],
                 s["cadence"],
                 int(s["month_of_year"]) if s.get("month_of_year") else None,
