@@ -8,4 +8,3 @@ mortgage_pmt,Asset_Checking,Liability_Mortgage,monthly,,mortgage_payment,Expense
 ss_alice,Income_SS_Alice,Asset_Checking,monthly,,ss_benefit,,alice,cpi,,67,3000.00,,,ss_benefit,2026-05-31,,200,,,Alice SS at FRA,{},,
 ss_bob,Income_SS_Bob,Asset_Checking,monthly,,ss_benefit,,bob,cpi,,70,3500.00,,,ss_benefit,2026-05-31,,200,,,Bob SS delayed to 70,{},,
 rmd_alice,Asset_TraditionalIRA_Alice,Asset_Checking,annual,12,rmd,,alice,,,,,,,tax_deferred_out,2026-05-31,,500,,,Alice RMD from IRA,{},,
-waterfall_topup,Asset_Savings,Asset_Checking,monthly,,waterfall_fill,,,,,,2000.00,,,none,2026-05-31,,900,,,keep checking >= $2000 at month end (from_account mirrors position-1 source per ADR-003 §2.4),{},,

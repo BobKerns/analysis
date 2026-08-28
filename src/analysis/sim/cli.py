@@ -1092,11 +1092,14 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
 
     changed = False
     accounts_path = scenario_dir / "accounts.csv"
-    changed |= _rename_account_row_values(accounts_path, ("name",), old_name, new_name)
+    changed |= _rename_account_row_values(
+        accounts_path, ("name", "refill_chain", "overflow_chain"), old_name, new_name,
+    )
     changed |= _rename_account_row_values(scenario_dir / "account_values.csv", ("account_name",), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "scheduled.csv", ("from_account", "to_account", "interest_account"), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "calendar.csv", ("account_1", "account_2"), old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "waterfall_sources.csv", ("account_name",), old_name, new_name)
+    for chain_path in sorted((scenario_dir / "chains").glob("*.csv")) if (scenario_dir / "chains").is_dir() else []:
+        changed |= _rename_account_row_values(chain_path, ("account_name",), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "quicken_account_map.csv", ("account_name",), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "year_to_date.csv", ("from_account", "to_account"), old_name, new_name)
 

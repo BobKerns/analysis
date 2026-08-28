@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -26,6 +26,14 @@ CREATE TABLE account (
                         ('taxable','tax_deferred','tax_free','none')),
     opened          TEXT,
     closed          TEXT,
+    -- Balance management (ADR-003 §2.9): when the balance would fall below
+    -- minimum_balance_cents, draw the shortfall from refill_chain_id; when it
+    -- would exceed maximum_balance_cents (NULL = unbounded), sweep the excess
+    -- into overflow_chain_id. Both chains are resolved recursively at runtime.
+    minimum_balance_cents  INTEGER NOT NULL DEFAULT 0,
+    refill_chain_id        INTEGER REFERENCES chain(id),
+    maximum_balance_cents  INTEGER,
+    overflow_chain_id      INTEGER REFERENCES chain(id),
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
         (kind = 'asset' AND subkind IN ('checking','savings','brokerage_taxable',
@@ -42,6 +50,31 @@ CREATE TABLE account (
 );
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
 CREATE INDEX idx_account_owner ON account(owner);
+
+-- Liquidity chains (ADR-003 §2.9). A `chain` row is either a LEAF (account_id
+-- set: the chain IS that account) or an INTERIOR named chain (account_id NULL,
+-- with >=1 chain_steps rows, walked in step_order until a step's amount need
+-- is satisfied). Every real account gets an implicit leaf chain at load time
+-- (name = account.name, kind = account.kind), so `chain.name` is one namespace
+-- covering both kinds -- account.refill_chain_id/overflow_chain_id and
+-- chain_steps.draw_from_chain_id always reference `chain(id)`, never
+-- `account(id)` directly, so no union-typed reference column is ever needed.
+CREATE TABLE chain (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    kind       TEXT NOT NULL,
+    account_id INTEGER REFERENCES account(id)
+);
+CREATE INDEX idx_chain_account ON chain(account_id);
+
+CREATE TABLE chain_steps (
+    id                 INTEGER PRIMARY KEY,
+    chain_id           INTEGER NOT NULL REFERENCES chain(id),
+    step_order         INTEGER NOT NULL,
+    draw_from_chain_id INTEGER NOT NULL REFERENCES chain(id),
+    threshold_cents    INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (chain_id, step_order)
+);
 
 CREATE TABLE account_model (
     id          INTEGER PRIMARY KEY,
@@ -122,13 +155,6 @@ CREATE TABLE scheduled_transaction (
 );
 CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
 CREATE INDEX idx_sched_created_by ON scheduled_transaction(created_by_event_id);
-
-CREATE TABLE scheduled_transaction_source (
-    scheduled_transaction_id INTEGER NOT NULL REFERENCES scheduled_transaction(id),
-    position                 INTEGER NOT NULL,
-    account_id               INTEGER NOT NULL REFERENCES account(id),
-    PRIMARY KEY (scheduled_transaction_id, position)
-);
 
 CREATE TABLE aux_table (
     id             INTEGER PRIMARY KEY,
@@ -315,7 +341,8 @@ CREATE TABLE transfer_event (
     to_account      INTEGER NOT NULL REFERENCES account(id),
     amount          INTEGER NOT NULL,
     tax_character   TEXT NOT NULL,
-    reason_kind     TEXT NOT NULL CHECK (reason_kind IN ('rule','initial','ytd','ytd_rule')),
+    reason_kind     TEXT NOT NULL CHECK (reason_kind IN
+                        ('rule','initial','ytd','ytd_rule','refill','overflow')),
     reason_id       INTEGER,
     parent_event_id INTEGER REFERENCES transfer_event(id),
     from_holding_id INTEGER REFERENCES holding(id),
@@ -453,12 +480,13 @@ def apply_run_schema(con: sqlite3.Connection) -> None:
 SNAPSHOT_TABLES: tuple[str, ...] = (
     "person",
     "account",
+    "chain",
+    "chain_steps",
     "account_model",
     "account_model_member",
     "calendar",
     "calendar_event",
     "scheduled_transaction",
-    "scheduled_transaction_source",
     "aux_table",
     "scenario",
     "person_lifespan",

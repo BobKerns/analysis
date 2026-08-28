@@ -6,12 +6,14 @@ delta sign when posting a ``transfer_event`` against a liability account in
 either direction so that a payment reduces debt and a draw increases it.
 
 v2 rule kinds: ``fixed_amount``, ``percent_of_balance`` (basis='opening',
-rate from aux_table), ``waterfall_fill`` (drain ordered sources to top up a
-target account), ``refill_transfer`` (conditional fixed top-up when a
-target account falls below a threshold; sources optional),
-``mortgage_payment`` (multi-leg P&I), ``ss_benefit``
+rate from aux_table), ``mortgage_payment`` (multi-leg P&I), ``ss_benefit``
 (COLA-adjusted, claim-age gated), ``rmd`` (annual December, age-gated).
-All v0/v1 rule kinds are now supported.
+
+Liquidity chains (ADR-003 §2.9) replace the old ``waterfall_fill``/
+``refill_transfer`` rule kinds: after each month's rules post, every account
+with ``minimum_balance_cents``/``refill_chain_id`` or
+``maximum_balance_cents``/``overflow_chain_id`` set is settled by recursively
+drawing from (or sweeping into) its configured chain -- see ``_settle_accounts``.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from analysis.sim import registries
 from analysis.sim.runs import finalize_run, open_run_file
 
 __all__ = ["run_scenario", "EngineError"]
@@ -32,8 +35,7 @@ class EngineError(RuntimeError):
 
 
 SUPPORTED_RULE_KINDS = frozenset(
-    {"fixed_amount", "percent_of_balance", "waterfall_fill",
-     "refill_transfer",
+    {"fixed_amount", "percent_of_balance",
     "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator"}
 )
 
@@ -92,6 +94,15 @@ def run_scenario(
         account_kinds: dict[int, str] = {
             r[0]: r[1] for r in con.execute("SELECT id, kind FROM account")
         }
+        account_subkind: dict[int, str] = {
+            r[0]: r[1] for r in con.execute("SELECT id, subkind FROM account")
+        }
+        account_tax_treatment: dict[int, str | None] = {
+            r[0]: r[1] for r in con.execute("SELECT id, tax_treatment FROM account")
+        }
+        account_name: dict[int, str] = {
+            r[0]: r[1] for r in con.execute("SELECT id, name FROM account")
+        }
         account_owner: dict[int, str | None] = {
             r[0]: r[1] for r in con.execute("SELECT id, owner FROM account")
         }
@@ -144,7 +155,8 @@ def run_scenario(
             'FROM calendar_event ORDER BY date, id'
         ).fetchall()
 
-        sources = _load_sources(con)
+        chain_graph = _load_chain_graph(con)
+        settle_order = _settle_order(chain_graph)
         aux = _load_aux(con)
         inflation_indexes = _initialize_inflation_indexes(aux)
         inflation_factor_cache: dict[tuple[str, date, date, str], int] = {}
@@ -285,18 +297,6 @@ def run_scenario(
                                 con, balances, account_kinds, step_id, month_s,
                                 to, frm, -amount, tax_char, tid,
                             )
-                    case "waterfall_fill":
-                        _apply_waterfall_fill(
-                            con, balances, account_kinds, step_id, month_s,
-                            params, sources.get(tid, []), to,
-                            tax_char, tid,
-                        )
-                    case "refill_transfer":
-                        _apply_refill_transfer(
-                            con, balances, account_kinds, step_id, month_s,
-                            params, sources.get(tid, []), frm, to,
-                            fire_count, tax_char, tid,
-                        )
                     case "mortgage_payment":
                         _apply_mortgage_payment(
                             con, balances, account_kinds, step_id, month_s,
@@ -327,6 +327,11 @@ def run_scenario(
                         )
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
+
+            _settle_accounts(
+                con, balances, account_kinds, account_subkind, account_tax_treatment,
+                account_name, step_id, month_s, chain_graph, settle_order,
+            )
 
             con.executemany(
                 "INSERT INTO account_state(step_id, account_id, balance, cost_basis) "
@@ -401,7 +406,7 @@ def _post_transfer(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str,
     from_id: int, to_id: int, amount: int, tax_char: str, reason_id: int,
-    parent_event_id: int | None = None,
+    parent_event_id: int | None = None, *, reason_kind: str = "rule",
 ) -> int | None:
     """Insert one transfer_event and adjust balances. Liability balances
     store debt magnitude; the sign is inverted when posting against them.
@@ -413,8 +418,8 @@ def _post_transfer(
         "INSERT INTO transfer_event("
         "  step_id, date, from_account, to_account, amount, "
         "  tax_character, reason_kind, reason_id, parent_event_id"
-        ") VALUES (?, ?, ?, ?, ?, ?, 'rule', ?, ?)",
-        (step_id, month_s, from_id, to_id, amount, tax_char, reason_id,
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, month_s, from_id, to_id, amount, tax_char, reason_kind, reason_id,
          parent_event_id),
     )
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
@@ -761,72 +766,251 @@ def _lookup_rmd_factor(
     return chosen
 
 
-def _apply_refill_transfer(
-    con, balances: dict[int, int], account_kinds: dict[int, str],
-    step_id: int, month_s: str,
-    params: dict[str, Any], source_ids: list[int],
-    from_id: int, to_id: int, fire_count: int,
-    tax_char: str, tid: int,
-) -> None:
-    refill_cents = params.get("amount_cents")
-    if refill_cents is None:
-        raise EngineError(
-            f"refill_transfer id={tid}: missing amount (refill size)"
+class ChainGraph:
+    """Resolved ``chain``/``chain_steps`` reference graph (ADR-003 §2.9)."""
+
+    __slots__ = ("members", "leaf_account", "minimum_of", "refill_chain_of",
+                 "maximum_of", "overflow_chain_of")
+
+    def __init__(
+        self,
+        members: dict[int, list[tuple[int, int]]],
+        leaf_account: dict[int, int],
+        minimum_of: dict[int, int],
+        refill_chain_of: dict[int, int | None],
+        maximum_of: dict[int, int | None],
+        overflow_chain_of: dict[int, int | None],
+    ) -> None:
+        self.members = members
+        self.leaf_account = leaf_account
+        self.minimum_of = minimum_of
+        self.refill_chain_of = refill_chain_of
+        self.maximum_of = maximum_of
+        self.overflow_chain_of = overflow_chain_of
+
+
+def _load_chain_graph(con) -> ChainGraph:
+    members: dict[int, list[tuple[int, int]]] = {}
+    for chain_id, draw_from_id, threshold in con.execute(
+        "SELECT chain_id, draw_from_chain_id, threshold_cents "
+        "FROM chain_steps ORDER BY chain_id, step_order"
+    ):
+        members.setdefault(chain_id, []).append((draw_from_id, threshold))
+    leaf_account: dict[int, int] = {
+        r[0]: r[1] for r in con.execute(
+            "SELECT id, account_id FROM chain WHERE account_id IS NOT NULL"
         )
-    threshold = int(params.get("threshold_cents", 0))
-    if balances.get(to_id, 0) >= threshold:
-        return
-    needed = int(refill_cents) * fire_count
-    if source_ids:
-        remaining = needed
-        for src_id in source_ids:
-            if remaining <= 0:
-                break
-            available = max(0, balances.get(src_id, 0))
-            take = min(remaining, available)
-            if take <= 0:
+    }
+    minimum_of: dict[int, int] = {}
+    refill_chain_of: dict[int, int | None] = {}
+    maximum_of: dict[int, int | None] = {}
+    overflow_chain_of: dict[int, int | None] = {}
+    for a_id, minimum, refill, maximum, overflow in con.execute(
+        "SELECT id, minimum_balance_cents, refill_chain_id, "
+        "       maximum_balance_cents, overflow_chain_id FROM account"
+    ):
+        minimum_of[a_id] = minimum
+        refill_chain_of[a_id] = refill
+        maximum_of[a_id] = maximum
+        overflow_chain_of[a_id] = overflow
+    return ChainGraph(members, leaf_account, minimum_of, refill_chain_of,
+                       maximum_of, overflow_chain_of)
+
+
+def _chain_leaves(chain_id: int, graph: ChainGraph, seen: set[int]) -> set[int]:
+    """Every real account reachable by walking a chain's steps recursively."""
+    if chain_id in seen:
+        return set()  # graph is validated acyclic at load time; guard anyway
+    seen.add(chain_id)
+    account_id = graph.leaf_account.get(chain_id)
+    if account_id is not None:
+        return {account_id}
+    out: set[int] = set()
+    for draw_from_id, _threshold in graph.members.get(chain_id, []):
+        out |= _chain_leaves(draw_from_id, graph, seen)
+    return out
+
+
+def _settle_order(graph: ChainGraph) -> list[int]:
+    """Accounts with a refill/overflow policy, ordered so a source account's
+    own policy settles before anything downstream draws from or sweeps into
+    it (ADR-003 §2.9) -- a topological sort of the policy-account subgraph.
+    """
+    policy_accounts = {
+        a_id for a_id in graph.minimum_of
+        if graph.refill_chain_of.get(a_id) or graph.overflow_chain_of.get(a_id)
+    }
+    depends_on: dict[int, set[int]] = {a_id: set() for a_id in policy_accounts}
+    for a_id in policy_accounts:
+        for chain_id in (graph.refill_chain_of.get(a_id), graph.overflow_chain_of.get(a_id)):
+            if chain_id is None:
                 continue
-            _post_transfer(
-                con, balances, account_kinds, step_id, month_s,
-                src_id, to_id, take, tax_char, tid,
-            )
-            remaining -= take
-    else:
-        _post_transfer(
-            con, balances, account_kinds, step_id, month_s,
-            from_id, to_id, needed, tax_char, tid,
-        )
+            for leaf in _chain_leaves(chain_id, graph, set()):
+                if leaf in policy_accounts and leaf != a_id:
+                    depends_on[a_id].add(leaf)
+
+    order: list[int] = []
+    visited: set[int] = set()
+
+    def visit(node: int) -> None:
+        if node in visited:
+            return
+        visited.add(node)
+        for dep in depends_on.get(node, ()):
+            visit(dep)
+        order.append(node)
+
+    for node in policy_accounts:
+        visit(node)
+    return order
 
 
-def _apply_waterfall_fill(
-    con, balances: dict[int, int], account_kinds: dict[int, str],
-    step_id: int, month_s: str,
-    params: dict[str, Any], source_ids: list[int],
-    target_id: int,
-    tax_char: str, tid: int,
-) -> None:
-    target_balance = params.get("amount_cents")
-    if target_balance is None:
+def _withdrawal_tax_character(
+    account_id: int,
+    account_tax_treatment: dict[int, str | None],
+    account_subkind: dict[int, str],
+    account_name: dict[int, str],
+) -> str:
+    tax_char = registries.withdrawal_tax_character(
+        account_tax_treatment.get(account_id), account_subkind.get(account_id, ""),
+    )
+    if tax_char is None:
         raise EngineError(
-            f"waterfall_fill id={tid}: missing target balance (amount_cents)"
+            f"chain draw/sweep: account '{account_name.get(account_id)}' is a "
+            "taxable non-cash account; withdrawal tax character needs "
+            "cost-basis tracking, not yet supported"
         )
-    if not source_ids:
-        raise EngineError(f"waterfall_fill id={tid}: no scheduled_transaction_source rows")
-    deficit = int(target_balance) - balances.get(target_id, 0)
-    if deficit <= 0:
-        return
-    for src_id in source_ids:
-        if deficit <= 0:
-            break
-        available = max(0, balances.get(src_id, 0))
-        take = min(deficit, available)
+    return tax_char
+
+
+def _chain_draw(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    account_tax_treatment: dict[int, str | None], account_subkind: dict[int, str],
+    account_name: dict[int, str],
+    step_id: int, month_s: str, graph: ChainGraph,
+    chain_id: int, amount_needed: int, target_account_id: int,
+    *, threshold_cents: int = 0,
+) -> int:
+    """Recursively draw up to ``amount_needed`` into ``target_account_id``.
+
+    Each leg is posted with the concrete source account's own withdrawal tax
+    character -- derived here, at the point the money actually moves, since
+    it depends on which account supplied it (ADR-003 §2.9).
+    """
+    if amount_needed <= 0:
+        return 0
+    account_id = graph.leaf_account.get(chain_id)
+    if account_id is not None:
+        if account_id == target_account_id:
+            return 0
+        available = max(0, balances.get(account_id, 0) - threshold_cents)
+        take = min(amount_needed, available)
         if take <= 0:
-            continue
+            return 0
+        tax_char = _withdrawal_tax_character(
+            account_id, account_tax_treatment, account_subkind, account_name,
+        )
         _post_transfer(
             con, balances, account_kinds, step_id, month_s,
-            src_id, target_id, take, tax_char, tid,
+            account_id, target_account_id, take, tax_char, account_id,
+            parent_event_id=None, reason_kind="refill",
         )
-        deficit -= take
+        return take
+    total = 0
+    for draw_from_id, step_threshold in graph.members.get(chain_id, []):
+        remaining = amount_needed - total
+        if remaining <= 0:
+            break
+        total += _chain_draw(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id, month_s, graph,
+            draw_from_id, remaining, target_account_id,
+            threshold_cents=step_threshold,
+        )
+    return total
+
+
+def _chain_sweep(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    account_tax_treatment: dict[int, str | None], account_subkind: dict[int, str],
+    account_name: dict[int, str],
+    step_id: int, month_s: str, graph: ChainGraph,
+    chain_id: int, amount_available: int, source_account_id: int,
+) -> int:
+    """Recursively sweep up to ``amount_available`` out of ``source_account_id``.
+
+    Mirrors ``_chain_draw``: each destination's own ``maximum_balance_cents``
+    caps how much it accepts, and any remainder falls through to the next step.
+    """
+    if amount_available <= 0:
+        return 0
+    account_id = graph.leaf_account.get(chain_id)
+    if account_id is not None:
+        if account_id == source_account_id:
+            return 0
+        cap = graph.maximum_of.get(account_id)
+        room = (
+            amount_available if cap is None
+            else max(0, cap - max(0, balances.get(account_id, 0)))
+        )
+        put = min(amount_available, room)
+        if put <= 0:
+            return 0
+        tax_char = _withdrawal_tax_character(
+            source_account_id, account_tax_treatment, account_subkind, account_name,
+        )
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            source_account_id, account_id, put, tax_char, source_account_id,
+            parent_event_id=None, reason_kind="overflow",
+        )
+        return put
+    total = 0
+    for draw_into_id, _threshold in graph.members.get(chain_id, []):
+        remaining = amount_available - total
+        if remaining <= 0:
+            break
+        total += _chain_sweep(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id, month_s, graph,
+            draw_into_id, remaining, source_account_id,
+        )
+    return total
+
+
+def _settle_accounts(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    account_subkind: dict[int, str], account_tax_treatment: dict[int, str | None],
+    account_name: dict[int, str],
+    step_id: int, month_s: str, graph: ChainGraph, settle_order: list[int],
+) -> None:
+    """Refill/overflow pass (ADR-003 §2.9), run once after each month's rules.
+
+    ``settle_order`` is precomputed once per run so an account's own
+    refill/overflow already reflects this month's activity before anything
+    downstream draws from or sweeps into it.
+    """
+    for account_id in settle_order:
+        minimum = graph.minimum_of.get(account_id, 0)
+        deficit = minimum - balances.get(account_id, 0)
+        refill_chain = graph.refill_chain_of.get(account_id)
+        if deficit > 0 and refill_chain is not None:
+            _chain_draw(
+                con, balances, account_kinds, account_tax_treatment, account_subkind,
+                account_name, step_id, month_s, graph,
+                refill_chain, deficit, account_id,
+            )
+
+        maximum = graph.maximum_of.get(account_id)
+        overflow_chain = graph.overflow_chain_of.get(account_id)
+        if maximum is not None and overflow_chain is not None:
+            excess = balances.get(account_id, 0) - maximum
+            if excess > 0:
+                _chain_sweep(
+                    con, balances, account_kinds, account_tax_treatment, account_subkind,
+                    account_name, step_id, month_s, graph,
+                    overflow_chain, excess, account_id,
+                )
 
 
 def _apply_tax_accumulator(
@@ -1057,16 +1241,6 @@ def _progressive_tax_cents(taxable_income: int, brackets: list[tuple[int, int]])
         if taxable_slice > 0:
             tax += (taxable_slice * rate_micros) // 1_000_000
     return tax
-
-
-def _load_sources(con) -> dict[int, list[int]]:
-    out: dict[int, list[int]] = {}
-    for tid, _pos, aid in con.execute(
-        "SELECT scheduled_transaction_id, position, account_id "
-        "FROM scheduled_transaction_source ORDER BY scheduled_transaction_id, position"
-    ):
-        out.setdefault(tid, []).append(aid)
-    return out
 
 
 def _load_aux(con) -> dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]:

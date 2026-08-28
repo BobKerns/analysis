@@ -22,8 +22,8 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 }
 
 AMOUNT_RULE_KINDS: set[str] = {
-    "fixed_amount", "percent_of_balance", "rmd", "waterfall_fill",
-    "refill_transfer", "ss_benefit", "tax_accumulator", "mortgage_payment",
+    "fixed_amount", "percent_of_balance", "rmd",
+    "ss_benefit", "tax_accumulator", "mortgage_payment",
 }
 
 # Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
@@ -43,6 +43,38 @@ SERIES_RULE_KINDS: dict[str, str] = {
     "ss_benefit": "COLA series",
 }
 
+# tax_treatment -> withdrawal tax_character, for chain legs (ADR-003 §2.9): the
+# character of a leg drawn from an account depends on which concrete account
+# actually supplied the money, so this is looked up per-leg at runtime rather
+# than authored on the scheduled_transaction row. 'taxable' is deliberately
+# absent: `checking`/`savings` withdrawals return already-taxed principal
+# ('none'), but a taxable brokerage withdrawal may be `ltcg` or
+# `return_of_capital` depending on cost basis -- state the engine doesn't yet
+# track. Callers must special-case 'taxable' by subkind (see
+# `withdrawal_tax_character`) rather than treat it as a flat lookup.
+TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER: dict[str, str] = {
+    "tax_deferred": "tax_deferred_out",
+    "tax_free": "tax_free",
+    "none": "none",
+}
+
+# Subkinds whose 'taxable' tax_treatment still withdraws tax-free (principal,
+# already taxed when earned) -- i.e. cash-like accounts, not brokerage.
+TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX: set[str] = {"checking", "savings"}
+
+
+def withdrawal_tax_character(tax_treatment: str | None, subkind: str) -> str | None:
+    """The tax_character of a leg drawn from an account with these attributes.
+
+    Returns ``None`` when the account's tax_treatment/subkind combination isn't
+    supported yet (today: a `taxable` account that isn't cash-like, e.g.
+    `brokerage_taxable`, which needs cost-basis tracking not yet implemented) --
+    callers should raise rather than guess.
+    """
+    if tax_treatment == "taxable":
+        return "none" if subkind in TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX else None
+    return TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER.get(tax_treatment or "none", "none")
+
 CALENDAR_EVENT_KINDS: set[str] = {
     "set_rate", "set_amount", "add_scheduled", "retire_scheduled", "swap_aux_table",
     "one_off_transfer", "sell_asset", "buy_asset", "life_transition",
@@ -60,8 +92,14 @@ TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 # Canonical accounts.csv column order (ADR-003 §4.5).
 ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
     "name", "kind", "subkind", "owner", "tax_treatment", "series",
-    "tax_character", "opened", "closed", "meta_json", "tags",
+    "tax_character", "minimum_balance", "refill_chain",
+    "maximum_balance", "overflow_chain", "opened", "closed", "meta_json", "tags",
 )
+
+# Kinds a chains/<kind>__<name>.csv file may declare (ADR-003 §2.9); a closed
+# registry like every other file-kind vocabulary, extensible without engine
+# changes (a future 'expense'/'income' entry would enable deposit-only chains).
+CHAIN_KINDS: set[str] = {"asset"}
 
 
 class GrowthCounterparty(NamedTuple):
@@ -110,8 +148,6 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     "mortgage_payment": 300,
     "tax_accumulator": 400,
     "rmd": 500,
-    "refill_transfer": 800,
-    "waterfall_fill": 900,
 }
 
 # Aux file kind -> required columns (ADR-003 §4.4).

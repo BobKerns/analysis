@@ -49,20 +49,23 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         }
         assert kinds == {
             "fixed_amount", "percent_of_balance", "mortgage_payment",
-            "ss_benefit", "rmd", "waterfall_fill",
+            "ss_benefit", "rmd",
         }
 
         cal_kinds = {r["kind"] for r in con.execute("SELECT kind FROM calendar_event")}
         assert {"set_rate", "retire_scheduled", "set_amount", "one_off_transfer"} <= cal_kinds
 
-        first_source_id, from_account_id = con.execute("""
-            SELECT s.account_id, st.from_account
-            FROM scheduled_transaction st
-            JOIN scheduled_transaction_source s
-                ON s.scheduled_transaction_id = st.id
-            WHERE st.name = 'waterfall_topup' AND s.position = 1
-        """).fetchone()
-        assert first_source_id == from_account_id
+        chain_row = con.execute("""
+            SELECT c.id, c.name, cs.draw_from_chain_id, cs.threshold_cents
+            FROM chain c
+            JOIN chain_steps cs ON cs.chain_id = c.id
+            WHERE c.name = 'asset_checking_liquidity'
+            ORDER BY cs.step_order
+        """).fetchall()
+        assert len(chain_row) == 2
+        assert {r[1] for r in chain_row} == {"asset_checking_liquidity"}
+        assert chain_row[0][2] == con.execute("SELECT id FROM chain WHERE name = 'Asset_Savings'").fetchone()[0]
+        assert chain_row[1][2] == con.execute("SELECT id FROM chain WHERE name = 'Asset_TraditionalIRA_Alice'").fetchone()[0]
 
         rmd_rows = con.execute(
             "SELECT COUNT(*) FROM aux_table WHERE kind = 'rmd_factors'"
@@ -106,7 +109,7 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
     )
     for filename in (
         "accounts.csv", "account_values.csv", "scheduled.csv",
-        "waterfall_sources.csv", "calendar.csv", "year_to_date.csv",
+        "calendar.csv", "year_to_date.csv",
     ):
         header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
         (child / filename).write_text(header + "\n", encoding="utf-8")
@@ -119,7 +122,7 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
     )
     tables = (
         "account", "account_model_member", "scheduled_transaction",
-        "scheduled_transaction_source", "calendar_event", "year_to_date",
+        "calendar_event", "year_to_date",
     )
     with sqlite3.connect(current.intent_path) as current_con, \
             sqlite3.connect(tight.intent_path) as tight_con:
@@ -303,11 +306,37 @@ def test_invalid_subkind_rejected(tmp_path: Path) -> None:
 
 
 def test_waterfall_from_account_mismatch_rejected(tmp_path: Path) -> None:
-    bad = tmp_path / "repo"
-    shutil.copytree(FIXTURE_DATA / "bad_waterfall", bad)
+    repo = tmp_path / "repo"
+    scenario_dir = repo / "scenarios" / "x"
+    scenario_dir.mkdir(parents=True)
+
+    (repo / "persons.csv").write_text(
+        "id,display,birthdate,role,meta_json\n"
+        "alice,Alice,1980-01-01,,{}\n",
+        encoding="utf-8",
+    )
+    (scenario_dir / "scenario.csv").write_text(
+        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
+        "x,,m,2026-01-31,2026-12-31,,,test,{}\n",
+        encoding="utf-8",
+    )
+    (scenario_dir / "accounts.csv").write_text(
+        "name,kind,subkind,owner,tax_treatment,series,tax_character,minimum_balance,"
+        "refill_chain,maximum_balance,overflow_chain,opened,closed,meta_json,tags\n"
+        "Asset_Checking,asset,checking,,taxable,,,,missing,,,,,{}\n",
+        encoding="utf-8",
+    )
+    for filename, header in {
+        "account_values.csv": "account_name,opening_balance,opening_cost_basis,prior_year_end_balance",
+        "scheduled.csv": "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,interest_account,person,series,rate_micros,claim_age,amount,base_date,inflation_cadence,tax_character,start,end,priority,ytd_amount,ytd_preroll,description,meta_json,params_json,tags",
+        "calendar.csv": "date,kind,scheduled_name,account_1,account_2,series,amount,param_date,tax_character,payload_json,description,tags",
+        "year_to_date.csv": "name,amount,tax_character,year,from_account,to_account",
+    }.items():
+        (scenario_dir / filename).write_text(header + "\n", encoding="utf-8")
+
     with pytest.raises(LoadError) as ei:
-        load_scenario(bad, "x", intent_dir=tmp_path / "out")
-    assert any("ADR-003 §2.4" in issue for issue in ei.value.issues)
+        load_scenario(repo, "x", intent_dir=tmp_path / "out")
+    assert any("refill_chain 'missing'" in issue for issue in ei.value.issues)
 
 
 # ---- ADR-004 git provenance ----

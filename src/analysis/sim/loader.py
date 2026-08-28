@@ -309,7 +309,7 @@ def _read_scenario_inputs(
     *,
     stack: tuple[str, ...] = (),
 ) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]],
-           list[dict[str, str]], list[dict[str, str]], list[dict[str, str]],
+           list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]]]:
     """Read a scenario and recursively overlay any declared parent."""
     scenario_dir = data_dir / "scenarios" / scenario_name
@@ -334,11 +334,11 @@ def _read_scenario_inputs(
             data_dir, parent_name, issues, stack=(*stack, scenario_name)
         )
         parent_scenario, parent_accounts, parent_models, parent_scheduled, \
-            parent_waterfall, parent_calendar, parent_lifespan, parent_ytd = parent
+            parent_calendar, parent_lifespan, parent_ytd = parent
     else:
         parent_scenario = {}
         parent_accounts = parent_models = parent_scheduled = []
-        parent_waterfall = parent_calendar = parent_lifespan = []
+        parent_calendar = parent_lifespan = []
         parent_ytd = []
 
     def read_overlay(filename: str, *, required: bool = False) -> list[dict[str, str]]:
@@ -360,10 +360,6 @@ def _read_scenario_inputs(
     scheduled_rows = _merge_scenario_rows(
         parent_scheduled, read_overlay("scheduled.csv", required=True), ("name",)
     )
-    waterfall_rows = _merge_scenario_rows(
-        parent_waterfall, read_overlay("waterfall_sources.csv"),
-        ("scheduled_name", "position"),
-    )
     calendar_rows = _merge_scenario_rows(
         parent_calendar, read_overlay("calendar.csv"),
         ("date", "kind", "scheduled_name", "account_1", "account_2", "series", "amount"),
@@ -377,7 +373,7 @@ def _read_scenario_inputs(
     )
     return (
         scenario_row, accounts, model_rows, scheduled_rows,
-        waterfall_rows, calendar_rows, lifespan_rows, ytd_rows,
+        calendar_rows, lifespan_rows, ytd_rows,
     )
 
 
@@ -436,8 +432,9 @@ def load_scenario(
     persons = _read_csv(data_dir / "persons.csv", issues)
     (
         scenario_row, accounts, model_rows, scheduled_rows,
-        waterfall_rows, calendar_rows, lifespan_rows, ytd_rows,
+        calendar_rows, lifespan_rows, ytd_rows,
     ) = _read_scenario_inputs(data_dir, scenario_name, issues)
+    chains = _read_chain_files(data_dir, scenario_name, issues)
 
 
     aux_rows = _read_aux_dir(data_dir / "aux", issues, money_resolver=money_resolver)
@@ -446,7 +443,7 @@ def load_scenario(
         accounts, model_rows, scheduled_rows, scenario_row, issues,
     )
 
-    _validate_accounts(accounts, issues)
+    _validate_accounts(accounts, issues, money_resolver=money_resolver)
     _validate_account_model_money(
         model_rows,
         issues,
@@ -456,7 +453,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, accounts, issues)
     _validate_calendar(calendar_rows, issues)
-    _validate_waterfall(waterfall_rows, scheduled_rows, issues)
+    _validate_chains(chains, accounts, issues, money_resolver=money_resolver)
     _validate_lifespan(lifespan_rows, persons, issues)
     _validate_year_to_date(ytd_rows, accounts, issues, money_resolver=money_resolver)
 
@@ -494,7 +491,7 @@ def load_scenario(
             aux_rows=aux_rows,
             scenario_row=scenario_row,
             scheduled_rows=scheduled_rows,
-            waterfall_rows=waterfall_rows,
+            chains=chains,
             calendar_rows=calendar_rows,
             lifespan_rows=lifespan_rows,
             ytd_rows=ytd_rows,
@@ -712,7 +709,9 @@ def _expand_account_growth(
 
 # ---------- validation ----------
 
-def _validate_accounts(rows: list[dict[str, str]], issues: list[str]) -> None:
+def _validate_accounts(
+    rows: list[dict[str, str]], issues: list[str], *, money_resolver: _MoneyReferenceResolver,
+) -> None:
     seen: set[str] = set()
     for i, row in enumerate(rows, start=2):
         name = row.get("name", "")
@@ -734,6 +733,13 @@ def _validate_accounts(rows: list[dict[str, str]], issues: list[str]) -> None:
         tt = row.get("tax_treatment", "")
         if tt and tt not in registries.TAX_TREATMENTS:
             issues.append(f"accounts.csv row {i} ({name}): unknown tax_treatment '{tt}'")
+        for column in ("minimum_balance", "maximum_balance"):
+            value = row.get(column, "")
+            if value:
+                try:
+                    _dollars_to_cents(value, resolver=money_resolver)
+                except ValueError as e:
+                    issues.append(f"accounts.csv row {i} ({name}): {column} {e}")
         _validate_tags("accounts.csv", i, name, row.get("tags", ""), issues)
 
 
@@ -954,44 +960,120 @@ def _validate_tags(file: str, row_i: int, name: str, raw: str,
         issues.append(f"{file} row {row_i} ({name}): {e}")
 
 
-def _validate_waterfall(
-    waterfall_rows: list[dict[str, str]],
-    scheduled_rows: list[dict[str, str]],
+def _chain_name_from_filename(path: Path) -> tuple[str, str] | None:
+    """Parse a ``chains/<kind>__<name>.csv`` filename into ``(kind, name)``."""
+    stem = path.stem
+    if "__" not in stem:
+        return None
+    kind, name = stem.split("__", 1)
+    return kind, name
+
+
+def _read_chain_files(
+    data_dir: Path, scenario_name: str, issues: list[str], *, stack: tuple[str, ...] = (),
+) -> dict[str, tuple[str, list[dict[str, str]]]]:
+    """Read ``chains/*.csv`` for a scenario, recursively overlaying any parent.
+
+    Unlike the other per-scenario CSVs, chains merge by WHOLE FILE per chain
+    name (ADR-003 §2.9): a child's ``chains/<kind>__<name>.csv`` entirely
+    replaces the parent's file of that name; a chain not overridden by the
+    child is inherited unchanged.
+    """
+    scenario_dir = data_dir / "scenarios" / scenario_name
+    if scenario_name in stack:
+        raise LoadError([f"scenario inheritance cycle: {' -> '.join((*stack, scenario_name))}"])
+    scenario_rows = _read_csv(scenario_dir / "scenario.csv", issues, optional=True)
+    parent_name = scenario_rows[0].get("parent_scenario", "") if scenario_rows else ""
+    chains: dict[str, tuple[str, list[dict[str, str]]]] = {}
+    if parent_name:
+        chains.update(
+            _read_chain_files(data_dir, parent_name, issues, stack=(*stack, scenario_name))
+        )
+    chains_dir = scenario_dir / "chains"
+    if chains_dir.is_dir():
+        for path in sorted(chains_dir.glob("*.csv")):
+            parsed = _chain_name_from_filename(path)
+            if parsed is None:
+                issues.append(f"chains/{path.name}: filename must be '<kind>__<name>.csv'")
+                continue
+            kind, name = parsed
+            chains[name] = (kind, _read_csv(path, issues))
+    return chains
+
+
+def _reject_cycles(edges: dict[str, set[str]], issues: list[str], *, label: str) -> None:
+    """Report a load error for any cycle in a name -> {referenced names} graph."""
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = dict.fromkeys(edges, WHITE)
+
+    def visit(node: str, path: list[str]) -> None:
+        color[node] = GRAY
+        for neighbor in edges.get(node, ()):
+            if color.get(neighbor, WHITE) == GRAY:
+                issues.append(f"{label}: cycle detected: {' -> '.join((*path, neighbor))}")
+            elif color.get(neighbor, WHITE) == WHITE:
+                visit(neighbor, [*path, neighbor])
+        color[node] = BLACK
+
+    for node in list(edges):
+        if color[node] == WHITE:
+            visit(node, [node])
+
+
+def _validate_chains(
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
+    accounts: list[dict[str, str]],
     issues: list[str],
+    *,
+    money_resolver: _MoneyReferenceResolver,
 ) -> None:
-    sched_by_name = {r["name"]: r for r in scheduled_rows if r.get("name")}
-    by_sched: dict[str, list[dict[str, str]]] = {}
-    for i, row in enumerate(waterfall_rows, start=2):
-        name = row.get("scheduled_name", "")
-        if not name:
-            issues.append(f"waterfall_sources.csv row {i}: missing scheduled_name")
-            continue
-        sched = sched_by_name.get(name)
-        if sched is None:
+    account_names = {a["name"] for a in accounts if a.get("name")}
+    for name in sorted(set(chains) & account_names):
+        issues.append(f"chains/*.csv: chain name '{name}' collides with an account name")
+    resolvable = account_names | set(chains)
+
+    edges: dict[str, set[str]] = {name: set() for name in chains}
+    for name, (kind, rows) in chains.items():
+        if kind not in registries.CHAIN_KINDS:
             issues.append(
-                f"waterfall_sources.csv row {i}: scheduled_name '{name}' not in scheduled.csv"
+                f"chains/{kind}__{name}.csv: unknown kind '{kind}'; "
+                f"allowed: {sorted(registries.CHAIN_KINDS)}"
             )
-            continue
-        if sched.get("amount_rule_kind") not in ("waterfall_fill", "refill_transfer"):
-            issues.append(
-                f"waterfall_sources.csv row {i}: '{name}' is not a waterfall_fill "
-                "or refill_transfer rule"
-            )
-        by_sched.setdefault(name, []).append(row)
-    for name, group in by_sched.items():
-        positions = sorted(int(r["position"]) for r in group if r.get("position"))
-        if positions != list(range(1, len(positions) + 1)):
-            issues.append(
-                f"waterfall_sources.csv: '{name}' positions not 1..N (got {positions})"
-            )
-        first = next((r for r in group if int(r.get("position") or 0) == 1), None)
-        sched = sched_by_name.get(name)
-        if first and sched and sched.get("from_account") != first.get("account_name"):
-            issues.append(
-                f"scheduled.csv '{name}': from_account='{sched.get('from_account')}' "
-                f"must equal waterfall_sources position-1 '{first.get('account_name')}' "
-                "(ADR-003 §2.4)"
-            )
+        if not rows:
+            issues.append(f"chains/{kind}__{name}.csv: must have at least one row")
+        for i, row in enumerate(rows, start=2):
+            member = row.get("account_name", "")
+            if not member:
+                issues.append(f"chains/{kind}__{name}.csv row {i}: missing account_name")
+                continue
+            if member not in resolvable:
+                issues.append(
+                    f"chains/{kind}__{name}.csv row {i}: '{member}' is not a known "
+                    "account or chain"
+                )
+            elif member in chains:
+                edges[name].add(member)
+            threshold = row.get("threshold", "")
+            if threshold:
+                try:
+                    _dollars_to_cents(threshold, resolver=money_resolver)
+                except ValueError as e:
+                    issues.append(f"chains/{kind}__{name}.csv row {i}: threshold {e}")
+
+    for a in accounts:
+        for column in ("refill_chain", "overflow_chain"):
+            target = a.get(column, "")
+            if not target:
+                continue
+            if target not in resolvable:
+                issues.append(
+                    f"accounts.csv ({a.get('name', '')}): {column} '{target}' is not "
+                    "a known account or chain"
+                )
+            elif target in chains:
+                edges.setdefault(a["name"], set()).add(target)
+
+    _reject_cycles(edges, issues, label="chains/*.csv")
 
 
 def _validate_lifespan(
@@ -1051,7 +1133,7 @@ def _write_intent(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     scenario_row: dict[str, str],
     scheduled_rows: list[dict[str, str]],
-    waterfall_rows: list[dict[str, str]],
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
     calendar_rows: list[dict[str, str]],
     lifespan_rows: list[dict[str, str]],
     ytd_rows: list[dict[str, str]],
@@ -1077,11 +1159,16 @@ def _write_intent(
     for a in accounts:
         cur = con.execute(
             "INSERT INTO account(name, kind, subkind, owner, tax_treatment, "
-            "opened, closed, meta_json) VALUES (?,?,?,?,?,?,?,?)",
+            "opened, closed, minimum_balance_cents, maximum_balance_cents, "
+            "meta_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 a["name"], a["kind"], a["subkind"],
                 a.get("owner") or None, a.get("tax_treatment") or None,
                 a.get("opened") or None, a.get("closed") or None,
+                _dollars_to_cents(a["minimum_balance"], resolver=money_resolver)
+                if a.get("minimum_balance") else 0,
+                _dollars_to_cents(a["maximum_balance"], resolver=money_resolver)
+                if a.get("maximum_balance") else None,
                 a.get("meta_json") or "{}",
             ),
         )
@@ -1089,6 +1176,52 @@ def _write_intent(
         _insert_tags(con, cur.lastrowid, a.get("tags", ""),
                      "account_tag", "account_id", tag_cache)
     counts["account"] = len(accounts)
+
+    # Liquidity chains (ADR-003 §2.9): one implicit leaf chain per real account,
+    # plus one interior chain per chains/*.csv file, in one shared name space.
+    chain_ids: dict[str, int] = {}
+    for a in accounts:
+        cur = con.execute(
+            "INSERT INTO chain(name, kind, account_id) VALUES (?,?,?)",
+            (a["name"], a["kind"], account_ids[a["name"]]),
+        )
+        chain_ids[a["name"]] = cur.lastrowid
+    for name, (kind, _rows) in chains.items():
+        cur = con.execute(
+            "INSERT INTO chain(name, kind, account_id) VALUES (?,?,NULL)",
+            (name, kind),
+        )
+        chain_ids[name] = cur.lastrowid
+    counts["chain"] = len(chain_ids)
+
+    step_count = 0
+    for name, (_kind, rows) in chains.items():
+        for i, row in enumerate(rows, start=1):
+            con.execute(
+                "INSERT INTO chain_steps(chain_id, step_order, draw_from_chain_id, "
+                "threshold_cents) VALUES (?,?,?,?)",
+                (
+                    chain_ids[name], i, chain_ids[row["account_name"]],
+                    _dollars_to_cents(row["threshold"], resolver=money_resolver)
+                    if row.get("threshold") else 0,
+                ),
+            )
+            step_count += 1
+    counts["chain_steps"] = step_count
+
+    for a in accounts:
+        refill = a.get("refill_chain") or None
+        overflow = a.get("overflow_chain") or None
+        if refill or overflow:
+            con.execute(
+                "UPDATE account SET refill_chain_id = ?, overflow_chain_id = ? "
+                "WHERE id = ?",
+                (
+                    chain_ids[refill] if refill else None,
+                    chain_ids[overflow] if overflow else None,
+                    account_ids[a["name"]],
+                ),
+            )
 
     cur = con.execute(
         "INSERT INTO account_model(name, description, created_at) VALUES (?,?,?)",
@@ -1184,18 +1317,6 @@ def _write_intent(
                      "scheduled_transaction_tag", "scheduled_transaction_id",
                      tag_cache)
     counts["scheduled_transaction"] = len(scheduled_rows)
-
-    for w in waterfall_rows:
-        con.execute(
-            "INSERT INTO scheduled_transaction_source("
-            "scheduled_transaction_id, position, account_id) VALUES (?,?,?)",
-            (
-                sched_ids[w["scheduled_name"]],
-                int(w["position"]),
-                account_ids[w["account_name"]],
-            ),
-        )
-    counts["scheduled_transaction_source"] = len(waterfall_rows)
 
     for kind, series, payload, eff in aux_rows:
         con.execute(

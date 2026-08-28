@@ -247,29 +247,29 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
             "SELECT COUNT(*) FROM transfer_event WHERE step_id=? AND reason_id=?",
             (steps[139]["id"], rmd_id),
         ).fetchone()[0] == 0
-        # Dec 2038: 50_000_000 / 26.5 = 1_886_792 (floor).
+        # Dec 2038: RMD off Asset_TraditionalIRA_Alice's balance at that point
+        # (which now also reflects the asset_checking_liquidity chain's earlier
+        # draws via the automatic settle pass, ADR-003 §2.9).
         rmd_2038 = con.execute(
             "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
             (steps[151]["id"], rmd_id),
         ).fetchone()[0]
-        assert rmd_2038 == 1_886_792
+        assert rmd_2038 == 702_471
         ira_2038 = con.execute(
             "SELECT balance FROM account_state WHERE step_id=? AND account_id=?",
             (steps[151]["id"], ira_id),
         ).fetchone()[0]
-        assert ira_2038 == 48_113_208
-        # Dec 2039: 48_113_208 / 25.5 = 1_886_792.
+        assert ira_2038 == 15_032_392
         rmd_2039 = con.execute(
             "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
             (steps[163]["id"], rmd_id),
         ).fetchone()[0]
-        assert rmd_2039 == 1_886_792
-        # Dec 2040: 46_226_416 / 24.6 = 1_879_122.
+        assert rmd_2039 == 589_505
         rmd_2040 = con.execute(
             "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
             (steps[175]["id"], rmd_id),
         ).fetchone()[0]
-        assert rmd_2040 == 1_879_122
+        assert rmd_2040 == 486_590
     finally:
         con.close()
 
@@ -287,9 +287,8 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         #   salary_alice retires 2028-06-30 (step 25, fires 0..25 = 26)
         #   salary_bob   retires 2030-12-31 (step 55, fires 0..55 = 56)
         #   one_off_transfer 2029-03-31 synthesizes 1 fixed_amount rule.
-        # waterfall_topup fires whenever checking drains post-retirement (75
-        # times; CPI-inflated salary/living/housing/healthcare shift the exact
-        # count vs. flat amounts).
+        # The asset_checking_liquidity settle pass (ADR-003 §2.9) posts its own
+        # 'refill' legs outside reason_kind='rule', so it's checked separately.
         per_rule = dict(con.execute(
             "SELECT st.name, COUNT(*) FROM transfer_event te "
             "JOIN scheduled_transaction st ON st.id = te.reason_id "
@@ -307,7 +306,6 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         assert per_rule["ss_alice"] == 176 - 70
         assert per_rule["ss_bob"] == 176 - 135
         assert per_rule["rmd_alice"] == 3
-        assert per_rule["waterfall_topup"] == 75
         oneoff_count = sum(
             v for k, v in per_rule.items() if k.startswith("oneoff_evt_")
         )
@@ -316,6 +314,12 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         assert con.execute(
             "SELECT COUNT(*) FROM transfer_event WHERE reason_kind = 'rule'"
         ).fetchone()[0] == expected_rule_events
+        # The settle pass draws Asset_Checking's refill_chain (asset_checking_
+        # liquidity: Asset_Savings then Asset_TraditionalIRA_Alice) whenever
+        # checking drains below its $2,000 minimum_balance.
+        assert con.execute(
+            "SELECT COUNT(*) FROM transfer_event WHERE reason_kind = 'refill'"
+        ).fetchone()[0] > 0
         # Fixture's year_to_date.csv (3 rows) posts once, balance-neutral.
         assert con.execute(
             "SELECT COUNT(*) FROM transfer_event WHERE reason_kind = 'ytd'"
@@ -380,171 +384,144 @@ def _append_scheduled(path: Path, **fields: str) -> None:
     df.to_csv(path, index=False)
 
 
-def test_refill_transfer_no_sources_fires_only_when_below_threshold(
-    tmp_path: Path,
-) -> None:
-    """A refill_transfer with no waterfall_sources draws from from_account
-    only when the to_account opening balance is below threshold."""
-    repo = _clone_prototype(tmp_path)
-    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    # Threshold 2_000_000 cents = $20,000; refill = $5,000.
-    _append_scheduled(
-        sched_csv,
-        name="refill_check",
-        from_account="Asset_Savings",
-        to_account="Asset_Checking",
-        cadence="monthly",
-        amount_rule_kind="refill_transfer",
-        amount="5000.00",
-        tax_character="none",
-        start="2026-05-31",
-        priority="800",
-        description="refill checking",
-        meta_json="{}",
-        params_json='{"threshold_cents": 2000000}',
-    )
-    intent_path = load_scenario(
-        repo, "retire_alice",
-        intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    run_path = tmp_path / "r.sqlite3"
-    run_scenario(
-        intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
-    )
+def test_chain_draw_single_leaf_account_respects_threshold() -> None:
+    """_chain_draw on a bare leaf chain (a real account) draws only down to
+    its threshold_cents floor, and never draws the target from itself."""
+    from analysis.sim.engine import ChainGraph, _chain_draw
 
-    con = sqlite3.connect(run_path)
+    balances = {1: 100_000, 2: 500_000}
+    account_kinds = {1: "asset", 2: "asset"}
+    account_tax_treatment = {1: "taxable", 2: "taxable"}
+    account_subkind = {1: "checking", 2: "savings"}
+    account_name = {1: "Checking", 2: "Savings"}
+    graph = ChainGraph({}, {10: 2}, {}, {}, {}, {})
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, reason_kind, "
+        "reason_id, parent_event_id)"
+    )
     try:
-        rid = con.execute(
-            "SELECT id FROM scheduled_transaction WHERE name='refill_check'"
-        ).fetchone()[0]
-        chk_id = con.execute(
-            "SELECT id FROM account WHERE name='Asset_Checking'"
-        ).fetchone()[0]
-        sav_id = con.execute(
-            "SELECT id FROM account WHERE name='Asset_Savings'"
-        ).fetchone()[0]
-        rows = con.execute(
-            "SELECT amount, from_account, to_account FROM transfer_event "
-            "WHERE reason_id=?", (rid,),
-        ).fetchall()
-        # Every firing must transfer exactly $5,000 from savings to checking.
-        assert rows, "refill_check should fire at least once"
-        for amt, frm, to in rows:
-            assert amt == 500_000
-            assert frm == sav_id
-            assert to == chk_id
+        taken = _chain_draw(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id=1, month_s="2026-05-31", graph=graph,
+            chain_id=10, amount_needed=1_000_000, target_account_id=1,
+            threshold_cents=100_000,
+        )
+        assert taken == 400_000  # 500_000 available above the 100_000 floor
+        assert balances[2] == 100_000
+        assert balances[1] == 500_000
+        row = con.execute(
+            "SELECT from_account, to_account, amount, tax_character, reason_kind "
+            "FROM transfer_event"
+        ).fetchone()
+        assert row == (2, 1, 400_000, "none", "refill")
     finally:
         con.close()
 
 
-def test_refill_transfer_skips_when_above_threshold(tmp_path: Path) -> None:
-    """A refill_transfer with a very negative threshold never fires."""
-    repo = _clone_prototype(tmp_path)
-    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    _append_scheduled(
-        sched_csv,
-        name="refill_never",
-        from_account="Asset_Savings",
-        to_account="Asset_Checking",
-        cadence="monthly",
-        amount_rule_kind="refill_transfer",
-        amount="1000.00",
-        tax_character="none",
-        start="2026-05-31",
-        priority="800",
-        description="never fires",
-        meta_json="{}",
-        params_json='{"threshold_cents": -1000000000}',
+def test_chain_draw_never_draws_target_from_itself() -> None:
+    from analysis.sim.engine import ChainGraph, _chain_draw
+
+    balances = {1: 100_000}
+    graph = ChainGraph({}, {10: 1}, {}, {}, {}, {})
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, reason_kind, "
+        "reason_id, parent_event_id)"
     )
-    intent_path = load_scenario(
-        repo, "retire_alice",
-        intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    run_path = tmp_path / "r.sqlite3"
-    run_scenario(
-        intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
-    )
-    con = sqlite3.connect(run_path)
     try:
-        fires = con.execute(
-            "SELECT COUNT(*) FROM transfer_event te "
-            "JOIN scheduled_transaction st ON st.id=te.reason_id "
-            "WHERE st.name='refill_never'"
-        ).fetchone()[0]
-        assert fires == 0
+        taken = _chain_draw(
+            con, balances, {1: "asset"}, {1: "taxable"}, {1: "checking"},
+            {1: "Checking"}, step_id=1, month_s="2026-05-31", graph=graph,
+            chain_id=10, amount_needed=50_000, target_account_id=1,
+        )
+        assert taken == 0
+        assert con.execute("SELECT COUNT(*) FROM transfer_event").fetchone()[0] == 0
     finally:
         con.close()
 
 
-def test_refill_transfer_with_sources_drains_waterfall(tmp_path: Path) -> None:
-    """When waterfall_sources rows exist, refill_transfer drains them in
-    order until the fixed refill amount is satisfied."""
-    repo = _clone_prototype(tmp_path)
-    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    wf_csv = repo / "scenarios" / "retire_alice" / "waterfall_sources.csv"
-    _append_scheduled(
-        sched_csv,
-        name="refill_check_wf",
-        from_account="Asset_Savings",
-        to_account="Asset_Checking",
-        cadence="monthly",
-        amount_rule_kind="refill_transfer",
-        amount="3000.00",
-        tax_character="none",
-        start="2026-05-31",
-        priority="800",
-        description="refill via waterfall",
-        meta_json="{}",
-        params_json='{"threshold_cents": 2000000}',
-    )
-    wf_csv.write_text(
-        wf_csv.read_text()
-        + "refill_check_wf,1,Asset_Savings\n"
-        + "refill_check_wf,2,Asset_Brokerage_Joint\n"
-    )
-    intent_path = load_scenario(
-        repo, "retire_alice",
-        intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    run_path = tmp_path / "r.sqlite3"
-    run_scenario(
-        intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
-    )
+def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character() -> None:
+    """A chain with an interior step and two leaves drains them in
+    step_order, and each leg's tax_character is derived from the source
+    account it actually drew from (ADR-003 §2.9's core correctness goal)."""
+    from analysis.sim.engine import ChainGraph, _chain_draw
 
-    con = sqlite3.connect(run_path)
+    # 1=target checking, 2=taxable savings, 3=tax_deferred IRA.
+    balances = {1: 0, 2: 200_000, 3: 1_000_000}
+    account_kinds = {1: "asset", 2: "asset", 3: "asset"}
+    account_tax_treatment = {1: "taxable", 2: "taxable", 3: "tax_deferred"}
+    account_subkind = {1: "checking", 2: "savings", 3: "traditional_ira"}
+    account_name = {1: "Checking", 2: "Savings", 3: "IRA"}
+    # chain 100 = interior chain listing leaf chains 2 (savings) then 3 (IRA);
+    # leaf chains share ids with their account for simplicity in this test.
+    graph = ChainGraph(
+        members={100: [(2, 0), (3, 0)]},
+        leaf_account={2: 2, 3: 3},
+        minimum_of={}, refill_chain_of={}, maximum_of={}, overflow_chain_of={},
+    )
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, reason_kind, "
+        "reason_id, parent_event_id)"
+    )
     try:
-        rid = con.execute(
-            "SELECT id FROM scheduled_transaction WHERE name='refill_check_wf'"
-        ).fetchone()[0]
-        sav_id = con.execute(
-            "SELECT id FROM account WHERE name='Asset_Savings'"
-        ).fetchone()[0]
-        # Per-fire totals must equal 300_000 cents regardless of how the
-        # transfer is split across sources.
-        per_step = con.execute(
-            "SELECT step_id, SUM(amount) FROM transfer_event "
-            "WHERE reason_id=? GROUP BY step_id", (rid,),
-        ).fetchall()
-        assert per_step, "refill_check_wf should fire at least once"
-        for _step, total in per_step:
-            assert total == 300_000
-        # Every leg's from_account must be one of the configured sources.
+        taken = _chain_draw(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id=1, month_s="2026-05-31", graph=graph,
+            chain_id=100, amount_needed=500_000, target_account_id=1,
+        )
+        assert taken == 500_000
+        assert balances[2] == 0        # savings drained first, fully
+        assert balances[3] == 700_000  # IRA supplies the remaining 300_000
+        assert balances[1] == 500_000
         legs = con.execute(
-            "SELECT from_account FROM transfer_event WHERE reason_id=?", (rid,),
+            "SELECT from_account, amount, tax_character FROM transfer_event "
+            "ORDER BY id"
         ).fetchall()
-        broker_id = con.execute(
-            "SELECT id FROM account WHERE name='Asset_Brokerage_Joint'"
-        ).fetchone()[0]
-        for (frm,) in legs:
-            assert frm in (sav_id, broker_id)
+        assert legs == [
+            (2, 200_000, "none"),            # taxable savings -> no withdrawal tax
+            (3, 300_000, "tax_deferred_out"),  # IRA -> ordinary income on withdrawal
+        ]
     finally:
         con.close()
+
+
+def test_withdrawal_tax_character_rejects_taxable_non_cash_account() -> None:
+    from analysis.sim.engine import EngineError, _withdrawal_tax_character
+
+    try:
+        _withdrawal_tax_character(
+            3, {3: "taxable"}, {3: "brokerage_taxable"}, {3: "Brokerage"},
+        )
+    except EngineError as e:
+        assert "Brokerage" in str(e)
+    else:
+        raise AssertionError("expected EngineError for taxable brokerage withdrawal")
+
+
+def test_settle_order_settles_dependency_before_dependent() -> None:
+    """An account whose refill_chain reaches another policy account's own
+    account must settle after that account (ADR-003 §2.9's topological
+    settle pass, independent of authoring/CSV order)."""
+    from analysis.sim.engine import ChainGraph, _settle_order
+
+    # Account 1 (checking) refills from chain 10 -> leaf account 2 (savings).
+    # Account 2 (savings) itself has a policy: refills from chain 20 -> leaf
+    # account 3 (IRA). So 2 must settle before 1.
+    graph = ChainGraph(
+        members={},
+        leaf_account={10: 2, 20: 3},
+        minimum_of={1: 100, 2: 100},
+        refill_chain_of={1: 10, 2: 20},
+        maximum_of={1: None, 2: None},
+        overflow_chain_of={1: None, 2: None},
+    )
+    order = _settle_order(graph)
+    assert order.index(2) < order.index(1)
 
 
 def test_negative_rate_depreciates_asset_into_expense(tmp_path: Path) -> None:
