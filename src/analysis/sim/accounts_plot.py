@@ -56,6 +56,7 @@ def account_balance_history_widget(
     title: str,
     kind: str,
     initial_count: int = 1,
+    cpi_balance_pivot: pd.DataFrame | None = None,
 ):
     """Build a SelectMultiple + Output widget pair that plots on selection change.
 
@@ -75,20 +76,30 @@ def account_balance_history_widget(
         description="Accounts:",
         layout=widgets.Layout(width="50%"),
     )
+    plot_mode = widgets.ToggleButtons(
+        options=[("Nominal", "nominal"), ("CPI-constant", "cpi_constant")],
+        value="nominal",
+        description="Dollar basis:",
+    )
     out = widgets.Output()
 
     def _redraw(change=None):
-        del change
+        selected = list(change["new"] if change and change.get("owner") is picker else picker.value)
+        mode = plot_mode.value
+        if change and change.get("owner") is plot_mode:
+            mode = change["new"]
+        pivot = cpi_balance_pivot if mode == "cpi_constant" and cpi_balance_pivot is not None else balance_pivot
         with out:
             clear_output(wait=True)
-            selected = list(picker.value)
-            png_bytes = render_balance_history_png(balance_pivot, selected, title)
+            mode_title = "CPI-constant" if mode == "cpi_constant" else "nominal"
+            png_bytes = render_balance_history_png(pivot, selected, f"{title} ({mode_title})")
             if png_bytes is None:
                 print("(pick one or more accounts)")
                 return
             display(Image(data=png_bytes, format="png"))
 
     picker.observe(_redraw, names="value")
+    plot_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([picker, out])
+    return widgets.VBox([widgets.HBox([plot_mode]), picker, out])

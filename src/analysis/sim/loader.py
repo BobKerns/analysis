@@ -526,6 +526,7 @@ def _read_csv(
         return [
             {k: (v or "").strip() for k, v in row.items()}
             for row in csv.DictReader(fh)
+            if any((v or "").strip() for v in row.values())
         ]
 
 
@@ -780,6 +781,14 @@ def _validate_scheduled(
         tc = row.get("tax_character", "")
         if tc not in registries.TAX_CHARACTERS:
             issues.append(f"scheduled.csv row {i} ({name}): unknown tax_character '{tc}'")
+        tax_year = row.get("tax_year", "")
+        if tax_year:
+            try:
+                if len(tax_year) != 4:
+                    raise ValueError
+                int(tax_year)
+            except ValueError:
+                issues.append(f"scheduled.csv row {i} ({name}): tax_year must be a four-digit year")
         for retired, merged in (("base_amount", "amount"), ("inflation_series", "series")):
             if row.get(retired, "") != "":
                 issues.append(
@@ -1364,9 +1373,9 @@ def _write_intent(
             "amount_rule_kind, "
             "interest_account, person, series, rate_micros, claim_age, amount_cents, "
             "params_json, base_date, "
-            "tax_character, start, \"end\", priority, "
+            "tax_character, tax_year, start, \"end\", priority, "
             "description, meta_json, ytd_amount, ytd_preroll, inflation_cadence"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 model_id, s["name"],
                 chain_ids[s["from_account"]],
@@ -1383,7 +1392,8 @@ def _write_intent(
                 if s.get("amount") else None,
                 s.get("params_json") or None,
                 s.get("base_date") or None,
-                s["tax_character"], s["start"], s.get("end") or None, prio,
+                s["tax_character"], _opt_int(s.get("tax_year")),
+                s["start"], s.get("end") or None, prio,
                 s.get("description") or None, s.get("meta_json") or "{}",
                 _dollars_to_cents(s["ytd_amount"], resolver=money_resolver)
                 if s.get("ytd_amount") else None,

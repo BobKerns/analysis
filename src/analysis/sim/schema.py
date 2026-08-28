@@ -158,6 +158,7 @@ CREATE TABLE scheduled_transaction (
     ytd_amount              INTEGER,
     ytd_preroll             INTEGER NOT NULL DEFAULT 0,
     inflation_cadence       TEXT CHECK (inflation_cadence IN ('monthly','annual')),
+    tax_year                INTEGER,
     UNIQUE (model_id, name)
 );
 CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
@@ -347,6 +348,7 @@ CREATE TABLE transfer_event (
     from_account    INTEGER NOT NULL REFERENCES account(id),
     to_account      INTEGER NOT NULL REFERENCES account(id),
     amount          INTEGER NOT NULL,
+    tax_year        INTEGER,
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
                         ('rule','initial','ytd','ytd_rule','refill','overflow')),

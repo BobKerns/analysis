@@ -46,8 +46,8 @@ SUPPORTED_CALENDAR_KINDS = frozenset(
 # Positions in the `txns` rows loaded by run_scenario, for the fields that
 # calendar events mutate in place.
 _SCHED_AMOUNT_CENTS = 12
-_SCHED_END = 16
-_SCHED_BASE_DATE = 18
+_SCHED_END = 17
+_SCHED_BASE_DATE = 19
 
 SS_FRA = 67
 
@@ -132,7 +132,7 @@ def run_scenario(
                 'SELECT id, name, from_account, to_account, cadence, month_of_year, '
                 '       amount_rule_kind, interest_account, person, series, '
                 '       rate_micros, claim_age, amount_cents, params_json, '
-                '       tax_character, start, "end", priority, base_date, '
+                '       tax_character, tax_year, start, "end", priority, base_date, '
                 '       ytd_amount, ytd_preroll, inflation_cadence '
                 'FROM scheduled_transaction WHERE model_id = ? '
                 'ORDER BY priority, id',
@@ -218,7 +218,7 @@ def run_scenario(
                 (tid, _name, frm, to_chain, cadence, moy, rule_kind,
                  p_interest_acct, p_person, p_series, p_rate_micros,
                  p_claim_age, p_amount_cents, ext_json,
-                 tax_char, t_start, t_end, _prio, t_base_date,
+                 tax_char, tax_year, t_start, t_end, _prio, t_base_date,
                  _t_ytd_amount, _t_ytd_preroll, t_inflation_cadence) = txn
                 rule_start = _parse_scheduled_date(t_start, tid, _name, "start")
                 rule_end = (
@@ -226,11 +226,6 @@ def run_scenario(
                     if t_end is not None else None
                 )
                 from_account = chain_graph.leaf_account.get(frm)
-                if from_account is None and rule_kind != "fixed_amount":
-                    raise EngineError(
-                        f"scheduled_transaction id={tid} ({_name!r}): interior chain "
-                        "source is only supported for fixed_amount rules"
-                    )
                 to = chain_graph.leaf_account.get(to_chain)
                 if to is None and rule_kind != "fixed_amount":
                     raise EngineError(
@@ -299,6 +294,7 @@ def run_scenario(
                             _post_transfer(
                                 con, balances, account_kinds, step_id, month_s,
                                 from_account, to, total_amount, tax_char, tid,
+                                tax_year=tax_year,
                             )
                         elif from_account is not None:
                             _chain_sweep(
@@ -307,7 +303,7 @@ def run_scenario(
                                 chain_graph, to_chain, total_amount, from_account,
                                 aux=aux, chain_base_date=_parse_date(start_s),
                                 inflation_factor_cache=inflation_factor_cache,
-                                source_tax_character=tax_char,
+                                source_tax_character=tax_char, source_tax_year=tax_year,
                             )
                         elif to is not None:
                             _chain_draw(
@@ -330,35 +326,39 @@ def run_scenario(
                         if amount > 0:
                             _post_transfer(
                                 con, balances, account_kinds, step_id, month_s,
-                                frm, to, amount, tax_char, tid,
+                                from_account, to, amount, tax_char, tid,
                             )
                         elif amount < 0:
                             # Negative rate = depreciation: the legs swap, so
                             # value leaves the asset for the counterparty.
                             _post_transfer(
                                 con, balances, account_kinds, step_id, month_s,
-                                to, frm, -amount, tax_char, tid,
+                                to, from_account, -amount, tax_char, tid,
                             )
                     case "mortgage_payment":
                         _apply_mortgage_payment(
                             con, balances, account_kinds, step_id, month_s,
-                            params, p_amount_cents, frm, to, account_id_by_name,
-                            tax_char, tid,
+                            params, p_amount_cents, from_account, to, account_id_by_name,
+                            tax_char, tid, graph=chain_graph,
+                            source_chain_id=frm,
+                            account_tax_treatment=account_tax_treatment,
+                            account_subkind=account_subkind, account_name=account_name,
                         )
                     case "ss_benefit":
                         _apply_ss_benefit(
                             con, balances, account_kinds, step_id, month_s, month,
-                            params, frm, to, person_birthdates, aux, tax_char, tid,
+                            params, from_account, to, person_birthdates, aux, tax_char, tid,
                             chain_graph=chain_graph, to_chain_id=to_chain,
                             account_tax_treatment=account_tax_treatment,
                             account_subkind=account_subkind, account_name=account_name,
                             inflation_factor_cache=inflation_factor_cache,
                             chain_base_date=_parse_date(start_s),
+                            source_tax_year=tax_year,
                         )
                     case "rmd":
                         _apply_rmd(
                             con, balances, account_kinds, step_id, month_s, month,
-                            params, frm, to,
+                            params, from_account, to,
                             person_birthdates, prior_year_end_balances, aux,
                             tax_char, tid,
                         )
@@ -369,8 +369,12 @@ def run_scenario(
                             )
                         _apply_tax_accumulator(
                             con, balances, account_kinds, step_id, month_s, month,
-                            params, from_id=frm, to_id=to, aux=aux,
-                            tax_char=tax_char, tid=tid,
+                            params, from_id=from_account, to_id=to, aux=aux,
+                            tax_char=tax_char, tid=tid, graph=chain_graph,
+                            source_chain_id=frm,
+                            account_tax_treatment=account_tax_treatment,
+                            account_subkind=account_subkind, account_name=account_name,
+                            tax_year=tax_year,
                         )
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
@@ -403,10 +407,10 @@ def run_scenario(
         ):
             tail_month_s = tail_month.isoformat()
             for txn in txns:
-                (tid, _name, frm, _to_chain, cadence, moy, rule_kind,
+                (tid, _name, frm, to_chain, cadence, moy, rule_kind,
                  _p_interest_acct, _p_person, _p_series, _p_rate_micros,
                  _p_claim_age, _p_amount_cents, ext_json,
-                 tax_char, t_start, t_end, _prio, _t_base_date,
+                 tax_char, _tax_year, t_start, t_end, _prio, _t_base_date,
                  _t_ytd_amount, _t_ytd_preroll, _t_inflation_cadence) = txn
                 rule_start = _parse_scheduled_date(t_start, tid, _name, "start")
                 rule_end = (
@@ -415,6 +419,12 @@ def run_scenario(
                 )
                 if rule_kind != "tax_accumulator":
                     continue
+                tail_to = chain_graph.leaf_account.get(to_chain)
+                if tail_to is None:
+                    raise EngineError(
+                        f"tax_accumulator id={tid}: tax settlement destination must "
+                        "resolve to a concrete account"
+                    )
                 if tail_month_s < t_start:
                     continue
                 if t_end is not None and tail_month_s > t_end:
@@ -429,8 +439,9 @@ def run_scenario(
                 _apply_tax_accumulator(
                     con, balances, account_kinds, tail_last_step_id,
                     tail_month_s, tail_month,
-                    params, from_id=frm, to_id=to, aux=aux,
+                    params, from_id=None, to_id=tail_to, aux=aux,
                     tax_char=tax_char, tid=tid, post_transfer=False,
+                    tax_year=_tax_year,
                 )
 
         if skipped_counts:
@@ -460,6 +471,7 @@ def _post_transfer(
     step_id: int, month_s: str,
     from_id: int, to_id: int, amount: int, tax_char: str, reason_id: int,
     parent_event_id: int | None = None, *, reason_kind: str = "rule",
+    tax_year: int | None = None,
 ) -> int | None:
     """Insert one transfer_event and adjust balances. Liability balances
     store debt magnitude; the sign is inverted when posting against them.
@@ -470,10 +482,10 @@ def _post_transfer(
     cur = con.execute(
         "INSERT INTO transfer_event("
         "  step_id, date, from_account, to_account, amount, "
-        "  tax_character, reason_kind, reason_id, parent_event_id"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (step_id, month_s, from_id, to_id, amount, tax_char, reason_kind, reason_id,
-         parent_event_id),
+        "  tax_character, tax_year, reason_kind, reason_id, parent_event_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, month_s, from_id, to_id, amount, tax_char, tax_year, reason_kind,
+         reason_id, parent_event_id),
     )
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
@@ -542,7 +554,7 @@ def _apply_ytd_catchups(
         (tid, _name, frm, to_chain, _cadence, _moy, _rule_kind,
          _p_interest_acct, _p_person, _p_series, _p_rate_micros,
          _p_claim_age, amount_cents, _ext_json,
-         tax_char, _t_start, _t_end, _prio, _t_base_date,
+         tax_char, _tax_year, _t_start, _t_end, _prio, _t_base_date,
          ytd_amount, ytd_preroll, _t_inflation_cadence) = txn
         if ytd_amount is not None:
             amount = ytd_amount
@@ -691,7 +703,8 @@ def _apply_mortgage_payment(
     params: dict[str, Any], amount_cents: int | None,
     from_id: int, liab_id: int,
     account_id_by_name: dict[str, int],
-    tax_char: str, tid: int,
+    tax_char: str, tid: int, *, graph=None, source_chain_id=None,
+    account_tax_treatment=None, account_subkind=None, account_name=None,
 ) -> None:
     """Multi-leg P&I per ADR-003 §2.7. Interest leg writes first; principal
     leg's ``parent_event_id`` points at the interest leg. The liability
@@ -725,14 +738,28 @@ def _apply_mortgage_payment(
         )
     if principal > outstanding:
         principal = outstanding
-    interest_event_id = _post_transfer(
-        con, balances, account_kinds, step_id, month_s,
-        from_id, interest_id, interest, tax_char, tid,
+    if from_id is not None:
+        interest_event_id = _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            from_id, interest_id, interest, tax_char, tid,
+        )
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            from_id, liab_id, principal, tax_char, tid,
+            parent_event_id=interest_event_id,
+        )
+        return
+    if source_chain_id is None:
+        raise EngineError(f"mortgage_payment id={tid}: missing source chain")
+    _chain_draw(
+        con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id, month_s, graph, source_chain_id,
+        interest, interest_id,
     )
-    _post_transfer(
-        con, balances, account_kinds, step_id, month_s,
-        from_id, liab_id, principal, tax_char, tid,
-        parent_event_id=interest_event_id,
+    _chain_draw(
+        con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id, month_s, graph, source_chain_id,
+        principal, liab_id,
     )
 
 
@@ -759,7 +786,7 @@ def _apply_ss_benefit(
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     tax_char: str, tid: int, *, chain_graph=None, to_chain_id=None,
     account_tax_treatment=None, account_subkind=None, account_name=None,
-    inflation_factor_cache=None, chain_base_date=None,
+    inflation_factor_cache=None, chain_base_date=None, source_tax_year=None,
 ) -> None:
     """ADR-003 §2.5. Claim-age multiplier + annual-January COLA compounding."""
     person = params.get("person")
@@ -802,6 +829,7 @@ def _apply_ss_benefit(
                 aux=aux, chain_base_date=chain_base_date,
                 inflation_factor_cache=inflation_factor_cache,
                 source_tax_character=tax_char,
+                source_tax_year=source_tax_year,
             )
         else:
             raise EngineError(f"ss_benefit id={tid}: missing destination")
@@ -1066,6 +1094,7 @@ def _chain_sweep(
     *, aux=None, chain_base_date: date | None = None,
     inflation_factor_cache: dict | None = None,
     source_tax_character: str | None = None,
+    source_tax_year: int | None = None,
 ) -> int:
     """Recursively sweep up to ``amount_available`` out of ``source_account_id``.
 
@@ -1093,6 +1122,7 @@ def _chain_sweep(
             con, balances, account_kinds, step_id, month_s,
             source_account_id, account_id, put, tax_char, source_account_id,
             parent_event_id=None, reason_kind="overflow",
+            tax_year=source_tax_year,
         )
         return put
     total = 0
@@ -1123,6 +1153,7 @@ def _chain_sweep(
             aux=aux, chain_base_date=chain_base_date,
             inflation_factor_cache=inflation_factor_cache,
             source_tax_character=source_tax_character,
+            source_tax_year=source_tax_year,
         )
     return total
 
@@ -1180,6 +1211,8 @@ def _apply_tax_accumulator(
     tax_char: str,
     tid: int,
     post_transfer: bool = True,
+    graph=None, source_chain_id=None, account_tax_treatment=None,
+    account_subkind=None, account_name=None, tax_year=None,
 ) -> None:
     """Compute and optionally pay forecasted income tax for a target year.
 
@@ -1290,19 +1323,26 @@ def _apply_tax_accumulator(
     paid_transfers = con.execute(
         "SELECT COALESCE(SUM(amount), 0) "
         "FROM transfer_event "
-        "WHERE substr(date, 1, 4) = ? "
-        "  AND to_account = ?",
-        (str(tax_year), to_id),
+        "WHERE to_account = ? "
+        "  AND COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ?",
+        (to_id, tax_year),
     ).fetchone()[0]
     already_paid = int(paid_transfers or 0)
     tax_due = max(0, tax_liability - already_paid)
     tax_overpaid = max(0, already_paid - tax_liability)
 
     if post_transfer and tax_due > 0:
-        _post_transfer(
-            con, balances, account_kinds, step_id, month_s,
-            from_id, to_id, tax_due, tax_char, tid,
-        )
+        if from_id is not None:
+            _post_transfer(
+                con, balances, account_kinds, step_id, month_s,
+                from_id, to_id, tax_due, tax_char, tid, tax_year=tax_year,
+            )
+        else:
+            _chain_draw(
+                con, balances, account_kinds, account_tax_treatment,
+                account_subkind, account_name, step_id, month_s, graph,
+                source_chain_id, tax_due, to_id,
+            )
 
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     summary_rows = {
@@ -1331,12 +1371,16 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
     rows = con.execute(
         "SELECT tax_character, COALESCE(SUM(amount), 0) "
         "FROM transfer_event "
-        "WHERE substr(date, 1, 4) = ? "
+        "WHERE COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ? "
         "GROUP BY tax_character",
-        (str(tax_year),),
+        (tax_year,),
     ).fetchall()
     by_char = {k: int(v or 0) for k, v in rows}
-    ordinary = by_char.get("ordinary", 0) + by_char.get("tax_deferred_out", 0)
+    ordinary = (
+        by_char.get("ordinary", 0)
+        + by_char.get("tax_deferred_out", 0)
+        - by_char.get("tax_deferred_in", 0)
+    )
     ltcg = by_char.get("ltcg", 0)
     ss = by_char.get("ss_benefit", 0)
     return ordinary, ltcg, ss

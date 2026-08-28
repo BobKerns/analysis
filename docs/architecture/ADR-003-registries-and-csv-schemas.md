@@ -412,6 +412,7 @@ A child row with a new key is appended; one whose key matches the parent replace
 | `base_date` | YYYY-MM | | required when `series` names an inflation series |
 | `inflation_cadence` | enum | | `monthly` (default) compounds every month; `annual` steps once per calendar year crossed (each January) instead of drifting smoothly — use for COLA-style adjustments (e.g. Social Security) that jump once a year rather than continuously; requires `series` to be set |
 | `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `gains`, `deferred`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field. |
+| `tax_year` | int | | optional designated tax year for the transfer; when present, tax aggregation uses this value instead of the transfer date's calendar year (for example, a 2026 IRA contribution made in early 2027) |
 | `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |
 | `priority` | int | | defaults per §2's priority band |

@@ -32,7 +32,7 @@ SCHEDULED_CSV_HEADER: tuple[str, ...] = (
     "name", "from_account", "to_account", "cadence", "month_of_year",
     "amount_rule_kind", "interest_account", "person", "series",
     "rate_micros", "claim_age", "amount", "base_date", "inflation_cadence",
-    "tax_character", "start", "end", "priority", "ytd_amount", "ytd_preroll",
+    "tax_character", "tax_year", "start", "end", "priority", "ytd_amount", "ytd_preroll",
     "description", "meta_json", "params_json", "tags",
 )
 
