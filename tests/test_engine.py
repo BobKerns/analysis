@@ -503,6 +503,45 @@ def test_withdrawal_tax_character_rejects_taxable_non_cash_account() -> None:
         raise AssertionError("expected EngineError for taxable brokerage withdrawal")
 
 
+def test_chain_sweep_allocates_fixed_then_percent_of_remainder() -> None:
+    from analysis.sim.engine import ChainGraph, _chain_sweep
+
+    balances = {1: 1_000_000, 2: 0, 3: 0, 4: 0}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = {1: "checking", 2: "checking", 3: "savings", 4: "hsa"}
+    account_name = {1: "Income_SS", 2: "Checking", 3: "Savings", 4: "HSA"}
+    graph = ChainGraph(
+        members={100: [(2, 0, 100_000, None), (3, 0, None, 500_000),
+                       (4, 0, None, 1_000_000)]},
+        leaf_account={2: 2, 3: 3, 4: 4},
+        minimum_of={}, refill_chain_of={}, maximum_of={2: None, 3: None, 4: None},
+        overflow_chain_of={},
+    )
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, reason_kind, "
+        "reason_id, parent_event_id)"
+    )
+    try:
+        swept = _chain_sweep(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id=1, month_s="2026-05-31", graph=graph,
+            chain_id=100, amount_available=1_000_000, source_account_id=1,
+        )
+        assert swept == 1_000_000
+        assert balances[1] == 0
+        assert {account_id: balances[account_id] for account_id in (2, 3, 4)} == {
+            2: 100_000, 3: 450_000, 4: 450_000,
+        }
+        assert [row[2] for row in con.execute(
+            "SELECT from_account, to_account, amount FROM transfer_event ORDER BY id"
+        )] == [100_000, 450_000, 450_000]
+    finally:
+        con.close()
+
+
 def test_settle_order_settles_dependency_before_dependent() -> None:
     """An account whose refill_chain reaches another policy account's own
     account must settle after that account (ADR-003 §2.9's topological

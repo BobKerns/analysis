@@ -142,7 +142,7 @@ Social Security retirement benefit with COLA.
 
 - **Params:** `person` = person id, `claim_age` = integer claim age, `amount` = PIA at FRA in dollars, `series` = COLA aux series name (e.g. `cpi`). `tax_character` on the row should be `ss_benefit`.
 - **Compute:** Fires monthly. Adjusts `base_pia_at_fra_cents` by the claim-age multiplier (a lookup based on months early/late vs. FRA, hard-coded) and applies cumulative COLA from claim date to `date`. Zero before the person reaches `claim_age`.
-- **Emits:** one event, `from_account = Income_SS_<person>`, `to_account = Asset_Checking`, `tax_character = 'ss_benefit'`.
+- **Emits:** one event, `from_account = Income_SS_<person>`, `to_account = <SS landing account>`, `tax_character = 'ss_benefit'`. The income account may have `maximum_balance = 0` and an `overflow_chain`; the chain then distributes the gross benefit into its component destinations.
 - **Start semantics:** as with `rmd`, the row's `start` column is a lower bound. The rule emits zero amount in months before the person reaches `claim_age`; that age gate ANDs with the row's `start`.
 - **Use:** each spouse's SS rule. Different scenarios swap `claim_age` to test claim-timing decisions.
 
@@ -163,6 +163,8 @@ Author it as an extra leg out of the *income* account:
 Medigap (Part G) is **not** withheld — it is billed directly, so it stays an ordinary expense funded from checking. Likewise, premiums are only withheld while a benefit is actually being paid: someone on Medicare before claiming Social Security is billed directly, and the premium becomes a withheld leg only from the claim date.
 
 Premiums are authored flat (grown by an inflation series). The income-related surcharge (IRMAA), which keys off MAGI from two tax years prior, is **not** modeled; a future rule kind could read it from `tax_year_summary`, which already stores per-year MAGI inputs.
+
+For a single gross benefit with multiple destinations, use one `ss_benefit` row and a chain attached to the Social Security income account. Chain rows may specify either a fixed `amount` or a `percent` of the amount remaining after earlier rows. Once allocation fields are used, every row must specify one and the final row must specify `percent = 100`; this makes the definition stable when the benefit amount changes.
 
 #### 2.6 `tax_accumulator` (priority band: 400)
 
@@ -382,7 +384,7 @@ A scenario naming a `parent_scenario` inherits the parent's rows and overlays it
 | `accounts.csv` | `name` |
 | `account_values.csv` | `account_name` |
 | `scheduled.csv` | `name` |
-| `waterfall_sources.csv` | (`scheduled_name`, `position`) |
+| `chains/<kind>__<name>.csv` | whole file by chain name |
 | `calendar.csv` | (`date`, `kind`, `scheduled_name`, `account_1`, `account_2`, `series`, `amount`) |
 | `lifespan.csv` | `person` |
 | `year_to_date.csv` | `name` |
@@ -406,10 +408,10 @@ A child row with a new key is appended; one whose key matches the parent replace
 | `series` | text | | interpreted per `amount_rule_kind`: inflation series for `fixed_amount` (or `fixed` for none), rate series for `percent_of_balance`, COLA series for `ss_benefit`; rejected for any other rule kind |
 | `rate_micros` | int | | annual rate as millionths of 1; required for `mortgage_payment` (e.g. `60000` = 6.0%) |
 | `claim_age` | int | | required for `ss_benefit` |
-| `amount` | dollars | | interpreted per `amount_rule_kind`: base amount for `fixed_amount`, monthly P&I for `mortgage_payment`, PIA at FRA for `ss_benefit`, target balance for `waterfall_fill`, refill size for `refill_transfer`; decimal string e.g. `1234.56`; loader converts to integer cents |
+| `amount` | dollars | | interpreted per `amount_rule_kind`: base amount for `fixed_amount`, monthly P&I for `mortgage_payment`, or PIA at FRA for `ss_benefit`; decimal string e.g. `1234.56`; loader converts to integer cents |
 | `base_date` | YYYY-MM | | required when `series` names an inflation series |
 | `inflation_cadence` | enum | | `monthly` (default) compounds every month; `annual` steps once per calendar year crossed (each January) instead of drifting smoothly — use for COLA-style adjustments (e.g. Social Security) that jump once a year rather than continuously; requires `series` to be set |
-| `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `gains`, `deferred`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field — an income-account-sourced transfer can carry `tax_character='none'` (e.g. an inheritance), and an expense-leg can carry any value. `waterfall_fill` is the one exception: per §2.4, the engine overrides each leg's `tax_character` from the source account's `tax_treatment`. |
+| `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `gains`, `deferred`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field. |
 | `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |
 | `priority` | int | | defaults per §2's priority band |
@@ -421,13 +423,16 @@ A child row with a new key is appended; one whose key matches the parent replace
 
 Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` into `series`, and `base_amount` into `amount`. Each is now read per `amount_rule_kind` (see the rows above); the loader rejects a row that still carries a retired column, and rejects `series` on a rule kind that does not read it.
 
-#### 4.7 Per-scenario: `data_repo/scenarios/<name>/waterfall_sources.csv`
+#### 4.7 Per-scenario: `data_repo/scenarios/<name>/chains/<kind>__<name>.csv`
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
-| `scheduled_name` | text | ✓ | name from `scheduled.csv` with `amount_rule_kind` either `waterfall_fill` or `refill_transfer` |
-| `position` | int | ✓ | 1-based, monotonic per `scheduled_name` |
-| `account_name` | text | ✓ | source account |
+| `account_name` | text | ✓ | account or another named chain to visit at this step |
+| `threshold` | dollars | | source account reserve to leave untouched when drawing |
+| `amount` | dollars | | fixed amount to sweep to this destination; mutually exclusive with `percent` |
+| `percent` | percentage | | percentage of the amount remaining after earlier rows; mutually exclusive with `amount` |
+
+Rows without `amount` or `percent` preserve ordinary liquidity-chain behavior and consume the requested amount in order. For allocation chains, every row must specify one of the two fields and the final row must specify `percent=100`, which receives the remaining amount after fixed and percentage allocations. Chain names share one namespace with account names, and a chain file's `<kind>` is currently `asset`.
 
 #### 4.8 Per-scenario: `data_repo/scenarios/<name>/calendar.csv`
 

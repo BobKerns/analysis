@@ -625,6 +625,20 @@ def _dollars_to_cents(
     return int(cents)
 
 
+def _percent_to_micros(s: str) -> int:
+    """Parse a human-facing percentage such as ``25`` into millionths."""
+    try:
+        value = Decimal(s.strip()) * 10_000
+    except InvalidOperation as e:
+        raise ValueError(f"invalid percent value: {s!r}") from e
+    if value != value.to_integral_value():
+        raise ValueError(f"percent value {s!r} has excessive precision")
+    micros = int(value)
+    if not 0 <= micros <= 1_000_000:
+        raise ValueError(f"percent value {s!r} must be between 0 and 100")
+    return micros
+
+
 # ---------- account-declared growth ----------
 
 def _slug(name: str) -> str:
@@ -1059,6 +1073,45 @@ def _validate_chains(
                     _dollars_to_cents(threshold, resolver=money_resolver)
                 except ValueError as e:
                     issues.append(f"chains/{kind}__{name}.csv row {i}: threshold {e}")
+            amount = row.get("amount", "")
+            percent = row.get("percent", "")
+            if amount and percent:
+                issues.append(
+                    f"chains/{kind}__{name}.csv row {i}: amount and percent are mutually exclusive"
+                )
+            if amount:
+                try:
+                    _dollars_to_cents(amount, resolver=money_resolver)
+                except ValueError as e:
+                    issues.append(f"chains/{kind}__{name}.csv row {i}: amount {e}")
+            if percent:
+                try:
+                    _percent_to_micros(percent)
+                except ValueError as e:
+                    issues.append(f"chains/{kind}__{name}.csv row {i}: percent {e}")
+
+        allocated = [row for row in rows if row.get("amount") or row.get("percent")]
+        if allocated:
+            if len(allocated) != len(rows):
+                issues.append(
+                    f"chains/{kind}__{name}.csv: every row must specify amount or percent "
+                    "when using allocation fields"
+                )
+            elif not rows[-1].get("percent"):
+                issues.append(
+                    f"chains/{kind}__{name}.csv: final row must specify percent=100 "
+                    "to receive the remaining amount"
+                )
+            else:
+                try:
+                    final_percent = _percent_to_micros(rows[-1]["percent"])
+                except ValueError:
+                    final_percent = None
+                if final_percent != 1_000_000:
+                    issues.append(
+                        f"chains/{kind}__{name}.csv: final row must specify percent=100 "
+                        "to receive the remaining amount"
+                    )
 
     for a in accounts:
         for column in ("refill_chain", "overflow_chain"):
@@ -1199,11 +1252,15 @@ def _write_intent(
         for i, row in enumerate(rows, start=1):
             con.execute(
                 "INSERT INTO chain_steps(chain_id, step_order, draw_from_chain_id, "
-                "threshold_cents) VALUES (?,?,?,?)",
+                "threshold_cents, amount_cents, percent_micros) VALUES (?,?,?,?,?,?)",
                 (
                     chain_ids[name], i, chain_ids[row["account_name"]],
                     _dollars_to_cents(row["threshold"], resolver=money_resolver)
                     if row.get("threshold") else 0,
+                    _dollars_to_cents(row["amount"], resolver=money_resolver)
+                    if row.get("amount") else None,
+                    _percent_to_micros(row["percent"])
+                    if row.get("percent") else None,
                 ),
             )
             step_count += 1

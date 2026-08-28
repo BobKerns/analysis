@@ -73,6 +73,11 @@ CREATE TABLE chain_steps (
     step_order         INTEGER NOT NULL,
     draw_from_chain_id INTEGER NOT NULL REFERENCES chain(id),
     threshold_cents    INTEGER NOT NULL DEFAULT 0,
+    amount_cents       INTEGER,
+    percent_micros     INTEGER,
+    CHECK (amount_cents IS NULL OR amount_cents >= 0),
+    CHECK (percent_micros IS NULL OR percent_micros >= 0 AND percent_micros <= 1000000),
+    CHECK (amount_cents IS NULL OR percent_micros IS NULL),
     UNIQUE (chain_id, step_order)
 );
 

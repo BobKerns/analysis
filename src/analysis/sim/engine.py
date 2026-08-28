@@ -774,14 +774,18 @@ class ChainGraph:
 
     def __init__(
         self,
-        members: dict[int, list[tuple[int, int]]],
+        members: dict[int, list[tuple[int, ...]]],
         leaf_account: dict[int, int],
         minimum_of: dict[int, int],
         refill_chain_of: dict[int, int | None],
         maximum_of: dict[int, int | None],
         overflow_chain_of: dict[int, int | None],
     ) -> None:
-        self.members = members
+        self.members = {
+            chain_id: [(*step, None, None) if len(step) == 2 else step
+                       for step in steps]
+            for chain_id, steps in members.items()
+        }
         self.leaf_account = leaf_account
         self.minimum_of = minimum_of
         self.refill_chain_of = refill_chain_of
@@ -790,12 +794,15 @@ class ChainGraph:
 
 
 def _load_chain_graph(con) -> ChainGraph:
-    members: dict[int, list[tuple[int, int]]] = {}
-    for chain_id, draw_from_id, threshold in con.execute(
-        "SELECT chain_id, draw_from_chain_id, threshold_cents "
+    members: dict[int, list[tuple[int, ...]]] = {}
+    for chain_id, draw_from_id, threshold, amount, percent in con.execute(
+        "SELECT chain_id, draw_from_chain_id, threshold_cents, "
+        "       amount_cents, percent_micros "
         "FROM chain_steps ORDER BY chain_id, step_order"
     ):
-        members.setdefault(chain_id, []).append((draw_from_id, threshold))
+        members.setdefault(chain_id, []).append(
+            (draw_from_id, threshold, amount, percent)
+        )
     leaf_account: dict[int, int] = {
         r[0]: r[1] for r in con.execute(
             "SELECT id, account_id FROM chain WHERE account_id IS NOT NULL"
@@ -826,7 +833,7 @@ def _chain_leaves(chain_id: int, graph: ChainGraph, seen: set[int]) -> set[int]:
     if account_id is not None:
         return {account_id}
     out: set[int] = set()
-    for draw_from_id, _threshold in graph.members.get(chain_id, []):
+    for draw_from_id, *_allocation in graph.members.get(chain_id, []):
         out |= _chain_leaves(draw_from_id, graph, seen)
     return out
 
@@ -917,7 +924,7 @@ def _chain_draw(
         )
         return take
     total = 0
-    for draw_from_id, step_threshold in graph.members.get(chain_id, []):
+    for draw_from_id, step_threshold, *_allocation in graph.members.get(chain_id, []):
         remaining = amount_needed - total
         if remaining <= 0:
             break
@@ -966,14 +973,22 @@ def _chain_sweep(
         )
         return put
     total = 0
-    for draw_into_id, _threshold in graph.members.get(chain_id, []):
+    for draw_into_id, _threshold, step_amount, step_percent in graph.members.get(chain_id, []):
         remaining = amount_available - total
         if remaining <= 0:
             break
+        if step_amount is not None:
+            allocation = min(remaining, step_amount)
+        elif step_percent is not None:
+            allocation = remaining * step_percent // 1_000_000
+        else:
+            allocation = remaining
+        if allocation <= 0:
+            continue
         total += _chain_sweep(
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, step_id, month_s, graph,
-            draw_into_id, remaining, source_account_id,
+            draw_into_id, allocation, source_account_id,
         )
     return total
 
