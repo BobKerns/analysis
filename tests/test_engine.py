@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 from analysis.sim.engine import run_scenario
@@ -538,6 +539,39 @@ def test_chain_sweep_allocates_fixed_then_percent_of_remainder() -> None:
         assert [row[2] for row in con.execute(
             "SELECT from_account, to_account, amount FROM transfer_event ORDER BY id"
         )] == [100_000, 450_000, 450_000]
+    finally:
+        con.close()
+
+
+def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
+    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+
+    graph = ChainGraph(
+        members={100: [(2, 0, 25_000, None), (3, 0, None, 1_000_000)]},
+        leaf_account={2: 2, 3: 3},
+        minimum_of={}, refill_chain_of={}, maximum_of={}, overflow_chain_of={},
+    )
+    txn = [
+        8, "social_security", 1, 100, "monthly", None, "fixed_amount",
+        None, "rwk", None, None, None, 100_000, None, "ss_benefit",
+        "2026-01-31", None, 200, None, None, 1, None,
+    ]
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, reason_kind, reason_id)"
+    )
+    try:
+        _apply_ytd_catchups(con, 1, date(2026, 5, 31), [txn], [], graph)
+        rows = con.execute(
+            "SELECT date, to_account, amount FROM transfer_event ORDER BY id"
+        ).fetchall()
+        assert rows == [
+            ("2026-01-31", 2, 25_000), ("2026-01-31", 3, 75_000),
+            ("2026-02-28", 2, 25_000), ("2026-02-28", 3, 75_000),
+            ("2026-03-31", 2, 25_000), ("2026-03-31", 3, 75_000),
+            ("2026-04-30", 2, 25_000), ("2026-04-30", 3, 75_000),
+        ]
     finally:
         con.close()
 

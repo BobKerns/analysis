@@ -977,12 +977,12 @@ def _validate_tags(file: str, row_i: int, name: str, raw: str,
 
 
 def _chain_name_from_filename(path: Path) -> tuple[str, str] | None:
-    """Parse a ``chains/<kind>__<name>.csv`` filename into ``(kind, name)``."""
+    """Parse a chain filename, decoding underscores in its name like aux files."""
     stem = path.stem
     if "__" not in stem:
         return None
     kind, name = stem.split("__", 1)
-    return kind, name
+    return kind, name.replace("_", " ")
 
 
 def _read_chain_files(

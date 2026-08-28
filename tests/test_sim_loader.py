@@ -59,11 +59,11 @@ def test_load_retire_alice(tmp_path: Path) -> None:
             SELECT c.id, c.name, cs.draw_from_chain_id, cs.threshold_cents
             FROM chain c
             JOIN chain_steps cs ON cs.chain_id = c.id
-            WHERE c.name = 'asset_checking_liquidity'
+            WHERE c.name = 'asset checking liquidity'
             ORDER BY cs.step_order
         """).fetchall()
         assert len(chain_row) == 2
-        assert {r[1] for r in chain_row} == {"asset_checking_liquidity"}
+        assert {r[1] for r in chain_row} == {"asset checking liquidity"}
         assert chain_row[0][2] == con.execute("SELECT id FROM chain WHERE name = 'Asset_Savings'").fetchone()[0]
         assert chain_row[1][2] == con.execute("SELECT id FROM chain WHERE name = 'Asset_TraditionalIRA_Alice'").fetchone()[0]
 

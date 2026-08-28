@@ -180,7 +180,9 @@ def run_scenario(
             )
 
             if step_index == 0:
-                _apply_ytd_catchups(con, step_id, month, txns, year_to_date_rows)
+                _apply_ytd_catchups(
+                    con, step_id, month, txns, year_to_date_rows, chain_graph,
+                )
 
             for ev in calendar_events:
                 (ev_id, _cal_id, ev_date, ev_kind,
@@ -218,6 +220,11 @@ def run_scenario(
                  p_claim_age, p_amount_cents, ext_json,
                  tax_char, t_start, t_end, _prio, t_base_date,
                  _t_ytd_amount, _t_ytd_preroll, t_inflation_cadence) = txn
+                rule_start = _parse_scheduled_date(t_start, tid, _name, "start")
+                rule_end = (
+                    _parse_scheduled_date(t_end, tid, _name, "end")
+                    if t_end is not None else None
+                )
                 to = chain_graph.leaf_account.get(to_chain)
                 if to is None and rule_kind != "fixed_amount":
                     raise EngineError(
@@ -234,8 +241,7 @@ def run_scenario(
                     continue
                 fire_count = _cadence_count(
                     cadence, moy, month,
-                    _parse_date(t_start),
-                    _parse_date(t_end) if t_end is not None else None,
+                    rule_start, rule_end,
                 )
                 if fire_count == 0:
                     continue
@@ -295,6 +301,7 @@ def run_scenario(
                                 chain_graph, to_chain, total_amount, frm,
                                 aux=aux, chain_base_date=_parse_date(start_s),
                                 inflation_factor_cache=inflation_factor_cache,
+                                source_tax_character=tax_char,
                             )
                     case "percent_of_balance":
                         amount = _amount_percent_of_balance(
@@ -382,6 +389,11 @@ def run_scenario(
                  _p_claim_age, _p_amount_cents, ext_json,
                  tax_char, t_start, t_end, _prio, _t_base_date,
                  _t_ytd_amount, _t_ytd_preroll, _t_inflation_cadence) = txn
+                rule_start = _parse_scheduled_date(t_start, tid, _name, "start")
+                rule_end = (
+                    _parse_scheduled_date(t_end, tid, _name, "end")
+                    if t_end is not None else None
+                )
                 if rule_kind != "tax_accumulator":
                     continue
                 if tail_month_s < t_start:
@@ -390,8 +402,7 @@ def run_scenario(
                     continue
                 fire_count = _cadence_count(
                     cadence, moy, tail_month,
-                    _parse_date(t_start),
-                    _parse_date(t_end) if t_end is not None else None,
+                    rule_start, rule_end,
                 )
                 if fire_count == 0:
                     continue
@@ -504,6 +515,7 @@ def _apply_ytd_catchups(
     con, step_id: int, start: date,
     txns: list[list[Any]],
     year_to_date_rows: list[tuple[int, int, int, int, str, int | None]],
+    graph: ChainGraph,
 ) -> None:
     """Fire partial-first-year catch-up transfers once, at step 0."""
     date_s = _ytd_catchup_date(start).isoformat()
@@ -519,22 +531,63 @@ def _apply_ytd_catchups(
             amount = (amount_cents or 0) * (start.month - 1)
         else:
             continue
-        to_account = con.execute(
-            "SELECT account_id FROM chain WHERE id = ?", (to_chain,)
-        ).fetchone()[0]
-        if to_account is None:
-            raise EngineError(
-                f"scheduled_transaction id={tid}: YTD catch-up cannot target an interior chain"
+        to_account = graph.leaf_account.get(to_chain)
+        if to_account is not None:
+            _post_ytd_transfer(
+                con, step_id, date_s, frm, to_account, amount,
+                tax_char, "ytd_rule", tid,
             )
-        _post_ytd_transfer(
-            con, step_id, date_s, frm, to_account, amount,
-            tax_char, "ytd_rule", tid,
-        )
+        elif ytd_preroll:
+            for month in range(1, start.month):
+                month_start = date(start.year, month, 1)
+                month_end = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                _post_ytd_chain(
+                    con, step_id, month_end.isoformat(), graph, to_chain,
+                    frm, amount_cents or 0, tax_char, tid,
+                )
+        else:
+            _post_ytd_chain(
+                con, step_id, date_s, graph, to_chain, frm, amount,
+                tax_char, tid,
+            )
     for yid, y_from, y_to, y_amount, y_tax_char, y_year in year_to_date_rows:
         row_date_s = _year_to_date_row_date(start, y_year).isoformat()
         _post_ytd_transfer(
             con, step_id, row_date_s, y_from, y_to, y_amount, y_tax_char, "ytd", yid,
         )
+
+
+def _post_ytd_chain(
+    con, step_id: int, date_s: str, graph: ChainGraph, chain_id: int,
+    from_id: int, amount: int, tax_char: str, reason_id: int,
+) -> None:
+    """Expand one balance-neutral YTD amount through a destination chain."""
+    if amount <= 0:
+        return
+    account_id = graph.leaf_account.get(chain_id)
+    if account_id is not None:
+        _post_ytd_transfer(
+            con, step_id, date_s, from_id, account_id, amount,
+            tax_char, "ytd_rule", reason_id,
+        )
+        return
+    remaining = amount
+    for draw_into_id, _threshold, step_amount, step_percent, _series, _cadence in graph.members.get(chain_id, []):
+        if remaining <= 0:
+            break
+        if step_amount is not None:
+            allocation = min(remaining, step_amount)
+        elif step_percent is not None:
+            allocation = remaining * step_percent // 1_000_000
+        else:
+            allocation = remaining
+        if allocation <= 0:
+            continue
+        _post_ytd_chain(
+            con, step_id, date_s, graph, draw_into_id,
+            from_id, allocation, tax_char, reason_id,
+        )
+        remaining -= allocation
 
 
 def _past_person_lifespan(
@@ -1034,7 +1087,7 @@ def _chain_sweep(
                 if aux is None or chain_base_date is None or inflation_factor_cache is None:
                     raise EngineError("inflated chain step requires runtime inflation context")
                 allocation = allocation * _cumulative_inflation_factor(
-                    aux, step_series, chain_base_date, month,
+                    aux, step_series, chain_base_date, _parse_date(month_s),
                     inflation_factor_cache, cadence=step_cadence or "monthly",
                 ) // 1_000_000
             allocation = min(remaining, allocation)
@@ -1463,6 +1516,19 @@ def _active_aux_rows(
 
 def _parse_date(s: str) -> date:
     return date.fromisoformat(s)
+
+
+def _parse_scheduled_date(
+    value: str | None, transaction_id: int, name: str, field: str,
+) -> date:
+    """Parse a scheduled date with enough context to fix its CSV row."""
+    try:
+        return _parse_date(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise EngineError(
+            f"scheduled_transaction id={transaction_id} ({name!r}): invalid "
+            f"{field} date {value!r}; expected YYYY-MM-DD in scheduled.csv"
+        ) from exc
 
 
 def _month_ends(start: date, end: date):
