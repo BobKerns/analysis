@@ -375,6 +375,7 @@ def run_scenario(
                             account_tax_treatment=account_tax_treatment,
                             account_subkind=account_subkind, account_name=account_name,
                             tax_year=tax_year,
+                            person_lifespan=person_lifespan,
                         )
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
@@ -442,6 +443,7 @@ def run_scenario(
                     params, from_id=None, to_id=tail_to, aux=aux,
                     tax_char=tax_char, tid=tid, post_transfer=False,
                     tax_year=_tax_year,
+                    person_lifespan=person_lifespan,
                 )
 
         if skipped_counts:
@@ -1213,6 +1215,7 @@ def _apply_tax_accumulator(
     post_transfer: bool = True,
     graph=None, source_chain_id=None, account_tax_treatment=None,
     account_subkind=None, account_name=None, tax_year=None,
+    person_lifespan: dict[str, str] | None = None,
 ) -> None:
     """Compute and optionally pay forecasted income tax for a target year.
 
@@ -1261,7 +1264,9 @@ def _apply_tax_accumulator(
     bracket_series = params.get("bracket_series")
 
     as_of = f"{tax_year}-12-31"
-    filing_status = _active_filing_status(aux, filing_status_aux, as_of, tid)
+    filing_status = _active_filing_status(
+        aux, filing_status_aux, as_of, tid, person_lifespan=person_lifespan,
+    )
 
     if bracket_aux == "state_brackets" and bracket_series is None:
         # If exactly one state bracket series exists, default to it.
@@ -1391,7 +1396,10 @@ def _active_filing_status(
     filing_status_aux: str,
     as_of: str,
     tid: int,
+    *, person_lifespan: dict[str, str] | None = None,
 ) -> str:
+    if person_lifespan and any(final_month < as_of for final_month in person_lifespan.values()):
+        return "Single"
     rows = _active_aux_rows(aux, filing_status_aux, None, as_of)
     if not rows:
         raise EngineError(
