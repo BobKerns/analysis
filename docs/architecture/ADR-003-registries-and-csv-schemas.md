@@ -431,6 +431,8 @@ Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` in
 | `threshold` | dollars | | source account reserve to leave untouched when drawing |
 | `amount` | dollars | | fixed amount to sweep to this destination; mutually exclusive with `percent` |
 | `percent` | percentage | | percentage of the amount remaining after earlier rows; mutually exclusive with `amount` |
+| `series` | text | | optional inflation series for a fixed `amount`; the amount is based at the scenario start month |
+| `cadence` | enum | | `monthly` or `annual`; controls compounding for `series` and requires `series` |
 
 Rows without `amount` or `percent` preserve ordinary liquidity-chain behavior and consume the requested amount in order. For allocation chains, every row must specify one of the two fields and the final row must specify `percent=100`, which receives the remaining amount after fixed and percentage allocations. Chain names share one namespace with account names, and a chain file's `<kind>` is currently `asset`.
 

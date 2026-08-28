@@ -75,6 +75,8 @@ CREATE TABLE chain_steps (
     threshold_cents    INTEGER NOT NULL DEFAULT 0,
     amount_cents       INTEGER,
     percent_micros     INTEGER,
+    series             TEXT,
+    cadence            TEXT CHECK (cadence IN ('monthly','annual')),
     CHECK (amount_cents IS NULL OR amount_cents >= 0),
     CHECK (percent_micros IS NULL OR percent_micros >= 0 AND percent_micros <= 1000000),
     CHECK (amount_cents IS NULL OR percent_micros IS NULL),
@@ -127,7 +129,7 @@ CREATE TABLE scheduled_transaction (
     model_id                INTEGER NOT NULL REFERENCES account_model(id),
     name                    TEXT NOT NULL,
     from_account            INTEGER NOT NULL REFERENCES account(id),
-    to_account              INTEGER NOT NULL REFERENCES account(id),
+    to_account              INTEGER NOT NULL REFERENCES chain(id),
     cadence                 TEXT NOT NULL CHECK (cadence IN
                                 ('monthly','biweekly','quarterly','annual','one_off')),
     month_of_year           INTEGER CHECK (month_of_year BETWEEN 1 AND 12),

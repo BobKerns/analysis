@@ -213,11 +213,17 @@ def run_scenario(
             opening_balances = dict(balances)
 
             for txn in txns:
-                (tid, _name, frm, to, cadence, moy, rule_kind,
+                (tid, _name, frm, to_chain, cadence, moy, rule_kind,
                  p_interest_acct, p_person, p_series, p_rate_micros,
                  p_claim_age, p_amount_cents, ext_json,
                  tax_char, t_start, t_end, _prio, t_base_date,
                  _t_ytd_amount, _t_ytd_preroll, t_inflation_cadence) = txn
+                to = chain_graph.leaf_account.get(to_chain)
+                if to is None and rule_kind != "fixed_amount":
+                    raise EngineError(
+                        f"scheduled_transaction id={tid}: interior chain destination "
+                        "is only supported for fixed_amount rules"
+                    )
                 if month_s < t_start:
                     continue
                 if t_end is not None and month_s > t_end:
@@ -276,10 +282,20 @@ def run_scenario(
                                 cadence=t_inflation_cadence or "monthly",
                             )
                             amount = amount * factor // 1_000_000
-                        _post_transfer(
-                            con, balances, account_kinds, step_id, month_s,
-                            frm, to, amount * fire_count, tax_char, tid,
-                        )
+                        total_amount = amount * fire_count
+                        if to is not None:
+                            _post_transfer(
+                                con, balances, account_kinds, step_id, month_s,
+                                frm, to, total_amount, tax_char, tid,
+                            )
+                        else:
+                            _chain_sweep(
+                                con, balances, account_kinds, account_tax_treatment,
+                                account_subkind, account_name, step_id, month_s,
+                                chain_graph, to_chain, total_amount, frm,
+                                aux=aux, chain_base_date=_parse_date(start_s),
+                                inflation_factor_cache=inflation_factor_cache,
+                            )
                     case "percent_of_balance":
                         amount = _amount_percent_of_balance(
                             params, opening_balances, balances, to, aux,
@@ -307,6 +323,11 @@ def run_scenario(
                         _apply_ss_benefit(
                             con, balances, account_kinds, step_id, month_s, month,
                             params, frm, to, person_birthdates, aux, tax_char, tid,
+                            chain_graph=chain_graph, to_chain_id=to_chain,
+                            account_tax_treatment=account_tax_treatment,
+                            account_subkind=account_subkind, account_name=account_name,
+                            inflation_factor_cache=inflation_factor_cache,
+                            chain_base_date=_parse_date(start_s),
                         )
                     case "rmd":
                         _apply_rmd(
@@ -331,6 +352,8 @@ def run_scenario(
             _settle_accounts(
                 con, balances, account_kinds, account_subkind, account_tax_treatment,
                 account_name, step_id, month_s, chain_graph, settle_order,
+                aux=aux, chain_base_date=_parse_date(start_s),
+                inflation_factor_cache=inflation_factor_cache,
             )
 
             con.executemany(
@@ -354,7 +377,7 @@ def run_scenario(
         ):
             tail_month_s = tail_month.isoformat()
             for txn in txns:
-                (tid, _name, frm, to, cadence, moy, rule_kind,
+                (tid, _name, frm, _to_chain, cadence, moy, rule_kind,
                  _p_interest_acct, _p_person, _p_series, _p_rate_micros,
                  _p_claim_age, _p_amount_cents, ext_json,
                  tax_char, t_start, t_end, _prio, _t_base_date,
@@ -485,7 +508,7 @@ def _apply_ytd_catchups(
     """Fire partial-first-year catch-up transfers once, at step 0."""
     date_s = _ytd_catchup_date(start).isoformat()
     for txn in txns:
-        (tid, _name, frm, to, _cadence, _moy, _rule_kind,
+        (tid, _name, frm, to_chain, _cadence, _moy, _rule_kind,
          _p_interest_acct, _p_person, _p_series, _p_rate_micros,
          _p_claim_age, amount_cents, _ext_json,
          tax_char, _t_start, _t_end, _prio, _t_base_date,
@@ -496,7 +519,17 @@ def _apply_ytd_catchups(
             amount = (amount_cents or 0) * (start.month - 1)
         else:
             continue
-        _post_ytd_transfer(con, step_id, date_s, frm, to, amount, tax_char, "ytd_rule", tid)
+        to_account = con.execute(
+            "SELECT account_id FROM chain WHERE id = ?", (to_chain,)
+        ).fetchone()[0]
+        if to_account is None:
+            raise EngineError(
+                f"scheduled_transaction id={tid}: YTD catch-up cannot target an interior chain"
+            )
+        _post_ytd_transfer(
+            con, step_id, date_s, frm, to_account, amount,
+            tax_char, "ytd_rule", tid,
+        )
     for yid, y_from, y_to, y_amount, y_tax_char, y_year in year_to_date_rows:
         row_date_s = _year_to_date_row_date(start, y_year).isoformat()
         _post_ytd_transfer(
@@ -652,7 +685,9 @@ def _apply_ss_benefit(
     params: dict[str, Any], from_id: int, to_id: int,
     person_birthdates: dict[str, date],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    tax_char: str, tid: int,
+    tax_char: str, tid: int, *, chain_graph=None, to_chain_id=None,
+    account_tax_treatment=None, account_subkind=None, account_name=None,
+    inflation_factor_cache=None, chain_base_date=None,
 ) -> None:
     """ADR-003 §2.5. Claim-age multiplier + annual-January COLA compounding."""
     person = params.get("person")
@@ -682,10 +717,22 @@ def _apply_ss_benefit(
         factor_micros = factor_micros * (1_000_000 + rate) // 1_000_000
     amount = int(pia) * mult_micros * factor_micros // (10 ** 12)
     if amount > 0:
-        _post_transfer(
-            con, balances, account_kinds, step_id, month_s,
-            from_id, to_id, amount, tax_char, tid,
-        )
+        if to_id is not None:
+            _post_transfer(
+                con, balances, account_kinds, step_id, month_s,
+                from_id, to_id, amount, tax_char, tid,
+            )
+        elif to_chain_id is not None:
+            _chain_sweep(
+                con, balances, account_kinds, account_tax_treatment,
+                account_subkind, account_name, step_id, month_s,
+                chain_graph, to_chain_id, amount, from_id,
+                aux=aux, chain_base_date=chain_base_date,
+                inflation_factor_cache=inflation_factor_cache,
+                source_tax_character=tax_char,
+            )
+        else:
+            raise EngineError(f"ss_benefit id={tid}: missing destination")
 
 
 def _apply_rmd(
@@ -782,7 +829,8 @@ class ChainGraph:
         overflow_chain_of: dict[int, int | None],
     ) -> None:
         self.members = {
-            chain_id: [(*step, None, None) if len(step) == 2 else step
+            chain_id: [(*step, None, None) if len(step) == 2
+                       else (*step, None, None) if len(step) == 4 else step
                        for step in steps]
             for chain_id, steps in members.items()
         }
@@ -795,13 +843,13 @@ class ChainGraph:
 
 def _load_chain_graph(con) -> ChainGraph:
     members: dict[int, list[tuple[int, ...]]] = {}
-    for chain_id, draw_from_id, threshold, amount, percent in con.execute(
+    for chain_id, draw_from_id, threshold, amount, percent, series, cadence in con.execute(
         "SELECT chain_id, draw_from_chain_id, threshold_cents, "
-        "       amount_cents, percent_micros "
+        "       amount_cents, percent_micros, series, cadence "
         "FROM chain_steps ORDER BY chain_id, step_order"
     ):
         members.setdefault(chain_id, []).append(
-            (draw_from_id, threshold, amount, percent)
+            (draw_from_id, threshold, amount, percent, series, cadence)
         )
     leaf_account: dict[int, int] = {
         r[0]: r[1] for r in con.execute(
@@ -943,6 +991,9 @@ def _chain_sweep(
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph,
     chain_id: int, amount_available: int, source_account_id: int,
+    *, aux=None, chain_base_date: date | None = None,
+    inflation_factor_cache: dict | None = None,
+    source_tax_character: str | None = None,
 ) -> int:
     """Recursively sweep up to ``amount_available`` out of ``source_account_id``.
 
@@ -963,7 +1014,7 @@ def _chain_sweep(
         put = min(amount_available, room)
         if put <= 0:
             return 0
-        tax_char = _withdrawal_tax_character(
+        tax_char = source_tax_character or _withdrawal_tax_character(
             source_account_id, account_tax_treatment, account_subkind, account_name,
         )
         _post_transfer(
@@ -973,12 +1024,20 @@ def _chain_sweep(
         )
         return put
     total = 0
-    for draw_into_id, _threshold, step_amount, step_percent in graph.members.get(chain_id, []):
+    for draw_into_id, _threshold, step_amount, step_percent, step_series, step_cadence in graph.members.get(chain_id, []):
         remaining = amount_available - total
         if remaining <= 0:
             break
         if step_amount is not None:
-            allocation = min(remaining, step_amount)
+            allocation = step_amount
+            if step_series:
+                if aux is None or chain_base_date is None or inflation_factor_cache is None:
+                    raise EngineError("inflated chain step requires runtime inflation context")
+                allocation = allocation * _cumulative_inflation_factor(
+                    aux, step_series, chain_base_date, month,
+                    inflation_factor_cache, cadence=step_cadence or "monthly",
+                ) // 1_000_000
+            allocation = min(remaining, allocation)
         elif step_percent is not None:
             allocation = remaining * step_percent // 1_000_000
         else:
@@ -989,6 +1048,9 @@ def _chain_sweep(
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, step_id, month_s, graph,
             draw_into_id, allocation, source_account_id,
+            aux=aux, chain_base_date=chain_base_date,
+            inflation_factor_cache=inflation_factor_cache,
+            source_tax_character=source_tax_character,
         )
     return total
 
@@ -998,6 +1060,7 @@ def _settle_accounts(
     account_subkind: dict[int, str], account_tax_treatment: dict[int, str | None],
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph, settle_order: list[int],
+    *, aux, chain_base_date: date, inflation_factor_cache: dict,
 ) -> None:
     """Refill/overflow pass (ADR-003 §2.9), run once after each month's rules.
 
@@ -1025,6 +1088,8 @@ def _settle_accounts(
                     con, balances, account_kinds, account_tax_treatment, account_subkind,
                     account_name, step_id, month_s, graph,
                     overflow_chain, excess, account_id,
+                    aux=aux, chain_base_date=chain_base_date,
+                    inflation_factor_cache=inflation_factor_cache,
                 )
 
 

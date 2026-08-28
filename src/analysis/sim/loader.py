@@ -451,7 +451,7 @@ def load_scenario(
         accounts=accounts,
     )
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
-    _validate_scheduled(scheduled_rows, accounts, issues)
+    _validate_scheduled(scheduled_rows, accounts, set(chains), issues)
     _validate_calendar(calendar_rows, issues)
     _validate_chains(chains, accounts, issues, money_resolver=money_resolver)
     _validate_lifespan(lifespan_rows, persons, issues)
@@ -758,7 +758,8 @@ def _validate_accounts(
 
 
 def _validate_scheduled(
-    rows: list[dict[str, str]], accounts: list[dict[str, str]], issues: list[str]
+    rows: list[dict[str, str]], accounts: list[dict[str, str]],
+    chain_names: set[str], issues: list[str],
 ) -> None:
     account_names = {r["name"] for r in accounts if r.get("name")}
     for i, row in enumerate(rows, start=2):
@@ -793,9 +794,10 @@ def _validate_scheduled(
             )
         for col in ("from_account", "to_account"):
             ref = row.get(col, "")
-            if not ref or ref not in account_names:
+            valid = ref in account_names if col == "from_account" else ref in account_names | chain_names
+            if not ref or not valid:
                 issues.append(
-                    f"scheduled.csv row {i} ({name}): {col} '{ref}' not in accounts.csv"
+                    f"scheduled.csv row {i} ({name}): {col} '{ref}' not in accounts.csv or chains/"
                 )
         params_json = row.get("amount_rule_params_json") or "{}"
         try:
@@ -1006,6 +1008,8 @@ def _read_chain_files(
     chains_dir = scenario_dir / "chains"
     if chains_dir.is_dir():
         for path in sorted(chains_dir.glob("*.csv")):
+            if path.stem.startswith("_"):
+                continue
             parsed = _chain_name_from_filename(path)
             if parsed is None:
                 issues.append(f"chains/{path.name}: filename must be '<kind>__<name>.csv'")
@@ -1089,6 +1093,20 @@ def _validate_chains(
                     _percent_to_micros(percent)
                 except ValueError as e:
                     issues.append(f"chains/{kind}__{name}.csv row {i}: percent {e}")
+            series = row.get("series", "")
+            cadence = row.get("cadence", "")
+            if cadence not in ("", "monthly", "annual"):
+                issues.append(
+                    f"chains/{kind}__{name}.csv row {i}: cadence must be monthly or annual"
+                )
+            if cadence and not series:
+                issues.append(
+                    f"chains/{kind}__{name}.csv row {i}: cadence set without series"
+                )
+            if series and not amount:
+                issues.append(
+                    f"chains/{kind}__{name}.csv row {i}: series requires amount"
+                )
 
         allocated = [row for row in rows if row.get("amount") or row.get("percent")]
         if allocated:
@@ -1252,7 +1270,8 @@ def _write_intent(
         for i, row in enumerate(rows, start=1):
             con.execute(
                 "INSERT INTO chain_steps(chain_id, step_order, draw_from_chain_id, "
-                "threshold_cents, amount_cents, percent_micros) VALUES (?,?,?,?,?,?)",
+                "threshold_cents, amount_cents, percent_micros, series, cadence) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 (
                     chain_ids[name], i, chain_ids[row["account_name"]],
                     _dollars_to_cents(row["threshold"], resolver=money_resolver)
@@ -1261,6 +1280,8 @@ def _write_intent(
                     if row.get("amount") else None,
                     _percent_to_micros(row["percent"])
                     if row.get("percent") else None,
+                    row.get("series") or None,
+                    row.get("cadence") or None,
                 ),
             )
             step_count += 1
@@ -1348,7 +1369,8 @@ def _write_intent(
             ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 model_id, s["name"],
-                account_ids[s["from_account"]], account_ids[s["to_account"]],
+                account_ids[s["from_account"]],
+                chain_ids[s["to_account"]],
                 s["cadence"],
                 int(s["month_of_year"]) if s.get("month_of_year") else None,
                 s["amount_rule_kind"],

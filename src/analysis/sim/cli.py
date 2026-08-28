@@ -1788,6 +1788,12 @@ def scenario_create(
     }
 
     target.mkdir(parents=True)
+    chains_dir = target / "chains"
+    chains_dir.mkdir()
+    (chains_dir / ".gitignore").write_text("", encoding="utf-8")
+    pd.DataFrame(columns=["account_name", "threshold", "amount", "percent", "series", "cadence"]).to_csv(
+        chains_dir / "_asset__example.csv", index=False,
+    )
     _append_csv_row(
         target / "scenario.csv",
         _SCENARIO_HEADER,
@@ -1823,6 +1829,9 @@ def scenario_create(
     click.echo(f"  inherits: {parent_ref.name}")
     for filename in ("scenario.csv", *skeletons):
         click.echo(f"  {filename}")
+    click.echo("  chains/")
+    click.echo("  chains/.gitignore")
+    click.echo("  chains/_asset__example.csv")
     click.echo(f"  current scenario: {name}")
 
 

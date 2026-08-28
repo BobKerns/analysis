@@ -178,7 +178,9 @@ CREATE TABLE scheduled_transaction (
     model_id                INTEGER NOT NULL REFERENCES account_model(id),
     name                    TEXT NOT NULL,
     from_account            INTEGER NOT NULL REFERENCES account(id),
-    to_account              INTEGER NOT NULL REFERENCES account(id),
+    -- Destination is always a chain: real accounts have implicit leaf chains;
+    -- named liquidity chains are interior chains (ADR-003 §2.9).
+    to_account              INTEGER NOT NULL REFERENCES chain(id),
     cadence                 TEXT NOT NULL CHECK (cadence IN
                                 ('monthly','quarterly','annual','one_off')),
     month_of_year           INTEGER CHECK (month_of_year BETWEEN 1 AND 12),
