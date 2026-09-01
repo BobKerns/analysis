@@ -20,6 +20,15 @@ This repository is a single top-level Python project. There are no nested repos 
     git config core.hooksPath .githooks
     ```
 4. Run `uv sync --group dev`
+5. Install the notebook-cleaning filter (one-time; strips outputs and other
+   per-run/per-machine metadata churn like `kernelspec.display_name` before
+   commit — see [notebooks/README.md](./notebooks/README.md)):
+    ```sh
+    uv run nbstripout --install
+    git config filter.nbstripout.clean '"$(git rev-parse --show-toplevel)/.venv/bin/python" -m nbstripout --extra-keys "metadata.kernelspec.display_name metadata.language_info.version"'
+    ```
+    (`--install --extra-keys` in one call does *not* persist the extra keys in
+    this nbstripout version — the second command is required.)
 
 ## Usage
 - CLI tools: `python -m analysis ...`
