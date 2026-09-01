@@ -4,6 +4,10 @@ Data is stored in one file:
 
 - `state/state.sqlite3`
 
+This file is committed in the data repo (unlike the rest of `state/`, which is
+ignored) so that a fresh clone can re-categorize Amazon items without
+re-answering every one from scratch.
+
 This guide is for asking questions in plain language. You do not need to know SQL.
 
 ## What Is In The Data
