@@ -223,6 +223,8 @@ class JsonStateStore:
         values: list[tuple[Any, ...]] = []
         for index, row in enumerate(rows):
             normalized_row = {_normalize_item_key(key): value for key, value in row.items()}
+            # Amazon renamed the "Payment Date" column to "Shipment Date" at some
+            # point; older exports only have the former. Same field, one column.
             shipment_date = _parse_date_iso(normalized_row.get("shipment_date"))
             if shipment_date is None:
                 shipment_date = _parse_date_iso(normalized_row.get("payment_date"))
