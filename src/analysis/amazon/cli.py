@@ -159,12 +159,18 @@ def _add_months(value: date, months: int) -> date:
     return date(year, month, day)
 
 
+def _col_width(header: str, values: list[str]) -> int:
+    return max([len(header), *(len(v) for v in values)])
+
+
 @click.command(name="items")
 @click.argument("start", type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.argument("end", required=False, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--state-dir", default="state", show_default=True, type=click.Path(path_type=Path))
 def amazon_items_command(start: datetime, end: datetime | None, state_dir: Path) -> None:
     """Show shipped items between START and END (default: START + 1 month, exclusive)."""
+    import shutil
+
     from rich.console import Console
     from rich.table import Table
 
@@ -175,12 +181,28 @@ def amazon_items_command(start: datetime, end: datetime | None, state_dir: Path)
     rows = store.query_items_by_shipment_date(start_date.isoformat(), end_date.isoformat())
     store.close()
 
+    dates = [str(row["shipment_date"] or "") for row in rows]
+    categories = [str(row["assigned_category"] or "") for row in rows]
+    quantities = [str(row["item_quantity"] or "") for row in rows]
+    totals = [str(row["item_net_total"] or "") for row in rows]
+
+    date_width = _col_width("Date", dates)
+    category_width = _col_width("Category", categories)
+    qty_width = _col_width("Qty", quantities)
+    total_width = _col_width("Total", totals)
+
+    # Each column adds ~3 chars of border/padding; give the rest to Item and
+    # truncate it there. A file/`less` gets the full width via a wide terminal.
+    term_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+    fixed_width = date_width + category_width + qty_width + total_width + 3 * 5 + 1
+    item_width = max(10, term_width - fixed_width)
+
     table = Table(title=f"Amazon items ({start_date} to {end_date}, exclusive)")
-    table.add_column("Shipment Date")
-    table.add_column("Category")
-    table.add_column("Item")
-    table.add_column("Qty", justify="right")
-    table.add_column("Item Net Total", justify="right")
+    table.add_column("Date", width=date_width)
+    table.add_column("Category", width=category_width)
+    table.add_column("Item", overflow="ellipsis", no_wrap=True, max_width=item_width)
+    table.add_column("Qty", justify="right", width=qty_width)
+    table.add_column("Total", justify="right", width=total_width)
     for row in rows:
         table.add_row(
             str(row["shipment_date"] or ""),
