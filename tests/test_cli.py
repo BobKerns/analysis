@@ -100,6 +100,45 @@ def test_cli_amazon_categorize_requires_at_least_one_input_file(tmp_path: Path) 
     assert "Provide at least one input CSV file." in result.output
 
 
+def test_cli_amazon_items_filters_by_shipment_date_range(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    store = JsonStateStore(state_dir)
+    store.insert_items(
+        [
+            {
+                "Order ID": "A-1",
+                "Shipment Date": "03/15/2026",
+                "Title": "In Range",
+                "Item Quantity": "1",
+                "Item Net Total": "10.00",
+                "normalized_item": "in range",
+                "category": "Household",
+            },
+            {
+                "Order ID": "A-2",
+                "Shipment Date": "04/01/2026",
+                "Title": "Out Of Range",
+                "Item Quantity": "1",
+                "Item Net Total": "20.00",
+                "normalized_item": "out of range",
+                "category": "Household",
+            },
+        ],
+        source_file="data/Amazon-2026-03.csv",
+    )
+    store.close()
+
+    result = CliRunner().invoke(
+        main,
+        ["amazon", "items", "2026-03-01", "--state-dir", str(state_dir)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "In Range" in result.output
+    assert "Out Of Range" not in result.output
+    assert "1 item(s)" in result.output
+
+
 def test_cli_amazon_categorize_accepts_cutoff_day_option(tmp_path: Path) -> None:
     input_csv = shutil.copy(DATA_DIR / "personal_coffee.csv", tmp_path / "amazon.csv")
 

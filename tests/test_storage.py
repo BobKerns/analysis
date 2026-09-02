@@ -143,3 +143,77 @@ def test_insert_items_upserts_by_order_id_and_populates_columns(tmp_path: Path) 
     assert row[2] == "Groceries"
     assert row[3] == "2026-04-01"
     assert row[4] == "12.34"
+
+
+def test_insert_items_defaults_shipment_date_to_payment_date(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    store = JsonStateStore(state_dir)
+    store.insert_items(
+        [
+            {
+                "Order ID": "A-200",
+                "Payment Date": "08/18/2026",
+                "Title": "Paper Towels",
+                "normalized_item": "paper towels",
+                "category": "Household",
+            }
+        ],
+        source_file="data/Amazon-2026-08.csv",
+    )
+    store.insert_items(
+        [
+            {
+                "Order ID": "A-201",
+                "Shipment Date": "03/02/2026",
+                "Payment Date": "03/05/2026",
+                "Title": "Coffee Pods",
+                "normalized_item": "coffee pods",
+                "category": "Groceries",
+            }
+        ],
+        source_file="data/Amazon-2026-03.csv",
+    )
+    store.close()
+
+    conn = sqlite3.connect(state_dir / "state.sqlite3")
+    rows = dict(
+        conn.execute("SELECT order_id, shipment_date FROM items ORDER BY order_id").fetchall()
+    )
+    conn.close()
+
+    assert rows["A-200"] == "2026-08-18"
+    assert rows["A-201"] == "2026-03-02"
+
+
+def test_query_items_by_shipment_date(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    store = JsonStateStore(state_dir)
+    store.insert_items(
+        [
+            {
+                "Order ID": "A-300",
+                "Shipment Date": "03/15/2026",
+                "Title": "In Range",
+                "Item Quantity": "1",
+                "Item Net Total": "10.00",
+                "normalized_item": "in range",
+                "category": "Household",
+            },
+            {
+                "Order ID": "A-301",
+                "Shipment Date": "04/01/2026",
+                "Title": "Out Of Range",
+                "Item Quantity": "1",
+                "Item Net Total": "20.00",
+                "normalized_item": "out of range",
+                "category": "Household",
+            },
+        ],
+        source_file="data/Amazon-2026-03.csv",
+    )
+
+    rows = store.query_items_by_shipment_date("2026-03-01", "2026-04-01")
+    store.close()
+
+    assert [row["title"] for row in rows] == ["In Range"]
+

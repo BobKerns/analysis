@@ -5,11 +5,13 @@ import os
 import re
 import sqlite3
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 STATE_DB_FILENAME = "state.sqlite3"
+
+_DATE_INPUT_FORMATS = ("%m/%d/%Y", "%Y-%m-%d")
 
 # Columns are based on data/Amazon-2026-04.csv headers, normalized to snake_case.
 ITEM_TABLE_COLUMNS: list[tuple[str, str]] = [
@@ -30,6 +32,7 @@ ITEM_TABLE_COLUMNS: list[tuple[str, str]] = [
     ("order_received_quantity", "TEXT"),
     ("account_user", "TEXT"),
     ("account_user_email", "TEXT"),
+    ("shipment_date", "TEXT"),
     ("invoice_status", "TEXT"),
     ("total_amount", "TEXT"),
     ("invoice_due_amount", "TEXT"),
@@ -220,6 +223,10 @@ class JsonStateStore:
         values: list[tuple[Any, ...]] = []
         for index, row in enumerate(rows):
             normalized_row = {_normalize_item_key(key): value for key, value in row.items()}
+            shipment_date = _parse_date_iso(normalized_row.get("shipment_date"))
+            if shipment_date is None:
+                shipment_date = _parse_date_iso(normalized_row.get("payment_date"))
+            normalized_row["shipment_date"] = shipment_date
             order_id = _coerce_sql_value(normalized_row.get("order_id"))
             if not order_id:
                 normalized_item = _coerce_sql_value(normalized_row.get("normalized_item"))
@@ -247,6 +254,20 @@ class JsonStateStore:
                 """,
                 values,
             )
+
+    def query_items_by_shipment_date(
+        self, start: str, end: str
+    ) -> list[sqlite3.Row]:
+        """Return items with shipment_date in [start, end), ordered by shipment_date."""
+        return self._conn.execute(
+            """
+            SELECT shipment_date, assigned_category, title, item_quantity, item_net_total
+            FROM items
+            WHERE shipment_date >= ? AND shipment_date < ?
+            ORDER BY shipment_date, title
+            """,
+            (start, end),
+        ).fetchall()
 
     def upsert_monthly_summaries(
         self,
@@ -337,7 +358,18 @@ class JsonStateStore:
                 CREATE INDEX IF NOT EXISTS idx_items_title ON items(title);
                 CREATE INDEX IF NOT EXISTS idx_monthly_summaries_month
                     ON monthly_summaries(summary_month_start);
+                """
+            )
 
+            item_columns = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(items)").fetchall()
+            }
+            for name, data_type in ITEM_TABLE_COLUMNS:
+                if name not in item_columns:
+                    self._conn.execute(f"ALTER TABLE items ADD COLUMN {name} {data_type}")
+
+            self._conn.executescript(
+                """
                 DROP VIEW IF EXISTS item_explore;
 
                 CREATE VIEW item_explore AS
@@ -345,6 +377,7 @@ class JsonStateStore:
                     order_id AS id,
                     order_id,
                     order_date,
+                    shipment_date,
                     title,
                     order_status,
                     item_quantity,
@@ -422,6 +455,24 @@ def normalize_category_name(raw: str) -> str | None:
             return None
 
     return cleaned
+
+
+def _parse_date_iso(value: Any) -> str | None:
+    """Parse a date-like string (Amazon export uses MM/DD/YYYY) to YYYY-MM-DD.
+
+    Returns None if the value is empty/missing/unparseable, so callers can
+    fall back to another source column.
+    """
+    coerced = _coerce_sql_value(value)
+    if not coerced:
+        return None
+    text = str(coerced).strip()
+    for fmt in _DATE_INPUT_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def month_start_iso(value: Any) -> str:

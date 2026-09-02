@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import calendar
 import logging
 from contextlib import contextmanager
+from datetime import date, datetime
 from pathlib import Path
 
 import click
@@ -147,6 +149,48 @@ def amazon_categorize_command(
         click.echo(f"Known categories: {result.categories_count}")
         click.echo(f"Mapped items: {result.mapped_items_count}")
         click.echo(f"Uncategorized rows: {result.uncategorized_count}")
+
+
+def _add_months(value: date, months: int) -> date:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+@click.command(name="items")
+@click.argument("start", type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.argument("end", required=False, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--state-dir", default="state", show_default=True, type=click.Path(path_type=Path))
+def amazon_items_command(start: datetime, end: datetime | None, state_dir: Path) -> None:
+    """Show shipped items between START and END (default: START + 1 month, exclusive)."""
+    from rich.console import Console
+    from rich.table import Table
+
+    start_date = start.date()
+    end_date = end.date() if end is not None else _add_months(start_date, 1)
+
+    store = JsonStateStore(state_dir)
+    rows = store.query_items_by_shipment_date(start_date.isoformat(), end_date.isoformat())
+    store.close()
+
+    table = Table(title=f"Amazon items ({start_date} to {end_date}, exclusive)")
+    table.add_column("Shipment Date")
+    table.add_column("Category")
+    table.add_column("Item")
+    table.add_column("Qty", justify="right")
+    table.add_column("Item Net Total", justify="right")
+    for row in rows:
+        table.add_row(
+            str(row["shipment_date"] or ""),
+            str(row["assigned_category"] or ""),
+            str(row["title"] or ""),
+            str(row["item_quantity"] or ""),
+            str(row["item_net_total"] or ""),
+        )
+    Console().print(table)
+    click.echo(f"{len(rows)} item(s)")
 
 
 @click.command(name="review")
@@ -299,6 +343,7 @@ def amazon_group_command() -> None:
 
 
 amazon_group_command.add_command(amazon_categorize_command)
+amazon_group_command.add_command(amazon_items_command)
 
 
 @click.group(name="category")
