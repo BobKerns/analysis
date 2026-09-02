@@ -271,6 +271,17 @@ class JsonStateStore:
             (start, end),
         ).fetchall()
 
+    def delete_generated_items(self) -> int:
+        """Delete items whose order_id was synthesized (input row had no Order ID).
+
+        Returns the number of rows deleted.
+        """
+        with self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM items WHERE order_id LIKE '__generated__:%'"
+            )
+            return cursor.rowcount
+
     def upsert_monthly_summaries(
         self,
         monthly_totals: list[tuple[str, str, float]],

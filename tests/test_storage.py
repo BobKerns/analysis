@@ -217,3 +217,35 @@ def test_query_items_by_shipment_date(tmp_path: Path) -> None:
 
     assert [row["title"] for row in rows] == ["In Range"]
 
+
+def test_delete_generated_items_removes_only_synthesized_order_ids(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    store = JsonStateStore(state_dir)
+    store.insert_items(
+        [
+            {
+                "Order ID": "A-400",
+                "Title": "Real Order",
+                "normalized_item": "real order",
+                "category": "Household",
+            },
+            {
+                # No Order ID: gets a synthesized "__generated__:..." key.
+                "Title": "No Order Id",
+                "normalized_item": "no order id",
+                "category": "Household",
+            },
+        ],
+        source_file="data/Amazon-2026-03.csv",
+    )
+
+    deleted = store.delete_generated_items()
+
+    conn = sqlite3.connect(state_dir / "state.sqlite3")
+    remaining = [row[0] for row in conn.execute("SELECT order_id FROM items").fetchall()]
+    conn.close()
+    store.close()
+
+    assert deleted == 1
+    assert remaining == ["A-400"]
+
