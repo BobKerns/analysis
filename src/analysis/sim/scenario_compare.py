@@ -89,8 +89,20 @@ def load_scenarios(
     return ScenarioLoadResult(scenarios, baseline, resolved_variants, colors, refs, runs, warnings)
 
 
+def render_load_or_warn(
+    data_dir: Path, baseline: str, variants: tuple[str, ...] | list[str], max_variants: int = 4
+) -> ScenarioLoadResult | None:
+    """Load scenarios, displaying any warnings; None means there's nothing to render."""
+    from IPython.display import Markdown, display
+
+    result = load_scenarios(data_dir, baseline, list(variants), max_variants)
+    for warning in result.warnings:
+        display(Markdown(f"> ⚠️ {warning}"))
+    return result if result.ok else None
+
+
 def scenario_picker_widgets(available: list[str], default_baseline: str, default_variants: list[str]):
-    """Build the baseline dropdown, variant multi-select, apply button, and output area."""
+    """Build the baseline dropdown and variant multi-select (variants excludes the baseline)."""
     import ipywidgets as widgets
 
     baseline_picker = widgets.Dropdown(
@@ -102,8 +114,6 @@ def scenario_picker_widgets(available: list[str], default_baseline: str, default
         description="Variants:",
         rows=min(len(available), 8),
     )
-    apply_button = widgets.Button(description="Load scenarios", button_style="primary")
-    status_output = widgets.Output()
 
     def _sync_variant_options(*_):
         variant_picker.options = [name for name in available if name != baseline_picker.value]
@@ -111,7 +121,7 @@ def scenario_picker_widgets(available: list[str], default_baseline: str, default
 
     baseline_picker.observe(_sync_variant_options, names="value")
 
-    return baseline_picker, variant_picker, apply_button, status_output
+    return baseline_picker, variant_picker
 
 
 def year_end_values(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:

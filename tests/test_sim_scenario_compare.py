@@ -14,6 +14,7 @@ from analysis.sim.scenario_compare import (
     filter_comparisons,
     load_scenarios,
     net_worth_by_month,
+    render_load_or_warn,
     variant_delta,
     year_end_values,
 )
@@ -41,6 +42,10 @@ def test_load_scenarios_rejects_too_many_variants() -> None:
 
     assert not result.ok
     assert "at most 4" in result.warnings[0]
+
+
+def test_render_load_or_warn_returns_none_when_not_ok() -> None:
+    assert render_load_or_warn(PROTOTYPE, "retire_alice", []) is None
 
 
 def test_load_scenarios_warns_when_baseline_has_no_run(tmp_path: Path) -> None:
