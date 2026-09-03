@@ -226,12 +226,22 @@ def filter_comparisons(comparisons: dict, available: list[str]) -> dict:
     }
 
 
+def has_any_comparisons(comparisons: dict) -> bool:
+    """True if at least one comparison pair survived `filter_comparisons`."""
+    return any(pairs for pairs in comparisons.values())
+
+
 def comparison_frame(nw: pd.DataFrame, comparisons: dict) -> pd.DataFrame:
-    """One column per comparison label: nw[a] - nw[b]."""
-    return pd.DataFrame({
-        label: nw[a] - nw[b]
-        for pairs in comparisons.values() for label, (a, b) in pairs.items()
-    })
+    """One column per comparison label: nw[a] - nw[b].
+
+    Keeps `nw`'s index even when there are no comparisons, so callers like
+    `year_end_values` don't choke on a columnless frame's default RangeIndex.
+    """
+    result = pd.DataFrame(index=nw.index)
+    for pairs in comparisons.values():
+        for label, (a, b) in pairs.items():
+            result[label] = nw[a] - nw[b]
+    return result
 
 
 def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:

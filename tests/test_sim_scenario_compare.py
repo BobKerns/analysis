@@ -12,6 +12,7 @@ from analysis.sim.scenario_compare import (
     breakeven_summary,
     comparison_frame,
     filter_comparisons,
+    has_any_comparisons,
     load_scenarios,
     net_worth_by_month,
     render_load_or_warn,
@@ -129,3 +130,24 @@ def test_comparison_frame_computes_pairwise_differences() -> None:
     frame = comparison_frame(nw, comparisons)
 
     assert list(frame["a minus b"]) == [6.0, 15.0]
+
+
+def test_has_any_comparisons() -> None:
+    assert has_any_comparisons({"group": {"label": ("a", "b")}})
+    assert not has_any_comparisons({"group": {}})
+    assert not has_any_comparisons({})
+
+
+def test_comparison_frame_keeps_index_when_no_comparisons_survive_filtering() -> None:
+    # Regression: an empty dict passed to comparison_frame previously produced a
+    # columnless frame with a default RangeIndex, breaking year_end_values(...).
+    idx = pd.date_range("2026-01-31", periods=2, freq="ME")
+    nw = pd.DataFrame({"a": [10.0, 20.0], "b": [4.0, 5.0]}, index=idx)
+    comparisons = filter_comparisons({"group": {"a minus c": ("a", "c")}}, ["a", "b"])
+
+    frame = comparison_frame(nw, comparisons)
+
+    assert not has_any_comparisons(comparisons)
+    assert list(frame.columns) == []
+    assert list(frame.index) == list(idx)
+    year_end_values(frame)  # must not raise
