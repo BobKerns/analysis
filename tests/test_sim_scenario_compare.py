@@ -151,3 +151,28 @@ def test_comparison_frame_keeps_index_when_no_comparisons_survive_filtering() ->
     assert list(frame.columns) == []
     assert list(frame.index) == list(idx)
     year_end_values(frame)  # must not raise
+
+
+def test_warning_html_converts_markdown_lite_and_sets_readable_colors() -> None:
+    # Regression: plain Markdown blockquotes could render illegibly (e.g.
+    # black-on-black) depending on the notebook theme; this uses explicit
+    # inline styling instead, so bold/code markup must survive the conversion.
+    from analysis.sim.scenario_compare import warning_html
+
+    html = warning_html("at least one run was made from **uncommitted** code or `data`")
+
+    assert "<strong>uncommitted</strong>" in html
+    assert "<code>data</code>" in html
+    assert "background-color:#fff8c5" in html
+    assert "color:#111" in html
+
+
+def test_warning_html_escapes_literal_angle_brackets() -> None:
+    # Regression: "run analysis sim load <name>" would otherwise be parsed as
+    # an (invalid) HTML tag and silently dropped from the rendered warning.
+    from analysis.sim.scenario_compare import warning_html
+
+    html = warning_html("run `analysis sim load <name>`")
+
+    assert "&lt;name&gt;" in html
+    assert "<name>" not in html

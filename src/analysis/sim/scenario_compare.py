@@ -89,15 +89,42 @@ def load_scenarios(
     return ScenarioLoadResult(scenarios, baseline, resolved_variants, colors, refs, runs, warnings)
 
 
+def warning_html(message: str) -> str:
+    """Build the HTML for a legible warning box.
+
+    Markdown blockquotes (`> ⚠️ ...`) pick up the ambient text color in some
+    notebook themes, which can render as black-on-black. This builds plain
+    HTML instead, with an explicit light-yellow background and dark text.
+    """
+    import html as html_lib
+    import re
+
+    # Escape first so literal "<...>" in messages (e.g. "sim load <name>")
+    # isn't swallowed as an HTML tag; **bold**/`code` add real tags after.
+    html = html_lib.escape(message)
+    html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html)
+    html = re.sub(r"`(.+?)`", r"<code>\1</code>", html)
+    return (
+        '<div style="background-color:#fff8c5; color:#111; padding:6px 10px; '
+        'border-left:4px solid #e6b800; border-radius:3px; margin:4px 0;">'
+        f"⚠️ {html}</div>"
+    )
+
+
+def display_warning(message: str) -> None:
+    """Display a warning with a legible background (see `warning_html`)."""
+    from IPython.display import HTML, display
+
+    display(HTML(warning_html(message)))
+
+
 def render_load_or_warn(
     data_dir: Path, baseline: str, variants: tuple[str, ...] | list[str], max_variants: int = 4
 ) -> ScenarioLoadResult | None:
     """Load scenarios, displaying any warnings; None means there's nothing to render."""
-    from IPython.display import Markdown, display
-
     result = load_scenarios(data_dir, baseline, list(variants), max_variants)
     for warning in result.warnings:
-        display(Markdown(f"> ⚠️ {warning}"))
+        display_warning(warning)
     return result if result.ok else None
 
 
