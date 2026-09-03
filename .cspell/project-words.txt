@@ -7,11 +7,13 @@ autofetch
 autofmt
 axhline
 birthdates
+blockquotes
 cachedir
 calevt
 carryforward
 carryforwards
 categoriser
+columnless
 configfile
 dflt
 executemany
@@ -27,6 +29,7 @@ IRMAA
 kernelspec
 lastrowid
 liab
+linestyle
 ltcg
 mktree
 msecs
@@ -57,6 +60,7 @@ scen
 sdir
 secho
 setp
+sharex
 sidefx
 sourceable
 sqls
