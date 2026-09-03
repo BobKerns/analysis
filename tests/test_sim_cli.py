@@ -36,6 +36,7 @@ def _load(tmp_path: Path) -> Path:
             "--data-dir", str(PROTOTYPE),
             "--intent-dir", str(intent_dir),
             "--allow-dirty-data",
+            "--no-run",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -160,20 +161,105 @@ def test_sim_load_records_current_scenario_and_defaults_to_it(
     result = runner.invoke(
         main,
         ["sim", "load", "retire_alice", "--intent-dir", str(intent_dir),
-         "--allow-dirty-data"],
+         "--allow-dirty-data", "--no-run"],
     )
     assert result.exit_code == 0, result.output
     assert (data / ".current_scenario").read_text().strip() == "retire_alice"
 
     # No scenario argument: falls back to the recorded one.
     again = runner.invoke(
-        main, ["sim", "load", "--intent-dir", str(intent_dir), "--allow-dirty-data"]
+        main, ["sim", "load", "--intent-dir", str(intent_dir), "--allow-dirty-data", "--no-run"]
     )
     assert again.exit_code == 0, again.output
     assert "current scenario: retire_alice" in again.output
 
     check = runner.invoke(main, ["sim", "check"])
     assert check.exit_code == 0, check.output
+
+
+def test_sim_load_runs_by_default(tmp_path: Path) -> None:
+    intent_dir = tmp_path / "intent"
+    runs_dir = tmp_path / "runs"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "load", "retire_alice",
+            "--data-dir", str(PROTOTYPE),
+            "--intent-dir", str(intent_dir),
+            "--runs-dir", str(runs_dir),
+            "--data-mode", "prototype",
+            "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "loaded " in result.output
+    assert "run " in result.output
+    assert len(list(runs_dir.glob("*.sqlite3"))) == 1
+
+
+def test_sim_load_no_run_skips_running(tmp_path: Path) -> None:
+    intent_dir = tmp_path / "intent"
+    runs_dir = tmp_path / "runs"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "load", "retire_alice",
+            "--data-dir", str(PROTOTYPE),
+            "--intent-dir", str(intent_dir),
+            "--runs-dir", str(runs_dir),
+            "--allow-dirty-data",
+            "--no-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "run " not in result.output
+    assert not runs_dir.exists()
+
+
+def test_sim_all_loads_and_runs_every_scenario(tmp_path: Path) -> None:
+    intent_dir = tmp_path / "intent"
+    runs_dir = tmp_path / "runs"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "all",
+            "--data-dir", str(PROTOTYPE),
+            "--intent-dir", str(intent_dir),
+            "--runs-dir", str(runs_dir),
+            "--data-mode", "prototype",
+            "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "=== retire_alice ===" in result.output
+    assert "all 1 scenario(s) succeeded" in result.output
+    assert len(list(runs_dir.glob("*.sqlite3"))) == 1
+
+
+def test_sim_all_reports_failures_without_stopping(tmp_path: Path, monkeypatch) -> None:
+    data = _copy_prototype(tmp_path)
+    (data / "scenarios" / "broken").mkdir()  # empty scenario dir: fails to load
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "all",
+            "--data-dir", str(data),
+            "--intent-dir", str(tmp_path / "intent"),
+            "--runs-dir", str(tmp_path / "runs"),
+            "--data-mode", "prototype",
+            "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "=== broken ===" in result.output
+    assert "=== retire_alice ===" in result.output
+    assert "1 of 2 scenario(s) failed:" in result.output
+    assert "  broken:" in result.output
+    assert len(list((tmp_path / "runs").glob("*.sqlite3"))) == 1
 
 
 def test_sim_scenario_create_derives_and_activates(tmp_path: Path, monkeypatch) -> None:

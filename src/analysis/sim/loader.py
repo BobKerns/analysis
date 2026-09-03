@@ -38,8 +38,9 @@ __all__ = [
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
-    "latest_run_path", "load_scenario", "open_intent_db", "read_current_scenario",
-    "resolve_scenario_name", "state_dir", "write_current_scenario",
+    "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
+    "read_current_scenario", "resolve_scenario_name", "state_dir",
+    "write_current_scenario",
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
@@ -258,6 +259,14 @@ def resolve_scenario_name(
     )
 
 
+def list_scenario_names(data_dir: Path) -> list[str]:
+    """Scenario folder names under data_dir/scenarios, sorted."""
+    scenarios = Path(data_dir) / "scenarios"
+    if not scenarios.is_dir():
+        raise LoadError([f"no scenarios/ in {data_dir}"])
+    return sorted(p.name for p in scenarios.iterdir() if p.is_dir())
+
+
 def _default_scenario_name(data_dir: Path, scenarios: Path) -> str:
     recorded = read_current_scenario(data_dir)
     if recorded:
@@ -267,7 +276,7 @@ def _default_scenario_name(data_dir: Path, scenarios: Path) -> str:
                 f"{recorded!r}"
             ])
         return recorded
-    subs = sorted(p.name for p in scenarios.iterdir() if p.is_dir())
+    subs = list_scenario_names(data_dir)
     if len(subs) == 1:
         return subs[0]
     if DEFAULT_SCENARIO_NAME in subs:

@@ -36,6 +36,7 @@ from analysis.sim.loader import (
     DataDirtyRefused,
     LoadError,
     ScenarioRef,
+    list_scenario_names,
     load_scenario,
     open_intent_db,
     resolve_scenario_name,
@@ -68,21 +69,53 @@ def sim_group_command() -> None:
     help="Default: data-repo state/intent when activated, else state/intent.",
 )
 @click.option(
+    "--runs-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Default: data-repo state/runs when activated, else state/runs. Used only when running.",
+)
+@click.option(
     "--allow-dirty-data",
     is_flag=True,
     default=False,
-    help="Allow loading when the data repo has uncommitted changes in the scenario's scoped paths.",
+    help="Allow loading (and running) when the data repo has uncommitted changes in the scenario's scoped paths.",
 )
+@click.option(
+    "--allow-dirty-code", is_flag=True, default=False, help="Used only when running.",
+)
+@click.option(
+    "--data-mode",
+    default=None,
+    help="live | prototype (default: $ANALYSIS_DATA_MODE or 'live'). Used only when running.",
+)
+@click.option(
+    "--run-by",
+    default=None,
+    help="Identifier recorded in simulation_run.run_by (default: $USER). Used only when running.",
+)
+@click.option(
+    "--run/--no-run",
+    "run_after_load",
+    default=True,
+    help="Also run the scenario after loading (default). Use --no-run to only build the intent file.",
+)
+@click.pass_context
 def load(
+    ctx: click.Context,
     scenario_name: str | None,
     data_dir: Path | None,
     intent_dir: Path | None,
+    runs_dir: Path | None,
     allow_dirty_data: bool,
+    allow_dirty_code: bool,
+    data_mode: str | None,
+    run_by: str | None,
+    run_after_load: bool,
 ) -> None:
-    """Build state/intent/<scenario>.sqlite3 from the data repo.
+    """Build state/intent/<scenario>.sqlite3 from the data repo, then run it.
 
     Naming a scenario also records it as the data repo's current scenario;
-    omitting it reuses that recorded scenario.
+    omitting it reuses that recorded scenario. Pass --no-run to only load.
     """
     resolved = _resolve_data_dir(data_dir)
     explicit = scenario_name is not None
@@ -109,6 +142,18 @@ def load(
     click.echo(f"  current scenario: {ref.name}")
     for table, n in result.counts.items():
         click.echo(f"  {table}: {n}")
+
+    if run_after_load:
+        ctx.invoke(
+            run,
+            scenario_name=ref.name,
+            intent_dir=intent_dir,
+            runs_dir=runs_dir,
+            data_mode=data_mode,
+            run_by=run_by,
+            allow_dirty_data=allow_dirty_data,
+            allow_dirty_code=allow_dirty_code,
+        )
 
 
 @sim_group_command.command()
@@ -223,6 +268,90 @@ def run(
         click.echo(str(exc), err=True)
         raise click.ClickException("data dirty; refusing to run") from None
     click.echo(f"run {out}")
+
+
+@sim_group_command.command(name="all")
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Data repo (default: $ANALYSIS_DATA_DIR)",
+)
+@click.option(
+    "--intent-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Default: data-repo state/intent when activated, else state/intent.",
+)
+@click.option(
+    "--runs-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Default: data-repo state/runs when activated, else state/runs.",
+)
+@click.option("--allow-dirty-data", is_flag=True, default=False)
+@click.option("--allow-dirty-code", is_flag=True, default=False)
+@click.option(
+    "--data-mode",
+    default=None,
+    help="live | prototype (default: $ANALYSIS_DATA_MODE or 'live')",
+)
+@click.option(
+    "--run-by",
+    default=None,
+    help="Identifier recorded in simulation_run.run_by (default: $USER)",
+)
+@click.pass_context
+def all_scenarios(
+    ctx: click.Context,
+    data_dir: Path | None,
+    intent_dir: Path | None,
+    runs_dir: Path | None,
+    allow_dirty_data: bool,
+    allow_dirty_code: bool,
+    data_mode: str | None,
+    run_by: str | None,
+) -> None:
+    """Load and run every scenario in the data repo.
+
+    Reports failures per scenario and keeps going; does not stop or fail the
+    command itself.
+    """
+    resolved = _resolve_data_dir(data_dir)
+    try:
+        names = list_scenario_names(resolved)
+    except LoadError as exc:
+        raise click.ClickException("; ".join(exc.issues)) from None
+    if not names:
+        raise click.ClickException(f"no scenarios found under {resolved / 'scenarios'}")
+
+    failures: list[tuple[str, str]] = []
+    for name in names:
+        click.echo(f"=== {name} ===")
+        try:
+            ctx.invoke(
+                load,
+                scenario_name=name,
+                data_dir=data_dir,
+                intent_dir=intent_dir,
+                runs_dir=runs_dir,
+                allow_dirty_data=allow_dirty_data,
+                allow_dirty_code=allow_dirty_code,
+                data_mode=data_mode,
+                run_by=run_by,
+                run_after_load=True,
+            )
+        except click.ClickException as exc:
+            failures.append((name, exc.format_message()))
+            click.echo(f"  error: {exc.format_message()}", err=True)
+
+    click.echo()
+    if failures:
+        click.echo(f"{len(failures)} of {len(names)} scenario(s) failed:")
+        for name, message in failures:
+            click.echo(f"  {name}: {message}")
+    else:
+        click.echo(f"all {len(names)} scenario(s) succeeded")
 
 
 def _read_data_version(intent_path: Path) -> str | None:
