@@ -569,7 +569,8 @@ def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, reason_id)"
+        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
+        "reason_id, parent_event_id)"
     )
     try:
         _apply_ytd_catchups(con, 1, date(2026, 5, 31), [txn], [], graph)
@@ -591,27 +592,35 @@ def test_ytd_amount_from_interior_source_chain_records_first_leaf_account() -> N
 
     graph = ChainGraph(
         members={100: [(2, 0), (3, 0)]},
-        leaf_account={2: 2, 3: 3, 4: 4},
+        leaf_account={2: 2, 3: 3, 4: 4, 5: 5},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
         maximum_of={}, overflow_chain_of={},
     )
     txn = [
         9, "mortgage_ytd", 100, 4, "monthly", None, "mortgage_payment",
-        None, "joint", None, None, None, None, None, "none",
-        None, "2026-01-31", None, 300, None, 1_395_664, 0, None,
+        "Mortgage Interest", "joint", None, 60_000, None, 185_000, None, "none",
+        None, "2026-01-31", None, 300, None, 370_000, 0, None,
     ]
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, reason_id)"
+        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
+        "reason_id, parent_event_id)"
     )
     try:
-        _apply_ytd_catchups(con, 1, date(2026, 5, 31), [txn], [], graph)
-        row = con.execute(
-            "SELECT from_account, to_account, amount FROM transfer_event"
-        ).fetchone()
-        assert row == (2, 4, 1_395_664)
+        _apply_ytd_catchups(
+            con, 1, date(2026, 5, 31), [txn], [], graph,
+            account_id_by_name={"Mortgage Interest": 5}, balances={4: 25_000_000},
+        )
+        rows = con.execute(
+            "SELECT from_account, to_account, amount, parent_event_id "
+            "FROM transfer_event ORDER BY id"
+        ).fetchall()
+        assert rows == [
+            (2, 5, 249_700, None),
+            (2, 4, 120_300, 1),
+        ]
     finally:
         con.close()
 

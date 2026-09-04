@@ -191,6 +191,9 @@ def run_scenario(
             if step_index == 0:
                 _apply_ytd_catchups(
                     con, step_id, month, txns, year_to_date_rows, chain_graph,
+                    account_id_by_name=account_id_by_name,
+                    balances=balances,
+                    prior_year_end_balances=prior_year_end_balances,
                 )
 
             for ev in calendar_events:
@@ -666,7 +669,8 @@ def _post_ytd_transfer(
     con, step_id: int, date_s: str,
     from_id: int, to_id: int, amount: int, tax_char: str,
     reason_kind: str, reason_id: int,
-) -> None:
+    parent_event_id: int | None = None,
+) -> int | None:
     """ADR-003 §4.10: balance-neutral catch-up entry. Visible to income/expense/
     tax reporting like any other transfer_event, but does not mutate account
     balances -- those already reflect the post-receipt state via opening_balance.
@@ -675,14 +679,16 @@ def _post_ytd_transfer(
     (scheduled_transaction.id vs year_to_date.id) that can otherwise collide.
     """
     if amount == 0:
-        return
-    con.execute(
+        return None
+    cur = con.execute(
         "INSERT INTO transfer_event("
         "  step_id, date, from_account, to_account, amount, "
-        "  tax_character, reason_kind, reason_id"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (step_id, date_s, from_id, to_id, amount, tax_char, reason_kind, reason_id),
+        "  tax_character, reason_kind, reason_id, parent_event_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, date_s, from_id, to_id, amount, tax_char, reason_kind, reason_id,
+         parent_event_id),
     )
+    return cur.lastrowid
 
 
 def _first_chain_leaf_account(graph: ChainGraph, chain_id: int) -> int | None:
@@ -696,17 +702,46 @@ def _first_chain_leaf_account(graph: ChainGraph, chain_id: int) -> int | None:
     return None
 
 
+def _mortgage_ytd_split(
+    ytd_total: int,
+    monthly_payment: int | None,
+    annual_micros: int | None,
+    starting_balance: int,
+    tid: int,
+) -> tuple[int, int]:
+    if monthly_payment is None or annual_micros is None:
+        raise EngineError(
+            f"mortgage_payment id={tid}: YTD split requires amount and rate_micros"
+        )
+    remaining_ytd = ytd_total
+    outstanding = max(0, starting_balance)
+    interest_total = 0
+    principal_total = 0
+    while remaining_ytd > 0 and outstanding > 0:
+        payment = min(int(monthly_payment), remaining_ytd)
+        interest = min(payment, (outstanding * int(annual_micros)) // (12 * 1_000_000))
+        principal = min(payment - interest, outstanding)
+        interest_total += interest
+        principal_total += principal
+        outstanding -= principal
+        remaining_ytd -= payment
+    return interest_total, principal_total
+
+
 def _apply_ytd_catchups(
     con, step_id: int, start: date,
     txns: list[list[Any]],
     year_to_date_rows: list[tuple[int, int, int, int, str, int | None]],
     graph: ChainGraph,
+    *, account_id_by_name: dict[str, int] | None = None,
+    balances: dict[int, int] | None = None,
+    prior_year_end_balances: dict[int, int] | None = None,
 ) -> None:
     """Fire partial-first-year catch-up transfers once, at step 0."""
     date_s = _ytd_catchup_date(start).isoformat()
     for txn in txns:
-        (tid, _name, frm, to_chain, _cadence, _moy, _rule_kind,
-         _p_interest_acct, _p_person, _p_series, _p_rate_micros,
+        (tid, _name, frm, to_chain, _cadence, _moy, rule_kind,
+         interest_acct, _p_person, _p_series, rate_micros,
          _p_claim_age, amount_cents, _ext_json,
          tax_char, _tax_year, _t_start, _t_end, _prio, _t_base_date,
          ytd_amount, ytd_preroll, _t_inflation_cadence) = txn
@@ -721,6 +756,33 @@ def _apply_ytd_catchups(
             raise EngineError(f"scheduled_transaction id={tid}: YTD source chain has no leaf account")
         to_account = graph.leaf_account.get(to_chain)
         if to_account is not None:
+            if rule_kind == "mortgage_payment" and ytd_amount is not None:
+                if account_id_by_name is None or balances is None:
+                    raise EngineError(
+                        f"scheduled_transaction id={tid}: mortgage YTD requires account context"
+                    )
+                interest_id = account_id_by_name.get(interest_acct or "")
+                if interest_id is None:
+                    raise EngineError(
+                        f"scheduled_transaction id={tid}: unknown interest_account {interest_acct!r}"
+                    )
+                starting_balance = (
+                    (prior_year_end_balances or {}).get(to_account)
+                    or balances.get(to_account, 0)
+                )
+                interest, principal = _mortgage_ytd_split(
+                    amount, amount_cents, rate_micros, starting_balance, tid,
+                )
+                parent_event_id = _post_ytd_transfer(
+                    con, step_id, date_s, from_account, interest_id, interest,
+                    tax_char, "ytd_rule", tid,
+                )
+                _post_ytd_transfer(
+                    con, step_id, date_s, from_account, to_account, principal,
+                    tax_char, "ytd_rule", tid,
+                    parent_event_id=parent_event_id,
+                )
+                continue
             _post_ytd_transfer(
                 con, step_id, date_s, from_account, to_account, amount,
                 tax_char, "ytd_rule", tid,

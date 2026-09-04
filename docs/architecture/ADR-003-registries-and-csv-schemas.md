@@ -491,7 +491,7 @@ Two mechanisms cover this, both posting **balance-neutral** `transfer_event` row
 
 **On `scheduled.csv`** (§4.6), for a single `fixed_amount` + `cadence='monthly'` row's own catch-up, since the catch-up is directly derived from that row's `amount`:
 
-- `ytd_amount` (dollars) — hard actual total already paid/received this calendar year before `scenario.start`. Valid for any rule kind because it is an observed fact, not derived from the rule's runtime computation. Posted with `reason_kind='ytd_rule'`, `reason_id` = the row's own `scheduled_transaction.id`.
+- `ytd_amount` (dollars) — hard actual total already paid/received this calendar year before `scenario.start`. Valid for any rule kind because it is an observed fact, not derived from the rule's runtime computation. Posted with `reason_kind='ytd_rule'`, `reason_id` = the row's own `scheduled_transaction.id`. Multi-leg rules keep their reporting shape: today, `mortgage_payment` splits the YTD amount into an interest-expense leg and principal-liability leg, linked by `parent_event_id`, so expense charts pick up the interest portion just like ordinary monthly mortgage payments.
 - `ytd_preroll` (`0`/`1`) — auto-computed as `amount × (scenario.start.month − 1)`, i.e. one full month's amount per elapsed month, unadjusted for inflation (a same-order approximation, not a substitute for real records).
 - Mutually exclusive; loader rejects `ytd_preroll` on a non-`fixed_amount`/non-`monthly` row.
 - Dated the last day of the month before `scenario.start` (degenerates to `scenario.start` itself when it falls in January).
