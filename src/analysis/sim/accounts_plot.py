@@ -14,12 +14,12 @@ from analysis.sim.plotting import include_zero
 def plottable_accounts(
     balance_pivot: pd.DataFrame, account_kinds: pd.Series, kind: str
 ) -> list[str]:
-    """Account names of one exact kind, sorted by latest |balance| descending."""
+    """Account names of one exact kind, sorted alphabetically."""
     names = [
         name for name in balance_pivot.columns
         if account_kinds.get(name) == kind
     ]
-    names.sort(key=lambda name: abs(balance_pivot[name].iloc[-1] or 0), reverse=True)
+    names.sort(key=str.casefold)
     return names
 
 
