@@ -105,12 +105,15 @@ def account_balance_history_widget(
         options=[("Nominal", "nominal"), ("CPI-constant", "cpi_constant")],
         value="nominal",
         description="Dollar basis:",
-        layout=widgets.Layout(margin="0 30px 0 0"),
+        layout=widgets.Layout(
+            border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+        ),
     )
     y_axis_mode = widgets.ToggleButtons(
         options=[("Zero-anchored", True), ("Auto-scale", False)],
         value=True,
         description="Y-axis:",
+        layout=widgets.Layout(border="1px solid #888", padding="4px 6px"),
     )
     out = widgets.Output()
 
