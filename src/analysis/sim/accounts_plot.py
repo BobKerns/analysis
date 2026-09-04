@@ -44,7 +44,7 @@ def render_balance_history_figure(
     balance_pivot: pd.DataFrame,
     selected: list[str],
     title: str,
-    *, zero_anchor: bool = True,
+    *, zero_anchor: bool = True, value_mode: str = "total",
 ):
     """Build the matplotlib Figure for selected account balance histories, or
     None if empty.
@@ -53,18 +53,27 @@ def render_balance_history_figure(
     for a series whose true variation is tiny relative to its magnitude (e.g.
     a home's value in CPI-constant terms) -- zero-anchoring would otherwise
     flatten it to an invisible line hugging the top of the axis.
+
+    ``value_mode``: ``"total"`` (default) plots the raw balance; ``"monthly"``
+    plots the change from the previous month -- the first month has no prior
+    value to diff against, so the visible line effectively starts one month
+    later.
     """
     if not selected:
         return None
 
     import matplotlib.pyplot as plt
 
-    balance_pivot = trim_to_last_nonzero(balance_pivot, selected)
+    balance_pivot = trim_to_last_nonzero(balance_pivot, selected)[selected]
+    ylabel = "USD"
+    if value_mode == "monthly":
+        balance_pivot = balance_pivot.diff()
+        ylabel = "USD / month"
     fig, ax = plt.subplots(figsize=(10, 5))
     for name in selected:
         ax.plot(balance_pivot.index, balance_pivot[name], label=name)
     ax.set_title(title)
-    ax.set_ylabel("USD")
+    ax.set_ylabel(ylabel)
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"${value:,.0f}"))
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best", fontsize="small")
@@ -101,6 +110,14 @@ def account_balance_history_widget(
         description="Accounts:",
         layout=widgets.Layout(width="50%"),
     )
+    value_mode = widgets.ToggleButtons(
+        options=[("Total", "total"), ("Monthly", "monthly")],
+        value="total",
+        description="Values:",
+        layout=widgets.Layout(
+            border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+        ),
+    )
     plot_mode = widgets.ToggleButtons(
         options=[("Nominal", "nominal"), ("CPI-constant", "cpi_constant")],
         value="nominal",
@@ -125,12 +142,17 @@ def account_balance_history_widget(
         zero_anchor = y_axis_mode.value
         if change and change.get("owner") is y_axis_mode:
             zero_anchor = change["new"]
+        values = value_mode.value
+        if change and change.get("owner") is value_mode:
+            values = change["new"]
         pivot = cpi_balance_pivot if mode == "cpi_constant" and cpi_balance_pivot is not None else balance_pivot
         with out:
             clear_output(wait=True)
             mode_title = "CPI-constant" if mode == "cpi_constant" else "nominal"
+            values_title = "monthly change" if values == "monthly" else "total"
             fig = render_balance_history_figure(
-                pivot, selected, f"{title} ({mode_title})", zero_anchor=zero_anchor,
+                pivot, selected, f"{title} ({mode_title}, {values_title})",
+                zero_anchor=zero_anchor, value_mode=values,
             )
             if fig is None:
                 print("(pick one or more accounts)")
@@ -140,6 +162,7 @@ def account_balance_history_widget(
     picker.observe(_redraw, names="value")
     plot_mode.observe(_redraw, names="value")
     y_axis_mode.observe(_redraw, names="value")
+    value_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([widgets.HBox([plot_mode, y_axis_mode]), picker, out])
+    return widgets.VBox([widgets.HBox([value_mode, plot_mode, y_axis_mode]), picker, out])
