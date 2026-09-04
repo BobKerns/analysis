@@ -685,6 +685,17 @@ def _post_ytd_transfer(
     )
 
 
+def _first_chain_leaf_account(graph: ChainGraph, chain_id: int) -> int | None:
+    account_id = graph.leaf_account.get(chain_id)
+    if account_id is not None:
+        return account_id
+    for next_chain_id, *_allocation in graph.members.get(chain_id, []):
+        account_id = _first_chain_leaf_account(graph, next_chain_id)
+        if account_id is not None:
+            return account_id
+    return None
+
+
 def _apply_ytd_catchups(
     con, step_id: int, start: date,
     txns: list[list[Any]],
@@ -705,10 +716,13 @@ def _apply_ytd_catchups(
             amount = (amount_cents or 0) * (start.month - 1)
         else:
             continue
+        from_account = _first_chain_leaf_account(graph, frm)
+        if from_account is None:
+            raise EngineError(f"scheduled_transaction id={tid}: YTD source chain has no leaf account")
         to_account = graph.leaf_account.get(to_chain)
         if to_account is not None:
             _post_ytd_transfer(
-                con, step_id, date_s, frm, to_account, amount,
+                con, step_id, date_s, from_account, to_account, amount,
                 tax_char, "ytd_rule", tid,
             )
         elif ytd_preroll:
@@ -717,11 +731,11 @@ def _apply_ytd_catchups(
                 month_end = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
                 _post_ytd_chain(
                     con, step_id, month_end.isoformat(), graph, to_chain,
-                    frm, amount_cents or 0, tax_char, tid,
+                    from_account, amount_cents or 0, tax_char, tid,
                 )
         else:
             _post_ytd_chain(
-                con, step_id, date_s, graph, to_chain, frm, amount,
+                con, step_id, date_s, graph, to_chain, from_account, amount,
                 tax_char, tid,
             )
     for yid, y_from, y_to, y_amount, y_tax_char, y_year in year_to_date_rows:

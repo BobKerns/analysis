@@ -556,7 +556,7 @@ def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
 
     graph = ChainGraph(
         members={100: [(2, 0, 25_000, None), (3, 0, None, 1_000_000)]},
-        leaf_account={2: 2, 3: 3},
+        leaf_account={1: 1, 2: 2, 3: 3},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
         maximum_of={}, overflow_chain_of={},
@@ -582,6 +582,36 @@ def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
             ("2026-03-31", 2, 25_000), ("2026-03-31", 3, 75_000),
             ("2026-04-30", 2, 25_000), ("2026-04-30", 3, 75_000),
         ]
+    finally:
+        con.close()
+
+
+def test_ytd_amount_from_interior_source_chain_records_first_leaf_account() -> None:
+    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+
+    graph = ChainGraph(
+        members={100: [(2, 0), (3, 0)]},
+        leaf_account={2: 2, 3: 3, 4: 4},
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    txn = [
+        9, "mortgage_ytd", 100, 4, "monthly", None, "mortgage_payment",
+        None, "joint", None, None, None, None, None, "none",
+        None, "2026-01-31", None, 300, None, 1_395_664, 0, None,
+    ]
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, tax_year, reason_kind, reason_id)"
+    )
+    try:
+        _apply_ytd_catchups(con, 1, date(2026, 5, 31), [txn], [], graph)
+        row = con.execute(
+            "SELECT from_account, to_account, amount FROM transfer_event"
+        ).fetchone()
+        assert row == (2, 4, 1_395_664)
     finally:
         con.close()
 

@@ -533,7 +533,7 @@ def test_year_to_date_unknown_account_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_scheduled_ytd_amount_and_preroll_validated(tmp_path: Path) -> None:
+def test_scheduled_ytd_preroll_rejected_for_non_fixed_amount(tmp_path: Path) -> None:
     import pandas as pd
 
     repo = tmp_path / "data"
@@ -545,11 +545,37 @@ def test_scheduled_ytd_amount_and_preroll_validated(tmp_path: Path) -> None:
     df.loc[df["name"] == "mortgage_pmt", "ytd_preroll"] = "1"
     df.to_csv(sched, index=False)
 
-    with pytest.raises(LoadError, match="only valid for amount_rule_kind='fixed_amount'"):
+    with pytest.raises(LoadError, match="ytd_preroll only valid"):
         load_scenario(
             repo, "retire_alice", intent_dir=tmp_path / "out",
             allow_dirty_data=True,
         )
+
+
+def test_scheduled_ytd_amount_allowed_for_mortgage_payment(tmp_path: Path) -> None:
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "mortgage_pmt", "ytd_amount"] = "13956.64"
+    df.to_csv(sched, index=False)
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out",
+        allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(result.intent_path)
+    try:
+        row = con.execute(
+            "SELECT ytd_amount FROM scheduled_transaction WHERE name='mortgage_pmt'"
+        ).fetchone()
+        assert row == (1_395_664,)
+    finally:
+        con.close()
 
 
 def test_scheduled_ytd_amount_and_preroll_mutually_exclusive(tmp_path: Path) -> None:
