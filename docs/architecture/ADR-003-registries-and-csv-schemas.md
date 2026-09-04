@@ -196,6 +196,15 @@ Conditional fixed top-up: when the `to_account` balance is below a threshold at 
 - **Emits:** zero or more events. With no sources: one event. With sources: one event per source actually drawn from. Each event carries the row's `tax_character` (no per-leg override).
 - **Use:** standalone scheduled refills (savings → checking when checking dips); a more explicit alternative to `waterfall_fill` when authors prefer fixed-size top-ups over fill-to-target.
 
+#### 2.9 `on_death` (priority band: author's choice; recommend 900)
+
+Fires once, automatically, the month a person dies -- for one-time death-triggered liquidations (selling a car, a life-insurance payout) where the current book value **is** the payout (no separate death-benefit computation yet).
+
+- **Params:** the row's `person` (required) names whose `lifespan.csv` `final_month` (§4.9) triggers it. `from_account`/`to_account` must both be concrete accounts (not interior chains) -- "100% of value" only makes sense for one real balance. `tax_character` must be `'tax_free'` -- death-triggered liquidations/payouts (selling a car, a life-insurance death benefit) are not taxable events; the loader rejects any other value.
+- **Compute:** at fire time (every month the rule's cadence allows it to be checked, recommend `cadence=monthly`), no-op unless `month_s` is exactly the month after `person`'s `final_month` (the same month other lifespan-gated rules stop -- see §4.9) and `person` has a declared lifespan at all. When it matches, transfers 100% of `from_account`'s current balance to `to_account`. A zero balance is a no-op, not an error; a `person` with no `lifespan.csv` row means the rule never fires.
+- **Emits:** one event when it fires, none otherwise.
+- **Use:** `from_account` = the vehicle/policy account being liquidated, `to_account` = wherever the proceeds land (e.g. the household cash account). Exempt from the general lifespan-gating in §4.9 (which would otherwise suppress the very rule that fires *because of* the lifespan ending).
+
 ### 3. `calendar_event.kind` registry
 
 Nine kinds in v1. Per the §2 invariant, calendar events never write to `transfer_event` directly. They fall into two classes:
@@ -514,6 +523,7 @@ When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule 
 | `tax_accumulator` | 400 |
 | `rmd` | 500 |
 | `refill_transfer` | 800 |
+| `on_death` | 900 |
 | `waterfall_fill` | 900 |
 
 Authors can override by setting `priority` explicitly. The check command (`analysis sim check --priorities`) flags rows whose explicit priority crosses a band boundary, since that's almost always a mistake.

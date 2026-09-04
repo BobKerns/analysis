@@ -41,7 +41,7 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance",
-    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator"}
+    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death"}
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
@@ -249,9 +249,11 @@ def run_scenario(
                 # account's growth is a property of the account"), never a
                 # personal service tied to the living owner -- an IRA/checking
                 # balance keeps earning interest/appreciating after its owner's
-                # death, so it's exempt from lifespan gating.
+                # death, so it's exempt from lifespan gating. on_death is the
+                # rule kind that FIRES on the death transition itself, so it
+                # must not be suppressed by the very gating it triggers.
                 if (
-                    person_lifespan and rule_kind != "percent_of_balance"
+                    person_lifespan and rule_kind not in ("percent_of_balance", "on_death")
                     and _past_person_lifespan(
                         month_s, p_person, from_account or frm, to, account_owner, person_lifespan,
                     )
@@ -381,6 +383,12 @@ def run_scenario(
                             con, balances, account_kinds, step_id, month_s, month,
                             params, from_account, to,
                             person_birthdates, prior_year_end_balances, aux,
+                            tax_char, tid, refill_ctx=refill_ctx,
+                        )
+                    case "on_death":
+                        _apply_on_death(
+                            con, balances, account_kinds, step_id, month_s,
+                            params, from_account, to, person_lifespan,
                             tax_char, tid, refill_ctx=refill_ctx,
                         )
                     case "tax_accumulator":
@@ -1049,6 +1057,47 @@ def _lookup_rmd_factor(
         if effective <= month_s and int(payload.get("age", -1)) == age:
             chosen = payload
     return chosen
+
+
+def _next_month_end(date_s: str) -> str:
+    """Month-end date one calendar month after ``date_s`` (itself a month-end)."""
+    d = _parse_date(date_s)
+    year, month = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, last_day).isoformat()
+
+
+def _apply_on_death(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str,
+    params: dict[str, Any], from_id: int | None, to_id: int | None,
+    person_lifespan: dict[str, str],
+    tax_char: str, tid: int, *, refill_ctx: "RefillContext | None" = None,
+) -> None:
+    """ADR-003 \u00a74.9-adjacent: fires once, the first month after the named
+    person's lifespan.csv ``final_month``, sweeping 100% of ``from_id``'s
+    balance into ``to_id`` (e.g. selling a car, or a life-insurance payout --
+    for now, at its current book value, not a separately declared death
+    benefit). A no-op if the person has no declared lifespan, or the balance
+    is already zero; not an error either way.
+    """
+    person = params.get("person")
+    if not person:
+        raise EngineError(f"on_death id={tid}: requires person")
+    if from_id is None or to_id is None:
+        raise EngineError(
+            f"on_death id={tid}: from_account and to_account must both be "
+            "concrete accounts, not interior chains"
+        )
+    final_month = person_lifespan.get(person)
+    if final_month is None or month_s != _next_month_end(final_month):
+        return
+    amount = max(0, balances.get(from_id, 0))
+    if amount > 0:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            from_id, to_id, amount, tax_char, tid, refill_ctx=refill_ctx,
+        )
 
 
 class ChainGraph:

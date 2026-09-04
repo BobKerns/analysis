@@ -23,7 +23,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd",
-    "ss_benefit", "tax_accumulator", "mortgage_payment",
+    "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death",
 }
 
 # Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
@@ -149,6 +149,7 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     "mortgage_payment": 300,
     "tax_accumulator": 400,
     "rmd": 500,
+    "on_death": 900,
 }
 
 # Aux file kind -> required columns (ADR-003 §4.4).

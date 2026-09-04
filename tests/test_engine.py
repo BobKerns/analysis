@@ -857,6 +857,78 @@ def test_person_lifespan_does_not_stop_solely_owned_asset_growth(tmp_path: Path)
         con.close()
 
 
+def test_on_death_sweeps_full_balance_once(tmp_path: Path) -> None:
+    """on_death (no ADR section number yet) fires exactly once, the month
+    after the named person's lifespan.csv final_month, sweeping 100% of
+    from_account into to_account -- e.g. liquidating a solely-owned asset."""
+    repo = _clone_prototype(tmp_path)
+    lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
+    lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
+
+    scheduled_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    _append_scheduled(
+        scheduled_csv,
+        name="sell_roth_alice",
+        from_account="Asset_Roth_Alice",
+        to_account="Asset_Checking",
+        cadence="monthly",
+        amount_rule_kind="on_death",
+        person="alice",
+        tax_character="tax_free",
+        start="2026-01-31",
+        priority="900",
+    )
+
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    try:
+        rule_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='sell_roth_alice'"
+        ).fetchone()[0]
+        roth_id, checking_id = (
+            con.execute(
+                "SELECT id FROM account WHERE name=?", (name,)
+            ).fetchone()[0]
+            for name in ("Asset_Roth_Alice", "Asset_Checking")
+        )
+
+        # Fires exactly once, the month after death (2027-01-31 -> 2027-02-28).
+        events = con.execute(
+            "SELECT date, amount FROM transfer_event WHERE reason_id=?", (rule_id,),
+        ).fetchall()
+        assert events == [("2027-02-28", 10_000_000)]  # $100,000.00 opening balance
+
+        # Roth zeroed out, checking received the full amount, from that month on.
+        roth_after = con.execute(
+            "SELECT ast.balance FROM account_state ast "
+            "JOIN simulation_step s ON s.id = ast.step_id "
+            "WHERE ast.account_id=? AND s.month='2027-02-28'", (roth_id,),
+        ).fetchone()[0]
+        assert roth_after == 0
+
+        checking_before, checking_after = (
+            con.execute(
+                "SELECT ast.balance FROM account_state ast "
+                "JOIN simulation_step s ON s.id = ast.step_id "
+                "WHERE ast.account_id=? AND s.month=?", (checking_id, m),
+            ).fetchone()[0]
+            for m in ("2027-01-31", "2027-02-28")
+        )
+        assert checking_after - checking_before >= 10_000_000
+    finally:
+        con.close()
+
+
 def test_fixed_amount_applies_cpi_inflation(tmp_path: Path) -> None:
     """ADR-003 §2.1: fixed_amount grows with series/base_date, not
     a flat amount for the life of the run."""

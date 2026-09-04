@@ -802,6 +802,12 @@ def _validate_scheduled(
         tc = row.get("tax_character", "")
         if tc not in registries.TAX_CHARACTERS:
             issues.append(f"scheduled.csv row {i} ({name}): unknown tax_character '{tc}'")
+        if kind == "on_death" and tc != "tax_free":
+            issues.append(
+                f"scheduled.csv row {i} ({name}): on_death requires "
+                f"tax_character='tax_free' (got {tc!r}) -- death-triggered "
+                "liquidations/payouts are not taxable events"
+            )
         tax_year = row.get("tax_year", "")
         if tax_year:
             try:

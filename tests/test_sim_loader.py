@@ -571,6 +571,33 @@ def test_scheduled_ytd_amount_and_preroll_mutually_exclusive(tmp_path: Path) -> 
         )
 
 
+def test_on_death_requires_tax_free(tmp_path: Path) -> None:
+    import pandas as pd
+
+    from analysis.sim.registries import SCHEDULED_CSV_HEADER
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched, dtype=str, keep_default_na=False)
+    df = df.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    row = {c: "" for c in SCHEDULED_CSV_HEADER}
+    row.update(
+        name="sell_car", from_account="Asset_Savings", to_account="Asset_Checking",
+        cadence="monthly", amount_rule_kind="on_death", person="alice",
+        tax_character="none", start="2026-01-31",
+    )
+    df.loc[len(df)] = [row[c] for c in SCHEDULED_CSV_HEADER]
+    df.to_csv(sched, index=False)
+
+    with pytest.raises(LoadError, match="on_death requires tax_character='tax_free'"):
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+
+
 def test_invalid_tag_rejected(tmp_path: Path) -> None:
     import pandas as pd
 
