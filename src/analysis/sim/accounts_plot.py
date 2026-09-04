@@ -44,9 +44,16 @@ def render_balance_history_figure(
     balance_pivot: pd.DataFrame,
     selected: list[str],
     title: str,
+    *, zero_anchor: bool = True,
 ):
     """Build the matplotlib Figure for selected account balance histories, or
-    None if empty."""
+    None if empty.
+
+    ``zero_anchor`` applies the include-zero policy by default; turn it off
+    for a series whose true variation is tiny relative to its magnitude (e.g.
+    a home's value in CPI-constant terms) -- zero-anchoring would otherwise
+    flatten it to an invisible line hugging the top of the axis.
+    """
     if not selected:
         return None
 
@@ -61,7 +68,8 @@ def render_balance_history_figure(
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"${value:,.0f}"))
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best", fontsize="small")
-    include_zero(ax)
+    if zero_anchor:
+        include_zero(ax)
     fig.autofmt_xdate()
     return fig
 
@@ -98,6 +106,11 @@ def account_balance_history_widget(
         value="nominal",
         description="Dollar basis:",
     )
+    y_axis_mode = widgets.ToggleButtons(
+        options=[("Zero-anchored", True), ("Auto-scale", False)],
+        value=True,
+        description="Y-axis:",
+    )
     out = widgets.Output()
 
     def _redraw(change=None):
@@ -105,11 +118,16 @@ def account_balance_history_widget(
         mode = plot_mode.value
         if change and change.get("owner") is plot_mode:
             mode = change["new"]
+        zero_anchor = y_axis_mode.value
+        if change and change.get("owner") is y_axis_mode:
+            zero_anchor = change["new"]
         pivot = cpi_balance_pivot if mode == "cpi_constant" and cpi_balance_pivot is not None else balance_pivot
         with out:
             clear_output(wait=True)
             mode_title = "CPI-constant" if mode == "cpi_constant" else "nominal"
-            fig = render_balance_history_figure(pivot, selected, f"{title} ({mode_title})")
+            fig = render_balance_history_figure(
+                pivot, selected, f"{title} ({mode_title})", zero_anchor=zero_anchor,
+            )
             if fig is None:
                 print("(pick one or more accounts)")
                 return
@@ -117,6 +135,7 @@ def account_balance_history_widget(
 
     picker.observe(_redraw, names="value")
     plot_mode.observe(_redraw, names="value")
+    y_axis_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([widgets.HBox([plot_mode]), picker, out])
+    return widgets.VBox([widgets.HBox([plot_mode, y_axis_mode]), picker, out])

@@ -19,15 +19,33 @@ def dollar_formatter() -> FuncFormatter:
     return FuncFormatter(lambda v, _: f"${v:,.0f}")
 
 
-def include_zero(ax: Axes) -> None:
-    """Policy: every chart's y-axis must include zero.
+def include_zero(ax: Axes, *, margin: float = 0.05) -> None:
+    """Policy: every chart's y-axis must include zero -- but zero stays
+    exactly at whichever edge it naturally belongs to; only the *other* edge
+    gets extra headroom.
 
     A dip that never actually crosses zero (or a rise that never approaches
     it) can otherwise look dramatic purely because matplotlib's autoscale
     zoomed in on the data's own min/max -- misreading true scale/magnitude.
+    Naively reusing the existing ``ylim`` for the non-zero edge doesn't work:
+    that margin was sized for the data's own (much narrower) range, so once
+    zero stretches the axis, a low-volatility line can end up flush against
+    the far spine and effectively disappear. Recompute headroom as a
+    fraction of the *actual plotted data's* range instead.
     """
-    ymin, ymax = ax.get_ylim()
-    ax.set_ylim(min(0, ymin), max(0, ymax))
+    data_min, data_max = ax.dataLim.ymin, ax.dataLim.ymax
+    lo = min(0.0, data_min)
+    hi = max(0.0, data_max)
+    span = hi - lo
+    pad = span * margin if span > 0 else max(abs(hi), abs(lo), 1.0) * margin
+    if lo == 0.0 and hi > 0.0:
+        hi += pad  # zero anchors the bottom; only the top needs headroom
+    elif hi == 0.0 and lo < 0.0:
+        lo -= pad  # zero anchors the top; only the bottom needs headroom
+    else:
+        lo -= pad
+        hi += pad
+    ax.set_ylim(lo, hi)
 
 
 def _finish(ax: Axes, title: str, ylabel: str) -> None:
