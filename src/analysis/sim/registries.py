@@ -92,8 +92,9 @@ TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 # Canonical accounts.csv column order (ADR-003 §4.5).
 ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
     "name", "kind", "subkind", "owner", "tax_treatment", "series",
-    "tax_character", "minimum_balance", "refill_chain",
-    "maximum_balance", "overflow_chain", "opened", "closed", "meta_json", "tags",
+    "tax_character", "minimum_balance", "refill_chain", "refill_target",
+    "refill_amount", "maximum_balance", "overflow_chain",
+    "opened", "closed", "meta_json", "tags",
 )
 
 # Kinds a chains/<kind>__<name>.csv file may declare (ADR-003 §2.9); a closed

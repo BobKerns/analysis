@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -26,12 +26,19 @@ CREATE TABLE account (
                         ('taxable','tax_deferred','tax_free','none')),
     opened          TEXT,
     closed          TEXT,
-    -- Balance management (ADR-003 §2.9): when the balance would fall below
-    -- minimum_balance_cents, draw the shortfall from refill_chain_id; when it
-    -- would exceed maximum_balance_cents (NULL = unbounded), sweep the excess
-    -- into overflow_chain_id. Both chains are resolved recursively at runtime.
+    -- Balance management (ADR-003 §2.9): a debit that would drop the balance
+    -- below minimum_balance_cents triggers a look-ahead draw on refill_chain_id
+    -- BEFORE the debit posts (not a month-end reconciliation); when it would
+    -- exceed maximum_balance_cents (NULL = unbounded), sweep the excess into
+    -- overflow_chain_id at month end. Both chains are resolved recursively.
+    -- refill_target_cents/refill_amount_cents are mutually exclusive: the
+    -- former refills to that fixed level, the latter by that fixed amount (or
+    -- enough to reach minimum_balance_cents if that is greater); neither set
+    -- means refill exactly to minimum_balance_cents.
     minimum_balance_cents  INTEGER NOT NULL DEFAULT 0,
     refill_chain_id        INTEGER REFERENCES chain(id),
+    refill_target_cents    INTEGER,
+    refill_amount_cents    INTEGER,
     maximum_balance_cents  INTEGER,
     overflow_chain_id      INTEGER REFERENCES chain(id),
     meta_json       TEXT NOT NULL DEFAULT '{}',

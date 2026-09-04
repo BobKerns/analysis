@@ -321,6 +321,12 @@ Single identity list for the household: account owners *and* operator identities
 | `tax_treatment` | enum | | `taxable`, `tax_deferred`, `tax_free`, `none` |
 | `series` | text | | asset accounts only: aux rate-series driving monthly growth; synthesizes a `percent_of_balance` rule (§2.2) |
 | `tax_character` | enum | | required with `series`, and only meaningful with it: `ordinary`, `gains`, `deferred`, `tax_free` — selects the built-in income account that funds the growth (§2.2) |
+| `minimum_balance` | dollars | | look-ahead refill floor (§2.9): a debit that would drop the balance below this triggers a draw on `refill_chain` *before* the debit posts. `0`/blank means no floor. |
+| `refill_chain` | text | | account or named `chains/*.csv` chain to draw from when `minimum_balance` would be breached; required for `refill_target`/`refill_amount` to have any effect |
+| `refill_target` | dollars | | when set, a triggered refill draws enough to bring the balance up to this fixed level (must be >= `minimum_balance`). Mutually exclusive with `refill_amount`. |
+| `refill_amount` | dollars | | when set, a triggered refill draws this fixed amount, or more if needed to reach `minimum_balance`. Mutually exclusive with `refill_target`. Neither set means refill exactly to `minimum_balance`. |
+| `maximum_balance` | dollars | | month-end overflow ceiling (§2.9): after each month's rules post, any excess above this is swept into `overflow_chain`. `NULL`/blank means unbounded. |
+| `overflow_chain` | text | | account or named `chains/*.csv` chain to sweep excess into |
 | `opened` | YYYY-MM | | informational |
 | `closed` | YYYY-MM | | informational |
 | `meta_json` | json | | default `{}` |
@@ -436,6 +442,10 @@ Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` in
 | `cadence` | enum | | `monthly` or `annual`; controls compounding for `series` and requires `series` |
 
 Rows without `amount` or `percent` preserve ordinary liquidity-chain behavior and consume the requested amount in order. For allocation chains, every row must specify one of the two fields and the final row must specify `percent=100`, which receives the remaining amount after fixed and percentage allocations. Chain names share one namespace with account names, and a chain file's `<kind>` is currently `asset`.
+
+Refill (`minimum_balance`/`refill_chain`, optionally `refill_target`/`refill_amount`) is a **look-ahead, per-transaction** check, not a month-end reconciliation: every debit against a protected account is checked before it posts, and the chain is drawn first if the debit would breach `minimum_balance`. It is not an error for the chain to be unable to fully cover the shortfall -- the debit still posts and may leave the account negative. An asset account going negative should only happen once its own refill chain is exhausted; the engine warns once per negative transition (not every month it stays negative) via `RuntimeWarning`, and also records `{month, account, balance_cents}` entries under `simulation_run.run_args_json.$.negative_balance_warnings`.
+
+Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue -- a balance can only exceed its ceiling from accumulated credits over a month -- so it stays a month-end sweep after all of a month's rules have posted.
 
 #### 4.8 Per-scenario: `data_repo/scenarios/<name>/calendar.csv`
 

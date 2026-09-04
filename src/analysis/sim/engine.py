@@ -10,16 +10,21 @@ rate from aux_table), ``mortgage_payment`` (multi-leg P&I), ``ss_benefit``
 (COLA-adjusted, claim-age gated), ``rmd`` (annual December, age-gated).
 
 Liquidity chains (ADR-003 §2.9) replace the old ``waterfall_fill``/
-``refill_transfer`` rule kinds: after each month's rules post, every account
-with ``minimum_balance_cents``/``refill_chain_id`` or
-``maximum_balance_cents``/``overflow_chain_id`` set is settled by recursively
-drawing from (or sweeping into) its configured chain -- see ``_settle_accounts``.
+``refill_transfer`` rule kinds. An account with ``minimum_balance_cents``/
+``refill_chain_id`` set is refilled proactively: every debit against it is
+checked look-ahead by ``_ensure_min_balance`` (called from ``_post_transfer``)
+*before* posting, and draws its refill chain first if the debit would drop it
+below the minimum. An account with ``maximum_balance_cents``/
+``overflow_chain_id`` set has no such per-transaction analogue (only
+accumulated credits can push it over), so its excess is swept once at month
+end -- see ``_settle_accounts``.
 """
 
 from __future__ import annotations
 
 import calendar
 import json
+import warnings
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -160,6 +165,10 @@ def run_scenario(
         aux = _load_aux(con)
         inflation_indexes = _initialize_inflation_indexes(aux)
         inflation_factor_cache: dict[tuple[str, date, date, str], int] = {}
+        refill_ctx = RefillContext(
+            chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
+            account_tax_treatment, account_subkind, account_name,
+        )
 
         skipped_counts: dict[str, int] = {}
         skipped_calendar: dict[str, int] = {}
@@ -203,7 +212,7 @@ def run_scenario(
                         _p_param_date, _p_tax_char, ev_payload_json,
                     ),
                     txns, txn_by_name, aux, account_id_by_name, account_kinds,
-                    balances, step_id, month_s, model_id,
+                    balances, step_id, month_s, model_id, refill_ctx=refill_ctx,
                 )
                 con.execute(
                     "INSERT INTO applied_calendar_event(step_id, calendar_event_id) "
@@ -294,7 +303,7 @@ def run_scenario(
                             _post_transfer(
                                 con, balances, account_kinds, step_id, month_s,
                                 from_account, to, total_amount, tax_char, tid,
-                                tax_year=tax_year,
+                                tax_year=tax_year, refill_ctx=refill_ctx,
                             )
                         elif from_account is not None:
                             _chain_sweep(
@@ -304,13 +313,14 @@ def run_scenario(
                                 aux=aux, chain_base_date=_parse_date(start_s),
                                 inflation_factor_cache=inflation_factor_cache,
                                 source_tax_character=tax_char, source_tax_year=tax_year,
+                                refill_ctx=refill_ctx,
                             )
                         elif to is not None:
                             _chain_draw(
                                 con, balances, account_kinds, account_tax_treatment,
                                 account_subkind, account_name, step_id, month_s,
                                 chain_graph, frm, total_amount, to,
-                                threshold_cents=0,
+                                threshold_cents=0, refill_ctx=refill_ctx,
                             )
                         else:
                             raise EngineError(
@@ -327,6 +337,7 @@ def run_scenario(
                             _post_transfer(
                                 con, balances, account_kinds, step_id, month_s,
                                 from_account, to, amount, tax_char, tid,
+                                refill_ctx=refill_ctx,
                             )
                         elif amount < 0:
                             # Negative rate = depreciation: the legs swap, so
@@ -334,6 +345,7 @@ def run_scenario(
                             _post_transfer(
                                 con, balances, account_kinds, step_id, month_s,
                                 to, from_account, -amount, tax_char, tid,
+                                refill_ctx=refill_ctx,
                             )
                     case "mortgage_payment":
                         _apply_mortgage_payment(
@@ -343,6 +355,7 @@ def run_scenario(
                             source_chain_id=frm,
                             account_tax_treatment=account_tax_treatment,
                             account_subkind=account_subkind, account_name=account_name,
+                            refill_ctx=refill_ctx,
                         )
                     case "ss_benefit":
                         _apply_ss_benefit(
@@ -353,14 +366,14 @@ def run_scenario(
                             account_subkind=account_subkind, account_name=account_name,
                             inflation_factor_cache=inflation_factor_cache,
                             chain_base_date=_parse_date(start_s),
-                            source_tax_year=tax_year,
+                            source_tax_year=tax_year, refill_ctx=refill_ctx,
                         )
                     case "rmd":
                         _apply_rmd(
                             con, balances, account_kinds, step_id, month_s, month,
                             params, from_account, to,
                             person_birthdates, prior_year_end_balances, aux,
-                            tax_char, tid,
+                            tax_char, tid, refill_ctx=refill_ctx,
                         )
                     case "tax_accumulator":
                         if cadence != "annual":
@@ -375,7 +388,7 @@ def run_scenario(
                             account_tax_treatment=account_tax_treatment,
                             account_subkind=account_subkind, account_name=account_name,
                             tax_year=tax_year,
-                            person_lifespan=person_lifespan,
+                            person_lifespan=person_lifespan, refill_ctx=refill_ctx,
                         )
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
@@ -384,7 +397,7 @@ def run_scenario(
                 con, balances, account_kinds, account_subkind, account_tax_treatment,
                 account_name, step_id, month_s, chain_graph, settle_order,
                 aux=aux, chain_base_date=_parse_date(start_s),
-                inflation_factor_cache=inflation_factor_cache,
+                inflation_factor_cache=inflation_factor_cache, refill_ctx=refill_ctx,
             )
 
             con.executemany(
@@ -458,6 +471,15 @@ def run_scenario(
                 "  run_args_json, '$.skipped_calendar_kinds', json(?)) WHERE id = 1",
                 (json.dumps(skipped_calendar, sort_keys=True),),
             )
+        if refill_ctx.negative_events:
+            con.execute(
+                "UPDATE simulation_run SET run_args_json = json_set("
+                "  run_args_json, '$.negative_balance_warnings', json(?)) WHERE id = 1",
+                (json.dumps(
+                    [{"month": m, "account": n, "balance_cents": b}
+                     for m, n, b in refill_ctx.negative_events],
+                ),),
+            )
 
         finalize_run(con, status="succeeded")
     except Exception as e:
@@ -468,12 +490,108 @@ def run_scenario(
     return Path(run_path)
 
 
+class RefillContext:
+    """Everything ``_post_transfer`` needs to look-ahead refill a debited
+    account and to warn once when an asset actually goes negative (ADR-003
+    §2.9). Built once per run in ``run_scenario`` and threaded through.
+    """
+
+    __slots__ = ("graph", "aux", "chain_base_date", "inflation_factor_cache",
+                 "account_tax_treatment", "account_subkind", "account_name",
+                 "refilling", "negative_since", "negative_events")
+
+    def __init__(
+        self, graph: ChainGraph, aux, chain_base_date: date,
+        inflation_factor_cache: dict,
+        account_tax_treatment: dict[int, str | None],
+        account_subkind: dict[int, str], account_name: dict[int, str],
+    ) -> None:
+        self.graph = graph
+        self.aux = aux
+        self.chain_base_date = chain_base_date
+        self.inflation_factor_cache = inflation_factor_cache
+        self.account_tax_treatment = account_tax_treatment
+        self.account_subkind = account_subkind
+        self.account_name = account_name
+        self.refilling: set[int] = set()  # reentrancy guard against refill cycles
+        self.negative_since: dict[int, bool] = {}
+        self.negative_events: list[tuple[str, str, int]] = []
+
+
+def _ensure_min_balance(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str, refill_ctx: RefillContext,
+    account_id: int, debit_amount: int,
+) -> None:
+    """Look-ahead refill (ADR-003 §2.9): if debiting ``account_id`` by
+    ``debit_amount`` would drop it below its minimum_balance, draw from its
+    refill_chain BEFORE the debit posts, enough to reach refill_target (a
+    fixed level), refill_amount (a fixed size, or more if needed to reach
+    minimum_balance), or minimum_balance itself if neither is set.
+
+    Not an error if the chain can't fully cover it -- the debit proceeds
+    regardless and may leave the account negative (see ``_warn_if_negative``).
+    """
+    graph = refill_ctx.graph
+    refill_chain = graph.refill_chain_of.get(account_id)
+    if refill_chain is None or account_id in refill_ctx.refilling:
+        return
+    minimum = graph.minimum_of.get(account_id, 0)
+    projected = balances.get(account_id, 0) - debit_amount
+    if projected >= minimum:
+        return
+    deficit = minimum - projected
+    target = graph.refill_target_of.get(account_id)
+    amount_policy = graph.refill_amount_of.get(account_id)
+    if target is not None:
+        needed = max(deficit, target - projected)
+    elif amount_policy is not None:
+        needed = max(deficit, amount_policy)
+    else:
+        needed = deficit
+    refill_ctx.refilling.add(account_id)
+    try:
+        _chain_draw(
+            con, balances, account_kinds,
+            refill_ctx.account_tax_treatment, refill_ctx.account_subkind,
+            refill_ctx.account_name, step_id, month_s, graph,
+            refill_chain, needed, account_id,
+            refill_ctx=refill_ctx,
+        )
+    finally:
+        refill_ctx.refilling.discard(account_id)
+
+
+def _warn_if_negative(
+    refill_ctx: RefillContext, account_kinds: dict[int, str],
+    account_id: int, balances: dict[int, int], month_s: str,
+) -> None:
+    """Warn once per negative transition (ADR-003 §2.9) -- an asset should
+    only go negative once its refill chain (if any) is fully exhausted; not
+    an error, but worth a one-time flag rather than silence or per-month spam.
+    """
+    if account_kinds.get(account_id) != "asset":
+        return
+    is_negative = balances.get(account_id, 0) < 0
+    was_negative = refill_ctx.negative_since.get(account_id, False)
+    if is_negative and not was_negative:
+        name = refill_ctx.account_name.get(account_id, str(account_id))
+        warnings.warn(
+            f"{month_s}: account {name!r} went negative "
+            f"(balance={balances[account_id] / 100:.2f}) after exhausting its refill chain",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        refill_ctx.negative_events.append((month_s, name, balances[account_id]))
+    refill_ctx.negative_since[account_id] = is_negative
+
+
 def _post_transfer(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str,
     from_id: int, to_id: int, amount: int, tax_char: str, reason_id: int,
     parent_event_id: int | None = None, *, reason_kind: str = "rule",
-    tax_year: int | None = None,
+    tax_year: int | None = None, refill_ctx: RefillContext | None = None,
 ) -> int | None:
     """Insert one transfer_event and adjust balances. Liability balances
     store debt magnitude; the sign is inverted when posting against them.
@@ -481,6 +599,11 @@ def _post_transfer(
     """
     if amount == 0:
         return None
+    if refill_ctx is not None and amount > 0:
+        _ensure_min_balance(
+            con, balances, account_kinds, step_id, month_s, refill_ctx,
+            from_id, amount,
+        )
     cur = con.execute(
         "INSERT INTO transfer_event("
         "  step_id, date, from_account, to_account, amount, "
@@ -491,6 +614,8 @@ def _post_transfer(
     )
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
+    if refill_ctx is not None:
+        _warn_if_negative(refill_ctx, account_kinds, from_id, balances, month_s)
     return cur.lastrowid
 
 
@@ -707,6 +832,7 @@ def _apply_mortgage_payment(
     account_id_by_name: dict[str, int],
     tax_char: str, tid: int, *, graph=None, source_chain_id=None,
     account_tax_treatment=None, account_subkind=None, account_name=None,
+    refill_ctx: "RefillContext | None" = None,
 ) -> None:
     """Multi-leg P&I per ADR-003 §2.7. Interest leg writes first; principal
     leg's ``parent_event_id`` points at the interest leg. The liability
@@ -744,11 +870,12 @@ def _apply_mortgage_payment(
         interest_event_id = _post_transfer(
             con, balances, account_kinds, step_id, month_s,
             from_id, interest_id, interest, tax_char, tid,
+            refill_ctx=refill_ctx,
         )
         _post_transfer(
             con, balances, account_kinds, step_id, month_s,
             from_id, liab_id, principal, tax_char, tid,
-            parent_event_id=interest_event_id,
+            parent_event_id=interest_event_id, refill_ctx=refill_ctx,
         )
         return
     if source_chain_id is None:
@@ -756,12 +883,12 @@ def _apply_mortgage_payment(
     _chain_draw(
         con, balances, account_kinds, account_tax_treatment, account_subkind,
         account_name, step_id, month_s, graph, source_chain_id,
-        interest, interest_id,
+        interest, interest_id, refill_ctx=refill_ctx,
     )
     _chain_draw(
         con, balances, account_kinds, account_tax_treatment, account_subkind,
         account_name, step_id, month_s, graph, source_chain_id,
-        principal, liab_id,
+        principal, liab_id, refill_ctx=refill_ctx,
     )
 
 
@@ -789,6 +916,7 @@ def _apply_ss_benefit(
     tax_char: str, tid: int, *, chain_graph=None, to_chain_id=None,
     account_tax_treatment=None, account_subkind=None, account_name=None,
     inflation_factor_cache=None, chain_base_date=None, source_tax_year=None,
+    refill_ctx: "RefillContext | None" = None,
 ) -> None:
     """ADR-003 §2.5. Claim-age multiplier + annual-January COLA compounding."""
     person = params.get("person")
@@ -821,7 +949,7 @@ def _apply_ss_benefit(
         if to_id is not None:
             _post_transfer(
                 con, balances, account_kinds, step_id, month_s,
-                from_id, to_id, amount, tax_char, tid,
+                from_id, to_id, amount, tax_char, tid, refill_ctx=refill_ctx,
             )
         elif to_chain_id is not None:
             _chain_sweep(
@@ -831,7 +959,7 @@ def _apply_ss_benefit(
                 aux=aux, chain_base_date=chain_base_date,
                 inflation_factor_cache=inflation_factor_cache,
                 source_tax_character=tax_char,
-                source_tax_year=source_tax_year,
+                source_tax_year=source_tax_year, refill_ctx=refill_ctx,
             )
         else:
             raise EngineError(f"ss_benefit id={tid}: missing destination")
@@ -844,7 +972,7 @@ def _apply_rmd(
     person_birthdates: dict[str, date],
     prior_year_end_balances: dict[int, int],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    tax_char: str, tid: int,
+    tax_char: str, tid: int, *, refill_ctx: "RefillContext | None" = None,
 ) -> None:
     """ADR-003 §2.3. Annual December RMD; age-gated by ``start_age_series``.
     Subject account is the row's ``from_account`` (the IRA being drawn down).
@@ -897,7 +1025,7 @@ def _apply_rmd(
     if amount > 0:
         _post_transfer(
             con, balances, account_kinds, step_id, month_s,
-            from_id, to_id, amount, tax_char, tid,
+            from_id, to_id, amount, tax_char, tid, refill_ctx=refill_ctx,
         )
 
 
@@ -919,6 +1047,7 @@ class ChainGraph:
     """Resolved ``chain``/``chain_steps`` reference graph (ADR-003 §2.9)."""
 
     __slots__ = ("members", "leaf_account", "minimum_of", "refill_chain_of",
+                 "refill_target_of", "refill_amount_of",
                  "maximum_of", "overflow_chain_of")
 
     def __init__(
@@ -927,6 +1056,8 @@ class ChainGraph:
         leaf_account: dict[int, int],
         minimum_of: dict[int, int],
         refill_chain_of: dict[int, int | None],
+        refill_target_of: dict[int, int | None],
+        refill_amount_of: dict[int, int | None],
         maximum_of: dict[int, int | None],
         overflow_chain_of: dict[int, int | None],
     ) -> None:
@@ -939,6 +1070,8 @@ class ChainGraph:
         self.leaf_account = leaf_account
         self.minimum_of = minimum_of
         self.refill_chain_of = refill_chain_of
+        self.refill_target_of = refill_target_of
+        self.refill_amount_of = refill_amount_of
         self.maximum_of = maximum_of
         self.overflow_chain_of = overflow_chain_of
 
@@ -960,17 +1093,23 @@ def _load_chain_graph(con) -> ChainGraph:
     }
     minimum_of: dict[int, int] = {}
     refill_chain_of: dict[int, int | None] = {}
+    refill_target_of: dict[int, int | None] = {}
+    refill_amount_of: dict[int, int | None] = {}
     maximum_of: dict[int, int | None] = {}
     overflow_chain_of: dict[int, int | None] = {}
-    for a_id, minimum, refill, maximum, overflow in con.execute(
+    for a_id, minimum, refill, refill_target, refill_amount, maximum, overflow in con.execute(
         "SELECT id, minimum_balance_cents, refill_chain_id, "
+        "       refill_target_cents, refill_amount_cents, "
         "       maximum_balance_cents, overflow_chain_id FROM account"
     ):
         minimum_of[a_id] = minimum
         refill_chain_of[a_id] = refill
+        refill_target_of[a_id] = refill_target
+        refill_amount_of[a_id] = refill_amount
         maximum_of[a_id] = maximum
         overflow_chain_of[a_id] = overflow
     return ChainGraph(members, leaf_account, minimum_of, refill_chain_of,
+                       refill_target_of, refill_amount_of,
                        maximum_of, overflow_chain_of)
 
 
@@ -1046,7 +1185,7 @@ def _chain_draw(
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph,
     chain_id: int, amount_needed: int, target_account_id: int,
-    *, threshold_cents: int = 0,
+    *, threshold_cents: int = 0, refill_ctx: "RefillContext | None" = None,
 ) -> int:
     """Recursively draw up to ``amount_needed`` into ``target_account_id``.
 
@@ -1070,7 +1209,7 @@ def _chain_draw(
         _post_transfer(
             con, balances, account_kinds, step_id, month_s,
             account_id, target_account_id, take, tax_char, account_id,
-            parent_event_id=None, reason_kind="refill",
+            parent_event_id=None, reason_kind="refill", refill_ctx=refill_ctx,
         )
         return take
     total = 0
@@ -1082,7 +1221,7 @@ def _chain_draw(
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, step_id, month_s, graph,
             draw_from_id, remaining, target_account_id,
-            threshold_cents=step_threshold,
+            threshold_cents=step_threshold, refill_ctx=refill_ctx,
         )
     return total
 
@@ -1097,6 +1236,7 @@ def _chain_sweep(
     inflation_factor_cache: dict | None = None,
     source_tax_character: str | None = None,
     source_tax_year: int | None = None,
+    refill_ctx: "RefillContext | None" = None,
 ) -> int:
     """Recursively sweep up to ``amount_available`` out of ``source_account_id``.
 
@@ -1124,7 +1264,7 @@ def _chain_sweep(
             con, balances, account_kinds, step_id, month_s,
             source_account_id, account_id, put, tax_char, source_account_id,
             parent_event_id=None, reason_kind="overflow",
-            tax_year=source_tax_year,
+            tax_year=source_tax_year, refill_ctx=refill_ctx,
         )
         return put
     total = 0
@@ -1155,7 +1295,7 @@ def _chain_sweep(
             aux=aux, chain_base_date=chain_base_date,
             inflation_factor_cache=inflation_factor_cache,
             source_tax_character=source_tax_character,
-            source_tax_year=source_tax_year,
+            source_tax_year=source_tax_year, refill_ctx=refill_ctx,
         )
     return total
 
@@ -1166,24 +1306,20 @@ def _settle_accounts(
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph, settle_order: list[int],
     *, aux, chain_base_date: date, inflation_factor_cache: dict,
+    refill_ctx: "RefillContext | None" = None,
 ) -> None:
-    """Refill/overflow pass (ADR-003 §2.9), run once after each month's rules.
+    """Overflow pass (ADR-003 §2.9), run once after each month's rules.
 
-    ``settle_order`` is precomputed once per run so an account's own
-    refill/overflow already reflects this month's activity before anything
-    downstream draws from or sweeps into it.
+    Refill is handled proactively per-debit (see ``_ensure_min_balance``, called
+    from ``_post_transfer``) rather than here -- by the time this runs, no
+    account should still be below its minimum_balance from this month's
+    activity. Overflow has no per-transaction analogue (a balance can only
+    exceed maximum_balance because of accumulated credits over the month), so
+    it stays a month-end sweep. ``settle_order`` is precomputed once per run
+    so an account's own overflow already reflects this month's activity before
+    anything downstream sweeps into it.
     """
     for account_id in settle_order:
-        minimum = graph.minimum_of.get(account_id, 0)
-        deficit = minimum - balances.get(account_id, 0)
-        refill_chain = graph.refill_chain_of.get(account_id)
-        if deficit > 0 and refill_chain is not None:
-            _chain_draw(
-                con, balances, account_kinds, account_tax_treatment, account_subkind,
-                account_name, step_id, month_s, graph,
-                refill_chain, deficit, account_id,
-            )
-
         maximum = graph.maximum_of.get(account_id)
         overflow_chain = graph.overflow_chain_of.get(account_id)
         if maximum is not None and overflow_chain is not None:
@@ -1195,6 +1331,7 @@ def _settle_accounts(
                     overflow_chain, excess, account_id,
                     aux=aux, chain_base_date=chain_base_date,
                     inflation_factor_cache=inflation_factor_cache,
+                    refill_ctx=refill_ctx,
                 )
 
 
@@ -1216,6 +1353,7 @@ def _apply_tax_accumulator(
     graph=None, source_chain_id=None, account_tax_treatment=None,
     account_subkind=None, account_name=None, tax_year=None,
     person_lifespan: dict[str, str] | None = None,
+    refill_ctx: "RefillContext | None" = None,
 ) -> None:
     """Compute and optionally pay forecasted income tax for a target year.
 
@@ -1341,12 +1479,13 @@ def _apply_tax_accumulator(
             _post_transfer(
                 con, balances, account_kinds, step_id, month_s,
                 from_id, to_id, tax_due, tax_char, tid, tax_year=tax_year,
+                refill_ctx=refill_ctx,
             )
         else:
             _chain_draw(
                 con, balances, account_kinds, account_tax_treatment,
                 account_subkind, account_name, step_id, month_s, graph,
-                source_chain_id, tax_due, to_id,
+                source_chain_id, tax_due, to_id, refill_ctx=refill_ctx,
             )
 
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1680,6 +1819,7 @@ def _apply_calendar_event(
     account_kinds: dict[int, str],
     balances: dict[int, int],
     step_id: int, month_s: str, model_id: int,
+    *, refill_ctx: "RefillContext | None" = None,
 ) -> None:
     """Expand one calendar_event per ADR-003 \u00a73."""
     match ev_kind:
@@ -1771,6 +1911,7 @@ def _apply_calendar_event(
             _post_transfer(
                 con, balances, account_kinds, step_id, month_s,
                 from_id, to_id, int(amount), tax_char, new_tid,
+                refill_ctx=refill_ctx,
             )
         case _:  # pragma: no cover
             raise EngineError(f"supported but unhandled calendar kind: {ev_kind}")

@@ -250,27 +250,30 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         ).fetchone()[0] == 0
         # Dec 2038: RMD off Asset_TraditionalIRA_Alice's balance at that point
         # (which now also reflects the asset_checking_liquidity chain's earlier
-        # draws via the automatic settle pass, ADR-003 §2.9).
+        # look-ahead refill draws, ADR-003 §2.9 -- these differ slightly from a
+        # month-end-only settle since a proactive refill never lets checking
+        # dip below its floor between debits, so it can draw a bit more from
+        # the IRA over the run than a once-a-month reconciliation would).
         rmd_2038 = con.execute(
             "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
             (steps[151]["id"], rmd_id),
         ).fetchone()[0]
-        assert rmd_2038 == 702_471
+        assert rmd_2038 == 681_542
         ira_2038 = con.execute(
             "SELECT balance FROM account_state WHERE step_id=? AND account_id=?",
             (steps[151]["id"], ira_id),
         ).fetchone()[0]
-        assert ira_2038 == 15_032_392
+        assert ira_2038 == 14_233_856
         rmd_2039 = con.execute(
             "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
             (steps[163]["id"], rmd_id),
         ).fetchone()[0]
-        assert rmd_2039 == 589_505
+        assert rmd_2039 == 558_190
         rmd_2040 = con.execute(
             "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
             (steps[175]["id"], rmd_id),
         ).fetchone()[0]
-        assert rmd_2040 == 486_590
+        assert rmd_2040 == 454_889
     finally:
         con.close()
 
@@ -396,7 +399,7 @@ def test_chain_draw_single_leaf_account_respects_threshold() -> None:
     account_tax_treatment = {1: "taxable", 2: "taxable"}
     account_subkind = {1: "checking", 2: "savings"}
     account_name = {1: "Checking", 2: "Savings"}
-    graph = ChainGraph({}, {10: 2}, {}, {}, {}, {})
+    graph = ChainGraph({}, {10: 2}, {}, {}, {}, {}, {}, {})
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
@@ -426,7 +429,7 @@ def test_chain_draw_never_draws_target_from_itself() -> None:
     from analysis.sim.engine import ChainGraph, _chain_draw
 
     balances = {1: 100_000}
-    graph = ChainGraph({}, {10: 1}, {}, {}, {}, {})
+    graph = ChainGraph({}, {10: 1}, {}, {}, {}, {}, {}, {})
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
@@ -462,7 +465,9 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character()
     graph = ChainGraph(
         members={100: [(2, 0), (3, 0)]},
         leaf_account={2: 2, 3: 3},
-        minimum_of={}, refill_chain_of={}, maximum_of={}, overflow_chain_of={},
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
     )
     con = sqlite3.connect(":memory:")
     con.execute(
@@ -517,7 +522,9 @@ def test_chain_sweep_allocates_fixed_then_percent_of_remainder() -> None:
         members={100: [(2, 0, 100_000, None), (3, 0, None, 500_000),
                        (4, 0, None, 1_000_000)]},
         leaf_account={2: 2, 3: 3, 4: 4},
-        minimum_of={}, refill_chain_of={}, maximum_of={2: None, 3: None, 4: None},
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={2: None, 3: None, 4: None},
         overflow_chain_of={},
     )
     con = sqlite3.connect(":memory:")
@@ -550,7 +557,9 @@ def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
     graph = ChainGraph(
         members={100: [(2, 0, 25_000, None), (3, 0, None, 1_000_000)]},
         leaf_account={2: 2, 3: 3},
-        minimum_of={}, refill_chain_of={}, maximum_of={}, overflow_chain_of={},
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
     )
     txn = [
         8, "social_security", 1, 100, "monthly", None, "fixed_amount",
@@ -591,6 +600,7 @@ def test_settle_order_settles_dependency_before_dependent() -> None:
         leaf_account={10: 2, 20: 3},
         minimum_of={1: 100, 2: 100},
         refill_chain_of={1: 10, 2: 20},
+        refill_target_of={}, refill_amount_of={},
         maximum_of={1: None, 2: None},
         overflow_chain_of={1: None, 2: None},
     )

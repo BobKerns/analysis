@@ -757,13 +757,25 @@ def _validate_accounts(
         tt = row.get("tax_treatment", "")
         if tt and tt not in registries.TAX_TREATMENTS:
             issues.append(f"accounts.csv row {i} ({name}): unknown tax_treatment '{tt}'")
-        for column in ("minimum_balance", "maximum_balance"):
+        for column in ("minimum_balance", "maximum_balance", "refill_target", "refill_amount"):
             value = row.get(column, "")
             if value:
                 try:
                     _dollars_to_cents(value, resolver=money_resolver)
                 except ValueError as e:
                     issues.append(f"accounts.csv row {i} ({name}): {column} {e}")
+        refill_target = row.get("refill_target", "")
+        refill_amount = row.get("refill_amount", "")
+        if refill_target and refill_amount:
+            issues.append(
+                f"accounts.csv row {i} ({name}): refill_target and refill_amount "
+                "are mutually exclusive; set at most one"
+            )
+        if (refill_target or refill_amount) and not row.get("refill_chain", ""):
+            issues.append(
+                f"accounts.csv row {i} ({name}): refill_target/refill_amount "
+                "requires refill_chain to be set"
+            )
         _validate_tags("accounts.csv", i, name, row.get("tags", ""), issues)
 
 
@@ -1249,7 +1261,8 @@ def _write_intent(
         cur = con.execute(
             "INSERT INTO account(name, kind, subkind, owner, tax_treatment, "
             "opened, closed, minimum_balance_cents, maximum_balance_cents, "
-            "meta_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "refill_target_cents, refill_amount_cents, "
+            "meta_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 a["name"], a["kind"], a["subkind"],
                 a.get("owner") or None, a.get("tax_treatment") or None,
@@ -1258,6 +1271,10 @@ def _write_intent(
                 if a.get("minimum_balance") else 0,
                 _dollars_to_cents(a["maximum_balance"], resolver=money_resolver)
                 if a.get("maximum_balance") else None,
+                _dollars_to_cents(a["refill_target"], resolver=money_resolver)
+                if a.get("refill_target") else None,
+                _dollars_to_cents(a["refill_amount"], resolver=money_resolver)
+                if a.get("refill_amount") else None,
                 a.get("meta_json") or "{}",
             ),
         )
