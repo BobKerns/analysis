@@ -25,6 +25,23 @@ def plottable_accounts(
     return names
 
 
+def trim_to_last_nonzero(
+    balance_pivot: pd.DataFrame, selected: list[str]
+) -> pd.DataFrame:
+    """Trim trailing months where every selected account is zero (or missing).
+
+    Keeps one month past the last non-zero balance -- the month it actually
+    settles to its final zero -- instead of stretching the x-axis out to the
+    scenario's full end for accounts that closed out early.
+    """
+    nonzero = balance_pivot[selected].fillna(0).ne(0).any(axis=1)
+    if not nonzero.any():
+        return balance_pivot
+    last_nonzero_pos = nonzero.to_numpy().nonzero()[0].max()
+    end_pos = min(last_nonzero_pos + 1, len(balance_pivot.index) - 1)
+    return balance_pivot.iloc[: end_pos + 1]
+
+
 def render_balance_history_png(
     balance_pivot: pd.DataFrame,
     selected: list[str],
@@ -36,6 +53,7 @@ def render_balance_history_png(
 
     import matplotlib.pyplot as plt
 
+    balance_pivot = trim_to_last_nonzero(balance_pivot, selected)
     fig, ax = plt.subplots(figsize=(10, 5))
     for name in selected:
         ax.plot(balance_pivot.index, balance_pivot[name], label=name)
