@@ -813,6 +813,50 @@ def test_person_lifespan_stops_associated_transfers(tmp_path: Path) -> None:
         con.close()
 
 
+def test_person_lifespan_does_not_stop_solely_owned_asset_growth(tmp_path: Path) -> None:
+    """percent_of_balance is always asset growth (ADR-003 \u00a72.2: "an asset
+    account's growth is a property of the account"), not a personal service
+    tied to the living owner -- a solely-owned IRA/checking balance keeps
+    earning interest/appreciating after its owner's death, unlike salary or
+    ss_benefit which are genuinely gated by the owner's lifespan."""
+    import pandas as pd
+
+    repo = _clone_prototype(tmp_path)
+    accounts_csv = repo / "scenarios" / "retire_alice" / "accounts.csv"
+    df = pd.read_csv(accounts_csv, dtype=str, keep_default_na=False)
+    mask = df["name"] == "Asset_TraditionalIRA_Alice"
+    df.loc[mask, "series"] = "brokerage growth"
+    df.loc[mask, "tax_character"] = "deferred"
+    df.to_csv(accounts_csv, index=False)
+
+    lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
+    lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
+
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(
+        intent_path, run_path,
+        run_by="test", data_mode="prototype", allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(run_path)
+    try:
+        growth_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='growth_asset_traditionalira_alice'"
+        ).fetchone()[0]
+        growth_after = con.execute(
+            "SELECT COUNT(*) FROM transfer_event "
+            "WHERE reason_id=? AND date > '2027-01-31'", (growth_id,),
+        ).fetchone()[0]
+        assert growth_after > 0
+    finally:
+        con.close()
+
+
 def test_fixed_amount_applies_cpi_inflation(tmp_path: Path) -> None:
     """ADR-003 §2.1: fixed_amount grows with series/base_date, not
     a flat amount for the life of the run."""

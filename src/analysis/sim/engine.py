@@ -245,8 +245,16 @@ def run_scenario(
                     continue
                 if t_end is not None and month_s > t_end:
                     continue
-                if person_lifespan and _past_person_lifespan(
-                    month_s, p_person, from_account or frm, to, account_owner, person_lifespan,
+                # percent_of_balance is asset growth (ADR-003 §2.2: "an asset
+                # account's growth is a property of the account"), never a
+                # personal service tied to the living owner -- an IRA/checking
+                # balance keeps earning interest/appreciating after its owner's
+                # death, so it's exempt from lifespan gating.
+                if (
+                    person_lifespan and rule_kind != "percent_of_balance"
+                    and _past_person_lifespan(
+                        month_s, p_person, from_account or frm, to, account_owner, person_lifespan,
+                    )
                 ):
                     continue
                 fire_count = _cadence_count(
