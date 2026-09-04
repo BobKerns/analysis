@@ -6,8 +6,6 @@ the data itself.
 
 from __future__ import annotations
 
-from io import BytesIO
-
 import pandas as pd
 
 from analysis.sim.plotting import include_zero
@@ -42,12 +40,13 @@ def trim_to_last_nonzero(
     return balance_pivot.iloc[: end_pos + 1]
 
 
-def render_balance_history_png(
+def render_balance_history_figure(
     balance_pivot: pd.DataFrame,
     selected: list[str],
     title: str,
-) -> bytes | None:
-    """Render selected account balance histories to PNG bytes, or None if empty."""
+):
+    """Build the matplotlib Figure for selected account balance histories, or
+    None if empty."""
     if not selected:
         return None
 
@@ -64,11 +63,7 @@ def render_balance_history_png(
     ax.legend(loc="best", fontsize="small")
     include_zero(ax)
     fig.autofmt_xdate()
-
-    buffer = BytesIO()
-    fig.savefig(buffer, format="png", bbox_inches="tight")
-    plt.close(fig)
-    return buffer.getvalue()
+    return fig
 
 
 def account_balance_history_widget(
@@ -86,7 +81,8 @@ def account_balance_history_widget(
     Returns the combined ``ipywidgets.VBox`` ready to ``display()``.
     """
     import ipywidgets as widgets
-    from IPython.display import Image, clear_output, display
+    import matplotlib.pyplot as plt
+    from IPython.display import clear_output
 
     plottable = plottable_accounts(balance_pivot, account_kinds, kind)
 
@@ -113,11 +109,11 @@ def account_balance_history_widget(
         with out:
             clear_output(wait=True)
             mode_title = "CPI-constant" if mode == "cpi_constant" else "nominal"
-            png_bytes = render_balance_history_png(pivot, selected, f"{title} ({mode_title})")
-            if png_bytes is None:
+            fig = render_balance_history_figure(pivot, selected, f"{title} ({mode_title})")
+            if fig is None:
                 print("(pick one or more accounts)")
                 return
-            display(Image(data=png_bytes, format="png"))
+            plt.show()
 
     picker.observe(_redraw, names="value")
     plot_mode.observe(_redraw, names="value")
