@@ -72,6 +72,7 @@ state/
 ### Conventions
 
 - **Money:** `INTEGER` cents. Negative values only for liability balances and explicitly-signed flows (none expected in v1).
+- **Liability balances:** store outstanding debt magnitude. Payments into a liability are capped at the current outstanding balance; a payment that would overpay posts only the amount needed to reach zero, and later payments into an already-zero liability are no-ops. Deliberate credit balances should be modeled as a separate asset, not as a negative liability.
 - **Dates:** `TEXT` in ISO 8601. Month-grain dates are always pinned to the last day of the month at load time (see ADR-001 cross-cutting principle 2).
 - **JSON:** `TEXT` columns named `*_json`, parsed by the application layer.
 - **Foreign keys:** declared with `REFERENCES … ON DELETE RESTRICT`. `PRAGMA foreign_keys = ON` set on every connection. No `ON DELETE CASCADE` is needed — deletion is per-file.

@@ -389,6 +389,37 @@ def _append_scheduled(path: Path, **fields: str) -> None:
     df.to_csv(path, index=False)
 
 
+def test_post_transfer_caps_payment_to_liability_balance() -> None:
+    from analysis.sim.engine import _post_transfer
+
+    balances = {1: 1_000_00, 2: 300_00}
+    account_kinds = {1: "asset", 2: "liability"}
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
+        "reason_id, parent_event_id)"
+    )
+    try:
+        event_id = _post_transfer(
+            con, balances, account_kinds, 1, "2026-05-31",
+            1, 2, 500_00, "none", 99,
+        )
+        assert event_id == 1
+        assert balances == {1: 700_00, 2: 0}
+        assert con.execute("SELECT amount FROM transfer_event").fetchone() == (300_00,)
+
+        event_id = _post_transfer(
+            con, balances, account_kinds, 2, "2026-06-30",
+            1, 2, 100_00, "none", 99,
+        )
+        assert event_id is None
+        assert balances == {1: 700_00, 2: 0}
+        assert con.execute("SELECT COUNT(*) FROM transfer_event").fetchone() == (1,)
+    finally:
+        con.close()
+
+
 def test_chain_draw_single_leaf_account_respects_threshold() -> None:
     """_chain_draw on a bare leaf chain (a real account) draws only down to
     its threshold_cents floor, and never draws the target from itself."""

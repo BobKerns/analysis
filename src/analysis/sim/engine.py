@@ -618,6 +618,10 @@ def _post_transfer(
     """
     if amount == 0:
         return None
+    if account_kinds[to_id] == "liability":
+        amount = min(amount, max(0, balances.get(to_id, 0)))
+        if amount == 0:
+            return None
     if refill_ctx is not None and amount > 0:
         _ensure_min_balance(
             con, balances, account_kinds, step_id, month_s, refill_ctx,
