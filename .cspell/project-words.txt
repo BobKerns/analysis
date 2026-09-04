@@ -71,6 +71,7 @@ subkinds
 taxchar
 tctronics
 topup
+traditionalira
 txns
 unsets
 unspsc
