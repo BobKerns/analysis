@@ -195,6 +195,8 @@ def plot_net_worth_and_delta(
     """Two-panel chart: net worth per scenario, and each variant's delta vs baseline."""
     import matplotlib.pyplot as plt
 
+    from analysis.sim.plotting import include_zero
+
     scenarios = [baseline, *variants]
     fig, (ax_nw, ax_delta) = plt.subplots(
         2, 1, figsize=(11, 9), sharex=True, height_ratios=[2, 1]
@@ -219,6 +221,7 @@ def plot_net_worth_and_delta(
     for ax in (ax_nw, ax_delta):
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
         ax.grid(True, axis="y", alpha=0.3)
+        include_zero(ax)
     plt.tight_layout()
     plt.show()
 
@@ -275,6 +278,8 @@ def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:
     """One panel per comparison group, with a break-even marker on each line."""
     import matplotlib.pyplot as plt
 
+    from analysis.sim.plotting import include_zero
+
     fig, axes = plt.subplots(1, len(comparisons), figsize=(13, 5))
     if len(comparisons) == 1:
         axes = [axes]
@@ -295,6 +300,7 @@ def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
         ax.grid(True, alpha=0.3)
         ax.legend()
+        include_zero(ax)
     axes[0].set_ylabel("difference in net worth")
     plt.tight_layout()
     plt.show()
@@ -333,6 +339,8 @@ def plot_ss_gross(ss: pd.DataFrame, ss_cumulative: pd.DataFrame, colors: dict[st
     """Monthly and cumulative gross Social Security, one line per scenario."""
     import matplotlib.pyplot as plt
 
+    from analysis.sim.plotting import include_zero
+
     fig, (ax_month, ax_cum) = plt.subplots(1, 2, figsize=(13, 4))
     for name in ss.columns:
         ax_month.plot(ss.index, ss[name], label=name, color=colors[name], alpha=0.85)
@@ -343,6 +351,7 @@ def plot_ss_gross(ss: pd.DataFrame, ss_cumulative: pd.DataFrame, colors: dict[st
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
         ax.grid(True, axis="y", alpha=0.3)
         ax.legend()
+        include_zero(ax)
     plt.tight_layout()
     plt.show()
 

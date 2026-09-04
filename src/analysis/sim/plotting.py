@@ -19,11 +19,23 @@ def dollar_formatter() -> FuncFormatter:
     return FuncFormatter(lambda v, _: f"${v:,.0f}")
 
 
+def include_zero(ax: Axes) -> None:
+    """Policy: every chart's y-axis must include zero.
+
+    A dip that never actually crosses zero (or a rise that never approaches
+    it) can otherwise look dramatic purely because matplotlib's autoscale
+    zoomed in on the data's own min/max -- misreading true scale/magnitude.
+    """
+    ymin, ymax = ax.get_ylim()
+    ax.set_ylim(min(0, ymin), max(0, ymax))
+
+
 def _finish(ax: Axes, title: str, ylabel: str) -> None:
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     ax.yaxis.set_major_formatter(dollar_formatter())
     ax.grid(True, alpha=0.3)
+    include_zero(ax)
 
 
 def plot_timeseries(

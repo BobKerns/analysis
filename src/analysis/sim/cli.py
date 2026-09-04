@@ -147,6 +147,7 @@ def load(
         ctx.invoke(
             run,
             scenario_name=ref.name,
+            data_dir=data_dir,
             intent_dir=intent_dir,
             runs_dir=runs_dir,
             data_mode=data_mode,
@@ -203,6 +204,12 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 @sim_group_command.command()
 @click.argument("scenario_name", required=False)
 @click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Data repo (default: $ANALYSIS_DATA_DIR)",
+)
+@click.option(
     "--intent-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     default=None,
@@ -228,6 +235,7 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 @click.option("--allow-dirty-code", is_flag=True, default=False)
 def run(
     scenario_name: str | None,
+    data_dir: Path | None,
     intent_dir: Path | None,
     runs_dir: Path | None,
     data_mode: str | None,
@@ -235,9 +243,19 @@ def run(
     allow_dirty_data: bool,
     allow_dirty_code: bool,
 ) -> None:
-    """Execute <scenario> against its intent file and write a new run file."""
+    """Execute <scenario> against its intent file and write a new run file.
+
+    Naming a scenario also records it as the data repo's current scenario,
+    same as ``sim load <scenario>``, but only when a data repo is resolvable
+    (--data-dir or $ANALYSIS_DATA_DIR); this command otherwise only needs the
+    already-built intent file, not the data repo.
+    """
+    explicit = scenario_name is not None
+    data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
+    resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     if scenario_name is None:
-        scenario_name = _resolve_scenario(_resolve_data_dir(None), None).name
+        resolved_data_dir = resolved_data_dir or _resolve_data_dir(data_dir)
+        scenario_name = _resolve_scenario(resolved_data_dir, None).name
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
@@ -246,6 +264,8 @@ def run(
             f"intent file not found: {intent_path}\n"
             f"  run: analysis sim load {scenario_name}"
         )
+    if explicit and resolved_data_dir is not None:
+        write_current_scenario(resolved_data_dir, scenario_name)
 
     resolved_mode = data_mode or os.environ.get("ANALYSIS_DATA_MODE") or "live"
     resolved_by = run_by or os.environ.get("USER") or "unknown"

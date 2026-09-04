@@ -10,6 +10,8 @@ from io import BytesIO
 
 import pandas as pd
 
+from analysis.sim.plotting import include_zero
+
 
 def plottable_accounts(
     balance_pivot: pd.DataFrame, account_kinds: pd.Series, kind: str
@@ -42,6 +44,7 @@ def render_balance_history_png(
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"${value:,.0f}"))
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best", fontsize="small")
+    include_zero(ax)
     fig.autofmt_xdate()
 
     buffer = BytesIO()
