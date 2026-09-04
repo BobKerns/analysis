@@ -728,6 +728,27 @@ def _mortgage_ytd_split(
     return interest_total, principal_total
 
 
+def _ytd_preroll_posts(
+    start: date,
+    cadence: str,
+    month_of_year: int | None,
+    rule_start: date,
+    amount_cents: int | None,
+    tid: int,
+) -> list[tuple[str, int]]:
+    if amount_cents is None:
+        raise EngineError(f"scheduled_transaction id={tid}: ytd_preroll requires amount")
+    if start.month == 1:
+        return []
+    end = date(start.year, start.month, 1) - timedelta(days=1)
+    posts: list[tuple[str, int]] = []
+    for month in _month_ends(date(start.year, 1, 1), end):
+        fire_count = _cadence_count(cadence, month_of_year, month, rule_start, None)
+        if fire_count:
+            posts.append((month.isoformat(), amount_cents * fire_count))
+    return posts
+
+
 def _apply_ytd_catchups(
     con, step_id: int, start: date,
     txns: list[list[Any]],
@@ -740,16 +761,19 @@ def _apply_ytd_catchups(
     """Fire partial-first-year catch-up transfers once, at step 0."""
     date_s = _ytd_catchup_date(start).isoformat()
     for txn in txns:
-        (tid, _name, frm, to_chain, _cadence, _moy, rule_kind,
+        (tid, _name, frm, to_chain, cadence, moy, rule_kind,
          interest_acct, _p_person, _p_series, rate_micros,
          _p_claim_age, amount_cents, _ext_json,
          tax_char, _tax_year, _t_start, _t_end, _prio, _t_base_date,
          ytd_amount, ytd_preroll, _t_inflation_cadence) = txn
         if ytd_amount is not None:
-            amount = ytd_amount
+            posts = [(date_s, ytd_amount)]
         elif ytd_preroll:
-            amount = (amount_cents or 0) * (start.month - 1)
+            rule_start = _parse_scheduled_date(_t_start, tid, _name, "start")
+            posts = _ytd_preroll_posts(start, cadence, moy, rule_start, amount_cents, tid)
         else:
+            continue
+        if not posts:
             continue
         from_account = _first_chain_leaf_account(graph, frm)
         if from_account is None:
@@ -771,7 +795,7 @@ def _apply_ytd_catchups(
                     or balances.get(to_account, 0)
                 )
                 interest, principal = _mortgage_ytd_split(
-                    amount, amount_cents, rate_micros, starting_balance, tid,
+                    posts[0][1], amount_cents, rate_micros, starting_balance, tid,
                 )
                 parent_event_id = _post_ytd_transfer(
                     con, step_id, date_s, from_account, interest_id, interest,
@@ -783,23 +807,17 @@ def _apply_ytd_catchups(
                     parent_event_id=parent_event_id,
                 )
                 continue
-            _post_ytd_transfer(
-                con, step_id, date_s, from_account, to_account, amount,
-                tax_char, "ytd_rule", tid,
-            )
-        elif ytd_preroll:
-            for month in range(1, start.month):
-                month_start = date(start.year, month, 1)
-                month_end = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-                _post_ytd_chain(
-                    con, step_id, month_end.isoformat(), graph, to_chain,
-                    from_account, amount_cents or 0, tax_char, tid,
+            for post_date_s, amount in posts:
+                _post_ytd_transfer(
+                    con, step_id, post_date_s, from_account, to_account, amount,
+                    tax_char, "ytd_rule", tid,
                 )
         else:
-            _post_ytd_chain(
-                con, step_id, date_s, graph, to_chain, from_account, amount,
-                tax_char, tid,
-            )
+            for post_date_s, amount in posts:
+                _post_ytd_chain(
+                    con, step_id, post_date_s, graph, to_chain, from_account, amount,
+                    tax_char, tid,
+                )
     for yid, y_from, y_to, y_amount, y_tax_char, y_year in year_to_date_rows:
         row_date_s = _year_to_date_row_date(start, y_year).isoformat()
         _post_ytd_transfer(

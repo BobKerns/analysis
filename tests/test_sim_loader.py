@@ -552,6 +552,36 @@ def test_scheduled_ytd_preroll_rejected_for_non_fixed_amount(tmp_path: Path) -> 
         )
 
 
+def test_scheduled_ytd_preroll_allowed_for_annual_fixed_amount(tmp_path: Path) -> None:
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched, dtype=str, keep_default_na=False)
+    mask = df["name"] == "living"
+    df.loc[mask, "cadence"] = "annual"
+    df.loc[mask, "month_of_year"] = "4"
+    df.loc[mask, "ytd_preroll"] = "1"
+    df.to_csv(sched, index=False)
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out",
+        allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(result.intent_path)
+    try:
+        row = con.execute(
+            "SELECT cadence, month_of_year, ytd_preroll "
+            "FROM scheduled_transaction WHERE name='living'"
+        ).fetchone()
+        assert row == ("annual", 4, 1)
+    finally:
+        con.close()
+
+
 def test_scheduled_ytd_amount_allowed_for_mortgage_payment(tmp_path: Path) -> None:
     import pandas as pd
 

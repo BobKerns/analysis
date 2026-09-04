@@ -845,10 +845,10 @@ def _validate_scheduled(
         ytd_amount = row.get("ytd_amount", "")
         ytd_preroll = row.get("ytd_preroll", "")
         if ytd_preroll not in ("", "0"):
-            if kind != "fixed_amount" or cad != "monthly":
+            if kind != "fixed_amount":
                 issues.append(
                     f"scheduled.csv row {i} ({name}): ytd_preroll only "
-                    "valid for amount_rule_kind='fixed_amount' with cadence='monthly'"
+                    "valid for amount_rule_kind='fixed_amount'"
                 )
         if ytd_amount != "" and ytd_preroll not in ("", "0"):
             issues.append(

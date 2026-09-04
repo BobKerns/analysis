@@ -587,6 +587,42 @@ def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
         con.close()
 
 
+def test_ytd_preroll_annual_fixed_amount_fires_only_if_month_has_passed() -> None:
+    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+
+    graph = ChainGraph(
+        members={},
+        leaf_account={1: 1, 2: 2},
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    apr_tax = [
+        10, "property_tax_apr", 1, 2, "annual", 4, "fixed_amount",
+        None, None, None, None, None, 580_000, None, "none",
+        None, "2026-01-31", None, 200, None, None, 1, None,
+    ]
+    dec_tax = [
+        11, "property_tax_dec", 1, 2, "annual", 12, "fixed_amount",
+        None, None, None, None, None, 580_000, None, "none",
+        None, "2026-01-31", None, 200, None, None, 1, None,
+    ]
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
+        "reason_id, parent_event_id)"
+    )
+    try:
+        _apply_ytd_catchups(con, 1, date(2026, 5, 31), [apr_tax, dec_tax], [], graph)
+        rows = con.execute(
+            "SELECT date, reason_id, amount FROM transfer_event ORDER BY id"
+        ).fetchall()
+        assert rows == [("2026-04-30", 10, 580_000)]
+    finally:
+        con.close()
+
+
 def test_ytd_amount_from_interior_source_chain_records_first_leaf_account() -> None:
     from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
 
@@ -1084,10 +1120,12 @@ def test_ytd_preroll_posts_balance_neutral_catchup(tmp_path: Path) -> None:
             "SELECT date, amount, reason_kind FROM transfer_event "
             "WHERE reason_kind = 'ytd_rule' AND reason_id = ?", (salary_alice_id,),
         ).fetchall()
-        assert len(rows) == 1
-        # scenario start = 2026-05-31 -> 4 elapsed months (Jan-Apr), dated 2026-04-30.
-        assert rows[0]["date"] == "2026-04-30"
-        assert rows[0]["amount"] == SALARY_ALICE_MONTHLY * 4
+        assert [(row["date"], row["amount"]) for row in rows] == [
+            ("2026-01-31", SALARY_ALICE_MONTHLY),
+            ("2026-02-28", SALARY_ALICE_MONTHLY),
+            ("2026-03-31", SALARY_ALICE_MONTHLY),
+            ("2026-04-30", SALARY_ALICE_MONTHLY),
+        ]
 
         # Balance-neutral: checking's step-0 balance is unaffected by the catch-up.
         assert opening_checking == EXPECTED_CHECKING[1]

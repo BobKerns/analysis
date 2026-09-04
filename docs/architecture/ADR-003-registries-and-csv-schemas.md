@@ -435,7 +435,7 @@ A child row with a new key is appended; one whose key matches the parent replace
 | `meta_json` | json | | default `{}` |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
 | `ytd_amount` | dollars | | partial-first-year catch-up (§4.10); hard actual total already paid/received before `scenario.start`; valid for any rule kind; mutually exclusive with `ytd_preroll` |
-| `ytd_preroll` | `0`/`1` | | if `1`, catch-up amount = `amount × (scenario.start.month − 1)`; only valid when `amount_rule_kind='fixed_amount'` and `cadence='monthly'` |
+| `ytd_preroll` | `0`/`1` | | if `1`, posts one catch-up amount for each time the `fixed_amount` rule would have fired in the calendar months before `scenario.start`; only valid when `amount_rule_kind='fixed_amount'` |
 
 Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` into `series`, and `base_amount` into `amount`. Each is now read per `amount_rule_kind` (see the rows above); the loader rejects a row that still carries a retired column, and rejects `series` on a rule kind that does not read it.
 
@@ -492,8 +492,8 @@ Two mechanisms cover this, both posting **balance-neutral** `transfer_event` row
 **On `scheduled.csv`** (§4.6), for a single `fixed_amount` + `cadence='monthly'` row's own catch-up, since the catch-up is directly derived from that row's `amount`:
 
 - `ytd_amount` (dollars) — hard actual total already paid/received this calendar year before `scenario.start`. Valid for any rule kind because it is an observed fact, not derived from the rule's runtime computation. Posted with `reason_kind='ytd_rule'`, `reason_id` = the row's own `scheduled_transaction.id`. Multi-leg rules keep their reporting shape: today, `mortgage_payment` splits the YTD amount into an interest-expense leg and principal-liability leg, linked by `parent_event_id`, so expense charts pick up the interest portion just like ordinary monthly mortgage payments.
-- `ytd_preroll` (`0`/`1`) — auto-computed as `amount × (scenario.start.month − 1)`, i.e. one full month's amount per elapsed month, unadjusted for inflation (a same-order approximation, not a substitute for real records).
-- Mutually exclusive; loader rejects `ytd_preroll` on a non-`fixed_amount`/non-`monthly` row.
+- `ytd_preroll` (`0`/`1`) — auto-computed by replaying the fixed_amount rule's cadence for the calendar months before `scenario.start`, unadjusted for inflation (a same-order approximation, not a substitute for real records). For `monthly`, that is one amount per elapsed month. For `annual`, it posts only if `month_of_year` has already passed (e.g. April property tax is included for a May-start scenario; December property tax is not).
+- Mutually exclusive; loader rejects `ytd_preroll` on a non-`fixed_amount` row.
 - Dated the last day of the month before `scenario.start` (degenerates to `scenario.start` itself when it falls in January).
 
 **`data_repo/scenarios/<name>/year_to_date.csv`** (optional) — for everything else needing a partial-first-year catch-up that isn't one `fixed_amount` monthly rule's own amount (investment growth, Social Security already received, prior withholding, fully-prior-year loss carryforwards, etc.). No `cadence`/`series`/`base_date`: each row is one flat historical fact, not a recurring rule. Posted with `reason_kind='ytd'`, `reason_id` = the row's `year_to_date.id` (a distinct id space from `scheduled_transaction.id`, hence the different `reason_kind`).
