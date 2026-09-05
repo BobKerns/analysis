@@ -9,6 +9,7 @@ from __future__ import annotations
 import ipywidgets as widgets
 import pandas as pd
 from IPython.display import Markdown, clear_output, display
+import matplotlib.pyplot as plt
 
 from analysis.sim.connection import (
     EXPENSE_CATEGORIES,
@@ -18,18 +19,11 @@ from analysis.sim.connection import (
     year_end_values,
     yearly_totals,
 )
+from analysis.sim.notebook_ui.pickers import dollar_plot_mode
 
 
-def _dollar_plot_mode() -> widgets.ToggleButtons:
-    return widgets.ToggleButtons(
-        options=[("Nominal", "nominal"), ("CPI-constant", "cpi_constant")],
-        value="cpi_constant", description="Dollar basis:",
-    )
-
-
-def net_worth_widget(rc: RunConnection) -> widgets.VBox:
+def net_worth_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
     """Year-end table + monthly chart of net worth (nominal and CPI-constant)."""
-    import matplotlib.pyplot as plt
 
     nw = rc.net_worth_frame()
     year_end = year_end_values(nw[["nominal", "cpi_constant"]])
@@ -55,10 +49,10 @@ def net_worth_widget(rc: RunConnection) -> widgets.VBox:
         plt.xticks(rotation=90)
         plt.show()
 
-    return widgets.VBox([table_out, chart_out])
+    return widgets.VBox([chart_out, table_out])
 
 
-def income_widget(rc: RunConnection) -> widgets.VBox:
+def income_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
     """Yearly income table + a nominal/CPI-constant stacked bar chart, by category."""
     income = rc.income_by_category()
     income_yearly = yearly_totals(income)
@@ -67,7 +61,7 @@ def income_widget(rc: RunConnection) -> widgets.VBox:
     with table_out:
         display(income_yearly.style.format("${:,.0f}"))
 
-    plot_mode = _dollar_plot_mode()
+    plot_mode = plot_mode or dollar_plot_mode()
     chart_out = widgets.Output()
 
     def _redraw(*_):
@@ -97,7 +91,7 @@ def income_widget(rc: RunConnection) -> widgets.VBox:
     plot_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([table_out, plot_mode, chart_out])
+    return widgets.VBox([plot_mode, chart_out, table_out])
 
 
 _EXPENSES_CAVEAT = (
@@ -110,7 +104,7 @@ _EXPENSES_CAVEAT = (
 )
 
 
-def expenses_widget(rc: RunConnection) -> widgets.VBox:
+def expenses_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
     """Yearly expenses table + a nominal/CPI-constant stacked bar chart, by category."""
     expenses = rc.expenses_by_category()
     expenses_yearly = yearly_totals(expenses)
@@ -119,7 +113,7 @@ def expenses_widget(rc: RunConnection) -> widgets.VBox:
     with table_out:
         display(expenses_yearly.style.format("${:,.0f}"))
 
-    plot_mode = _dollar_plot_mode()
+    plot_mode = plot_mode or dollar_plot_mode()
     chart_out = widgets.Output()
     caveat_out = widgets.Output()
     with caveat_out:
@@ -152,10 +146,10 @@ def expenses_widget(rc: RunConnection) -> widgets.VBox:
     plot_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([table_out, plot_mode, chart_out, caveat_out])
+    return widgets.VBox([plot_mode, chart_out, caveat_out, table_out])
 
 
-def gains_widget(rc: RunConnection) -> widgets.VBox:
+def gains_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
     """Yearly realized-vs-unrealized gains table + chart, with an expenses overlay."""
     gains_yearly = rc.gains_by_category()
 
@@ -163,7 +157,7 @@ def gains_widget(rc: RunConnection) -> widgets.VBox:
     with table_out:
         display(gains_yearly.style.format("${:,.0f}"))
 
-    plot_mode = _dollar_plot_mode()
+    plot_mode = plot_mode or dollar_plot_mode()
     chart_out = widgets.Output()
 
     def _redraw(*_):
@@ -200,10 +194,10 @@ def gains_widget(rc: RunConnection) -> widgets.VBox:
     plot_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([table_out, plot_mode, chart_out])
+    return widgets.VBox([plot_mode, chart_out, table_out])
 
 
-def after_tax_widget(rc: RunConnection) -> widgets.VBox:
+def after_tax_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
     """Tax reconciliation table + after-tax income vs. non-tax-expense chart."""
     reconciliation = rc.tax_reconciliation_by_year()
     money_columns = [c for c in reconciliation.columns if c != "reconciliation_year"]
@@ -229,7 +223,7 @@ def after_tax_widget(rc: RunConnection) -> widgets.VBox:
         display(reconciliation.style.format({c: "${:,.0f}" for c in money_columns}))
         display(net.style.format("${:,.0f}"))
 
-    plot_mode = _dollar_plot_mode()
+    plot_mode = plot_mode or dollar_plot_mode()
     chart_out = widgets.Output()
 
     def _redraw(*_):
@@ -271,4 +265,4 @@ def after_tax_widget(rc: RunConnection) -> widgets.VBox:
     plot_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([table_out, plot_mode, chart_out])
+    return widgets.VBox([plot_mode, chart_out, table_out])

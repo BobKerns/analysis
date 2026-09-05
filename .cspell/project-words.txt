@@ -82,5 +82,7 @@ xfer
 xfers
 xlabel
 xticklabels
+xticks
 ylabel
+ylim
 zpln

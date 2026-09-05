@@ -5,11 +5,14 @@ the data itself.
 """
 
 from __future__ import annotations
-
+from ipywidgets import widgets
 import pandas as pd
+import ipywidgets as widgets
+import matplotlib.pyplot as plt
+from IPython.display import clear_output
 
+from analysis.sim.notebook_ui.pickers import dollar_plot_mode, value_plot_mode, y_axis_plot_mode
 from analysis.sim.plotting import include_zero
-
 
 def plottable_accounts(
     balance_pivot: pd.DataFrame, account_kinds: pd.Series, kind: str
@@ -90,6 +93,9 @@ def account_balance_history_widget(
     kind: str,
     initial_count: int = 1,
     cpi_balance_pivot: pd.DataFrame | None = None,
+    plot_mode: widgets.ToggleButtons | None = None,
+    value_mode: widgets.ToggleButtons | None = None,
+    y_axis_mode: widgets.ToggleButtons | None = None,
 ):
     """Build a SelectMultiple + Output widget pair that plots on selection change.
 
@@ -97,9 +103,6 @@ def account_balance_history_widget(
     or expense), which keeps unlike histories on separate scales.
     Returns the combined ``ipywidgets.VBox`` ready to ``display()``.
     """
-    import ipywidgets as widgets
-    import matplotlib.pyplot as plt
-    from IPython.display import clear_output
 
     plottable = plottable_accounts(balance_pivot, account_kinds, kind)
 
@@ -110,28 +113,9 @@ def account_balance_history_widget(
         description="Accounts:",
         layout=widgets.Layout(width="50%"),
     )
-    value_mode = widgets.ToggleButtons(
-        options=[("Total", "total"), ("Monthly", "monthly")],
-        value="total",
-        description="Values:",
-        layout=widgets.Layout(
-            border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
-        ),
-    )
-    plot_mode = widgets.ToggleButtons(
-        options=[("Nominal", "nominal"), ("CPI-constant", "cpi_constant")],
-        value="nominal",
-        description="Dollar basis:",
-        layout=widgets.Layout(
-            border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
-        ),
-    )
-    y_axis_mode = widgets.ToggleButtons(
-        options=[("Zero-anchored", True), ("Auto-scale", False)],
-        value=True,
-        description="Y-axis:",
-        layout=widgets.Layout(border="1px solid #888", padding="4px 6px"),
-    )
+    value_mode = value_mode or value_plot_mode()
+    plot_mode = plot_mode or dollar_plot_mode()
+    y_axis_mode = y_axis_mode or y_axis_plot_mode()
     out = widgets.Output()
 
     def _redraw(change=None):

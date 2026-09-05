@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import ipywidgets as widgets
+
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 
@@ -267,3 +269,35 @@ def multi_scenario_picker(
         [widgets.VBox([baseline_picker, variant_picker]), warnings_out]
     )
     return picker_widget, container
+
+
+def dollar_plot_mode() -> widgets.ToggleButtons:
+    """Return a toggle button widget for selecting nominal vs. CPI-constant dollars."""
+    return widgets.ToggleButtons(
+        options=[("Nominal", "nominal"), ("CPI-constant", "cpi_constant")],
+        value="nominal",
+        description="Dollar basis:",
+        layout=widgets.Layout(
+            border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+        ),
+    )
+
+def value_plot_mode() -> widgets.ToggleButtons:
+    """Return a toggle button for selecting total vs. monthly values."""
+    return widgets.ToggleButtons(
+        options=[("Total", "total"), ("Monthly", "monthly")],
+        value="total",
+        description="Values:",
+        layout=widgets.Layout(
+            border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+        ),
+    )
+
+def y_axis_plot_mode() -> widgets.ToggleButtons:
+    """Return a toggle button for selecting zero-anchored vs. auto-scaled Y-axis."""
+    return widgets.ToggleButtons(
+        options=[("Zero-anchored", True), ("Auto-scale", False)],
+        value=True,
+        description="Y-axis:",
+        layout=widgets.Layout(border="1px solid #888", padding="4px 6px"),
+    )
