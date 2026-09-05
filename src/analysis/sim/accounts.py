@@ -1,8 +1,10 @@
-"""Accounts: tabular view over the loaded intent DB.
+"""Accounts: tabular view over a scenario's intent data.
 
 Pure helpers used by the CLI (``analysis sim account list``) and notebooks.
-The intent DB is the single source of truth: CSV files are read only by
-``analysis.sim.loader``.
+Reads go through :class:`~analysis.sim.connection.ScenarioConnection` --
+account setup (opening balances, growth rates) is intent-side data, not
+simulation-run output, so it's available even before a scenario has ever
+been run.
 """
 
 from __future__ import annotations
@@ -10,9 +12,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 
-from analysis.sim.loader import open_intent_db
+import pandas as pd
+
+from analysis.sim.connection import ScenarioConnection
+
+
+def _or_empty(value) -> str:
+    """pandas represents a SQL NULL text column as NaN here, not None -- and
+    NaN is truthy, so a plain ``value or ""`` doesn't normalize it."""
+    return "" if pd.isna(value) else value
 
 
 @dataclass(frozen=True)
@@ -36,103 +45,80 @@ def _rate_role(subkind: str) -> str:
 
 
 def _latest_rate_micros(
-    con, series: str, as_of: str | None
+    sc: ScenarioConnection, series: str, as_of: str | None
 ) -> int | None:
     """Most recent ``aux_table`` rate row for ``series`` with
     effective_date ≤ as_of (default: today)."""
     cutoff = as_of or date.today().isoformat()
-    row = con.execute(
-        "SELECT payload_json FROM aux_table "
-        "WHERE kind = 'rate' AND series = ? AND effective_date <= ? "
-        "ORDER BY effective_date DESC LIMIT 1",
-        (series, cutoff),
-    ).fetchone()
-    if row is None:
+    aux = sc.items("aux_table", kind="rate", series=series)
+    if aux.empty:
+        return None
+    eligible = aux[aux["effective_date"] <= cutoff]
+    row = (
+        eligible.sort_values("effective_date").iloc[-1] if not eligible.empty
         # Fall back to earliest if none qualify (matches prior CSV behavior).
-        row = con.execute(
-            "SELECT payload_json FROM aux_table "
-            "WHERE kind = 'rate' AND series = ? "
-            "ORDER BY effective_date ASC LIMIT 1",
-            (series,),
-        ).fetchone()
-        if row is None:
-            return None
+        else aux.sort_values("effective_date").iloc[0]
+    )
     payload = json.loads(row["payload_json"])
     v = payload.get("annual_rate_micros")
     return int(v) if v is not None else None
 
 
 def load_accounts_view(
-    data_dir: Path | str,
-    scenario: str | None = None,
-    *,
-    as_of: str | None = None,
+    sc: ScenarioConnection, *, as_of: str | None = None,
 ) -> list[AccountRow]:
     """Return accounts joined with model opening balances and percent-of-balance rate rules."""
-    with open_intent_db(data_dir, scenario) as (con, _name):
-        accounts = con.execute(
-            "SELECT a.id, a.name, a.kind, a.subkind, "
-            "       COALESCE(a.owner, '') AS owner, "
-            "       COALESCE(a.tax_treatment, '') AS tax_treatment, "
-            "       COALESCE(a.opened, '') AS opened, "
-            "       COALESCE(a.closed, '') AS closed "
-            "FROM account a ORDER BY a.id"
-        ).fetchall()
+    accounts = sc.items("account")
+    members = sc.items("account_model_member")
+    opening = (
+        members.set_index("account")["opening_balance"] if not members.empty
+        else None
+    )
 
-        # Opening balances come from the scenario's account_model.
-        opening: dict[int, int | None] = {
-            r["account_id"]: r["opening_balance"]
-            for r in con.execute(
-                "SELECT m.account_id, m.opening_balance "
-                "FROM account_model_member m "
-                "JOIN scenario s ON s.account_model_id = m.model_id"
+    # Rate series come from percent_of_balance scheduled transactions
+    # keyed by to_account (the balance-bearing account, per ADR-003).
+    account_name_by_id = accounts.set_index("id")["name"]
+    scheduled = sc.items("scheduled")
+    rate_rows = scheduled[
+        (scheduled["amount_rule_kind"] == "percent_of_balance")
+        & scheduled["series"].notna()
+    ]
+    rate_by_name: dict[str, tuple[str, int | None]] = {}
+    for _, row in rate_rows.iterrows():
+        account_name = account_name_by_id.get(row["to_account"])
+        if account_name is None:
+            continue
+        rate_by_name[account_name] = (
+            row["series"], _latest_rate_micros(sc, row["series"], as_of),
+        )
+
+    out: list[AccountRow] = []
+    for _, a in accounts.iterrows():
+        series, micros = rate_by_name.get(a["name"], (None, None))
+        out.append(
+            AccountRow(
+                name=a["name"],
+                kind=a["kind"],
+                subkind=a["subkind"],
+                owner=_or_empty(a["owner"]),
+                tax_treatment=_or_empty(a["tax_treatment"]),
+                opened=_or_empty(a["opened"]),
+                closed=_or_empty(a["closed"]),
+                opening_balance_cents=(
+                    None if opening is None else opening.get(a["name"])
+                ),
+                rate_series=series,
+                annual_rate_micros=micros,
+                rate_role=_rate_role(a["subkind"]) if series else None,
             )
-        }
-
-        # Rate series come from percent_of_balance scheduled transactions
-        # keyed by to_account (the balance-bearing account, per ADR-003).
-        rate_by_name: dict[str, tuple[str, int | None]] = {}
-        for r in con.execute(
-            "SELECT a.name AS account_name, s.series AS series "
-            "FROM scheduled_transaction s "
-            "JOIN account a ON a.id = s.to_account "
-            "WHERE s.amount_rule_kind = 'percent_of_balance' "
-            "  AND s.series IS NOT NULL"
-        ):
-            rate_by_name[r["account_name"]] = (
-                r["series"], _latest_rate_micros(con, r["series"], as_of),
-            )
-
-        out: list[AccountRow] = []
-        for a in accounts:
-            series, micros = rate_by_name.get(a["name"], (None, None))
-            out.append(
-                AccountRow(
-                    name=a["name"],
-                    kind=a["kind"],
-                    subkind=a["subkind"],
-                    owner=a["owner"],
-                    tax_treatment=a["tax_treatment"],
-                    opened=a["opened"],
-                    closed=a["closed"],
-                    opening_balance_cents=opening.get(a["id"]),
-                    rate_series=series,
-                    annual_rate_micros=micros,
-                    rate_role=_rate_role(a["subkind"]) if series else None,
-                )
-            )
-        return out
+        )
+    return out
 
 
-def accounts_dataframe(
-    data_dir: Path | str,
-    scenario: str | None = None,
-    *,
-    as_of: str | None = None,
-):
+def accounts_dataframe(sc: ScenarioConnection, *, as_of: str | None = None):
     """Return ``load_accounts_view`` as a pandas DataFrame for notebook display."""
     import pandas as pd
-    rows = load_accounts_view(data_dir, scenario, as_of=as_of)
+    rows = load_accounts_view(sc, as_of=as_of)
     df = pd.DataFrame([r.__dict__ for r in rows])
     if df.empty:
         return df

@@ -1,7 +1,7 @@
 """Shared matplotlib helpers for sim notebooks (formatting, common chart shapes).
 
 Kept deliberately thin: these are layout/styling conveniences, not analysis —
-the data transforms live in :mod:`analysis.sim.reports`.
+the data transforms live on :class:`~analysis.sim.connection.RunConnection`.
 """
 
 from __future__ import annotations

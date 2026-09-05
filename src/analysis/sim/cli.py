@@ -1478,7 +1478,8 @@ def list_accounts(
     data_dir_p = _resolve_data_dir(data_dir)
     if as_of:
         _validate_iso_date(as_of)
-    rows = load_accounts_view(data_dir_p, scenario, as_of=as_of)
+    with open_scenario(data_dir_p, scenario) as sc:
+        rows = load_accounts_view(sc, as_of=as_of)
     if kind is not None:
         rows = [r for r in rows if r.kind == kind]
     if owner is not None:

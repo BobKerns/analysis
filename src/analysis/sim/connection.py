@@ -25,6 +25,60 @@ import pandas as pd
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
 
+# Category-bucketing defaults for RunConnection's derived-data methods below.
+# Notebooks may pass their own mapping/set to override any of these.
+INCOME_SUBKIND_TO_CATEGORY: dict[str, str] = {
+    "salary": "salary",
+    "interest": "investment",
+    "dividend": "investment",
+    "capital_gain": "investment",
+    "ss_benefit": "social security",
+}
+INCOME_CATEGORIES = ["salary", "social security", "investment"]
+
+EXPENSE_SUBKIND_TO_CATEGORY: dict[str, str] = {
+    "housing": "housing",
+    "interest_expense": "housing",
+    "taxes_property": "housing",
+    "healthcare": "healthcare",
+    "taxes_federal": "taxes",
+    "taxes_state": "taxes",
+    "living": "living",
+    "food": "living",
+}
+EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "other"]
+# depreciation is a book entry, not spending -- see ADR-002 gains/losses.
+NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
+
+LIQUID_SUBKINDS = {"checking", "savings"}
+TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "tax_deferred_out"}  # ss_benefit handled separately
+NONTAXABLE_GAIN_CHARS = {"tax_free"}
+GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
+
+DEFAULT_SETTLE_TAX_BUCKETS = ["federal_tax_due", "state_tax_due"]
+DEFAULT_TAX_SUMMARY_BUCKETS: dict[str, str] = {
+    "federal_tax_liability": "federal tax",
+    "state_tax_liability": "state tax",
+    "federal_ss_income": "SS gross",
+    "federal_taxable_ss": "SS taxed",
+}
+_TAX_RECONCILIATION_BUCKETS = [
+    "federal_tax_liability", "state_tax_liability",
+    "federal_tax_paid", "state_tax_paid",
+    "federal_tax_due", "state_tax_due",
+    "federal_tax_overpaid", "state_tax_overpaid",
+]
+_TAX_RECONCILIATION_RENAME = {
+    "federal_tax_liability": "federal_liability",
+    "state_tax_liability": "state_liability",
+    "federal_tax_paid": "federal_withheld_or_paid",
+    "state_tax_paid": "state_withheld_or_paid",
+    "federal_tax_due": "federal_reconciliation_due",
+    "state_tax_due": "state_reconciliation_due",
+    "federal_tax_overpaid": "federal_estimated_refund",
+    "state_tax_overpaid": "state_estimated_refund",
+}
+
 ItemType = Literal[
     "account",
     "scheduled",
@@ -40,6 +94,23 @@ ItemType = Literal[
     "tax_year_summary",
     "year_to_date",
 ]
+
+
+def year_end_values(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
+    """Last row of each calendar year from a month-indexed frame/series.
+
+    Re-indexed by year (int).
+    """
+    year_end = frame.groupby(frame.index.year).tail(1)
+    year_end.index = year_end.index.year
+    return year_end
+
+
+def yearly_totals(monthly: pd.DataFrame) -> pd.DataFrame:
+    """Sum a month-indexed frame (e.g. from ``income_by_category``) by calendar year."""
+    yearly = monthly.groupby(monthly.index.year).sum()
+    yearly.index.name = "year"
+    return yearly
 
 
 def _normalize_tag_collection(
@@ -174,6 +245,7 @@ class _TagReader:
 
     _con: sqlite3.Connection
     _item_cache: dict[str, pd.DataFrame]
+    _derived_cache: dict[str, object]
 
     def _ensure_fresh(self) -> None:
         """Hook for subclasses; default no-op (run files don't mutate)."""
@@ -289,6 +361,23 @@ class _TagReader:
     def _invalidate_items_cache(self) -> None:
         if getattr(self, "_item_cache", None) is not None:
             self._item_cache.clear()
+        if getattr(self, "_derived_cache", None) is not None:
+            self._derived_cache.clear()
+
+    def _cached(self, key: str, builder):
+        """Memoize a derived-data ``builder()`` call for the life of this connection.
+
+        Not keyed on ``builder``'s arguments -- callers with parameters (e.g.
+        a ``kind`` filter) should key on those explicitly, or leave the result
+        uncached if it's cheap relative to the ``items()`` call it rests on.
+        """
+        cache = getattr(self, "_derived_cache", None)
+        if cache is None:
+            cache = {}
+            self._derived_cache = cache
+        if key not in cache:
+            cache[key] = builder()
+        return cache[key]
 
 
 # ---------- run (read-only) ----------
@@ -315,6 +404,284 @@ class RunConnection(_TagReader):
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    # -- derived data (cached per instance; see _TagReader._cached) --
+
+    def net_worth_frame(self) -> pd.DataFrame:
+        """Month-indexed nominal + CPI-constant net worth, in dollars."""
+
+        def _build() -> pd.DataFrame:
+            nw = self.items("net_worth").rename(columns={"net_worth": "nominal_cents"})
+            cpi = self.items("net_worth_constant_cpi")[
+                ["month", "constant_cents", "cumulative_index_micros"]
+            ]
+            nw = nw.merge(cpi, on="month", how="left")
+            nw["month"] = pd.to_datetime(nw["month"])
+            nw["nominal"] = nw["nominal_cents"] / 100
+            nw["cpi_constant"] = nw["constant_cents"].astype("Float64") / 100
+            return nw.set_index("month")
+
+        return self._cached("net_worth_frame", _build)
+
+    def cpi_index(self) -> pd.Series:
+        """Month-indexed cumulative CPI index (micros), for CPI-constant conversion."""
+        return self._cached(
+            "cpi_index", lambda: self.net_worth_frame()["cumulative_index_micros"]
+        )
+
+    def to_cpi_constant(self, monthly: pd.DataFrame | pd.Series):
+        """Convert a month-indexed dollar series/frame to this run's CPI-constant dollars."""
+        factor = 1_000_000 / self.cpi_index().reindex(monthly.index)
+        return monthly.mul(factor, axis=0)
+
+    def to_cpi_constant_annual(self, yearly: pd.DataFrame | pd.Series):
+        """Convert a year-indexed dollar series/frame using each year's year-end CPI."""
+        cpi = self.cpi_index()
+        year_end_index = cpi.groupby(cpi.index.year).last()
+        return yearly.mul(1_000_000 / year_end_index.reindex(yearly.index), axis=0)
+
+    def account_kinds(self) -> pd.Series:
+        """Account name -> kind, from this run's account-balance history."""
+
+        def _build() -> pd.Series:
+            df = self.items("account_balance")
+            return df.drop_duplicates("account").set_index("account")["kind"]
+
+        return self._cached("account_kinds", _build)
+
+    def balance_pivot(self, kind: str | None = None) -> pd.DataFrame:
+        """Month x account balance pivot (dollars), optionally filtered to one ``kind``.
+
+        For income/expense accounts the balance is already the engine's own
+        running cumulative total (``account_state`` tracks every account, not
+        just assets/liabilities), so this needs no separate flow/cumsum pass.
+        """
+
+        def _build() -> pd.DataFrame:
+            df = self.items("account_balance").copy()
+            df["month"] = pd.to_datetime(df["month"])
+            pivot = df.pivot_table(
+                index="month", columns="account", values="balance", aggfunc="last"
+            )
+            return pivot / 100
+
+        full = self._cached("balance_pivot", _build)
+        if kind is None:
+            return full
+        kinds = self.account_kinds()
+        cols = [c for c in full.columns if kinds.get(c) == kind]
+        return full[cols]
+
+    def cpi_balance_pivot(self, kind: str | None = None) -> pd.DataFrame:
+        """``balance_pivot(kind)`` converted to CPI-constant dollars."""
+        return self.to_cpi_constant(self.balance_pivot(kind))
+
+    def income_by_category(
+        self, subkind_to_category: dict[str, str] = INCOME_SUBKIND_TO_CATEGORY,
+    ) -> pd.DataFrame:
+        """Monthly income by category, plus a ``total`` column, in dollars.
+
+        Rows whose subkind isn't in ``subkind_to_category`` are computed as
+        "other" but -- matching this method's notebook origin -- dropped from
+        the result along with ``total``, since only the categories in
+        :data:`INCOME_CATEGORIES` are kept.
+        """
+
+        def _build() -> pd.DataFrame:
+            xfer = self.items("transfer_event", from_kind="income").copy()
+            xfer["month"] = pd.to_datetime(xfer["month"])
+            xfer["category"] = xfer["from_subkind"].map(subkind_to_category).fillna("other")
+            income = (
+                xfer.groupby(["month", "category"])["amount"].sum()
+                .unstack("category", fill_value=0)
+                .reindex(columns=INCOME_CATEGORIES, fill_value=0)
+                / 100
+            )
+            income["total"] = income.sum(axis=1)
+            return income
+
+        return self._cached("income_by_category", _build)
+
+    def expenses_by_category(
+        self,
+        subkind_to_category: dict[str, str] = EXPENSE_SUBKIND_TO_CATEGORY,
+        non_cash_accounts: set[str] = NON_CASH_EXPENSE_ACCOUNTS,
+    ) -> pd.DataFrame:
+        """Monthly expenses by category, plus a ``total`` column, in dollars."""
+
+        def _build() -> pd.DataFrame:
+            xfer_exp = self.items("transfer_event", to_kind="expense").copy()
+            xfer_exp = xfer_exp[~xfer_exp["to_name"].isin(non_cash_accounts)]
+            xfer_exp["month"] = pd.to_datetime(xfer_exp["month"])
+            xfer_exp["category"] = (
+                xfer_exp["to_subkind"].map(subkind_to_category).fillna("other")
+            )
+            expenses = (
+                xfer_exp.groupby(["month", "category"])["amount"].sum()
+                .unstack("category", fill_value=0)
+                .reindex(columns=EXPENSE_CATEGORIES, fill_value=0)
+                / 100
+            )
+            expenses["total"] = expenses.sum(axis=1)
+            return expenses
+
+        return self._cached("expenses_by_category", _build)
+
+    def gains_by_category(self) -> pd.DataFrame:
+        """Year-indexed realized (taxable/non-taxable) vs. unrealized gains, in dollars.
+
+        Social Security is split into taxable/non-taxable by this run's own
+        ``federal_taxable_ss`` (the provisional-income test), not a flat
+        assumption. Also includes ``expenses``/``distribution_coverage``
+        (realized cash vs. that year's spending).
+        """
+
+        def _build() -> pd.DataFrame:
+            gains = self.items("transfer_event")
+            gains = gains[gains["reason_kind"] != "initial"].copy()
+            gains["month"] = pd.to_datetime(gains["month"])
+            gains["year"] = gains["month"].dt.year
+
+            reaches_cash = gains["to_subkind"].isin(LIQUID_SUBKINDS)
+            is_unrealized = (gains["from_kind"] == "income") & ~reaches_cash
+            is_taxable = reaches_cash & gains["tax_character"].isin(TAXABLE_GAIN_CHARS)
+            is_nontaxable = reaches_cash & gains["tax_character"].isin(NONTAXABLE_GAIN_CHARS)
+            is_ss = gains["tax_character"] == "ss_benefit"
+
+            gains["gain_category"] = pd.NA
+            gains.loc[is_unrealized, "gain_category"] = "unrealized"
+            gains.loc[is_taxable, "gain_category"] = "taxable"
+            gains.loc[is_nontaxable, "gain_category"] = "non-taxable"
+            gains.loc[is_ss, "gain_category"] = "social_security"
+            gains = gains.dropna(subset=["gain_category"])
+
+            gains_yearly = (
+                gains.groupby(["year", "gain_category"])["amount"].sum()
+                .unstack("gain_category", fill_value=0)
+                .reindex(columns=[*GAIN_CATEGORIES, "social_security"], fill_value=0)
+                / 100
+            )
+            gains_yearly.index.name = "year"
+
+            tax_summary = self.items("tax_year_summary")
+            federal_taxable_ss = (
+                tax_summary.loc[
+                    tax_summary["bucket"] == "federal_taxable_ss", ["year", "amount"]
+                ].set_index("year")["amount"]
+                / 100
+            )
+            ss_total = gains_yearly["social_security"]
+            ss_taxable = (
+                federal_taxable_ss.reindex(gains_yearly.index).fillna(0).clip(upper=ss_total)
+            )
+            ss_nontaxable = ss_total - ss_taxable
+
+            gains_yearly["taxable"] += ss_taxable
+            gains_yearly["non-taxable"] += ss_nontaxable
+            gains_yearly = gains_yearly.drop(columns="social_security")
+
+            gains_yearly["realized_total"] = (
+                gains_yearly["taxable"] + gains_yearly["non-taxable"]
+            )
+            expenses_yearly = self.expenses_by_category().groupby(
+                lambda month: month.year
+            ).sum()
+            gains_yearly["expenses"] = (
+                expenses_yearly["total"].reindex(gains_yearly.index).fillna(0)
+            )
+            gains_yearly["distribution_coverage"] = (
+                gains_yearly["realized_total"] - gains_yearly["expenses"]
+            )
+            return gains_yearly
+
+        return self._cached("gains_by_category", _build)
+
+    def tax_liability_by_year(self) -> pd.Series:
+        """Year-indexed total (federal + state) tax liability, in dollars."""
+
+        def _build() -> pd.Series:
+            tax_summary = self.items("tax_year_summary")
+            return (
+                tax_summary.loc[
+                    tax_summary["bucket"].isin(
+                        ["federal_tax_liability", "state_tax_liability"]
+                    ),
+                    ["year", "amount"],
+                ]
+                .groupby("year")["amount"]
+                .sum()
+                / 100
+            )
+
+        return self._cached("tax_liability_by_year", _build)
+
+    def tax_reconciliation_by_year(self) -> pd.DataFrame:
+        """Year-indexed liability/withheld/due/overpaid, federal and state, in dollars.
+
+        Adds ``reconciliation_year`` (year + 1): the annual reconciliation
+        payment or refund for year Y settles in April of Y+1.
+        """
+
+        def _build() -> pd.DataFrame:
+            tax_summary = self.items("tax_year_summary")
+            reconciliation = (
+                tax_summary.loc[
+                    tax_summary["bucket"].isin(_TAX_RECONCILIATION_BUCKETS),
+                    ["year", "bucket", "amount"],
+                ]
+                .pivot_table(
+                    index="year", columns="bucket", values="amount",
+                    aggfunc="sum", fill_value=0,
+                )
+                .rename(columns=_TAX_RECONCILIATION_RENAME)
+                / 100
+            )
+            reconciliation["reconciliation_year"] = reconciliation.index + 1
+            return reconciliation
+
+        return self._cached("tax_reconciliation_by_year", _build)
+
+    def outstanding_tax_by_year(
+        self, buckets: list[str] = DEFAULT_SETTLE_TAX_BUCKETS,
+    ) -> pd.Series:
+        """Year X's tax liability still unpaid at year end; it settles the April after.
+
+        Only ``*_tax_due`` buckets are used. ``*_tax_overpaid`` looks like a
+        refund but also fires when the *previous* April's settlement lands in
+        a zero-liability year, so crediting it here would double-count that
+        payment.
+        """
+        df = self.items("tax_year_summary")
+        df = df[df["bucket"].isin(buckets)]
+        wide = (
+            df.pivot(index="year", columns="bucket", values="amount")
+            .reindex(columns=buckets)
+            .fillna(0)
+            / 100
+        )
+        return wide.sum(axis=1)
+
+    def tax_summary_by_year(
+        self, buckets: dict[str, str] = DEFAULT_TAX_SUMMARY_BUCKETS,
+    ) -> pd.DataFrame:
+        """Yearly federal/state tax and SS income/taxed-portion, plus a total-tax column."""
+        df = self.items("tax_year_summary")
+        df = df[df["bucket"].isin(buckets)]
+        wide = df.pivot(index="year", columns="bucket", values="amount") / 100
+        wide = wide.rename(columns=buckets).reindex(columns=list(buckets.values()))
+        wide["total tax"] = wide["federal tax"] + wide["state tax"]
+        return wide
+
+    def ss_gross_by_month(self) -> pd.Series:
+        """Gross Social Security received per month (before Medicare withholding)."""
+
+        def _build() -> pd.Series:
+            te = self.items("transfer_event")
+            te = te[te["tax_character"] == "ss_benefit"].copy()
+            te["month"] = pd.to_datetime(te["month"])
+            return te.groupby("month")["amount"].sum() / 100
+
+        return self._cached("ss_gross_by_month", _build)
 
 
 @contextmanager
