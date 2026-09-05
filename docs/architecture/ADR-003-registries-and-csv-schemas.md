@@ -230,8 +230,8 @@ Mutate a `ScheduledTransaction.amount` going forward.
 
 Introduce a new `ScheduledTransaction` from this date forward.
 
-- **Columns:** all required fields of `scheduled_transaction` (using the same named param columns as §4.6) plus a `sources` array for waterfall rules. `start` defaults to `event.date` if omitted.
-- **Expansion:** inserts the row (and any `scheduled_transaction_source` rows) into the in-memory intent.
+- **Columns:** all required fields of `scheduled_transaction` (using the same named param columns as §4.6). `start` defaults to `event.date` if omitted. `from_account`/`to_account` may name a chain as well as an account (§4.7).
+- **Expansion:** inserts the row into the in-memory intent.
 - **Use:** "Medicare premium starts at age 65"; "RMD rule activates the year you turn 73".
 
 #### 3.4 `retire_scheduled` (primitive)
@@ -516,15 +516,18 @@ When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule 
 | --- | --- |
 | `percent_of_balance` | 100 |
 | `ss_benefit` | 200 |
-| `fixed_amount` | 200 (income) / 300 (expense) / 500 (one-off) — disambiguated by `tax_character` and `cadence`; the loader emits a warning if it had to guess |
+| `fixed_amount` | 200 |
 | `mortgage_payment` | 300 |
 | `tax_accumulator` | 400 |
 | `rmd` | 500 |
-| `refill_transfer` | 800 |
 | `on_death` | 900 |
-| `waterfall_fill` | 900 |
 
-Authors can override by setting `priority` explicitly. The check command (`analysis sim check --priorities`) flags rows whose explicit priority crosses a band boundary, since that's almost always a mistake.
+A kind not listed falls back to 500. (`fixed_amount` was originally specified as
+200/300/500 split by `tax_character` and `cadence`; that was never implemented —
+it is a flat 200, and an author who wants an expense to settle after income sets
+`priority` explicitly.)
+
+Authors can override by setting `priority` explicitly.
 
 ### 6. Ad-hoc tags (`tags` column)
 
@@ -578,7 +581,7 @@ inherited along the parent chain.
 - Free-text `kind`/`subkind` in the DDL with loader-side validation means a hand-written SQL `INSERT` could bypass the registry. The loader is the only sanctioned writer; ad-hoc edits to `state/intent/*.sqlite3` are out of scope (and would be overwritten on next reload anyway).
 - The `life_transition` expansion code is per-transition. Adding a new transition is a code change, not a data change. That's deliberate — these transitions are rare and high-impact enough to want a code review, not a CSV edit.
 - `sell_asset` requires the author to supply `cost_basis_override` whenever `account_state.cost_basis` is NULL (basis was never tracked). The `--check basis` validator surfaces these cases before a run fails.
-- `priors.csv` is intentionally narrow (tax activity only). Account-level state facts that used to live in a union `prior_account_fact` table now live as columns on `account_model_member` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`). This keeps the "what's in the accounts at scenario start" story in one file (`account_models/<name>.csv`) and lets `priors.csv` stay a thin tax-activity feed. (Superseded: `priors.csv`/`prior_tax_activity` were later folded into `year_to_date.csv` — see §4.10.)
+- `priors.csv` is intentionally narrow (tax activity only). Account-level state facts that used to live in a union `prior_account_fact` table now live as columns on `account_model_member` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`). This keeps the "what's in the accounts at scenario start" story in one file (`account_values.csv`, §4.3) and lets `priors.csv` stay a thin tax-activity feed. (Superseded: `priors.csv`/`prior_tax_activity` were later folded into `year_to_date.csv` — see §4.10.)
 
 ## Amendments applied to ADR-002 alongside this ADR
 
