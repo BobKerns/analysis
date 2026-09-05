@@ -250,7 +250,7 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         ).fetchone()[0] == 0
         # Dec 2038: RMD off Asset_TraditionalIRA_Alice's balance at that point
         # (which now also reflects the asset_checking_liquidity chain's earlier
-        # look-ahead refill draws, ADR-003 §2.9 -- these differ slightly from a
+        # look-ahead refill draws, ADR-003 §4.7 -- these differ slightly from a
         # month-end-only settle since a proactive refill never lets checking
         # dip below its floor between debits, so it can draw a bit more from
         # the IRA over the run than a once-a-month reconciliation would).
@@ -291,7 +291,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         #   salary_alice retires 2028-06-30 (step 25, fires 0..25 = 26)
         #   salary_bob   retires 2030-12-31 (step 55, fires 0..55 = 56)
         #   one_off_transfer 2029-03-31 synthesizes 1 fixed_amount rule.
-        # The asset_checking_liquidity settle pass (ADR-003 §2.9) posts its own
+        # The asset_checking_liquidity settle pass (ADR-003 §4.7) posts its own
         # 'refill' legs outside reason_kind='rule', so it's checked separately.
         per_rule = dict(con.execute(
             "SELECT st.name, COUNT(*) FROM transfer_event te "
@@ -482,7 +482,7 @@ def test_chain_draw_never_draws_target_from_itself() -> None:
 def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character() -> None:
     """A chain with an interior step and two leaves drains them in
     step_order, and each leg's tax_character is derived from the source
-    account it actually drew from (ADR-003 §2.9's core correctness goal)."""
+    account it actually drew from (ADR-003 §4.7's core correctness goal)."""
     from analysis.sim.engine import ChainGraph, _chain_draw
 
     # 1=target checking, 2=taxable savings, 3=tax_deferred IRA.
@@ -694,7 +694,7 @@ def test_ytd_amount_from_interior_source_chain_records_first_leaf_account() -> N
 
 def test_settle_order_settles_dependency_before_dependent() -> None:
     """An account whose refill_chain reaches another policy account's own
-    account must settle after that account (ADR-003 §2.9's topological
+    account must settle after that account (ADR-003 §4.7's topological
     settle pass, independent of authoring/CSV order)."""
     from analysis.sim.engine import ChainGraph, _settle_order
 

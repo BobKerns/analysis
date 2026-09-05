@@ -99,7 +99,7 @@ ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
 
 # Kinds a chains/<kind>__<name>.csv file may declare (ADR-003 §4.7); a closed
 # registry like every other file-kind vocabulary, extensible without engine
-# changes (a future 'expense'/'income' entry would enable deposit-only chains).
+# changes (a future 'expense' entry would enable deposit-only chains).
 CHAIN_KINDS: set[str] = {"asset", "income"}
 
 

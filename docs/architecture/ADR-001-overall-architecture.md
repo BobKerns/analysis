@@ -33,7 +33,7 @@ Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to
 | `Person` | Intent | Shared | Owner identity (id, display, birthdate). Needed for RMD ages and life-transition events. |
 | `Account` | Intent | Shared | One real-world place where money sits. `kind` ∈ {asset, liability, income, expense}; `subkind` carries tax/usage semantics; optional `owner`. |
 | `AccountModel` | Intent | Shared | A named set of `Account`s with opening balances and opening cost basis. Typically shared across scenarios. |
-| `ScheduledTransaction` | Intent | Mostly shared | A *rule* that emits `TransferEvent`s on a cadence. Amount is computed by a typed `amount_rule` (fixed, percent-of-balance, RMD, waterfall-fill, …) so interest accrual, SS payments, withdrawals, and tax reconciliation all use the same machinery. |
+| `ScheduledTransaction` | Intent | Mostly shared | A *rule* that emits `TransferEvent`s on a cadence. Amount is computed by a typed `amount_rule` (fixed, percent-of-balance, RMD, SS benefit, …) so interest accrual, SS payments, withdrawals, and tax reconciliation all use the same machinery. |
 | `Calendar` | Intent | Per-scenario | An ordered list of `CalendarEvent`s. Represents the assumptions being compared. |
 | `CalendarEvent` | Intent | Per-scenario | A *patch* to the running scenario on a given date: change a rate, add/retire a scheduled transaction, swap an aux table, sell an asset, apply a life transition, etc. Bounded set of kinds; see ADR-003. |
 | `AuxiliaryTable` | Intent | Mostly shared | Versioned reference data: tax brackets, RMD divisors, SS taxation thresholds, inflation series, per-account return rates, filing status. Calendars can swap these by date. |
@@ -67,7 +67,12 @@ Within-month ordering is **strictly by rule priority**, never by date. Priority 
 - `300` expenses
 - `400` tax accumulators / accruals
 - `500` conversions / one-offs
-- `900` waterfall fill (must run last so it sees the actual shortfall)
+- `900` terminal rules (`on_death`)
+
+Liquidity is *not* a priority band. Refilling a drawn-down account is a
+look-ahead check on each debit, and overflow is a month-end sweep, both driven
+by the account's own `refill_chain`/`overflow_chain` rather than by a rule that
+has to be ordered last — see ADR-003 §4.7.
 
 ### Cross-cutting principles
 
@@ -79,7 +84,7 @@ These are project-wide rules that all subsequent ADRs and code reference:
 4. **Visible approximation beats invisible omission.** Zero-valued accounts for assets we choose not to model (ISOs, potential JPY inheritance); basis-with-sources lists for the home; `data/known_exclusions.md` for things deliberately out of scope.
 5. **The scenario is a checklist.** Every `ScheduledTransaction` should be referenceable by `life_transition` events; a `--check life_transitions` mode flags omissions without erroring.
 6. **Schema is documentation.** Long-narrow tables, descriptive names, a `schema_overview` row per table for LLM priming. See ADR-002.
-7. **Hard errors on impossible states.** Insufficient funds, waterfall exhaustion, unknown user, dirty data without override → halt, persist partial results, report enough context to fix the scenario.
+7. **Hard errors on impossible states.** Unresolvable references, unknown user, dirty data without override → halt before the run starts, report enough context to fix the scenario. *Amended:* running an account negative is **not** in this category. The draft had insufficient funds halt the run; in practice that made a scenario un-runnable at the first shortfall, which is exactly when you most want to see the projection. A debit that a chain cannot cover posts anyway, drives the balance negative, raises a `RuntimeWarning` once per negative transition, and is recorded under `simulation_run.run_args_json.$.negative_balance_warnings` — visible and queryable, per principle 4, rather than fatal.
 
 ### Reproducibility and gating contract
 

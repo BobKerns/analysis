@@ -3,12 +3,14 @@
 Computes ``code_version``, ``data_version``, ``data_dirty``, and
 ``scenario_tree_id`` via GitPython. ``scenario_tree_id`` is a real git tree
 SHA, computed via a sidecar index (the user's index is never touched), over
-exactly the paths the loader read for a scenario: ``scenarios/<name>/``,
-``persons.csv``, ``accounts.csv``, ``account_models/<model>.csv``, ``aux/``.
+exactly the paths the loader read for a scenario: ``scenarios/<name>/`` plus the
+folder of every scenario it inherits from via ``parent_scenario``,
+``persons.csv``, ``aux/``, and ``itemizations/``.
 """
 
 from __future__ import annotations
 
+import csv
 import tempfile
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
@@ -65,19 +67,12 @@ def code_stamps() -> CodeStamps:
     )
 
 
-def data_stamps(
-    data_dir: Path,
-    scenario_name: str,
-    account_model_name: str,
-) -> DataStamps:
+def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
     data_dir = data_dir.resolve()
     repo = _open_repo(data_dir)
     if repo is None:
         return DataStamps(version="unversioned", dirty=True, tree_id="", dirty_paths=())
-    scoped_abs = [
-        str(data_dir / p)
-        for p in _scoped_paths(data_dir, scenario_name, account_model_name)
-    ]
+    scoped_abs = [str(data_dir / p) for p in _scoped_paths(data_dir, scenario_name)]
     status = repo.git.status("--porcelain", "--", *scoped_abs)
     dirty_paths = tuple(line[3:] for line in status.splitlines()) if status.strip() else ()
     tree_id = _compute_tree_id(repo, scoped_abs)
@@ -89,16 +84,49 @@ def data_stamps(
     )
 
 
-def _scoped_paths(data_dir: Path, scenario_name: str, model_name: str) -> list[str]:
+def _scoped_paths(data_dir: Path, scenario_name: str) -> list[str]:
     candidates = [
-        f"scenarios/{scenario_name}",
+        *(f"scenarios/{n}" for n in _scenario_lineage(data_dir, scenario_name)),
         "persons.csv",
-        "accounts.csv",
         "aux",
+        "itemizations",
     ]
-    if model_name:
-        candidates.append(f"account_models/{model_name}.csv")
     return [p for p in candidates if (data_dir / p).exists()]
+
+
+def _scenario_lineage(data_dir: Path, scenario_name: str) -> list[str]:
+    """``scenario_name`` followed by each ancestor it inherits from.
+
+    A derived scenario's load reads its parents' folders too (ADR-003 §4.5), so
+    the provenance scope has to cover them or an edit to a parent would leave a
+    child's ``scenario_tree_id`` unchanged and its ``data_dirty`` false.
+    """
+    lineage: list[str] = []
+    seen: set[str] = set()
+    name = scenario_name
+    while name and name not in seen:
+        lineage.append(name)
+        seen.add(name)
+        name = _parent_of(data_dir, name)
+    return lineage
+
+
+def _parent_of(data_dir: Path, scenario_name: str) -> str:
+    """Read ``parent_scenario`` out of a scenario header, or "" if absent.
+
+    Deliberately tolerant: provenance must not be the thing that reports a
+    malformed scenario.csv — the loader validates it properly and will raise.
+    """
+    path = data_dir / "scenarios" / scenario_name / "scenario.csv"
+    if not path.is_file():
+        return ""
+    try:
+        with path.open(newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                return (row.get("parent_scenario") or "").strip()
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return ""
+    return ""
 
 
 def _compute_tree_id(repo: Repo, scoped_abs: list[str]) -> str:

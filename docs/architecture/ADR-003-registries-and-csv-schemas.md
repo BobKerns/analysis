@@ -596,6 +596,32 @@ These amendments to ADR-002 fall out of the §2 invariant, §1 vocabulary, and t
 7. Dropped the `prior_account_fact` table entirely; added `prior_year_end_balance INTEGER` (nullable) to `account_model_member` to carry the one fact `prior_account_fact` actually drove (partial-first-year RMD's `dec31_prev_year_balance`).
 8. Added `role TEXT` (nullable) to `person`, unifying the former standalone `users.toml` operator list with the persons table. `$ANALYSIS_USER` is now validated against `persons.csv`; `users.toml` is removed from the data-repo layout.
 
+## Later amendments to this ADR
+
+Applied after the original acceptance, as the implementation diverged from the
+draft. Section numbers are never reused, so cross-references from code comments
+and older notes stay valid.
+
+1. **`waterfall_fill` (§2.4) and `refill_transfer` (§2.8) removed**, superseded by
+   liquidity chains (§4.7) and account-level refill/overflow (§4.2). The rule
+   registry is seven kinds, not nine. Both sections are retained as tombstones
+   carrying the rationale and a migration note.
+2. **`accounts.csv` (§4.2) and `account_values.csv` (§4.3) are per-scenario, not
+   shared.** They live in `scenarios/<name>/`, are required in a root scenario,
+   and overlay the parent's rows by `name` / `account_name` in a derived one
+   (§4.5). The `data_repo/account_models/<name>.csv` layout the draft described
+   never shipped.
+3. **§4.3's money columns are dollars, not cents**, like every other CSV money
+   column — the loader converts to integer cents (§4.1).
+4. **§5's `fixed_amount` default priority is a flat 200**; the drafted
+   income/expense/one-off split and the `analysis sim check --priorities` band
+   check were never implemented.
+5. **`CHAIN_KINDS` is `{asset, income}`** (§4.7), not `asset` alone.
+6. **Corresponding ADR-002 amendments:** `scheduled_transaction_source` and
+   `waterfall_sources.csv` dropped; `chain` / `chain_steps` added;
+   `transfer_event.from_account`/`to_account` now reference `chain(id)`; the
+   file-layout tree updated to the per-scenario shape above.
+
 ## Open questions deferred
 
 - Vocabulary of `tax_year_summary.bucket` is referenced by `prior_tax_activity` and `tax_accumulator`. Locked when ADR on tax computation lands.

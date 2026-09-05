@@ -1,8 +1,93 @@
-- [ ] Gather and confirm project requirements with stakeholders to ensure clarity
-- [ ] Scaffold the Project
-- [ ] Customize the Project
-- [ ] Install Required Extensions
-- [ ] Compile the Project
-- [ ] Create and Run Task
-- [ ] Launch the Project
-- [ ] Verify that all required technical documentation, user guides, and internal notes are complete and up-to-date
+# Working in this repository
+
+Personal finance analysis and planning: an Amazon expense categorizer and a
+scenario-based finance simulator, usable from both a CLI and Jupyter notebooks.
+Python 3.14+, `uv`, `src/` layout, single top-level project (no nested repos).
+
+## Two repositories, one workflow
+
+Code lives here. **Data lives in a separate git repository**, with the
+simulator's inputs under its `sim/` subtree. Commands find it via
+`$ANALYSIS_DATA_DIR` (set by sourcing the data repo's `activate-analysis`) or an
+explicit `--data-dir`. Nothing in `data/`, `out/`, or `state/` here is tracked.
+
+Never edit the data repo to make code or tests pass. If scenario data looks
+wrong or stale, say so and let the user decide.
+
+## Architecture
+
+Read the ADRs before changing the simulator; they are the specification, and
+they are kept in sync with the code.
+
+| Doc | Covers |
+| --- | --- |
+| `docs/architecture/ADR-001-overall-architecture.md` | Design principles, priority bands |
+| `docs/architecture/ADR-002-storage-schema.md` | Two-layer SQLite storage, DDL, glossary |
+| `docs/architecture/ADR-003-registries-and-csv-schemas.md` | Locked vocabularies, every CSV schema |
+| `docs/architecture/ADR-004-reproducibility-and-activation.md` | Provenance, determinism, activation |
+
+An ADR is amended, not silently rewritten: superseded sections stay as
+tombstones with the rationale, and material corrections go under "Later
+amendments to this ADR". If the code and an ADR disagree, fix the drift in the
+same change — the ADRs are load-bearing, not historical.
+
+Key modules:
+
+- `src/analysis/sim/registries.py` — the locked vocabularies (account kinds and
+  subkinds, the seven `AMOUNT_RULE_KINDS`, tax characters, `CHAIN_KINDS`,
+  `DEFAULT_PRIORITIES`, CSV headers). ADR-003 defines these; keep them paired.
+- `src/analysis/sim/schema.py` — all SQLite DDL, `SCHEMA_VERSION`. Mirrors ADR-002.
+- `src/analysis/sim/loader.py` — data repo CSVs to `state/intent/<scenario>.sqlite3`.
+  Validation belongs here: unresolvable references must fail loudly at load.
+- `src/analysis/sim/engine.py` — monthly stepping to a run file under `state/runs/`.
+- `src/analysis/sim/provenance.py` — code/data versions and `scenario_tree_id`.
+
+Invariants that are easy to break:
+
+- **Chains, not accounts, on both sides of a transfer.** Every account gets an
+  implicit leaf chain at load, so `chain.name` is one namespace shared with
+  account names. `scheduled_transaction.from_account`/`to_account`,
+  `chain_steps.draw_from_chain_id`, and
+  `account.refill_chain_id`/`overflow_chain_id` all reference `chain(id)` —
+  never `account(id)`.
+- **Refill is a per-debit look-ahead; overflow is a month-end sweep.** Neither
+  is a rule, and neither has a priority band.
+- **Insufficient funds does not halt the run.** The debit posts, the balance
+  goes negative, a `RuntimeWarning` fires once per negative transition, and the
+  event is recorded under
+  `simulation_run.run_args_json.$.negative_balance_warnings` — visible and
+  queryable, not fatal. A scenario must stay runnable past its first shortfall.
+- **Money is integer cents everywhere past the loader.** CSVs are authored in
+  decimal dollars; the loader converts. Don't leak floats inward.
+- **Scenario inheritance is real.** Most scenarios set `parent_scenario` and
+  ship only their overrides. Anything reasoning about "the files this scenario
+  read" must walk the whole lineage, not just the scenario's own folder.
+
+## Verifying a change
+
+Three gates, all of which should pass before reporting a simulator change done:
+
+```sh
+.venv/bin/python -m pytest -q                     # tests
+.venv/bin/python -m ruff check src tests          # lint (line-length 100)
+for s in "$ANALYSIS_DATA_DIR"/scenarios/*/; do    # real scenarios still load
+  .venv/bin/analysis sim check "$(basename "$s")"
+done
+```
+
+`ruff check` has pre-existing findings. Compare counts against the baseline
+(`git stash -u`, re-run, `git stash pop`) rather than assuming a clean slate,
+and leave unrelated findings alone.
+
+`mypy` is not installed; there is no type-check gate.
+
+## Conventions
+
+- `uv` manages the environment; the venv is `.venv/`. Prefer `.venv/bin/...` or
+  `uv run ...` over a bare `python`.
+- Notebooks are stripped with `nbstripout`. Don't commit output cells or churn
+  in kernel metadata.
+- Comments explain *why*, at the density of the surrounding code. A comment
+  restating the line below it is noise; one recording a decision or a trap is
+  worth keeping.
+- When a test's name stops describing what it asserts, rename it.

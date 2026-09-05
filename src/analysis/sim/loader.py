@@ -470,9 +470,8 @@ def load_scenario(
         raise LoadError(issues)
 
 
-    # account_model_name is obsolete; pass empty string for compatibility
     if compute_stamps:
-        ds = data_stamps(data_dir, scenario_name, "")
+        ds = data_stamps(data_dir, scenario_name)
         if ds.dirty and not allow_dirty_data:
             raise DataDirtyRefused(list(ds.dirty_paths))
         cs = code_stamps()

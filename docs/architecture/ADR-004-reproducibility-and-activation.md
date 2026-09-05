@@ -54,7 +54,7 @@ The single-row `simulation_run` manifest (ADR-002 §Ledger DDL) carries the foll
 
 **Data version.** Always the HEAD SHA of the data repo at `$ANALYSIS_DATA_DIR`. If the data dir is not a git repo at all (rare; only legitimate inside the prototype tree before it's been initialized), `data_version` is set to the literal string `"unversioned"` and the run is treated as dirty for gating purposes (§3).
 
-**Scenario tree id.** Per ADR-002, this is a content-addressed git tree SHA covering exactly the files the scenario load actually read: `scenarios/<name>/`, `accounts.csv`, `persons.csv`, `account_models/<referenced>.csv`, `aux/<referenced>.csv`. Clean repo → use `git ls-tree HEAD -- <paths>` and `git mktree` to assemble the synthetic tree object. Dirty repo → use a sidecar index (`GIT_INDEX_FILE=<tmp> git add -- <paths>; git write-tree`) and optionally pin it under `refs/analysis-dirty/<tree-id>` so the object stays reachable through GC.
+**Scenario tree id.** Per ADR-002, this is a content-addressed git tree SHA covering exactly the files the scenario load actually read: `scenarios/<name>/`, the folder of every scenario reached through `parent_scenario`, `persons.csv`, `aux/`, and `itemizations/`. Clean repo → use `git ls-tree HEAD -- <paths>` and `git mktree` to assemble the synthetic tree object. Dirty repo → use a sidecar index (`GIT_INDEX_FILE=<tmp> git add -- <paths>; git write-tree`) and optionally pin it under `refs/analysis-dirty/<tree-id>` so the object stays reachable through GC.
 
 This means: edit one comment in an unrelated CSV, `scenario_tree_id` doesn't change. Edit a referenced file, it does. The key tracks what the scenario actually depends on, not the whole repo's state.
 
@@ -132,7 +132,7 @@ This is the operational definition of "reproducible from stamps."
 
 `analysis sim check <scenario>` runs the lints listed across ADRs without simulating:
 
-- ADR-001 principle 7: every reachable account is in the account model; every scheduled `from_account`/`to_account` exists; waterfall sources resolve.
+- ADR-001 principle 7: every reachable account is in the account model; every scheduled `from_account`/`to_account` resolves to an account or a chain; every chain step and every `refill_chain`/`overflow_chain` resolves.
 - ADR-003 §1: every account's `(kind, subkind)` is in the locked vocabulary. Catch-all subkinds (`other_*`) emit a non-fatal warning.
 - ADR-003 §2: every `amount_rule_kind` is registered; every required JSON param is present and typed; default priorities not crossed without explicit override (warn).
 - ADR-003 §3: every `calendar_event.kind` is registered; every payload validates; rule-synthesizing events reference accounts that exist.

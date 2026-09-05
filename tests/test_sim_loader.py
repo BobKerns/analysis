@@ -20,6 +20,7 @@ from analysis.sim.loader import (
     resolve_scenario_name,
     write_current_scenario,
 )
+from analysis.sim.provenance import data_stamps
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -305,7 +306,7 @@ def test_invalid_subkind_rejected(tmp_path: Path) -> None:
     assert any("bogus_subkind" in issue for issue in ei.value.issues)
 
 
-def test_waterfall_from_account_mismatch_rejected(tmp_path: Path) -> None:
+def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     scenario_dir = repo / "scenarios" / "x"
     scenario_dir.mkdir(parents=True)
@@ -400,6 +401,68 @@ def test_dirty_data_allowed_records_dirty_flag(tmp_path: Path) -> None:
         assert len(m["scenario_tree_id"]) in (40, 64)
     finally:
         con.close()
+
+
+def _derive_empty_child(repo: Path, parent_name: str, child_name: str) -> Path:
+    """A scenario that inherits everything from ``parent_name`` and overrides nothing."""
+    parent = repo / "scenarios" / parent_name
+    child = repo / "scenarios" / child_name
+    child.mkdir()
+    (child / "scenario.csv").write_text(
+        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
+        f"{child_name},,,,,,{parent_name},,\n",
+        encoding="utf-8",
+    )
+    for filename in (
+        "accounts.csv", "account_values.csv", "scheduled.csv",
+        "calendar.csv", "year_to_date.csv",
+    ):
+        header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
+        (child / filename).write_text(header + "\n", encoding="utf-8")
+    return child
+
+
+def test_child_provenance_covers_parent_scenario(tmp_path: Path) -> None:
+    """A derived scenario's stamps must track its parent's files (ADR-004 §1).
+
+    The child reads the parent's folder, so editing the parent changes what the
+    child loaded. If the provenance scope stopped at ``scenarios/<child>/``,
+    that edit would leave the child's tree id untouched and its ``data_dirty``
+    false -- two different scenarios sharing one determinism key.
+    """
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _derive_empty_child(repo, "retire_alice", "tight")
+    _git_init_commit(repo)
+
+    before = data_stamps(repo, "tight")
+    assert not before.dirty
+
+    parent_sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    parent_sched.write_text(
+        parent_sched.read_text(encoding="utf-8") + "# scratch\n", encoding="utf-8",
+    )
+
+    after = data_stamps(repo, "tight")
+    assert after.dirty, "parent edit must mark the child's data dirty"
+    assert any("retire_alice" in p for p in after.dirty_paths)
+    assert after.tree_id != before.tree_id, "parent edit must move the child's tree id"
+
+
+def test_provenance_scope_excludes_unrelated_scenarios(tmp_path: Path) -> None:
+    """Scope covers the lineage, not the whole scenarios/ directory."""
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _derive_empty_child(repo, "retire_alice", "unrelated")
+    _git_init_commit(repo)
+
+    before = data_stamps(repo, "retire_alice")
+    sibling = repo / "scenarios" / "unrelated" / "scheduled.csv"
+    sibling.write_text(sibling.read_text(encoding="utf-8") + "# scratch\n", encoding="utf-8")
+
+    after = data_stamps(repo, "retire_alice")
+    assert not after.dirty
+    assert after.tree_id == before.tree_id
 
 
 def test_tags_round_trip(tmp_path: Path) -> None:

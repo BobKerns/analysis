@@ -24,30 +24,34 @@ The schema must:
 
 ```text
 data_repo/
-    accounts.csv            # shared base: every Account in the household
-    persons.csv             # shared base: owners with birthdates
+    persons.csv             # shared base: owners with birthdates (and operator role)
     aux/
         federal_brackets.csv
         rmd_factors.csv
-        inflation_series.csv
-        ...                 # one CSV per aux_table.kind
-    account_models/
-        standard.csv        # member rows: account_name, opening_balance, opening_cost_basis
-        pre_house_sale.csv  # alternate
+        inflation__cpi.csv
+        ...                 # one CSV per aux_table.kind; `kind__series.csv`
+    itemizations/
+        <name>.csv          # expansions for `@name` monetary references
     scenarios/
         retire_2030/
-            scenario.csv    # one-row scenario header
+            scenario.csv    # one-row scenario header (incl. parent_scenario)
+            accounts.csv    # every Account this scenario models (ADR-003 §4.2)
+            account_values.csv # opening balances/bases (ADR-003 §4.3)
             scheduled.csv   # this scenario's ScheduledTransactions
-            waterfall_sources.csv
             calendar.csv    # CalendarEvents
+            lifespan.csv    # per-person final month
             year_to_date.csv # partial-first-year catch-up facts (ADR-003 §4.10)
+            chains/
+                asset__Family_Cash.csv   # named liquidity chains (ADR-003 §4.7)
+                income__SS_Bob.csv
         retire_2032/
-            ...
-    activate
+            ...             # a derived scenario names `parent_scenario` in
+                            # scenario.csv and ships only the files it overrides
+    activate-analysis
 
 state/
     intent/
-        retire_2030.sqlite3   # built from scenarios/retire_2030/ + shared base
+        retire_2030.sqlite3   # built from scenarios/retire_2030/ (+ its parents) + shared base
         retire_2032.sqlite3
     runs/
         2026-05-17T193045Z_retire_2030_d4f7a2b.sqlite3
@@ -90,7 +94,8 @@ state/
 | --- | --- | --- |
 | `person`, `account` | ✓ | ✓ (snapshot) |
 | `account_model`, `account_model_member` | ✓ | ✓ (snapshot) |
-| `scheduled_transaction`, `scheduled_transaction_source` | ✓ | ✓ (snapshot) |
+| `scheduled_transaction` | ✓ | ✓ (snapshot) |
+| `chain`, `chain_steps` | ✓ | ✓ (snapshot) |
 | `calendar`, `calendar_event` | ✓ | ✓ (snapshot) |
 | `aux_table` | ✓ | ✓ (snapshot) |
 | `scenario` (one row) | ✓ | ✓ (snapshot) |
@@ -208,12 +213,37 @@ CREATE TABLE scheduled_transaction (
 CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
 CREATE INDEX idx_sched_created_by ON scheduled_transaction(created_by_event_id);
 
--- Ordered source list for waterfall_fill rules (and any future list-of-accounts rule)
-CREATE TABLE scheduled_transaction_source (
-    scheduled_transaction_id INTEGER NOT NULL REFERENCES scheduled_transaction(id),
-    position                 INTEGER NOT NULL,
-    account_id               INTEGER NOT NULL REFERENCES account(id),
-    PRIMARY KEY (scheduled_transaction_id, position)
+-- Liquidity chains (ADR-003 §4.7). A `chain` row is either a LEAF (account_id
+-- set: the chain IS that account) or an INTERIOR named chain (account_id NULL,
+-- with >=1 chain_steps rows, walked in step_order until the amount need is
+-- satisfied). Every real account gets an implicit leaf chain at load time
+-- (name = account.name, kind = account.kind), so `chain.name` is one namespace
+-- covering both kinds -- account.refill_chain_id/overflow_chain_id,
+-- chain_steps.draw_from_chain_id, and transfer_event.from_account/to_account
+-- always reference `chain(id)`, never `account(id)` directly, so no
+-- union-typed reference column is ever needed.
+CREATE TABLE chain (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    kind       TEXT NOT NULL,
+    account_id INTEGER REFERENCES account(id)
+);
+CREATE INDEX idx_chain_account ON chain(account_id);
+
+CREATE TABLE chain_steps (
+    id                 INTEGER PRIMARY KEY,
+    chain_id           INTEGER NOT NULL REFERENCES chain(id),
+    step_order         INTEGER NOT NULL,
+    draw_from_chain_id INTEGER NOT NULL REFERENCES chain(id),
+    threshold_cents    INTEGER NOT NULL DEFAULT 0,
+    amount_cents       INTEGER,
+    percent_micros     INTEGER,
+    series             TEXT,
+    cadence            TEXT CHECK (cadence IN ('monthly','annual')),
+    CHECK (amount_cents IS NULL OR amount_cents >= 0),
+    CHECK (percent_micros IS NULL OR percent_micros >= 0 AND percent_micros <= 1000000),
+    CHECK (amount_cents IS NULL OR percent_micros IS NULL),
+    UNIQUE (chain_id, step_order)
 );
 
 -- Calendar: ordered patches to a scenario (one calendar per intent file)
@@ -289,7 +319,7 @@ CREATE TABLE intent_manifest (
 );
 ```
 
-`scenario_tree_id` is a **git tree object SHA** covering the exact set of files the loader reads for this scenario: the scenario folder (`data_repo/scenarios/<name>/**`) plus the shared base paths it consumes (`accounts.csv`, `persons.csv`, `aux/*.csv`, the referenced `account_models/<model>.csv`).
+`scenario_tree_id` is a **git tree object SHA** covering the exact set of files the loader reads for this scenario: the scenario folder (`data_repo/scenarios/<name>/**`), the folders of every scenario it inherits from via `parent_scenario`, and the shared base paths it consumes (`persons.csv`, `aux/*.csv`, and any `itemizations/*.csv` reached by an `@name` reference).
 
 - **Clean** (`data_dirty = 0`): computed by `git ls-tree` against `HEAD` for those paths and combined with `git mktree` into a single tree object, or equivalently by writing them to a temporary index and calling `git write-tree`. Either way the result is a normal git tree SHA, addressable forever.
 - **Dirty** (`data_dirty = 1`): the loader stages the working-tree contents of those paths into a **separate index file** (`GIT_INDEX_FILE=...` env var, never touching the user's index) and runs `git write-tree` against it. The output is a real tree SHA, identical to what a future commit of the same content would produce. Optionally the engine runs `git update-ref refs/analysis-dirty/<tree-id> <tree-id>` so the object is reachable from a ref and won't be garbage-collected before the run is forgotten.
@@ -441,7 +471,8 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `account_model` | The account bundle this scenario uses (one row per intent/run file). |
 | `account_model_member` | Opening balance, opening cost basis, and prior-Dec-31 balance (for partial-first-year RMD) for each account in the model. |
 | `scheduled_transaction` | Recurring or one-off rule that emits transfer events on a cadence; `amount_rule_kind` selects the formula. |
-| `scheduled_transaction_source` | Ordered list of source accounts for rules that draw from multiple places (e.g. `waterfall_fill`). |
+| `chain` | A place money can be drawn from or deposited into: either a leaf (one account) or a named, ordered, reusable liquidity chain. One namespace over both. |
+| `chain_steps` | The ordered steps of an interior chain — which chain each step draws from, and the threshold/amount/percent limiting that step. |
 | `calendar` | The patch sequence this scenario applies to the running model (one row per intent/run file). |
 | `calendar_event` | One patch on one date; `kind` selects the semantics, `payload_json` carries the parameters. |
 | `aux_table` | Versioned reference data: tax brackets, RMD divisors, inflation series, per-account rates, filing status. |
@@ -583,4 +614,4 @@ Both seed their respective `schema_overview` rows. A `_schema_version` table tra
 - Exact vocabulary of `account.subkind` values — drafted in code, will become a checked list in ADR-003.
 - Exact vocabulary of `aux_table.kind` — same.
 - Whether `tax_year_summary` should also store the inputs used (bracket-table aux_table id, filing status). Likely yes; added when the tax scan is implemented.
-- Exact CSV layout for the per-scenario folder (column headers for `scenario.csv`, `scheduled.csv`, `calendar.csv`, `year_to_date.csv`, `waterfall_sources.csv`) — to be specified in ADR-003 alongside the rule and event-kind registries.
+- ~~Exact CSV layout for the per-scenario folder~~ — **settled** in ADR-003 §4 (`scenario.csv`, `accounts.csv`, `account_values.csv`, `scheduled.csv`, `calendar.csv`, `lifespan.csv`, `year_to_date.csv`, `chains/<kind>__<name>.csv`).
