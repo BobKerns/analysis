@@ -94,6 +94,7 @@ ItemType = Literal[
     "tax_year_summary",
     "year_to_date",
     "person",
+    "person_lifespan",
     "chain",
     "chain_steps",
     "intent_manifest",
@@ -185,6 +186,7 @@ _ITEM_SQL: dict[str, str] = {
         "GROUP BY s.id ORDER BY s.id"
     ),
     "person": "SELECT * FROM person ORDER BY id",
+    "person_lifespan": "SELECT * FROM person_lifespan ORDER BY person",
     "chain": (
         "SELECT c.*, a.name AS account_name, a.kind AS account_kind "
         "FROM chain c "

@@ -36,8 +36,17 @@ def manifest_view(sc: ScenarioConnection) -> pd.DataFrame:
 
 
 def persons_view(sc: ScenarioConnection) -> pd.DataFrame:
-    """Every person, one row each."""
-    return sc.items("person")[["id", "display", "birthdate", "role"]].set_index("id")
+    """Every person, one row each, with their date of death if the scenario sets one.
+
+    ``date_of_death`` comes from ``person_lifespan.final_month`` (ADR-003
+    §4.9) -- the last month a person's rules still fire; blank if the
+    scenario has no lifespan override for them.
+    """
+    persons = sc.items("person")[["id", "display", "birthdate", "role"]].fillna('')
+    lifespan = sc.items("person_lifespan").set_index("person")["final_month"]
+    persons = persons.set_index("id")
+    persons["date_of_death"] = lifespan.reindex(persons.index).fillna('-')
+    return persons
 
 
 def chains_view(sc: ScenarioConnection) -> pd.DataFrame:
@@ -54,7 +63,7 @@ def chains_view(sc: ScenarioConnection) -> pd.DataFrame:
         "chain": leaves["name"], "step": pd.NA, "draw_from": leaves["account_name"],
         "threshold": pd.NA, "amount": pd.NA, "percent": pd.NA,
         "series": pd.NA, "cadence": pd.NA,
-    })
+    }).fillna('-')
     step_rows = pd.DataFrame({
         "chain": steps["chain_name"], "step": steps["step_order"],
         "draw_from": steps["draw_from_chain_name"],
@@ -62,7 +71,7 @@ def chains_view(sc: ScenarioConnection) -> pd.DataFrame:
         "amount": steps["amount_cents"].apply(lambda c: None if pd.isna(c) else c / 100),
         "percent": steps["percent_micros"].apply(
             lambda m: None if pd.isna(m) else m / 10_000
-        ),
+        ).fillna('-'),
         "series": steps["series"], "cadence": steps["cadence"],
     })
     return (
@@ -100,4 +109,4 @@ def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
     """Calendar events, human-readable (dollars), by date."""
     events = sc.items("calendar_event").copy()
     events["amount"] = events["amount"].apply(lambda c: None if pd.isna(c) else c / 100)
-    return events[_CALENDAR_COLS].sort_values("date").reset_index(drop=True)
+    return events[_CALENDAR_COLS].sort_values("date").reset_index(drop=True).fillna('-')
