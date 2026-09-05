@@ -63,7 +63,7 @@ def chains_view(sc: ScenarioConnection) -> pd.DataFrame:
         "chain": leaves["name"], "step": pd.NA, "draw_from": leaves["account_name"],
         "threshold": pd.NA, "amount": pd.NA, "percent": pd.NA,
         "series": pd.NA, "cadence": pd.NA,
-    }).fillna('-')
+    })
     step_rows = pd.DataFrame({
         "chain": steps["chain_name"], "step": steps["step_order"],
         "draw_from": steps["draw_from_chain_name"],
@@ -71,7 +71,7 @@ def chains_view(sc: ScenarioConnection) -> pd.DataFrame:
         "amount": steps["amount_cents"].apply(lambda c: None if pd.isna(c) else c / 100),
         "percent": steps["percent_micros"].apply(
             lambda m: None if pd.isna(m) else m / 10_000
-        ).fillna('-'),
+        ),
         "series": steps["series"], "cadence": steps["cadence"],
     })
     return (
@@ -88,11 +88,18 @@ _SCHEDULED_COLS = [
 
 
 def scheduled_view(sc: ScenarioConnection) -> pd.DataFrame:
-    """Scheduled transactions, human-readable (chain names, dollars), by priority."""
+    """Scheduled transactions, human-readable (chain names, dollars), by priority.
+
+    ``amount`` is left as a float (NaN where the rule has none, e.g.
+    ``percent_of_balance`` growth rules) so numeric formatting still works --
+    display it with ``.style.format({"amount": ...}, na_rep="-")`` rather than
+    filling it here.
+    """
     scheduled = sc.items("scheduled").copy()
     scheduled["amount"] = scheduled["amount_cents"].apply(
         lambda c: None if pd.isna(c) else c / 100
     )
+    scheduled[["end", "description"]] = scheduled[["end", "description"]].fillna("-")
     return (
         scheduled[_SCHEDULED_COLS]
         .sort_values(["priority", "name"])
@@ -106,7 +113,15 @@ _CALENDAR_COLS = [
 
 
 def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
-    """Calendar events, human-readable (dollars), by date."""
+    """Calendar events, human-readable (dollars), by date.
+
+    ``amount`` is left as a float (NaN where the event carries none) so
+    numeric formatting still works -- display it with
+    ``.style.format({"amount": ...}, na_rep="-")`` rather than filling it here.
+    """
     events = sc.items("calendar_event").copy()
     events["amount"] = events["amount"].apply(lambda c: None if pd.isna(c) else c / 100)
-    return events[_CALENDAR_COLS].sort_values("date").reset_index(drop=True).fillna('-')
+    events = events[_CALENDAR_COLS].sort_values("date").reset_index(drop=True)
+    text_cols = [c for c in _CALENDAR_COLS if c != "amount"]
+    events[text_cols] = events[text_cols].fillna("-")
+    return events
