@@ -48,10 +48,10 @@ def test_net_worth_widget_builds_without_error(tmp_path: Path) -> None:
 def test_income_widget_toggles_dollar_basis(tmp_path: Path) -> None:
     with open_run(_build_run(tmp_path)) as rc:
         widget = income_widget(rc)
-        table_out, plot_mode, chart_out = widget.children
-        assert plot_mode.value == "cpi_constant"
-        plot_mode.value = "nominal"  # must not raise
+        plot_mode, chart_out, table_out = widget.children
         assert plot_mode.value == "nominal"
+        plot_mode.value = "cpi_constant"  # must not raise
+        assert plot_mode.value == "cpi_constant"
 
 
 def test_expenses_widget_includes_caveat(tmp_path: Path) -> None:
@@ -63,14 +63,14 @@ def test_expenses_widget_includes_caveat(tmp_path: Path) -> None:
 def test_gains_widget_builds_without_error(tmp_path: Path) -> None:
     with open_run(_build_run(tmp_path)) as rc:
         widget = gains_widget(rc)
-        table_out, plot_mode, chart_out = widget.children
+        plot_mode, chart_out, table_out = widget.children
         plot_mode.value = "nominal"
 
 
 def test_after_tax_widget_builds_without_error(tmp_path: Path) -> None:
     with open_run(_build_run(tmp_path)) as rc:
         widget = after_tax_widget(rc)
-        table_out, plot_mode, chart_out = widget.children
+        plot_mode, chart_out, table_out = widget.children
         plot_mode.value = "nominal"
 
 

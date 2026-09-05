@@ -93,6 +93,10 @@ ItemType = Literal[
     "scenario",
     "tax_year_summary",
     "year_to_date",
+    "person",
+    "chain",
+    "chain_steps",
+    "intent_manifest",
 ]
 
 
@@ -170,13 +174,29 @@ _ITEM_SQL: dict[str, str] = {
         "GROUP BY a.id ORDER BY a.id"
     ),
     "scheduled": (
-        "SELECT s.*, "
+        "SELECT s.*, fc.name AS from_name, tc.name AS to_name, "
         "  COALESCE(GROUP_CONCAT(t.role || ':' || t.name, ' '), '') AS tags "
         "FROM scheduled_transaction s "
+        "JOIN chain fc ON fc.id = s.from_account "
+        "JOIN chain tc ON tc.id = s.to_account "
         "LEFT JOIN scheduled_transaction_tag x "
         "  ON x.scheduled_transaction_id = s.id "
         "LEFT JOIN tag t ON t.id = x.tag_id "
         "GROUP BY s.id ORDER BY s.id"
+    ),
+    "person": "SELECT * FROM person ORDER BY id",
+    "chain": (
+        "SELECT c.*, a.name AS account_name, a.kind AS account_kind "
+        "FROM chain c "
+        "LEFT JOIN account a ON a.id = c.account_id "
+        "ORDER BY c.id"
+    ),
+    "chain_steps": (
+        "SELECT cs.*, c.name AS chain_name, df.name AS draw_from_chain_name "
+        "FROM chain_steps cs "
+        "JOIN chain c ON c.id = cs.chain_id "
+        "JOIN chain df ON df.id = cs.draw_from_chain_id "
+        "ORDER BY c.name, cs.step_order"
     ),
     "calendar_event": (
         "SELECT c.*, "
@@ -237,6 +257,9 @@ _ITEM_SQL: dict[str, str] = {
         "ORDER BY a.name"
     ),
     "aux_table": "SELECT * FROM aux_table ORDER BY kind, series, effective_date",
+    # Intent-file-only: not copied into run files (SNAPSHOT_TABLES), so this
+    # only works on a ScenarioConnection, not a RunConnection.
+    "intent_manifest": "SELECT * FROM intent_manifest",
 }
 
 
