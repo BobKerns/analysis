@@ -1027,7 +1027,7 @@ def _read_chain_files(
     """Read ``chains/*.csv`` for a scenario, recursively overlaying any parent.
 
     Unlike the other per-scenario CSVs, chains merge by WHOLE FILE per chain
-    name (ADR-003 §2.9): a child's ``chains/<kind>__<name>.csv`` entirely
+    name (ADR-003 §4.7): a child's ``chains/<kind>__<name>.csv`` entirely
     replaces the parent's file of that name; a chain not overridden by the
     child is inherited unchanged.
     """
@@ -1289,7 +1289,7 @@ def _write_intent(
                      "account_tag", "account_id", tag_cache)
     counts["account"] = len(accounts)
 
-    # Liquidity chains (ADR-003 §2.9): one implicit leaf chain per real account,
+    # Liquidity chains (ADR-003 §4.7): one implicit leaf chain per real account,
     # plus one interior chain per chains/*.csv file, in one shared name space.
     chain_ids: dict[str, int] = {}
     for a in accounts:

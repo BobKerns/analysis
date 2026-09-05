@@ -26,7 +26,7 @@ CREATE TABLE account (
                         ('taxable','tax_deferred','tax_free','none')),
     opened          TEXT,
     closed          TEXT,
-    -- Balance management (ADR-003 §2.9): a debit that would drop the balance
+    -- Balance management (ADR-003 §4.7): a debit that would drop the balance
     -- below minimum_balance_cents triggers a look-ahead draw on refill_chain_id
     -- BEFORE the debit posts (not a month-end reconciliation); when it would
     -- exceed maximum_balance_cents (NULL = unbounded), sweep the excess into
@@ -58,7 +58,7 @@ CREATE TABLE account (
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
 CREATE INDEX idx_account_owner ON account(owner);
 
--- Liquidity chains (ADR-003 §2.9). A `chain` row is either a LEAF (account_id
+-- Liquidity chains (ADR-003 §4.7). A `chain` row is either a LEAF (account_id
 -- set: the chain IS that account) or an INTERIOR named chain (account_id NULL,
 -- with >=1 chain_steps rows, walked in step_order until a step's amount need
 -- is satisfied). Every real account gets an implicit leaf chain at load time

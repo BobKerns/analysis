@@ -9,7 +9,7 @@ v2 rule kinds: ``fixed_amount``, ``percent_of_balance`` (basis='opening',
 rate from aux_table), ``mortgage_payment`` (multi-leg P&I), ``ss_benefit``
 (COLA-adjusted, claim-age gated), ``rmd`` (annual December, age-gated).
 
-Liquidity chains (ADR-003 §2.9) replace the old ``waterfall_fill``/
+Liquidity chains (ADR-003 §4.7) replace the old ``waterfall_fill``/
 ``refill_transfer`` rule kinds. An account with ``minimum_balance_cents``/
 ``refill_chain_id`` set is refilled proactively: every debit against it is
 checked look-ahead by ``_ensure_min_balance`` (called from ``_post_transfer``)
@@ -542,7 +542,7 @@ def _ensure_min_balance(
     step_id: int, month_s: str, refill_ctx: RefillContext,
     account_id: int, debit_amount: int,
 ) -> None:
-    """Look-ahead refill (ADR-003 §2.9): if debiting ``account_id`` by
+    """Look-ahead refill (ADR-003 §4.7): if debiting ``account_id`` by
     ``debit_amount`` would drop it below its minimum_balance, draw from its
     refill_chain BEFORE the debit posts, enough to reach refill_target (a
     fixed level), refill_amount (a fixed size, or more if needed to reach
@@ -585,7 +585,7 @@ def _warn_if_negative(
     refill_ctx: RefillContext, account_kinds: dict[int, str],
     account_id: int, balances: dict[int, int], month_s: str,
 ) -> None:
-    """Warn once per negative transition (ADR-003 §2.9) -- an asset should
+    """Warn once per negative transition (ADR-003 §4.7) -- an asset should
     only go negative once its refill chain (if any) is fully exhausted; not
     an error, but worth a one-time flag rather than silence or per-month spam.
     """
@@ -1199,7 +1199,7 @@ def _apply_on_death(
 
 
 class ChainGraph:
-    """Resolved ``chain``/``chain_steps`` reference graph (ADR-003 §2.9)."""
+    """Resolved ``chain``/``chain_steps`` reference graph (ADR-003 §4.7)."""
 
     __slots__ = ("members", "leaf_account", "minimum_of", "refill_chain_of",
                  "refill_target_of", "refill_amount_of",
@@ -1285,7 +1285,7 @@ def _chain_leaves(chain_id: int, graph: ChainGraph, seen: set[int]) -> set[int]:
 def _settle_order(graph: ChainGraph) -> list[int]:
     """Accounts with a refill/overflow policy, ordered so a source account's
     own policy settles before anything downstream draws from or sweeps into
-    it (ADR-003 §2.9) -- a topological sort of the policy-account subgraph.
+    it (ADR-003 §4.7) -- a topological sort of the policy-account subgraph.
     """
     policy_accounts = {
         a_id for a_id in graph.minimum_of
@@ -1346,7 +1346,7 @@ def _chain_draw(
 
     Each leg is posted with the concrete source account's own withdrawal tax
     character -- derived here, at the point the money actually moves, since
-    it depends on which account supplied it (ADR-003 §2.9).
+    it depends on which account supplied it (ADR-003 §4.7).
     """
     if amount_needed <= 0:
         return 0
@@ -1463,7 +1463,7 @@ def _settle_accounts(
     *, aux, chain_base_date: date, inflation_factor_cache: dict,
     refill_ctx: "RefillContext | None" = None,
 ) -> None:
-    """Overflow pass (ADR-003 §2.9), run once after each month's rules.
+    """Overflow pass (ADR-003 §4.7), run once after each month's rules.
 
     Refill is handled proactively per-debit (see ``_ensure_min_balance``, called
     from ``_post_transfer``) rather than here -- by the time this runs, no

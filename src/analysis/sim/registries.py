@@ -43,7 +43,7 @@ SERIES_RULE_KINDS: dict[str, str] = {
     "ss_benefit": "COLA series",
 }
 
-# tax_treatment -> withdrawal tax_character, for chain legs (ADR-003 §2.9): the
+# tax_treatment -> withdrawal tax_character, for chain legs (ADR-003 §4.7): the
 # character of a leg drawn from an account depends on which concrete account
 # actually supplied the money, so this is looked up per-leg at runtime rather
 # than authored on the scheduled_transaction row. 'taxable' is deliberately
@@ -89,7 +89,7 @@ TAX_CHARACTERS: set[str] = {
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 
-# Canonical accounts.csv column order (ADR-003 §4.5).
+# Canonical accounts.csv column order (ADR-003 §4.2).
 ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
     "name", "kind", "subkind", "owner", "tax_treatment", "series",
     "tax_character", "minimum_balance", "refill_chain", "refill_target",
@@ -97,7 +97,7 @@ ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
     "opened", "closed", "meta_json", "tags",
 )
 
-# Kinds a chains/<kind>__<name>.csv file may declare (ADR-003 §2.9); a closed
+# Kinds a chains/<kind>__<name>.csv file may declare (ADR-003 §4.7); a closed
 # registry like every other file-kind vocabulary, extensible without engine
 # changes (a future 'expense'/'income' entry would enable deposit-only chains).
 CHAIN_KINDS: set[str] = {"asset", "income"}

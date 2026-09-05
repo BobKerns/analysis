@@ -74,7 +74,7 @@ The `_other` catch-alls are deliberate escape hatches; the `--check` mode (ADR-0
 
 ### 2. `amount_rule_kind` registry
 
-Eight rule kinds in v1. Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
+Seven rule kinds. (Nine were specified originally; `waterfall_fill` (§2.4) and `refill_transfer` (§2.8) were later removed in favour of liquidity chains — see §4.7. Their section numbers are retained rather than reused, so existing cross-references stay valid.) Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
 
 **Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. (ADR-002 follow-up: tighten `transfer_event.reason_kind` CHECK to `('rule','initial')` and add `scheduled_transaction.created_by_event_id INTEGER REFERENCES calendar_event(id)` so synthesized rules trace back to their authoring calendar event.)
 
@@ -126,15 +126,13 @@ IRS Required Minimum Distribution.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
 - **Use:** post-age-73 required distributions for either spouse.
 
-#### 2.4 `waterfall_fill` (priority band: 900 — must run last)
+#### 2.4 `waterfall_fill` — **removed** (superseded by liquidity chains, §4.7)
 
-Cover any remaining cash shortfall in a target account by drawing from an ordered list of sources.
+Originally: cover a target account's end-of-month shortfall by draining an ordered list of `scheduled_transaction_source` rows, halting the run if the sources were exhausted.
 
-- **Params:** the row's `to_account` is the target account being filled; `amount` = minimum acceptable end-of-month balance in dollars (usually 0 or a small cushion).
-- **Sources:** rows in `scheduled_transaction_source` ordered by `position`. The row's `from_account` column MUST equal the `position = 1` source — a redundancy the loader enforces so a human (or AI) reading `scheduled.csv` alone sees the primary draw without cross-referencing `waterfall_sources.csv`.
-- **Compute:** at fire time, `shortfall = max(0, target_balance_cents - target_balance_after_all_other_rules)`. If `shortfall > 0`, draw `min(shortfall, source_balance)` from sources in order. If still short after all sources, **halt the run** (per ADR-001 principle 7); record `failure_reason = "WaterfallExhausted: <month> short $<amount>"` and persist partial results.
-- **Emits:** zero or more events (one per source actually drawn from). Each event uses `tax_character` from the source's account semantics (taxable brokerage → `ltcg`, IRA → `tax_deferred_out`, etc.) — the `tax_character` column on the scheduled_transaction row is overridden per leg from `account.tax_treatment`.
-- **Use:** the single "fill checking from savings, then brokerage, then traditional IRA" rule that every scenario carries.
+Removed because the source list encoded the household's *withdrawal ordering* inside each rule that needed it, so every rule drawing on the same pool had to repeat the list, and rule `priority` had to double as the topology encoding. That ordering is now a first-class, named, reusable object: a chain (§4.7), referenced by name from `from_account`/`to_account` or from an account's `refill_chain`. `scheduled_transaction_source` and `waterfall_sources.csv` were dropped with it.
+
+Migration: move the ordered source list into `chains/asset__<name>.csv` and point the rule's `from_account` at that chain name. A cushion that was expressed as the rule's `amount` becomes the target account's `minimum_balance`/`refill_chain` pair, which is checked per-transaction rather than at month end.
 
 #### 2.5 `ss_benefit` (priority band: 200)
 
@@ -186,15 +184,13 @@ Monthly P&I against a mortgage liability account.
   2. **Principal leg:** `from_account = Asset_Checking`, `to_account = <liability>` (the row's `to_account`, reducing the liability balance), amount = `principal`, tax_character = `'none'`, `parent_event_id` linked to the interest leg.
 - **Use:** one row per active mortgage. Retired by a `retire_scheduled` calendar event when the home is sold (see §3.4).
 
-#### 2.8 `refill_transfer` (priority band: 800)
+#### 2.8 `refill_transfer` — **removed** (superseded by account-level refill, §4.2/§4.7)
 
-Conditional fixed top-up: when the `to_account` balance is below a threshold at fire time, transfer a fixed amount; otherwise do nothing. Models concrete manual transfers ("top up checking by $5,000 whenever it drops below $20,000") as a more explicit alternative to `waterfall_fill`.
+Originally: a scheduled rule that topped `to_account` up by a fixed `amount` whenever its balance was below `params_json.threshold_cents` at fire time.
 
-- **Params:** the row's `to_account` is the account being checked and refilled; `amount` = refill size in dollars. `params_json` may set `threshold_cents` (default `0`).
-- **Sources (optional):** if `scheduled_transaction_source` rows exist for the rule, sources are drained in `position` order until the refill is satisfied (same convention as `waterfall_fill`, including the rule that `from_account` must equal the `position = 1` source). If no source rows exist, the entire refill comes from `from_account`.
-- **Compute:** at fire time, if `to_account_balance >= threshold_cents`, emit zero events. Otherwise transfer `amount × fire_count` from the configured source(s) to `to_account`. Unlike `waterfall_fill`, the transfer is a **fixed size** that does not depend on how far below threshold the account is, and sources may end up insufficient (the run does not halt — any unsatisfied remainder is simply not transferred).
-- **Emits:** zero or more events. With no sources: one event. With sources: one event per source actually drawn from. Each event carries the row's `tax_character` (no per-leg override).
-- **Use:** standalone scheduled refills (savings → checking when checking dips); a more explicit alternative to `waterfall_fill` when authors prefer fixed-size top-ups over fill-to-target.
+Removed for the same reason as §2.4, plus one of its own: as a *scheduled* rule it only fired on its own cadence, so an account could sit below its floor for the rest of the month. The replacement — `minimum_balance` + `refill_chain` on the account itself (§4.2) — is a look-ahead check on **every** debit against that account, so the floor is maintained continuously rather than sampled monthly.
+
+Migration: drop the rule row; set `minimum_balance` (the old threshold) and `refill_chain` on the target account, plus `refill_amount` to reproduce the old fixed top-up size (or `refill_target` to fill to a fixed level instead).
 
 #### 2.9 `on_death` (priority band: author's choice; recommend 900)
 
@@ -319,7 +315,9 @@ Single identity list for the household: account owners *and* operator identities
 | `role` | text | | informational; conventional values `primary`, `secondary`; NULL = person-not-operator |
 | `meta_json` | json | | default `{}` |
 
-#### 4.2 Shared base: `data_repo/accounts.csv`
+#### 4.2 Per-scenario: `data_repo/scenarios/<name>/accounts.csv`
+
+Required in a root scenario; optional in a derived one, where it overlays the parent's rows by `name` (§4.5).
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
@@ -330,26 +328,26 @@ Single identity list for the household: account owners *and* operator identities
 | `tax_treatment` | enum | | `taxable`, `tax_deferred`, `tax_free`, `none` |
 | `series` | text | | asset accounts only: aux rate-series driving monthly growth; synthesizes a `percent_of_balance` rule (§2.2) |
 | `tax_character` | enum | | required with `series`, and only meaningful with it: `ordinary`, `gains`, `deferred`, `tax_free` — selects the built-in income account that funds the growth (§2.2) |
-| `minimum_balance` | dollars | | look-ahead refill floor (§2.9): a debit that would drop the balance below this triggers a draw on `refill_chain` *before* the debit posts. `0`/blank means no floor. |
+| `minimum_balance` | dollars | | look-ahead refill floor (§4.7): a debit that would drop the balance below this triggers a draw on `refill_chain` *before* the debit posts. `0`/blank means no floor. |
 | `refill_chain` | text | | account or named `chains/*.csv` chain to draw from when `minimum_balance` would be breached; required for `refill_target`/`refill_amount` to have any effect |
 | `refill_target` | dollars | | when set, a triggered refill draws enough to bring the balance up to this fixed level (must be >= `minimum_balance`). Mutually exclusive with `refill_amount`. |
 | `refill_amount` | dollars | | when set, a triggered refill draws this fixed amount, or more if needed to reach `minimum_balance`. Mutually exclusive with `refill_target`. Neither set means refill exactly to `minimum_balance`. |
-| `maximum_balance` | dollars | | month-end overflow ceiling (§2.9): after each month's rules post, any excess above this is swept into `overflow_chain`. `NULL`/blank means unbounded. |
+| `maximum_balance` | dollars | | month-end overflow ceiling (§4.7): after each month's rules post, any excess above this is swept into `overflow_chain`. `NULL`/blank means unbounded. |
 | `overflow_chain` | text | | account or named `chains/*.csv` chain to sweep excess into |
 | `opened` | YYYY-MM | | informational |
 | `closed` | YYYY-MM | | informational |
 | `meta_json` | json | | default `{}` |
 
-#### 4.3 Shared: `data_repo/account_models/<name>.csv`
+#### 4.3 Per-scenario: `data_repo/scenarios/<name>/account_values.csv`
 
-One file per named model. Filename stem becomes `account_model.name`.
+Opening state for the accounts declared in §4.2 — one row per account. Required in a root scenario; optional in a derived one, where it overlays the parent's rows by `account_name` (§4.5). `scenario.csv`'s `account_model` column names the resulting model.
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `account_name` | text | ✓ | resolves to `account.id` |
-| `opening_balance` | cents | ✓ | balance at the model's effective start |
-| `opening_cost_basis` | cents | | required for accounts with `tax_treatment IN ('taxable')` holding appreciable assets |
-| `prior_year_end_balance` | cents | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` accounts whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
+| `opening_balance` | dollars | ✓ | balance at the model's effective start |
+| `opening_cost_basis` | dollars | | required for accounts with `tax_treatment IN ('taxable')` holding appreciable assets |
+| `prior_year_end_balance` | dollars | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` accounts whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
 
 #### 4.4 Shared: `data_repo/aux/<kind>[__<series>].csv`
 
@@ -450,7 +448,7 @@ Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` in
 | `series` | text | | optional inflation series for a fixed `amount`; the amount is based at the scenario start month |
 | `cadence` | enum | | `monthly` or `annual`; controls compounding for `series` and requires `series` |
 
-Rows without `amount` or `percent` preserve ordinary liquidity-chain behavior and consume the requested amount in order. For allocation chains, every row must specify one of the two fields and the final row must specify `percent=100`, which receives the remaining amount after fixed and percentage allocations. Chain names share one namespace with account names, and a chain file's `<kind>` is currently `asset`.
+Rows without `amount` or `percent` preserve ordinary liquidity-chain behavior and consume the requested amount in order. For allocation chains, every row must specify one of the two fields and the final row must specify `percent=100`, which receives the remaining amount after fixed and percentage allocations. Chain names share one namespace with account names (the loader rejects a chain whose name collides with an account, since every real account already has an implicit leaf chain of its own name). A chain file's `<kind>` is drawn from a closed registry, currently `asset` and `income`; the kind is extensible without engine changes.
 
 Refill (`minimum_balance`/`refill_chain`, optionally `refill_target`/`refill_amount`) is a **look-ahead, per-transaction** check, not a month-end reconciliation: every debit against a protected account is checked before it posts, and the chain is drawn first if the debit would breach `minimum_balance`. It is not an error for the chain to be unable to fully cover the shortfall -- the debit still posts and may leave the account negative. An asset account going negative should only happen once its own refill chain is exhausted; the engine warns once per negative transition (not every month it stays negative) via `RuntimeWarning`, and also records `{month, account, balance_cents}` entries under `simulation_run.run_args_json.$.negative_balance_warnings`.
 
