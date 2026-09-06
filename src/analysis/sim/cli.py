@@ -1258,6 +1258,118 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
     click.echo(f"renamed account '{old_name}' to '{new_name}' in {scenario_dir}")
 
 
+_ACCOUNT_REFERENCE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("account_values.csv", ("account_name",)),
+    ("scheduled.csv", ("from_account", "to_account", "interest_account")),
+    ("calendar.csv", ("account_1", "account_2")),
+    ("quicken_account_map.csv", ("account_name",)),
+    ("year_to_date.csv", ("from_account", "to_account")),
+)
+
+
+def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
+    """Return direct CSV references to an account in deterministic display order."""
+    references: list[str] = []
+    accounts_path = scenario_dir / "accounts.csv"
+    if accounts_path.exists():
+        accounts = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+        chain_fields = [
+            field for field in ("refill_chain", "overflow_chain") if field in accounts.columns
+        ]
+        for idx, row in accounts.iterrows():
+            if row.get("name") == name:
+                continue
+            matched_fields = [field for field in chain_fields if row[field] == name]
+            if matched_fields:
+                references.append(
+                    f"  accounts.csv row {idx + 2}: {', '.join(matched_fields)}"
+                )
+
+    paths = [
+        (scenario_dir / filename, fields)
+        for filename, fields in _ACCOUNT_REFERENCE_FIELDS
+    ]
+    chains_dir = scenario_dir / "chains"
+    if chains_dir.is_dir():
+        paths.extend((path, ("account_name",)) for path in sorted(chains_dir.glob("*.csv")))
+
+    for path, fields in paths:
+        if not path.exists():
+            continue
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        available_fields = tuple(field for field in fields if field in df.columns)
+        for idx, row in df.iterrows():
+            matched_fields = [field for field in available_fields if row[field] == name]
+            if matched_fields:
+                references.append(
+                    f"  {path.relative_to(scenario_dir)} row {idx + 2}: "
+                    f"{', '.join(matched_fields)}"
+                )
+    return references
+
+
+def _delete_account_references(scenario_dir: Path, name: str) -> None:
+    """Remove rows dependent on an account, preserving the CSV headers."""
+    paths = [
+        (scenario_dir / filename, fields)
+        for filename, fields in _ACCOUNT_REFERENCE_FIELDS
+    ]
+    chains_dir = scenario_dir / "chains"
+    if chains_dir.is_dir():
+        paths.extend((path, ("account_name",)) for path in sorted(chains_dir.glob("*.csv")))
+
+    for path, fields in paths:
+        if not path.exists():
+            continue
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        available_fields = [field for field in fields if field in df.columns]
+        if not available_fields:
+            continue
+        keep = ~df[available_fields].eq(name).any(axis=1)
+        if not keep.all():
+            df.loc[keep].to_csv(path, index=False)
+
+    accounts_path = scenario_dir / "accounts.csv"
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    for field in ("refill_chain", "overflow_chain"):
+        if field in df.columns:
+            df.loc[df[field] == name, field] = ""
+    keep = df["name"] != name
+    if not keep.all():
+        df.loc[keep].to_csv(accounts_path, index=False)
+
+
+@account_group_command.command("delete")
+@click.argument("name")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete an account and any direct CSV rows that reference it."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    accounts_path = scenario_dir / "accounts.csv"
+    if not accounts_path.exists():
+        raise click.ClickException(f"accounts.csv not found: {accounts_path}")
+
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    if "name" not in df.columns or not (df["name"] == name).any():
+        raise click.ClickException(f"unknown account: {name!r}")
+
+    references = _account_reference_rows(scenario_dir, name)
+    if references:
+        click.echo(f"account '{name}' is referenced by:")
+        click.echo("\n".join(references))
+        if not click.confirm("delete the account and these referenced rows?", default=False):
+            click.echo("aborted")
+            return
+
+    _delete_account_references(scenario_dir, name)
+    click.echo(f"deleted account '{name}' from {accounts_path}")
+
+
 @account_group_command.command("edit")
 @click.argument("name")
 @click.option("--new-name", default=None, help="Update the account name.")

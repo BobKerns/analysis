@@ -521,6 +521,45 @@ def test_sim_account_rename_updates_references(tmp_path: Path) -> None:
     assert "Asset_Checking" not in names
 
 
+def test_sim_account_delete_lists_references_and_removes_them(tmp_path: Path) -> None:
+    import csv
+
+    import pandas as pd
+
+    data = _copy_prototype(tmp_path)
+    accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
+    accounts = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    accounts.loc[accounts["name"] == "Asset_Savings", "refill_chain"] = "Asset_Checking"
+    accounts.to_csv(accounts_path, index=False)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "delete", "Asset_Checking",
+            "--scenario", "retire_alice", "--data-dir", str(data),
+        ],
+        input="y\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "account 'Asset_Checking' is referenced by:" in result.output
+    assert "accounts.csv row 3: refill_chain" in result.output
+    assert "account_values.csv row 2: account_name" in result.output
+    assert "scheduled.csv row 2: to_account" in result.output
+    assert "deleted account 'Asset_Checking'" in result.output
+
+    with accounts_path.open(
+        newline="", encoding="utf-8"
+    ) as fh:
+        accounts = list(csv.DictReader(fh))
+    assert "Asset_Checking" not in {row["name"] for row in accounts}
+    assert next(row for row in accounts if row["name"] == "Asset_Savings")["refill_chain"] == ""
+
+    check = runner.invoke(
+        main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
+    )
+    assert check.exit_code == 0, check.output
+
+
 def test_sim_account_rename_updates_quicken_map(tmp_path: Path) -> None:
     import csv
 
