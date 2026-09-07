@@ -498,8 +498,17 @@ class RunConnection(_TagReader):
         return full[cols]
 
     def cpi_balance_pivot(self, kind: str | None = None) -> pd.DataFrame:
-        """``balance_pivot(kind)`` converted to CPI-constant dollars."""
-        return self.to_cpi_constant(self.balance_pivot(kind))
+        """``balance_pivot(kind)`` converted to CPI-constant dollars.
+
+        Income and expense balances are cumulative flows. Converting their
+        monthly changes before accumulating avoids a false negative change
+        after a nominal flow has stopped while CPI continues increasing.
+        """
+        balances = self.balance_pivot(kind)
+        if kind not in {"income", "expense"}:
+            return self.to_cpi_constant(balances)
+        monthly_flows = balances.diff().fillna(balances)
+        return self.to_cpi_constant(monthly_flows).cumsum()
 
     def income_by_category(
         self, subkind_to_category: dict[str, str] = INCOME_SUBKIND_TO_CATEGORY,

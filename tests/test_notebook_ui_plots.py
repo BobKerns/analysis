@@ -80,3 +80,19 @@ def test_account_history_widget_defaults_to_kind(tmp_path: Path) -> None:
         widget = account_history_widget(rc, "asset", "Asset balances")
         picker = widget.children[1]
         assert all(rc.account_kinds()[name] == "asset" for name in picker.options)
+
+
+def test_cpi_constant_expense_balances_preserve_zero_monthly_flow(
+    tmp_path: Path, monkeypatch
+) -> None:
+    with open_run(_build_run(tmp_path)) as rc:
+        nominal = rc.balance_pivot("expense")
+        stopped = nominal.copy()
+        stopped.loc[stopped.index >= "2027-01-31", "Expense_Living"] = (
+            stopped.loc["2026-12-31", "Expense_Living"]
+        )
+
+        monkeypatch.setattr(rc, "balance_pivot", lambda kind: stopped)
+        converted = rc.cpi_balance_pivot("expense")
+
+        assert converted.loc["2027-01-31":, "Expense_Living"].diff().iloc[1:].eq(0).all()

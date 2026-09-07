@@ -333,7 +333,8 @@ def run_scenario(
                                 con, balances, account_kinds, account_tax_treatment,
                                 account_subkind, account_name, step_id, month_s,
                                 chain_graph, frm, total_amount, to,
-                                threshold_cents=0, refill_ctx=refill_ctx,
+                                threshold_cents=0, reason_kind="rule", reason_id=tid,
+                                tax_year=tax_year, refill_ctx=refill_ctx,
                             )
                         else:
                             raise EngineError(
@@ -997,12 +998,14 @@ def _apply_mortgage_payment(
     _chain_draw(
         con, balances, account_kinds, account_tax_treatment, account_subkind,
         account_name, step_id, month_s, graph, source_chain_id,
-        interest, interest_id, refill_ctx=refill_ctx,
+        interest, interest_id, reason_kind="rule", reason_id=tid,
+        refill_ctx=refill_ctx,
     )
     _chain_draw(
         con, balances, account_kinds, account_tax_treatment, account_subkind,
         account_name, step_id, month_s, graph, source_chain_id,
-        principal, liab_id, refill_ctx=refill_ctx,
+        principal, liab_id, reason_kind="rule", reason_id=tid,
+        refill_ctx=refill_ctx,
     )
 
 
@@ -1341,6 +1344,8 @@ def _chain_draw(
     step_id: int, month_s: str, graph: ChainGraph,
     chain_id: int, amount_needed: int, target_account_id: int,
     *, threshold_cents: int = 0, refill_ctx: "RefillContext | None" = None,
+    reason_kind: str = "refill", reason_id: int | None = None,
+    tax_year: int | None = None,
 ) -> int:
     """Recursively draw up to ``amount_needed`` into ``target_account_id``.
 
@@ -1363,8 +1368,9 @@ def _chain_draw(
         )
         _post_transfer(
             con, balances, account_kinds, step_id, month_s,
-            account_id, target_account_id, take, tax_char, account_id,
-            parent_event_id=None, reason_kind="refill", refill_ctx=refill_ctx,
+            account_id, target_account_id, take, tax_char, reason_id or account_id,
+            parent_event_id=None, reason_kind=reason_kind, tax_year=tax_year,
+            refill_ctx=refill_ctx,
         )
         return take
     total = 0
@@ -1376,7 +1382,8 @@ def _chain_draw(
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, step_id, month_s, graph,
             draw_from_id, remaining, target_account_id,
-            threshold_cents=step_threshold, refill_ctx=refill_ctx,
+            threshold_cents=step_threshold, reason_kind=reason_kind,
+            reason_id=reason_id, tax_year=tax_year, refill_ctx=refill_ctx,
         )
     return total
 
@@ -1640,7 +1647,8 @@ def _apply_tax_accumulator(
             _chain_draw(
                 con, balances, account_kinds, account_tax_treatment,
                 account_subkind, account_name, step_id, month_s, graph,
-                source_chain_id, tax_due, to_id, refill_ctx=refill_ctx,
+                source_chain_id, tax_due, to_id, reason_kind="rule", reason_id=tid,
+                tax_year=tax_year, refill_ctx=refill_ctx,
             )
 
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

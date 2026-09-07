@@ -511,18 +511,20 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character()
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, step_id=1, month_s="2026-05-31", graph=graph,
             chain_id=100, amount_needed=500_000, target_account_id=1,
+            reason_kind="rule", reason_id=99,
         )
         assert taken == 500_000
         assert balances[2] == 0        # savings drained first, fully
         assert balances[3] == 700_000  # IRA supplies the remaining 300_000
         assert balances[1] == 500_000
         legs = con.execute(
-            "SELECT from_account, amount, tax_character FROM transfer_event "
+            "SELECT from_account, amount, tax_character, reason_kind, reason_id "
+            "FROM transfer_event "
             "ORDER BY id"
         ).fetchall()
         assert legs == [
-            (2, 200_000, "none"),            # taxable savings -> no withdrawal tax
-            (3, 300_000, "tax_deferred_out"),  # IRA -> ordinary income on withdrawal
+            (2, 200_000, "none", "rule", 99),
+            (3, 300_000, "tax_deferred_out", "rule", 99),
         ]
     finally:
         con.close()
