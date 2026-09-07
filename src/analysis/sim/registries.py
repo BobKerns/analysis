@@ -48,9 +48,11 @@ SERIES_RULE_KINDS: dict[str, str] = {
 # actually supplied the money, so this is looked up per-leg at runtime rather
 # than authored on the scheduled_transaction row. 'taxable' is deliberately
 # absent: `checking`/`savings` withdrawals return already-taxed principal
-# ('none'), but a taxable brokerage withdrawal may be `ltcg` or
-# `return_of_capital` depending on cost basis -- state the engine doesn't yet
-# track. Callers must special-case 'taxable' by subkind (see
+# ('none'), but a taxable brokerage withdrawal splits into `return_of_capital`
+# / `ltcg` legs based on the account's running cost basis (see
+# `engine._post_withdrawal`) -- returning None here is how this function
+# signals "not a flat lookup, go compute the split" rather than an outright
+# unsupported case. Callers must special-case 'taxable' by subkind (see
 # `withdrawal_tax_character`) rather than treat it as a flat lookup.
 TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER: dict[str, str] = {
     "tax_deferred": "tax_deferred_out",
@@ -66,10 +68,10 @@ TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX: set[str] = {"checking", "savings"}
 def withdrawal_tax_character(tax_treatment: str | None, subkind: str) -> str | None:
     """The tax_character of a leg drawn from an account with these attributes.
 
-    Returns ``None`` when the account's tax_treatment/subkind combination isn't
-    supported yet (today: a `taxable` account that isn't cash-like, e.g.
-    `brokerage_taxable`, which needs cost-basis tracking not yet implemented) --
-    callers should raise rather than guess.
+    Returns ``None`` when the character can't be determined by a flat lookup
+    (today: a `taxable` account that isn't cash-like, e.g. `brokerage_taxable`)
+    -- the caller must instead split the leg by cost basis, see
+    ``engine._post_withdrawal``.
     """
     if tax_treatment == "taxable":
         return "none" if subkind in TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX else None

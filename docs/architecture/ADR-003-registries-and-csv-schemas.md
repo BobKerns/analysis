@@ -636,6 +636,20 @@ and older notes stay valid.
    `minimum_balance` (§4.2) *after* that account's own `refill_chain` has
    been drawn, which is what `threshold` was really trying to express one
    step at a time.
+8. **A chain draw/sweep leg from a `taxable` non-cash account (e.g.
+   `brokerage_taxable`) now splits into `return_of_capital` + `ltcg` legs**
+   (`engine._post_withdrawal`), rather than raising. This is ADR-001's
+   already-documented v1 design (account-level running cost basis, not full
+   holding/lot tracking) actually wired up: the split is pro-rata to the
+   fraction of the account's balance withdrawn (`basis_out = cost_basis *
+   amount // balance`), and mutates that running `cost_basis` (originally
+   seeded from `account_model_member.opening_cost_basis`) by the basis
+   consumed. A realized loss (basis exceeds proceeds) is a negative `ltcg`
+   leg, same convention as a `year_to_date.csv` loss carryforward. Still
+   requires `opening_cost_basis` to be set for the account -- an untracked
+   basis (`NULL`) raises, telling the author to add it to
+   `account_values.csv`, same posture as `sell_asset`'s existing
+   `cost_basis_override` requirement (§3.7).
 
 ## Open questions deferred
 

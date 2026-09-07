@@ -167,7 +167,7 @@ def run_scenario(
         inflation_factor_cache: dict[tuple[str, date, date, str], int] = {}
         refill_ctx = RefillContext(
             chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
-            account_tax_treatment, account_subkind, account_name,
+            account_tax_treatment, account_subkind, account_name, cost_bases,
         )
 
         skipped_counts: dict[str, int] = {}
@@ -518,13 +518,14 @@ class RefillContext:
 
     __slots__ = ("graph", "aux", "chain_base_date", "inflation_factor_cache",
                  "account_tax_treatment", "account_subkind", "account_name",
-                 "refilling", "negative_since", "negative_events")
+                 "cost_bases", "refilling", "negative_since", "negative_events")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
         inflation_factor_cache: dict,
         account_tax_treatment: dict[int, str | None],
         account_subkind: dict[int, str], account_name: dict[int, str],
+        cost_bases: dict[int, int | None],
     ) -> None:
         self.graph = graph
         self.aux = aux
@@ -533,6 +534,7 @@ class RefillContext:
         self.account_tax_treatment = account_tax_treatment
         self.account_subkind = account_subkind
         self.account_name = account_name
+        self.cost_bases = cost_bases
         self.refilling: set[int] = set()  # reentrancy guard against refill cycles
         self.negative_since: dict[int, bool] = {}
         self.negative_events: list[tuple[str, str, int]] = []
@@ -1338,22 +1340,63 @@ def _settle_order(graph: ChainGraph) -> list[int]:
     return order
 
 
-def _withdrawal_tax_character(
-    account_id: int,
-    account_tax_treatment: dict[int, str | None],
-    account_subkind: dict[int, str],
-    account_name: dict[int, str],
-) -> str:
-    tax_char = registries.withdrawal_tax_character(
-        account_tax_treatment.get(account_id), account_subkind.get(account_id, ""),
+def _post_withdrawal(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    account_tax_treatment: dict[int, str | None], account_subkind: dict[int, str],
+    account_name: dict[int, str], cost_bases: dict[int, int | None] | None,
+    step_id: int, month_s: str, from_id: int, to_id: int, amount: int,
+    reason_id: int, *, parent_event_id: int | None = None,
+    reason_kind: str = "rule", tax_year: int | None = None,
+    refill_ctx: "RefillContext | None" = None,
+    requested: int | None = None, remainder: int | None = None,
+    tax_character: str | None = None,
+) -> None:
+    """Post one withdrawal leg out of ``from_id``, splitting it into a
+    ``return_of_capital`` + ``ltcg`` pair (v1's account-level running
+    cost-basis approach, ADR-001's "cost basis tracked via basis-tagged
+    transfer events") when the source needs cost-basis tracking (today: a
+    taxable non-cash account such as ``brokerage_taxable``) and no caller-
+    supplied ``tax_character`` already settles the question.
+
+    The split is pro-rata to the fraction of the account's balance withdrawn:
+    ``basis_out = cost_basis * amount // balance``. A realized loss (basis
+    exceeds proceeds) falls out naturally as a negative ``ltcg`` leg -- the
+    same convention year_to_date.csv already uses for loss carryforwards.
+    """
+    tax_char = tax_character or registries.withdrawal_tax_character(
+        account_tax_treatment.get(from_id), account_subkind.get(from_id, ""),
     )
-    if tax_char is None:
-        raise EngineError(
-            f"chain draw/sweep: account '{account_name.get(account_id)}' is a "
-            "taxable non-cash account; withdrawal tax character needs "
-            "cost-basis tracking, not yet supported"
+    if tax_char is not None:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, to_id, amount,
+            tax_char, reason_id, parent_event_id, reason_kind=reason_kind,
+            tax_year=tax_year, refill_ctx=refill_ctx,
+            requested=requested, remainder=remainder,
         )
-    return tax_char
+        return
+    basis = None if cost_bases is None else cost_bases.get(from_id)
+    if basis is None:
+        raise EngineError(
+            f"account {account_name.get(from_id)!r}: withdrawal needs cost-basis "
+            "tracking (taxable, non-cash) but opening_cost_basis was never set -- "
+            "add it to account_values.csv"
+        )
+    prior_balance = balances.get(from_id, 0)
+    basis_out = 0 if prior_balance <= 0 else min(basis, basis * amount // prior_balance)
+    gain = amount - basis_out
+    basis_leg_id = _post_transfer(
+        con, balances, account_kinds, step_id, month_s, from_id, to_id, basis_out,
+        "return_of_capital", reason_id, parent_event_id, reason_kind=reason_kind,
+        tax_year=tax_year, refill_ctx=refill_ctx,
+        requested=requested, remainder=remainder,
+    )
+    _post_transfer(
+        con, balances, account_kinds, step_id, month_s, from_id, to_id, gain,
+        "ltcg", reason_id, basis_leg_id if basis_leg_id is not None else parent_event_id,
+        reason_kind=reason_kind, tax_year=tax_year, refill_ctx=refill_ctx,
+        requested=requested, remainder=remainder,
+    )
+    cost_bases[from_id] = basis - basis_out
 
 
 def _chain_step_allocation(
@@ -1454,12 +1497,11 @@ def _chain_draw(
         take = min(amount_needed, available)
         if take <= 0:
             return 0
-        tax_char = _withdrawal_tax_character(
-            account_id, account_tax_treatment, account_subkind, account_name,
-        )
-        _post_transfer(
-            con, balances, account_kinds, step_id, month_s,
-            account_id, target_account_id, take, tax_char, reason_id or account_id,
+        _post_withdrawal(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, refill_ctx.cost_bases if refill_ctx is not None else None,
+            step_id, month_s, account_id, target_account_id, take,
+            reason_id or account_id,
             parent_event_id=None, reason_kind=reason_kind, tax_year=tax_year,
             refill_ctx=refill_ctx, requested=_progress.requested,
             remainder=_progress.record(take),
@@ -1525,15 +1567,14 @@ def _chain_sweep(
         put = min(amount_available, room)
         if put <= 0:
             return 0
-        tax_char = source_tax_character or _withdrawal_tax_character(
-            source_account_id, account_tax_treatment, account_subkind, account_name,
-        )
-        _post_transfer(
-            con, balances, account_kinds, step_id, month_s,
-            source_account_id, account_id, put, tax_char, source_account_id,
+        _post_withdrawal(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, refill_ctx.cost_bases if refill_ctx is not None else None,
+            step_id, month_s, source_account_id, account_id, put, source_account_id,
             parent_event_id=None, reason_kind="overflow",
             tax_year=source_tax_year, refill_ctx=refill_ctx,
             requested=_progress.requested, remainder=_progress.record(put),
+            tax_character=source_tax_character,
         )
         return put
     total = 0

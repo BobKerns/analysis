@@ -637,7 +637,7 @@ def test_chain_draw_refills_source_before_checking_availability() -> None:
     refill_ctx = RefillContext(
         graph, aux=None, chain_base_date=date(2026, 5, 31),
         inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
-        account_subkind=account_subkind, account_name=account_name,
+        account_subkind=account_subkind, account_name=account_name, cost_bases={},
     )
     try:
         taken = _chain_draw(
@@ -654,17 +654,97 @@ def test_chain_draw_refills_source_before_checking_availability() -> None:
         con.close()
 
 
-def test_withdrawal_tax_character_rejects_taxable_non_cash_account() -> None:
-    from analysis.sim.engine import EngineError, _withdrawal_tax_character
+def test_post_withdrawal_rejects_untracked_taxable_non_cash_account() -> None:
+    from analysis.sim.engine import EngineError, _post_withdrawal
 
+    balances = {3: 100_000, 4: 0}
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    )
     try:
-        _withdrawal_tax_character(
-            3, {3: "taxable"}, {3: "brokerage_taxable"}, {3: "Brokerage"},
+        _post_withdrawal(
+            con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
+            {3: "brokerage_taxable"}, {3: "Brokerage"}, {3: None},
+            step_id=1, month_s="2026-05-31", from_id=3, to_id=4, amount=1_000,
+            reason_id=99,
         )
     except EngineError as e:
         assert "Brokerage" in str(e)
+        assert "opening_cost_basis" in str(e)
     else:
-        raise AssertionError("expected EngineError for taxable brokerage withdrawal")
+        raise AssertionError("expected EngineError: opening_cost_basis never set")
+    finally:
+        con.close()
+
+
+def test_post_withdrawal_splits_return_of_capital_and_ltcg_pro_rata() -> None:
+    """A taxable brokerage withdrawal with tracked cost basis splits into a
+    return_of_capital leg (pro-rata basis) and an ltcg leg (the gain), and
+    reduces the account's running cost basis by the basis consumed."""
+    from analysis.sim.engine import _post_withdrawal
+
+    balances = {3: 10_000_00, 4: 0}
+    cost_bases = {3: 4_000_00}
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    )
+    try:
+        _post_withdrawal(
+            con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
+            {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
+            step_id=1, month_s="2026-05-31", from_id=3, to_id=4, amount=3_000_00,
+            reason_id=99, requested=3_000_00, remainder=0,
+        )
+        legs = con.execute(
+            "SELECT amount, tax_character, parent_event_id FROM transfer_event "
+            "ORDER BY id"
+        ).fetchall()
+        # basis_out = 4_000_00 * 3_000_00 // 10_000_00 = 1_200_00; gain = 1_800_00.
+        assert legs == [
+            (1_200_00, "return_of_capital", None),
+            (1_800_00, "ltcg", 1),
+        ]
+        assert balances[3] == 10_000_00 - 3_000_00
+        assert balances[4] == 3_000_00
+        assert cost_bases[3] == 4_000_00 - 1_200_00
+    finally:
+        con.close()
+
+
+def test_post_withdrawal_realizes_loss_as_negative_ltcg_leg() -> None:
+    """A withdrawal from a position underwater vs. its basis realizes a loss:
+    the ltcg leg comes out negative rather than erroring or clamping to zero."""
+    from analysis.sim.engine import _post_withdrawal
+
+    balances = {3: 9_000_00, 4: 0}
+    cost_bases = {3: 20_000_00}  # bought high, now worth less than basis
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    )
+    try:
+        _post_withdrawal(
+            con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
+            {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
+            step_id=1, month_s="2026-05-31", from_id=3, to_id=4, amount=3_000_00,
+            reason_id=99,
+        )
+        legs = con.execute(
+            "SELECT amount, tax_character FROM transfer_event ORDER BY id"
+        ).fetchall()
+        # basis_out = 20_000_00 * 3_000_00 // 9_000_00 = 6_666_66; gain = -3_666_66.
+        assert legs == [(6_666_66, "return_of_capital"), (-3_666_66, "ltcg")]
+        assert balances[4] == 3_000_00  # to_id still nets the full amount requested
+    finally:
+        con.close()
 
 
 def test_chain_sweep_allocates_fixed_then_percent_of_remainder() -> None:
