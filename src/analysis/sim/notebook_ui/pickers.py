@@ -146,7 +146,9 @@ _META_COLS = [
 ]
 
 def scenario_picker(
-    data_dir: Path | str, default: str, *, require_run: bool = True,
+    data_dir: Path | str, default: str, *,
+    require_run: bool = True,
+    show_metadata: bool = False,
 ):
     """A ``Scenario:`` dropdown that keeps a live connection pair in sync.
 
@@ -167,12 +169,13 @@ def scenario_picker(
         with ref_out:
             clear_output(wait=True)
             display(container.scenario_ref)
-            rc = container.run
-            if rc is not None:
-                run_meta = rc.metadata().copy()
-                run_meta["code_version"] = run_meta["code_version"].str[:12]
-                run_meta["data_version"] = run_meta["data_version"].str[:12]
-                display(run_meta.T)
+            if show_metadata:
+                rc = container.run
+                if rc is not None:
+                    run_meta = rc.metadata().copy()
+                    run_meta["code_version"] = run_meta["code_version"].str[:12]
+                    run_meta["data_version"] = run_meta["data_version"].str[:12]
+                    display(run_meta.T)
 
     def _on_change(change) -> None:
         old_scenario, old_run = container.scenario, container.run
