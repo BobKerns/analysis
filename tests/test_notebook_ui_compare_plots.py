@@ -14,7 +14,11 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim.notebook_ui import compare_plots as cp
-from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
+from analysis.sim.notebook_ui.pickers import (
+    MultiScenarioConnections,
+    dollar_plot_mode,
+    multi_scenario_picker,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -166,9 +170,24 @@ def test_comparability_widget_renders_without_error(tmp_path: Path) -> None:
 
 def test_net_worth_compare_widget_renders_without_error(tmp_path: Path) -> None:
     _, container = _two_scenario_container(tmp_path)
-    cp.net_worth_compare_widget(container)
+    widget = cp.net_worth_compare_widget(container)
+    assert widget is not None
 
 
 def test_year_end_widget_includes_delta_column(tmp_path: Path) -> None:
     _, container = _two_scenario_container(tmp_path)
-    cp.year_end_widget(container)
+    widget = cp.year_end_widget(container)
+    assert widget is not None
+
+
+def test_compare_widgets_share_plot_mode_observers(tmp_path: Path) -> None:
+    _, container = _two_scenario_container(tmp_path)
+    plot_mode = dollar_plot_mode()
+
+    cp.net_worth_compare_widget(container, plot_mode=plot_mode)
+    cp.breakeven_widget(container, plot_mode=plot_mode)
+    cp.year_end_widget(container, plot_mode=plot_mode)
+
+    assert set(plot_mode._compare_plot_redraws) == {
+        "net_worth", "breakeven", "year_end",
+    }
