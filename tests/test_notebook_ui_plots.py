@@ -79,8 +79,17 @@ def test_account_history_widget_defaults_to_kind(tmp_path: Path) -> None:
     with open_run(_build_run(tmp_path)) as rc:
         assert isinstance(rc, RunConnection)
         widget = account_history_widget(rc, "asset", "Asset balances")
-        picker = widget.children[1]
+        kind_picker, picker = widget.children[1], widget.children[2]
+        assert kind_picker.value == "asset"
         assert all(rc.account_kinds()[name] == "asset" for name in picker.options)
+
+
+def test_account_history_widget_kind_switch_repopulates_accounts(tmp_path: Path) -> None:
+    with open_run(_build_run(tmp_path)) as rc:
+        widget = account_history_widget(rc, "asset", "Balances")
+        kind_picker, picker = widget.children[1], widget.children[2]
+        kind_picker.value = "expense"
+        assert all(rc.account_kinds()[name] == "expense" for name in picker.options)
 
 
 def test_balance_history_adds_total_for_multiple_accounts() -> None:

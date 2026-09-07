@@ -6,6 +6,8 @@ the data itself.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import Markdown, clear_output, display
@@ -13,6 +15,17 @@ from ipywidgets import widgets
 
 from analysis.sim.notebook_ui.pickers import dollar_plot_mode, value_plot_mode, y_axis_plot_mode
 from analysis.sim.plotting import include_zero
+
+# Account kinds a balance-history widget can switch between, in dropdown order.
+KIND_LABELS: dict[str, str] = {
+    "asset": "Asset", "liability": "Liability",
+    "income": "Income", "expense": "Expense",
+}
+
+# Income/expense balances are cumulative totals, unlike asset/liability's
+# point-in-time balances -- worth a standing note whenever one is selected.
+_CUMULATIVE_KINDS = {"income", "expense"}
+_CUMULATIVE_CAVEAT = "_Note that expense and income flows are cumulative totals._  \n"
 
 
 def plottable_accounts(
@@ -90,63 +103,71 @@ def render_balance_history_figure(
 
 
 def account_balance_history_widget(
-    balance_pivot: pd.DataFrame,
+    balance_pivot_by_kind: Callable[[str], pd.DataFrame],
     account_kinds: pd.Series,
     title: str,
     kind: str,
     initial_count: int = 1,
-    cpi_balance_pivot: pd.DataFrame | None = None,
+    cpi_balance_pivot_by_kind: Callable[[str], pd.DataFrame] | None = None,
     plot_mode: widgets.ToggleButtons | None = None,
     value_mode: widgets.ToggleButtons | None = None,
     y_axis_mode: widgets.ToggleButtons | None = None,
-    caveat: str | None = None,
 ):
-    """Build a SelectMultiple + Output widget pair that plots on selection change.
+    """Build a Kind + Accounts + Output widget set that plots on selection change.
 
-    ``kind`` restricts the picker to one account kind (asset, liability, income,
-    or expense), which keeps unlike histories on separate scales.
+    ``kind`` is only the Kind dropdown's initial value -- switching it
+    repopulates the Accounts picker from that kind's own accounts, so one
+    widget covers asset/liability/income/expense instead of one apiece
+    (unlike kinds stay off the same axis this way). Income/expense get an
+    automatic cumulative-totals note; other kinds don't need one.
     Returns the combined ``ipywidgets.VBox`` ready to ``display()``.
     """
 
-    plottable = plottable_accounts(balance_pivot, account_kinds, kind)
-
+    kind_picker = widgets.Dropdown(
+        options=[(label, k) for k, label in KIND_LABELS.items()],
+        value=kind,
+        description="Kind:",
+    )
     picker = widgets.SelectMultiple(
-        options=plottable,
-        value=tuple(plottable[:initial_count]),
-        rows=min(15, max(5, len(plottable))),
-        description="Accounts:",
-        layout=widgets.Layout(width="50%"),
+        description="Accounts:", layout=widgets.Layout(width="50%"),
     )
     value_mode = value_mode or value_plot_mode()
     plot_mode = plot_mode or dollar_plot_mode()
     y_axis_mode = y_axis_mode or y_axis_plot_mode()
-    caveat_out: widgets.Output | None = None
+    caveat_out = widgets.Output()
     out = widgets.Output()
-    caveat_display = ()
-    if caveat is not None:
-        caveat_out = widgets.Output()
-        with caveat_out:
-            display(Markdown(caveat))
-        caveat_display = (caveat_out,)
 
-    def _redraw(change=None):
-        selected = list(change["new"] if change and change.get("owner") is picker else picker.value)
+    def _sync_accounts_options(*_):
+        plottable = plottable_accounts(
+            balance_pivot_by_kind(kind_picker.value), account_kinds, kind_picker.value,
+        )
+        picker.rows = min(15, max(5, len(plottable)))
+        picker.options = plottable
+        picker.value = tuple(plottable[:initial_count])
+
+    def _redraw_caveat(*_):
+        with caveat_out:
+            clear_output(wait=True)
+            if kind_picker.value in _CUMULATIVE_KINDS:
+                display(Markdown(_CUMULATIVE_CAVEAT))
+
+    def _redraw(*_):
+        selected = list(picker.value)
         mode = plot_mode.value
-        if change and change.get("owner") is plot_mode:
-            mode = change["new"]
         zero_anchor = y_axis_mode.value
-        if change and change.get("owner") is y_axis_mode:
-            zero_anchor = change["new"]
         values = value_mode.value
-        if change and change.get("owner") is value_mode:
-            values = change["new"]
-        pivot = cpi_balance_pivot if mode == "cpi_constant" and cpi_balance_pivot is not None else balance_pivot
+        pivot = (
+            cpi_balance_pivot_by_kind(kind_picker.value)
+            if mode == "cpi_constant" and cpi_balance_pivot_by_kind is not None
+            else balance_pivot_by_kind(kind_picker.value)
+        )
         with out:
             clear_output(wait=True)
             mode_title = "CPI-constant" if mode == "cpi_constant" else "nominal"
             values_title = "monthly change" if values == "monthly" else "total"
+            kind_title = KIND_LABELS[kind_picker.value]
             fig = render_balance_history_figure(
-                pivot, selected, f"{title} [{mode_title}, {values_title}]",
+                pivot, selected, f"{title} ({kind_title}) [{mode_title}, {values_title}]",
                 zero_anchor=zero_anchor, value_mode=values,
             )
             if fig is None:
@@ -154,10 +175,21 @@ def account_balance_history_widget(
                 return
             plt.show()
 
+    def _on_kind_change(*_):
+        _redraw_caveat()
+        _sync_accounts_options()
+
+    kind_picker.observe(_on_kind_change, names="value")
     picker.observe(_redraw, names="value")
     plot_mode.observe(_redraw, names="value")
     y_axis_mode.observe(_redraw, names="value")
     value_mode.observe(_redraw, names="value")
+
+    _redraw_caveat()
+    _sync_accounts_options()
     _redraw()
 
-    return widgets.VBox([widgets.HBox([value_mode, plot_mode, y_axis_mode]), picker, out, *caveat_display])
+    return widgets.VBox([
+        widgets.HBox([value_mode, plot_mode, y_axis_mode]),
+        kind_picker, picker, out, caveat_out,
+    ])
