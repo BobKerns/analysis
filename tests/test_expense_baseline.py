@@ -170,6 +170,37 @@ def test_build_expense_baseline_canonicalizes_and_combines_amazon_categories(
     ]
 
 
+def test_build_expense_baseline_splits_food_by_quicken_account(tmp_path: Path) -> None:
+    path = tmp_path / "quicken.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Hiromi FECU Checking",,,,,,,,,,,\n'
+        ',,"2026-01-02","2026-01-03","2026-01-02","","Market","Groceries","","","","-12.34"\n'
+        '"Bob Checking",,,,,,,,,,,\n'
+        ',,"2026-01-03","2026-01-04","2026-01-03","","Cafe","Fast Food","","","","-5.00"\n',
+        encoding="utf-8",
+    )
+    amazon = pd.DataFrame(
+        {
+            "summary_month_start": ["2026-01-01"],
+            "category": ["Groceries"],
+            "amount_total": [20.00],
+        }
+    )
+
+    result = build_expense_baseline(
+        path,
+        amazon,
+        category_merges={"Groceries": "Food", "Fast Food": "Food"},
+        food_owner_account="Hiromi FECU Checking",
+    )
+
+    assert result.category_totals.to_dict("records") == [
+        {"category": "Bob Food", "amount_total": 25.0},
+        {"category": "Hiromi Food", "amount_total": 12.34},
+    ]
+
+
 def test_build_expense_baseline_defaults_unmapped_categories_to_other(tmp_path: Path) -> None:
     path = tmp_path / "quicken.csv"
     path.write_text(

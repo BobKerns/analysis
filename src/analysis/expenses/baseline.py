@@ -166,6 +166,7 @@ def build_expense_baseline(
     category_merges: CategoryCanonicalization | None = None,
     excluded_categories: Collection[CanonicalCategory] | None = None,
     default_category: CanonicalCategory | None = None,
+    food_owner_account: str | None = None,
 ) -> BaselineResult:
     """Build baseline expenses, substituting Amazon summaries for Amazon rows.
 
@@ -174,13 +175,22 @@ def build_expense_baseline(
     category names to remove after merges are applied. Quicken rows are
     retained only when they are negative, non-transfer
     transactions outside the explicitly modeled mortgage, State Farm, and
-    Amazon exclusions. Amazon summaries must contain ``summary_month_start``,
+    Amazon exclusions. When ``food_owner_account`` is supplied, canonical
+    ``Food`` rows from that Quicken account become ``Hiromi Food`` and all
+    other Food, including Amazon summaries, becomes ``Bob Food``. Amazon
+    summaries must contain ``summary_month_start``,
     ``category``, and ``amount_total`` columns and use positive expense totals.
     """
     raw = load_quicken_transactions(quicken_path).copy()
     raw["category_raw"] = raw["category"]
     merges = {str(source): str(target) for source, target in (category_merges or {}).items()}
     raw["category"] = raw["category"].replace(merges)
+    if food_owner_account is not None:
+        raw.loc[
+            raw["category"].eq("Food") & raw["account"].eq(food_owner_account),
+            "category",
+        ] = "Hiromi Food"
+        raw.loc[raw["category"].eq("Food"), "category"] = "Bob Food"
     categories_to_exclude = {str(category) for category in (excluded_categories or ())}
     raw["exclude_reason"] = ""
     raw.loc[raw["amount_cents"] >= 0, "exclude_reason"] = "non_expense"
@@ -210,6 +220,8 @@ def build_expense_baseline(
         raise ValueError(f"Amazon summaries missing required columns: {sorted(missing)}")
     amazon = amazon.loc[:, ["summary_month_start", "category", "amount_total"]].copy()
     amazon["category"] = amazon["category"].replace(merges)
+    if food_owner_account is not None:
+        amazon.loc[amazon["category"].eq("Food"), "category"] = "Bob Food"
     amazon = amazon.loc[~amazon["category"].isin(categories_to_exclude)].copy()
     observed_categories = set(included["category_raw"]) | set(amazon["category"])
     explicitly_mapped = set(merges) | categories_to_exclude

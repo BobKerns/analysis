@@ -838,6 +838,8 @@ def scheduled_add(
 @click.option("--category-map", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None,
               help="Category map (default: sibling data-repo/quicken/expense_category_map.csv).")
+@click.option("--food-owner-account", default="Hiromi FECU Checking", show_default=True,
+              help="Quicken account whose Food expenses are assigned to Hiromi Food.")
 @click.option("--account-map", type=click.Path(dir_okay=False, path_type=Path),
               default=None,
               help="Optional category account map (default: sibling data-repo/quicken/expense_account_map.csv).")
@@ -855,6 +857,7 @@ def scheduled_import_baseline(
     quicken_file: Path | None,
     amazon_state_dir: Path | None,
     category_map: Path | None,
+    food_owner_account: str,
     account_map: Path | None,
     from_account: str,
     start: str | None,
@@ -890,6 +893,7 @@ def scheduled_import_baseline(
         category_merges=merges,
         excluded_categories=exclusions,
         default_category="Other",
+        food_owner_account=food_owner_account,
     )
     mappings = (
         load_expense_account_map(account_map_path)
@@ -900,8 +904,11 @@ def scheduled_import_baseline(
         scenario_accounts = {
             row[0] for row in con.execute("SELECT name FROM account")
         }
-    if from_account not in scenario_accounts:
-        raise click.ClickException(f"unknown from account: {from_account!r}")
+        scenario_sources = scenario_accounts | {
+            row[0] for row in con.execute("SELECT name FROM chain")
+        }
+    if from_account not in scenario_sources:
+        raise click.ClickException(f"unknown from account or chain: {from_account!r}")
     baseline_categories = set(baseline.category_totals["category"])
     mappings = {
         category: target for category, target in mappings.items()
