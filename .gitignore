@@ -18,6 +18,10 @@ env/
 .ipynb_checkpoints/
 notebooks/.ipynb_checkpoints/
 
+# Coverage files
+.coverage
+htmlcov/
+
 # Data, output, and state (never commit data artifacts)
 data/**
 out/**

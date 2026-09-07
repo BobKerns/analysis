@@ -24,6 +24,7 @@ gethostname
 gpgsign
 heloc
 hexsha
+htmlcov
 huggingface
 IRMAA
 kernelspec
