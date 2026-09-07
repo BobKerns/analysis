@@ -76,7 +76,12 @@ def test_scenario_picker_switches_scenarios_closing_the_old_connections(
     widget, container = scenario_picker(data, "retire_alice")
     old_scenario, old_run = container.scenario, container.run
 
-    dropdown = widget.children[0]
+    # Keep the test independent of the layout's title/description children.
+    dropdown = next(
+        child
+        for child in widget.children
+        if hasattr(child, "options") and hasattr(child, "value")
+    )
     dropdown.value = "second"
 
     assert container.scenario_ref.name == "second"

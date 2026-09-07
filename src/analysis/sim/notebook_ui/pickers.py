@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import ipywidgets as widgets
+from IPython.display import clear_output, display
 from matplotlib import rc
 import traitlets
 
@@ -99,8 +100,6 @@ def scenario_picker(
     :class:`SingleScenarioConnections`, refreshed in place (closing the
     previous connections) whenever the dropdown changes.
     """
-    import ipywidgets as widgets
-    from IPython.display import clear_output, display
 
     data_dir = Path(data_dir)
     options = list_scenario_names(data_dir)
@@ -115,10 +114,11 @@ def scenario_picker(
             clear_output(wait=True)
             display(container.scenario_ref)
             rc = container.run
-            run_meta = rc.items("simulation_run")[_META_COLS].copy()
-            run_meta["code_version"] = run_meta["code_version"].str[:12]
-            run_meta["data_version"] = run_meta["data_version"].str[:12]
-            display(run_meta.T)
+            if rc is not None:
+                run_meta = rc.metadata().copy()
+                run_meta["code_version"] = run_meta["code_version"].str[:12]
+                run_meta["data_version"] = run_meta["data_version"].str[:12]
+                display(run_meta.T)
 
     def _on_change(change) -> None:
         old_scenario, old_run = container.scenario, container.run
@@ -224,8 +224,6 @@ def multi_scenario_picker(
     :class:`MultiScenarioConnections`, refreshed in place (closing dropped
     connections) whenever either picker changes.
     """
-    import ipywidgets as widgets
-    from IPython.display import clear_output
 
     data_dir = Path(data_dir)
     available = list_scenario_names(data_dir)
