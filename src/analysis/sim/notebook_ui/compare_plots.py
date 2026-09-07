@@ -12,30 +12,11 @@ from datetime import datetime
 
 import ipywidgets as widgets
 import pandas as pd
-from IPython.display import Markdown, clear_output, display
+from IPython.display import Markdown, display
 
 from analysis.sim.connection import year_end_values
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, display_warning
 from analysis.sim.plotting import include_zero
-
-
-def _watch(
-    container: MultiScenarioConnections, baseline_picker, variant_picker, redraw,
-) -> widgets.Output:
-    """Wire ``redraw`` to both pickers, run it once, and return its Output."""
-    out = widgets.Output()
-
-    def _run(*_):
-        with out:
-            clear_output(wait=True)
-            if not container.ok:
-                return
-            redraw()
-
-    baseline_picker.observe(_run, names="value")
-    variant_picker.observe(_run, names="value")
-    _run()
-    return out
 
 
 # ---------- data helpers (pure; unchanged math from the old scenario_compare.py) ----------
@@ -210,7 +191,7 @@ _META_COLS = [
 ]
 
 
-def comparability_widget(container, baseline_picker, variant_picker) -> widgets.Output:
+def comparability_widget(container: MultiScenarioConnections) -> None:
     """Whether the loaded runs share code/data version -- a comparison is only
     meaningful if a difference isn't just an unrelated code/data change."""
 
@@ -243,13 +224,14 @@ def comparability_widget(container, baseline_picker, variant_picker) -> widgets.
                 "> ✅ Same code and data version; differences below are the scenarios."
             ))
 
-    return _watch(container, baseline_picker, variant_picker, _redraw)
+    if container.ok:
+        _redraw()
 
 
 _RULE_COMPARE_COLS = ["amount_cents", "start", "end", "series", "cadence", "tax_character"]
 
 
-def rules_and_events_widget(container, baseline_picker, variant_picker) -> widgets.Output:
+def rules_and_events_widget(container: MultiScenarioConnections) -> None:
     """What actually differs between scenarios: rules (as of run end) and calendar events."""
 
     def _redraw():
@@ -310,10 +292,11 @@ def rules_and_events_widget(container, baseline_picker, variant_picker) -> widge
                 .set_index(["scenario", "date"])
             )
 
-    return _watch(container, baseline_picker, variant_picker, _redraw)
+    if container.ok:
+        _redraw()
 
 
-def net_worth_compare_widget(container, baseline_picker, variant_picker) -> widgets.Output:
+def net_worth_compare_widget(container: MultiScenarioConnections) -> None:
     """Net worth per scenario, plus each variant's delta vs. the baseline."""
 
     def _redraw():
@@ -321,10 +304,11 @@ def net_worth_compare_widget(container, baseline_picker, variant_picker) -> widg
         delta = variant_delta(nw, container)
         plot_net_worth_and_delta(nw, delta, container)
 
-    return _watch(container, baseline_picker, variant_picker, _redraw)
+    if container.ok:
+        _redraw()
 
 
-def breakeven_widget(container, baseline_picker, variant_picker) -> widgets.Output:
+def breakeven_widget(container: MultiScenarioConnections) -> None:
     """Per-variant break-even summary table."""
 
     def _redraw():
@@ -342,10 +326,11 @@ def breakeven_widget(container, baseline_picker, variant_picker) -> widgets.Outp
             f"`{container.baseline}` final net worth: **${nw[container.baseline].iloc[-1]:,.0f}**"
         ))
 
-    return _watch(container, baseline_picker, variant_picker, _redraw)
+    if container.ok:
+        _redraw()
 
 
-def horizon_widget(container, baseline_picker, variant_picker, comparisons: dict) -> widgets.Output:
+def horizon_widget(container: MultiScenarioConnections, comparisons: dict) -> None:
     """Net-worth gap at every possible horizon, for a set of (scenario, counterfactual) pairs."""
 
     def _redraw():
@@ -361,10 +346,11 @@ def horizon_widget(container, baseline_picker, variant_picker, comparisons: dict
         compare = comparison_frame(nw, filtered)
         plot_horizon_comparisons(compare, filtered)
 
-    return _watch(container, baseline_picker, variant_picker, _redraw)
+    if container.ok:
+        _redraw()
 
 
-def year_end_widget(container, baseline_picker, variant_picker) -> widgets.Output:
+def year_end_widget(container: MultiScenarioConnections) -> None:
     """Year-end net worth per scenario, with each variant's delta vs. the baseline."""
 
     def _redraw():
@@ -375,10 +361,11 @@ def year_end_widget(container, baseline_picker, variant_picker) -> widgets.Outpu
             year_end[f"Δ {name}"] = year_end[name] - year_end[container.baseline]
         display(year_end.style.format("${:,.0f}"))
 
-    return _watch(container, baseline_picker, variant_picker, _redraw)
+    if container.ok:
+        _redraw()
 
 
-def ss_gross_widget(container, baseline_picker, variant_picker) -> widgets.Output:
+def ss_gross_widget(container: MultiScenarioConnections) -> None:
     """Monthly and cumulative gross Social Security, plus lifetime totals vs. baseline."""
 
     def _redraw():
@@ -397,10 +384,11 @@ def ss_gross_widget(container, baseline_picker, variant_picker) -> widgets.Outpu
             }).style.format("${:,.0f}")
         )
 
-    return _watch(container, baseline_picker, variant_picker, _redraw)
+    if container.ok:
+        _redraw()
 
 
-def tax_impact_widget(container, baseline_picker, variant_picker) -> widgets.Output:
+def tax_impact_widget(container: MultiScenarioConnections) -> None:
     """Per-year tax delta vs. baseline, plus lifetime tax/SS/net-worth summary."""
 
     def _redraw():
@@ -444,4 +432,5 @@ def tax_impact_widget(container, baseline_picker, variant_picker) -> widgets.Out
             }).style.format("${:,.0f}")
         )
 
-    return _watch(container, baseline_picker, variant_picker, _redraw)
+    if container.ok:
+        _redraw()

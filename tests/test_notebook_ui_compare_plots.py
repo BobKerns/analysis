@@ -160,21 +160,15 @@ def _two_scenario_container(tmp_path: Path):
 
 
 def test_comparability_widget_renders_without_error(tmp_path: Path) -> None:
-    widget, container = _two_scenario_container(tmp_path)
-    baseline_picker, variant_picker = widget.children[0].children
-    out = cp.comparability_widget(container, baseline_picker, variant_picker)
-    assert out is not None
+    _, container = _two_scenario_container(tmp_path)
+    cp.comparability_widget(container)
 
 
 def test_net_worth_compare_widget_renders_without_error(tmp_path: Path) -> None:
-    widget, container = _two_scenario_container(tmp_path)
-    baseline_picker, variant_picker = widget.children[0].children
-    out = cp.net_worth_compare_widget(container, baseline_picker, variant_picker)
-    assert out is not None
+    _, container = _two_scenario_container(tmp_path)
+    cp.net_worth_compare_widget(container)
 
 
 def test_year_end_widget_includes_delta_column(tmp_path: Path) -> None:
-    widget, container = _two_scenario_container(tmp_path)
-    baseline_picker, variant_picker = widget.children[0].children
-    out = cp.year_end_widget(container, baseline_picker, variant_picker)
-    assert out is not None
+    _, container = _two_scenario_container(tmp_path)
+    cp.year_end_widget(container)

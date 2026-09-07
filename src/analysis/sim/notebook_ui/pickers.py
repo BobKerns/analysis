@@ -212,6 +212,7 @@ class MultiScenarioConnections(Connections):
     variants: list[str]
     colors: dict[str, str]
     warnings: list[str] = field(default_factory=list)
+    value: object = traitlets.Any()
 
     @property
     def scenarios(self) -> list[str]:
@@ -333,6 +334,7 @@ def multi_scenario_picker(
             if new.connections.get(name) is not rc:
                 rc.close()
         _redraw()
+        container.value = object()
 
     baseline_picker.observe(_on_change, names="value")
     variant_picker.observe(_on_change, names="value")
