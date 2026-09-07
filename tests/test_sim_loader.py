@@ -57,7 +57,7 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         assert {"set_rate", "retire_scheduled", "set_amount", "one_off_transfer"} <= cal_kinds
 
         chain_row = con.execute("""
-            SELECT c.id, c.name, cs.draw_from_chain_id, cs.threshold_cents
+            SELECT c.id, c.name, cs.draw_from_chain_id
             FROM chain c
             JOIN chain_steps cs ON cs.chain_id = c.id
             WHERE c.name = 'asset checking liquidity'

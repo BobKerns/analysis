@@ -333,7 +333,7 @@ def run_scenario(
                                 con, balances, account_kinds, account_tax_treatment,
                                 account_subkind, account_name, step_id, month_s,
                                 chain_graph, frm, total_amount, to,
-                                threshold_cents=0, reason_kind="rule", reason_id=tid,
+                                reason_kind="rule", reason_id=tid,
                                 tax_year=tax_year, refill_ctx=refill_ctx,
                             )
                         else:
@@ -845,15 +845,13 @@ def _post_ytd_chain(
         )
         return
     remaining = amount
-    for draw_into_id, _threshold, step_amount, step_percent, _series, _cadence in graph.members.get(chain_id, []):
+    for draw_into_id, step_maximum, step_percent, _series, _cadence in graph.members.get(chain_id, []):
         if remaining <= 0:
             break
-        if step_amount is not None:
-            allocation = min(remaining, step_amount)
-        elif step_percent is not None:
-            allocation = remaining * step_percent // 1_000_000
-        else:
-            allocation = remaining
+        allocation = remaining * step_percent // 1_000_000
+        if step_maximum is not None:
+            allocation = min(allocation, step_maximum)
+        allocation = min(remaining, allocation)
         if allocation <= 0:
             continue
         _post_ytd_chain(
@@ -1202,11 +1200,19 @@ def _apply_on_death(
 
 
 class ChainGraph:
-    """Resolved ``chain``/``chain_steps`` reference graph (ADR-003 §4.7)."""
+    """Resolved ``chain``/``chain_steps`` reference graph (ADR-003 §4.7).
+
+    Each ``members`` entry is a ``(draw_from_chain_id, maximum, percent,
+    series, cadence)`` tuple; callers (tests especially) may pass a shorter
+    tuple and have it padded with the same defaults the loader writes
+    (``maximum=None``, ``percent=100%``, ``series=None``, ``cadence=None``).
+    """
 
     __slots__ = ("members", "leaf_account", "minimum_of", "refill_chain_of",
                  "refill_target_of", "refill_amount_of",
                  "maximum_of", "overflow_chain_of")
+
+    _STEP_DEFAULTS: tuple = (None, 1_000_000, None, None)
 
     def __init__(
         self,
@@ -1220,9 +1226,7 @@ class ChainGraph:
         overflow_chain_of: dict[int, int | None],
     ) -> None:
         self.members = {
-            chain_id: [(*step, None, None) if len(step) == 2
-                       else (*step, None, None) if len(step) == 4 else step
-                       for step in steps]
+            chain_id: [(*step, *self._STEP_DEFAULTS[len(step) - 1:]) for step in steps]
             for chain_id, steps in members.items()
         }
         self.leaf_account = leaf_account
@@ -1236,13 +1240,13 @@ class ChainGraph:
 
 def _load_chain_graph(con) -> ChainGraph:
     members: dict[int, list[tuple[int, ...]]] = {}
-    for chain_id, draw_from_id, threshold, amount, percent, series, cadence in con.execute(
-        "SELECT chain_id, draw_from_chain_id, threshold_cents, "
-        "       amount_cents, percent_micros, series, cadence "
+    for chain_id, draw_from_id, maximum, percent, series, cadence in con.execute(
+        "SELECT chain_id, draw_from_chain_id, "
+        "       maximum_cents, percent_micros, series, cadence "
         "FROM chain_steps ORDER BY chain_id, step_order"
     ):
         members.setdefault(chain_id, []).append(
-            (draw_from_id, threshold, amount, percent, series, cadence)
+            (draw_from_id, maximum, percent, series, cadence)
         )
     leaf_account: dict[int, int] = {
         r[0]: r[1] for r in con.execute(
@@ -1337,29 +1341,74 @@ def _withdrawal_tax_character(
     return tax_char
 
 
+def _chain_step_allocation(
+    remaining: int, maximum: int | None, percent: int, series: str | None,
+    cadence: str | None, month_s: str,
+    aux, chain_base_date: date | None, inflation_factor_cache: dict | None,
+) -> int:
+    """One chain_steps row's allocation out of ``remaining`` (ADR-003 §4.7):
+    ``percent`` of what's still outstanding (default 100%, so an unallocated
+    step consumes all of it), capped at ``maximum`` if set -- the two may be
+    combined -- with ``series``/``cadence`` inflating that cap over time.
+    """
+    allocation = remaining * percent // 1_000_000
+    if maximum is not None:
+        cap = maximum
+        if series:
+            if aux is None or chain_base_date is None or inflation_factor_cache is None:
+                raise EngineError("inflated chain step requires runtime inflation context")
+            cap = cap * _cumulative_inflation_factor(
+                aux, series, chain_base_date, _parse_date(month_s),
+                inflation_factor_cache, cadence=cadence or "monthly",
+            ) // 1_000_000
+        allocation = min(allocation, cap)
+    return min(remaining, allocation)
+
+
 def _chain_draw(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     account_tax_treatment: dict[int, str | None], account_subkind: dict[int, str],
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph,
     chain_id: int, amount_needed: int, target_account_id: int,
-    *, threshold_cents: int = 0, refill_ctx: "RefillContext | None" = None,
+    *, refill_ctx: "RefillContext | None" = None,
     reason_kind: str = "refill", reason_id: int | None = None,
     tax_year: int | None = None,
+    aux=None, chain_base_date: date | None = None,
+    inflation_factor_cache: dict | None = None,
 ) -> int:
-    """Recursively draw up to ``amount_needed`` into ``target_account_id``.
+    """Recursively draw up to ``amount_needed`` into ``target_account_id``,
+    scanning ``chain_id``'s steps in order (ADR-003 §4.7).
 
-    Each leg is posted with the concrete source account's own withdrawal tax
+    Each step's account supplies as much of its ``_chain_step_allocation`` as
+    it can without dropping -- after any refill_chain draw -- at or below its
+    own minimum_balance_cents; whatever it can't cover falls through to the
+    next step, whether because it's exhausted or because the step's own
+    percent/maximum allocation was smaller than what's still needed. Each leg
+    is posted with the concrete source account's own withdrawal tax
     character -- derived here, at the point the money actually moves, since
-    it depends on which account supplied it (ADR-003 §4.7).
+    it depends on which account actually supplied it.
     """
     if amount_needed <= 0:
         return 0
+    if refill_ctx is not None:
+        if aux is None:
+            aux = refill_ctx.aux
+        if chain_base_date is None:
+            chain_base_date = refill_ctx.chain_base_date
+        if inflation_factor_cache is None:
+            inflation_factor_cache = refill_ctx.inflation_factor_cache
     account_id = graph.leaf_account.get(chain_id)
     if account_id is not None:
         if account_id == target_account_id:
             return 0
-        available = max(0, balances.get(account_id, 0) - threshold_cents)
+        if refill_ctx is not None:
+            _ensure_min_balance(
+                con, balances, account_kinds, step_id, month_s, refill_ctx,
+                account_id, amount_needed,
+            )
+        floor = graph.minimum_of.get(account_id, 0)
+        available = max(0, balances.get(account_id, 0) - floor)
         take = min(amount_needed, available)
         if take <= 0:
             return 0
@@ -1374,16 +1423,24 @@ def _chain_draw(
         )
         return take
     total = 0
-    for draw_from_id, step_threshold, *_allocation in graph.members.get(chain_id, []):
+    for draw_from_id, step_maximum, step_percent, step_series, step_cadence in graph.members.get(chain_id, []):
         remaining = amount_needed - total
         if remaining <= 0:
             break
+        allocation = _chain_step_allocation(
+            remaining, step_maximum, step_percent, step_series, step_cadence,
+            month_s, aux, chain_base_date, inflation_factor_cache,
+        )
+        if allocation <= 0:
+            continue
         total += _chain_draw(
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, step_id, month_s, graph,
-            draw_from_id, remaining, target_account_id,
-            threshold_cents=step_threshold, reason_kind=reason_kind,
-            reason_id=reason_id, tax_year=tax_year, refill_ctx=refill_ctx,
+            draw_from_id, allocation, target_account_id,
+            refill_ctx=refill_ctx, reason_kind=reason_kind,
+            reason_id=reason_id, tax_year=tax_year,
+            aux=aux, chain_base_date=chain_base_date,
+            inflation_factor_cache=inflation_factor_cache,
         )
     return total
 
@@ -1430,24 +1487,14 @@ def _chain_sweep(
         )
         return put
     total = 0
-    for draw_into_id, _threshold, step_amount, step_percent, step_series, step_cadence in graph.members.get(chain_id, []):
+    for draw_into_id, step_maximum, step_percent, step_series, step_cadence in graph.members.get(chain_id, []):
         remaining = amount_available - total
         if remaining <= 0:
             break
-        if step_amount is not None:
-            allocation = step_amount
-            if step_series:
-                if aux is None or chain_base_date is None or inflation_factor_cache is None:
-                    raise EngineError("inflated chain step requires runtime inflation context")
-                allocation = allocation * _cumulative_inflation_factor(
-                    aux, step_series, chain_base_date, _parse_date(month_s),
-                    inflation_factor_cache, cadence=step_cadence or "monthly",
-                ) // 1_000_000
-            allocation = min(remaining, allocation)
-        elif step_percent is not None:
-            allocation = remaining * step_percent // 1_000_000
-        else:
-            allocation = remaining
+        allocation = _chain_step_allocation(
+            remaining, step_maximum, step_percent, step_series, step_cadence,
+            month_s, aux, chain_base_date, inflation_factor_cache,
+        )
         if allocation <= 0:
             continue
         total += _chain_sweep(

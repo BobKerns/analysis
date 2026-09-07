@@ -2148,7 +2148,7 @@ def scenario_create(
     chains_dir = target / "chains"
     chains_dir.mkdir()
     (chains_dir / ".gitignore").write_text("", encoding="utf-8")
-    pd.DataFrame(columns=["account_name", "threshold", "amount", "percent", "series", "cadence"]).to_csv(
+    pd.DataFrame(columns=["account_name", "maximum", "percent", "series", "cadence"]).to_csv(
         chains_dir / "_asset__example.csv", index=False,
     )
     _append_csv_row(

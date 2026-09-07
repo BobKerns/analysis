@@ -442,13 +442,14 @@ Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` in
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `account_name` | text | ✓ | account or another named chain to visit at this step |
-| `threshold` | dollars | | source account reserve to leave untouched when drawing |
-| `amount` | dollars | | fixed amount to sweep to this destination; mutually exclusive with `percent` |
-| `percent` | percentage | | percentage of the amount remaining after earlier rows; mutually exclusive with `amount` |
-| `series` | text | | optional inflation series for a fixed `amount`; the amount is based at the scenario start month |
+| `maximum` | dollars | | ceiling on how much this step supplies; may be combined with `percent` |
+| `percent` | percentage | | percentage of the amount still outstanding when this step is reached; default 100% |
+| `series` | text | | optional inflation series for `maximum`; the amount is based at the scenario start month; only meaningful when `maximum` is set |
 | `cadence` | enum | | `monthly` or `annual`; controls compounding for `series` and requires `series` |
 
-Rows without `amount` or `percent` preserve ordinary liquidity-chain behavior and consume the requested amount in order. For allocation chains, every row must specify one of the two fields and the final row must specify `percent=100`, which receives the remaining amount after fixed and percentage allocations. Chain names share one namespace with account names (the loader rejects a chain whose name collides with an account, since every real account already has an implicit leaf chain of its own name). A chain file's `<kind>` is drawn from a closed registry, currently `asset` and `income`; the kind is extensible without engine changes.
+Steps are scanned in file order. Each step's allocation is `percent` of whatever amount is still outstanding when the scan reaches it (default 100%, so an unallocated step consumes all of it), capped at `maximum` if set — the two may be combined, e.g. "up to $X, or Y% of what's left, whichever is smaller." Whatever a step doesn't supply — whether because its own account (after any refill_chain draw, see below) is exhausted or because the step's percent/maximum allocation was smaller than what's still needed — falls through to the next step. A cascading sequence of percentages (e.g. 50%, then 100% of what's left) distributes a draw across multiple steps in parallel rather than draining each one in turn; ordinary rows with neither field preserve the original "drain each step fully before moving on" liquidity-chain behavior. Chain names share one namespace with account names (the loader rejects a chain whose name collides with an account, since every real account already has an implicit leaf chain of its own name). A chain file's `<kind>` is drawn from a closed registry, currently `asset` and `income`; the kind is extensible without engine changes.
+
+There is deliberately no per-step reserve column: a step's account is "exhausted" once it is at or below its own `minimum_balance` (§4.2, default 0) — checked *after* that account's own `refill_chain` (if any) has been drawn, not before. This is why `minimum_balance`/`refill_chain` live on the account, not the chain step: the same floor applies no matter which chain reaches the account, and refilling is handled once, in one place.
 
 Refill (`minimum_balance`/`refill_chain`, optionally `refill_target`/`refill_amount`) is a **look-ahead, per-transaction** check, not a month-end reconciliation: every debit against a protected account is checked before it posts, and the chain is drawn first if the debit would breach `minimum_balance`. It is not an error for the chain to be unable to fully cover the shortfall -- the debit still posts and may leave the account negative. An asset account going negative should only happen once its own refill chain is exhausted; the engine warns once per negative transition (not every month it stays negative) via `RuntimeWarning`, and also records `{month, account, balance_cents}` entries under `simulation_run.run_args_json.$.negative_balance_warnings`.
 
@@ -621,6 +622,20 @@ and older notes stay valid.
    `waterfall_sources.csv` dropped; `chain` / `chain_steps` added;
    `transfer_event.from_account`/`to_account` now reference `chain(id)`; the
    file-layout tree updated to the per-scenario shape above.
+7. **`chains/<kind>__<name>.csv` (§4.7) dropped `threshold`, renamed `amount`
+   to `maximum`, and made `percent` always-on (default 100%) rather than
+   mutually exclusive with `maximum`.** The original `threshold`/`amount`
+   design was never actually read for draws -- the engine only ever
+   implemented allocation (`amount`/`percent`) for the *sweep* direction
+   (overflow/income chains); a withdrawal chain always fully drained each
+   step before moving to the next, silently ignoring any `amount`/`percent`
+   a scenario author set on it (real symptom: a chain step authored at 1%
+   applied at 100%). The fix unifies both directions on one allocation rule
+   (§4.7's rewritten table) and removes the per-step reserve entirely --
+   "exhausted" is now the step's account being at or below its own
+   `minimum_balance` (§4.2) *after* that account's own `refill_chain` has
+   been drawn, which is what `threshold` was really trying to express one
+   step at a time.
 
 ## Open questions deferred
 

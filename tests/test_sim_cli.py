@@ -290,7 +290,7 @@ def test_sim_scenario_create_derives_and_activates(tmp_path: Path, monkeypatch) 
     assert (scenario_dir / "chains").is_dir()
     assert (scenario_dir / "chains" / ".gitignore").read_text() == ""
     assert (scenario_dir / "chains" / "_asset__example.csv").read_text() == (
-        "account_name,threshold,amount,percent,series,cadence\n"
+        "account_name,maximum,percent,series,cadence\n"
     )
 
     def header_of(name: str) -> list[str]:

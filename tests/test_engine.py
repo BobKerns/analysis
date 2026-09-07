@@ -420,9 +420,10 @@ def test_post_transfer_caps_payment_to_liability_balance() -> None:
         con.close()
 
 
-def test_chain_draw_single_leaf_account_respects_threshold() -> None:
+def test_chain_draw_single_leaf_account_respects_minimum_balance() -> None:
     """_chain_draw on a bare leaf chain (a real account) draws only down to
-    its threshold_cents floor, and never draws the target from itself."""
+    its own minimum_balance_cents floor, and never draws the target from
+    itself."""
     from analysis.sim.engine import ChainGraph, _chain_draw
 
     balances = {1: 100_000, 2: 500_000}
@@ -430,7 +431,7 @@ def test_chain_draw_single_leaf_account_respects_threshold() -> None:
     account_tax_treatment = {1: "taxable", 2: "taxable"}
     account_subkind = {1: "checking", 2: "savings"}
     account_name = {1: "Checking", 2: "Savings"}
-    graph = ChainGraph({}, {10: 2}, {}, {}, {}, {}, {}, {})
+    graph = ChainGraph({}, {10: 2}, {2: 100_000}, {}, {}, {}, {}, {})
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
@@ -442,7 +443,6 @@ def test_chain_draw_single_leaf_account_respects_threshold() -> None:
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, step_id=1, month_s="2026-05-31", graph=graph,
             chain_id=10, amount_needed=1_000_000, target_account_id=1,
-            threshold_cents=100_000,
         )
         assert taken == 400_000  # 500_000 available above the 100_000 floor
         assert balances[2] == 100_000
@@ -494,7 +494,7 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character()
     # chain 100 = interior chain listing leaf chains 2 (savings) then 3 (IRA);
     # leaf chains share ids with their account for simplicity in this test.
     graph = ChainGraph(
-        members={100: [(2, 0), (3, 0)]},
+        members={100: [(2,), (3,)]},
         leaf_account={2: 2, 3: 3},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
@@ -530,6 +530,130 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character()
         con.close()
 
 
+def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhausted() -> None:
+    """Step 2 requests 1% of what's still outstanding, step 3 the default
+    100% of whatever's left -- absent a shortfall this is a cascading
+    near-even split, but step 2 (Hiromi Vanguard) is nearly empty here, so
+    its unfulfilled share falls through and step 3 (Bob Vanguard) picks up
+    the rest, exactly the parallel-draw-until-exhausted behavior ADR-003
+    §4.7 describes rather than the old 'drain each step to zero in turn'
+    bug."""
+    from analysis.sim.engine import ChainGraph, _chain_draw
+
+    balances = {1: 0, 2: 1_000, 3: 1_000_000}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = dict.fromkeys(balances, "savings")
+    account_name = {1: "Target", 2: "Hiromi Vanguard", 3: "Bob Vanguard"}
+    graph = ChainGraph(
+        members={100: [(2, None, 10_000), (3,)]},  # 2: percent=1%, 3: default 100%
+        leaf_account={2: 2, 3: 3},
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
+        "reason_id, parent_event_id)"
+    )
+    try:
+        taken = _chain_draw(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id=1, month_s="2026-05-31", graph=graph,
+            chain_id=100, amount_needed=500_000, target_account_id=1,
+        )
+        assert taken == 500_000
+        assert balances[2] == 0        # step 2's 1% target (5_000) exceeded its 1_000 balance
+        assert balances[3] == 501_000  # 1_000_000 - (500_000 - 1_000)
+    finally:
+        con.close()
+
+
+def test_chain_draw_step_maximum_caps_allocation_even_when_more_is_available() -> None:
+    """The `amount`/`maximum` column is a per-step ceiling, not a target: once
+    a step has supplied its cap, the remainder moves to the next step even
+    though the source account could have covered more."""
+    from analysis.sim.engine import ChainGraph, _chain_draw
+
+    balances = {1: 0, 2: 1_000_000, 3: 1_000_000}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = dict.fromkeys(balances, "savings")
+    account_name = {1: "Target", 2: "First", 3: "Second"}
+    graph = ChainGraph(
+        members={100: [(2, 200_000), (3,)]},  # step 2 capped at 200_000
+        leaf_account={2: 2, 3: 3},
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
+        "reason_id, parent_event_id)"
+    )
+    try:
+        taken = _chain_draw(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id=1, month_s="2026-05-31", graph=graph,
+            chain_id=100, amount_needed=500_000, target_account_id=1,
+        )
+        assert taken == 500_000
+        assert balances[2] == 800_000  # only the 200_000 cap was drawn
+        assert balances[3] == 700_000  # the remaining 300_000 fell through
+    finally:
+        con.close()
+
+
+def test_chain_draw_refills_source_before_checking_availability() -> None:
+    """A leaf's refill_chain is drawn *before* computing how much it can
+    supply, so a source that's below its own minimum_balance still
+    contributes up to what its refill chain can restore, rather than falling
+    straight through to the next step."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _chain_draw
+
+    # 1=target, 2=source (near-empty but refillable), 3=source's refill chain.
+    balances = {1: 0, 2: 500, 3: 1_000_000}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = dict.fromkeys(balances, "savings")
+    account_name = {1: "Target", 2: "Source", 3: "Refill"}
+    graph = ChainGraph(
+        members={},
+        leaf_account={10: 2, 20: 3},
+        minimum_of={2: 0}, refill_chain_of={2: 20},
+        refill_target_of={2: None}, refill_amount_of={2: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
+        "reason_id, parent_event_id)"
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
+        account_subkind=account_subkind, account_name=account_name,
+    )
+    try:
+        taken = _chain_draw(
+            con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id=1, month_s="2026-05-31", graph=graph,
+            chain_id=10, amount_needed=50_000, target_account_id=1,
+            refill_ctx=refill_ctx,
+        )
+        assert taken == 50_000
+        assert balances[1] == 50_000
+        assert balances[2] == 0
+        assert balances[3] == 1_000_000 - 49_500  # refilled just enough to cover the draw
+    finally:
+        con.close()
+
+
 def test_withdrawal_tax_character_rejects_taxable_non_cash_account() -> None:
     from analysis.sim.engine import EngineError, _withdrawal_tax_character
 
@@ -552,8 +676,8 @@ def test_chain_sweep_allocates_fixed_then_percent_of_remainder() -> None:
     account_subkind = {1: "checking", 2: "checking", 3: "savings", 4: "hsa"}
     account_name = {1: "Income_SS", 2: "Checking", 3: "Savings", 4: "HSA"}
     graph = ChainGraph(
-        members={100: [(2, 0, 100_000, None), (3, 0, None, 500_000),
-                       (4, 0, None, 1_000_000)]},
+        members={100: [(2, 100_000, 1_000_000), (3, None, 500_000),
+                       (4,)]},
         leaf_account={2: 2, 3: 3, 4: 4},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
@@ -588,7 +712,7 @@ def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
     from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
-        members={100: [(2, 0, 25_000, None), (3, 0, None, 1_000_000)]},
+        members={100: [(2, 25_000), (3,)]},
         leaf_account={1: 1, 2: 2, 3: 3},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
@@ -660,7 +784,7 @@ def test_ytd_amount_from_interior_source_chain_records_first_leaf_account() -> N
     from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
-        members={100: [(2, 0), (3, 0)]},
+        members={100: [(2,), (3,)]},
         leaf_account={2: 2, 3: 3, 4: 4, 5: 5},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},

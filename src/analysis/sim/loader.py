@@ -1106,23 +1106,13 @@ def _validate_chains(
                 )
             elif member in chains:
                 edges[name].add(member)
-            threshold = row.get("threshold", "")
-            if threshold:
+            maximum = row.get("maximum", "")
+            if maximum:
                 try:
-                    _dollars_to_cents(threshold, resolver=money_resolver)
+                    _dollars_to_cents(maximum, resolver=money_resolver)
                 except ValueError as e:
-                    issues.append(f"chains/{kind}__{name}.csv row {i}: threshold {e}")
-            amount = row.get("amount", "")
+                    issues.append(f"chains/{kind}__{name}.csv row {i}: maximum {e}")
             percent = row.get("percent", "")
-            if amount and percent:
-                issues.append(
-                    f"chains/{kind}__{name}.csv row {i}: amount and percent are mutually exclusive"
-                )
-            if amount:
-                try:
-                    _dollars_to_cents(amount, resolver=money_resolver)
-                except ValueError as e:
-                    issues.append(f"chains/{kind}__{name}.csv row {i}: amount {e}")
             if percent:
                 try:
                     _percent_to_micros(percent)
@@ -1138,33 +1128,10 @@ def _validate_chains(
                 issues.append(
                     f"chains/{kind}__{name}.csv row {i}: cadence set without series"
                 )
-            if series and not amount:
+            if series and not maximum:
                 issues.append(
-                    f"chains/{kind}__{name}.csv row {i}: series requires amount"
+                    f"chains/{kind}__{name}.csv row {i}: series requires maximum"
                 )
-
-        allocated = [row for row in rows if row.get("amount") or row.get("percent")]
-        if allocated:
-            if len(allocated) != len(rows):
-                issues.append(
-                    f"chains/{kind}__{name}.csv: every row must specify amount or percent "
-                    "when using allocation fields"
-                )
-            elif not rows[-1].get("percent"):
-                issues.append(
-                    f"chains/{kind}__{name}.csv: final row must specify percent=100 "
-                    "to receive the remaining amount"
-                )
-            else:
-                try:
-                    final_percent = _percent_to_micros(rows[-1]["percent"])
-                except ValueError:
-                    final_percent = None
-                if final_percent != 1_000_000:
-                    issues.append(
-                        f"chains/{kind}__{name}.csv: final row must specify percent=100 "
-                        "to receive the remaining amount"
-                    )
 
     for a in accounts:
         for column in ("refill_chain", "overflow_chain"):
@@ -1310,16 +1277,14 @@ def _write_intent(
         for i, row in enumerate(rows, start=1):
             con.execute(
                 "INSERT INTO chain_steps(chain_id, step_order, draw_from_chain_id, "
-                "threshold_cents, amount_cents, percent_micros, series, cadence) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "maximum_cents, percent_micros, series, cadence) "
+                "VALUES (?,?,?,?,?,?,?)",
                 (
                     chain_ids[name], i, chain_ids[row["account_name"]],
-                    _dollars_to_cents(row["threshold"], resolver=money_resolver)
-                    if row.get("threshold") else 0,
-                    _dollars_to_cents(row["amount"], resolver=money_resolver)
-                    if row.get("amount") else None,
+                    _dollars_to_cents(row["maximum"], resolver=money_resolver)
+                    if row.get("maximum") else None,
                     _percent_to_micros(row["percent"])
-                    if row.get("percent") else None,
+                    if row.get("percent") else 1_000_000,
                     row.get("series") or None,
                     row.get("cadence") or None,
                 ),

@@ -61,14 +61,13 @@ def chains_view(sc: ScenarioConnection) -> pd.DataFrame:
 
     leaf_rows = pd.DataFrame({
         "chain": leaves["name"], "step": pd.NA, "draw_from": leaves["account_name"],
-        "threshold": pd.NA, "amount": pd.NA, "percent": pd.NA,
+        "maximum": pd.NA, "percent": pd.NA,
         "series": pd.NA, "cadence": pd.NA,
     })
     step_rows = pd.DataFrame({
         "chain": steps["chain_name"], "step": steps["step_order"],
         "draw_from": steps["draw_from_chain_name"],
-        "threshold": steps["threshold_cents"] / 100,
-        "amount": steps["amount_cents"].apply(lambda c: None if pd.isna(c) else c / 100),
+        "maximum": steps["maximum_cents"].apply(lambda c: None if pd.isna(c) else c / 100),
         "percent": steps["percent_micros"].apply(
             lambda m: None if pd.isna(m) else m / 10_000
         ),

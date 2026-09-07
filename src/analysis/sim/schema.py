@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -74,19 +74,28 @@ CREATE TABLE chain (
 );
 CREATE INDEX idx_chain_account ON chain(account_id);
 
+-- A step's allocation is `percent_micros` of the amount still outstanding
+-- when the step is reached (default 100%, so an unallocated step consumes
+-- whatever remains), capped at `maximum_cents` if set (an optional ceiling,
+-- not a target -- the two may be combined). `series`/`cadence` inflate that
+-- cap and are only meaningful when `maximum_cents` is set. There is
+-- deliberately no per-step reserve: a step is "exhausted" once its account
+-- (after any refill_chain draw) is at or below its own minimum_balance_cents
+-- (ADR-003 §4.7), at which point the still-outstanding amount falls through
+-- to the next step.
 CREATE TABLE chain_steps (
     id                 INTEGER PRIMARY KEY,
     chain_id           INTEGER NOT NULL REFERENCES chain(id),
     step_order         INTEGER NOT NULL,
     draw_from_chain_id INTEGER NOT NULL REFERENCES chain(id),
-    threshold_cents    INTEGER NOT NULL DEFAULT 0,
-    amount_cents       INTEGER,
-    percent_micros     INTEGER,
+    maximum_cents      INTEGER,
+    percent_micros     INTEGER NOT NULL DEFAULT 1000000,
     series             TEXT,
     cadence            TEXT CHECK (cadence IN ('monthly','annual')),
-    CHECK (amount_cents IS NULL OR amount_cents >= 0),
-    CHECK (percent_micros IS NULL OR percent_micros >= 0 AND percent_micros <= 1000000),
-    CHECK (amount_cents IS NULL OR percent_micros IS NULL),
+    CHECK (maximum_cents IS NULL OR maximum_cents >= 0),
+    CHECK (percent_micros >= 0 AND percent_micros <= 1000000),
+    CHECK (cadence IS NULL OR series IS NOT NULL),
+    CHECK (series IS NULL OR maximum_cents IS NOT NULL),
     UNIQUE (chain_id, step_order)
 );
 
