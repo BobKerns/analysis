@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
+import traitlets
 
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
@@ -417,6 +418,15 @@ class RunConnection(_TagReader):
     ``RunConnection(path)`` and use it across cells without ceremony.
     """
 
+    @property
+    def name(self) -> str:
+        return self.metadata().scenario_name[0]
+    run_path: Path
+    _con: sqlite3.Connection
+    @property
+    def date(self) -> pd.Timestamp:
+        return pd.to_datetime(self.metadata().finished_at)[0]
+
     def __init__(self, run_path: Path | str) -> None:
         self.run_path = Path(run_path)
         self._con = sqlite3.connect(self.run_path)
@@ -721,9 +731,16 @@ class RunConnection(_TagReader):
 
         return self._cached("ss_gross_by_month", _build)
 
+    def metadata(self) -> pd.Series:
+        """Return basic metadata about the run, including its name and path."""
+        def _build() -> pd.Series:
+            meta = self.items("simulation_run")
+            return meta
+        return self._cached("metadata", _build)
+
 
 @contextmanager
-def open_run(run_path: Path | str) -> Iterator[RunConnection]:
+def open_run(run_path: Path | str) -> Generator[RunConnection]:
     rc = RunConnection(run_path)
     try:
         yield rc
@@ -754,7 +771,7 @@ _TAG_CSV_KEY: dict[ItemType, tuple[str, str]] = {
 }
 
 
-class ScenarioConnection(_TagReader):
+class ScenarioConnection(_TagReader, traitlets.HasTraits):
     """Read+write access to a scenario.
 
     Reads run against a freshly built intent DB; writes go to the CSV source
@@ -885,7 +902,7 @@ class ScenarioConnection(_TagReader):
 @contextmanager
 def open_scenario(
     data_dir: Path | str, scenario: str | None = None,
-) -> Iterator[ScenarioConnection]:
+) -> Generator[ScenarioConnection]:
     sc = ScenarioConnection(data_dir, scenario)
     try:
         yield sc

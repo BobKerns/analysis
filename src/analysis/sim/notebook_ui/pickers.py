@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import ipywidgets as widgets
+from matplotlib import rc
+import traitlets
 
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
@@ -51,16 +53,17 @@ def display_warning(message: str) -> None:
 
 
 @dataclass
-class SingleScenarioConnections:
+class SingleScenarioConnections(traitlets.HasTraits):
     """Currently selected scenario, with its open connections.
 
     ``run`` is ``None`` only when the picker was built with
     ``require_run=False`` and the scenario has no run yet.
     """
 
-    scenario_ref: ScenarioRef
-    scenario: ScenarioConnection
-    run: RunConnection | None
+    value: str = traitlets.Any()
+    scenario_ref: ScenarioRef = traitlets.Any()
+    scenario: ScenarioConnection = traitlets.Any()
+    run: RunConnection | None = traitlets.Any()
 
     def close(self) -> None:
         self.scenario.close()
@@ -79,8 +82,13 @@ def _open_single(
         )
     scenario = ScenarioConnection(data_dir, name)
     run = RunConnection(ref.run_path) if ref.run_path is not None else None
-    return SingleScenarioConnections(ref, scenario, run)
+    return SingleScenarioConnections(name, ref, scenario, run)
 
+_META_COLS = [
+    "scenario_name", "status", "started_at", "finished_at",
+    "code_version", "code_dirty", "data_version", "data_dirty",
+    "data_mode", "run_by",
+]
 
 def scenario_picker(
     data_dir: Path | str, default: str, *, require_run: bool = True,
@@ -100,11 +108,17 @@ def scenario_picker(
     ref_out = widgets.Output()
 
     container = _open_single(data_dir, default, require_run=require_run)
+    vbox = widgets.VBox([dropdown, ref_out])
 
     def _redraw() -> None:
         with ref_out:
             clear_output(wait=True)
             display(container.scenario_ref)
+            rc = container.run
+            run_meta = rc.items("simulation_run")[_META_COLS].copy()
+            run_meta["code_version"] = run_meta["code_version"].str[:12]
+            run_meta["data_version"] = run_meta["data_version"].str[:12]
+            display(run_meta.T)
 
     def _on_change(change) -> None:
         old_scenario, old_run = container.scenario, container.run
@@ -118,9 +132,10 @@ def scenario_picker(
         _redraw()
 
     dropdown.observe(_on_change, names="value")
+    traitlets.link((dropdown, "value"), (container, "value"))
     _redraw()
 
-    return widgets.VBox([dropdown, ref_out]), container
+    return vbox, container
 
 
 # ---------- multi-scenario (baseline + variants) picker ----------
