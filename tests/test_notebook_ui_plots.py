@@ -9,6 +9,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+from analysis.sim.accounts_plot import render_balance_history_figure
 from analysis.sim.connection import RunConnection, open_run
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import load_scenario
@@ -80,6 +81,21 @@ def test_account_history_widget_defaults_to_kind(tmp_path: Path) -> None:
         widget = account_history_widget(rc, "asset", "Asset balances")
         picker = widget.children[1]
         assert all(rc.account_kinds()[name] == "asset" for name in picker.options)
+
+
+def test_balance_history_adds_total_for_multiple_accounts() -> None:
+    import pandas as pd
+
+    index = pd.to_datetime(["2026-01-31", "2026-02-28"])
+    balances = pd.DataFrame({"Checking": [100, 120], "Savings": [50, 80]}, index=index)
+
+    fig = render_balance_history_figure(balances, ["Checking", "Savings"], "Assets")
+
+    assert fig is not None
+    assert [line.get_label() for line in fig.axes[0].lines] == [
+        "Checking", "Savings", "Total",
+    ]
+    assert list(fig.axes[0].lines[-1].get_ydata()) == [150, 200]
 
 
 def test_cpi_constant_expense_balances_preserve_zero_monthly_flow(

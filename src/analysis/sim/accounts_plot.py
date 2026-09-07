@@ -68,13 +68,15 @@ def render_balance_history_figure(
 
     import matplotlib.pyplot as plt
 
-    balance_pivot = trim_to_last_nonzero(balance_pivot, selected)[selected]
+    balance_pivot = trim_to_last_nonzero(balance_pivot, selected)[selected].copy()
+    if len(selected) > 1:
+        balance_pivot["Total"] = balance_pivot.sum(axis=1)
     ylabel = "USD"
     if value_mode == "monthly":
         balance_pivot = balance_pivot.diff()
         ylabel = "USD / month"
     fig, ax = plt.subplots(figsize=(10, 5))
-    for name in selected:
+    for name in balance_pivot.columns:
         ax.plot(balance_pivot.index, balance_pivot[name], label=name)
     ax.set_title(title)
     ax.set_ylabel(ylabel)
