@@ -5,6 +5,7 @@ data from its cached derived-data methods -- no notebook-local pandas code.
 """
 
 from __future__ import annotations
+from statistics import mode
 
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
@@ -30,10 +31,8 @@ def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:
     year_end.index.name = "year"
 
     table_out = widgets.Output()
-    with table_out:
-        display(year_end.style.format({"nominal": "${:,.0f}", "cpi_constant": "${:,.0f}"}))
-
     chart_out = widgets.Output()
+
     with chart_out:
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.plot(nw.index, nw["nominal"], label="nominal")
@@ -49,30 +48,32 @@ def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:
         plt.xticks(rotation=90)
         plt.show()
 
+        with table_out:
+            clear_output(wait=True)
+            display(year_end.style.format({"nominal": "${:,.0f}", "cpi_constant": "${:,.0f}"}))
+
     return widgets.VBox([chart_out, table_out])
 
 
 def income_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
     """Yearly income table + a nominal/CPI-constant stacked bar chart, by category."""
-    income = rc.income_by_category()
-    income_yearly = yearly_totals(income)
+    plot_mode = plot_mode or dollar_plot_mode()
 
     table_out = widgets.Output()
-    with table_out:
-        display(income_yearly.style.format("${:,.0f}"))
-
-    plot_mode = plot_mode or dollar_plot_mode()
     chart_out = widgets.Output()
 
     def _redraw(*_):
-        import matplotlib.pyplot as plt
-
         mode = plot_mode.value
         mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
-        chart = (
-            yearly_totals(rc.to_cpi_constant(income)) if mode == "cpi_constant"
-            else income_yearly
+        
+        income = rc.income_by_category()
+        income_based = (
+            rc.to_cpi_constant(income) if mode == "cpi_constant"
+            else income
         )
+        income_yearly = yearly_totals(income_based)
+
+        chart = income_yearly
         with chart_out:
             clear_output(wait=True)
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -87,6 +88,9 @@ def income_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = N
             ax.grid(True, axis="y", alpha=0.3)
             ax.legend(title="category")
             plt.show()
+        with table_out:
+            clear_output(wait=True)
+            display(income_yearly.style.format("${:,.0f}"))
 
     plot_mode.observe(_redraw, names="value")
     _redraw()
@@ -106,28 +110,26 @@ _EXPENSES_CAVEAT = (
 
 def expenses_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
     """Yearly expenses table + a nominal/CPI-constant stacked bar chart, by category."""
-    expenses = rc.expenses_by_category()
-    expenses_yearly = yearly_totals(expenses)
+    plot_mode = plot_mode or dollar_plot_mode()
 
     table_out = widgets.Output()
-    with table_out:
-        display(expenses_yearly.style.format("${:,.0f}"))
-
-    plot_mode = plot_mode or dollar_plot_mode()
     chart_out = widgets.Output()
     caveat_out = widgets.Output()
     with caveat_out:
         display(Markdown(_EXPENSES_CAVEAT))
 
     def _redraw(*_):
-        import matplotlib.pyplot as plt
-
         mode = plot_mode.value
         mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
-        chart = (
-            yearly_totals(rc.to_cpi_constant(expenses)) if mode == "cpi_constant"
-            else expenses_yearly
+
+        expenses = rc.expenses_by_category()
+        expenses_based = (
+            rc.to_cpi_constant(expenses) if mode == "cpi_constant"
+            else expenses
         )
+        expenses_yearly = yearly_totals(expenses_based)
+
+        chart = expenses_yearly
         with chart_out:
             clear_output(wait=True)
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -142,6 +144,9 @@ def expenses_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None =
             ax.grid(True, axis="y", alpha=0.3)
             ax.legend(title="category")
             plt.show()
+        with table_out:
+            clear_output(wait=True)
+            display(expenses_yearly.style.format("${:,.0f}"))
 
     plot_mode.observe(_redraw, names="value")
     _redraw()
@@ -151,24 +156,21 @@ def expenses_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None =
 
 def gains_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
     """Yearly realized-vs-unrealized gains table + chart, with an expenses overlay."""
-    gains_yearly = rc.gains_by_category()
+    plot_mode = plot_mode or dollar_plot_mode()
 
     table_out = widgets.Output()
-    with table_out:
-        display(gains_yearly.style.format("${:,.0f}"))
-
-    plot_mode = plot_mode or dollar_plot_mode()
     chart_out = widgets.Output()
 
     def _redraw(*_):
-        import matplotlib.pyplot as plt
-
         mode = plot_mode.value
         mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
-        chart = (
-            rc.to_cpi_constant_annual(gains_yearly) if mode == "cpi_constant"
-            else gains_yearly
+
+        gains_nominal = rc.gains_by_category()
+        gains_yearly = (
+            rc.to_cpi_constant(gains_nominal) if mode == "cpi_constant"
+            else gains_nominal
         )
+        chart = gains_yearly
         with chart_out:
             clear_output(wait=True)
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -190,6 +192,9 @@ def gains_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = No
             ax.legend(title="category")
             plt.setp(ax.get_xticklabels(), rotation=90)
             plt.show()
+        with table_out:
+            clear_output(wait=True)
+            display(gains_yearly.style.format("${:,.0f}"))
 
     plot_mode.observe(_redraw, names="value")
     _redraw()
@@ -199,38 +204,36 @@ def gains_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = No
 
 def after_tax_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
     """Tax reconciliation table + after-tax income vs. non-tax-expense chart."""
-    reconciliation = rc.tax_reconciliation_by_year()
-    money_columns = [c for c in reconciliation.columns if c != "reconciliation_year"]
-
-    income_yearly = yearly_totals(rc.income_by_category())
-    expenses_yearly = yearly_totals(rc.expenses_by_category())
-
-    net = pd.DataFrame({
-        "gross_income": income_yearly["total"],
-        "tax_liability": rc.tax_liability_by_year(),
-        "expenses": expenses_yearly["total"],
-        "tax_expenses": expenses_yearly["taxes"],
-    })
-    net[["gross_income", "expenses", "tax_expenses"]] = net[[
-        "gross_income", "expenses", "tax_expenses",
-    ]].fillna(0)
-    net["after_tax_income"] = net["gross_income"] - net["tax_liability"]
-    net["non_tax_expenses"] = net["expenses"] - net["tax_expenses"]
-    net["after_tax_surplus"] = net["after_tax_income"] - net["non_tax_expenses"]
+    plot_mode = plot_mode or dollar_plot_mode()
 
     table_out = widgets.Output()
-    with table_out:
-        display(reconciliation.style.format({c: "${:,.0f}" for c in money_columns}))
-        display(net.style.format("${:,.0f}"))
-
-    plot_mode = plot_mode or dollar_plot_mode()
     chart_out = widgets.Output()
 
     def _redraw(*_):
-        import matplotlib.pyplot as plt
-
         mode = plot_mode.value
         mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
+
+        reconciliation_nominal = rc.tax_reconciliation_by_year()
+        income_yearly_nominal = yearly_totals(rc.income_by_category())
+        expenses_yearly_nominal = yearly_totals(rc.expenses_by_category())
+
+        money_columns = [c for c in reconciliation_nominal.columns if c != "reconciliation_year"]
+        reconciliation = rc.to_cpi_constant_annual(reconciliation_nominal) if mode == "cpi_constant" else reconciliation_nominal
+        income_yearly = rc.to_cpi_constant_annual(income_yearly_nominal) if mode == "cpi_constant" else income_yearly_nominal
+        expenses_yearly = rc.to_cpi_constant_annual(expenses_yearly_nominal) if mode == "cpi_constant" else expenses_yearly_nominal
+
+        net = pd.DataFrame({
+            "gross_income": income_yearly["total"],
+            "tax_liability": rc.tax_liability_by_year(),
+            "expenses": expenses_yearly["total"],
+            "tax_expenses": expenses_yearly["taxes"],
+        })
+        net[["gross_income", "expenses", "tax_expenses"]] = net[[
+            "gross_income", "expenses", "tax_expenses",
+        ]].fillna(0)
+        net["after_tax_income"] = net["gross_income"] - net["tax_liability"]
+        net["non_tax_expenses"] = net["expenses"] - net["tax_expenses"]
+        net["after_tax_surplus"] = net["after_tax_income"] - net["non_tax_expenses"]
         chart = rc.to_cpi_constant_annual(net) if mode == "cpi_constant" else net
         with chart_out:
             clear_output(wait=True)
@@ -261,6 +264,11 @@ def after_tax_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None 
             ax.legend()
             plt.setp(ax.get_xticklabels(), rotation=90)
             plt.show()
+
+        with table_out:
+            clear_output(wait=True)
+            display(reconciliation.style.format({c: "${:,.0f}" for c in money_columns}))
+            display(net.style.format("${:,.0f}"))
 
     plot_mode.observe(_redraw, names="value")
     _redraw()
