@@ -5,14 +5,15 @@ the data itself.
 """
 
 from __future__ import annotations
-from ipywidgets import widgets
-import pandas as pd
-import ipywidgets as widgets
+
 import matplotlib.pyplot as plt
+import pandas as pd
 from IPython.display import clear_output
+from ipywidgets import widgets
 
 from analysis.sim.notebook_ui.pickers import dollar_plot_mode, value_plot_mode, y_axis_plot_mode
 from analysis.sim.plotting import include_zero
+
 
 def plottable_accounts(
     balance_pivot: pd.DataFrame, account_kinds: pd.Series, kind: str

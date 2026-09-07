@@ -7,9 +7,9 @@ data from its cached derived-data methods -- no notebook-local pandas code.
 from __future__ import annotations
 
 import ipywidgets as widgets
+import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import Markdown, clear_output, display
-import matplotlib.pyplot as plt
 
 from analysis.sim.connection import (
     EXPENSE_CATEGORIES,
@@ -40,7 +40,7 @@ def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:
         if nw["cpi_constant"].notna().any():
             ax.plot(nw.index, nw["cpi_constant"], label="CPI-constant", linestyle="--")
         ax.set_ylim(bottom=0)
-        ax.set_title(f"Net worth ({rc.name} @ {rc.date.strftime('%Y-%m-%d %H:%M')})")
+        ax.set_title(f"Net worth ({rc.label})")
         ax.set_xlabel("month")
         ax.set_ylabel("USD")
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
@@ -80,7 +80,7 @@ def income_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = N
                 kind="bar", stacked=True, ax=ax,
                 color=["#1f77b4", "#2ca02c", "#ff7f0e"],
             )
-            ax.set_title(f"Annual income by category ({mode_label}) ({rc.name} @ {rc.date.strftime('%Y-%m-%d %H:%M')})")
+            ax.set_title(f"Annual income by category ({mode_label}) ({rc.label})")
             ax.set_xlabel("year")
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
@@ -135,7 +135,7 @@ def expenses_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None =
                 kind="bar", stacked=True, ax=ax,
                 color=["#1f77b4", "#d62728", "#9467bd", "#8c564b", "#7f7f7f"],
             )
-            ax.set_title(f"Annual expenses by category ({mode_label}) ({rc.name} @ {rc.date.strftime('%Y-%m-%d %H:%M')})")
+            ax.set_title(f"Annual expenses by category ({mode_label}) ({rc.label})")
             ax.set_xlabel("year")
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
@@ -182,7 +182,7 @@ def gains_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = No
                 label="expenses", color="#d62728", marker="o", linewidth=2,
             )
             ax.axhline(0, color="grey", linewidth=0.8)
-            ax.set_title(f"Realized vs. unrealized gains ({mode_label}) ({rc.name} @ {rc.date.strftime('%Y-%m-%d %H:%M')})")
+            ax.set_title(f"Realized vs. unrealized gains ({mode_label}) ({rc.label})")
             ax.set_xlabel("year")
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
@@ -253,7 +253,7 @@ def after_tax_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None 
                 label="after-tax surplus", color="black", marker="o", linewidth=2,
             )
             ax.axhline(0, color="grey", linewidth=0.8)
-            ax.set_title(f"Annual after-tax income ({mode_label}) ({rc.name} @ {rc.date.strftime('%Y-%m-%d %H:%M')})")
+            ax.set_title(f"Annual after-tax income ({mode_label}) ({rc.label})")
             ax.set_xlabel("year")
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))

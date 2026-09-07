@@ -8,7 +8,6 @@ import sqlite3
 from pathlib import Path
 
 import git
-
 import pytest
 
 from analysis.sim.loader import (
@@ -66,7 +65,9 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         assert len(chain_row) == 2
         assert {r[1] for r in chain_row} == {"asset checking liquidity"}
         assert chain_row[0][2] == con.execute("SELECT id FROM chain WHERE name = 'Asset_Savings'").fetchone()[0]
-        assert chain_row[1][2] == con.execute("SELECT id FROM chain WHERE name = 'Asset_TraditionalIRA_Alice'").fetchone()[0]
+        assert chain_row[1][2] == (
+            con.execute("SELECT id FROM chain WHERE name = 'Asset_TraditionalIRA_Alice'").fetchone()[0]
+        )
 
         rmd_rows = con.execute(
             "SELECT COUNT(*) FROM aux_table WHERE kind = 'rmd_factors'"
@@ -329,8 +330,15 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
     )
     for filename, header in {
         "account_values.csv": "account_name,opening_balance,opening_cost_basis,prior_year_end_balance",
-        "scheduled.csv": "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,interest_account,person,series,rate_micros,claim_age,amount,base_date,inflation_cadence,tax_character,start,end,priority,ytd_amount,ytd_preroll,description,meta_json,params_json,tags",
-        "calendar.csv": "date,kind,scheduled_name,account_1,account_2,series,amount,param_date,tax_character,payload_json,description,tags",
+        "scheduled.csv": (
+            "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,interest_account"
+            ",person,series,rate_micros,claim_age,amount,base_date,inflation_cadence,tax_character"
+            ",start,end,priority,ytd_amount,ytd_preroll,description,meta_json,params_json,tags"
+        ),
+        "calendar.csv": (
+            "date,kind,scheduled_name,account_1,account_2,series,amount,param_date,tax_character"
+            ",payload_json,description,tags"
+        ),
         "year_to_date.csv": "name,amount,tax_character,year,from_account,to_account",
     }.items():
         (scenario_dir / filename).write_text(header + "\n", encoding="utf-8")

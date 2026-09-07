@@ -16,9 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import ipywidgets as widgets
-from IPython.display import clear_output, display
-from matplotlib import rc
 import traitlets
+from IPython.display import clear_output, display
 
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name

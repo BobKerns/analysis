@@ -5,6 +5,7 @@ instead of pre-built pandas structures.
 """
 
 from __future__ import annotations
+
 from ipywidgets import widgets
 
 from analysis.sim.accounts_plot import account_balance_history_widget

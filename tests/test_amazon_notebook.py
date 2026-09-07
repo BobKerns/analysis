@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pandas as pd
-
 from analysis.amazon.notebook import (
     load_categorization_state,
     load_events_dataframe,

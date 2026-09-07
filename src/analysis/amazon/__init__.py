@@ -6,4 +6,5 @@ __all__ = [
     "normalize_item_description",
     "load_categorization_state",
     "load_events_dataframe",
+    "run_amazon_categorization",
 ]

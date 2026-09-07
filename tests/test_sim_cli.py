@@ -608,7 +608,9 @@ def test_sim_account_rename_updates_quicken_map(tmp_path: Path) -> None:
         newline="", encoding="utf-8"
     ) as fh:
         scheduled = list(csv.DictReader(fh))
-    assert any(r["from_account"] == "Asset_Checking_Updated" or r["to_account"] == "Asset_Checking_Updated" for r in scheduled)
+    assert any((r["from_account"] == "Asset_Checking_Updated")
+               or (r["to_account"] == "Asset_Checking_Updated")
+                for r in scheduled)
     assert not any(r["from_account"] == "Asset_Checking" or r["to_account"] == "Asset_Checking" for r in scheduled)
 
     check = runner.invoke(
@@ -754,11 +756,9 @@ def test_sim_tag_add_rejects_bad_token(tmp_path: Path) -> None:
 
 def test_sim_account_check_detects_missing_rows(tmp_path: Path) -> None:
     """account check reports accounts missing from account_values.csv."""
-    import csv
 
     data = _copy_prototype(tmp_path)
     accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
-    values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
 
     # Add a new account to accounts.csv using pandas to avoid line-ending issues
     import pandas as pd

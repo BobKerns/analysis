@@ -962,7 +962,7 @@ def _apply_mortgage_payment(
     account_id_by_name: dict[str, int],
     tax_char: str, tid: int, *, graph=None, source_chain_id=None,
     account_tax_treatment=None, account_subkind=None, account_name=None,
-    refill_ctx: "RefillContext | None" = None,
+    refill_ctx: RefillContext | None = None,
 ) -> None:
     """Multi-leg P&I per ADR-003 §2.7. Interest leg writes first; principal
     leg's ``parent_event_id`` points at the interest leg. The liability
@@ -1048,7 +1048,7 @@ def _apply_ss_benefit(
     tax_char: str, tid: int, *, chain_graph=None, to_chain_id=None,
     account_tax_treatment=None, account_subkind=None, account_name=None,
     inflation_factor_cache=None, chain_base_date=None, source_tax_year=None,
-    refill_ctx: "RefillContext | None" = None,
+    refill_ctx: RefillContext | None = None,
 ) -> None:
     """ADR-003 §2.5. Claim-age multiplier + annual-January COLA compounding."""
     person = params.get("person")
@@ -1104,7 +1104,7 @@ def _apply_rmd(
     person_birthdates: dict[str, date],
     prior_year_end_balances: dict[int, int],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    tax_char: str, tid: int, *, refill_ctx: "RefillContext | None" = None,
+    tax_char: str, tid: int, *, refill_ctx: RefillContext | None = None,
 ) -> None:
     """ADR-003 §2.3. Annual December RMD; age-gated by ``start_age_series``.
     Subject account is the row's ``from_account`` (the IRA being drawn down).
@@ -1188,7 +1188,7 @@ def _apply_on_death(
     step_id: int, month_s: str,
     params: dict[str, Any], from_id: int | None, to_id: int | None,
     person_lifespan: dict[str, str],
-    tax_char: str, tid: int, *, refill_ctx: "RefillContext | None" = None,
+    tax_char: str, tid: int, *, refill_ctx: RefillContext | None = None,
 ) -> None:
     """ADR-003 \u00a74.9-adjacent: fires once, the first month after the named
     person's lifespan.csv ``final_month``, sweeping 100% of ``from_id``'s
@@ -1347,7 +1347,7 @@ def _post_withdrawal(
     step_id: int, month_s: str, from_id: int, to_id: int, amount: int,
     reason_id: int, *, parent_event_id: int | None = None,
     reason_kind: str = "rule", tax_year: int | None = None,
-    refill_ctx: "RefillContext | None" = None,
+    refill_ctx: RefillContext | None = None,
     requested: int | None = None, remainder: int | None = None,
     tax_character: str | None = None,
 ) -> None:
@@ -1450,7 +1450,7 @@ def _chain_draw(
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph,
     chain_id: int, amount_needed: int, target_account_id: int,
-    *, refill_ctx: "RefillContext | None" = None,
+    *, refill_ctx: RefillContext | None = None,
     reason_kind: str = "refill", reason_id: int | None = None,
     tax_year: int | None = None,
     aux=None, chain_base_date: date | None = None,
@@ -1541,7 +1541,7 @@ def _chain_sweep(
     inflation_factor_cache: dict | None = None,
     source_tax_character: str | None = None,
     source_tax_year: int | None = None,
-    refill_ctx: "RefillContext | None" = None,
+    refill_ctx: RefillContext | None = None,
     _progress: _ChainProgress | None = None,
 ) -> int:
     """Recursively sweep up to ``amount_available`` out of ``source_account_id``.
@@ -1607,7 +1607,7 @@ def _settle_accounts(
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph, settle_order: list[int],
     *, aux, chain_base_date: date, inflation_factor_cache: dict,
-    refill_ctx: "RefillContext | None" = None,
+    refill_ctx: RefillContext | None = None,
 ) -> None:
     """Overflow pass (ADR-003 §4.7), run once after each month's rules.
 
@@ -1654,7 +1654,7 @@ def _apply_tax_accumulator(
     graph=None, source_chain_id=None, account_tax_treatment=None,
     account_subkind=None, account_name=None, tax_year=None,
     person_lifespan: dict[str, str] | None = None,
-    refill_ctx: "RefillContext | None" = None,
+    refill_ctx: RefillContext | None = None,
 ) -> None:
     """Compute and optionally pay forecasted income tax for a target year.
 
@@ -2121,7 +2121,7 @@ def _apply_calendar_event(
     account_kinds: dict[int, str],
     balances: dict[int, int],
     step_id: int, month_s: str, model_id: int,
-    *, refill_ctx: "RefillContext | None" = None,
+    *, refill_ctx: RefillContext | None = None,
 ) -> None:
     """Expand one calendar_event per ADR-003 \u00a73."""
     match ev_kind:

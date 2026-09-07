@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
-from collections.abc import Generator, Iterable, Iterator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
@@ -209,14 +209,6 @@ _ITEM_SQL: dict[str, str] = {
         "LEFT JOIN tag t ON t.id = x.tag_id "
         "GROUP BY c.id ORDER BY c.id"
     ),
-    "account_model_member": (
-        "SELECT a.name AS account, a.kind, a.subkind, a.tax_treatment, "
-        "       m.opening_balance, m.opening_cost_basis, "
-        "       m.prior_year_end_balance "
-        "FROM account_model_member m "
-        "JOIN account a ON a.id = m.account_id "
-        "ORDER BY a.name"
-    ),
     "scenario": "SELECT * FROM scenario",
     # Run-file tables/views. No tag join: these aren't user-tagged today.
     "transfer_event": (
@@ -255,7 +247,9 @@ _ITEM_SQL: dict[str, str] = {
         "ORDER BY s.month, a.name"
     ),
     "account_model_member": (
-        "SELECT m.*, a.name AS account, a.kind, a.subkind "
+        "SELECT a.name AS account, a.kind, a.subkind, a.tax_treatment, "
+        "       m.opening_balance, m.opening_cost_basis, "
+        "       m.prior_year_end_balance "
         "FROM account_model_member m "
         "JOIN account a ON a.id = m.account_id "
         "ORDER BY a.name"
@@ -427,6 +421,10 @@ class RunConnection(_TagReader):
     def date(self) -> pd.Timestamp:
         return pd.to_datetime(self.metadata().finished_at)[0]
 
+    @property
+    def label(self) -> str:
+        return f"{self.name} ({self.date.strftime('%Y-%m-%d %H:%M')})"
+
     def __init__(self, run_path: Path | str) -> None:
         self.run_path = Path(run_path)
         self._con = sqlite3.connect(self.run_path)
@@ -435,7 +433,7 @@ class RunConnection(_TagReader):
     def close(self) -> None:
         self._con.close()
 
-    def __enter__(self) -> "RunConnection":
+    def __enter__(self) -> RunConnection:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -820,7 +818,7 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
             self._con = None  # type: ignore[assignment]
         self._tmp.cleanup()
 
-    def __enter__(self) -> "ScenarioConnection":
+    def __enter__(self) -> ScenarioConnection:
         return self
 
     def __exit__(self, *exc: object) -> None:

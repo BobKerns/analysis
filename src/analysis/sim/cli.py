@@ -25,11 +25,8 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
-from analysis.sim.engine import run_scenario
 from analysis.sim.connection import open_scenario
-from analysis.sim.quicken import (
-    format_dollars, is_investment_asset, load_account_map, parse_net_worth_export,
-)
+from analysis.sim.engine import run_scenario
 from analysis.sim.loader import (
     DEFAULT_INTENT_DIR,
     DEFAULT_RUNS_DIR,
@@ -42,6 +39,12 @@ from analysis.sim.loader import (
     resolve_scenario_name,
     state_dir,
     write_current_scenario,
+)
+from analysis.sim.quicken import (
+    format_dollars,
+    is_investment_asset,
+    load_account_map,
+    parse_net_worth_export,
 )
 
 
@@ -1221,11 +1224,6 @@ def add_account(
     with open_intent_db(data_dir_p, scenario) as (con, scen_name):
         existing = {r[0] for r in con.execute("SELECT name FROM account")}
         persons = [r[0] for r in con.execute("SELECT id FROM person ORDER BY id")]
-        model_row = con.execute(
-            "SELECT m.name FROM scenario s "
-            "JOIN account_model m ON m.id = s.account_model_id"
-        ).fetchone()
-    model_name = model_row[0] if model_row else ""
 
     if not name:
         name = _prompt_with_completion("account name").strip()
@@ -1353,12 +1351,18 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
         accounts_path, ("name", "refill_chain", "overflow_chain"), old_name, new_name,
     )
     changed |= _rename_account_row_values(scenario_dir / "account_values.csv", ("account_name",), old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "scheduled.csv", ("from_account", "to_account", "interest_account"), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "scheduled.csv",
+                                          ("from_account", "to_account", "interest_account"),
+                                          old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "calendar.csv", ("account_1", "account_2"), old_name, new_name)
     for chain_path in sorted((scenario_dir / "chains").glob("*.csv")) if (scenario_dir / "chains").is_dir() else []:
         changed |= _rename_account_row_values(chain_path, ("account_name",), old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "quicken_account_map.csv", ("account_name",), old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "year_to_date.csv", ("from_account", "to_account"), old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "quicken_account_map.csv",
+                                          ("account_name",),
+                                          old_name, new_name)
+    changed |= _rename_account_row_values(scenario_dir / "year_to_date.csv",
+                                          ("from_account", "to_account"),
+                                          old_name, new_name)
 
     if not changed:
         raise click.ClickException(f"account not found in scenario files: {old_name!r}")
