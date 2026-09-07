@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import matplotlib.pyplot as plt
 import pandas as pd
-from IPython.display import clear_output
+from IPython.display import Markdown, clear_output, display
 from ipywidgets import widgets
 
 from analysis.sim.notebook_ui.pickers import dollar_plot_mode, value_plot_mode, y_axis_plot_mode
@@ -97,6 +97,7 @@ def account_balance_history_widget(
     plot_mode: widgets.ToggleButtons | None = None,
     value_mode: widgets.ToggleButtons | None = None,
     y_axis_mode: widgets.ToggleButtons | None = None,
+    caveat: str | None = None,
 ):
     """Build a SelectMultiple + Output widget pair that plots on selection change.
 
@@ -117,7 +118,14 @@ def account_balance_history_widget(
     value_mode = value_mode or value_plot_mode()
     plot_mode = plot_mode or dollar_plot_mode()
     y_axis_mode = y_axis_mode or y_axis_plot_mode()
+    caveat_out: widgets.Output | None = None
     out = widgets.Output()
+    caveat_display = ()
+    if caveat is not None:
+        caveat_out = widgets.Output()
+        with caveat_out:
+            display(Markdown(caveat))
+        caveat_display = (caveat_out,)
 
     def _redraw(change=None):
         selected = list(change["new"] if change and change.get("owner") is picker else picker.value)
@@ -136,7 +144,7 @@ def account_balance_history_widget(
             mode_title = "CPI-constant" if mode == "cpi_constant" else "nominal"
             values_title = "monthly change" if values == "monthly" else "total"
             fig = render_balance_history_figure(
-                pivot, selected, f"{title} ({mode_title}, {values_title})",
+                pivot, selected, f"{title} [{mode_title}, {values_title}]",
                 zero_anchor=zero_anchor, value_mode=values,
             )
             if fig is None:
@@ -150,4 +158,4 @@ def account_balance_history_widget(
     value_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([widgets.HBox([value_mode, plot_mode, y_axis_mode]), picker, out])
+    return widgets.VBox([widgets.HBox([value_mode, plot_mode, y_axis_mode]), picker, out, *caveat_display])

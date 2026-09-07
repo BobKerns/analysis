@@ -423,7 +423,7 @@ class RunConnection(_TagReader):
 
     @property
     def label(self) -> str:
-        return f"{self.name} ({self.date.strftime('%Y-%m-%d %H:%M')})"
+        return f"{self.name}@{self.date.strftime('%Y-%m-%d %H:%M')}"
 
     def __init__(self, run_path: Path | str) -> None:
         self.run_path = Path(run_path)

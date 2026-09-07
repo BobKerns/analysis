@@ -10,6 +10,7 @@ notebook cell that captured it once keeps seeing the current selection.
 
 from __future__ import annotations
 
+from abc import abstractmethod
 import html as html_lib
 import re
 from dataclasses import dataclass, field
@@ -48,12 +49,60 @@ def display_warning(message: str) -> None:
 
     display(HTML(warning_html(message)))
 
+class Connections(traitlets.HasTraits):
+    """
+    Holds the currently open scenario and run connections.
+    This class is intended to be used as a singleton in notebooks, where
+    it is mutated in place whenever the scenario picker changes.
+
+    This is the base class for SingleScenarioConnections and MultiScenarioConnections.
+    """
+
+    @abstractmethod
+    def _invoke(self, fn: callable, *args, **kwargs):
+        """Invoke the given function with the current connections context."""
+        raise NotImplementedError()
+
+    def show(self, fn: callable, *args, **kwargs) -> widgets.Output:
+        """
+        Return an output widget that displays the result of calling `fn` with the current run connection.
+        Parameters
+        ----------
+        fn : callable
+            The function to call with the current run connection.
+        **kwargs
+            Additional keyword arguments to pass to `fn`.
+        
+        """
+        out = widgets.Output()
+        def _redraw(*_):
+            with out:
+                clear_output(wait=True)
+                result = self._invoke(fn, *args, **kwargs)
+                if result is not None:
+                    display(result)
+        self.observe(_redraw, names="value")
+        _redraw()
+        return out
+
+    def show_scenario(self, fn: callable, *args, **kwargs) -> widgets.Output:
+        """
+        Return an output widget that displays the result of calling `fn` with the current scenario connection.
+        Parameters
+        ----------
+        fn : callable
+            The function to call with the current scenario connection.
+        **kwargs
+            Additional keyword arguments to pass to `fn`.
+        
+        """
+        return self.show(lambda _, *args, **kwargs: fn(self.scenario, *args, **kwargs), *args, **kwargs)
 
 # ---------- single-scenario picker ----------
 
 
 @dataclass
-class SingleScenarioConnections(traitlets.HasTraits):
+class SingleScenarioConnections(Connections):
     """Currently selected scenario, with its open connections.
 
     ``run`` is ``None`` only when the picker was built with
@@ -69,6 +118,12 @@ class SingleScenarioConnections(traitlets.HasTraits):
         self.scenario.close()
         if self.run is not None:
             self.run.close()
+
+    def _invoke(self, fn: callable, *args, **kwargs):
+        """Invoke the given function with the current connections context."""
+        if self.run is None:
+            raise RuntimeError("No run connection available")
+        return fn(self.run, *args, **kwargs)
 
 
 def _open_single(
@@ -141,7 +196,7 @@ def scenario_picker(
 
 
 @dataclass
-class MultiScenarioConnections:
+class MultiScenarioConnections(Connections):
     """Currently selected baseline + variants, with their open run connections.
 
     ``connections`` only holds scenarios that resolved to a run;
@@ -162,6 +217,9 @@ class MultiScenarioConnections:
     @property
     def ok(self) -> bool:
         return bool(self.baseline)
+
+    def _invoke(self, fn: callable, **kwargs) -> widgets.Widget:
+        return fn(self, **kwargs)
 
 
 def _load_multi(
