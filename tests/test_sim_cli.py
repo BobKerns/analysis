@@ -143,6 +143,22 @@ def test_sim_explain_dumps_provenance_and_yearly_nw(tmp_path: Path) -> None:
     assert "  2040  " in out
 
 
+def test_sim_items_shows_account_events_and_originating_rule(tmp_path: Path) -> None:
+    _, runfile = _seed_one_run(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "items", "--account", "Asset_Checking", "--start", "2026-05-31",
+            "--end", "2026-05-31", "--runfile", str(runfile),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Asset_Checking" in result.output
+    assert "salary_alice (fixed_amount)" in result.output
+    assert "living (fixed_amount)" in result.output
+
+
 def _copy_prototype(tmp_path: Path) -> Path:
     import shutil
     dest = tmp_path / "data"

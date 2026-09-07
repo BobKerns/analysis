@@ -476,6 +476,94 @@ def explain(runfile: Path) -> None:
         con.close()
 
 
+@sim_group_command.command("items")
+@click.option("--account", required=True, help="Account name in the selected run.")
+@click.option("--start", required=True, help="First month (YYYY-MM-DD).")
+@click.option("--end", default=None, help="Last month (YYYY-MM-DD); overrides --months.")
+@click.option("--months", default=1, show_default=True, type=click.IntRange(min=1),
+              help="Number of months to include when --end is omitted.")
+@click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None, help="Run file (default: selected scenario's latest run).")
+@click.option("--scenario", default=None,
+              help="Scenario name used to find the latest run.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+@click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Directory to search for the latest run.")
+def items(
+    account: str,
+    start: str,
+    end: str | None,
+    months: int,
+    runfile: Path | None,
+    scenario: str | None,
+    data_dir: Path | None,
+    runs_dir: Path | None,
+) -> None:
+    """Show ledger events for one account with their originating rules."""
+    start = _validate_iso_date(start)
+    if end is not None:
+        end = _validate_iso_date(end)
+        if end < start:
+            raise click.ClickException("--end must be on or after --start")
+    else:
+        end = str((pd.Period(start, freq="M") + months - 1).end_time.date())
+
+    if runfile is None:
+        data_dir_p = _resolve_data_dir(data_dir)
+        scenario_ref = _resolve_scenario(data_dir_p, scenario)
+        resolved_runs_dir = runs_dir or scenario_ref.runs_dir
+        from analysis.sim.loader import latest_run_path
+
+        runfile = latest_run_path(resolved_runs_dir, scenario_ref.name)
+        if runfile is None:
+            raise click.ClickException(
+                f"no runs for {scenario_ref.name!r} in {resolved_runs_dir}; run `sim run` first"
+            )
+
+    con = sqlite3.connect(f"file:{runfile}?mode=ro", uri=True)
+    try:
+        account_row = con.execute("SELECT id FROM account WHERE name = ?", (account,)).fetchone()
+        if account_row is None:
+            raise click.ClickException(f"unknown account in run: {account!r}")
+        account_id = account_row[0]
+        rows = con.execute(
+            "SELECT te.date, fa.name, ta.name, te.amount, te.tax_character, "
+            "te.reason_kind, s.name, s.amount_rule_kind "
+            "FROM transfer_event te "
+            "JOIN account fa ON fa.id = te.from_account "
+            "JOIN account ta ON ta.id = te.to_account "
+            "LEFT JOIN scheduled_transaction s "
+            "  ON s.id = te.reason_id AND te.reason_kind IN ('rule', 'ytd_rule') "
+            "WHERE ? IN (te.from_account, te.to_account) "
+            "  AND te.date BETWEEN ? AND ? "
+            "ORDER BY te.date, te.id",
+            (account_id, start, end),
+        ).fetchall()
+    finally:
+        con.close()
+
+    click.echo(f"run: {runfile}")
+    click.echo(f"account: {account}  window: {start} through {end}")
+    if not rows:
+        click.echo("(no matching ledger events)")
+        return
+    header = "date        direction  amount              tax              origin"
+    click.echo(header)
+    click.echo("-" * len(header))
+    for date, from_name, to_name, amount, tax_character, reason_kind, rule_name, rule_kind in rows:
+        direction = f"to {to_name}" if from_name == account else f"from {from_name}"
+        origin = (
+            f"{reason_kind}: {rule_name} ({rule_kind})"
+            if rule_name is not None
+            else reason_kind
+        )
+        click.echo(
+            f"{date:<10}  {direction:<22} {_fmt_cents(amount):>17}  "
+            f"{tax_character:<16} {origin}"
+        )
+
+
 def _fmt_cents(cents: int | None) -> str:
     if cents is None:
         return "-"
