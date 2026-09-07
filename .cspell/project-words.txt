@@ -39,6 +39,7 @@ mult
 multimonth
 munknown
 nbstripout
+networth
 nextstrain
 NOCASE
 oneoff
@@ -54,6 +55,7 @@ recomputable
 reconstructable
 reentrancy
 reprompts
+ripwire
 rollups
 rootdir
 roundtrips

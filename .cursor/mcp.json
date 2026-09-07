@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "ripwire": { "command": "ripwire", "args": ["--mcp"] }
+  }
+}

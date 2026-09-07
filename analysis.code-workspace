@@ -11,6 +11,9 @@
 		"cSpell.configFile": "${workspaceFolder:analysis}/cspell.json",
 		"cSpell.import": ["./cspell.json"],
 		"explorerExclude.backup": {},
-		"explorerExcludeManager.backup": {}
+		"explorerExcludeManager.backup": {},
+		"chat.mcp.discovery.enabled": {
+			"cursor-workspace": true
+		}
 	}
 }

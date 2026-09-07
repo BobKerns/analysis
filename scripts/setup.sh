@@ -12,6 +12,20 @@ if ! command -v uv >/dev/null 2>&1; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
+if ! command -v ripwire >/dev/null 2>&1; then
+    echo "ripwire not found; installing..."
+    RIPWIRE_REPO=redhat-et/ripwire bash -c \
+        "$(curl -fsSL https://raw.githubusercontent.com/redhat-et/ripwire/main/scripts/install.sh)"
+    # ripwire's installer puts the binary in ~/.local/bin, which may not be on PATH yet.
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+
+if ! command -v ripwire >/dev/null 2>&1; then
+    echo "ripwire installation failed or is not on PATH." >&2
+    exit 1
+fi
+echo "Using $(ripwire --version)"
+
 echo "Configuring git hooks path..."
 git config core.hooksPath .githooks
 
