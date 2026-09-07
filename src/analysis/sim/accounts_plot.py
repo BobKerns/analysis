@@ -82,7 +82,7 @@ def render_balance_history_figure(
     ax.set_ylabel(ylabel)
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"${value:,.0f}"))
     ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize="small")
+    ax.legend(loc="best", fontsize="small", framealpha=0.5)
     if zero_anchor:
         include_zero(ax)
     fig.autofmt_xdate()

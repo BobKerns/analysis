@@ -20,7 +20,7 @@ from analysis.sim.notebook_ui.pickers import (
     display_warning,
     dollar_plot_mode,
 )
-from analysis.sim.plotting import include_zero
+from analysis.sim.plotting import include_zero, FRAME_ALPHA
 
 # ---------- data helpers (pure; unchanged math from the old scenario_compare.py) ----------
 
@@ -135,14 +135,14 @@ def plot_net_worth_and_delta(
     ax_nw.set_ylabel("net worth (USD)")
     mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
     ax_nw.set_title(f"Net worth, {mode_label}")
-    ax_nw.legend()
+    # ax_nw.legend(framealpha=FRAME_ALPHA)
 
     for name in variants:
         ax_delta.plot(delta.index, delta[name], label=name, color=colors[name])
     ax_delta.axhline(0, color="grey", linewidth=0.8)
     ax_delta.set_ylabel(f"difference vs {baseline}")
     ax_delta.set_xlabel("month")
-    ax_delta.legend()
+    ax_delta.legend(framealpha=FRAME_ALPHA)
 
     for ax in (ax_nw, ax_delta):
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
@@ -175,7 +175,7 @@ def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:
         ax.set_xlabel("if the money stops mattering here…")
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
         ax.grid(True, alpha=0.3)
-        ax.legend()
+        ax.legend(framealpha=FRAME_ALPHA)
         include_zero(ax)
     axes[0].set_ylabel("difference in net worth")
     plt.tight_layout()
@@ -195,7 +195,7 @@ def plot_ss_gross(ss: pd.DataFrame, ss_cumulative: pd.DataFrame, colors: dict[st
     for ax in (ax_month, ax_cum):
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
         ax.grid(True, axis="y", alpha=0.3)
-        ax.legend()
+        ax.legend(framealpha=FRAME_ALPHA)
         include_zero(ax)
     plt.tight_layout()
     plt.show()

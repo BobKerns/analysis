@@ -6,6 +6,7 @@ AMOLED
 autofetch
 autofmt
 axhline
+axvline
 birthdates
 blockquotes
 cachedir
@@ -13,6 +14,7 @@ calevt
 carryforward
 carryforwards
 categoriser
+cmap
 columnless
 configfile
 dflt
@@ -20,6 +22,7 @@ executemany
 executescript
 figsize
 fontsize
+framealpha
 gethostname
 gpgsign
 heloc
@@ -74,9 +77,11 @@ subkind
 subkinds
 taxchar
 tctronics
+textcoords
 topup
 traditionalira
 txns
+unobserve
 unsets
 unspsc
 upserts
@@ -87,6 +92,7 @@ xfers
 xlabel
 xticklabels
 xticks
+xytext
 ylabel
 ylim
 zpln

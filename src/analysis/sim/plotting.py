@@ -13,6 +13,9 @@ import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.ticker import FuncFormatter
 
+FRAME_ALPHA = 0.8
+"""Alpha transparency for legend frames."""
+
 
 def dollar_formatter() -> FuncFormatter:
     """A matplotlib tick formatter rendering values as ``$1,234``."""
@@ -70,7 +73,7 @@ def plot_timeseries(
         if s.notna().any():
             ax.plot(s.index, s, label=label)
     _finish(ax, title, ylabel)
-    ax.legend()
+    ax.legend(framealpha=FRAME_ALPHA)
     ax.figure.autofmt_xdate()
     return ax
 
@@ -93,7 +96,7 @@ def plot_stacked_bar(
     _finish(ax, title, ylabel)
     ax.set_xlabel(xlabel)
     ax.grid(True, axis="y", alpha=0.3)
-    ax.legend(title=legend_title)
+    ax.legend(title=legend_title, framealpha=FRAME_ALPHA)
     return ax
 
 
@@ -109,6 +112,6 @@ def plot_income_expense_net(net: pd.DataFrame, *, title: str, ax: Axes | None = 
     _finish(ax, title, "USD")
     ax.set_xlabel("year")
     ax.grid(True, axis="y", alpha=0.3)
-    ax.legend()
+    ax.legend(framealpha=FRAME_ALPHA)
     plt.setp(ax.get_xticklabels(), rotation=90)
     return ax
