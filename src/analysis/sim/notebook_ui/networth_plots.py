@@ -167,7 +167,7 @@ def gains_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = No
 
         gains_nominal = rc.gains_by_category()
         gains_yearly = (
-            rc.to_cpi_constant(gains_nominal) if mode == "cpi_constant"
+            rc.to_cpi_constant_annual(gains_nominal) if mode == "cpi_constant"
             else gains_nominal
         )
         chart = gains_yearly
