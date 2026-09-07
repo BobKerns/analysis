@@ -612,17 +612,31 @@ def _post_transfer(
     from_id: int, to_id: int, amount: int, tax_char: str, reason_id: int,
     parent_event_id: int | None = None, *, reason_kind: str = "rule",
     tax_year: int | None = None, refill_ctx: RefillContext | None = None,
+    requested: int | None = None, remainder: int | None = None,
 ) -> int | None:
     """Insert one transfer_event and adjust balances. Liability balances
     store debt magnitude; the sign is inverted when posting against them.
     Returns the new event's rowid, or None when amount==0 (no insert).
+
+    ``requested`` is the ORIGINAL triggering rule's/event's total ask, the
+    same value on every leg of one draw -- not that leg's own recursively-
+    allocated slice -- so the legs can be scanned to see how one request
+    broke down across accounts. ``remainder`` is how much of that request is
+    still outstanding after this leg. Both default to a single-leg,
+    fully-satisfied transfer (``requested = amount`` before the liability
+    cap below, ``remainder = requested - amount`` after it); chain draws/
+    sweeps pass both explicitly, tracked across their whole call tree.
     """
     if amount == 0:
         return None
+    if requested is None:
+        requested = amount
     if account_kinds[to_id] == "liability":
         amount = min(amount, max(0, balances.get(to_id, 0)))
         if amount == 0:
             return None
+    if remainder is None:
+        remainder = requested - amount
     if refill_ctx is not None and amount > 0:
         _ensure_min_balance(
             con, balances, account_kinds, step_id, month_s, refill_ctx,
@@ -630,11 +644,12 @@ def _post_transfer(
         )
     cur = con.execute(
         "INSERT INTO transfer_event("
-        "  step_id, date, from_account, to_account, amount, "
-        "  tax_character, tax_year, reason_kind, reason_id, parent_event_id"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (step_id, month_s, from_id, to_id, amount, tax_char, tax_year, reason_kind,
-         reason_id, parent_event_id),
+        "  step_id, date, from_account, to_account, amount, requested_cents, "
+        "  remainder_cents, tax_character, tax_year, reason_kind, reason_id, "
+        "  parent_event_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, month_s, from_id, to_id, amount, requested, remainder, tax_char,
+         tax_year, reason_kind, reason_id, parent_event_id),
     )
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
@@ -687,11 +702,11 @@ def _post_ytd_transfer(
         return None
     cur = con.execute(
         "INSERT INTO transfer_event("
-        "  step_id, date, from_account, to_account, amount, "
-        "  tax_character, reason_kind, reason_id, parent_event_id"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (step_id, date_s, from_id, to_id, amount, tax_char, reason_kind, reason_id,
-         parent_event_id),
+        "  step_id, date, from_account, to_account, amount, requested_cents, "
+        "  remainder_cents, tax_character, reason_kind, reason_id, parent_event_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, date_s, from_id, to_id, amount, amount, 0, tax_char, reason_kind,
+         reason_id, parent_event_id),
     )
     return cur.lastrowid
 
@@ -1365,6 +1380,27 @@ def _chain_step_allocation(
     return min(remaining, allocation)
 
 
+class _ChainProgress:
+    """Tracks one top-level ``_chain_draw``/``_chain_sweep`` call tree's
+    original ask and how much of it has been fulfilled so far, so every leg's
+    transfer_event can record the SAME requested amount (the rule's original
+    ask, not that leg's own recursively-allocated slice) plus a running
+    remainder -- letting the ledger show how one request broke down across
+    accounts without having to trace the recursion.
+    """
+
+    __slots__ = ("requested", "fulfilled")
+
+    def __init__(self, requested: int) -> None:
+        self.requested = requested
+        self.fulfilled = 0
+
+    def record(self, amount: int) -> int:
+        """Register ``amount`` fulfilled and return the remainder after it."""
+        self.fulfilled += amount
+        return self.requested - self.fulfilled
+
+
 def _chain_draw(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     account_tax_treatment: dict[int, str | None], account_subkind: dict[int, str],
@@ -1376,6 +1412,7 @@ def _chain_draw(
     tax_year: int | None = None,
     aux=None, chain_base_date: date | None = None,
     inflation_factor_cache: dict | None = None,
+    _progress: _ChainProgress | None = None,
 ) -> int:
     """Recursively draw up to ``amount_needed`` into ``target_account_id``,
     scanning ``chain_id``'s steps in order (ADR-003 §4.7).
@@ -1387,10 +1424,15 @@ def _chain_draw(
     percent/maximum allocation was smaller than what's still needed. Each leg
     is posted with the concrete source account's own withdrawal tax
     character -- derived here, at the point the money actually moves, since
-    it depends on which account actually supplied it.
+    it depends on which account actually supplied it. ``_progress`` (created
+    here at the top-level call, then threaded through the recursion) is what
+    lets every leg's transfer_event report the ORIGINAL ``amount_needed`` as
+    ``requested`` rather than its own shrunk-down allocation.
     """
     if amount_needed <= 0:
         return 0
+    if _progress is None:
+        _progress = _ChainProgress(amount_needed)
     if refill_ctx is not None:
         if aux is None:
             aux = refill_ctx.aux
@@ -1419,7 +1461,8 @@ def _chain_draw(
             con, balances, account_kinds, step_id, month_s,
             account_id, target_account_id, take, tax_char, reason_id or account_id,
             parent_event_id=None, reason_kind=reason_kind, tax_year=tax_year,
-            refill_ctx=refill_ctx,
+            refill_ctx=refill_ctx, requested=_progress.requested,
+            remainder=_progress.record(take),
         )
         return take
     total = 0
@@ -1441,6 +1484,7 @@ def _chain_draw(
             reason_id=reason_id, tax_year=tax_year,
             aux=aux, chain_base_date=chain_base_date,
             inflation_factor_cache=inflation_factor_cache,
+            _progress=_progress,
         )
     return total
 
@@ -1456,14 +1500,19 @@ def _chain_sweep(
     source_tax_character: str | None = None,
     source_tax_year: int | None = None,
     refill_ctx: "RefillContext | None" = None,
+    _progress: _ChainProgress | None = None,
 ) -> int:
     """Recursively sweep up to ``amount_available`` out of ``source_account_id``.
 
-    Mirrors ``_chain_draw``: each destination's own ``maximum_balance_cents``
-    caps how much it accepts, and any remainder falls through to the next step.
+    Mirrors ``_chain_draw``, including ``_progress`` tracking so every leg
+    reports the original ``amount_available`` as ``requested``: each
+    destination's own ``maximum_balance_cents`` caps how much it accepts, and
+    any remainder falls through to the next step.
     """
     if amount_available <= 0:
         return 0
+    if _progress is None:
+        _progress = _ChainProgress(amount_available)
     account_id = graph.leaf_account.get(chain_id)
     if account_id is not None:
         if account_id == source_account_id:
@@ -1484,6 +1533,7 @@ def _chain_sweep(
             source_account_id, account_id, put, tax_char, source_account_id,
             parent_event_id=None, reason_kind="overflow",
             tax_year=source_tax_year, refill_ctx=refill_ctx,
+            requested=_progress.requested, remainder=_progress.record(put),
         )
         return put
     total = 0
@@ -1505,6 +1555,7 @@ def _chain_sweep(
             inflation_factor_cache=inflation_factor_cache,
             source_tax_character=source_tax_character,
             source_tax_year=source_tax_year, refill_ctx=refill_ctx,
+            _progress=_progress,
         )
     return total
 

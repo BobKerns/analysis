@@ -220,6 +220,7 @@ _ITEM_SQL: dict[str, str] = {
     # Run-file tables/views. No tag join: these aren't user-tagged today.
     "transfer_event": (
         "SELECT te.id, te.step_id, s.month, te.date, te.amount, "
+        "       te.requested_cents, te.remainder_cents, "
         "       te.tax_character, te.reason_kind, te.reason_id, "
         "       te.parent_event_id, te.from_account, te.to_account, "
         "       fa.name AS from_name, fa.kind AS from_kind, "

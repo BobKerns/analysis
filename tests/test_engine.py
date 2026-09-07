@@ -397,8 +397,8 @@ def test_post_transfer_caps_payment_to_liability_balance() -> None:
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         event_id = _post_transfer(
@@ -435,8 +435,8 @@ def test_chain_draw_single_leaf_account_respects_minimum_balance() -> None:
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         taken = _chain_draw(
@@ -464,8 +464,8 @@ def test_chain_draw_never_draws_target_from_itself() -> None:
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         taken = _chain_draw(
@@ -503,8 +503,8 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character()
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         taken = _chain_draw(
@@ -555,8 +555,8 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         taken = _chain_draw(
@@ -592,8 +592,8 @@ def test_chain_draw_step_maximum_caps_allocation_even_when_more_is_available() -
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         taken = _chain_draw(
@@ -631,8 +631,8 @@ def test_chain_draw_refills_source_before_checking_availability() -> None:
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     refill_ctx = RefillContext(
         graph, aux=None, chain_base_date=date(2026, 5, 31),
@@ -687,8 +687,8 @@ def test_chain_sweep_allocates_fixed_then_percent_of_remainder() -> None:
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         swept = _chain_sweep(
@@ -726,8 +726,8 @@ def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         _apply_ytd_catchups(con, 1, date(2026, 5, 31), [txn], [], graph)
@@ -767,8 +767,8 @@ def test_ytd_preroll_annual_fixed_amount_fires_only_if_month_has_passed() -> Non
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         _apply_ytd_catchups(con, 1, date(2026, 5, 31), [apr_tax, dec_tax], [], graph)
@@ -798,8 +798,8 @@ def test_ytd_amount_from_interior_source_chain_records_first_leaf_account() -> N
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, tax_character, tax_year, reason_kind, "
-        "reason_id, parent_event_id)"
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     try:
         _apply_ytd_catchups(

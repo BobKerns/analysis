@@ -51,6 +51,7 @@ pypi
 recategorize
 recomputable
 reconstructable
+reentrancy
 reprompts
 rollups
 rootdir

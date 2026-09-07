@@ -400,6 +400,8 @@ CREATE TABLE transfer_event (
     from_account    INTEGER NOT NULL REFERENCES account(id),
     to_account      INTEGER NOT NULL REFERENCES account(id),
     amount          INTEGER NOT NULL,         -- cents, always non-negative
+    requested_cents INTEGER NOT NULL,         -- original triggering rule's ask; same on every leg of one draw
+    remainder_cents INTEGER NOT NULL,         -- requested_cents still outstanding after this leg (0 once satisfied)
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN ('rule','initial')),
     reason_id       INTEGER,                  -- scheduled_transaction.id when 'rule';

@@ -528,7 +528,8 @@ def items(
             raise click.ClickException(f"unknown account in run: {account!r}")
         account_id = account_row[0]
         rows = con.execute(
-            "SELECT te.date, fa.name, ta.name, te.amount, te.tax_character, "
+            "SELECT te.date, fa.name, ta.name, te.amount, te.requested_cents, "
+            "te.remainder_cents, te.tax_character, "
             "te.reason_kind, s.name, s.amount_rule_kind "
             "FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account "
@@ -548,20 +549,32 @@ def items(
     if not rows:
         click.echo("(no matching ledger events)")
         return
-    header = "date        direction  amount              tax              origin"
-    click.echo(header)
-    click.echo("-" * len(header))
-    for date, from_name, to_name, amount, tax_character, reason_kind, rule_name, rule_kind in rows:
+
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title=f"ledger events ({account})")
+    table.add_column("Date")
+    table.add_column("Direction")
+    table.add_column("Amount", justify="right")
+    table.add_column("Requested", justify="right")
+    table.add_column("Remainder", justify="right")
+    table.add_column("Tax")
+    table.add_column("Origin")
+    for (date, from_name, to_name, amount, requested, remainder, tax_character,
+         reason_kind, rule_name, rule_kind) in rows:
         direction = f"to {to_name}" if from_name == account else f"from {from_name}"
         origin = (
             f"{reason_kind}: {rule_name} ({rule_kind})"
             if rule_name is not None
             else reason_kind
         )
-        click.echo(
-            f"{date:<10}  {direction:<22} {_fmt_cents(amount):>17}  "
-            f"{tax_character:<16} {origin}"
+        table.add_row(
+            date, direction, _fmt_cents(amount).strip(),
+            _fmt_cents(requested).strip(), _fmt_cents(remainder).strip(),
+            tax_character, origin,
         )
+    Console(width=200).print(table)
 
 
 def _fmt_cents(cents: int | None) -> str:

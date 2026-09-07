@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -364,6 +364,15 @@ CREATE TABLE transfer_event (
     from_account    INTEGER NOT NULL REFERENCES account(id),
     to_account      INTEGER NOT NULL REFERENCES account(id),
     amount          INTEGER NOT NULL,
+    -- Total amount asked for by the original triggering rule/event -- the
+    -- SAME value on every leg of one draw, not that leg's own recursively-
+    -- allocated slice, so a chain's legs can be summed/scanned to see how
+    -- one request broke down across accounts. `remainder` is how much of
+    -- that original request is still outstanding after this leg posted
+    -- (0 once fully satisfied); for a single-leg, non-chain transfer,
+    -- requested == amount and remainder == 0.
+    requested_cents INTEGER NOT NULL,
+    remainder_cents INTEGER NOT NULL,
     tax_year        INTEGER,
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
