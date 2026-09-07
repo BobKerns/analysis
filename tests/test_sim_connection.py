@@ -303,6 +303,17 @@ def test_balance_pivot_filters_by_kind_and_is_cents_to_dollars(tmp_path: Path) -
         assert full.loc[month, "Asset_Checking"] == raw_checking["balance"] / 100
 
 
+def test_income_balance_pivot_displays_credits_as_positive_inflows(tmp_path: Path) -> None:
+    with open_run(_build_run(tmp_path)) as rc:
+        raw = rc.items("account_balance")
+        raw_income = raw[raw["account"] == "Income_Salary_Alice"].iloc[0]
+        month = pd.to_datetime(raw_income["month"])
+
+        income = rc.balance_pivot("income")
+
+        assert income.loc[month, "Income_Salary_Alice"] == -raw_income["balance"] / 100
+
+
 def test_income_and_expenses_by_category_have_total_column(tmp_path: Path) -> None:
     with open_run(_build_run(tmp_path)) as rc:
         income = rc.income_by_category()

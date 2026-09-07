@@ -480,6 +480,8 @@ class RunConnection(_TagReader):
         For income/expense accounts the balance is already the engine's own
         running cumulative total (``account_state`` tracks every account, not
         just assets/liabilities), so this needs no separate flow/cumsum pass.
+        Income accounts are stored as credits (negative balances), but are
+        displayed as positive cumulative inflows.
         """
 
         def _build() -> pd.DataFrame:
@@ -495,7 +497,8 @@ class RunConnection(_TagReader):
             return full
         kinds = self.account_kinds()
         cols = [c for c in full.columns if kinds.get(c) == kind]
-        return full[cols]
+        pivot = full[cols]
+        return -pivot if kind == "income" else pivot
 
     def cpi_balance_pivot(self, kind: str | None = None) -> pd.DataFrame:
         """``balance_pivot(kind)`` converted to CPI-constant dollars.
