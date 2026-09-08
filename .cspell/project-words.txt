@@ -93,6 +93,7 @@ xlabel
 xticklabels
 xticks
 xytext
+ydata
 ylabel
 ylim
 zpln

@@ -220,7 +220,7 @@ def render_balance_history_figure(
 def or_dash(fmt: str):
     return lambda x: fmt.format(x) if not pd.isna(x) else "-"
 
-def show_account_setup(scenario: ScenarioConnection, as_of: str | None = AS_OF):
+def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None):
     df = accounts_dataframe(scenario, as_of=as_of)
     output = widgets.Output()
     with output:
