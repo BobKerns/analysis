@@ -234,7 +234,19 @@ class MultiScenarioConnections(Connections):
         return bool(self.baseline)
 
     def _invoke(self, fn: callable, **kwargs) -> widgets.Widget:
-        return fn(self, **kwargs)
+        baseline_rc = self.connections[self.baseline] if self.baseline in self.connections else None
+        variant_rcs = {
+            variant: self.connections[variant]
+            for variant in self.variants
+            if variant in self.connections
+        }
+        return fn(self,
+                  baseline=self.baseline,
+                  baseline_rc=baseline_rc,
+                  variants=self.variants,
+                  variant_rcs=variant_rcs,
+                  connections=self.connections,
+                  **kwargs)
 
 
 def _load_multi(
