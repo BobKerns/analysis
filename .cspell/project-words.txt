@@ -5,6 +5,7 @@ aggfunc
 AMOLED
 autofetch
 autofmt
+autouse
 axhline
 axvline
 birthdates
@@ -17,9 +18,12 @@ categoriser
 cmap
 columnless
 configfile
+conftest
+delenv
 dflt
 executemany
 executescript
+execv
 figsize
 fontsize
 framealpha

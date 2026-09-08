@@ -39,6 +39,9 @@ packages = ["src/analysis"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "uses_current_scenario_write: exempt from the no-op write_current_scenario fixture (see tests/conftest.py)",
+]
 
 [tool.ruff]
 line-length = 120

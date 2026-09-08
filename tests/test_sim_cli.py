@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
@@ -166,6 +167,7 @@ def _copy_prototype(tmp_path: Path) -> Path:
     return dest
 
 
+@pytest.mark.uses_current_scenario_write
 def test_sim_load_records_current_scenario_and_defaults_to_it(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -278,6 +280,7 @@ def test_sim_all_reports_failures_without_stopping(tmp_path: Path, monkeypatch) 
     assert len(list((tmp_path / "runs").glob("*.sqlite3"))) == 1
 
 
+@pytest.mark.uses_current_scenario_write
 def test_sim_scenario_create_derives_and_activates(tmp_path: Path, monkeypatch) -> None:
     data = _copy_prototype(tmp_path)
     monkeypatch.setenv("ANALYSIS_DATA_DIR", str(data))
