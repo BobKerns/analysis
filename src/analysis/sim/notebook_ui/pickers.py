@@ -157,8 +157,10 @@ def scenario_picker(
     :class:`SingleScenarioConnections`, refreshed in place (closing the
     previous connections) whenever the dropdown changes.
     """
+
+    REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
     if data_dir is None:
-        data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", "../data/shared/sim"))
+        data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data/shared/sim"))
     else:
         data_dir = Path(data_dir)
     if default is None:
