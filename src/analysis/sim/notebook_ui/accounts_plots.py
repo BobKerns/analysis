@@ -90,7 +90,6 @@ def account_balance_history_widget(
             else balance_pivot_by_kind(kind_picker.value)
         )
         with out:
-            clear_output(wait=True)
             mode_title = "CPI-constant" if mode == "cpi_constant" else "nominal"
             values_title = "monthly change" if values == "monthly" else "total"
             kind_title = KIND_LABELS[kind_picker.value]
@@ -117,10 +116,11 @@ def account_balance_history_widget(
     _sync_accounts_options()
     _redraw()
 
-    return widgets.VBox([
+    box = widgets.VBox([
         widgets.HBox([value_mode, plot_mode, y_axis_mode]),
         kind_picker, picker, out, caveat_out,
     ])
+    display(box, clear=True)
 
 
 
