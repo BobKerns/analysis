@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from datetime import date
 
 import pandas as pd
+from rich.console import Console
 
-from analysis.sim.connection import ScenarioConnection
+from analysis.sim.connection import RunConnection, ScenarioConnection
 
 
 def _or_empty(value) -> str:
@@ -159,3 +160,16 @@ def render_accounts_table(rows: list[AccountRow], title: str | None = None):
             ob, rate, r.rate_series or "", r.rate_role or "",
         )
     return table
+
+def account_summary_by_kind(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a summary of opening balances grouped by account kind."""
+    return (
+            df.dropna(subset=["opening_balance"])
+            .groupby("kind", as_index=False)["opening_balance"]
+            .sum()
+            .sort_values("opening_balance", ascending=False)
+        )
+
+def show_account_rows_text(rc: RunConnection, as_of: str | None = None):
+    rows = load_accounts_view(rc.scenario, as_of=as_of)
+    Console().print(render_accounts_table(rows, title=f"accounts ({rc.data_dir.name})"))

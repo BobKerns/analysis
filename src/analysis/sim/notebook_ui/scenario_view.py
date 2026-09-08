@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from analysis.sim.connection import ScenarioConnection, RunConnection
+from analysis.sim.connection import ScenarioConnection
 
 
 def manifest_view(sc: ScenarioConnection) -> pd.DataFrame:

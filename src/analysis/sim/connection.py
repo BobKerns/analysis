@@ -425,7 +425,14 @@ class RunConnection(_TagReader):
     def label(self) -> str:
         return f"{self.name}@{self.date.strftime('%Y-%m-%d %H:%M')}"
 
-    def __init__(self, run_path: Path | str) -> None:
+    scenario: ScenarioConnection
+
+    @property
+    def data_dir(self) -> Path:
+        return self.scenario.data_dir
+
+    def __init__(self, scenario: ScenarioConnection, run_path: Path | str) -> None:
+        self.scenario = scenario 
         self.run_path = Path(run_path)
         self._con = sqlite3.connect(self.run_path)
         self._con.row_factory = sqlite3.Row
@@ -738,8 +745,9 @@ class RunConnection(_TagReader):
 
 
 @contextmanager
-def open_run(run_path: Path | str) -> Generator[RunConnection]:
-    rc = RunConnection(run_path)
+def open_run(run_path: Path | str, scenario: str| None = None) -> Generator[RunConnection]:
+    scenario_conn = open_scenario(run_path, scenario)
+    rc = RunConnection(scenario_conn, run_path)
     try:
         yield rc
     finally:

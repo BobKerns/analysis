@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import matplotlib
 
+from analysis.sim.notebook_ui.accounts_plots import trim_to_last_nonzero
+
 matplotlib.use("Agg")
 
 import pandas as pd
 
-from analysis.sim.accounts_plot import render_balance_history_figure, trim_to_last_nonzero
+from analysis.sim.notebook_ui.accounts_plots import render_balance_history_figure
 
 
 def test_trim_to_last_nonzero_keeps_one_month_past_last_nonzero() -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 import html as html_lib
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -136,7 +137,7 @@ def _open_single(
             f"`analysis sim load {name} && analysis sim run {name}`"
         )
     scenario = ScenarioConnection(data_dir, name)
-    run = RunConnection(ref.run_path) if ref.run_path is not None else None
+    run = RunConnection(scenario,ref.run_path) if ref.run_path is not None else None
     return SingleScenarioConnections(name, ref, scenario, run)
 
 _META_COLS = [
@@ -146,7 +147,7 @@ _META_COLS = [
 ]
 
 def scenario_picker(
-    data_dir: Path | str, default: str, *,
+    data_dir: Path | str | None = None, default: str | None = None, *,
     require_run: bool = True,
     show_metadata: bool = False,
 ):
@@ -156,8 +157,16 @@ def scenario_picker(
     :class:`SingleScenarioConnections`, refreshed in place (closing the
     previous connections) whenever the dropdown changes.
     """
-
-    data_dir = Path(data_dir)
+    if data_dir is None:
+        data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", "../data/shared/sim"))
+    else:
+        data_dir = Path(data_dir)
+    if default is None:
+    # Same resolution the CLI uses: $ANALYSIS_SCENARIO, else the data repo's
+    # .current_scenario, else "current".
+        default = resolve_scenario_name(
+            data_dir, os.environ.get("ANALYSIS_SCENARIO") or None
+        ).name
     options = list_scenario_names(data_dir)
     dropdown = widgets.Dropdown(options=options, value=default, description="Scenario:")
     ref_out = widgets.Output()
@@ -245,7 +254,8 @@ def _load_multi(
         if ref.run_path is None:
             missing.append(name)
             continue
-        connections[name] = RunConnection(ref.run_path)
+        scenario = _open_single(data_dir, name, require_run=True)
+        connections[name] = RunConnection(scenario, ref.run_path)
 
     if baseline not in connections:
         return MultiScenarioConnections(connections, "", [], {}, [

@@ -9,7 +9,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-from analysis.sim.accounts_plot import render_balance_history_figure
+from analysis.sim.notebook_ui.accounts_plots import render_balance_history_figure
 from analysis.sim.connection import RunConnection, open_run
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import load_scenario
