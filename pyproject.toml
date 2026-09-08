@@ -12,7 +12,7 @@ dependencies = [
   "pandas>=3.0.5",
   "rich>=15.0.0",
   "ipykernel>=7.3.0",
-  "jupyterlab>=4.6",
+  "jupyterlab>=4.6.3",
 ]
 
 [project.scripts]
