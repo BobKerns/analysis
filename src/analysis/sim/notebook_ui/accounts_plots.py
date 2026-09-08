@@ -123,7 +123,6 @@ def account_balance_history_widget(
     display(box, clear=True)
 
 
-
 def account_history_widget(
     rc: RunConnection, kind: str, title: str, initial_count: int = 1,
     plot_mode: widgets.ToggleButtons | None = None,
@@ -221,13 +220,29 @@ def or_dash(fmt: str):
     return lambda x: fmt.format(x) if not pd.isna(x) else "-"
 
 def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None):
+    """
+    Show the account setup for the given scenario as of the specified date.
+
+    Parameters
+    ----------
+    scenario : ScenarioConnection
+        The scenario connection object.
+    as_of : str | None, optional
+        The date as of which to show the account setup, by default None.
+
+    Returns
+    -------
+    widgets.Output
+        The output widget containing the account setup display.
+    """
     df = accounts_dataframe(scenario, as_of=as_of)
     output = widgets.Output()
     with output:
         display(account_summary_by_kind(df).style.format({
-            "opening_balance": or_dash("${:,.2f}"),
-            
-        }))
+                "opening_balance": or_dash("${:,.2f}"),
+                "annual_rate_pct": or_dash("{:.2f}%"),
+            },
+            na_rep="-"))
         with pd.option_context("display.max_rows", None, "display.max_columns", None):
             display(df.style.format({
                 "opening_balance": or_dash("${:,.2f}"),
