@@ -63,17 +63,33 @@ Invariants that are easy to break:
   ship only their overrides. Anything reasoning about "the files this scenario
   read" must walk the whole lineage, not just the scenario's own folder.
 
+## CLI entry points
+
+Three scripts are installed via `pyproject.toml` `[project.scripts]`:
+
+| Script | Equivalent | Purpose |
+| --- | --- | --- |
+| `analysis` | — | Top-level; all subcommands |
+| `amazon` | `analysis amazon` | Amazon expense categorizer |
+| `sim` | `analysis sim` | Scenario simulator |
+
+Use `.venv/bin/analysis` / `.venv/bin/amazon` / `.venv/bin/sim`, or `uv run ...`,
+if the venv isn't on `PATH`.
+
 ## Verifying a change
 
 Three gates, all of which should pass before reporting a simulator change done:
 
 ```sh
 .venv/bin/python -m pytest -q                     # tests
-.venv/bin/python -m ruff check src tests          # lint (line-length 100)
+.venv/bin/python -m ruff check src tests          # lint
 for s in "$ANALYSIS_DATA_DIR"/scenarios/*/; do    # real scenarios still load
   .venv/bin/analysis sim check "$(basename "$s")"
 done
 ```
+
+Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_name -q`
+(or `-k pattern` to match by substring).
 
 `ruff check` has pre-existing findings. Compare counts against the baseline
 (`git stash -u`, re-run, `git stash pop`) rather than assuming a clean slate,
@@ -91,3 +107,8 @@ and leave unrelated findings alone.
   restating the line below it is noise; one recording a decision or a trap is
   worth keeping.
 - When a test's name stops describing what it asserts, rename it.
+- **Tabs are forbidden** in all text files (code, markdown, docs) — spaces only.
+- Spell checking (cspell) runs over docs, markdown, and comments only; add
+  project-specific words to `.cspell/project-words.txt`.
+- `data/`, `out/`, and `state/` are gitignored and protected by a pre-commit
+  hook — never try to make code or tests pass by editing files there.

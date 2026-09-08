@@ -36,6 +36,7 @@ liab
 linestyle
 ltcg
 mktree
+modelcontextprotocol
 msecs
 mtimes
 mult

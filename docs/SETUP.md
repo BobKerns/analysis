@@ -17,6 +17,11 @@ token usage and improve quality by creating and using
 deterministic repository maps and code-navigation checks; its optional MCP
 server is registered separately per coding-agent client below.
 
+It also generates `.mcp.json` (gitignored, machine-local) on first run, with a
+random token for the Jupyter MCP server — see
+[Jupyter and filesystem MCP servers](#jupyter-and-filesystem-mcp-servers)
+below.
+
 ## What the script does, step by step (for reference or manual setup)
 
 1. Install [uv](https://github.com/astral-sh/uv)
@@ -41,6 +46,36 @@ server is registered separately per coding-agent client below.
     ```
     (`--install --extra-keys` in one call does *not* persist the extra keys in
     this nbstripout version — the second command is required.)
+6. Generate `.mcp.json` if it doesn't already exist, with a random 32-byte hex
+   token for the Jupyter MCP server:
+    ```sh
+    JUPYTER_TOKEN=$(openssl rand -hex 32)
+    ```
+    The script never overwrites an existing `.mcp.json`, so a token generated
+    once survives reruns.
+
+## Jupyter and filesystem MCP servers
+
+Two project-level MCP servers are configured for coding agents (Copilot CLI,
+and any other client that reads `.mcp.json` / `.github/mcp.json`):
+
+- **filesystem** — [`@modelcontextprotocol/server-filesystem`](https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem),
+  scoped to the repository root. Defined in `.github/mcp.json` (committed —
+  no secrets involved).
+- **jupyter** — [`jupyter-mcp-server`](https://pypi.org/project/jupyter-mcp-server/),
+  which talks to a running JupyterLab instance. Defined in `.mcp.json`
+  (gitignored — holds the per-machine token `setup.sh` generates).
+
+Both files are loaded together; server names don't conflict, so no merging
+surprises. Before using the jupyter MCP server, start JupyterLab with the
+token `setup.sh` printed (or read it back out of `.mcp.json`):
+
+```sh
+uv run jupyter lab --port 8888 --IdentityProvider.token=<token from .mcp.json>
+```
+
+If you lose the printed token, `cat .mcp.json` to find it, or delete the file
+and re-run `./scripts/setup.sh` to generate a new one.
 
 ## Optional MCP registration
 
