@@ -17,11 +17,6 @@ token usage and improve quality by creating and using
 deterministic repository maps and code-navigation checks; its optional MCP
 server is registered separately per coding-agent client below.
 
-It also generates `.mcp.json` (gitignored, machine-local) on first run, with a
-random token for the Jupyter MCP server — see
-[Jupyter and filesystem MCP servers](#jupyter-and-filesystem-mcp-servers)
-below.
-
 ## What the script does, step by step (for reference or manual setup)
 
 1. Install [uv](https://github.com/astral-sh/uv)
@@ -46,13 +41,6 @@ below.
     ```
     (`--install --extra-keys` in one call does *not* persist the extra keys in
     this nbstripout version — the second command is required.)
-6. Generate `.mcp.json` if it doesn't already exist, with a random 32-byte hex
-   token for the Jupyter MCP server:
-    ```sh
-    JUPYTER_TOKEN=$(openssl rand -hex 32)
-    ```
-    The script never overwrites an existing `.mcp.json`, so a token generated
-    once survives reruns.
 
 ## Jupyter and filesystem MCP servers
 
@@ -64,18 +52,21 @@ and any other client that reads `.mcp.json` / `.github/mcp.json`):
   no secrets involved).
 - **jupyter** — [`jupyter-mcp-server`](https://pypi.org/project/jupyter-mcp-server/),
   which talks to a running JupyterLab instance. Defined in `.mcp.json`
-  (gitignored — holds the per-machine token `setup.sh` generates).
+  (gitignored — holds a per-machine token).
 
 Both files are loaded together; server names don't conflict, so no merging
-surprises. Before using the jupyter MCP server, start JupyterLab with the
-token `setup.sh` printed (or read it back out of `.mcp.json`):
+surprises. Run JupyterLab through the CLI rather than starting it directly —
+it generates `.mcp.json` with a fresh random token on first run (never
+overwriting an existing one), then launches `jupyter lab` with that same
+token, so the Jupyter MCP server always talks to the instance you started:
 
 ```sh
-uv run jupyter lab --port 8888 --IdentityProvider.token=<token from .mcp.json>
+analysis jupyter
 ```
 
-If you lose the printed token, `cat .mcp.json` to find it, or delete the file
-and re-run `./scripts/setup.sh` to generate a new one.
+Any extra arguments are passed through to `jupyter lab` verbatim, e.g.
+`analysis jupyter --no-browser`. If `.mcp.json` gets corrupted, delete it and
+rerun `analysis jupyter` to regenerate it.
 
 ## Optional MCP registration
 
