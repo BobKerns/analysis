@@ -286,9 +286,9 @@ def _load_multi(
 
 
 def multi_scenario_picker(
-    data_dir: Path | str,
-    default_baseline: str,
-    default_variants: list[str],
+    data_dir: Path | str | None = None,
+    default_baseline: str | None = None,
+    default_variants: list[str] | None = None,
     max_variants: int = 4,
 ):
     """Baseline dropdown + variant multi-select, backed by live run connections.
@@ -298,15 +298,26 @@ def multi_scenario_picker(
     connections) whenever either picker changes.
     """
 
+    REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+    if data_dir is None:
+        data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data" / "shared" / "sim"))  
     data_dir = Path(data_dir)
     available = list_scenario_names(data_dir)
+
+    if default_baseline is None:
+        # Same resolution the CLI uses: $ANALYSIS_SCENARIO, else the data repo's
+        # .current_scenario, else "current".
+        default_baseline = resolve_scenario_name(
+            data_dir, os.environ.get("ANALYSIS_SCENARIO") or None
+        ).name
 
     baseline_picker = widgets.Dropdown(
         options=available, value=default_baseline, description="Baseline:",
     )
     variant_picker = widgets.SelectMultiple(
         options=[name for name in available if name != default_baseline],
-        value=tuple(default_variants),
+        value=tuple(default_variants
+                    or (*[name for name in available if name != default_baseline][:max_variants],)),
         description="Variants:",
         rows=min(len(available), 8),
     )
