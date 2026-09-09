@@ -747,6 +747,134 @@ def test_post_withdrawal_realizes_loss_as_negative_ltcg_leg() -> None:
         con.close()
 
 
+def _home_sale_transfer_event_table(con: sqlite3.Connection) -> None:
+    con.execute(
+        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
+        "from_account, to_account, amount, requested_cents, remainder_cents, "
+        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    )
+
+
+def test_apply_home_sale_splits_basis_excluded_and_taxable_gain() -> None:
+    """Sale price above basis + exclusion cap produces all three legs:
+    return_of_capital (the basis), excluded_gain (gain up to the §121 cap,
+    untaxed), and ltcg (gain above the cap, taxed)."""
+    from analysis.sim.engine import _apply_home_sale
+
+    balances = {5: 900_000_00, 6: 0}
+    cost_bases = {5: 200_000_00}
+    con = sqlite3.connect(":memory:")
+    _home_sale_transfer_event_table(con)
+    try:
+        _apply_home_sale(
+            con, balances, {5: "asset", 6: "asset"}, cost_bases,
+            step_id=1, month_s="2026-06-30",
+            params={"exclusion_cap_cents": 500_000_00},
+            amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux={},
+        )
+        legs = con.execute(
+            "SELECT amount, tax_character, parent_event_id FROM transfer_event "
+            "ORDER BY id"
+        ).fetchall()
+        # gain = 900k - 200k = 700k; excluded = min(700k, 500k) = 500k;
+        # taxable = 200k.
+        assert legs == [
+            (200_000_00, "return_of_capital", None),
+            (500_000_00, "excluded_gain", 1),
+            (200_000_00, "ltcg", 2),
+        ]
+        assert balances[6] == 900_000_00
+        assert cost_bases[5] == 0
+    finally:
+        con.close()
+
+
+def test_apply_home_sale_excludes_entire_gain_when_under_cap() -> None:
+    """Gain fully covered by the exclusion posts no ltcg leg at all -- not
+    a zero-amount leg, no leg."""
+    from analysis.sim.engine import _apply_home_sale
+
+    balances = {5: 600_000_00, 6: 0}
+    cost_bases = {5: 200_000_00}
+    con = sqlite3.connect(":memory:")
+    _home_sale_transfer_event_table(con)
+    try:
+        _apply_home_sale(
+            con, balances, {5: "asset", 6: "asset"}, cost_bases,
+            step_id=1, month_s="2026-06-30",
+            params={"exclusion_cap_cents": 500_000_00},
+            amount_cents=600_000_00, from_id=5, to_id=6, tid=42, aux={},
+        )
+        legs = con.execute(
+            "SELECT amount, tax_character FROM transfer_event ORDER BY id"
+        ).fetchall()
+        # gain = 400k, fully under the 500k cap -- no ltcg leg at all.
+        assert legs == [
+            (200_000_00, "return_of_capital"),
+            (400_000_00, "excluded_gain"),
+        ]
+    finally:
+        con.close()
+
+
+def test_apply_home_sale_looks_up_exclusion_from_aux_table_by_filing_status() -> None:
+    """With no explicit override, the exclusion cap comes from the
+    home_sale_exclusion aux table, keyed by filing_status, using the same
+    latest-effective-date-on-or-before convention as every other aux
+    lookup."""
+    from analysis.sim.engine import _apply_home_sale
+
+    balances = {5: 900_000_00, 6: 0}
+    cost_bases = {5: 200_000_00}
+    aux = {
+        ("home_sale_exclusion", None): [
+            ("1997-05-07", {"filing_status": "Single", "amount": 250_000_00}),
+            ("1997-05-07", {"filing_status": "MFJ", "amount": 500_000_00}),
+        ],
+    }
+    con = sqlite3.connect(":memory:")
+    _home_sale_transfer_event_table(con)
+    try:
+        _apply_home_sale(
+            con, balances, {5: "asset", 6: "asset"}, cost_bases,
+            step_id=1, month_s="2026-06-30",
+            params={"filing_status": "MFJ"},
+            amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux=aux,
+        )
+        legs = con.execute(
+            "SELECT amount, tax_character FROM transfer_event ORDER BY id"
+        ).fetchall()
+        assert legs == [
+            (200_000_00, "return_of_capital"),
+            (500_000_00, "excluded_gain"),
+            (200_000_00, "ltcg"),
+        ]
+    finally:
+        con.close()
+
+
+def test_apply_home_sale_requires_cost_basis_tracking() -> None:
+    """Selling an account with no opening_cost_basis set errors the same
+    way an untracked brokerage withdrawal does, rather than silently
+    treating the whole sale as tax-free."""
+    from analysis.sim.engine import EngineError, _apply_home_sale
+
+    con = sqlite3.connect(":memory:")
+    _home_sale_transfer_event_table(con)
+    try:
+        _apply_home_sale(
+            con, {5: 900_000_00, 6: 0}, {5: "asset", 6: "asset"}, {5: None},
+            step_id=1, month_s="2026-06-30", params={},
+            amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux={},
+        )
+    except EngineError as e:
+        assert "cost-basis tracking" in str(e)
+    else:
+        raise AssertionError("expected EngineError: opening_cost_basis never set")
+    finally:
+        con.close()
+
+
 def test_chain_sweep_allocates_fixed_then_percent_of_remainder() -> None:
     from analysis.sim.engine import ChainGraph, _chain_sweep
 
