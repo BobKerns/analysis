@@ -807,6 +807,13 @@ def _validate_scheduled(
                 f"tax_character='tax_free' (got {tc!r}) -- death-triggered "
                 "liquidations/payouts are not taxable events"
             )
+        if kind == "home_sale" and tc != "none":
+            issues.append(
+                f"scheduled.csv row {i} ({name}): home_sale requires "
+                f"tax_character='none' (got {tc!r}) -- the row's own "
+                "tax_character is unused; _apply_home_sale posts its own "
+                "return_of_capital / excluded_gain / ltcg legs"
+            )
         tax_year = row.get("tax_year", "")
         if tax_year:
             try:

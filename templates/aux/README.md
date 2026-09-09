@@ -52,6 +52,8 @@ kind and series; the required columns per kind are listed in
 | `rate__example.csv` | Template for a per-account growth/interest-rate series. Copy and rename to e.g. `rate__Asset_Brokerage.csv`. |
 | `rmd_factors.csv` | IRS Uniform Lifetime Table divisors used to compute Required Minimum Distributions. One row per (effective_date, age). |
 | `rmd_start_age.csv` | First age at which an RMD is required (currently 73; rises to 75 in 2033 under SECURE 2.0). |
+| `home_sale_exclusion.csv` | IRC §121 home-sale gain exclusion by filing status. Frozen at $250k/$500k since 1997 -- not inflation-indexed. Used by the `home_sale` rule kind (`engine._apply_home_sale`). |
+| `energy_credits.csv` | Federal energy-efficiency credit/rebate rate and cap, by category (`heat_pump`, `induction_range`, `ev_charger`, ...) and effective date. **Expiring credits need an explicit zero-rate row on their expiration date** -- the lookup takes the latest `effective_date <= month`, so an omitted row means "still in effect," not "expired." OBBBA (2025) ended 25C/25D for property placed in service after 2025-12-31 and 30C after 2026-06-30; the shipped rows reflect that. Not yet wired to a call site -- see `engine._lookup_energy_credit`. |
 
 ### Filing status codes
 

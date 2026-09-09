@@ -41,7 +41,8 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance",
-    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death"}
+    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death",
+    "home_sale"}
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
@@ -394,6 +395,12 @@ def run_scenario(
                             con, balances, account_kinds, step_id, month_s,
                             params, from_account, to, person_lifespan,
                             tax_char, tid, refill_ctx=refill_ctx,
+                        )
+                    case "home_sale":
+                        _apply_home_sale(
+                            con, balances, account_kinds, cost_bases, step_id, month_s,
+                            params, p_amount_cents, from_account, to, tid, aux,
+                            tax_year=tax_year, refill_ctx=refill_ctx,
                         )
                     case "tax_accumulator":
                         if cadence != "annual":
@@ -1214,6 +1221,148 @@ def _apply_on_death(
             con, balances, account_kinds, step_id, month_s,
             from_id, to_id, amount, tax_char, tid, refill_ctx=refill_ctx,
         )
+
+
+def _lookup_by_series_key(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    kind: str, key_field: str, key_value: str, month_s: str,
+) -> dict[str, Any] | None:
+    """Generic version of ``_lookup_rmd_factor`` for aux kinds keyed by a
+    string payload field (e.g. ``filing_status``, ``category``) rather than
+    an integer age -- ``home_sale_exclusion`` and ``energy_credits`` both
+    fit this shape, as do the existing ``federal_brackets``/
+    ``standard_deduction`` tables if they're ever driven through here
+    instead of their current bespoke lookups.
+
+    Same "most recent row with effective_date <= month_s" convention as
+    ``_lookup_rmd_factor``.
+    """
+    rows = aux.get((kind, None))
+    if not rows:
+        return None
+    chosen: dict[str, Any] | None = None
+    for effective, payload in rows:
+        if effective <= month_s and payload.get(key_field) == key_value:
+            chosen = payload
+    return chosen
+
+
+def _lookup_energy_credit(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    category: str, month_s: str,
+) -> dict[str, Any] | None:
+    """Federal/state credit or rebate rate for ``category`` (e.g.
+    "heat_pump", "ev_charger", "induction_range") effective as of
+    ``month_s``, or ``None`` if nothing in the ``energy_credits`` aux table
+    covers that category at that date -- callers must treat that as "no
+    credit available," not as a default rate. Returns the raw payload
+    (``rate_micros``, ``cap`` in cents); it's up to the caller to apply it
+    to whatever project cost is being credited. Not wired to a call site
+    yet -- see ADR note on where credits should apply (tax_accumulator
+    reduction vs. a standalone income-like leg).
+    """
+    return _lookup_by_series_key(aux, "energy_credits", "category", category, month_s)
+
+
+def _apply_home_sale(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    cost_bases: dict[int, int | None], step_id: int, month_s: str,
+    params: dict[str, Any], amount_cents: int | None,
+    from_id: int | None, to_id: int | None, tid: int,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    *, tax_year: int | None = None, refill_ctx: RefillContext | None = None,
+) -> None:
+    """One-time full(-ish) liquidation of a cost-basis-tracked asset --
+    written for ``real_estate``, but not restricted to it -- applying the
+    IRC §121 home-sale exclusion. Reuses ``_post_withdrawal``'s
+    return-of-capital/gain split (ADR-001), but where that function's
+    brokerage case only ever produces ``return_of_capital`` + ``ltcg``, this
+    one can produce a third leg:
+
+      - ``return_of_capital``: sale proceeds up to cost basis (not gain)
+      - ``excluded_gain``:     gain covered by the §121 exclusion (real
+                                gain, but not taxed)
+      - ``ltcg``:              any gain above the exclusion (taxed)
+
+    ``amount_cents`` is the sale price (the row's own amount_cents column).
+    The exclusion amount comes from ``params["exclusion_cap_cents"]`` if
+    given directly, else from the ``home_sale_exclusion`` aux table keyed
+    by ``params["filing_status"]`` (mirrors ``standard_deduction``'s
+    shape). One row's tax_character is authored as 'none' (enforced by
+    loader validation) since the real split is computed here, not read off
+    the row.
+
+    Does NOT model §121 eligibility (ownership/use tests, once-per-2-years,
+    partial exclusion for hardship) or the surviving-spouse $500k-within-
+    2-years rule under §121(b)(4) -- pass an explicit
+    ``exclusion_cap_cents`` override for scenarios needing those, rather
+    than teaching this function the full statute for a one-time event.
+
+    Unlike ``_post_withdrawal``, this always liquidates the account's full
+    balance -- there's no partial-sale case for a house in this model.
+    """
+    if from_id is None or to_id is None:
+        raise EngineError(
+            f"home_sale id={tid}: from_account and to_account must both be "
+            "concrete accounts, not interior chains"
+        )
+    if amount_cents is None:
+        raise EngineError(f"home_sale id={tid}: missing amount (sale price)")
+    basis = cost_bases.get(from_id)
+    if basis is None:
+        raise EngineError(
+            f"home_sale id={tid}: requires cost-basis tracking, but "
+            "opening_cost_basis was never set -- add it to account_values.csv"
+        )
+
+    sale_price = int(amount_cents)
+    basis_out = min(basis, sale_price)
+    gain = max(0, sale_price - basis)
+
+    exclusion_cap_param = params.get("exclusion_cap_cents")
+    if exclusion_cap_param is not None:
+        exclusion_cap = int(exclusion_cap_param)
+    else:
+        filing_status = params.get("filing_status")
+        if not filing_status:
+            raise EngineError(
+                f"home_sale id={tid}: requires filing_status (or an "
+                "explicit exclusion_cap_cents override)"
+            )
+        row = _lookup_by_series_key(
+            aux, "home_sale_exclusion", "filing_status", filing_status, month_s,
+        )
+        if row is None:
+            raise EngineError(
+                f"home_sale id={tid}: no home_sale_exclusion row for "
+                f"filing_status={filing_status!r} effective on or before {month_s}"
+            )
+        exclusion_cap = int(row["amount"])
+
+    excluded = min(gain, exclusion_cap)
+    taxable_gain = gain - excluded
+
+    parent_id: int | None = None
+    if basis_out > 0:
+        parent_id = _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, to_id,
+            basis_out, "return_of_capital", tid,
+            tax_year=tax_year, refill_ctx=refill_ctx,
+        )
+    if excluded > 0:
+        leg_id = _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, to_id,
+            excluded, "excluded_gain", tid, parent_event_id=parent_id,
+            tax_year=tax_year, refill_ctx=refill_ctx,
+        )
+        parent_id = leg_id if leg_id is not None else parent_id
+    if taxable_gain > 0:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, to_id,
+            taxable_gain, "ltcg", tid, parent_event_id=parent_id,
+            tax_year=tax_year, refill_ctx=refill_ctx,
+        )
+    cost_bases[from_id] = basis - basis_out
 
 
 class ChainGraph:
