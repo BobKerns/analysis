@@ -24,6 +24,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd",
     "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death",
+    "home_sale",
 }
 
 # Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
@@ -87,6 +88,10 @@ CADENCES: set[str] = {"monthly", "biweekly", "quarterly", "annual", "one_off"}
 TAX_CHARACTERS: set[str] = {
     "ordinary", "ltcg", "gains", "deferred", "ss_benefit", "tax_free",
     "tax_deferred_in", "tax_deferred_out", "return_of_capital", "property_tax", "none",
+    # IRC §121 excluded portion of a home-sale gain: real gain, but not
+    # taxed. Distinct from 'return_of_capital' (not gain at all) and from
+    # 'ltcg' (gain that *is* taxed) -- see engine._apply_home_sale.
+    "excluded_gain",
 }
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
@@ -171,6 +176,14 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "inflation": ("effective_date", "annual_rate_micros"),
     "filing_status": ("effective_date", "filing_status"),
     "rmd_start_age": ("effective_date", "start_age"),
+    # One row per (category, effective_date): a federal/state credit or
+    # rebate schedule that appears and disappears on its own timeline (25C,
+    # 25D, 30C all had different 2025/2026 sunset dates under OBBBA).
+    # `category` free-text, e.g. "heat_pump", "ev_charger". `rate_micros` is
+    # the credit fraction (300000 = 30%); `cap` is the per-project dollar
+    # cap, 0/blank for uncapped. A category/date combo with no matching row
+    # means "no credit available" -- callers must not assume a fallback.
+    "energy_credits": ("effective_date", "category", "rate_micros", "cap"),
 }
 
 # Per-aux-kind set of column names that hold dollar amounts in the CSV and must
@@ -180,6 +193,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "state_brackets": frozenset({"floor"}),
     "standard_deduction": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
+    "energy_credits": frozenset({"cap"}),
 }
 
 # Tag tokens are `<role>:<name>` with lowercase [a-z0-9_] on each side.

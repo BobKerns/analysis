@@ -121,6 +121,7 @@ def account_balance_history_widget(
         kind_picker, picker, out, caveat_out,
     ])
     display(box, clear=True)
+    return box
 
 
 def account_history_widget(

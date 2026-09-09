@@ -53,7 +53,7 @@ NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 
 LIQUID_SUBKINDS = {"checking", "savings"}
 TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "tax_deferred_out"}  # ss_benefit handled separately
-NONTAXABLE_GAIN_CHARS = {"tax_free"}
+NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
 DEFAULT_SETTLE_TAX_BUCKETS = ["federal_tax_due", "state_tax_due"]
