@@ -246,6 +246,7 @@ class MultiScenarioConnections(Connections):
                   variants=self.variants,
                   variant_rcs=variant_rcs,
                   connections=self.connections,
+                  scenarios=self.scenarios,
                   **kwargs)
 
 

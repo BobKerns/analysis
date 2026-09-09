@@ -9,6 +9,7 @@ see :func:`analysis.sim.notebook_ui.pickers.multi_scenario_picker`).
 from __future__ import annotations
 
 from datetime import datetime
+from collections.abc import Sequence
 
 import ipywidgets as widgets
 import pandas as pd
@@ -210,15 +211,19 @@ _META_COLS = [
 ]
 
 
-def comparability_widget(container: MultiScenarioConnections) -> None:
+def comparability_widget(container: MultiScenarioConnections,
+                         connections: MultiScenarioConnections,
+                         scenarios: Sequence[str],
+                         **_
+                         ) -> None:
     """Whether the loaded runs share code/data version -- a comparison is only
     meaningful if a difference isn't just an unrelated code/data change."""
 
     def _redraw():
         meta = pd.concat(
             [
-                container.connections[name].items("simulation_run")[_META_COLS]
-                for name in container.scenarios
+                connections[name].items("simulation_run")[_META_COLS]
+                for name in scenarios
             ],
             ignore_index=True,
         )
@@ -250,21 +255,25 @@ def comparability_widget(container: MultiScenarioConnections) -> None:
 _RULE_COMPARE_COLS = ["amount_cents", "start", "end", "series", "cadence", "tax_character"]
 
 
-def rules_and_events_widget(container: MultiScenarioConnections) -> None:
+def rules_and_events_widget(container: MultiScenarioConnections,
+                            connections: MultiScenarioConnections,
+                            scenarios: Sequence[str],
+                            variants: Sequence[str],
+                            baseline: str = "current",
+                            **_
+                            ) -> None:
     """What actually differs between scenarios: rules (as of run end) and calendar events."""
 
     def _redraw():
-        scenarios, base, variants = container.scenarios, container.baseline, container.variants
-
         rules = {
-            name: container.connections[name].items("scheduled")
+            name: connections[name].items("scheduled")
                 .set_index("name").reindex(columns=_RULE_COMPARE_COLS)
             for name in scenarios
         }
         index = sorted(set().union(*(frame.index for frame in rules.values())))
         rules = {name: frame.reindex(index) for name, frame in rules.items()}
 
-        base_rules = rules[base]
+        base_rules = rules[baseline]
         differs = pd.DataFrame(False, index=index, columns=_RULE_COMPARE_COLS)
         for name in variants:
             other = rules[name]
@@ -284,7 +293,7 @@ def rules_and_events_widget(container: MultiScenarioConnections) -> None:
 
         events = pd.concat(
             [
-                container.connections[name].items("calendar_event").assign(scenario=name)
+                connections[name].items("calendar_event").assign(scenario=name)
                 for name in scenarios
             ],
             ignore_index=True,
@@ -318,6 +327,7 @@ def rules_and_events_widget(container: MultiScenarioConnections) -> None:
 def net_worth_compare_widget(
     container: MultiScenarioConnections,
     plot_mode: widgets.ToggleButtons | None = None,
+    **_
 ) -> widgets.VBox:
     """Net worth per scenario, plus each variant's delta vs. the baseline."""
 
@@ -341,6 +351,8 @@ def net_worth_compare_widget(
 def breakeven_widget(
     container: MultiScenarioConnections,
     plot_mode: widgets.ToggleButtons | None = None,
+    baseline: str = "current",
+    **_
 ) -> widgets.VBox:
     """Per-variant break-even summary table."""
 
@@ -363,8 +375,8 @@ def breakeven_widget(
             )
             mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
             display(Markdown(
-                f"`{container.baseline}` final net worth ({mode_label}): "
-                f"**${nw[container.baseline].iloc[-1]:,.0f}**"
+                f"`{baseline}` final net worth ({mode_label}): "
+                f"**${nw[baseline].iloc[-1]:,.0f}**"
             ))
 
     _observe_plot_mode(plot_mode, "breakeven", _redraw)
@@ -396,6 +408,8 @@ def horizon_widget(container: MultiScenarioConnections, comparisons: dict) -> No
 def year_end_widget(
     container: MultiScenarioConnections,
     plot_mode: widgets.ToggleButtons | None = None,
+    baseline: str | None = "current",
+    **_
 ) -> widgets.VBox:
     """Year-end net worth per scenario, with each variant's delta vs. the baseline."""
 
@@ -408,7 +422,7 @@ def year_end_widget(
         year_end = year_end_values(nw)
         year_end.index.name = "year"
         for name in container.variants:
-            year_end[f"Δ {name}"] = year_end[name] - year_end[container.baseline]
+            year_end[f"Δ {name}"] = year_end[name] - year_end[baseline]
         with output:
             clear_output(wait=True)
             display(year_end.style.format("${:,.0f}"))
