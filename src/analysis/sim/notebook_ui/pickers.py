@@ -137,7 +137,7 @@ def _open_single(
             f"`analysis sim load {name} && analysis sim run {name}`"
         )
     scenario = ScenarioConnection(data_dir, name)
-    run = RunConnection(scenario,ref.run_path) if ref.run_path is not None else None
+    run = RunConnection(scenario, scenario.ref.run_path) if ref.run_path is not None else None
     return SingleScenarioConnections(name, ref, scenario, run)
 
 _META_COLS = [

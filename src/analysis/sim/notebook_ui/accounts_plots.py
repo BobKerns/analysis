@@ -217,8 +217,13 @@ def render_balance_history_figure(
     fig.autofmt_xdate()
     return fig
 
-def or_dash(fmt: str):
-    return lambda x: fmt.format(x) if not pd.isna(x) else "-"
+def to_month(date: str) -> str:
+    if not date:
+        return "-"
+    ts = pd.to_datetime(date)
+    if not ts or ts is pd.NaT:
+        return "-"
+    return ts.strftime("%Y-%m")
 
 def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None):
     """
@@ -236,20 +241,25 @@ def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None):
     widgets.Output
         The output widget containing the account setup display.
     """
-    df = accounts_dataframe(scenario, as_of=as_of)
+    df = accounts_dataframe(scenario, as_of=as_of).copy()
     output = widgets.Output()
     with output:
         display(account_summary_by_kind(df).style.format({
-                "opening_balance": or_dash("${:,.2f}"),
-                "annual_rate_pct": or_dash("{:.2f}%"),
+                "opening_balance": "${:,.2f}",
+                "annual_rate_pct": "{:.2f}%",
             },
             na_rep="-"))
         with pd.option_context("display.max_rows", None, "display.max_columns", None):
             display(df.style.format({
-                "opening_balance": or_dash("${:,.2f}"),
-                "annual_rate_pct": or_dash("{:.2f}%"),
-                "rate_series": or_dash("{!s}"),
-                "rate_role": or_dash("{!s}")
-            }))
+                    "opening_balance": "${:,.2f}",
+                    "cost_basis": "${:,.2f}",
+                    "annual_rate": "{:.2f}%",
+                    "rate_series": "{!s}",
+                    "rate_role": "{!s}",
+                    "opened": to_month,
+                    "closed": to_month,
+                },
+                na_rep="-",
+                ))
     return output
 

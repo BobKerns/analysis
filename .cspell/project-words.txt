@@ -15,6 +15,7 @@ calevt
 carryforward
 carryforwards
 categoriser
+clsname
 cmap
 columnless
 configfile

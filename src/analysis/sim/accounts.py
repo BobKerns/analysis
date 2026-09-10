@@ -34,7 +34,8 @@ class AccountRow:
     tax_treatment: str
     opened: str
     closed: str
-    opening_balance_cents: int | None
+    opening_balance: int | None
+    cost_basis: int | None
     rate_series: str | None
     annual_rate_micros: int | None
     rate_role: str | None  # "growth" | "yield" | None
@@ -75,6 +76,8 @@ def load_accounts_view(
         members.set_index("account")["opening_balance"] if not members.empty
         else None
     )
+    basis = members["opening_cost_basis"]
+
 
     # Rate series come from percent_of_balance scheduled transactions
     # keyed by to_account (the balance-bearing account, per ADR-003).
@@ -95,18 +98,21 @@ def load_accounts_view(
 
     out: list[AccountRow] = []
     for _, a in accounts.iterrows():
-        series, micros = rate_by_name.get(a["name"], (None, None))
+        name = a["name"]
+        series, micros = rate_by_name.get(name, (None, None))
+        cost_basis = basis.get(name) if basis is not None else None
         out.append(
             AccountRow(
-                name=a["name"],
+                name=name,
                 kind=a["kind"],
                 subkind=a["subkind"],
                 owner=_or_empty(a["owner"]),
                 tax_treatment=_or_empty(a["tax_treatment"]),
                 opened=_or_empty(a["opened"]),
                 closed=_or_empty(a["closed"]),
-                opening_balance_cents=(
-                    None if opening is None else opening.get(a["name"])
+                cost_basis=cost_basis / 100.0 if cost_basis is not None else None,
+                opening_balance=(
+                    None if opening is None else opening.get(name) / 100 if opening.get(name) is not None else None
                 ),
                 rate_series=series,
                 annual_rate_micros=micros,
@@ -118,21 +124,20 @@ def load_accounts_view(
 
 def accounts_dataframe(sc: ScenarioConnection, *, as_of: str | None = None):
     """Return ``load_accounts_view`` as a pandas DataFrame for notebook display."""
-    import pandas as pd
     rows = load_accounts_view(sc, as_of=as_of)
-    df = pd.DataFrame([r.__dict__ for r in rows])
+    df = pd.DataFrame([r.__dict__ for r in rows]).set_index("name")
+    model = sc.items("account_model_member").copy().set_index("account")
+    values = model["opening_cost_basis"]
     if df.empty:
         return df
-    df["opening_balance"] = df["opening_balance_cents"].apply(
-        lambda c: None if c is None else c / 100
-    )
-    df["annual_rate_pct"] = df["annual_rate_micros"].apply(
+    df["annual_rate"] = df["annual_rate_micros"].apply(
         lambda m: None if m is None else round(m / 10_000, 4)
     )
-    return df[[
-        "name", "kind", "subkind", "owner", "tax_treatment",
-        "opening_balance", "rate_role", "rate_series", "annual_rate_pct",
-        "opened", "closed",
+    df['cost_basis'] = values.reindex(df.index) / 100.0
+    return df[
+        ["kind", "subkind", "owner", "tax_treatment",
+        "opening_balance", "rate_role", "rate_series", "annual_rate",
+        "opened", "closed", "cost_basis",
     ]]
 
 

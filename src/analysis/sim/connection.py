@@ -13,6 +13,7 @@ on as notebook/CLI needs grow.
 
 from __future__ import annotations
 
+from abc import abstractmethod
 import sqlite3
 import tempfile
 from collections.abc import Generator, Iterable
@@ -268,6 +269,12 @@ class _TagReader:
     _item_cache: dict[str, pd.DataFrame]
     _derived_cache: dict[str, object]
 
+    @property
+    @abstractmethod
+    def label(self) -> str:
+        """Return a human-readable label for the scenario connection."""
+        ...
+
     def _ensure_fresh(self) -> None:
         """Hook for subclasses; default no-op (run files don't mutate)."""
 
@@ -399,6 +406,10 @@ class _TagReader:
         if key not in cache:
             cache[key] = builder()
         return cache[key]
+
+    def __repr__(self) -> str:
+        clsname = type(self).__name__
+        return f'<{clsname} "{self.label}">'
 
 
 # ---------- run (read-only) ----------
@@ -789,6 +800,19 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
     shutdown, so notebooks can keep a bare ``ScenarioConnection(...)`` alive
     across cells without a ``with`` block.
     """
+
+    @property
+    def name(self) -> str:
+        """
+        Return the name of the scenario.
+        """
+        return self.ref.name
+
+    def label(self) -> str:
+        """
+        Return a human-readable label for the scenario connection.
+        """
+        return f"{self.name}"
 
     def __init__(self, data_dir: Path | str, scenario: str | None = None) -> None:
         self.data_dir = Path(data_dir).resolve()
