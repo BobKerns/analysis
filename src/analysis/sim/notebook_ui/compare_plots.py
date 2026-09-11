@@ -213,7 +213,7 @@ _META_COLS = [
 
 def comparability_widget(container: MultiScenarioConnections,
                          connections: MultiScenarioConnections,
-                         scenarios: Sequence[str],
+                         variants: Sequence[str],
                          **_
                          ) -> None:
     """Whether the loaded runs share code/data version -- a comparison is only
@@ -223,7 +223,7 @@ def comparability_widget(container: MultiScenarioConnections,
         meta = pd.concat(
             [
                 connections[name].items("simulation_run")[_META_COLS]
-                for name in scenarios
+                for name in variants
             ],
             ignore_index=True,
         )

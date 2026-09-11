@@ -269,8 +269,8 @@ def _load_multi(
         if ref.run_path is None:
             missing.append(name)
             continue
-        scenario = _open_single(data_dir, name, require_run=True)
-        connections[name] = RunConnection(scenario, ref.run_path)
+        scenarios = _open_single(data_dir, name, require_run=True)
+        connections[name] = RunConnection(scenarios.scenario, ref.run_path)
 
     if baseline not in connections:
         return MultiScenarioConnections(connections, "", [], {}, [

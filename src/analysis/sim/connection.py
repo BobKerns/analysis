@@ -409,7 +409,10 @@ class _TagReader:
 
     def __repr__(self) -> str:
         clsname = type(self).__name__
-        return f'<{clsname} "{self.label}">'
+        try:
+            return f'<{clsname} "{self.label}">'
+        except Exception as ex:
+            return f'<{clsname} ({ex})>'
 
 
 # ---------- run (read-only) ----------
@@ -443,6 +446,7 @@ class RunConnection(_TagReader):
         return self.scenario.data_dir
 
     def __init__(self, scenario: ScenarioConnection, run_path: Path | str) -> None:
+        assert isinstance(scenario, ScenarioConnection), "scenario must be a ScenarioConnection instance"
         self.scenario = scenario 
         self.run_path = Path(run_path)
         self._con = sqlite3.connect(self.run_path)
@@ -808,6 +812,7 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
         """
         return self.ref.name
 
+    @property
     def label(self) -> str:
         """
         Return a human-readable label for the scenario connection.
