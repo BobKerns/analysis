@@ -10,12 +10,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from collections.abc import Sequence
+import json
+from typing import Any
 
 import ipywidgets as widgets
 import pandas as pd
 from IPython.display import Markdown, clear_output, display
 
-from analysis.sim.connection import year_end_values
+from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.notebook_ui.pickers import (
     MultiScenarioConnections,
     display_warning,
@@ -502,3 +504,211 @@ def tax_impact_widget(container: MultiScenarioConnections) -> None:
 
     if container.ok:
         _redraw()
+
+
+def group_account_balances(base: RunConnection) -> dict[str, float]:
+    """
+    Get the account balances grouped by account.
+
+    Parameters
+    ----------
+    base : RunConnection
+        The run connection for the baseline scenario.
+
+    Returns
+    -------
+    dict[str, float]
+        A dictionary mapping account names to their monthly balances.
+    """
+    balances = base.items("account_balance").copy()
+    balances['month'] = pd.to_datetime(balances['month']).dt.strftime("%Y-%m")
+
+    return balances.pivot(index="month", columns="account", values="balance")
+
+
+def compare_account_balances(_,
+                    baseline_rc: RunConnection,
+                    variant_rcs: Sequence[RunConnection],
+                    **kwargs
+            ) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str,Any], dict[str, Any]]:
+    """
+    Compare the account balances across multiple scenario connections.
+
+    Parameters
+    ----------
+    _ : Any
+        Placeholder for the first argument.
+    baseline_rc : RunConnection
+        The run connection for the baseline scenario.
+    variants_rcs : Sequence[RunConnection]
+        The run connections for the variant scenarios.
+    **kwargs : dict
+        Additional keyword arguments.
+
+    Returns
+    -------
+    dict[str, set[str]], dict[str, set[str]], dict[str, dict[str, ...]], dict[str, ...]
+    """
+    bg = group_account_balances(baseline_rc)
+    vgs = {
+        name: group_account_balances(variant)
+        for name, variant in variant_rcs.items()
+        if variant is not baseline_rc}
+    bg_keys = set(bg.keys())
+    vgs_keys = {
+        variant: set(groups.keys())
+        for variant, groups in vgs.items()
+    }
+    added = {variant: keys - bg_keys for variant, keys in vgs_keys.items()}
+    deleted = {variant: bg_keys - keys for variant, keys in vgs_keys.items()}
+    diff = {
+        variant: {
+            acct: (bg[acct], vgs[variant][acct])
+            for acct in bg_keys
+            if (bg[acct] != vgs[variant][acct]).any()
+        }
+        for variant in vgs_keys.keys()
+        for acct in bg_keys
+        if (bg[acct] != vgs[variant][acct]).any()
+    }
+    return (added, deleted, diff, bg)
+
+
+def to_markdown(*lines: str) -> widgets.Output:
+    out = widgets.Output()
+    with out:
+        display(
+            Markdown("\n".join(lines))
+        )
+    return out
+
+
+def account_balance_diffs(baseline: str,
+                          baseline_rc: RunConnection,
+                          variant_rcs: Sequence[RunConnection],
+                          **kwargs) -> tuple[str, str, dict[str, pd.DataFrame]]:
+    added, deleted, diff, bg = compare_account_balances(None, baseline_rc, variant_rcs)
+    diff_accounts = {
+        key
+        for d in diff.values()
+        for key in d.keys()
+    }
+    diff_months = {
+        m
+        for d in diff.values()
+        for key, (base, variant) in d.items()
+        for m in base.index
+        if base[m] != variant[m]
+    }
+    diff_accounts = set(sorted(diff_accounts))
+    diff_months = list(sorted(diff_months))
+
+    accounts = baseline_rc.items("account")
+    accounts = accounts.set_index(accounts["name"], drop=True)
+
+    metas = accounts["meta_json"].apply(json.loads)
+    builtins = {
+        acct for acct in metas.keys()
+        if metas[acct].get("builtin", False)
+    }
+    transients = {
+        acct for acct in metas.keys()
+        if metas[acct].get("diff", None) == "transient"
+    }
+    balance_sheet_accts = {
+        acct
+        for acct in accounts.index
+        if accounts.loc[acct, "kind"] in ("asset", "liability")
+    }
+    excluded = builtins | balance_sheet_accts | transients
+
+
+    d_add = "\n".join(
+        f"-- Added accounts in `{variant}`: {", ".join(accts)}"
+        for variant in variant_rcs.keys()
+        for accts in ((added[variant] - excluded),)
+        if accts
+    )
+    d_del= "\n".join(
+        f"-- Deleted accounts in `{variant}`: {", ".join(accts)}"
+        for variant in variant_rcs.keys()
+        for accts in ((deleted[variant] - excluded),)
+        if accts
+    )
+    def diff_acct(acct: str):
+        base_col = bg[acct]
+        def diffs_(variant: str):
+            vaccts = diff.get(variant, None)
+            if vaccts is None:
+                return ()
+            return tuple(
+                c
+                for cs in (
+                    (
+                        col.copy().to_frame(variant),
+                        delta.to_frame(f"Δ{variant}")
+                    )
+                    for col in vaccts.get(acct, ())
+                    for delta in ((col - base_col),)
+                    if delta.any()
+                )
+                if len(cs) > 0
+                for c in cs
+            )
+        dd = [diffs_(variant) for variant in variant_rcs.keys()]
+        if len(dd) == 0:
+            return ()
+        retval = (
+            base_col.to_frame("baseline"),
+            *(
+                x
+                for d in dd
+                for x in d
+            )
+        )
+        return retval
+    return d_add, d_del, {
+        acct: cl[0].join(cl[1:])
+        for acct in (diff_accounts - excluded)
+        for cl in (diff_acct(acct),)
+        if len(cl) > 1
+    }
+
+def _show_account_balance_diffs(heading: str,
+                                d_add: str,
+                                d_del: str,
+                                diffs: dict[str, pd.DataFrame],
+                            ) -> widgets.VBox:
+    with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+        def show(label: str, df: pd.DataFrame) -> widgets.Output:
+            df = df.loc[(df != 0).all(axis=1)]
+            df = df / 100.0
+            df = df.style.format("${:.2f}")
+            out = widgets.Output()
+            with out:
+                display(df)
+            return (to_markdown(f"### {label}"), out)
+        outs = [
+            b
+            for acct, cl in diffs.items()
+            for b in show(acct, cl)
+        ]
+        return widgets.VBox([
+            to_markdown(heading),
+            *((to_markdown(d_add),) if d_add else ()),
+            *((to_markdown(d_del),) if d_del else ()),
+            *outs])
+
+def show_account_balance_diffs(_,
+                          baseline: str,
+                          baseline_rc: RunConnection,
+                          variant_rcs: Sequence[RunConnection],
+                          **kwargs) -> pd.DataFrame:
+    heading = f"## Account Balance Diffs for Baseline `{baseline}`"
+    d_add, d_del, diffs = account_balance_diffs(
+        baseline=baseline,
+        baseline_rc=baseline_rc,
+        variant_rcs=variant_rcs,
+        **kwargs
+    )
+    return _show_account_balance_diffs(heading, d_add, d_del, diffs)
