@@ -203,7 +203,7 @@ def scenario_picker(
     traitlets.link((dropdown, "value"), (container, "value"))
     _redraw()
 
-    return vbox, container
+    return vbox, container, dropdown
 
 
 # ---------- multi-scenario (baseline + variants) picker ----------

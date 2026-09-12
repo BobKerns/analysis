@@ -37,6 +37,7 @@ def account_balance_history_widget(
     kind: str,
     initial_count: int = 1,
     cpi_balance_pivot_by_kind: Callable[[str], pd.DataFrame] | None = None,
+    scenario_picker: widgets.Dropdown | None = None,
     plot_mode: widgets.ToggleButtons | None = None,
     value_mode: widgets.ToggleButtons | None = None,
     y_axis_mode: widgets.ToggleButtons | None = None,
@@ -80,7 +81,6 @@ def account_balance_history_widget(
                 display(Markdown(_CUMULATIVE_CAVEAT))
 
     def _redraw(*_):
-        print('HERE')
         selected = list(picker.value)
         mode = plot_mode.value
         zero_anchor = y_axis_mode.value
@@ -119,6 +119,7 @@ def account_balance_history_widget(
     _redraw()
 
     box = widgets.VBox([
+        *( [scenario_picker] if scenario_picker is not None else () ),
         widgets.HBox([value_mode, plot_mode, y_axis_mode]),
         kind_picker, picker, out, caveat_out,
     ])
@@ -128,6 +129,7 @@ def account_balance_history_widget(
 
 def account_history_widget(
     rc: RunConnection, kind: str, title: str, initial_count: int = 1,
+    scenario_picker: widgets.Dropdown | None = None,
     plot_mode: widgets.ToggleButtons | None = None,
     value_mode: widgets.ToggleButtons | None = None,
     y_axis_mode: widgets.ToggleButtons | None = None,
@@ -142,6 +144,7 @@ def account_history_widget(
     return account_balance_history_widget(
         rc.balance_pivot, rc.account_kinds(), title, kind,
         initial_count=initial_count, cpi_balance_pivot_by_kind=rc.cpi_balance_pivot,
+        scenario_picker=scenario_picker,
         plot_mode=plot_mode,
         value_mode=value_mode,
         y_axis_mode=y_axis_mode,
