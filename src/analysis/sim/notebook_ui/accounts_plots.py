@@ -80,6 +80,7 @@ def account_balance_history_widget(
                 display(Markdown(_CUMULATIVE_CAVEAT))
 
     def _redraw(*_):
+        print('HERE')
         selected = list(picker.value)
         mode = plot_mode.value
         zero_anchor = y_axis_mode.value
@@ -90,6 +91,7 @@ def account_balance_history_widget(
             else balance_pivot_by_kind(kind_picker.value)
         )
         with out:
+            clear_output(wait=True)
             mode_title = "CPI-constant" if mode == "cpi_constant" else "nominal"
             values_title = "monthly change" if values == "monthly" else "total"
             kind_title = KIND_LABELS[kind_picker.value]
