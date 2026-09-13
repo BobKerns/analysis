@@ -48,3 +48,5 @@ Thumbs.db
 *_cache
 
 .scratch_*
+
+test-output.*

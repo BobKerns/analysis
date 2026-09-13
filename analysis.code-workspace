@@ -14,6 +14,19 @@
 		"explorerExcludeManager.backup": {},
 		"chat.mcp.discovery.enabled": {
 			"cursor-workspace": true
+		},
+		"explorer.fileNesting.patterns": {
+			"AGENTS.MD": "CLAUDE.MD,CONVENTIONS.MD,.mcp.json",
+			"README.md": "LICENSE,LICENSE.md,CONTRIBUTORS.md",
+			"pyproject.toml": "uv.lock,.python-version,.markdownlint.json,cspell.json,*.code-workspace,.coverage",
+			".gitignore": ".gitattributes"
+		},
+		"files.exclude": {
+			"**/..cache": true,
+			"**/.*_checkpoints": true,
+			"**/.coverage": true,
+			"**/.venv": true,
+			"**/*_cache": true
 		}
 	}
 }
