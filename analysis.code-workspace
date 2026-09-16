@@ -27,6 +27,20 @@
 			"**/.coverage": true,
 			"**/.venv": true,
 			"**/*_cache": true
+		},
+		"interactiveWindow.collapseCellInputCode": "always",
+		"notebook.cellToolbarVisibility": "hover",
+		"notebook.inlineValues": "on",
+		"notebook.variablesView": true,
+		"explorer.autoRevealExclude": {
+			"**/.venv": true
+		},
+		"files.watcherExclude": {
+			"*/*_cache": true
+		},
+		"search.exclude": {
+			"**/.venv": true,
+			"**/*_cache": true
 		}
 	}
 }
