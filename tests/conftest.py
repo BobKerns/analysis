@@ -7,6 +7,52 @@ is the developer's real, personal data directory. That happened: a test run
 overwrote the real data repo's ``.current_scenario`` with a prototype
 scenario name. Clearing these here makes any such test fail loudly with
 "ANALYSIS_DATA_DIR not set" instead of quietly mutating real data.
+
+Fixture pattern for filesystem test data
+-----------------------------------------
+Any test data that lives on disk (a data repo, a scenario, an intent/run
+directory, a DB connection opened against one of those) is provided by a
+fixture, never by a helper function a test calls directly. All setup that
+touches the filesystem — ``mkdir``, ``shutil.copytree``, ``scenario.create_scenario``,
+opening a connection — happens inside the fixture body, so pytest owns the
+setup/teardown and the dependency graph, and other test files can reuse the
+same fixture instead of rolling their own helper.
+
+Scope follows mutability, not convenience:
+
+- If a fixture is read-only and depends only on session-scoped fixtures, make
+  it ``session``-scoped so its (possibly expensive) setup runs once. E.g.
+  ``data_dir`` copies ``prototype_data`` into a ``tmp_path_factory`` dir once
+  per session; ``scenarios_dir``, ``retire_alice_scenario`` and
+  ``variant_a_scenario_create`` build on it read-only.
+- If a test needs to mutate the data (e.g. add a tag to an account before
+  running), it must not share the session copy with every other test. Use a
+  function-scoped fixture built on the function-scoped ``tmp_path`` instead.
+  This is why two parallel families exist: ``data_dir``/``scenarios_dir``/
+  ``retire_alice_scenario`` (session, shared, read-only) vs. ``test_data_dir``/
+  ``test_scenarios_dir``/``test_retire_alice_scenario``/
+  ``test_retire_alice_scenario_ref`` (function, private copy, mutation-safe).
+  Anything downstream of a function-scoped fixture (``state_dir``,
+  ``intent_dir``, ``runs_dir``, and everything built from them) is
+  necessarily function-scoped too — pytest forbids a session fixture
+  depending on a narrower one.
+
+Fixtures can't take arguments, so a fixture parameterized by name (e.g. "give
+me a ``ScenarioRef`` for scenario X") is written as a fixture that returns a
+*callable* closing over its own dependencies — see ``scenario_ref`` and
+``run_path``. Named per-scenario fixtures (``retire_alice_scenario_ref``,
+``variant_a_scenario_ref``, ...) then wrap that callable so tests can inject
+"the retire_alice ref" by name and so further fixtures can depend on it
+directly.
+
+Setup is layered one step at a time — ref -> intent file -> run file ->
+connection (``retire_alice_scenario_ref`` -> ``retire_alice_intent_file`` ->
+``retire_alice_run_file`` -> ``retire_alice_run``) — so a test pulls in only
+as much setup as it needs by picking the right fixture name, and pytest
+caches each layer per test. ``load_from_ref``/``run_from_ref`` are plain
+functions, but they exist only to be called from inside a fixture body, not
+from a test directly — if you find a test importing a helper to set up its
+own data, that setup belongs in a fixture instead.
 """
 
 from __future__ import annotations
