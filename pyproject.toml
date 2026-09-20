@@ -21,6 +21,9 @@ amazon = "analysis.amazon.cli:amazon_group_command"
 sim = "analysis.sim.cli:sim_group_command"
 
 [dependency-groups]
+dependabot = [
+    "pillow>=12.3.0",
+]
 dev = [
   "nbstripout>=0.9.1",
   "pytest>=9.1.1",
