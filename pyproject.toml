@@ -22,6 +22,7 @@ sim = "analysis.sim.cli:sim_group_command"
 
 [dependency-groups]
 dependabot = [
+    "bleach>=6.4.0",
     "pillow>=12.3.0",
 ]
 dev = [

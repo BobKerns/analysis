@@ -24,6 +24,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dependabot = [
+    { name = "bleach" },
     { name = "pillow" },
 ]
 dev = [
@@ -47,7 +48,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dependabot = [{ name = "pillow", specifier = ">=12.3.0" }]
+dependabot = [
+    { name = "bleach", specifier = ">=6.3.0" },
+    { name = "pillow", specifier = ">=12.3.0" },
+]
 dev = [
     { name = "nbstripout", specifier = ">=0.9.1" },
     { name = "pytest", specifier = ">=9.1.1" },
