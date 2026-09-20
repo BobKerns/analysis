@@ -565,7 +565,6 @@ def load_scenario(
             scenario_tree_id="",
             data_repo_path="DATA_REPO",
             data_repo_name=data_repo_name or data_dir.name,
-            data_mode="live",
             allow_dirty_data=False,
             allow_dirty_code=False,
             run_by="TEST",

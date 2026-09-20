@@ -40,7 +40,7 @@ def _load_and_run(data_dir: Path, scenario: str) -> None:
         main,
         ["sim", "load", scenario, "--data-dir", str(data_dir),
          "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-         "--data-mode", "prototype", "--allow-dirty-data"],
+         "--allow-dirty-data"],
     )
     assert result.exit_code == 0, result.output
 
@@ -103,7 +103,7 @@ def test_scenario_picker_require_run_false_allows_missing_run(tmp_path: Path) ->
         main,
         ["sim", "load", "retire_alice", "--data-dir", str(data),
          "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-         "--data-mode", "prototype", "--allow-dirty-data", "--no-run"],
+         "--allow-dirty-data", "--no-run"],
     )
     assert result.exit_code == 0, result.output
 
@@ -122,7 +122,7 @@ def test_scenario_picker_require_run_true_raises_when_missing(tmp_path: Path) ->
         main,
         ["sim", "load", "retire_alice", "--data-dir", str(data),
          "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-         "--data-mode", "prototype", "--allow-dirty-data", "--no-run"],
+         "--allow-dirty-data", "--no-run"],
     )
     assert result.exit_code == 0, result.output
 

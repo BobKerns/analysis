@@ -330,7 +330,6 @@ CREATE TABLE simulation_run (
     scenario_tree_id TEXT NOT NULL,
     data_repo_path  TEXT NOT NULL,
     data_repo_name  TEXT NOT NULL,
-    data_mode       TEXT NOT NULL CHECK (data_mode IN ('prototype','live')),
     allow_dirty_data INTEGER NOT NULL DEFAULT 0,
     allow_dirty_code INTEGER NOT NULL DEFAULT 0,
     run_by          TEXT NOT NULL,

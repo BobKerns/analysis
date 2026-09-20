@@ -31,7 +31,7 @@ def test_open_run_file_snapshots_intent_and_writes_simulation_run(tmp_path: Path
 
     con = open_run_file(
         run_path, intent_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
         run_args={"scenario": "retire_alice"},
     )
     try:
@@ -39,7 +39,6 @@ def test_open_run_file_snapshots_intent_and_writes_simulation_run(tmp_path: Path
         run = con.execute("SELECT * FROM simulation_run").fetchone()
         assert run["scenario_name"] == "retire_alice"
         assert run["status"] == "running"
-        assert run["data_mode"] == "prototype"
         assert run["allow_dirty_data"] == 1
         assert run["allow_dirty_code"] == 0
         assert run["finished_at"] is None
@@ -84,7 +83,7 @@ def test_finalize_run_sets_terminal_status(tmp_path: Path) -> None:
     run_path = tmp_path / "runs" / "r.sqlite3"
     con = open_run_file(
         run_path, intent_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
     try:
         finalize_run(con, status="succeeded")
@@ -103,7 +102,7 @@ def test_finalize_run_records_failure_reason(tmp_path: Path) -> None:
     run_path = tmp_path / "runs" / "r.sqlite3"
     con = open_run_file(
         run_path, intent_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
     try:
         finalize_run(con, status="failed", failure_reason="WaterfallExhausted")
@@ -122,7 +121,7 @@ def test_open_run_file_rejects_existing_path(tmp_path: Path) -> None:
     with pytest.raises(FileExistsError):
         open_run_file(
             run_path, intent_path,
-            run_by="test", data_mode="prototype", allow_dirty_data=True,
+            run_by="test", allow_dirty_data=True,
         )
 
 
@@ -131,7 +130,7 @@ def test_simulation_run_status_check_constraint(tmp_path: Path) -> None:
     run_path = tmp_path / "r.sqlite3"
     con = open_run_file(
         run_path, intent_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
     try:
         with pytest.raises(sqlite3.IntegrityError):

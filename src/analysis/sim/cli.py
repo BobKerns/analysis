@@ -86,11 +86,6 @@ def sim_group_command() -> None:
     "--allow-dirty-code", is_flag=True, default=False, help="Used only when running.",
 )
 @click.option(
-    "--data-mode",
-    default=None,
-    help="live | prototype (default: $ANALYSIS_DATA_MODE or 'live'). Used only when running.",
-)
-@click.option(
     "--run-by",
     default=None,
     help="Identifier recorded in simulation_run.run_by (default: $USER). Used only when running.",
@@ -110,7 +105,6 @@ def load(
     runs_dir: Path | None,
     allow_dirty_data: bool,
     allow_dirty_code: bool,
-    data_mode: str | None,
     run_by: str | None,
     run_after_load: bool,
 ) -> None:
@@ -123,9 +117,6 @@ def load(
     explicit = scenario_name is not None
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
     ref = _resolve_scenario(resolved, scenario_name, intent_dir=resolved_intent_dir)
-    if not allow_dirty_data and os.environ.get("ANALYSIS_DATA_MODE") == "prototype":
-        allow_dirty_data = True
-        click.echo("info: ANALYSIS_DATA_MODE=prototype; allowing dirty data", err=True)
     try:
         result = load_scenario(
             resolved, ref.name, intent_dir=resolved_intent_dir,
@@ -152,7 +143,6 @@ def load(
             data_dir=data_dir,
             intent_dir=intent_dir,
             runs_dir=runs_dir,
-            data_mode=data_mode,
             run_by=run_by,
             allow_dirty_data=allow_dirty_data,
             allow_dirty_code=allow_dirty_code,
@@ -224,11 +214,6 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
     help="Default: data-repo state/runs when activated, else state/runs.",
 )
 @click.option(
-    "--data-mode",
-    default=None,
-    help="live | prototype (default: $ANALYSIS_DATA_MODE or 'live')",
-)
-@click.option(
     "--run-by",
     default=None,
     help="Identifier recorded in simulation_run.run_by (default: $USER)",
@@ -240,7 +225,6 @@ def run(
     data_dir: Path | None,
     intent_dir: Path | None,
     runs_dir: Path | None,
-    data_mode: str | None,
     run_by: str | None,
     allow_dirty_data: bool,
     allow_dirty_code: bool,
@@ -269,10 +253,7 @@ def run(
     if explicit and resolved_data_dir is not None:
         write_current_scenario(resolved_data_dir, scenario_name)
 
-    resolved_mode = data_mode or os.environ.get("ANALYSIS_DATA_MODE") or "live"
     resolved_by = run_by or os.environ.get("USER") or "unknown"
-    if not allow_dirty_data and resolved_mode == "prototype":
-        allow_dirty_data = True
 
     data_version = _read_data_version(intent_path)
     short = data_version[:7] if data_version else "nodata"
@@ -282,7 +263,7 @@ def run(
     try:
         out = run_scenario(
             intent_path, run_path,
-            run_by=resolved_by, data_mode=resolved_mode,
+            run_by=resolved_by,
             allow_dirty_data=allow_dirty_data,
             allow_dirty_code=allow_dirty_code,
         )
@@ -314,11 +295,6 @@ def run(
 @click.option("--allow-dirty-data", is_flag=True, default=False)
 @click.option("--allow-dirty-code", is_flag=True, default=False)
 @click.option(
-    "--data-mode",
-    default=None,
-    help="live | prototype (default: $ANALYSIS_DATA_MODE or 'live')",
-)
-@click.option(
     "--run-by",
     default=None,
     help="Identifier recorded in simulation_run.run_by (default: $USER)",
@@ -331,7 +307,6 @@ def all_scenarios(
     runs_dir: Path | None,
     allow_dirty_data: bool,
     allow_dirty_code: bool,
-    data_mode: str | None,
     run_by: str | None,
 ) -> None:
     """Load and run every scenario in the data repo.
@@ -359,7 +334,6 @@ def all_scenarios(
                 runs_dir=runs_dir,
                 allow_dirty_data=allow_dirty_data,
                 allow_dirty_code=allow_dirty_code,
-                data_mode=data_mode,
                 run_by=run_by,
                 run_after_load=True,
             )
@@ -437,13 +411,13 @@ def explain(runfile: Path) -> None:
     try:
         run = con.execute(
             "SELECT scenario_name, status, started_at, finished_at, failure_reason, "
-            "code_version, code_dirty, data_version, data_dirty, data_mode, "
+            "code_version, code_dirty, data_version, data_dirty, "
             "run_by, host, python_version "
             "FROM simulation_run WHERE id = 1"
         ).fetchone()
         if run is None:
             raise click.ClickException(f"no simulation_run row in {runfile}")
-        (name, status, started, finished, failure, cv, cd, dv, dd, mode,
+        (name, status, started, finished, failure, cv, cd, dv, dd,
          by, host, py) = run
         click.echo(f"file:           {runfile}")
         click.echo(f"scenario:       {name}")
@@ -451,7 +425,7 @@ def explain(runfile: Path) -> None:
         click.echo(f"started:        {started}")
         click.echo(f"finished:       {finished or '-'}")
         click.echo(f"code:           {cv[:12]}{' (dirty)' if cd else ''}")
-        click.echo(f"data:           {dv[:12]}{' (dirty)' if dd else ''}  mode={mode}")
+        click.echo(f"data:           {dv[:12]}{' (dirty)' if dd else ''}")
         click.echo(f"run_by:         {by}@{host}  python {py}")
 
         steps = con.execute("SELECT COUNT(*) FROM simulation_step").fetchone()[0]

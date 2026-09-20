@@ -134,7 +134,7 @@ def _load_and_run(intent_dir: Path, state_dir: Path, data_dir: Path, runs_dir: P
         main,
         ["sim", "load", scenario, "--data-dir", str(data_dir),
          "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-         "--data-mode", "prototype", "--allow-dirty-data"],
+         "--allow-dirty-data"],
     )
     assert result.exit_code == 0, result.output
 

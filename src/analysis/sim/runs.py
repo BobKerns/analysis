@@ -21,7 +21,6 @@ def open_run_file(
     intent_path: Path,
     *,
     run_by: str,
-    data_mode: str,
     allow_dirty_data: bool = False,
     allow_dirty_code: bool = False,
     run_args: dict[str, Any] | None = None,
@@ -76,7 +75,6 @@ def open_run_file(
         scenario_tree_id=scenario_tree_id,
         data_repo_path=data_repo_path,
         data_repo_name=data_repo_name,
-        data_mode=data_mode,
         allow_dirty_data=allow_dirty_data,
         allow_dirty_code=allow_dirty_code,
         run_by=run_by,
@@ -100,7 +98,6 @@ def insert_run_metadata(
     scenario_tree_id: str,
     data_repo_path: str,
     data_repo_name: str,
-    data_mode: str,
     allow_dirty_data: bool,
     allow_dirty_code: bool,
     run_by: str,
@@ -118,17 +115,17 @@ def insert_run_metadata(
         "id, scenario_name, schema_version, status, started_at, "
         "code_version, code_dirty, code_repo_path, "
         "data_version, data_dirty, scenario_tree_id, "
-        "data_repo_path, data_repo_name, data_mode, "
+        "data_repo_path, data_repo_name, "
         "allow_dirty_data, allow_dirty_code, "
         "run_by, host, python_version, "
         "run_args_json, engine_options_json, "
         "finished_at) "
-        "VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             scenario_name, SCHEMA_VERSION, status, _now_iso(),
             version, int(code_dirty), code_repo_path,
             data_version, int(data_dirty), scenario_tree_id,
-            data_repo_path, data_repo_name, data_mode,
+            data_repo_path, data_repo_name,
             int(allow_dirty_data), int(allow_dirty_code),
             run_by, socket.gethostname(), sys.version.split()[0],
             json.dumps(run_args or {}, sort_keys=True),

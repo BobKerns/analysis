@@ -128,7 +128,6 @@ def test_run_connection_reads_tags_from_snapshot(test_retire_alice_scenario: Sce
         result.intent_path, retire_alice_run_path,
         allow_dirty_data=True,
         run_by="TEST",
-        data_mode="prototype",
     )
 
     # Validate the modified scenario including our new tag.

@@ -32,7 +32,6 @@ The single-row `simulation_run` manifest (ADR-002 §Ledger DDL) carries the foll
 | `scenario_tree_id` | text | git tree SHA over scenario folder + referenced shared paths | per ADR-002 §scenario_tree_id |
 | `data_repo_path` | text | `$ANALYSIS_DATA_DIR` (resolved) | absolute |
 | `data_repo_name` | text | `$ANALYSIS_DATA_REPO_NAME` | display label |
-| `data_mode` | text | `$ANALYSIS_DATA_MODE` | `prototype` or `live` |
 | `run_by` | text | `$ANALYSIS_USER` | validated; see §4 |
 | `host` | text | `socket.gethostname()` | informational |
 | `python_version` | text | `sys.version` short form | e.g. `3.14.0` |
@@ -76,7 +75,6 @@ The engine performs these checks in order, before any simulation work:
    ```
 
    Future ADRs may gate write operations by `role`.
-7. **Mode banner.** If `$ANALYSIS_DATA_MODE = prototype` (auto-set by `activate` when `ANALYSIS_DATA_DIR` is inside the code repo tree): print `INFO: data mode = prototype (demo data inside code repo)`. This banner is loud on purpose so a developer doesn't confuse a prototype run with a household run during a demo.
 
 ### 4. The `activate` script
 
@@ -92,7 +90,6 @@ Required behavior:
 - Resolve its own location via `BASH_SOURCE`/`(%):-%x` so it works regardless of caller `cwd`.
 - Set `ANALYSIS_DATA_DIR` to that absolute path.
 - Set `ANALYSIS_DATA_REPO_NAME` to the basename, unless already set by the user.
-- Set `ANALYSIS_DATA_MODE = prototype` iff the resolved data dir is inside the code repo tree (detected by walking up looking for a `pyproject.toml` whose `[project].name == "analysis"`); else `live`.
 - Prompt for `ANALYSIS_USER` if unset: read one line from `/dev/tty`, validate against `persons.csv` (column 1), re-prompt on miss, abort on EOF.
 - Save the pre-activation values of `PS1` and the four env vars in `_ANALYSIS_OLD_*` shell variables.
 - Prefix `PS1` with `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER]`.
@@ -162,11 +159,10 @@ Run filenames embed `<timestamp>_<scenario>_<shortTreeId>` (ADR-002 §File layou
 These amendments to `simulation_run` (ADR-002 §Ledger DDL) accommodate the §1 stamp set; all rolled into ADR-002:
 
 1. Added `code_repo_path TEXT NOT NULL`.
-2. Added `data_mode TEXT NOT NULL CHECK (data_mode IN ('prototype','live'))`.
-3. Added `python_version TEXT NOT NULL`.
-4. Added `allow_dirty_data INTEGER NOT NULL DEFAULT 0` and `allow_dirty_code INTEGER NOT NULL DEFAULT 0`.
-5. Added `run_args_json TEXT NOT NULL DEFAULT '{}'` and `engine_options_json TEXT NOT NULL DEFAULT '{}'`.
-6. Extended the `status` CHECK enum from `('running','succeeded','failed')` to `('running','succeeded','failed','halted')` to match ADR-001 principle 7 (halt-and-persist).
+2. Added `python_version TEXT NOT NULL`.
+3. Added `allow_dirty_data INTEGER NOT NULL DEFAULT 0` and `allow_dirty_code INTEGER NOT NULL DEFAULT 0`.
+4. Added `run_args_json TEXT NOT NULL DEFAULT '{}'` and `engine_options_json TEXT NOT NULL DEFAULT '{}'`.
+5. Extended the `status` CHECK enum from `('running','succeeded','failed')` to `('running','succeeded','failed','halted')` to match ADR-001 principle 7 (halt-and-persist).
 
 ## Consequences
 
@@ -187,5 +183,5 @@ These amendments to `simulation_run` (ADR-002 §Ledger DDL) accommodate the §1 
 ## Open questions deferred
 
 - Whether `analysis sim verify` should optionally **auto-checkout** the matching `code_version` in a worktree to bridge a `CodeMismatch`. Compelling but adds significant complexity (must trust the runfile, must not touch the user's worktree). Defer to an ADR if the need is concrete.
-- Whether dirty-code runs should also be refused by default in `live` mode (warned only in `prototype` mode). Currently warned in both. Will revisit after some real-use experience.
+- Whether dirty-code runs should also be refused by default under some condition (currently only warned). Will revisit after some real-use experience.
 - Whether to capture `pip freeze` of the venv as part of the stamp set. Strict reproducibility argues yes; cost is a multi-KB JSON blob per run. Defer until a non-stdlib dependency actually affects ledger output (today: only `click`, which is interactive-surface-only).

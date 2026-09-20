@@ -46,7 +46,6 @@ def test_sim_run_writes_named_run_file(tmp_path: Path) -> None:
             "sim", "run", "retire_alice",
             "--intent-dir", str(intent_dir),
             "--runs-dir", str(runs_dir),
-            "--data-mode", "prototype",
             "--run-by", "tester",
         ],
     )
@@ -81,7 +80,6 @@ def test_sim_run_errors_when_intent_missing(tmp_path: Path) -> None:
             "sim", "run", "retire_alice",
             "--intent-dir", str(tmp_path / "intent"),
             "--runs-dir", str(tmp_path / "runs"),
-            "--data-mode", "prototype",
         ],
     )
     assert result.exit_code != 0
@@ -98,7 +96,6 @@ def _seed_one_run(tmp_path: Path) -> tuple[Path, Path]:
             "sim", "run", "retire_alice",
             "--intent-dir", str(intent_dir),
             "--runs-dir", str(runs_dir),
-            "--data-mode", "prototype",
             "--run-by", "tester",
         ],
     )
@@ -197,7 +194,6 @@ def test_sim_load_runs_by_default(tmp_path: Path) -> None:
             "--data-dir", str(PROTOTYPE),
             "--intent-dir", str(intent_dir),
             "--runs-dir", str(runs_dir),
-            "--data-mode", "prototype",
             "--allow-dirty-data",
         ],
     )
@@ -238,7 +234,6 @@ def test_sim_all_loads_and_runs_every_scenario(tmp_path: Path) -> None:
             "--data-dir", str(PROTOTYPE),
             "--intent-dir", str(intent_dir),
             "--runs-dir", str(runs_dir),
-            "--data-mode", "prototype",
             "--allow-dirty-data",
         ],
     )
@@ -259,7 +254,6 @@ def test_sim_all_reports_failures_without_stopping(tmp_path: Path, monkeypatch) 
             "--data-dir", str(data),
             "--intent-dir", str(tmp_path / "intent"),
             "--runs-dir", str(tmp_path / "runs"),
-            "--data-mode", "prototype",
             "--allow-dirty-data",
         ],
     )

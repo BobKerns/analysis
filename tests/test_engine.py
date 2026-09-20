@@ -84,7 +84,7 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
 
     out = run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
     assert out == run_path
 
@@ -283,7 +283,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
     con = sqlite3.connect(run_path)
     try:
@@ -1082,7 +1082,7 @@ def test_negative_rate_depreciates_asset_into_expense(tmp_path: Path) -> None:
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con = sqlite3.connect(run_path)
@@ -1152,7 +1152,7 @@ def test_tax_accumulator_computes_federal_and_writes_summary(tmp_path: Path) -> 
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con = sqlite3.connect(run_path)
@@ -1212,7 +1212,7 @@ def test_person_lifespan_stops_associated_transfers(tmp_path: Path) -> None:
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con = sqlite3.connect(run_path)
@@ -1280,7 +1280,7 @@ def test_person_lifespan_does_not_stop_solely_owned_asset_growth(tmp_path: Path)
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con = sqlite3.connect(run_path)
@@ -1327,7 +1327,7 @@ def test_on_death_sweeps_full_balance_once(tmp_path: Path) -> None:
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con = sqlite3.connect(run_path)
@@ -1376,7 +1376,7 @@ def test_fixed_amount_applies_cpi_inflation(tmp_path: Path) -> None:
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con = sqlite3.connect(run_path)
@@ -1419,7 +1419,7 @@ def test_fixed_amount_annual_inflation_cadence_steps_once_per_year(tmp_path: Pat
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con = sqlite3.connect(run_path)
@@ -1463,7 +1463,7 @@ def test_ytd_preroll_posts_balance_neutral_catchup(tmp_path: Path) -> None:
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con = sqlite3.connect(run_path)
@@ -1511,7 +1511,7 @@ def test_year_to_date_csv_posts_balance_neutral_catchup(tmp_path: Path) -> None:
     run_path_base = tmp_path / "base.sqlite3"
     run_scenario(
         intent_path_base, run_path_base,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     ytd_csv = repo / "scenarios" / "retire_alice" / "year_to_date.csv"
@@ -1528,7 +1528,7 @@ def test_year_to_date_csv_posts_balance_neutral_catchup(tmp_path: Path) -> None:
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con_base = sqlite3.connect(run_path_base)
@@ -1597,7 +1597,7 @@ def test_tax_tail_reconciles_final_year_without_extending_simulation_data(
     run_path = tmp_path / "r.sqlite3"
     run_scenario(
         intent_path, run_path,
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+        run_by="test", allow_dirty_data=True,
     )
 
     con = sqlite3.connect(run_path)

@@ -26,7 +26,6 @@ from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_sce
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
     "ANALYSIS_SCENARIO",
-    "ANALYSIS_DATA_MODE",
 )
 
 
@@ -177,7 +176,6 @@ def run_from_ref(scenario_ref: ScenarioRef, *,
                         allow_dirty_data=True,
                         allow_dirty_code=True,
                         run_by="TEST",
-                        data_mode="prototype"
                         )
 
 

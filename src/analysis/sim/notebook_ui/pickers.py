@@ -153,7 +153,7 @@ def _open_single(
 _META_COLS = [
     "scenario_name", "status", "started_at", "finished_at",
     "code_version", "code_dirty", "data_version", "data_dirty",
-    "data_mode", "run_by",
+    "run_by",
 ]
 
 
