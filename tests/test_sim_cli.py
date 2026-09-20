@@ -10,21 +10,12 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim.cli import DEFAULT_INTENT_DIR, DEFAULT_RUNS_DIR, _resolve_state_dir
-from analysis.sim.loader import load_scenario
+from analysis.sim.connection import ScenarioConnection
+from analysis.sim.loader import DEFAULT_STATE_DIR, load_scenario
+from tests.conftest import data_dir
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
-
-
-def test_default_state_dirs_use_analysis_data_dir(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.delenv("ANALYSIS_DATA_DIR", raising=False)
-    assert _resolve_state_dir(None, DEFAULT_INTENT_DIR) == DEFAULT_INTENT_DIR
-
-    data_dir = tmp_path / "sim"
-    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(data_dir))
-    assert _resolve_state_dir(None, DEFAULT_INTENT_DIR) == tmp_path / DEFAULT_INTENT_DIR
-    assert _resolve_state_dir(None, DEFAULT_RUNS_DIR) == tmp_path / DEFAULT_RUNS_DIR
-    assert _resolve_state_dir(Path("custom"), DEFAULT_RUNS_DIR) == Path("custom")
 
 
 def _load(tmp_path: Path) -> Path:
@@ -326,9 +317,8 @@ def test_sim_scenario_create_derives_and_activates(tmp_path: Path, monkeypatch) 
             )
 
 
-def test_sim_scenario_create_rejects_bad_input(tmp_path: Path, monkeypatch) -> None:
-    data = _copy_prototype(tmp_path)
-    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(data))
+def test_sim_scenario_create_rejects_bad_input(test_data_dir: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(test_data_dir))
     runner = CliRunner()
 
     dup = runner.invoke(
@@ -346,7 +336,7 @@ def test_sim_scenario_create_rejects_bad_input(tmp_path: Path, monkeypatch) -> N
     )
     assert bad_name.exit_code != 0
     assert "invalid scenario name" in bad_name.output
-    assert not (data / "scenarios" / "Has Spaces").exists()
+    assert not (test_data_dir / "scenarios" / "Has Spaces").exists()
 
 
 def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ instead of pre-built pandas structures.
 """
 
 from __future__ import annotations
+from analysis.sim.types import AccountKind
 from collections.abc import Callable
 
 from IPython.display import Markdown, clear_output, display
@@ -14,15 +15,9 @@ import pandas as pd
 
 from analysis.sim.accounts import account_summary_by_kind, accounts_dataframe
 from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.notebook_ui.pickers import dollar_plot_mode, value_plot_mode, y_axis_plot_mode
+from analysis.sim.notebook_ui.pickers import KIND_LABELS, dollar_plot_mode, value_plot_mode, y_axis_plot_mode
 from analysis.sim.plotting import include_zero
 
-
-# Account kinds a balance-history widget can switch between, in dropdown order.
-KIND_LABELS: dict[str, str] = {
-    "asset": "Asset", "liability": "Liability",
-    "income": "Income", "expense": "Expense",
-}
 
 # Income/expense balances are cumulative totals, unlike asset/liability's
 # point-in-time balances -- worth a standing note whenever one is selected.
@@ -34,7 +29,7 @@ def account_balance_history_widget(
     balance_pivot_by_kind: Callable[[str], pd.DataFrame],
     account_kinds: pd.Series,
     title: str,
-    kind: str,
+    kind: AccountKind,
     initial_count: int = 1,
     cpi_balance_pivot_by_kind: Callable[[str], pd.DataFrame] | None = None,
     scenario_picker: widgets.Dropdown | None = None,

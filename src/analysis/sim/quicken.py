@@ -14,19 +14,13 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+
 __all__ = [
     "QuickenBalance", "AccountMapEntry",
     "parse_net_worth_export", "load_account_map", "format_dollars",
     "is_investment_asset",
 ]
-
-# subkinds eligible for prior_year_end_balance (the RMD-relevant investment
-# holdings); checking/savings/vehicle/real_estate/other_asset are excluded.
-INVESTMENT_ASSET_SUBKINDS = frozenset({
-    "brokerage_taxable", "traditional_ira", "roth_ira",
-    "traditional_401k", "roth_401k", "hsa",
-})
-
 
 def is_investment_asset(kind: str, subkind: str) -> bool:
     """Whether an account's ``prior_year_end_balance`` is meaningful to set."""

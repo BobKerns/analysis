@@ -16,12 +16,12 @@ from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.connection import (
     EXPENSE_CATEGORIES,
     GAIN_CATEGORIES,
-    INCOME_CATEGORIES,
     RunConnection,
     year_end_values,
     yearly_totals,
 )
 from analysis.sim.notebook_ui.pickers import dollar_plot_mode
+from analysis.sim.types import INCOME_CATEGORIES
 
 
 def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:

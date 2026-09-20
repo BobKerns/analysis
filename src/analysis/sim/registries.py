@@ -196,6 +196,32 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "energy_credits": frozenset({"cap"}),
 }
 
+
+SCENARIO_HEADER: tuple[str, ...] = (
+    "name", "description", "account_model", "start", "end", "seed",
+    "parent_scenario", "created_by", "meta_json",
+)
+
+SCENARIO_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+CALENDAR_HEADER: tuple[str, ...] = (
+    "date", "kind", "scheduled_name", "account_1", "account_2", "series",
+    "amount", "param_date", "tax_character", "params_json", "description",
+    "tags",
+)
+
+
+PERSONS_CSV_HEADER: tuple[str, ...] = (
+    "account_name", "role", "tags", "meta_json"
+)
+
+ACCOUNT_VALUES_CSV_HEADER: tuple[str, ...] = (
+    "account_name", "opening_balance", "opening_cost_basis", "prior_year_end_balance",
+)
+
+
+
 # Tag tokens are `<role>:<name>` with lowercase [a-z0-9_] on each side.
 # Role is intentionally an OPEN registry to support ad-hoc exploration.
 TAG_TOKEN_RE = re.compile(r"^[a-z0-9_]+:[a-z0-9_]+$")

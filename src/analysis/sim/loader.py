@@ -32,21 +32,23 @@ from analysis.sim.provenance import (
     data_stamps,
     repo_head,
 )
-from analysis.sim.schema import INTENT_DDL, SCHEMA_VERSION
+from analysis.sim.runs import insert_run_metadata
+from analysis.sim.schema import  SCHEMA_VERSION, apply_run_schema
 
 __all__ = [
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
     "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
-    "read_current_scenario", "resolve_scenario_name", "state_dir",
+    "read_current_scenario", "resolve_scenario_name", "find_state_dir",
     "write_current_scenario",
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
 DEFAULT_SCENARIO_NAME = "current"
-DEFAULT_INTENT_DIR = Path("state/intent")
-DEFAULT_RUNS_DIR = Path("state/runs")
+DEFAULT_STATE_DIR = Path("state")
+DEFAULT_INTENT_DIR = Path("intent")
+DEFAULT_RUNS_DIR = Path("runs")
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,9 @@ class LoadResult:
 
 class LoadError(ValueError):
     def __init__(self, issues: list[str]) -> None:
+        match issues:
+            case str():
+                issues = [issues]
         super().__init__(
             f"{len(issues)} issue(s) loading intent:\n  " + "\n  ".join(issues)
         )
@@ -132,7 +137,7 @@ def write_current_scenario(data_dir: Path | str, scenario: str) -> None:
     current_scenario_path(data_dir).write_text(f"{scenario}\n", encoding="utf-8")
 
 
-def state_dir(data_dir: Path | str | None, default: Path) -> Path:
+def find_state_dir(data_dir: Path | str | None, default: Path | str) -> Path:
     """Resolve a data repo's ``state/intent`` or ``state/runs`` dir (ADR-004 §4).
 
     State lives beside the data dir, not inside it. Falls back to
@@ -141,8 +146,8 @@ def state_dir(data_dir: Path | str | None, default: Path) -> Path:
     if data_dir is None:
         data_dir = os.environ.get("ANALYSIS_DATA_DIR")
         if not data_dir:
-            return default
-    return Path(data_dir).resolve().parent / default
+            return Path(default).resolve()
+    return (Path(data_dir).resolve().parent / default).resolve()
 
 
 def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path | None:
@@ -156,18 +161,21 @@ def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path |
     return runs[-1] if runs else None
 
 
-class ScenarioRef(NamedTuple):
+@dataclass(frozen=True)
+class ScenarioRef:
     """A resolved scenario: what it is called, where it lives, what state it is in."""
 
     name: str
     data_dir: Path
     path: Path
+    scenarios_dir: Path
     intent_path: Path
     runs_dir: Path
     run_path: Path | None
+    state_dir: Path
     commit: str | None
     branch: str | None
-    dirty: bool
+    dirty: bool = False
 
     @property
     def loaded(self) -> bool:
@@ -220,6 +228,9 @@ def resolve_scenario_name(
     *,
     intent_dir: Path | None = None,
     runs_dir: Path | None = None,
+    run_path: Path | None=None,
+    state_dir: Path | None = None,
+    scenarios_dir: Path | None = None,
 ) -> ScenarioRef:
     """Pick a scenario from the data repo and describe where it lives.
 
@@ -228,55 +239,66 @@ def resolve_scenario_name(
     there is only one, and finally ``current``.
     """
     data_dir = Path(data_dir).resolve()
-    scenarios = data_dir / "scenarios"
-    if not scenarios.is_dir():
+    scenarios_dir = (Path(scenarios_dir).resolve() if scenarios_dir is not None
+                     else data_dir / "scenarios")
+    if not scenarios_dir.is_dir():
         raise LoadError([f"no scenarios/ in {data_dir}"])
+    if state_dir is None:
+        state_dir = find_state_dir(data_dir, data_dir.parent / "state")
     if scenario:
-        if not (scenarios / scenario).is_dir():
-            raise LoadError([f"scenario not found: {scenarios / scenario}"])
+        if not (scenarios_dir / scenario).is_dir():
+            raise LoadError([f"scenario not found: {scenarios_dir / scenario}"])
         name = scenario
     else:
-        name = _default_scenario_name(data_dir, scenarios)
+        name = _default_scenario_name(data_dir, scenarios_dir)
     head = repo_head(data_dir)
     resolved_intent_dir = (
-        Path(intent_dir) if intent_dir is not None
-        else state_dir(data_dir, DEFAULT_INTENT_DIR)
+        Path(intent_dir).resolve() if intent_dir is not None
+        else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_INTENT_DIR
     )
     resolved_runs_dir = (
-        Path(runs_dir) if runs_dir is not None
-        else state_dir(data_dir, DEFAULT_RUNS_DIR)
+        Path(runs_dir).resolve() if runs_dir is not None
+        else (Path(run_path).parent.resolve()
+                if run_path is not None
+                else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
+        )
+    )
+    run_path = (Path(run_path).resolve() if run_path is not None
+                else latest_run_path(resolved_runs_dir, name)
     )
     return ScenarioRef(
         name=name,
         data_dir=data_dir,
-        path=scenarios / name,
+        scenarios_dir=scenarios_dir,
+        path=scenarios_dir / name,
         intent_path=resolved_intent_dir / f"{name}.sqlite3",
         runs_dir=resolved_runs_dir,
-        run_path=latest_run_path(resolved_runs_dir, name),
+        run_path=run_path,
+        state_dir=state_dir,
         commit=head.commit,
         branch=head.branch,
         dirty=head.dirty,
     )
 
 
-def list_scenario_names(data_dir: Path) -> list[str]:
+def list_scenario_names(data_dir: Path, scenarios_dir: Path | None = None) -> list[str]:
     """Scenario folder names under data_dir/scenarios, sorted."""
-    scenarios = Path(data_dir) / "scenarios"
+    scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
     if not scenarios.is_dir():
         raise LoadError([f"no scenarios/ in {data_dir}"])
     return sorted(p.name for p in scenarios.iterdir() if p.is_dir())
 
 
-def _default_scenario_name(data_dir: Path, scenarios: Path) -> str:
+def _default_scenario_name(data_dir: Path, scenarios: Path, scenarios_dir: Path | None = None) -> str:
     recorded = read_current_scenario(data_dir)
     if recorded:
-        if not (scenarios / recorded).is_dir():
+        if not ((scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios") / recorded).is_dir():
             raise LoadError([
                 f"{current_scenario_path(data_dir)} names a missing scenario: "
                 f"{recorded!r}"
             ])
         return recorded
-    subs = list_scenario_names(data_dir)
+    subs = list_scenario_names(data_dir, scenarios_dir)
     if len(subs) == 1:
         return subs[0]
     if DEFAULT_SCENARIO_NAME in subs:
@@ -316,12 +338,14 @@ def _read_scenario_inputs(
     scenario_name: str,
     issues: list[str],
     *,
+    scenarios_dir: Path | None = None,
     stack: tuple[str, ...] = (),
 ) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]]]:
     """Read a scenario and recursively overlay any declared parent."""
-    scenario_dir = data_dir / "scenarios" / scenario_name
+    scenarios_dir = Path(scenarios_dir or (data_dir / "scenarios"))
+    scenario_dir = scenarios_dir / scenario_name
     if scenario_name in stack:
         raise LoadError([f"scenario inheritance cycle: {' -> '.join((*stack, scenario_name))}"])
     if not scenario_dir.is_dir():
@@ -412,11 +436,14 @@ def open_intent_db(
             con.close()
 
 
+
 def load_scenario(
     data_dir: Path,
     scenario_name: str,
     *,
-    intent_dir: Path,
+    intent_dir: Path | None = None,
+    intent_path: Path | None = None,
+    scenarios_dir: Path | None = None,
     data_repo_name: str | None = None,
     loaded_by: str | None = None,
     allow_dirty_data: bool = False,
@@ -430,9 +457,21 @@ def load_scenario(
     raises ``DataDirtyRefused``.
     """
     data_dir = Path(data_dir).resolve()
-    scenario_dir = data_dir / "scenarios" / scenario_name
+    scenarios_dir = Path(scenarios_dir or (data_dir / "scenarios"))
+    scenario_dir = scenarios_dir / scenario_name
     if not scenario_dir.is_dir():
         raise LoadError([f"scenario folder not found: {scenario_dir}"])
+    match intent_dir, intent_path:
+        case None, None:
+            intent_dir = data_dir / "intent"
+            intent_path = intent_dir / f"{scenario_name}.sqlite3"
+        case None, _:
+            intent_dir = intent_path.parent
+        case _, None:
+            intent_path = intent_dir / f"{scenario_name}.sqlite3"
+        case _, _:
+            if intent_path.parent != intent_dir:
+                raise LoadError([f"intent_path {intent_path} is not within intent_dir {intent_dir}"])
 
     money_resolver = _MoneyReferenceResolver(data_dir)
 
@@ -442,7 +481,10 @@ def load_scenario(
     (
         scenario_row, accounts, model_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
-    ) = _read_scenario_inputs(data_dir, scenario_name, issues)
+    ) = _read_scenario_inputs(data_dir,
+                              scenario_name,
+                              issues,
+                              scenarios_dir=scenarios_dir)
     chains = _read_chain_files(data_dir, scenario_name, issues)
 
 
@@ -489,7 +531,7 @@ def load_scenario(
     try:
         con.execute("PRAGMA locking_mode = EXCLUSIVE")
         con.execute("PRAGMA foreign_keys = ON")
-        con.executescript(INTENT_DDL)
+        apply_run_schema(con)
         counts = _write_intent(
             con,
             persons=persons,
@@ -514,11 +556,33 @@ def load_scenario(
             code=cs,
             data=ds,
         )
+        insert_run_metadata(
+            con,
+            scenario_name=scenario_name,
+            status="running",
+            scenario_tree_id="",
+            data_repo_path="DATA_REPO",
+            data_repo_name=data_repo_name or data_dir.name,
+            data_mode="live",
+            allow_dirty_data=False,
+            allow_dirty_code=False,
+            run_by="TEST",
+            version=cs.version,
+            data_version=0,
+            data_dirty=False,
+            run_args={},
+            engine_options={},
+            code_repo_path="CODE_REPO",
+            code_dirty=False,
+            finished_at=_now_iso(),
+        )
         con.commit()
     finally:
         con.close()
 
-    return LoadResult(intent_path=intent_path, scenario_name=scenario_name, counts=counts)
+    return LoadResult(intent_path=intent_path,
+                      scenario_name=scenario_name,
+                      counts=counts)
 
 
 # ---------- CSV reading ----------

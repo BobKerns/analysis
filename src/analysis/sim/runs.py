@@ -69,6 +69,50 @@ def open_run_file(
      scenario_tree_id, data_repo_path, data_repo_name) = manifest
 
     code = code_stamps()
+    insert_run_metadata(
+        con,
+        scenario_name=scenario_name,
+        status="running",
+        scenario_tree_id=scenario_tree_id,
+        data_repo_path=data_repo_path,
+        data_repo_name=data_repo_name,
+        data_mode=data_mode,
+        allow_dirty_data=allow_dirty_data,
+        allow_dirty_code=allow_dirty_code,
+        run_by=run_by,
+        version=code.version,
+        data_version=data_version,
+        data_dirty=data_dirty,
+        run_args=run_args,
+        engine_options=engine_options,
+        code_repo_path=code.repo_path,
+        code_dirty=code.dirty,
+    )
+    con.commit()
+    _ = intent_code_version  # reserved: cross-check intent vs run code version later
+    return con
+
+def insert_run_metadata(
+    con: sqlite3.Connection,
+    *,
+    scenario_name: str,
+    status: str = "running",
+    scenario_tree_id: str,
+    data_repo_path: str,
+    data_repo_name: str,
+    data_mode: str,
+    allow_dirty_data: bool,
+    allow_dirty_code: bool,
+    run_by: str,
+    version: str,
+    code_repo_path: str,
+    code_dirty: bool,
+    data_version: str,
+    data_dirty: bool,
+    run_args: dict | None = None,
+    engine_options: dict | None = None,
+    finished_at: str | None = None,
+) -> None:
     con.execute(
         "INSERT INTO simulation_run("
         "id, scenario_name, schema_version, status, started_at, "
@@ -77,22 +121,22 @@ def open_run_file(
         "data_repo_path, data_repo_name, data_mode, "
         "allow_dirty_data, allow_dirty_code, "
         "run_by, host, python_version, "
-        "run_args_json, engine_options_json) "
-        "VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "run_args_json, engine_options_json, "
+        "finished_at) "
+        "VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
-            scenario_name, SCHEMA_VERSION, "running", _now_iso(),
-            code.version, int(code.dirty), code.repo_path,
+            scenario_name, SCHEMA_VERSION, status, _now_iso(),
+            version, int(code_dirty), code_repo_path,
             data_version, int(data_dirty), scenario_tree_id,
             data_repo_path, data_repo_name, data_mode,
             int(allow_dirty_data), int(allow_dirty_code),
             run_by, socket.gethostname(), sys.version.split()[0],
             json.dumps(run_args or {}, sort_keys=True),
             json.dumps(engine_options or {}, sort_keys=True),
-        ),
+            finished_at,
+        )
     )
     con.commit()
-    _ = intent_code_version  # reserved: cross-check intent vs run code version later
-    return con
 
 
 def finalize_run(

@@ -23,6 +23,9 @@ from IPython.display import clear_output, display
 
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
+from analysis.sim.types import AccountKind
+
+from analysis.sim.types import AccountKind, AccountName, ScenarioName
 
 
 def warning_html(message: str) -> str:
@@ -110,7 +113,7 @@ class SingleScenarioConnections(Connections):
     ``require_run=False`` and the scenario has no run yet.
     """
 
-    value: str = traitlets.Any()
+    value: ScenarioName = traitlets.Any()
     scenario_ref: ScenarioRef = traitlets.Any()
     scenario: ScenarioConnection = traitlets.Any()
     run: RunConnection | None = traitlets.Any()
@@ -128,16 +131,23 @@ class SingleScenarioConnections(Connections):
 
 
 def _open_single(
-    data_dir: Path, name: str, *, require_run: bool,
+    data_dir: Path, name: str, *,
+    require_run: bool,
+    scenarios_dir: Path | None = None,
+    runs_dir: Path | None = None,
+    run_path: Path | None = None,
 ) -> SingleScenarioConnections:
-    ref = resolve_scenario_name(data_dir, name)
+    ref = resolve_scenario_name(data_dir, name,
+                                scenarios_dir=scenarios_dir,
+                                runs_dir=runs_dir,
+                                run_path=run_path)
     if require_run and ref.run_path is None:
         raise FileNotFoundError(
             f"no runs for {name!r} in {ref.runs_dir}; run "
             f"`analysis sim load {name} && analysis sim run {name}`"
         )
     scenario = ScenarioConnection(data_dir, name)
-    run = RunConnection(scenario, scenario.ref.run_path) if ref.run_path is not None else None
+    run = RunConnection(ref.run_path, scenario) if ref.run_path is not None else None
     return SingleScenarioConnections(name, ref, scenario, run)
 
 _META_COLS = [
@@ -146,11 +156,14 @@ _META_COLS = [
     "data_mode", "run_by",
 ]
 
+
 def scenario_picker(
     data_dir: Path | str | None = None, default: str | None = None, *,
+    scenarios_dir: Path | None = None,
+    runs_dir: Path | None = None,
     require_run: bool = True,
     show_metadata: bool = False,
-):
+) -> tuple[widgets.VBox, SingleScenarioConnections, widgets.Dropdown]:
     """A ``Scenario:`` dropdown that keeps a live connection pair in sync.
 
     Returns ``(widget, container)``; ``container`` is a
@@ -167,13 +180,18 @@ def scenario_picker(
     # Same resolution the CLI uses: $ANALYSIS_SCENARIO, else the data repo's
     # .current_scenario, else "current".
         default = resolve_scenario_name(
-            data_dir, os.environ.get("ANALYSIS_SCENARIO") or None
+            data_dir, os.environ.get("ANALYSIS_SCENARIO") or None,
+            scenarios_dir=scenarios_dir,
+            runs_dir=runs_dir,
         ).name
-    options = list_scenario_names(data_dir)
+    options = list_scenario_names(data_dir, scenarios_dir=scenarios_dir)
     dropdown = widgets.Dropdown(options=options, value=default, description="Scenario:")
     ref_out = widgets.Output()
 
-    container = _open_single(data_dir, default, require_run=require_run)
+    container = _open_single(data_dir, default,
+                             runs_dir=runs_dir,
+                             require_run=require_run,
+                             scenarios_dir=scenarios_dir)
     vbox = widgets.VBox([dropdown, ref_out])
 
     def _redraw() -> None:
@@ -190,7 +208,10 @@ def scenario_picker(
 
     def _on_change(change) -> None:
         old_scenario, old_run = container.scenario, container.run
-        new = _open_single(data_dir, change["new"], require_run=require_run)
+        new = _open_single(data_dir, change["new"],
+                           runs_dir=runs_dir,
+                           require_run=require_run,
+                           scenarios_dir=scenarios_dir)
         container.scenario_ref = new.scenario_ref
         container.scenario = new.scenario
         container.run = new.run
@@ -219,14 +240,14 @@ class MultiScenarioConnections(Connections):
     """
 
     connections: dict[str, RunConnection]
-    baseline: str
-    variants: list[str]
+    baseline: ScenarioName
+    variants: list[ScenarioName]
     colors: dict[str, str]
     warnings: list[str] = field(default_factory=list)
     value: object = traitlets.Any()
 
     @property
-    def scenarios(self) -> list[str]:
+    def scenarios(self) -> list[ScenarioName]:
         return [self.baseline, *self.variants] if self.baseline else []
 
     @property
@@ -270,7 +291,7 @@ def _load_multi(
             missing.append(name)
             continue
         scenarios = _open_single(data_dir, name, require_run=True)
-        connections[name] = RunConnection(scenarios.scenario, ref.run_path)
+        connections[name] = RunConnection(ref.run_path, scenarios.scenario)
 
     if baseline not in connections:
         return MultiScenarioConnections(connections, "", [], {}, [
@@ -302,6 +323,8 @@ def multi_scenario_picker(
     data_dir: Path | str | None = None,
     default_baseline: str | None = None,
     default_variants: list[str] | None = None,
+    intent_dir: Path | str | None = None,
+    runs_dir: Path | str | None = None,
     max_variants: int = 4,
 ):
     """Baseline dropdown + variant multi-select, backed by live run connections.
@@ -321,7 +344,8 @@ def multi_scenario_picker(
         # Same resolution the CLI uses: $ANALYSIS_SCENARIO, else the data repo's
         # .current_scenario, else "current".
         default_baseline = resolve_scenario_name(
-            data_dir, os.environ.get("ANALYSIS_SCENARIO") or None
+            data_dir, os.environ.get("ANALYSIS_SCENARIO") or None,
+            intent_dir=intent_dir, runs_dir=runs_dir,
         ).name
 
     baseline_picker = widgets.Dropdown(
@@ -412,3 +436,31 @@ def y_axis_plot_mode() -> widgets.ToggleButtons:
         description="Y-axis:",
         layout=widgets.Layout(border="1px solid #888", padding="4px 6px"),
     )
+
+
+# Account kinds a balance-history widget can switch between, in dropdown order.
+KIND_LABELS: dict[AccountKind, str] = {
+    "asset": "Asset", "liability": "Liability",
+    "income": "Income", "expense": "Expense",
+}
+
+
+class AccountPicker(widgets.HBox):
+    """A widget for selecting account kind and specific accounts."""
+    kind: AccountKind = traitlets.Any("asset")
+    accounts: list[AccountName] = traitlets.List()
+    def __init__(self, accounts: list[str], kind: str = "asset"):
+
+        kind_picker = widgets.Dropdown(
+            options=[(label, k) for k, label in KIND_LABELS.items()],
+            value=kind,
+            description="Kind:",
+        )
+        picker = widgets.SelectMultiple(
+            description="Accounts:", layout=widgets.Layout(width="50%"),
+            value=accounts[0:1] if accounts else None,
+            options=accounts,
+        )
+        traitlets.link((kind_picker, "value"), (self, "kind"))
+        traitlets.link((picker, "value"), (self, "accounts"))
+        super().__init__([kind_picker, picker])

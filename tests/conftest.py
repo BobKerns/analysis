@@ -10,8 +10,18 @@ scenario name. Clearing these here makes any such test fail loudly with
 """
 
 from __future__ import annotations
+from collections.abc import Callable, Generator
+from pathlib import Path
+import shutil
 
 import pytest
+from rich import scope
+
+from analysis.sim import scenario
+from analysis.sim.connection import RunConnection, ScenarioConnection, open_scenario, open_run
+from analysis.sim.engine import run_scenario
+from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
+from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
@@ -30,7 +40,7 @@ def _no_ambient_analysis_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _no_current_scenario_writes(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Make the ``sim`` CLI's ``write_current_scenario`` a no-op by default.
+    """Make the ``sim`` CLI's ``write_current_scenario`` a no-op by retire_alice.
 
     It writes into whatever ``--data-dir`` points at — real data repo,
     activated data repo, or the tracked ``prototype_data/`` fixture — none of
@@ -41,3 +51,256 @@ def _no_current_scenario_writes(
     if request.node.get_closest_marker("uses_current_scenario_write"):
         return
     monkeypatch.setattr("analysis.sim.cli.write_current_scenario", lambda *args, **kwargs: None)
+
+@pytest.fixture(scope="session")
+def data_dir(tmp_path_factory: pytest.TempPathFactory, prototype_data: Path) -> Path:
+    """
+    Create and populate a temporary data directory for tests.
+
+    This includes the retire_alice scenario data used in tests.
+    """
+    data_dir = tmp_path_factory.mktemp("data")
+    shutil.copytree(prototype_data, data_dir, dirs_exist_ok=True)
+    return data_dir
+
+
+@pytest.fixture(scope="function")
+def test_data_dir(tmp_path, prototype_data: Path) -> Path:
+    """
+    Create and populate a temporary data directory for tests, per test.
+
+    This includes the retire_alice scenario data used in tests.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(prototype_data, data_dir, dirs_exist_ok=True)
+    return data_dir
+
+@pytest.fixture(scope="session")
+def scenarios_dir(data_dir: Path) -> Path:
+    """Create a temporary scenario directory within the temporary data directory for tests."""
+    scenarios_dir = data_dir / "scenarios"
+    scenarios_dir.mkdir(parents=True, exist_ok=True)
+    return scenarios_dir
+
+@pytest.fixture(scope="function")
+def state_dir(tmp_path: Path) -> Generator[Path, None, None]:
+    """Create a temporary state directory within the temporary data directory for tests."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        yield state_dir
+    finally:
+        shutil.rmtree(state_dir, ignore_errors=True)
+
+
+@pytest.fixture(scope="function")
+def intent_dir(state_dir: Path) -> Path:
+    """Create a temporary intent directory within the temporary data directory for tests."""
+    intent_dir = state_dir / "intent"
+    intent_dir.mkdir(parents=True, exist_ok=True)
+    return intent_dir
+
+
+@pytest.fixture(scope="function")
+def runs_dir(state_dir: Path) -> Path:
+    """Create a temporary runs directory within the temporary state directory for tests."""
+    runs_dir = state_dir / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    return runs_dir
+
+
+@pytest.fixture(scope="function")
+def scenario_ref(data_dir: Path,
+                 intent_dir: Path,
+                 runs_dir: Path,
+                 scenarios_dir: Path) -> Callable[[str], ScenarioRef]:
+    """Fixture to provide a callable that returns a ScenarioRef for a given scenario name."""   
+    def _scenario_ref(scenario: str) -> ScenarioRef:
+        return resolve_scenario_name(data_dir, scenario,
+                                     intent_dir=intent_dir,
+                                     scenarios_dir=scenarios_dir,
+                                     runs_dir=runs_dir)
+    return _scenario_ref
+
+@pytest.fixture(scope="function")
+def run_path(runs_dir: Path) -> Callable[[str], Path]:
+    """
+    Fixture to provide a callable that returns the run path for a given scenario.
+    
+    This closes over the appropriate runs directory for the test.
+    """
+    def _run_path(scenario: str) -> Path:
+        return runs_dir / f"test_{scenario}_run.sqlite3"
+    return _run_path
+
+
+def load_from_ref(scenario_ref: ScenarioRef) -> Path:
+    """Utility function to load and get the intent path from a ScenarioRef."""
+    result: LoadResult = load_scenario(scenario_ref.data_dir, scenario_ref.name,
+                                       intent_path=scenario_ref.intent_path,
+                                       allow_dirty_data=True)       
+    return result.intent_path
+
+
+def run_from_ref(scenario_ref: ScenarioRef, *,
+                 intent_file: Path | None = None,
+                 run_path: Path | None = None) -> Path:
+    """
+    Utility function to run a scenario and get the run path from a ScenarioRef.
+    
+    The scenario is expected to have been loaded, and this function
+    returns the path to the resulting run file.
+
+    The intent_file parameter will ordinarily be the same as scenario_ref.intent_path.
+    Specifying it specifically lets you get it from the fixture that causes it to be
+    loaded by the corresponding load fixture, allowing for a more clear pattern
+    of dependency between loading and running the scenario.
+    """
+    intent_file = intent_file or scenario_ref.intent_path
+    run_path = (
+        run_path
+        or scenario_ref.run_path
+        or scenario_ref.runs_dir / f"test_{scenario_ref.name}_run.sqlite3"
+    )
+    return run_scenario(intent_file, run_path,
+                        allow_dirty_data=True,
+                        allow_dirty_code=True,
+                        run_by="TEST",
+                        data_mode="prototype"
+                        )
+
+
+@pytest.fixture(scope="function")
+def retire_alice_intent_file(retire_alice_scenario_ref: ScenarioRef) -> Path:
+    """Fixture to load and get the intent path for the retire_alice scenario."""
+    return load_from_ref(retire_alice_scenario_ref)
+
+
+@pytest.fixture(scope="function")
+def variant_a_intent_file(variant_a_scenario_ref: ScenarioRef) -> Path:
+    """Fixture to load and get the intent path for the variant_a scenario."""
+    return load_from_ref(variant_a_scenario_ref)
+
+
+@pytest.fixture(scope="function")
+def retire_alice_run_file(retire_alice_scenario_ref: ScenarioRef,
+                          retire_alice_intent_file: Path) -> Path:
+    """Fixture to load and run the retire_alice scenario."""
+    return run_from_ref(retire_alice_scenario_ref,
+                        intent_file=retire_alice_intent_file)
+
+
+@pytest.fixture(scope="function")
+def variant_a_run_file(variant_a_scenario_ref: ScenarioRef,
+                       variant_a_intent_file: Path) -> Path:
+    """Fixture to load and run the variant_a scenario."""
+    return run_from_ref(variant_a_scenario_ref,
+                        intent_file=variant_a_intent_file)
+
+
+@pytest.fixture(scope="function")
+def variant_a_scenario_ref(scenario_ref: Callable[[str], ScenarioRef],
+                           variant_a_scenario_create: Path) -> ScenarioRef:
+    """Fixture to provide the ScenarioRef for the variant_a scenario."""
+    return scenario_ref("variant_a")
+
+
+@pytest.fixture(scope="function")
+def retire_alice_scenario_ref(scenario_ref: Callable[[str], ScenarioRef]) -> ScenarioRef:
+    """Fixture to provide the ScenarioRef for the retire_alice scenario."""
+    return scenario_ref("retire_alice")
+
+
+@pytest.fixture(scope="function")
+def retire_alice_run_path(run_path: Callable[[str], Path]) -> Path:
+    """Fixture to provide the run path for the retire_alice scenario."""
+    return run_path("retire_alice")
+
+
+@pytest.fixture(scope="function")
+def variant_a_run_path(run_path: Callable[[str], Path]) -> Path:
+    """Fixture to provide the run path for the variant_a scenario."""
+    return run_path("variant_a")
+
+
+@pytest.fixture(scope="function")
+def retire_alice_run(scenarios_dir: Path,
+                     retire_alice_scenario: ScenarioConnection,
+                     retire_alice_run_file: Path) -> Generator[RunConnection, None, None]:
+    """Fixture to provide the RunConnection for the retire_alice scenario."""
+    with open_run(retire_alice_run_file, retire_alice_scenario,
+                  scenarios_dir=scenarios_dir) as r:
+        yield r
+
+
+@pytest.fixture(scope="function")
+def variant_a_run(scenarios_dir: Path,
+                  variant_a_scenario: ScenarioConnection,
+                  variant_a_run_file: Path) -> Generator[RunConnection, None, None]:
+    """Fixture to provide the RunConnection for the variant_a scenario."""
+    with open_run(variant_a_run_file, variant_a_scenario,
+                  scenarios_dir=scenarios_dir) as r:
+        yield r
+
+
+@pytest.fixture(scope="session")
+def retire_alice_scenario(data_dir: Path) -> Generator[ScenarioConnection, None, None]:
+    """Fixture to provide the ScenarioConnection for the retire_alice scenario."""
+    with open_scenario(data_dir, "retire_alice") as conn:
+        yield conn
+
+
+@pytest.fixture(scope="function")
+def test_retire_alice_scenario(test_data_dir: Path) -> Generator[ScenarioConnection, None, None]:
+    """Fixture to provide the ScenarioConnection for the retire_alice scenario."""
+    with open_scenario(test_data_dir, "retire_alice") as conn:
+        yield conn
+
+
+@pytest.fixture(scope="function")
+def variant_a_scenario(data_dir: Path,
+                       variant_a_scenario_create: Path,
+                       ) -> Generator[ScenarioConnection, None, None]:
+    """Fixture to provide the ScenarioConnection for the variant_a scenario."""
+    with open_scenario(data_dir, "variant_a") as conn:
+        yield conn
+
+
+@pytest.fixture(scope="session")
+def repo_root() -> Path:
+    """Fixture to provide the root path of the repository."""
+    return Path(__file__).parent.parent
+
+@pytest.fixture(scope="session")
+def prototype_data(repo_root: Path) -> Path:
+    """Fixture to provide the path to the prototype directory within the repository."""
+    return repo_root / "prototype_data"
+
+
+@pytest.fixture(scope="session")
+def variant_a_scenario_create(data_dir: Path) -> Path:
+    """Fixture to provide the path to the variant_a scenario within the data directory."""
+    return scenario.create_scenario(data_dir, "variant_a", "retire_alice")
+
+@pytest.fixture(scope="function")
+def multi_connections(data_dir: Path,
+                      retire_alice_run: RunConnection,
+                      variant_a_run: RunConnection) -> MultiScenarioConnections:
+    """Fixture to provide multiple run connections for different scenarios."""
+    _, container = multi_scenario_picker(data_dir,
+                                         retire_alice_run.name,
+                                         [variant_a_run.name])
+    return container
+
+
+@pytest.fixture(scope="session")
+def test_data(repo_root: Path) -> Path:
+    """Fixture to provide the path to the test data directory within the repository."""
+    return repo_root / "tests" / "data"
+
+@pytest.fixture(scope="session")
+def bad_subkind_data(test_data: Path) -> Path:
+    """Fixture to provide the path to the bad_subkind data within the test data directory."""
+    return test_data / "sim/bad_subkind"
+

@@ -509,7 +509,7 @@ def apply_intent_schema(con: sqlite3.Connection) -> None:
 
 
 def apply_run_schema(con: sqlite3.Connection) -> None:
-    con.executescript(INTENT_BASE_DDL + RESERVED_DDL + LEDGER_DDL + RUN_VIEWS_DDL)
+    con.executescript(INTENT_BASE_DDL + RESERVED_DDL + LEDGER_DDL + RUN_VIEWS_DDL + INTENT_MANIFEST_DDL)
 
 
 # Tables snapshotted from intent into run files. Order respects FK dependencies.

@@ -17,7 +17,7 @@ import ipywidgets as widgets
 import pandas as pd
 from IPython.display import Markdown, clear_output, display
 
-from analysis.sim.connection import RunConnection, year_end_values
+from analysis.sim.connection import RunConnection, ScenarioConnection, year_end_values
 from analysis.sim.notebook_ui.pickers import (
     MultiScenarioConnections,
     display_warning,
@@ -214,12 +214,15 @@ _META_COLS = [
 
 
 def comparability_widget(container: MultiScenarioConnections,
-                         connections: MultiScenarioConnections,
-                         variants: Sequence[str],
+                         connections: dict[str, ScenarioConnection] | None = None,
+                         variants: Sequence[str] | None = None,
                          **_
                          ) -> None:
     """Whether the loaded runs share code/data version -- a comparison is only
     meaningful if a difference isn't just an unrelated code/data change."""
+
+    connections = connections or container.connections
+    variants = variants or list(connections.keys())
 
     def _redraw():
         meta = pd.concat(

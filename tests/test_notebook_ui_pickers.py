@@ -57,34 +57,39 @@ def test_scenario_picker_opens_scenario_and_run_connections(tmp_path: Path) -> N
     data = _copy_prototype(tmp_path)
     _load_and_run(data, "retire_alice")
 
-    widget, container = scenario_picker(data, "retire_alice")
+    widget, container, dropdown = scenario_picker(data, "retire_alice")
 
     assert isinstance(container.scenario, ScenarioConnection)
     assert isinstance(container.run, RunConnection)
+    from ipywidgets import Dropdown
+    assert isinstance(dropdown, Dropdown)
     assert container.scenario_ref.name == "retire_alice"
+    assert dropdown.value == "retire_alice"
     container.close()
 
 
 def test_scenario_picker_switches_scenarios_closing_the_old_connections(
-    tmp_path: Path,
+    data_dir: Path,
+    scenarios_dir: Path,
+    runs_dir: Path,
+    retire_alice_run_file: Path,
+    variant_a_run_file: Path,
 ) -> None:
-    data = _copy_prototype(tmp_path)
-    _load_and_run(data, "retire_alice")
-    _create_scenario(data, "second", "retire_alice")
-    _load_and_run(data, "second")
 
-    widget, container = scenario_picker(data, "retire_alice")
+    widget, container, dropdown = scenario_picker(data_dir, "retire_alice",
+                                                  scenarios_dir=scenarios_dir,
+                                                  runs_dir=runs_dir)
     old_scenario, old_run = container.scenario, container.run
 
-    # Keep the test independent of the layout's title/description children.
-    dropdown = next(
-        child
-        for child in widget.children
-        if hasattr(child, "options") and hasattr(child, "value")
-    )
-    dropdown.value = "second"
+    # # Keep the test independent of the layout's title/description children.
+    # dropdown = next(
+    #     child
+    #     for child in widget.children
+    #     if hasattr(child, "options") and hasattr(child, "value")
+    # )
+    dropdown.value = "variant_a"
 
-    assert container.scenario_ref.name == "second"
+    assert container.scenario_ref.name == "variant_a"
     assert container.scenario is not old_scenario
     assert container.run is not old_run
     container.close()
@@ -102,7 +107,7 @@ def test_scenario_picker_require_run_false_allows_missing_run(tmp_path: Path) ->
     )
     assert result.exit_code == 0, result.output
 
-    widget, container = scenario_picker(data, "retire_alice", require_run=False)
+    widget, container, dropdown = scenario_picker(data, "retire_alice", require_run=False)
     assert container.run is None
     container.close()
 

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import matplotlib
 
+from tests.conftest import retire_alice_run_file
+
 matplotlib.use("Agg")
 
 from analysis.sim.notebook_ui.accounts_plots import render_balance_history_figure
@@ -22,32 +24,18 @@ from analysis.sim.notebook_ui.networth_plots import (
     net_worth_widget,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PROTOTYPE = REPO_ROOT / "prototype_data"
+
+def test_net_worth_widget_builds_without_error(retire_alice_run: RunConnection) -> None:
+    widget = net_worth_widget(retire_alice_run)
+    assert len(widget.children) == 2
 
 
-def _build_run(tmp_path: Path, scenario: str = "retire_alice") -> Path:
-    dest = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, dest)
-    intent_path = load_scenario(
-        dest, scenario,
-        intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    return run_scenario(
-        intent_path, tmp_path / "runs" / "r.sqlite3",
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
-    )
-
-
-def test_net_worth_widget_builds_without_error(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
-        widget = net_worth_widget(rc)
-        assert len(widget.children) == 2
-
-
-def test_income_widget_toggles_dollar_basis(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
+def test_income_widget_toggles_dollar_basis(retire_alice_run_file: Path,
+                                            data_dir: Path,
+                                            scenarios_dir: Path) -> None:
+    with open_run(retire_alice_run_file, "retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
         widget = income_widget(rc)
         plot_mode, chart_out, table_out = widget.children
         assert plot_mode.value == "nominal"
@@ -55,28 +43,44 @@ def test_income_widget_toggles_dollar_basis(tmp_path: Path) -> None:
         assert plot_mode.value == "cpi_constant"
 
 
-def test_expenses_widget_includes_caveat(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
+def test_expenses_widget_includes_caveat(retire_alice_run_file: Path,
+                                         data_dir: Path,
+                                         scenarios_dir: Path) -> None:
+    with open_run(retire_alice_run_file, "retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
         widget = expenses_widget(rc)
         assert len(widget.children) == 4
 
 
-def test_gains_widget_builds_without_error(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
+def test_gains_widget_builds_without_error(retire_alice_run_file: Path,
+                                           data_dir: Path,
+                                           scenarios_dir: Path) -> None:
+    with open_run(retire_alice_run_file, "retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
         widget = gains_widget(rc)
         plot_mode, chart_out, table_out = widget.children
         plot_mode.value = "nominal"
 
 
-def test_after_tax_widget_builds_without_error(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
+def test_after_tax_widget_builds_without_error(retire_alice_run_file: Path,
+                                               data_dir: Path,
+                                               scenarios_dir: Path) -> None:
+    with open_run(retire_alice_run_file, "retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
         widget = after_tax_widget(rc)
         plot_mode, chart_out, table_out = widget.children
         plot_mode.value = "nominal"
 
 
-def test_account_history_widget_defaults_to_kind(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
+def test_account_history_widget_defaults_to_kind(retire_alice_run_file: Path,
+                                                 data_dir: Path,
+                                                 scenarios_dir: Path) -> None:
+    with open_run(retire_alice_run_file, "retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
         assert isinstance(rc, RunConnection)
         widget = account_history_widget(rc, "asset", "Asset balances")
         kind_picker, picker = widget.children[1], widget.children[2]
@@ -84,8 +88,12 @@ def test_account_history_widget_defaults_to_kind(tmp_path: Path) -> None:
         assert all(rc.account_kinds()[name] == "asset" for name in picker.options)
 
 
-def test_account_history_widget_kind_switch_repopulates_accounts(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
+def test_account_history_widget_kind_switch_repopulates_accounts(retire_alice_run_file: Path,
+                                                                 data_dir: Path,
+                                                                 scenarios_dir: Path) -> None:
+    with open_run(retire_alice_run_file, "retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
         widget = account_history_widget(rc, "asset", "Balances")
         kind_picker, picker = widget.children[1], widget.children[2]
         kind_picker.value = "expense"
@@ -108,9 +116,14 @@ def test_balance_history_adds_total_for_multiple_accounts() -> None:
 
 
 def test_cpi_constant_expense_balances_preserve_zero_monthly_flow(
-    tmp_path: Path, monkeypatch
+    monkeypatch,
+    retire_alice_run_file: Path,
+    data_dir: Path,
+    scenarios_dir: Path
 ) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
+    with open_run(retire_alice_run_file, "retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
         nominal = rc.balance_pivot("expense")
         stopped = nominal.copy()
         stopped.loc[stopped.index >= "2027-01-31", "Expense_Living"] = (

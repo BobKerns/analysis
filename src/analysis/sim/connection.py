@@ -24,6 +24,8 @@ from typing import Literal
 import pandas as pd
 import traitlets
 
+from analysis.sim.types import INCOME_CATEGORIES, ItemType
+
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
 
@@ -36,8 +38,6 @@ INCOME_SUBKIND_TO_CATEGORY: dict[str, str] = {
     "capital_gain": "investment",
     "ss_benefit": "social security",
 }
-INCOME_CATEGORIES = ["salary", "social security", "investment"]
-
 EXPENSE_SUBKIND_TO_CATEGORY: dict[str, str] = {
     "housing": "housing",
     "interest_expense": "housing",
@@ -80,27 +80,6 @@ _TAX_RECONCILIATION_RENAME = {
     "federal_tax_overpaid": "federal_estimated_refund",
     "state_tax_overpaid": "state_estimated_refund",
 }
-
-ItemType = Literal[
-    "account",
-    "scheduled",
-    "calendar_event",
-    "transfer_event",
-    "simulation_run",
-    "net_worth",
-    "net_worth_constant_cpi",
-    "account_balance",
-    "account_model_member",
-    "aux_table",
-    "scenario",
-    "tax_year_summary",
-    "year_to_date",
-    "person",
-    "person_lifespan",
-    "chain",
-    "chain_steps",
-    "intent_manifest",
-]
 
 
 def year_end_values(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
@@ -439,21 +418,44 @@ class RunConnection(_TagReader):
     def label(self) -> str:
         return f"{self.name}@{self.date.strftime('%Y-%m-%d %H:%M')}"
 
-    scenario: ScenarioConnection
+    _scenario_owned: bool = False
+    """Whether this run connection owns the scenario connection, and should close it."""
+    _scenario: ScenarioConnection
+    @property
+    def scenario(self) -> ScenarioConnection:
+        if self._scenario is None:
+            self._scenario = next(open_scenario(self._data_dir, self._scenario_name))
+            self._scenario_owned = True
+        return self._scenario
+
+    _scenario_name: str | None
+    @property
+    def scenario_name(self) -> str:
+        if self._scenario_name is None:
+            self._scenario_name = self.scenario.name
+        return self._scenario_name
 
     @property
     def data_dir(self) -> Path:
         return self.scenario.data_dir
 
-    def __init__(self, scenario: ScenarioConnection, run_path: Path | str) -> None:
-        assert isinstance(scenario, ScenarioConnection), "scenario must be a ScenarioConnection instance"
-        self.scenario = scenario 
+    def __init__(self, run_path: Path | str,
+                  scenario: ScenarioConnection | str | None = None) -> None:
+        if isinstance(scenario, str):
+            self._scenario_name = scenario
+            self._scenario = None
+        else:
+            self._scenario_name = None
+            self._scenario = scenario
+
         self.run_path = Path(run_path)
         self._con = sqlite3.connect(self.run_path)
         self._con.row_factory = sqlite3.Row
 
     def close(self) -> None:
         self._con.close()
+        if self._scenario_owned and self._scenario is not None:
+            self._scenario.close()
 
     def __enter__(self) -> RunConnection:
         return self
@@ -760,14 +762,33 @@ class RunConnection(_TagReader):
 
 
 @contextmanager
-def open_run(run_path: Path | str, scenario: str| None = None) -> Generator[RunConnection]:
-    scenario_conn = open_scenario(run_path, scenario)
-    rc = RunConnection(scenario_conn, run_path)
-    try:
-        yield rc
-    finally:
-        rc.close()
-
+def open_run(run_path: Path | str,
+             scenario: ScenarioConnection | str | None = None,
+             scenarios_dir: Path | str = None,
+             data_dir: Path | str = None) -> Generator[RunConnection]:
+    data_dir = Path(data_dir or Path(run_path).parent).resolve()
+    if scenarios_dir is None:
+        scenarios_dir = data_dir / "scenarios"
+    else:
+        scenarios_dir = Path(scenarios_dir)
+    scenarios_dir = scenarios_dir.resolve()
+    match scenario:
+        case ScenarioConnection():
+            rc = RunConnection(run_path, scenario)
+            try:
+                yield rc
+            finally:
+                rc.close()
+        case str() | None:
+            with open_scenario(data_dir, scenario,
+                               scenarios_dir=scenarios_dir) as scenario_conn:
+                rc = RunConnection(run_path, scenario_conn)
+                try:
+                    yield rc   
+                finally:
+                    rc.close()
+        case _:
+            raise TypeError(f"Unexpected type for scenario: {type(scenario)}")
 
 def find_latest_run(runs_dir: Path | str, scenario: str | None = None) -> Path:
     """Return the most recent run snapshot file under ``runs_dir``.
@@ -819,12 +840,29 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
         """
         return f"{self.name}"
 
-    def __init__(self, data_dir: Path | str, scenario: str | None = None) -> None:
+    scenarios_dir: Path
+
+    def __init__(self, data_dir: Path | str,
+                 scenario: str | None = None,
+                 scenarios_dir: Path | str | None = None,
+                 intent_dir: Path | str | None = None,
+                 state_dir: Path | str | None = None,
+                 runs_dir: Path | str | None = None,
+                 run_path: Path | str | None = None) -> None:
         self.data_dir = Path(data_dir).resolve()
-        self.ref = resolve_scenario_name(self.data_dir, scenario)
+        scenarios_dir = scenarios_dir or (self.data_dir / "scenarios")  # type: ignore[assignment]
+        self.scenarios_dir = Path(scenarios_dir).resolve()
+        self.ref = resolve_scenario_name(self.data_dir, scenario,
+                                         scenarios_dir=self.scenarios_dir,
+                                         intent_dir=intent_dir,
+                                         state_dir=state_dir,
+                                         runs_dir=runs_dir,
+                                         run_path=run_path)
         self.scenario = self.ref.name
         self._tmp = tempfile.TemporaryDirectory()
-        self._intent_dir = Path(self._tmp.name)
+        if intent_dir is None:
+            intent_dir = Path(self._tmp.name)
+        self._intent_dir = Path(intent_dir).resolve()
         self._con: sqlite3.Connection | None = None  # type: ignore[assignment]
         self._dirty = False
         self._reload()
@@ -837,6 +875,7 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
         load_scenario(
             self.data_dir, self.scenario,
             intent_dir=self._intent_dir,
+            scenarios_dir=self.scenarios_dir,
             compute_stamps=False, allow_dirty_data=True,
         )
         con = sqlite3.connect(self._intent_dir / f"{self.scenario}.sqlite3")
@@ -937,8 +976,10 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
 @contextmanager
 def open_scenario(
     data_dir: Path | str, scenario: str | None = None,
+    scenarios_dir: Path | str | None = None,
 ) -> Generator[ScenarioConnection]:
-    sc = ScenarioConnection(data_dir, scenario)
+    sc = ScenarioConnection(data_dir, scenario,
+                            scenarios_dir=scenarios_dir)
     try:
         yield sc
     finally:

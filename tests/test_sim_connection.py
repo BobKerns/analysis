@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.connection import RunConnection, find_latest_run, open_run, open_scenario
+from analysis.sim.connection import RunConnection, ScenarioConnection, find_latest_run, open_run, open_scenario
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import load_scenario
 
@@ -99,18 +99,25 @@ def test_scenario_connection_unknown_item_raises(tmp_path: Path) -> None:
             sc.add_tags("account", "no_such_account", "a:b")
 
 
-def test_run_connection_reads_tags_from_snapshot(tmp_path: Path) -> None:
-    data = _copy_data(tmp_path)
-    with open_scenario(data, "retire_alice") as sc:
-        sc.add_tags("account", "Asset_Checking", "run:ok")
+def test_run_connection_reads_tags_from_snapshot(retire_alice_scenario: ScenarioConnection,
+                                                 retire_alice_run_path: Path,
+                                                 data_dir: Path,
+                                                 scenarios_dir: Path,
+                                                 intent_dir: Path) -> None:
+    retire_alice_scenario.add_tags("account", "Asset_Checking", "run:ok")
 
-    intent_dir = tmp_path / "intent"
     result = load_scenario(
-        data, "retire_alice", intent_dir=intent_dir,
-        allow_dirty_data=True, compute_stamps=False,
+        data_dir, "retire_alice",
+        scenarios_dir=scenarios_dir,
+        intent_dir=intent_dir,
+        allow_dirty_data=True,
+        compute_stamps=False,
     )
 
-    with open_run(result.intent_path) as rc:
+    with open_run(retire_alice_run_path,
+                  scenario="retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
         assert isinstance(rc, RunConnection)
         df = rc.list_tags(role="run")
         assert (df["name"] == "ok").any()
@@ -164,209 +171,167 @@ def test_find_latest_run_filters_by_scenario(tmp_path: Path) -> None:
         find_latest_run(runs_dir, "nope")
 
 
-def test_run_connection_account_balance_item_type(tmp_path: Path) -> None:
-    data = _copy_data(tmp_path)
-    intent_path = load_scenario(
-        data, "retire_alice",
-        intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    run_path = run_scenario(
-        intent_path, tmp_path / "runs" / "r.sqlite3",
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+def test_run_connection_account_balance_item_type(retire_alice_run: RunConnection) -> None:
+    df = retire_alice_run.items("account_balance")
+    assert {"month", "account", "kind", "balance"} <= set(df.columns)
+    assert "Asset_Checking" in set(df["account"])
+
+
+def test_run_connection_tax_year_summary_item_type(retire_alice_run: RunConnection) -> None:
+    df = retire_alice_run.items("tax_year_summary")
+    assert {"year", "bucket", "amount"} <= set(df.columns)
+
+
+def test_items_unknown_column_raises(retire_alice_scenario: ScenarioConnection) -> None:
+    with pytest.raises(KeyError):
+        retire_alice_scenario.items("account", not_a_column="x")
+
+
+def test_items_tag_filter_any_and_all(retire_alice_scenario: ScenarioConnection) -> None:
+    sc = retire_alice_scenario
+    sc.add_tags("account", "Asset_Checking", "expense:liquid notebook:nw")
+    sc.add_tags("account", "Asset_Brokerage_Joint", "notebook:nw")
+
+    nw = sc.items("account", tags="notebook:nw")
+    assert set(nw["name"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
+
+    any_two = sc.items("account", tags=["expense:liquid", "notebook:nw"])
+    assert set(any_two["name"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
+
+    all_two = sc.items(
+        "account",
+        tags={"expense:liquid", "notebook:nw"},
+        tags_match="all",
     )
+    assert list(all_two["name"]) == ["Asset_Checking"]
 
-    with open_run(run_path) as rc:
-        df = rc.items("account_balance")
-        assert {"month", "account", "kind", "balance"} <= set(df.columns)
-        assert "Asset_Checking" in set(df["account"])
+    pairs = sc.items("account", tags=[("expense", "liquid")])
+    assert list(pairs["name"]) == ["Asset_Checking"]
 
+    assert sc.items("account", tags="missing:tag").empty
 
-def test_run_connection_tax_year_summary_item_type(tmp_path: Path) -> None:
-    data = _copy_data(tmp_path)
-    intent_path = load_scenario(
-        data, "retire_alice",
-        intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    run_path = run_scenario(
-        intent_path, tmp_path / "runs" / "r.sqlite3",
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
-    )
-
-    with open_run(run_path) as rc:
-        df = rc.items("tax_year_summary")
-        assert {"year", "bucket", "amount"} <= set(df.columns)
+    combo = sc.items("account", tags="notebook:nw", kind="asset")
+    assert (combo["kind"] == "asset").all()
+    assert "Asset_Checking" in set(combo["name"])
 
 
-def test_items_unknown_column_raises(tmp_path: Path) -> None:
-    data = _copy_data(tmp_path)
-    with open_scenario(data, "retire_alice") as sc:
-        with pytest.raises(KeyError):
-            sc.items("account", not_a_column="x")
+def test_items_cache_invalidated_on_write(retire_alice_scenario: ScenarioConnection) -> None:
+    sc = retire_alice_scenario
+    before = sc.items("account", tags="x:y")
+    assert before.empty
+
+    sc.add_tags("account", "Asset_Checking", "x:y")
+
+    after = sc.items("account", tags="x:y")
+    assert "Asset_Checking" in set(after["name"])
 
 
-def test_items_tag_filter_any_and_all(tmp_path: Path) -> None:
-    data = _copy_data(tmp_path)
-    with open_scenario(data, "retire_alice") as sc:
-        sc.add_tags("account", "Asset_Checking", "expense:liquid notebook:nw")
-        sc.add_tags("account", "Asset_Brokerage_Joint", "notebook:nw")
-
-        nw = sc.items("account", tags="notebook:nw")
-        assert set(nw["name"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
-
-        any_two = sc.items("account", tags=["expense:liquid", "notebook:nw"])
-        assert set(any_two["name"]) == {"Asset_Checking", "Asset_Brokerage_Joint"}
-
-        all_two = sc.items(
-            "account",
-            tags={"expense:liquid", "notebook:nw"},
-            tags_match="all",
-        )
-        assert list(all_two["name"]) == ["Asset_Checking"]
-
-        pairs = sc.items("account", tags=[("expense", "liquid")])
-        assert list(pairs["name"]) == ["Asset_Checking"]
-
-        assert sc.items("account", tags="missing:tag").empty
-
-        combo = sc.items("account", tags="notebook:nw", kind="asset")
-        assert (combo["kind"] == "asset").all()
-        assert "Asset_Checking" in set(combo["name"])
+def test_items_unknown_type(retire_alice_scenario: ScenarioConnection) -> None:
+    sc = retire_alice_scenario
+    with pytest.raises(ValueError):
+        sc.items("bogus")  # type: ignore[arg-type]
 
 
-def test_items_cache_invalidated_on_write(tmp_path: Path) -> None:
-    data = _copy_data(tmp_path)
-    with open_scenario(data, "retire_alice") as sc:
-        before = sc.items("account", tags="x:y")
-        assert before.empty
-
-        sc.add_tags("account", "Asset_Checking", "x:y")
-
-        after = sc.items("account", tags="x:y")
-        assert "Asset_Checking" in set(after["name"])
+def test_net_worth_frame_has_nominal_and_cpi_constant(retire_alice_run: RunConnection) -> None:
+    rc = retire_alice_run
+    nw = rc.net_worth_frame()
+    assert {"nominal", "cpi_constant", "cumulative_index_micros"} <= set(nw.columns)
+    assert nw.index.name == "month"
+    # Cached: same object on a second call.
+    assert rc.net_worth_frame() is nw
 
 
-def test_items_unknown_type(tmp_path: Path) -> None:
-    data = _copy_data(tmp_path)
-    with open_scenario(data, "retire_alice") as sc:
-        with pytest.raises(ValueError):
-            sc.items("bogus")  # type: ignore[arg-type]
-
-
-def _build_run(tmp_path: Path, scenario: str = "retire_alice") -> Path:
-    data = _copy_data(tmp_path)
-    intent_path = load_scenario(
-        data, scenario,
-        intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    return run_scenario(
-        intent_path, tmp_path / "runs" / "r.sqlite3",
-        run_by="test", data_mode="prototype", allow_dirty_data=True,
+def test_to_cpi_constant_matches_manual_conversion(retire_alice_run: RunConnection) -> None:
+    rc = retire_alice_run
+    nw = rc.net_worth_frame()
+    converted = rc.to_cpi_constant(nw[["nominal"]])
+    factor = 1_000_000 / nw["cumulative_index_micros"]
+    expected = nw["nominal"] * factor
+    pd.testing.assert_series_equal(
+        converted["nominal"], expected, check_names=False,
     )
 
 
-def test_net_worth_frame_has_nominal_and_cpi_constant(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
-        nw = rc.net_worth_frame()
-        assert {"nominal", "cpi_constant", "cumulative_index_micros"} <= set(nw.columns)
-        assert nw.index.name == "month"
-        # Cached: same object on a second call.
-        assert rc.net_worth_frame() is nw
+def test_balance_pivot_filters_by_kind_and_is_cents_to_dollars(retire_alice_run: RunConnection) -> None:
+    rc = retire_alice_run
+    full = rc.balance_pivot()
+    assert "Asset_Checking" in full.columns
+
+    assets = rc.balance_pivot("asset")
+    kinds = rc.account_kinds()
+    assert all(kinds[c] == "asset" for c in assets.columns)
+    assert "Asset_Checking" in assets.columns
+
+    raw = rc.items("account_balance")
+    raw_checking = raw[raw["account"] == "Asset_Checking"].iloc[0]
+    month = pd.to_datetime(raw_checking["month"])
+    assert full.loc[month, "Asset_Checking"] == raw_checking["balance"] / 100
 
 
-def test_to_cpi_constant_matches_manual_conversion(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
-        nw = rc.net_worth_frame()
-        converted = rc.to_cpi_constant(nw[["nominal"]])
-        factor = 1_000_000 / nw["cumulative_index_micros"]
-        expected = nw["nominal"] * factor
-        pd.testing.assert_series_equal(
-            converted["nominal"], expected, check_names=False,
-        )
+def test_income_balance_pivot_displays_credits_as_positive_inflows(retire_alice_run: RunConnection) -> None:
+    rc = retire_alice_run
+    raw = rc.items("account_balance")
+    raw_income = raw[raw["account"] == "Income_Salary_Alice"].iloc[0]
+    month = pd.to_datetime(raw_income["month"])
+
+    income = rc.balance_pivot("income")
+
+    assert income.loc[month, "Income_Salary_Alice"] == -raw_income["balance"] / 100
 
 
-def test_balance_pivot_filters_by_kind_and_is_cents_to_dollars(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
-        full = rc.balance_pivot()
-        assert "Asset_Checking" in full.columns
-
-        assets = rc.balance_pivot("asset")
-        kinds = rc.account_kinds()
-        assert all(kinds[c] == "asset" for c in assets.columns)
-        assert "Asset_Checking" in assets.columns
-
-        raw = rc.items("account_balance")
-        raw_checking = raw[raw["account"] == "Asset_Checking"].iloc[0]
-        month = pd.to_datetime(raw_checking["month"])
-        assert full.loc[month, "Asset_Checking"] == raw_checking["balance"] / 100
-
-
-def test_income_balance_pivot_displays_credits_as_positive_inflows(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
-        raw = rc.items("account_balance")
-        raw_income = raw[raw["account"] == "Income_Salary_Alice"].iloc[0]
-        month = pd.to_datetime(raw_income["month"])
-
-        income = rc.balance_pivot("income")
-
-        assert income.loc[month, "Income_Salary_Alice"] == -raw_income["balance"] / 100
-
-
-def test_income_and_expenses_by_category_have_total_column(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
-        income = rc.income_by_category()
-        assert "total" in income.columns
-        expenses = rc.expenses_by_category()
-        assert "total" in expenses.columns
-        assert "other" in expenses.columns  # unlike income, "other" is kept
+def test_income_and_expenses_by_category_have_total_column(retire_alice_run: RunConnection) -> None:
+    rc = retire_alice_run
+    income = rc.income_by_category()
+    assert "total" in income.columns
+    expenses = rc.expenses_by_category()
+    assert "total" in expenses.columns
+    assert "other" in expenses.columns  # unlike income, "other" is kept
 
 
 def test_gains_by_category_covers_expenses_with_distribution_coverage(
-    tmp_path: Path,
+    retire_alice_run: RunConnection,
 ) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
-        gains = rc.gains_by_category()
-        assert {
-            "taxable", "non-taxable", "unrealized",
-            "realized_total", "expenses", "distribution_coverage",
-        } <= set(gains.columns)
-        assert (
-            gains["distribution_coverage"]
-            == gains["realized_total"] - gains["expenses"]
-        ).all()
+    rc = retire_alice_run
+    gains = rc.gains_by_category()
+    assert {
+        "taxable", "non-taxable", "unrealized",
+        "realized_total", "expenses", "distribution_coverage",
+    } <= set(gains.columns)
+    assert (
+        gains["distribution_coverage"]
+        == gains["realized_total"] - gains["expenses"]
+    ).all()
 
 
-def test_tax_helpers_return_year_indexed_frames(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
-        liability = rc.tax_liability_by_year()
-        assert isinstance(liability, pd.Series)
-        reconciliation = rc.tax_reconciliation_by_year()
-        assert "reconciliation_year" in reconciliation.columns
-        outstanding = rc.outstanding_tax_by_year()
-        assert isinstance(outstanding, pd.Series)
-        summary = rc.tax_summary_by_year()
-        assert "total tax" in summary.columns
+def test_tax_helpers_return_year_indexed_frames(retire_alice_run: RunConnection) -> None:
+    rc = retire_alice_run
+    liability = rc.tax_liability_by_year()
+    assert isinstance(liability, pd.Series)
+    reconciliation = rc.tax_reconciliation_by_year()
+    assert "reconciliation_year" in reconciliation.columns
+    outstanding = rc.outstanding_tax_by_year()
+    assert isinstance(outstanding, pd.Series)
+    summary = rc.tax_summary_by_year()
+    assert "total tax" in summary.columns
 
 
-def test_ss_gross_by_month_only_includes_ss_benefit_character(tmp_path: Path) -> None:
-    with open_run(_build_run(tmp_path)) as rc:
-        ss = rc.ss_gross_by_month()
-        te = rc.items("transfer_event")
-        expected_total = te.loc[te["tax_character"] == "ss_benefit", "amount"].sum() / 100
-        assert ss.sum() == pytest.approx(expected_total)
+def test_ss_gross_by_month_only_includes_ss_benefit_character(retire_alice_run: RunConnection) -> None:
+    rc = retire_alice_run
+    ss = rc.ss_gross_by_month()
+    te = rc.items("transfer_event")
+    expected_total = te.loc[te["tax_character"] == "ss_benefit", "amount"].sum() / 100
+    assert ss.sum() == pytest.approx(expected_total)
 
 
-def test_year_end_values_and_yearly_totals(tmp_path: Path) -> None:
+def test_year_end_values_and_yearly_totals(retire_alice_run: RunConnection) -> None:
     from analysis.sim.connection import year_end_values, yearly_totals
 
-    with open_run(_build_run(tmp_path)) as rc:
-        nw = rc.net_worth_frame()
-        year_end = year_end_values(nw[["nominal"]])
-        assert (year_end.index == sorted(year_end.index)).all()
-        assert set(nw.index.year) >= set(year_end.index)
+    rc = retire_alice_run
+    nw = rc.net_worth_frame()
+    year_end = year_end_values(nw[["nominal"]])
+    assert (year_end.index == sorted(year_end.index)).all()
+    assert set(nw.index.year) >= set(year_end.index)
 
-        income_yearly = yearly_totals(rc.income_by_category())
-        assert income_yearly.index.name == "year"
-        assert set(income_yearly.index) == set(rc.income_by_category().index.year)
+    income_yearly = yearly_totals(rc.income_by_category())
+    assert income_yearly.index.name == "year"
+    assert set(income_yearly.index) == set(rc.income_by_category().index.year)

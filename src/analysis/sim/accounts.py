@@ -153,8 +153,8 @@ def render_accounts_table(rows: list[AccountRow], title: str | None = None):
         table.add_column(col, justify=justify, overflow="fold")
     for r in rows:
         ob = (
-            "" if r.opening_balance_cents is None
-            else f"${r.opening_balance_cents/100:,.2f}"
+            "" if r.opening_balance is None
+            else f"${r.opening_balance:,.2f}"
         )
         rate = (
             "" if r.annual_rate_micros is None

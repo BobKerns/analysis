@@ -8,6 +8,8 @@ from pathlib import Path
 import matplotlib
 import pandas as pd
 
+from tests.conftest import multi_connections
+
 matplotlib.use("Agg")
 
 from click.testing import CliRunner
@@ -126,14 +128,7 @@ def test_warning_html_escapes_and_formats() -> None:
 
 # ---------- integration: real scenarios + widget wiring ----------
 
-
-def _state_dirs(data_dir: Path) -> tuple[Path, Path]:
-    state = data_dir.parent / "state"
-    return state / "intent", state / "runs"
-
-
-def _load_and_run(data_dir: Path, scenario: str) -> None:
-    intent_dir, runs_dir = _state_dirs(data_dir)
+def _load_and_run(intent_dir: Path, state_dir: Path, data_dir: Path, runs_dir: Path, scenario: str) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -152,41 +147,26 @@ def _create_scenario(data_dir: Path, name: str, parent: str) -> None:
     assert result.exit_code == 0, result.output
 
 
-def _two_scenario_container(tmp_path: Path):
-    data = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, data)
-    _load_and_run(data, "retire_alice")
-    _create_scenario(data, "variant_a", "retire_alice")
-    _load_and_run(data, "variant_a")
-
-    widget, container = multi_scenario_picker(data, "retire_alice", ["variant_a"])
-    return widget, container
+def test_comparability_widget_renders_without_error(multi_connections: MultiScenarioConnections) -> None:
+    cp.comparability_widget(multi_connections)
 
 
-def test_comparability_widget_renders_without_error(tmp_path: Path) -> None:
-    _, container = _two_scenario_container(tmp_path)
-    cp.comparability_widget(container)
-
-
-def test_net_worth_compare_widget_renders_without_error(tmp_path: Path) -> None:
-    _, container = _two_scenario_container(tmp_path)
-    widget = cp.net_worth_compare_widget(container)
+def test_net_worth_compare_widget_renders_without_error(multi_connections: MultiScenarioConnections) -> None:
+    widget = cp.net_worth_compare_widget(multi_connections)
     assert widget is not None
 
 
-def test_year_end_widget_includes_delta_column(tmp_path: Path) -> None:
-    _, container = _two_scenario_container(tmp_path)
-    widget = cp.year_end_widget(container)
+def test_year_end_widget_includes_delta_column(tmp_path: Path, multi_connections: MultiScenarioConnections) -> None:
+    widget = cp.year_end_widget(multi_connections, baseline="retire_alice")
     assert widget is not None
 
 
-def test_compare_widgets_share_plot_mode_observers(tmp_path: Path) -> None:
-    _, container = _two_scenario_container(tmp_path)
+def test_compare_widgets_share_plot_mode_observers(multi_connections: MultiScenarioConnections) -> None:
     plot_mode = dollar_plot_mode()
 
-    cp.net_worth_compare_widget(container, plot_mode=plot_mode)
-    cp.breakeven_widget(container, plot_mode=plot_mode)
-    cp.year_end_widget(container, plot_mode=plot_mode)
+    cp.net_worth_compare_widget(multi_connections, plot_mode=plot_mode)
+    cp.breakeven_widget(multi_connections, plot_mode=plot_mode, baseline="retire_alice")
+    cp.year_end_widget(multi_connections, plot_mode=plot_mode, baseline="retire_alice")
 
     assert set(plot_mode._compare_plot_redraws) == {
         "net_worth", "breakeven", "year_end",

@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv as _csv
 import json
 import os
-import re
 import sqlite3
 import tempfile
 from datetime import UTC, datetime
@@ -36,8 +35,7 @@ from analysis.sim.loader import (
     list_scenario_names,
     load_scenario,
     open_intent_db,
-    resolve_scenario_name,
-    state_dir,
+    find_state_dir,
     write_current_scenario,
 )
 from analysis.sim.quicken import (
@@ -46,10 +44,11 @@ from analysis.sim.quicken import (
     load_account_map,
     parse_net_worth_export,
 )
+import analysis.sim.scenario as sc
 
 
 def _resolve_state_dir(directory: Path | None, default: Path) -> Path:
-    return directory if directory is not None else state_dir(None, default)
+    return directory if directory is not None else find_state_dir(None, default)
 
 
 @click.group(name="sim")
@@ -188,7 +187,7 @@ def _resolve_scenario(
 ) -> ScenarioRef:
     """Scenario resolution shared with the notebooks (see loader)."""
     try:
-        return resolve_scenario_name(data_dir, scenario, intent_dir=intent_dir)
+        return sc.resolve_scenario_name(data_dir, scenario, intent_dir=intent_dir)
     except LoadError as exc:
         raise click.ClickException("; ".join(exc.issues)) from None
 
@@ -591,15 +590,6 @@ def _fmt_cents(cents: int | None) -> str:
 
 # ---------- add: append new rows to a scenario ----------
 
-_SCHEDULED_HEADER: tuple[str, ...] = registries.SCHEDULED_CSV_HEADER
-
-_CALENDAR_HEADER: tuple[str, ...] = (
-    "date", "kind", "scheduled_name", "account_1", "account_2", "series",
-    "amount", "param_date", "tax_character", "params_json", "description",
-    "tags",
-)
-
-
 def _resolve_scenario_dir(data_dir: Path, scenario: str | None) -> tuple[Path, str]:
     ref = _resolve_scenario(data_dir, scenario)
     return ref.path, ref.name
@@ -788,7 +778,7 @@ def transfer_add(
         "tags": "",
     }
     path = scenario_dir / "calendar.csv"
-    _append_csv_row(path, _CALENDAR_HEADER, row)
+    _append_csv_row(path, registries.CALENDAR_HEADER, row)
     click.echo(
         f"appended one_off_transfer {from_account} -> {to_account} "
         f"{_fmt_cents(cents).strip()} on {date} to {path}"
@@ -920,7 +910,7 @@ def scheduled_add(
         "tags": tags,
     }
     path = scenario_dir / "scheduled.csv"
-    _append_csv_row(path, _SCHEDULED_HEADER, row)
+    _append_csv_row(path, registries.SCHEDULED_CSV_HEADER, row)
     click.echo(
         f"appended scheduled row '{row_name}' ({cadence}) "
         f"{from_account} -> {to_account} {_fmt_cents(cents).strip()} to {path}"
@@ -1151,13 +1141,6 @@ def scheduled_tag_rm(
     _scenario_write(data_dir, scenario, "scheduled", name, tag_tokens, "rm")
 
 
-_ACCOUNTS_HEADER: tuple[str, ...] = registries.ACCOUNTS_CSV_HEADER
-
-_ACCOUNT_MODEL_HEADER: tuple[str, ...] = (
-    "account_name", "opening_balance", "opening_cost_basis", "prior_year_end_balance",
-)
-
-
 def _complete_kind(ctx, param, incomplete):  # noqa: ARG001
     return [k for k in sorted(registries.ACCOUNT_SUBKINDS) if k.startswith(incomplete)]
 
@@ -1290,7 +1273,7 @@ def add_account(
         "tags": tags,
     }
     accounts_path = data_dir_p / "scenarios" / scen_name / "accounts.csv"
-    _append_csv_row(accounts_path, _ACCOUNTS_HEADER, row)
+    _append_csv_row(accounts_path, registries.ACCOUNTS_CSV_HEADER, row)
     click.echo(f"appended account '{name}' to {accounts_path}")
 
     if opening_balance is None and kind in {"asset", "liability"}:
@@ -1304,7 +1287,7 @@ def add_account(
         values_path = data_dir_p / "scenarios" / scen_name / "account_values.csv"
         _append_csv_row(
             values_path,
-            _ACCOUNT_MODEL_HEADER,
+            registries.ACCOUNT_VALUES_CSV_HEADER,
             {
                 "account_name": name,
                 "opening_balance": f"{cents // 100}.{cents % 100:02d}",
@@ -2111,13 +2094,6 @@ def _scenario_write(
 
 # ---------- scenario: create derived scenarios ----------
 
-_SCENARIO_HEADER: tuple[str, ...] = (
-    "name", "description", "account_model", "start", "end", "seed",
-    "parent_scenario", "created_by", "meta_json",
-)
-
-_SCENARIO_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-
 
 @sim_group_command.group(name="scenario")
 def scenario_group_command() -> None:
@@ -2143,70 +2119,46 @@ def scenario_create(
     The new scenario inherits everything from PARENT; only the rows you add to
     its (empty) overlay CSVs differ. See ADR-003 §4.5 for merge semantics.
     """
-    data_dir_p = _resolve_data_dir(data_dir)
-    if not _SCENARIO_NAME_RE.match(name):
-        raise click.ClickException(
-            f"invalid scenario name {name!r}; use lowercase letters, digits, "
-            "'_' and '-' (it becomes a folder name)"
-        )
-    parent_ref = _resolve_scenario(data_dir_p, parent)
-    target = data_dir_p / "scenarios" / name
-    if target.exists():
-        raise click.ClickException(f"scenario already exists: {target}")
 
     skeletons: dict[str, tuple[str, ...]] = {
         "accounts.csv": registries.ACCOUNTS_CSV_HEADER,
-        "account_values.csv": _ACCOUNT_MODEL_HEADER,
-        "scheduled.csv": _SCHEDULED_HEADER,
-        "calendar.csv": _CALENDAR_HEADER,
+        "account_values.csv": registries.ACCOUNT_VALUES_CSV_HEADER,
+        "scheduled.csv": registries.SCHEDULED_CSV_HEADER,
+        "calendar.csv": registries.CALENDAR_HEADER,
     }
+    try:
+        data_dir_p = _resolve_data_dir(data_dir)
+        target = sc.create_scenario(data_dir_p, name, parent,
+                                        description=description)
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                load_scenario(
+                    data_dir_p, name, intent_dir=Path(td), compute_stamps=False,
+                    allow_dirty_data=True,
+                )
+            except LoadError as exc:
+                for issue in exc.issues:
+                    click.echo(f"  error: {issue}", err=True)
+                raise click.ClickException(
+                    f"created {target}, but it does not load; leaving it in place "
+                    "for inspection"
+                ) from None
 
-    target.mkdir(parents=True)
-    chains_dir = target / "chains"
-    chains_dir.mkdir()
-    (chains_dir / ".gitignore").write_text("", encoding="utf-8")
-    pd.DataFrame(columns=["account_name", "maximum", "percent", "series", "cadence"]).to_csv(
-        chains_dir / "_asset__example.csv", index=False,
-    )
-    _append_csv_row(
-        target / "scenario.csv",
-        _SCENARIO_HEADER,
-        {
-            "name": name,
-            "description": description or f"Derived from {parent_ref.name}",
-            "parent_scenario": parent_ref.name,
-            "created_by": os.environ.get("ANALYSIS_USER")
-            or os.environ.get("USER")
-            or "unknown",
-            "meta_json": "{}",
-        },
-    )
-    for filename, header in skeletons.items():
-        pd.DataFrame(columns=list(header)).to_csv(target / filename, index=False)
-
-    with tempfile.TemporaryDirectory() as td:
-        try:
-            load_scenario(
-                data_dir_p, name, intent_dir=Path(td), compute_stamps=False,
-                allow_dirty_data=True,
-            )
-        except LoadError as exc:
-            for issue in exc.issues:
-                click.echo(f"  error: {issue}", err=True)
-            raise click.ClickException(
-                f"created {target}, but it does not load; leaving it in place "
-                "for inspection"
-            ) from None
-
-    write_current_scenario(data_dir_p, name)
-    click.echo(f"created {target}")
-    click.echo(f"  inherits: {parent_ref.name}")
-    for filename in ("scenario.csv", *skeletons):
-        click.echo(f"  {filename}")
-    click.echo("  chains/")
-    click.echo("  chains/.gitignore")
-    click.echo("  chains/_asset__example.csv")
-    click.echo(f"  current scenario: {name}")
+        parent_ref = _resolve_scenario(data_dir_p, parent)
+        write_current_scenario(data_dir_p, name)
+        click.echo(f"created {target}")
+        click.echo(f"  inherits: {parent_ref.name}")
+        for filename in ("scenario.csv", *skeletons):
+            click.echo(f"  {filename}")
+        click.echo("  chains/")
+        click.echo("  chains/.gitignore")
+        click.echo("  chains/_asset__example.csv")
+        click.echo(f"  current scenario: {name}")
+    except Exception as exc:
+        click.echo(f"error: {exc}", err=True)
+        raise click.ClickException(
+            f"failed to create scenario {name}"
+        ) from None
 
 
 @sim_group_command.group(name="tags", invoke_without_command=True)

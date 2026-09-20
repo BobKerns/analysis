@@ -15,6 +15,7 @@ calevt
 carryforward
 carryforwards
 categoriser
+ccon
 clsname
 cmap
 columnless
@@ -52,9 +53,11 @@ nbstripout
 networth
 nextstrain
 NOCASE
+OBBBA
 oneoff
 pathoplexus
 paylease
+pcon
 plottable
 preroll
 prio
