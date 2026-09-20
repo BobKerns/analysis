@@ -156,8 +156,11 @@ def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path |
     Run filenames are ``<timestamp>_<scenario>_<data-version>.sqlite3``, so they
     sort chronologically and can be filtered by scenario by name alone.
     """
-    pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
-    runs = sorted(Path(runs_dir).glob(pattern))
+    glob_pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
+    re_pattern = re.compile(f".*_{scenario}_[^_]*\.sqlite3") if scenario else re.compile(f".*")
+    runs = (r for r in Path(runs_dir).glob(glob_pattern)
+            if re_pattern.match(r.name))
+    runs = sorted(runs)
     return runs[-1] if runs else None
 
 

@@ -334,8 +334,8 @@ def multi_scenario_picker(
     connections) whenever either picker changes.
     """
 
-    REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
     if data_dir is None:
+        REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
         data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data" / "shared" / "sim"))  
     data_dir = Path(data_dir)
     available = list_scenario_names(data_dir)
