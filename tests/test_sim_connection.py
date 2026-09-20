@@ -10,7 +10,7 @@ import pytest
 
 from analysis.sim.connection import RunConnection, ScenarioConnection, find_latest_run, open_run, open_scenario
 from analysis.sim.engine import run_scenario
-from analysis.sim.loader import load_scenario
+from analysis.sim.loader import ScenarioRef, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -99,25 +99,43 @@ def test_scenario_connection_unknown_item_raises(tmp_path: Path) -> None:
             sc.add_tags("account", "no_such_account", "a:b")
 
 
-def test_run_connection_reads_tags_from_snapshot(retire_alice_scenario: ScenarioConnection,
+def test_run_connection_reads_tags_from_snapshot(test_retire_alice_scenario: ScenarioConnection,
+                                                 test_retire_alice_scenario_ref: ScenarioRef,
                                                  retire_alice_run_path: Path,
-                                                 data_dir: Path,
-                                                 scenarios_dir: Path,
-                                                 intent_dir: Path) -> None:
-    retire_alice_scenario.add_tags("account", "Asset_Checking", "run:ok")
+                                                 test_data_dir: Path) -> None:
+    """
+    Test that the run connection correctly reads tags from the snapshot
+    created by the scenario connection.
 
+    This uses per-test (function) fixtures for the scenario connection and its reference,
+    because we modify the scenario connection within the test.
+    """
+    # Add a tag to the scenario connection before creating the run connection.
+    test_retire_alice_scenario.add_tags("account", "Asset_Checking", "run:ok")
+    ref = test_retire_alice_scenario_ref
+
+    # Load the modified scenario
     result = load_scenario(
-        data_dir, "retire_alice",
-        scenarios_dir=scenarios_dir,
-        intent_dir=intent_dir,
+        test_data_dir, "retire_alice",
+        scenarios_dir=ref.scenarios_dir,
+        intent_dir=ref.intent_dir,
         allow_dirty_data=True,
         compute_stamps=False,
     )
 
-    with open_run(retire_alice_run_path,
+    # Run the modified scenario
+    run = run_scenario(
+        result.intent_path, retire_alice_run_path,
+        allow_dirty_data=True,
+        run_by="TEST",
+        data_mode="prototype",
+    )
+
+    # Validate the modified scenario including our new tag.
+    with open_run(run,
                   scenario="retire_alice",
-                  data_dir=data_dir,
-                  scenarios_dir=scenarios_dir) as rc:
+                  data_dir=test_data_dir,
+                  scenarios_dir=ref.scenarios_dir) as rc:
         assert isinstance(rc, RunConnection)
         df = rc.list_tags(role="run")
         assert (df["name"] == "ok").any()

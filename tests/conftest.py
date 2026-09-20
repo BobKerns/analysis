@@ -83,6 +83,14 @@ def scenarios_dir(data_dir: Path) -> Path:
     scenarios_dir.mkdir(parents=True, exist_ok=True)
     return scenarios_dir
 
+
+@pytest.fixture(scope="function")
+def test_scenarios_dir(test_data_dir: Path) -> Path:
+    """Create a temporary scenario directory within the temporary data directory for tests."""
+    scenarios_dir = test_data_dir / "scenarios"
+    scenarios_dir.mkdir(parents=True, exist_ok=True)
+    return scenarios_dir
+
 @pytest.fixture(scope="function")
 def state_dir(tmp_path: Path) -> Generator[Path, None, None]:
     """Create a temporary state directory within the temporary data directory for tests."""
@@ -116,7 +124,9 @@ def scenario_ref(data_dir: Path,
                  runs_dir: Path,
                  scenarios_dir: Path) -> Callable[[str], ScenarioRef]:
     """Fixture to provide a callable that returns a ScenarioRef for a given scenario name."""   
-    def _scenario_ref(scenario: str) -> ScenarioRef:
+    def _scenario_ref(scenario: str,
+                      data_dir: Path = data_dir,
+                      scenarios_dir: Path = scenarios_dir) -> ScenarioRef:
         return resolve_scenario_name(data_dir, scenario,
                                      intent_dir=intent_dir,
                                      scenarios_dir=scenarios_dir,
@@ -210,6 +220,16 @@ def variant_a_scenario_ref(scenario_ref: Callable[[str], ScenarioRef],
 def retire_alice_scenario_ref(scenario_ref: Callable[[str], ScenarioRef]) -> ScenarioRef:
     """Fixture to provide the ScenarioRef for the retire_alice scenario."""
     return scenario_ref("retire_alice")
+
+
+@pytest.fixture(scope="function")
+def test_retire_alice_scenario_ref(test_data_dir: Path,
+                                   test_scenarios_dir: Path,
+                                   scenario_ref: Callable[[str], ScenarioRef]) -> ScenarioRef:
+    """Function fixture to provide the ScenarioRef for the retire_alice scenario."""
+    return scenario_ref("retire_alice",
+                        data_dir=test_data_dir,
+                        scenarios_dir=test_scenarios_dir)
 
 
 @pytest.fixture(scope="function")

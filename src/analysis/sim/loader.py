@@ -169,6 +169,7 @@ class ScenarioRef:
     data_dir: Path
     path: Path
     scenarios_dir: Path
+    intent_dir: Path
     intent_path: Path
     runs_dir: Path
     run_path: Path | None
@@ -271,6 +272,7 @@ def resolve_scenario_name(
         data_dir=data_dir,
         scenarios_dir=scenarios_dir,
         path=scenarios_dir / name,
+        intent_dir=resolved_intent_dir,
         intent_path=resolved_intent_dir / f"{name}.sqlite3",
         runs_dir=resolved_runs_dir,
         run_path=run_path,
