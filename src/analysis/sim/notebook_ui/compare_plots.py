@@ -19,20 +19,22 @@ from IPython.display import Markdown, clear_output, display
 
 from analysis.sim.connection import RunConnection, ScenarioConnection, year_end_values
 from analysis.sim.notebook_ui.pickers import (
+    DollarModePicker,
     MultiScenarioConnections,
     display_warning,
-    dollar_plot_mode,
 )
 from analysis.sim.plotting import include_zero, FRAME_ALPHA
+from analysis.sim.types import DollarMode
 
 # ---------- data helpers (pure; unchanged math from the old scenario_compare.py) ----------
 
 
 def net_worth_by_month(
-    container: MultiScenarioConnections, mode: str = "nominal",
+    container: MultiScenarioConnections,
+    mode: DollarMode = DollarMode.NOMINAL,
 ) -> pd.DataFrame:
     """Net worth (USD) by month, one column per scenario."""
-    value_column = "cpi_constant" if mode == "cpi_constant" else "nominal"
+    value_column = "cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
     return pd.DataFrame({
         name: container.connections[name].net_worth_frame()[value_column]
         for name in container.scenarios
@@ -103,15 +105,15 @@ def comparison_frame(nw: pd.DataFrame, comparisons: dict) -> pd.DataFrame:
     return result
 
 
-def _observe_plot_mode(plot_mode: widgets.ToggleButtons, key: str, redraw) -> None:
+def _observe_dollar_mode(dollar_mode: DollarModePicker, key: str, redraw) -> None:
     """Keep one observer per compare widget on the shared plot-mode toggle."""
-    observers = getattr(plot_mode, "_compare_plot_redraws", {})
+    observers = getattr(dollar_mode, "_compare_plot_redraws", {})
     previous = observers.get(key)
     if previous is not None:
-        plot_mode.unobserve(previous, names="value")
+        dollar_mode.unobserve(previous, names="value")
     observers[key] = redraw
-    plot_mode._compare_plot_redraws = observers
-    plot_mode.observe(redraw, names="value")
+    dollar_mode._compare_plot_redraws = observers
+    dollar_mode.observe(redraw, names="value")
 
 
 # ---------- pure plotting (unchanged math from the old scenario_compare.py) ----------
@@ -331,41 +333,41 @@ def rules_and_events_widget(container: MultiScenarioConnections,
 
 def net_worth_compare_widget(
     container: MultiScenarioConnections,
-    plot_mode: widgets.ToggleButtons | None = None,
+    dollar_mode: DollarModePicker | None = None,
     **_
 ) -> widgets.VBox:
     """Net worth per scenario, plus each variant's delta vs. the baseline."""
 
-    plot_mode = plot_mode or dollar_plot_mode()
+    dollar_mode = dollar_mode or DollarModePicker()
     output = widgets.Output()
 
     def _redraw(*_):
-        mode = plot_mode.value
+        mode = dollar_mode.value
         nw = net_worth_by_month(container, mode)
         delta = variant_delta(nw, container)
         with output:
             clear_output(wait=True)
             plot_net_worth_and_delta(nw, delta, container, mode)
 
-    _observe_plot_mode(plot_mode, "net_worth", _redraw)
+    _observe_dollar_mode(dollar_mode, "net_worth", _redraw)
     if container.ok:
         _redraw()
-    return widgets.VBox([plot_mode, output])
+    return widgets.VBox([dollar_mode, output])
 
 
 def breakeven_widget(
     container: MultiScenarioConnections,
-    plot_mode: widgets.ToggleButtons | None = None,
+    dollar_mode: DollarModePicker | None = None,
     baseline: str = "current",
     **_
 ) -> widgets.VBox:
     """Per-variant break-even summary table."""
 
-    plot_mode = plot_mode or dollar_plot_mode()
+    dollar_mode = dollar_mode or DollarModePicker()
     output = widgets.Output()
 
     def _redraw(*_):
-        mode = plot_mode.value
+        mode = dollar_mode.value
         nw = net_worth_by_month(container, mode)
         delta = variant_delta(nw, container)
         summary = breakeven_summary(nw, delta, container)
@@ -384,10 +386,10 @@ def breakeven_widget(
                 f"**${nw[baseline].iloc[-1]:,.0f}**"
             ))
 
-    _observe_plot_mode(plot_mode, "breakeven", _redraw)
+    _observe_dollar_mode(dollar_mode, "breakeven", _redraw)
     if container.ok:
         _redraw()
-    return widgets.VBox([plot_mode, output])
+    return widgets.VBox([dollar_mode, output])
 
 
 def horizon_widget(container: MultiScenarioConnections, comparisons: dict) -> None:
@@ -412,17 +414,17 @@ def horizon_widget(container: MultiScenarioConnections, comparisons: dict) -> No
 
 def year_end_widget(
     container: MultiScenarioConnections,
-    plot_mode: widgets.ToggleButtons | None = None,
+    dollar_mode: DollarModePicker | None = None,
     baseline: str | None = "current",
     **_
 ) -> widgets.VBox:
     """Year-end net worth per scenario, with each variant's delta vs. the baseline."""
 
-    plot_mode = plot_mode or dollar_plot_mode()
+    dollar_mode = dollar_mode or DollarModePicker()
     output = widgets.Output()
 
     def _redraw(*_):
-        mode = plot_mode.value
+        mode = dollar_mode.value
         nw = net_worth_by_month(container, mode)
         year_end = year_end_values(nw)
         year_end.index.name = "year"
@@ -432,10 +434,10 @@ def year_end_widget(
             clear_output(wait=True)
             display(year_end.style.format("${:,.0f}"))
 
-    _observe_plot_mode(plot_mode, "year_end", _redraw)
+    _observe_dollar_mode(dollar_mode, "year_end", _redraw)
     if container.ok:
         _redraw()
-    return widgets.VBox([plot_mode, output])
+    return widgets.VBox([dollar_mode, output])
 
 
 def ss_gross_widget(container: MultiScenarioConnections) -> None:

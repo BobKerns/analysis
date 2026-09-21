@@ -17,8 +17,8 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim.notebook_ui import compare_plots as cp
 from analysis.sim.notebook_ui.pickers import (
+    DollarModePicker,
     MultiScenarioConnections,
-    dollar_plot_mode,
     multi_scenario_picker,
 )
 
@@ -156,18 +156,18 @@ def test_net_worth_compare_widget_renders_without_error(multi_connections: Multi
     assert widget is not None
 
 
-def test_year_end_widget_includes_delta_column(tmp_path: Path, multi_connections: MultiScenarioConnections) -> None:
+def test_year_end_widget_includes_delta_column(multi_connections: MultiScenarioConnections) -> None:
     widget = cp.year_end_widget(multi_connections, baseline="retire_alice")
     assert widget is not None
 
 
-def test_compare_widgets_share_plot_mode_observers(multi_connections: MultiScenarioConnections) -> None:
-    plot_mode = dollar_plot_mode()
+def test_compare_widgets_share_dollar_mode_observers(multi_connections: MultiScenarioConnections) -> None:
+    dollar_mode = DollarModePicker()
 
-    cp.net_worth_compare_widget(multi_connections, plot_mode=plot_mode)
-    cp.breakeven_widget(multi_connections, plot_mode=plot_mode, baseline="retire_alice")
-    cp.year_end_widget(multi_connections, plot_mode=plot_mode, baseline="retire_alice")
+    cp.net_worth_compare_widget(multi_connections, dollar_mode=dollar_mode)
+    cp.breakeven_widget(multi_connections, dollar_mode=dollar_mode, baseline="retire_alice")
+    cp.year_end_widget(multi_connections, dollar_mode=dollar_mode, baseline="retire_alice")
 
-    assert set(plot_mode._compare_plot_redraws) == {
+    assert set(dollar_mode._compare_plot_redraws) == {
         "net_worth", "breakeven", "year_end",
     }

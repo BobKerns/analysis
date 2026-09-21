@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
+from typing import Collection
 
 import pandas as pd
 from rich.console import Console
 
 from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.types import AccountKind
 
 
 def _or_empty(value) -> str:
@@ -178,3 +180,30 @@ def account_summary_by_kind(df: pd.DataFrame) -> pd.DataFrame:
 def show_account_rows_text(rc: RunConnection, as_of: str | None = None):
     rows = load_accounts_view(rc.scenario, as_of=as_of)
     Console().print(render_accounts_table(rows, title=f"accounts ({rc.data_dir.name})"))
+
+
+KIND_LABELS: dict[AccountKind, str] = {
+    "asset": "Asset", "liability": "Liability",
+    "income": "Income", "expense": "Expense",
+}
+"""Account kinds a balance-history widget can switch between, in dropdown order."""
+BALANCE_KINDS: Collection[AccountKind] = ("asset", "liability")
+"""Account kinds representing balance sheet kinds."""
+CASHFLOW_KINDS: Collection[AccountKind] = ("income", "expense")
+"""Account kinds representing cash flow kinds."""
+POSITIVE_KINDS: Collection[AccountKind] = ("asset", "income")
+"""Account kinds that are considered positive."""
+NEGATIVE_KINDS: Collection[AccountKind] = ("liability", "expense")
+"""Account kinds that are considered negative."""
+
+
+def plottable_accounts(
+    balance_pivot: pd.DataFrame, account_kinds: pd.Series, kind: str
+) -> list[str]:
+    """Account names of one exact kind, sorted alphabetically."""
+    names = [
+        name for name in balance_pivot.columns
+        if account_kinds.get(name) == kind
+    ]
+    names.sort(key=str.casefold)
+    return names

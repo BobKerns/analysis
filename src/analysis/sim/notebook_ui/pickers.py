@@ -16,14 +16,18 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Collection
 
 import ipywidgets as widgets
 import traitlets
 from IPython.display import clear_output, display
+import pandas as pd
 
+from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
-from analysis.sim.types import AccountKind
+from analysis.sim.accounts import plottable_accounts
+from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
 
 from analysis.sim.types import AccountKind, AccountName, ScenarioName
 
@@ -406,61 +410,129 @@ def multi_scenario_picker(
     return picker_widget, container
 
 
-def dollar_plot_mode() -> widgets.ToggleButtons:
-    """Return a toggle button widget for selecting nominal vs. CPI-constant dollars."""
-    return widgets.ToggleButtons(
-        options=[("Nominal", "nominal"), ("CPI-constant", "cpi_constant")],
-        value="nominal",
-        description="Dollar basis:",
-        layout=widgets.Layout(
-            border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
-        ),
-    )
+class DollarModePicker(widgets.ToggleButtons):
+    """A toggle button widget for selecting nominal vs. CPI-constant dollars."""
+    value: DollarMode = traitlets.UseEnum(DollarMode)
+    label: str = traitlets.Unicode("Nominal")
+    def __init__(self, dollar_mode: DollarMode = DollarMode.NOMINAL):
+        super().__init__(
+            options=[("Nominal", DollarMode.NOMINAL), ("CPI-constant", DollarMode.CPI_CONSTANT)],
+            description="Dollar basis:",
+            layout=widgets.Layout(
+                border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+            ),
+        )
+        self.value = dollar_mode
 
-def value_plot_mode() -> widgets.ToggleButtons:
-    """Return a toggle button for selecting total vs. monthly values."""
-    return widgets.ToggleButtons(
-        options=[("Total", "total"), ("Monthly", "monthly")],
-        value="total",
-        description="Values:",
-        layout=widgets.Layout(
-            border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
-        ),
-    )
-
-def y_axis_plot_mode() -> widgets.ToggleButtons:
-    """Return a toggle button for selecting zero-anchored vs. auto-scaled Y-axis."""
-    return widgets.ToggleButtons(
-        options=[("Zero-anchored", True), ("Auto-scale", False)],
-        value=True,
-        description="Y-axis:",
-        layout=widgets.Layout(border="1px solid #888", padding="4px 6px"),
-    )
+    def _on_value_change(self, change):
+        self.label = "CPI-constant" if self.value == DollarMode.CPI_CONSTANT else "Nominal"
 
 
-# Account kinds a balance-history widget can switch between, in dropdown order.
-KIND_LABELS: dict[AccountKind, str] = {
-    "asset": "Asset", "liability": "Liability",
-    "income": "Income", "expense": "Expense",
-}
+class ValuePlotModePicker(widgets.ToggleButtons):
+    """A toggle button widget for selecting total vs. monthly values."""
+    value: ValuePlotMode = traitlets.UseEnum(ValuePlotMode)
+    label: str = traitlets.Unicode("Total")
+    def __init__(self, value_mode: ValuePlotMode = ValuePlotMode.TOTAL):
+        super().__init__(
+            options=[("Total", ValuePlotMode.TOTAL), ("Monthly", ValuePlotMode.MONTHLY)],
+            description="Values:",
+            layout=widgets.Layout(
+                border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+            ),
+        )
+        self.value = value_mode
+        
+    def _on_value_change(self, change):
+        self.label = "Monthly" if self.value == ValuePlotMode.MONTHLY else "Total"
+
+class YAxisPlotModePicker(widgets.ToggleButtons):
+    """A toggle button widget for selecting zero-anchored vs. auto-scaled Y-axis."""
+    value: bool = traitlets.Bool(True)
+    label: str = traitlets.Unicode("Zero-anchored")
+    def __init__(self, y_axis_mode: bool = True):
+        super().__init__(
+            options=[("Zero-anchored", True), ("Auto-scale", False)],
+            description="Y-axis:",
+            layout=widgets.Layout(border="1px solid #888", padding="4px 6px"),
+        )
+        self.value = y_axis_mode
+
+    def _on_value_change(self, change):
+        self.label = "Zero-anchored" if self.value else "Auto-scale"
 
 
-class AccountPicker(widgets.HBox):
-    """A widget for selecting account kind and specific accounts."""
-    kind: AccountKind = traitlets.Any("asset")
-    accounts: list[AccountName] = traitlets.List()
-    def __init__(self, accounts: list[str], kind: str = "asset"):
+class AccountKindPicker(widgets.Dropdown):
+    """A dropdown widget for selecting account kind."""
+    value: AccountKindAny = traitlets.Unicode("asset")
+    def __init__(self, kind: AccountKindAny = "asset", *,
+                 allow_kind: Collection[AccountKind] | None = None,
+                 allow_any: bool = False):
+        """
+        Initialize the account kind picker dropdown.
 
-        kind_picker = widgets.Dropdown(
-            options=[(label, k) for k, label in KIND_LABELS.items()],
+        Parameters
+        ----------
+        kind : AccountKindAny, default "asset" or first element of `allow_kind` if provided.
+            The initially selected account kind.
+        allow_kind : Collection[AccountKind] | None, optional
+            A collection of allowed account kinds. If None, all kinds are allowed.
+        allow_any : bool, default False
+            Whether to include an "Any" option in the dropdown.
+        """
+        if kind == "any":
+            allow_any = True
+        if allow_kind is not None and kind not in allow_kind:
+            kind = next(iter(allow_kind))
+        options = [
+            (label, k)
+            for k, label in KIND_LABELS.items()
+            if allow_kind is None or k in allow_kind
+        ]
+        if allow_any:
+            options.append(("Any", "any"))
+        super().__init__(
+            options=options,
             value=kind,
             description="Kind:",
         )
-        picker = widgets.SelectMultiple(
-            description="Accounts:", layout=widgets.Layout(width="50%"),
+
+
+class AccountPicker(widgets.HBox):
+    """
+    A widget for selecting account kind and specific accounts.
+    """
+    rc: RunConnection = traitlets.Instance(RunConnection)
+    kind: AccountKind = traitlets.Any("asset")
+    accounts: list[AccountName] = traitlets.List()
+    kind_picker: AccountKindPicker
+    def __init__(self, rc: RunConnection,
+                 accounts: list[AccountName] | None = None,
+                 kind: str = "asset",
+                 allow_kind: Collection[AccountKind] | None = None,
+                 allow_any: bool = False):
+        self.rc = rc
+        self.kind_picker = AccountKindPicker(
+            kind=kind,
+            allow_kind=allow_kind,
+            allow_any=allow_any,
+        )
+        self.account_picker = widgets.SelectMultiple(
+            description="Accounts:",
+            layout=widgets.Layout(width="50%"),
             value=accounts[0:1] if accounts else None,
             options=accounts,
         )
-        traitlets.link((kind_picker, "value"), (self, "kind"))
-        traitlets.link((picker, "value"), (self, "accounts"))
-        super().__init__([kind_picker, picker])
+        traitlets.link((self.kind_picker, "value"), (self, "kind"))
+        traitlets.link((self.account_picker, "value"), (self, "accounts"))
+        self.kind_picker.observe(self._on_kind_change, names="value")
+
+    def _on_kind_change(self, change):
+        self.kind = change["new"]
+        accounts = self.rc.balance_pivot(change["new"])
+        plottable = plottable_accounts(
+            self.rc.balance_pivot(change["new"]), self.rc.account_kinds, change["new"],
+        )
+        self.account_picker.rows = min(15, max(5, len(plottable)))
+        self.account_picker.options = plottable
+        self.account_picker.value = tuple(plottable[:len(accounts) if accounts is not None else 0])
+        super().__init__([self.kind_picker, self.account_picker])

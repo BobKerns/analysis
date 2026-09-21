@@ -7,6 +7,9 @@ from typing import Literal
 type AccountKind = Literal["asset", "liability", "income", "expense"]
 """Account kind type."""
 
+type AccountKindAny = AccountKind | Literal["any"]
+"""Account kind type including 'any'."""
+
 type AccountName = str
 """Account name type."""
 
@@ -14,7 +17,31 @@ type ScenarioName = str
 """Scenario name type."""
 
 
+class DollarMode(StrEnum):
+    """Dollar mode type."""
+    NOMINAL = "nominal"
+    CPI_CONSTANT = "cpi_constant"
+
+
+class ValuePlotMode(StrEnum):
+    """Value plot mode type."""
+    TOTAL = "total"
+    MONTHLY = "monthly"
+
+
+class YAxisPlotMode(StrEnum):
+    """Y-axis plot mode type."""
+    ZERO_ANCHORED = "zero_anchored"
+    AUTO_SCALE = "auto_scale"
+
+
 class InvestmentAssetSubkind(StrEnum):
+    """
+    Investment asset subkind type.
+
+    These subkinds represent different types of investment accounts.
+    The categories represent the tax treatment of the investment accounts.
+    """
     BROKERAGE_TAXABLE = "brokerage_taxable"
     TRADITIONAL_IRA = "traditional_ira"
     ROTH_IRA = "roth_ira"

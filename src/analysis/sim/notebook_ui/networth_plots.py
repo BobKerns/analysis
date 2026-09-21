@@ -20,8 +20,8 @@ from analysis.sim.connection import (
     year_end_values,
     yearly_totals,
 )
-from analysis.sim.notebook_ui.pickers import dollar_plot_mode
-from analysis.sim.types import INCOME_CATEGORIES
+from analysis.sim.notebook_ui.pickers import DollarModePicker
+from analysis.sim.types import INCOME_CATEGORIES, DollarMode
 
 
 def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:
@@ -56,20 +56,22 @@ def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:
     return widgets.VBox([chart_out, table_out])
 
 
-def income_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
+def income_widget(rc: RunConnection,
+                  dollar_mode: DollarModePicker | None = None,
+                  ) -> widgets.VBox:
     """Yearly income table + a nominal/CPI-constant stacked bar chart, by category."""
-    plot_mode = plot_mode or dollar_plot_mode()
+    dollar_mode = dollar_mode or DollarModePicker()
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
 
     def _redraw(*_):
-        mode = plot_mode.value
-        mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
+        mode = dollar_mode.value
+        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
         
         income = rc.income_by_category()
         income_based = (
-            rc.to_cpi_constant(income) if mode == "cpi_constant"
+            rc.to_cpi_constant(income) if mode == DollarMode.CPI_CONSTANT
             else income
         )
         income_yearly = yearly_totals(income_based)
@@ -93,10 +95,10 @@ def income_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = N
             clear_output(wait=True)
             display(income_yearly.style.format("${:,.0f}"))
 
-    plot_mode.observe(_redraw, names="value")
+    dollar_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([plot_mode, chart_out, table_out])
+    return widgets.VBox([dollar_mode, chart_out, table_out])
 
 
 _EXPENSES_CAVEAT = (
@@ -109,9 +111,9 @@ _EXPENSES_CAVEAT = (
 )
 
 
-def expenses_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
+def expenses_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None) -> widgets.VBox:
     """Yearly expenses table + a nominal/CPI-constant stacked bar chart, by category."""
-    plot_mode = plot_mode or dollar_plot_mode()
+    dollar_mode = dollar_mode or DollarModePicker()
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
@@ -120,12 +122,12 @@ def expenses_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None =
         display(Markdown(_EXPENSES_CAVEAT))
 
     def _redraw(*_):
-        mode = plot_mode.value
-        mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
+        mode = dollar_mode.value
+        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
 
         expenses = rc.expenses_by_category()
         expenses_based = (
-            rc.to_cpi_constant(expenses) if mode == "cpi_constant"
+            rc.to_cpi_constant(expenses) if mode == DollarMode.CPI_CONSTANT
             else expenses
         )
         expenses_yearly = yearly_totals(expenses_based)
@@ -149,26 +151,26 @@ def expenses_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None =
             clear_output(wait=True)
             display(expenses_yearly.style.format("${:,.0f}"))
 
-    plot_mode.observe(_redraw, names="value")
+    dollar_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([plot_mode, chart_out, caveat_out, table_out])
+    return widgets.VBox([dollar_mode, chart_out, caveat_out, table_out])
 
 
-def gains_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
+def gains_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None) -> widgets.VBox:
     """Yearly realized-vs-unrealized gains table + chart, with an expenses overlay."""
-    plot_mode = plot_mode or dollar_plot_mode()
+    dollar_mode = dollar_mode or DollarModePicker()
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
 
     def _redraw(*_):
-        mode = plot_mode.value
-        mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
+        mode = dollar_mode.value
+        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
 
         gains_nominal = rc.gains_by_category()
         gains_yearly = (
-            rc.to_cpi_constant_annual(gains_nominal) if mode == "cpi_constant"
+            rc.to_cpi_constant_annual(gains_nominal) if mode == DollarMode.CPI_CONSTANT
             else gains_nominal
         )
         chart = gains_yearly
@@ -197,31 +199,31 @@ def gains_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = No
             clear_output(wait=True)
             display(gains_yearly.style.format("${:,.0f}"))
 
-    plot_mode.observe(_redraw, names="value")
+    dollar_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([plot_mode, chart_out, table_out])
+    return widgets.VBox([dollar_mode, chart_out, table_out])
 
 
-def after_tax_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None = None) -> widgets.VBox:
+def after_tax_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None) -> widgets.VBox:
     """Tax reconciliation table + after-tax income vs. non-tax-expense chart."""
-    plot_mode = plot_mode or dollar_plot_mode()
+    dollar_mode = dollar_mode or DollarModePicker()
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
 
     def _redraw(*_):
-        mode = plot_mode.value
-        mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
+        mode = dollar_mode.value
+        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
 
         reconciliation_nominal = rc.tax_reconciliation_by_year()
         income_yearly_nominal = yearly_totals(rc.income_by_category())
         expenses_yearly_nominal = yearly_totals(rc.expenses_by_category())
 
         money_columns = [c for c in reconciliation_nominal.columns if c != "reconciliation_year"]
-        reconciliation = rc.to_cpi_constant_annual(reconciliation_nominal) if mode == "cpi_constant" else reconciliation_nominal
-        income_yearly = rc.to_cpi_constant_annual(income_yearly_nominal) if mode == "cpi_constant" else income_yearly_nominal
-        expenses_yearly = rc.to_cpi_constant_annual(expenses_yearly_nominal) if mode == "cpi_constant" else expenses_yearly_nominal
+        reconciliation = rc.to_cpi_constant_annual(reconciliation_nominal) if mode == DollarMode.CPI_CONSTANT else reconciliation_nominal
+        income_yearly = rc.to_cpi_constant_annual(income_yearly_nominal) if mode == DollarMode.CPI_CONSTANT else income_yearly_nominal
+        expenses_yearly = rc.to_cpi_constant_annual(expenses_yearly_nominal) if mode == DollarMode.CPI_CONSTANT else expenses_yearly_nominal
 
         net = pd.DataFrame({
             "gross_income": income_yearly["total"],
@@ -235,7 +237,7 @@ def after_tax_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None 
         net["after_tax_income"] = net["gross_income"] - net["tax_liability"]
         net["non_tax_expenses"] = net["expenses"] - net["tax_expenses"]
         net["after_tax_surplus"] = net["after_tax_income"] - net["non_tax_expenses"]
-        chart = rc.to_cpi_constant_annual(net) if mode == "cpi_constant" else net
+        chart = rc.to_cpi_constant_annual(net) if mode == DollarMode.CPI_CONSTANT else net
         with chart_out:
             clear_output(wait=True)
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -271,7 +273,7 @@ def after_tax_widget(rc: RunConnection, plot_mode: widgets.ToggleButtons | None 
             display(reconciliation.style.format({c: "${:,.0f}" for c in money_columns}))
             display(net.style.format("${:,.0f}"))
 
-    plot_mode.observe(_redraw, names="value")
+    dollar_mode.observe(_redraw, names="value")
     _redraw()
 
-    return widgets.VBox([plot_mode, chart_out, table_out])
+    return widgets.VBox([dollar_mode, chart_out, table_out])

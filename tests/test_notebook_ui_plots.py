@@ -1,6 +1,7 @@
 """Tests for analysis.sim.notebook_ui.networth_plots and .accounts_plots."""
 
 from __future__ import annotations
+from analysis.sim.types import DollarMode
 
 import shutil
 from pathlib import Path
@@ -37,10 +38,10 @@ def test_income_widget_toggles_dollar_basis(retire_alice_run_file: Path,
                   data_dir=data_dir,
                   scenarios_dir=scenarios_dir) as rc:
         widget = income_widget(rc)
-        plot_mode, chart_out, table_out = widget.children
-        assert plot_mode.value == "nominal"
-        plot_mode.value = "cpi_constant"  # must not raise
-        assert plot_mode.value == "cpi_constant"
+        dollar_mode, chart_out, table_out = widget.children
+        assert dollar_mode.value == DollarMode.NOMINAL
+        dollar_mode.value = DollarMode.CPI_CONSTANT  # must not raise
+        assert dollar_mode.value == DollarMode.CPI_CONSTANT
 
 
 def test_expenses_widget_includes_caveat(retire_alice_run_file: Path,
@@ -60,8 +61,8 @@ def test_gains_widget_builds_without_error(retire_alice_run_file: Path,
                   data_dir=data_dir,
                   scenarios_dir=scenarios_dir) as rc:
         widget = gains_widget(rc)
-        plot_mode, chart_out, table_out = widget.children
-        plot_mode.value = "nominal"
+        dollar_mode, chart_out, table_out = widget.children
+        dollar_mode.value = DollarMode.NOMINAL
 
 
 def test_after_tax_widget_builds_without_error(retire_alice_run_file: Path,
@@ -71,8 +72,8 @@ def test_after_tax_widget_builds_without_error(retire_alice_run_file: Path,
                   data_dir=data_dir,
                   scenarios_dir=scenarios_dir) as rc:
         widget = after_tax_widget(rc)
-        plot_mode, chart_out, table_out = widget.children
-        plot_mode.value = "nominal"
+        dollar_mode, chart_out, table_out = widget.children
+        dollar_mode.value = DollarMode.NOMINAL
 
 
 def test_account_history_widget_defaults_to_kind(retire_alice_run_file: Path,

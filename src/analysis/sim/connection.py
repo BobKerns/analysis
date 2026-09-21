@@ -24,7 +24,8 @@ from typing import Literal
 import pandas as pd
 import traitlets
 
-from analysis.sim.types import INCOME_CATEGORIES, ItemType
+from analysis.sim import accounts
+from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, ItemType
 
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
@@ -507,7 +508,7 @@ class RunConnection(_TagReader):
 
         return self._cached("account_kinds", _build)
 
-    def balance_pivot(self, kind: str | None = None) -> pd.DataFrame:
+    def balance_pivot(self, kind: AccountKindAny | None = None) -> pd.DataFrame:
         """Month x account balance pivot (dollars), optionally filtered to one ``kind``.
 
         For income/expense accounts the balance is already the engine's own
@@ -529,11 +530,16 @@ class RunConnection(_TagReader):
         if kind is None:
             return full
         kinds = self.account_kinds()
-        cols = [c for c in full.columns if kinds.get(c) == kind]
+        cols = [
+            c 
+            for c in full.columns
+            if kind == "any"
+            or kinds.get(c) == kind
+        ]
         pivot = full[cols]
         return -pivot if kind == "income" else pivot
 
-    def cpi_balance_pivot(self, kind: str | None = None) -> pd.DataFrame:
+    def cpi_balance_pivot(self, kind: AccountKindAny | None = None) -> pd.DataFrame:
         """``balance_pivot(kind)`` converted to CPI-constant dollars.
 
         Income and expense balances are cumulative flows. Converting their
@@ -541,7 +547,7 @@ class RunConnection(_TagReader):
         after a nominal flow has stopped while CPI continues increasing.
         """
         balances = self.balance_pivot(kind)
-        if kind not in {"income", "expense"}:
+        if kind not in accounts.CASHFLOW_KINDS:
             return self.to_cpi_constant(balances)
         monthly_flows = balances.diff().fillna(balances)
         return self.to_cpi_constant(monthly_flows).cumsum()
