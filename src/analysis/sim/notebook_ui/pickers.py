@@ -20,7 +20,7 @@ from typing import Collection
 
 import ipywidgets as widgets
 import traitlets
-from IPython.display import clear_output, display
+from IPython.display import Markdown, clear_output, display
 import pandas as pd
 
 from analysis.sim.accounts import KIND_LABELS
@@ -497,6 +497,15 @@ class AccountKindPicker(widgets.Dropdown):
         )
 
 
+def to_markdown(*lines: str) -> widgets.Output:
+    out = widgets.Output()
+    with out:
+        display(
+            Markdown("\n".join(lines))
+        )
+    return out
+
+
 class AccountPicker(widgets.HBox):
     """
     A widget for selecting account kind and specific accounts.
@@ -519,9 +528,10 @@ class AccountPicker(widgets.HBox):
         self.account_picker = widgets.SelectMultiple(
             description="Accounts:",
             layout=widgets.Layout(width="50%"),
-            value=accounts[0:1] if accounts else None,
-            options=accounts,
+            value=tuple(accounts[:1]) if accounts else (),
+            options=accounts or (),
         )
+        super().__init__((self.kind_picker, self.account_picker))
         traitlets.link((self.kind_picker, "value"), (self, "kind"))
         traitlets.link((self.account_picker, "value"), (self, "accounts"))
         self.kind_picker.observe(self._on_kind_change, names="value")
@@ -530,9 +540,8 @@ class AccountPicker(widgets.HBox):
         self.kind = change["new"]
         accounts = self.rc.balance_pivot(change["new"])
         plottable = plottable_accounts(
-            self.rc.balance_pivot(change["new"]), self.rc.account_kinds, change["new"],
+            self.rc.balance_pivot(change["new"]), self.rc.account_kinds(), change["new"],
         )
         self.account_picker.rows = min(15, max(5, len(plottable)))
         self.account_picker.options = plottable
         self.account_picker.value = tuple(plottable[:len(accounts) if accounts is not None else 0])
-        super().__init__([self.kind_picker, self.account_picker])

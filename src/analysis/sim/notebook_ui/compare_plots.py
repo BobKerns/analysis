@@ -19,9 +19,11 @@ from IPython.display import Markdown, clear_output, display
 
 from analysis.sim.connection import RunConnection, ScenarioConnection, year_end_values
 from analysis.sim.notebook_ui.pickers import (
+    AccountPicker,
     DollarModePicker,
     MultiScenarioConnections,
     display_warning,
+    to_markdown,
 )
 from analysis.sim.plotting import include_zero, FRAME_ALPHA
 from analysis.sim.types import DollarMode
@@ -579,15 +581,6 @@ def compare_account_balances(_,
     return (added, deleted, diff, bg)
 
 
-def to_markdown(*lines: str) -> widgets.Output:
-    out = widgets.Output()
-    with out:
-        display(
-            Markdown("\n".join(lines))
-        )
-    return out
-
-
 def account_balance_diffs(baseline: str,
                           baseline_rc: RunConnection,
                           variant_rcs: Sequence[RunConnection],
@@ -683,8 +676,11 @@ def _show_account_balance_diffs(heading: str,
                                 d_add: str,
                                 d_del: str,
                                 diffs: dict[str, pd.DataFrame],
+                                rc: RunConnection,
                             ) -> widgets.VBox:
-    with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+    account_picker = AccountPicker(rc, (("Foo", "bar")))
+    with pd.option_context('display.max_rows', None,
+                           'display.max_columns', None):
         def show(label: str, df: pd.DataFrame) -> widgets.Output:
             df = df.loc[(df != 0).all(axis=1)]
             df = df / 100.0
@@ -700,6 +696,7 @@ def _show_account_balance_diffs(heading: str,
         ]
         return widgets.VBox([
             to_markdown(heading),
+            # account_picker,
             *((to_markdown(d_add),) if d_add else ()),
             *((to_markdown(d_del),) if d_del else ()),
             *outs])
@@ -716,4 +713,4 @@ def show_account_balance_diffs(_,
         variant_rcs=variant_rcs,
         **kwargs
     )
-    return _show_account_balance_diffs(heading, d_add, d_del, diffs)
+    return _show_account_balance_diffs(heading, d_add, d_del, diffs, baseline_rc)

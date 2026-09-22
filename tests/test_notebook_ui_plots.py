@@ -17,6 +17,7 @@ from analysis.sim.connection import RunConnection, open_run
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import load_scenario
 from analysis.sim.notebook_ui.accounts_plots import account_history_widget
+from analysis.sim.notebook_ui.pickers import AccountPicker
 from analysis.sim.notebook_ui.networth_plots import (
     after_tax_widget,
     expenses_widget,
@@ -87,6 +88,32 @@ def test_account_history_widget_defaults_to_kind(retire_alice_run_file: Path,
         kind_picker, picker = widget.children[1], widget.children[2]
         assert kind_picker.value == "asset"
         assert all(rc.account_kinds()[name] == "asset" for name in picker.options)
+
+
+def test_account_picker_can_be_displayed(retire_alice_run_file: Path,
+                                         data_dir: Path,
+                                         scenarios_dir: Path) -> None:
+    with open_run(retire_alice_run_file, "retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
+        picker = AccountPicker(rc, ("Asset_Checking",))
+
+        assert picker._model_id
+        assert picker.accounts == ["Asset_Checking"]
+
+
+def test_empty_account_picker_keeps_a_real_select_multiple(
+    retire_alice_run_file: Path, data_dir: Path, scenarios_dir: Path,
+) -> None:
+    with open_run(retire_alice_run_file, "retire_alice",
+                  data_dir=data_dir,
+                  scenarios_dir=scenarios_dir) as rc:
+        picker = AccountPicker(rc, (), kind="asset")
+
+        assert picker.account_picker.options == ()
+        assert picker.account_picker.value == ()
+        picker.kind_picker.value = "liability"
+        assert picker.account_picker.options
 
 
 def test_account_history_widget_kind_switch_repopulates_accounts(retire_alice_run_file: Path,
