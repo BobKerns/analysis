@@ -16,7 +16,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Collection
+from typing import Collection, Mapping
 
 import ipywidgets as widgets
 import traitlets
@@ -518,30 +518,47 @@ class AccountPicker(widgets.HBox):
                  accounts: list[AccountName] | None = None,
                  kind: str = "asset",
                  allow_kind: Collection[AccountKind] | None = None,
-                 allow_any: bool = False):
+                 allow_any: bool = False,
+                 accounts_by_kind: Mapping[AccountKind, Collection[AccountName]] | None = None,
+                 max_accounts: int | None = None):
         self.rc = rc
+        self._accounts_by_kind = accounts_by_kind
+        self._max_accounts = max_accounts
         self.kind_picker = AccountKindPicker(
             kind=kind,
             allow_kind=allow_kind,
             allow_any=allow_any,
         )
+        initial_accounts = (
+            list(accounts_by_kind.get(kind, ()))
+            if accounts_by_kind is not None
+            else list(accounts or ())
+        )
         self.account_picker = widgets.SelectMultiple(
             description="Accounts:",
             layout=widgets.Layout(width="50%"),
-            value=tuple(accounts[:1]) if accounts else (),
-            options=accounts or (),
+            value=tuple(initial_accounts[:max_accounts]) if max_accounts else tuple(initial_accounts[:1]),
+            options=initial_accounts,
         )
         super().__init__((self.kind_picker, self.account_picker))
         traitlets.link((self.kind_picker, "value"), (self, "kind"))
         traitlets.link((self.account_picker, "value"), (self, "accounts"))
         self.kind_picker.observe(self._on_kind_change, names="value")
+        self.account_picker.observe(self._on_accounts_change, names="value")
 
     def _on_kind_change(self, change):
         self.kind = change["new"]
-        accounts = self.rc.balance_pivot(change["new"])
-        plottable = plottable_accounts(
-            self.rc.balance_pivot(change["new"]), self.rc.account_kinds(), change["new"],
-        )
+        if self._accounts_by_kind is not None:
+            plottable = list(self._accounts_by_kind.get(change["new"], ()))
+        else:
+            plottable = plottable_accounts(
+                self.rc.balance_pivot(change["new"]), self.rc.account_kinds(), change["new"],
+            )
         self.account_picker.rows = min(15, max(5, len(plottable)))
         self.account_picker.options = plottable
-        self.account_picker.value = tuple(plottable[:len(accounts) if accounts is not None else 0])
+        count = self._max_accounts or len(plottable)
+        self.account_picker.value = tuple(plottable[:count])
+
+    def _on_accounts_change(self, change):
+        if self._max_accounts is not None and len(change["new"]) > self._max_accounts:
+            self.account_picker.value = tuple(change["new"][:self._max_accounts])

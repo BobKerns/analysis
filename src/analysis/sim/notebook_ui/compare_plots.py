@@ -8,9 +8,9 @@ see :func:`analysis.sim.notebook_ui.pickers.multi_scenario_picker`).
 
 from __future__ import annotations
 
-from datetime import datetime
-from collections.abc import Sequence
 import json
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
 import ipywidgets as widgets
@@ -22,11 +22,12 @@ from analysis.sim.notebook_ui.pickers import (
     AccountPicker,
     DollarModePicker,
     MultiScenarioConnections,
+    ValuePlotModePicker,
     display_warning,
     to_markdown,
 )
-from analysis.sim.plotting import include_zero, FRAME_ALPHA
-from analysis.sim.types import DollarMode
+from analysis.sim.plotting import FRAME_ALPHA, include_zero
+from analysis.sim.types import DollarMode, ValuePlotMode
 
 # ---------- data helpers (pure; unchanged math from the old scenario_compare.py) ----------
 
@@ -613,12 +614,7 @@ def account_balance_diffs(baseline: str,
         acct for acct in metas.keys()
         if metas[acct].get("diff", None) == "transient"
     }
-    balance_sheet_accts = {
-        acct
-        for acct in accounts.index
-        if accounts.loc[acct, "kind"] in ("asset", "liability")
-    }
-    excluded = builtins | balance_sheet_accts | transients
+    excluded = builtins | transients
 
 
     d_add = "\n".join(
@@ -672,40 +668,103 @@ def account_balance_diffs(baseline: str,
         if len(cl) > 1
     }
 
-def _show_account_balance_diffs(heading: str,
-                                d_add: str,
-                                d_del: str,
-                                diffs: dict[str, pd.DataFrame],
-                                rc: RunConnection,
-                            ) -> widgets.VBox:
-    account_picker = AccountPicker(rc, (("Foo", "bar")))
+def _show_account_balance_diffs(
+    heading: str,
+    d_add: str,
+    d_del: str,
+    diffs: dict[str, pd.DataFrame],
+    rc: RunConnection,
+    accounts: Sequence[str],
+    accounts_by_kind: Mapping[str, Sequence[str]],
+    variant_rcs: Mapping[str, RunConnection],
+    dollar_mode: DollarModePicker,
+    value_mode: ValuePlotModePicker,
+    account_kinds: Mapping[str, str],
+    scenario_picker: widgets.Widget | None = None,
+) -> widgets.VBox:
+    mode_controls = widgets.HBox([dollar_mode, value_mode])
+    if not accounts:
+        return widgets.VBox([
+            *( (scenario_picker,) if scenario_picker is not None else () ),
+            mode_controls,
+            to_markdown(heading),
+            to_markdown("_No account balance differences._"),
+        ])
+
+    initial_kind = next(iter(accounts_by_kind))
+    account_picker = AccountPicker(
+        rc,
+        accounts=list(accounts),
+        kind=initial_kind,
+        allow_kind=tuple(accounts_by_kind),
+        accounts_by_kind=accounts_by_kind,
+        max_accounts=1,
+    )
+    account_output = widgets.Output()
+
+    def display_frame(account: str) -> pd.DataFrame:
+        raw = diffs[account]
+        dates = pd.PeriodIndex(raw.index, freq="M").to_timestamp("M")
+        kind = account_kinds[account]
+        mode = dollar_mode.value
+        values = {}
+        for name, connection in (("baseline", rc), *variant_rcs.items()):
+            pivot = (
+                connection.cpi_balance_pivot(kind)
+                if mode == DollarMode.CPI_CONSTANT
+                else connection.balance_pivot(kind)
+            )
+            values[name] = (
+                pivot[account].reindex(dates).fillna(0)
+                if account in pivot
+                else pd.Series(0.0, index=dates)
+            )
+        frame = pd.DataFrame(values, index=dates)
+        for name in variant_rcs:
+            frame[f"Δ{name}"] = frame[name] - frame["baseline"]
+        if value_mode.value == ValuePlotMode.MONTHLY:
+            frame = frame.diff()
+        return frame
+
+    def show_selected(*_):
+        selected = account_picker.accounts
+        if not selected:
+            return
+        account = selected[0]
+        df = display_frame(account)
+        df = df.loc[df.fillna(0).ne(0).any(axis=1)].style.format("${:.2f}")
+        with account_output:
+            clear_output(wait=True)
+            display(to_markdown(f"### {account}"))
+            display(df)
+
+    account_picker.account_picker.observe(show_selected, names="value")
+    _observe_dollar_mode(dollar_mode, "account_diffs", show_selected)
+    value_mode.observe(show_selected, names="value")
+    show_selected()
+
     with pd.option_context('display.max_rows', None,
                            'display.max_columns', None):
-        def show(label: str, df: pd.DataFrame) -> widgets.Output:
-            df = df.loc[(df != 0).all(axis=1)]
-            df = df / 100.0
-            df = df.style.format("${:.2f}")
-            out = widgets.Output()
-            with out:
-                display(df)
-            return (to_markdown(f"### {label}"), out)
-        outs = [
-            b
-            for acct, cl in diffs.items()
-            for b in show(acct, cl)
-        ]
         return widgets.VBox([
+            *((scenario_picker,) if scenario_picker is not None else ()),
             to_markdown(heading),
-            # account_picker,
+            account_picker,
+            mode_controls,
             *((to_markdown(d_add),) if d_add else ()),
             *((to_markdown(d_del),) if d_del else ()),
-            *outs])
+            account_output,
+        ])
 
-def show_account_balance_diffs(_,
-                          baseline: str,
-                          baseline_rc: RunConnection,
-                          variant_rcs: Sequence[RunConnection],
-                          **kwargs) -> pd.DataFrame:
+def show_account_balance_diffs(
+    _,
+    baseline: str,
+    baseline_rc: RunConnection,
+    variant_rcs: Mapping[str, RunConnection],
+    dollar_mode: DollarModePicker | None = None,
+    value_mode: ValuePlotModePicker | None = None,
+    scenario_picker: widgets.Widget | None = None,
+    **kwargs,
+) -> widgets.VBox:
     heading = f"## Account Balance Diffs for Baseline `{baseline}`"
     d_add, d_del, diffs = account_balance_diffs(
         baseline=baseline,
@@ -713,4 +772,19 @@ def show_account_balance_diffs(_,
         variant_rcs=variant_rcs,
         **kwargs
     )
-    return _show_account_balance_diffs(heading, d_add, d_del, diffs, baseline_rc)
+    accounts = sorted(diffs)
+    all_connections = (baseline_rc, *variant_rcs.values())
+    account_rows = pd.concat(
+        [connection.items("account").set_index("name") for connection in all_connections]
+    ).loc[lambda frame: ~frame.index.duplicated(keep="first")]
+    account_kinds = {name: account_rows.loc[name, "kind"] for name in accounts}
+    accounts_by_kind = {
+        kind: [name for name in accounts if account_rows.loc[name, "kind"] == kind]
+        for kind in ("asset", "liability", "income", "expense")
+        if any(account_rows.loc[name, "kind"] == kind for name in accounts)
+    }
+    return _show_account_balance_diffs(
+        heading, d_add, d_del, diffs, baseline_rc, accounts, accounts_by_kind,
+        variant_rcs, dollar_mode or DollarModePicker(), value_mode or ValuePlotModePicker(),
+        account_kinds, scenario_picker,
+    )
