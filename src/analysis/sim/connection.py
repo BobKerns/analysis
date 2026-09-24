@@ -173,9 +173,10 @@ _ITEM_SQL: dict[str, str] = {
     "security": "SELECT symbol, name FROM security ORDER BY symbol",
     "person_lifespan": "SELECT * FROM person_lifespan ORDER BY person",
     "chain": (
-        "SELECT c.*, a.name AS account_name, a.kind AS account_kind "
+        "SELECT c.*, a.name AS account_name, a.kind AS account_kind, m.lot AS lot "
         "FROM chain c "
         "LEFT JOIN account a ON a.id = c.account_id "
+        "LEFT JOIN account_model_member m ON m.id = c.lot_id "
         "ORDER BY c.id"
     ),
     "chain_steps": (
