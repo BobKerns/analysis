@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+
 ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     "asset": {
         "checking", "savings", "brokerage_taxable", "traditional_ira", "roth_ira",
@@ -217,7 +219,7 @@ PERSONS_CSV_HEADER: tuple[str, ...] = (
 )
 
 ACCOUNT_VALUES_CSV_HEADER: tuple[str, ...] = (
-    "account_name", "opening_balance", "opening_cost_basis", "prior_year_end_balance",
+    "account_name", "lot", "opening_balance", "opening_cost_basis", "prior_year_end_balance",
 )
 
 
@@ -250,7 +252,11 @@ def format_tags(tags: list[tuple[str, str]]) -> str:
 DEFAULT_LOT = "default"
 
 
-def leaf_chain_name(account: str, lot: str) -> str:
-    """Name of the leaf chain for one lot: the bare account name for its
-    default lot, ``account:lot`` otherwise (ADR-005 §3)."""
-    return account if lot == DEFAULT_LOT else f"{account}:{lot}"
+def leaf_chain_name(account: str, lot: str, subkind: str = "") -> str:
+    """Name of the leaf chain for one lot (ADR-005 §3): the bare account name
+    for the default lot of a non-investment account, ``account:lot`` otherwise.
+    Investment accounts are always spelled ``account:lot``.
+    """
+    if lot == DEFAULT_LOT and subkind not in INVESTMENT_ASSET_SUBKINDS:
+        return account
+    return f"{account}:{lot}"

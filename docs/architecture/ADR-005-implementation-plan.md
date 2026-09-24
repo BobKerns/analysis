@@ -7,14 +7,21 @@ Sizes of the files involved (lines): `engine.py` 2367, `loader.py` 1556, `connec
 ## Status
 
 - **Phase 0: done.** `tests/test_retire_alice_baseline.py` pins net worth, per-account state and the full transfer ledger against `tests/data/sim/retire_alice_baseline/` (regenerate with `UPDATE_BASELINE=1` only for an intentional behavior change). Basis splitting is not exercised by `retire_alice`; it is covered by the `_post_withdrawal` unit tests.
-- **Phase 1: done, uncommitted.** The baseline is byte-identical and the suite is green. Where the implementation differs from the text below:
+- **Phase 1: done (f81296d).** The baseline is byte-identical and the suite is green. Where the implementation differs from the text below:
   - The engine keeps its dict and parameter names (`balances`, `account_kinds`, `from_id`, ...) but their keys are now lot ids. Only `ChainGraph.leaf_account` was renamed (`leaf_lot`), because tests construct it directly.
   - `transfer_event.from_account`/`to_account` are filled by a sub-select on `account_model_member` inside `_post_transfer`/`_post_ytd_transfer`, so no call site changed signature. The engine unit tests now use a `ledger_con` fixture (run schema plus identity lots 1..99) instead of hand-written DDL.
   - Leaf chain names come from `registries.leaf_chain_name` (bare account name for the default lot, `account:lot` otherwise). Investment-subkind enforcement of explicit lots is Phase 2.
   - `year_to_date` gained `from_lot_id`/`to_lot_id`; the tax accumulator's paid-tax query now filters on `to_lot_id`.
   - Every account now gets a default lot row, including income and expense accounts that had no `account_values.csv` row. `accounts.py` sums per account (`_members_by_account`).
   - Duplicate `(account_name, lot)` rows are flagged at read time. The old duplicate-`account_name` check in `_validate_account_model_money` could never fire, because the overlay merge collapses same-key rows first.
-- **Still to audit for Phase 2:** which rule kinds assume one balance per account (`on_death`, `_apply_home_sale`, `mortgage_payment`, `ss_benefit`, `tax_accumulator`, `_chain_sweep`, `_settle_accounts`). Phase 1 did not change their logic, only their keys.
+- **Phase 2: done.** Suite green; multi-lot behavior is covered by `tests/test_lots.py`. Differences from the text below:
+  - The engine needed no per-rule changes: nodes are already lots, so multi-lot support is in the loader (`_LeafIndex`, `_ref_problem`, per-lot `_expand_account_growth`, the account_values validations) plus per-lot quantity, tracked in `_post_transfer` through `RefillContext.quantities`.
+  - `registries.leaf_chain_name(account, lot, subkind)` now spells investment accounts `account:lot` always. The engine takes lot names for messages from the `chain` table.
+  - Only `calendar.csv` `account_1`/`account_2` of `one_off_transfer` events are validated for lot-qualified names. `sell_asset`/`buy_asset` are not implemented in the engine (they are skipped), so their payload references are unchecked until they are.
+  - Deposits into a lot still change neither its cost basis nor its quantity (as before, basis only moves on withdrawals). Buying more of a position is therefore not yet modelled.
+  - CLI tooling was adapted here rather than in Phase 4 because renames, deletes and completions would otherwise break: `Account:lot` prefix matching in rename/delete/references, leaf-name completions, `account add`/`sync` write the lot column, `_append_csv_row` tolerates extra optional columns, `import-quicken` skips multi-lot accounts with a warning.
+  - `prototype_data` and `templates` were migrated (`lot` column, `:default` on the four investment accounts).
+- **Audit result:** `on_death` sweeps and the other rule kinds address one lot through their from/to chain, so a multi-lot account needs one rule (or an explicit chain) per lot; nothing silently uses lot `default`. `rmd` is guarded at load. `_settle_accounts`/refill only apply to single-lot accounts.
 
 ## Phase 0 — Baseline and audit (no behavior change)
 

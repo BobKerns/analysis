@@ -16,7 +16,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -34,6 +34,7 @@ from analysis.sim.provenance import (
 )
 from analysis.sim.runs import insert_run_metadata
 from analysis.sim.schema import  SCHEMA_VERSION, apply_run_schema
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
@@ -314,12 +315,18 @@ def _default_scenario_name(data_dir: Path, scenarios: Path, scenarios_dir: Path 
 
 
 def _default_lots(
-    rows: list[dict[str, str]], issues: list[str],
+    rows: list[dict[str, str]], issues: list[str], investment_accounts: set[str],
 ) -> list[dict[str, str]]:
-    """Default each account_values.csv row's lot, and flag repeated (account, lot)
-    pairs here: the overlay merge that follows would silently collapse them."""
+    """Default each account_values.csv row's lot (investment accounts must name
+    theirs), and flag repeated (account, lot) pairs here: the overlay merge that
+    follows would silently collapse them."""
     seen: set[tuple[str, str]] = set()
     for i, row in enumerate(rows, start=2):
+        if not row.get("lot") and row.get("account_name") in investment_accounts:
+            issues.append(
+                f"account_values.csv row {i} ({row['account_name']}): investment "
+                "account requires an explicit lot (e.g. lot=default)"
+            )
         row["lot"] = row.get("lot") or registries.DEFAULT_LOT
         key = (row.get("account_name", ""), row["lot"])
         if key[0] and key in seen:
@@ -410,7 +417,10 @@ def _read_scenario_inputs(
         parent_accounts, read_overlay("accounts.csv", required=True), ("name",)
     )
     model_rows = _merge_scenario_rows(
-        parent_models, _default_lots(read_overlay("account_values.csv", required=True), issues),
+        parent_models, _default_lots(
+            read_overlay("account_values.csv", required=True), issues,
+            {a["name"] for a in accounts if a.get("subkind") in INVESTMENT_ASSET_SUBKINDS},
+        ),
         ("account_name", "lot"),
     )
     scheduled_rows = _merge_scenario_rows(
@@ -514,9 +524,10 @@ def load_scenario(
     aux_rows = _read_aux_dir(data_dir / "aux", issues, money_resolver=money_resolver)
 
     _expand_account_growth(
-        accounts, model_rows, scheduled_rows, scenario_row, issues,
+        accounts, model_rows, scheduled_rows, scenario_row, aux_rows, issues,
     )
 
+    leaves = _leaf_index(accounts, model_rows)
     _validate_accounts(accounts, issues, money_resolver=money_resolver)
     _validate_account_model_money(
         model_rows,
@@ -525,11 +536,11 @@ def load_scenario(
         accounts=accounts,
     )
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
-    _validate_scheduled(scheduled_rows, accounts, set(chains), issues)
-    _validate_calendar(calendar_rows, issues)
-    _validate_chains(chains, accounts, issues, money_resolver=money_resolver)
+    _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
+    _validate_calendar(calendar_rows, leaves, issues)
+    _validate_chains(chains, accounts, leaves, issues, money_resolver=money_resolver)
     _validate_lifespan(lifespan_rows, persons, issues)
-    _validate_year_to_date(ytd_rows, accounts, issues, money_resolver=money_resolver)
+    _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
 
     if issues:
         raise LoadError(issues)
@@ -736,6 +747,53 @@ def _percent_to_micros(s: str) -> int:
 
 # ---------- account-declared growth ----------
 
+class _LeafIndex(NamedTuple):
+    """Every valid leaf reference (one per lot) and what it resolves to."""
+    names: frozenset[str]
+    account_of: dict[str, str]
+    lot_labels: dict[str, list[str]]
+    investment_accounts: frozenset[str]
+
+
+def _leaf_index(
+    accounts: list[dict[str, str]], model_rows: list[dict[str, str]],
+) -> _LeafIndex:
+    labels: dict[str, list[str]] = {}
+    for m in model_rows:
+        labels.setdefault(m.get("account_name", ""), []).append(
+            m.get("lot") or registries.DEFAULT_LOT
+        )
+    names: set[str] = set()
+    account_of: dict[str, str] = {}
+    lot_labels: dict[str, list[str]] = {}
+    for a in accounts:
+        name = a.get("name", "")
+        lot_labels[name] = labels.get(name) or [registries.DEFAULT_LOT]
+        for lot in lot_labels[name]:
+            leaf = registries.leaf_chain_name(name, lot, a.get("subkind", ""))
+            names.add(leaf)
+            account_of[leaf] = name
+    return _LeafIndex(
+        frozenset(names), account_of, lot_labels,
+        frozenset(
+            a["name"] for a in accounts
+            if a.get("name") and a.get("subkind") in INVESTMENT_ASSET_SUBKINDS
+        ),
+    )
+
+
+def _ref_problem(ref: str, leaves: _LeafIndex, chain_names: set[str] | frozenset[str]) -> str | None:
+    """Why ``ref`` is not a valid account/lot/chain reference, or None if it is."""
+    if ref and (ref in leaves.names or ref in chain_names):
+        return None
+    if ref in leaves.investment_accounts:
+        example = registries.leaf_chain_name(
+            ref, leaves.lot_labels[ref][0], "brokerage_taxable"
+        )
+        return f"'{ref}' is an investment account and needs an explicit lot, e.g. {example}"
+    return f"'{ref}' is not a known account, lot or chain"
+
+
 def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
 
@@ -745,22 +803,38 @@ def _expand_account_growth(
     model_rows: list[dict[str, str]],
     scheduled_rows: list[dict[str, str]],
     scenario_row: dict[str, str],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     issues: list[str],
 ) -> None:
-    """Turn an asset account's ``series`` into a ``percent_of_balance`` rule.
+    """Turn each lot's growth series into a ``percent_of_balance`` rule.
 
-    The income side is the built-in account for the row's ``tax_character``
-    (ADR-003 §2.2), created here on first use so scenarios never wire it up by
-    hand. Rules are named ``growth_<account slug>``.
+    A lot's series is its own ``series``, else a rate series named for its
+    ``symbol``, else its account's ``series`` (ADR-005 §5). The income side is
+    the built-in account for the account's ``tax_character`` (ADR-003 §2.2),
+    created here on first use so scenarios never wire it up by hand. Rules are
+    named ``growth_<account slug>`` (``_<lot slug>`` too unless the lot is
+    ``default``).
     """
     account_names = {row.get("name", "") for row in accounts}
     rule_names = {row.get("name", "") for row in scheduled_rows}
+    rate_series = {series for kind, series, *_ in aux_rows if kind == "rate"}
+    lots_by_account: dict[str, list[dict[str, str]]] = {}
+    for m in model_rows:
+        lots_by_account.setdefault(m.get("account_name", ""), []).append(m)
     start = scenario_row.get("start", "")
     for i, row in enumerate(accounts, start=2):
         name = row.get("name", "")
-        series = row.get("series", "")
+        account_series = row.get("series", "")
         character = row.get("tax_character", "")
-        if not series:
+        lot_series: list[tuple[str, str]] = []
+        for m in lots_by_account.get(name) or [{}]:
+            symbol = (m.get("symbol") or "").replace("_", " ")
+            lot_series.append((
+                m.get("lot") or registries.DEFAULT_LOT,
+                m.get("series") or (symbol if symbol in rate_series else "")
+                or account_series,
+            ))
+        if not any(series for _, series in lot_series):
             if character:
                 issues.append(
                     f"accounts.csv row {i} ({name}): tax_character without series "
@@ -795,28 +869,32 @@ def _expand_account_growth(
             model_rows.append({
                 "account_name": counterparty.name, "opening_balance": "0.00",
             })
-        rule_name = f"growth_{_slug(name)}"
-        if rule_name in rule_names:
-            issues.append(
-                f"accounts.csv row {i} ({name}): series would synthesize rule "
-                f"'{rule_name}', which scheduled.csv already defines"
-            )
-            continue
-        rule_names.add(rule_name)
-        scheduled_rows.append({
-            "name": rule_name,
-            "from_account": counterparty.name,
-            "to_account": name,
-            "cadence": "monthly",
-            "amount_rule_kind": "percent_of_balance",
-            "series": series,
-            "tax_character": counterparty.tax_character,
-            "start": start,
-            "description": f"Growth on {name} ({series})",
-        })
+        for lot, series in lot_series:
+            if not series:
+                continue
+            rule_name = f"growth_{_slug(name)}"
+            if lot != registries.DEFAULT_LOT:
+                rule_name += f"_{_slug(lot)}"
+            if rule_name in rule_names:
+                issues.append(
+                    f"accounts.csv row {i} ({name}): series would synthesize rule "
+                    f"'{rule_name}', which scheduled.csv already defines"
+                )
+                continue
+            rule_names.add(rule_name)
+            leaf = registries.leaf_chain_name(name, lot, row.get("subkind", ""))
+            scheduled_rows.append({
+                "name": rule_name,
+                "from_account": counterparty.name,
+                "to_account": leaf,
+                "cadence": "monthly",
+                "amount_rule_kind": "percent_of_balance",
+                "series": series,
+                "tax_character": counterparty.tax_character,
+                "start": start,
+                "description": f"Growth on {leaf} ({series})",
+            })
 
-
-# ---------- validation ----------
 
 def _validate_accounts(
     rows: list[dict[str, str]], issues: list[str], *, money_resolver: _MoneyReferenceResolver,
@@ -830,6 +908,8 @@ def _validate_accounts(
         if name in seen:
             issues.append(f"accounts.csv row {i}: duplicate name '{name}'")
         seen.add(name)
+        if ":" in name:
+            issues.append(f"accounts.csv row {i} ({name}): name may not contain ':'")
         kind = row.get("kind", "")
         subkind = row.get("subkind", "")
         valid = registries.ACCOUNT_SUBKINDS.get(kind)
@@ -865,10 +945,9 @@ def _validate_accounts(
 
 
 def _validate_scheduled(
-    rows: list[dict[str, str]], accounts: list[dict[str, str]],
+    rows: list[dict[str, str]], leaves: _LeafIndex,
     chain_names: set[str], issues: list[str],
 ) -> None:
-    account_names = {r["name"] for r in accounts if r.get("name")}
     for i, row in enumerate(rows, start=2):
         name = row.get("name", "")
         if not name:
@@ -921,11 +1000,15 @@ def _validate_scheduled(
                 f"{', '.join(sorted(registries.SERIES_RULE_KINDS))}"
             )
         for col in ("from_account", "to_account"):
-            ref = row.get(col, "")
-            valid = ref in account_names | chain_names
-            if not ref or not valid:
+            problem = _ref_problem(row.get(col, ""), leaves, chain_names)
+            if problem:
+                issues.append(f"scheduled.csv row {i} ({name}): {col} {problem}")
+        if kind == "rmd":
+            source_account = leaves.account_of.get(row.get("from_account", ""))
+            if source_account and len(leaves.lot_labels[source_account]) > 1:
                 issues.append(
-                    f"scheduled.csv row {i} ({name}): {col} '{ref}' not in accounts.csv or chains/"
+                    f"scheduled.csv row {i} ({name}): rmd on multi-lot account "
+                    f"'{source_account}' is not supported yet"
                 )
         params_json = row.get("amount_rule_params_json") or "{}"
         try:
@@ -1015,6 +1098,54 @@ def _validate_account_model_money(
                 issues.append(
                     f"account_values.csv row {i} ({name}): prior_year_end_balance {e}"
                 )
+        acquired = row.get("acquired", "")
+        if acquired:
+            try:
+                date.fromisoformat(acquired)
+            except ValueError:
+                issues.append(
+                    f"account_values.csv row {i} ({name}): acquired '{acquired}' "
+                    "is not an ISO date"
+                )
+        quantity = row.get("quantity", "")
+        if quantity:
+            try:
+                if _quantity_to_micros(quantity) < 0:
+                    raise ValueError
+            except (ValueError, InvalidOperation):
+                issues.append(
+                    f"account_values.csv row {i} ({name}): quantity '{quantity}' "
+                    "must be a non-negative number"
+                )
+
+    rows_by_account: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        rows_by_account.setdefault(row.get("account_name", ""), []).append(row)
+    cash_management = (
+        "minimum_balance", "maximum_balance", "refill_chain", "refill_target",
+        "refill_amount", "overflow_chain",
+    )
+    for a in accounts:
+        lots = rows_by_account.get(a.get("name", ""), [])
+        if len(lots) < 2:
+            continue
+        name = a["name"]
+        used = [c for c in cash_management if a.get(c)]
+        if used:
+            issues.append(
+                f"accounts.csv ({name}): {', '.join(used)} only supported on "
+                f"single-lot accounts ({len(lots)} lots in account_values.csv)"
+            )
+        with_pyeb = sum(1 for r in lots if r.get("prior_year_end_balance"))
+        if 0 < with_pyeb < len(lots):
+            issues.append(
+                f"account_values.csv ({name}): prior_year_end_balance must be set "
+                "on every lot of an account or on none"
+            )
+
+
+def _quantity_to_micros(raw: str) -> int:
+    return int((Decimal(raw.strip().replace(",", "")) * 1_000_000).to_integral_value())
 
 
 def _validate_scheduled_money(
@@ -1041,12 +1172,11 @@ def _validate_scheduled_money(
 
 def _validate_year_to_date(
     rows: list[dict[str, str]],
-    accounts: list[dict[str, str]],
+    leaves: _LeafIndex,
     issues: list[str],
     *,
     money_resolver: _MoneyReferenceResolver,
 ) -> None:
-    account_names = {r["name"] for r in accounts if r.get("name")}
     seen: set[str] = set()
     for i, row in enumerate(rows, start=2):
         name = row.get("name", "")
@@ -1057,11 +1187,9 @@ def _validate_year_to_date(
             issues.append(f"year_to_date.csv row {i} ({name}): duplicate name")
         seen.add(name)
         for col in ("from_account", "to_account"):
-            ref = row.get(col, "")
-            if not ref or ref not in account_names:
-                issues.append(
-                    f"year_to_date.csv row {i} ({name}): {col} '{ref}' not in accounts.csv"
-                )
+            problem = _ref_problem(row.get(col, ""), leaves, frozenset())
+            if problem:
+                issues.append(f"year_to_date.csv row {i} ({name}): {col} {problem}")
         tc = row.get("tax_character", "")
         if tc not in registries.TAX_CHARACTERS:
             issues.append(f"year_to_date.csv row {i} ({name}): unknown tax_character '{tc}'")
@@ -1081,11 +1209,18 @@ def _validate_year_to_date(
                 issues.append(f"year_to_date.csv row {i} ({name}): amount {e}")
 
 
-def _validate_calendar(rows: list[dict[str, str]], issues: list[str]) -> None:
+def _validate_calendar(
+    rows: list[dict[str, str]], leaves: _LeafIndex, issues: list[str],
+) -> None:
     for i, row in enumerate(rows, start=2):
         kind = row.get("kind", "")
         if kind not in registries.CALENDAR_EVENT_KINDS:
             issues.append(f"calendar.csv row {i}: unknown event kind '{kind}'")
+        if kind == "one_off_transfer":
+            for col in ("account_1", "account_2"):
+                problem = _ref_problem(row.get(col, ""), leaves, frozenset())
+                if problem:
+                    issues.append(f"calendar.csv row {i}: {col} {problem}")
         payload_json = row.get("payload_json") or "{}"
         try:
             json.loads(payload_json)
@@ -1168,14 +1303,16 @@ def _reject_cycles(edges: dict[str, set[str]], issues: list[str], *, label: str)
 def _validate_chains(
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     accounts: list[dict[str, str]],
+    leaves: _LeafIndex,
     issues: list[str],
     *,
     money_resolver: _MoneyReferenceResolver,
 ) -> None:
-    account_names = {a["name"] for a in accounts if a.get("name")}
-    for name in sorted(set(chains) & account_names):
+    for name in sorted(set(chains) & leaves.names):
         issues.append(f"chains/*.csv: chain name '{name}' collides with an account name")
-    resolvable = account_names | set(chains)
+    for name in sorted(n for n in chains if ":" in n):
+        issues.append(f"chains/*.csv: chain name '{name}' may not contain ':'")
+    resolvable = leaves.names | set(chains)
 
     edges: dict[str, set[str]] = {name: set() for name in chains}
     for name, (kind, rows) in chains.items():
@@ -1193,8 +1330,8 @@ def _validate_chains(
                 continue
             if member not in resolvable:
                 issues.append(
-                    f"chains/{kind}__{name}.csv row {i}: '{member}' is not a known "
-                    "account or chain"
+                    f"chains/{kind}__{name}.csv row {i}: "
+                    f"{_ref_problem(member, leaves, frozenset())}"
                 )
             elif member in chains:
                 edges[name].add(member)
@@ -1232,8 +1369,8 @@ def _validate_chains(
                 continue
             if target not in resolvable:
                 issues.append(
-                    f"accounts.csv ({a.get('name', '')}): {column} '{target}' is not "
-                    "a known account or chain"
+                    f"accounts.csv ({a.get('name', '')}): {column} "
+                    f"{_ref_problem(target, leaves, frozenset())}"
                 )
             elif target in chains:
                 edges.setdefault(a["name"], set()).add(target)
@@ -1369,12 +1506,17 @@ def _write_intent(
             lot = m.get("lot") or registries.DEFAULT_LOT
             cur = con.execute(
                 "INSERT INTO account_model_member("
-                "model_id, account_id, lot, opening_balance, opening_cost_basis, "
-                "prior_year_end_balance) VALUES (?,?,?,?,?,?)",
+                "model_id, account_id, lot, symbol, acquired, quantity_micros, "
+                "series, opening_balance, opening_cost_basis, "
+                "prior_year_end_balance) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     model_id,
                     account_ids[a["name"]],
                     lot,
+                    m.get("symbol") or None,
+                    m.get("acquired") or None,
+                    _quantity_to_micros(m["quantity"]) if m.get("quantity") else None,
+                    m.get("series") or None,
                     _dollars_to_cents(m["opening_balance"], resolver=money_resolver),
                     _dollars_to_cents(m["opening_cost_basis"], resolver=money_resolver)
                     if m.get("opening_cost_basis") else None,
@@ -1382,7 +1524,7 @@ def _write_intent(
                     if m.get("prior_year_end_balance") else None,
                 ),
             )
-            leaf = registries.leaf_chain_name(a["name"], lot)
+            leaf = registries.leaf_chain_name(a["name"], lot, a["subkind"])
             lot_ids[leaf] = cur.lastrowid
             lot_account[leaf] = a["name"]
             member_count += 1
@@ -1558,7 +1700,8 @@ def _write_intent(
             "amount, tax_character, year, description) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 scenario_id, y["name"],
-                account_ids[y["from_account"]], account_ids[y["to_account"]],
+                account_ids[lot_account[y["from_account"]]],
+                account_ids[lot_account[y["to_account"]]],
                 lot_ids[y["from_account"]], lot_ids[y["to_account"]],
                 _dollars_to_cents(y["amount"], resolver=money_resolver),
                 y["tax_character"], _opt_int(y.get("year")), y.get("description") or None,

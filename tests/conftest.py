@@ -61,6 +61,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 
+import pandas as pd
 import pytest
 
 from analysis.sim import scenario
@@ -386,3 +387,63 @@ def ledger_con() -> Generator[sqlite3.Connection, None, None]:
         yield con
     finally:
         con.close()
+
+
+@pytest.fixture(scope="function")
+def retire_alice_csv(test_scenarios_dir: Path) -> Callable[[str], Path]:
+    """Path of one of the private retire_alice copy's scenario files, for tests
+    that edit inputs before loading."""
+    return lambda name: test_scenarios_dir / "retire_alice" / name
+
+
+@pytest.fixture(scope="function")
+def load_test_copy(test_data_dir: Path, test_scenarios_dir: Path,
+                   intent_dir: Path) -> Callable[[], LoadResult]:
+    """Loader for the private retire_alice copy, after a test has edited it."""
+    def _load() -> LoadResult:
+        return load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                             scenarios_dir=test_scenarios_dir, allow_dirty_data=True)
+    return _load
+
+
+@pytest.fixture(scope="function")
+def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+                     load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:
+    """Run of a retire_alice copy whose brokerage is split into lots ``a`` (symbol
+    AAA, 1000 shares, with its own growth series) and ``b`` (BBB, 2000.5 shares), with a monthly draw from lot b."""
+    values = pd.read_csv(retire_alice_csv("account_values.csv"), dtype=str, keep_default_na=False)
+    values = values[values["account_name"] != "Asset_Brokerage_Joint"]
+    values["symbol"] = ""
+    values["quantity"] = ""
+    lots = pd.DataFrame([
+        {"account_name": "Asset_Brokerage_Joint", "lot": "a", "symbol": "AAA",
+         "quantity": "1000", "opening_balance": "100000.00",
+         "opening_cost_basis": "60000.00"},
+        {"account_name": "Asset_Brokerage_Joint", "lot": "b", "symbol": "BBB",
+         "quantity": "2,000.5", "opening_balance": "200000.00",
+         "opening_cost_basis": "140000.00"},
+    ])
+    pd.concat([values, lots], ignore_index=True).fillna("").to_csv(
+        retire_alice_csv("account_values.csv"), index=False)
+
+    calendar = retire_alice_csv("calendar.csv")
+    calendar.write_text(calendar.read_text().replace(
+        "Asset_Brokerage_Joint:default", "Asset_Brokerage_Joint:a"))
+    (test_data_dir / "aux" / "rate__AAA.csv").write_text(
+        "effective_date,annual_rate_micros\n2026-01-31,20000\n")
+    (retire_alice_csv("chains") / "asset__lotb.csv").write_text(
+        "account_name,maximum,percent,series,cadence\nAsset_Brokerage_Joint:b,,,,\n")
+
+    scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(scheduled.columns, ""),
+        "name": "lot_b_draw", "from_account": "lotb", "to_account": "Asset_Checking",
+        "cadence": "monthly", "amount_rule_kind": "fixed_amount", "amount": "1000.00",
+        "tax_character": "none", "start": "2026-05-31", "priority": "500",
+        "meta_json": "{}",
+    }
+    scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+
+    intent = load_test_copy().intent_path
+    return run_scenario(intent, runs_dir / "two_lot.sqlite3", run_by="TEST",
+                        allow_dirty_data=True, allow_dirty_code=True)

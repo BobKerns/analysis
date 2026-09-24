@@ -45,6 +45,7 @@ from analysis.sim.quicken import (
     parse_net_worth_export,
 )
 import analysis.sim.scenario as sc
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 
 def _resolve_state_dir(directory: Path | None, default: Path) -> Path:
@@ -640,23 +641,30 @@ def _validate_iso_date(s: str) -> str:
     return s
 
 
+def _refers_to(value: str, account: str) -> bool:
+    """Whether a CSV cell names ``account``, bare or as ``account:lot``."""
+    return value == account or value.startswith(account + ":")
+
+
 def _append_csv_row(path: Path, header: tuple[str, ...],
                     row: dict[str, str]) -> None:
     """Append a row to a CSV, aligning columns by name via pandas.
 
-    If the file exists, its header must match ``header`` exactly; this catches
-    schema drift instead of silently writing misaligned columns.
+    If the file exists, its header must contain every column of ``header``
+    (extra optional columns are kept and left blank); this catches schema
+    drift instead of silently writing misaligned columns.
     """
     cols = list(header)
     if path.exists() and path.stat().st_size > 0:
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
         existing = tuple(df.columns)
-        if existing != header:
+        if not set(header) <= set(existing):
             raise click.ClickException(
                 f"CSV header mismatch in {path}\n"
                 f"  expected: {list(header)}\n"
                 f"  found:    {list(existing)}"
             )
+        cols = list(existing)
     else:
         df = pd.DataFrame(columns=cols)
     new_row = pd.DataFrame([{c: row.get(c, "") for c in cols}], columns=cols)
@@ -702,7 +710,9 @@ def transfer_add(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
     with open_intent_db(data_dir_p, scenario) as (con, _name):
-        accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
+        accounts = [r[0] for r in con.execute(
+            "SELECT name FROM chain WHERE lot_id IS NOT NULL ORDER BY name"
+        )]
 
     if not date:
         date = _prompt_with_completion("date (YYYY-MM-DD)")
@@ -817,7 +827,9 @@ def scheduled_add(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
     with open_intent_db(data_dir_p, scenario) as (con, _name):
-        accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
+        accounts = [r[0] for r in con.execute(
+            "SELECT name FROM chain WHERE lot_id IS NOT NULL ORDER BY name"
+        )]
         existing_names = {
             r[0] for r in con.execute("SELECT name FROM scheduled_transaction")
         }
@@ -856,8 +868,8 @@ def scheduled_add(
         )
 
     if not row_name:
-        slug_from = from_account.lower().replace(" ", "_")
-        slug_to = to_account.lower().replace(" ", "_")
+        slug_from = from_account.lower().replace(" ", "_").replace(":", "_")
+        slug_to = to_account.lower().replace(" ", "_").replace(":", "_")
         row_name = f"xfer_{slug_from}_to_{slug_to}_{date}"
     if row_name in existing_names:
         raise click.ClickException(
@@ -970,7 +982,9 @@ def scheduled_import_baseline(
     )
     with open_intent_db(data_dir_p, scenario_name) as (con, _):
         scenario_accounts = {
-            row[0] for row in con.execute("SELECT name FROM account")
+            row[0] for row in con.execute(
+                "SELECT name FROM chain WHERE lot_id IS NOT NULL"
+            )
         }
         scenario_sources = scenario_accounts | {
             row[0] for row in con.execute("SELECT name FROM chain")
@@ -1264,6 +1278,7 @@ def add_account(
             registries.ACCOUNT_VALUES_CSV_HEADER,
             {
                 "account_name": name,
+                "lot": registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else "",
                 "opening_balance": f"{cents // 100}.{cents % 100:02d}",
                 "opening_cost_basis": "",
                 "prior_year_end_balance": "",
@@ -1284,7 +1299,9 @@ def _rename_account_row_values(path: Path, field_names: tuple[str, ...], old_nam
         if field not in df.columns:
             continue
         before = df[field].copy()
-        df[field] = df[field].map(lambda v: new_name if v == old_name else v)
+        df[field] = df[field].map(
+            lambda v: new_name + v[len(old_name):] if _refers_to(v, old_name) else v
+        )
         changed = changed or not before.equals(df[field])
     if changed:
         df.to_csv(path, index=False)
@@ -1348,7 +1365,7 @@ def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
         for idx, row in accounts.iterrows():
             if row.get("name") == name:
                 continue
-            matched_fields = [field for field in chain_fields if row[field] == name]
+            matched_fields = [field for field in chain_fields if _refers_to(row[field], name)]
             if matched_fields:
                 references.append(
                     f"  accounts.csv row {idx + 2}: {', '.join(matched_fields)}"
@@ -1368,7 +1385,7 @@ def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
         available_fields = tuple(field for field in fields if field in df.columns)
         for idx, row in df.iterrows():
-            matched_fields = [field for field in available_fields if row[field] == name]
+            matched_fields = [field for field in available_fields if _refers_to(row[field], name)]
             if matched_fields:
                 references.append(
                     f"  {path.relative_to(scenario_dir)} row {idx + 2}: "
@@ -1394,7 +1411,9 @@ def _delete_account_references(scenario_dir: Path, name: str) -> None:
         available_fields = [field for field in fields if field in df.columns]
         if not available_fields:
             continue
-        keep = ~df[available_fields].eq(name).any(axis=1)
+        keep = ~df[available_fields].apply(
+            lambda column: column.map(lambda v: _refers_to(v, name))
+        ).any(axis=1)
         if not keep.all():
             df.loc[keep].to_csv(path, index=False)
 
@@ -1750,16 +1769,19 @@ def check_account_values(
 
     # Read account_values
     values_accounts = {}
+    seen_lots: set[tuple[str, str]] = set()
     with values_path.open(newline="", encoding="utf-8") as f:
         reader = _csv.DictReader(f)
         if reader.fieldnames is None or "account_name" not in reader.fieldnames:
             raise click.ClickException("account_values.csv missing 'account_name' column")
         for i, row in enumerate(reader, start=2):
             acct = row.get("account_name", "")
-            if acct in values_accounts:
-                click.echo(f"  warning: duplicate account_name '{acct}' at row {i}", err=True)
-            else:
-                values_accounts[acct] = i
+            if (acct, row.get("lot", "")) in seen_lots:
+                click.echo(
+                    f"  warning: duplicate account_name and lot '{acct}' at row {i}", err=True
+                )
+            seen_lots.add((acct, row.get("lot", "")))
+            values_accounts.setdefault(acct, i)
             if acct and acct not in account_names:
                 click.echo(f"  warning: unknown account_name '{acct}' at row {i}", err=True)
 
@@ -1794,6 +1816,7 @@ def sync_account_values(
 
     # Read accounts
     account_names = []
+    account_subkinds: dict[str, str] = {}
     with accounts_path.open(newline="", encoding="utf-8") as f:
         reader = _csv.DictReader(f)
         if reader.fieldnames is None or "name" not in reader.fieldnames:
@@ -1801,6 +1824,7 @@ def sync_account_values(
         for row in reader:
             if row.get("name"):
                 account_names.append(row["name"])
+                account_subkinds[row["name"]] = row.get("subkind", "")
 
     # Read existing account_values
     values_accounts = set()
@@ -1825,6 +1849,7 @@ def sync_account_values(
     for name in missing:
         values_rows.append({
             "account_name": name,
+            "lot": registries.DEFAULT_LOT if account_subkinds.get(name) in INVESTMENT_ASSET_SUBKINDS else "",
             "opening_balance": "0.00",
             "opening_cost_basis": "",
             "prior_year_end_balance": "",
@@ -1832,7 +1857,7 @@ def sync_account_values(
 
     # Write back
     with values_path.open("w", newline="", encoding="utf-8") as f:
-        writer = _csv.DictWriter(f, fieldnames=values_header)
+        writer = _csv.DictWriter(f, fieldnames=values_header, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(values_rows)
 
@@ -1965,7 +1990,14 @@ def import_quicken(
                 f"mapped account not found in account_values.csv: {name!r}"
             )
         dollars = format_dollars(cents)
-        idx = df.index[df["account_name"] == name][0]
+        rows = df.index[df["account_name"] == name]
+        if len(rows) > 1:
+            click.echo(
+                f"warning: {name!r} has {len(rows)} lots; import-quicken only "
+                "updates single-lot accounts, so it was skipped", err=True,
+            )
+            continue
+        idx = rows[0]
 
         if year_end:
             old = df.at[idx, "prior_year_end_balance"]

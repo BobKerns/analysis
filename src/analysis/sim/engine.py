@@ -91,7 +91,7 @@ def run_scenario(
         lots = con.execute(
             "SELECT m.id, m.opening_balance, m.opening_cost_basis, "
             "       m.prior_year_end_balance, a.kind, a.subkind, a.tax_treatment, "
-            "       a.owner, a.name, m.lot "
+            "       a.owner, m.quantity_micros "
             "FROM account_model_member m "
             "JOIN account a ON a.id = m.account_id "
             "WHERE m.model_id = ? ORDER BY m.id",
@@ -106,13 +106,14 @@ def run_scenario(
         account_subkind: dict[int, str] = {r[0]: r[5] for r in lots}
         account_tax_treatment: dict[int, str | None] = {r[0]: r[6] for r in lots}
         account_owner: dict[int, str | None] = {r[0]: r[7] for r in lots}
-        account_name: dict[int, str] = {
-            r[0]: registries.leaf_chain_name(r[8], r[9]) for r in lots
-        }
+        quantities: dict[int, int | None] = {r[0]: r[8] for r in lots}
         account_id_by_name: dict[str, int] = {
             r[0]: r[1] for r in con.execute(
                 "SELECT name, lot_id FROM chain WHERE lot_id IS NOT NULL"
             )
+        }
+        account_name: dict[int, str] = {
+            lot_id: name for name, lot_id in account_id_by_name.items()
         }
         person_lifespan: dict[str, str] = {
             r[0]: r[1] for r in con.execute(
@@ -159,6 +160,7 @@ def run_scenario(
         refill_ctx = RefillContext(
             chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
             account_tax_treatment, account_subkind, account_name, cost_bases,
+            quantities,
         )
 
         skipped_counts: dict[str, int] = {}
@@ -418,9 +420,10 @@ def run_scenario(
             )
 
             con.executemany(
-                "INSERT INTO lot_state(step_id, lot_id, balance, cost_basis) "
-                "VALUES (?, ?, ?, ?)",
-                [(step_id, lot_id, balances[lot_id], cost_bases[lot_id])
+                "INSERT INTO lot_state(step_id, lot_id, balance, cost_basis, "
+                "                      quantity_micros) VALUES (?, ?, ?, ?, ?)",
+                [(step_id, lot_id, balances[lot_id], cost_bases[lot_id],
+                  quantities[lot_id])
                  for lot_id in balances],
             )
             previous_step_id = step_id
@@ -515,7 +518,8 @@ class RefillContext:
 
     __slots__ = ("graph", "aux", "chain_base_date", "inflation_factor_cache",
                  "account_tax_treatment", "account_subkind", "account_name",
-                 "cost_bases", "refilling", "negative_since", "negative_events")
+                 "cost_bases", "quantities", "refilling", "negative_since",
+                 "negative_events")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
@@ -523,6 +527,7 @@ class RefillContext:
         account_tax_treatment: dict[int, str | None],
         account_subkind: dict[int, str], account_name: dict[int, str],
         cost_bases: dict[int, int | None],
+        quantities: dict[int, int | None] | None = None,
     ) -> None:
         self.graph = graph
         self.aux = aux
@@ -532,6 +537,7 @@ class RefillContext:
         self.account_subkind = account_subkind
         self.account_name = account_name
         self.cost_bases = cost_bases
+        self.quantities = quantities if quantities is not None else {}
         self.refilling: set[int] = set()  # reentrancy guard against refill cycles
         self.negative_since: dict[int, bool] = {}
         self.negative_events: list[tuple[str, str, int]] = []
@@ -653,6 +659,13 @@ def _post_transfer(
         (step_id, month_s, from_id, to_id, from_id, to_id, amount, requested,
          remainder, tax_char, tax_year, reason_kind, reason_id, parent_event_id),
     )
+    if refill_ctx is not None and amount > 0 and account_kinds[from_id] == "asset":
+        quantity = refill_ctx.quantities.get(from_id)
+        prior_balance = balances.get(from_id, 0)
+        if quantity and prior_balance > 0:
+            refill_ctx.quantities[from_id] = quantity - min(
+                quantity, quantity * amount // prior_balance
+            )
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
     if refill_ctx is not None:

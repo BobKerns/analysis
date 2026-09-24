@@ -66,7 +66,7 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         assert {r[1] for r in chain_row} == {"asset checking liquidity"}
         assert chain_row[0][2] == con.execute("SELECT id FROM chain WHERE name = 'Asset_Savings'").fetchone()[0]
         assert chain_row[1][2] == (
-            con.execute("SELECT id FROM chain WHERE name = 'Asset_TraditionalIRA_Alice'").fetchone()[0]
+            con.execute("SELECT id FROM chain WHERE name = 'Asset_TraditionalIRA_Alice:default'").fetchone()[0]
         )
 
         rmd_rows = con.execute(
@@ -561,7 +561,7 @@ def test_year_to_date_csv_round_trip(tmp_path: Path) -> None:
     ytd = repo / "scenarios" / "retire_alice" / "year_to_date.csv"
     ytd.write_text(
         "name,from_account,to_account,amount,tax_character,description\n"
-        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint,"
+        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint:default,"
         "1234.56,ltcg,pre-simulation brokerage appreciation\n"
     )
 
@@ -597,7 +597,7 @@ def test_year_to_date_unknown_account_rejected(tmp_path: Path) -> None:
         "bogus,Nonexistent_Account,Asset_Checking,100.00,none,\n"
     )
 
-    with pytest.raises(LoadError, match="not in accounts.csv"):
+    with pytest.raises(LoadError, match="not a known account"):
         load_scenario(
             repo, "retire_alice", intent_dir=tmp_path / "out",
             allow_dirty_data=True,
