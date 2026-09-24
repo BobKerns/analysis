@@ -114,7 +114,7 @@ def chains_view(sc: ScenarioConnection) -> pd.DataFrame:
 
 
 _SCHEDULED_COLS = [
-    "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
+    "id", "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
     "amount_rule_kind", "amount", "tax_character", "priority", "start", "end",
     "description",
 ]

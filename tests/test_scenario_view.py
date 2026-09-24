@@ -11,7 +11,12 @@ import matplotlib
 matplotlib.use("Agg")
 
 from analysis.sim.connection import open_scenario
-from analysis.sim.notebook_ui.scenario_plots import show_chains
+from analysis.sim.notebook_ui.scenario_plots import (
+    SCHEDULED_OPTIONAL_COLUMNS,
+    scheduled_styler,
+    show_chains,
+    show_scheduled_view,
+)
 from analysis.sim.notebook_ui.scenario_view import calendar_view, chains_view, scheduled_view
 
 
@@ -86,7 +91,7 @@ def test_scheduled_view_has_separate_account_and_lot_columns(
     with open_scenario(test_data_dir, "retire_alice") as scenario:
         view = scheduled_view(scenario).set_index("name")
     columns = list(view.columns)
-    assert columns[:5] == ["from_account", "from_lot", "to_account", "to_lot", "cadence"]
+    assert columns[:5] == ["id", "from_account", "from_lot", "to_account", "to_lot"]
     assert "from_name" not in columns and "to_name" not in columns
     # An account with several lots names the lot; single-lot accounts and chains show '-'.
     growth = view[view["to_account"] == "Asset_Brokerage_Joint"]
@@ -110,3 +115,29 @@ def test_calendar_view_has_separate_account_and_lot_columns(
     events_without_accounts = view[view["account_1"] == "-"]
     assert not events_without_accounts.empty
     assert set(events_without_accounts["lot_1"]) == {"-"}
+
+
+def test_optional_scheduled_columns_default_to_name_and_description(test_data_dir: Path) -> None:
+    assert SCHEDULED_OPTIONAL_COLUMNS == {
+        "id": False, "name": True, "priority": False, "description": True,
+    }
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        box = show_scheduled_view(scenario)
+    checkboxes = box.children[0].children
+    assert [(c.description, c.value) for c in checkboxes] == [
+        ("id", False), ("name", True), ("priority", False), ("description", True),
+    ]
+    checkboxes[0].value = True       # toggling must not raise
+    checkboxes[3].value = False
+
+
+def test_hidden_columns_are_dropped_and_the_rest_are_formatted(test_data_dir: Path) -> None:
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = scheduled_view(scenario)
+    styled = scheduled_styler(view, hidden=["id", "priority"])
+    assert "id" not in styled.data.columns and "priority" not in styled.data.columns
+    assert "name" in styled.data.columns and "description" in styled.data.columns
+    assert list(scheduled_styler(view).data.columns) == list(view.columns)
+    html = styled.to_html()
+    assert "$" in html                       # amounts are formatted
+    assert list(styled.data.index) == list(view.index)  # hiding columns does not reorder rows
