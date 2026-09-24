@@ -229,7 +229,8 @@ PERSONS_CSV_HEADER: tuple[str, ...] = (
 )
 
 ACCOUNT_VALUES_CSV_HEADER: tuple[str, ...] = (
-    "account_name", "lot", "opening_balance", "opening_cost_basis", "prior_year_end_balance",
+    "account_name", "lot", "symbol", "acquired", "quantity", "series",
+    "opening_balance", "opening_cost_basis", "prior_year_end_balance",
 )
 
 

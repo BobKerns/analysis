@@ -417,6 +417,33 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
 
 
 @pytest.fixture(scope="function")
+def add_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Append a row to the private copy's account_values.csv, by column name."""
+    def _add(account_name: str, **columns: str) -> None:
+        path = retire_alice_csv("account_values.csv")
+        values = pd.read_csv(path, dtype=str, keep_default_na=False)
+        values.loc[len(values)] = {**dict.fromkeys(values.columns, ""),
+                                   "account_name": account_name, **columns}
+        values.to_csv(path, index=False)
+    return _add
+
+
+@pytest.fixture(scope="function")
+def update_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Set columns on one existing (account, lot) row of the private copy's
+    account_values.csv."""
+    def _update(account_name: str, lot: str, **columns: str) -> None:
+        path = retire_alice_csv("account_values.csv")
+        values = pd.read_csv(path, dtype=str, keep_default_na=False)
+        row = (values["account_name"] == account_name) & (values["lot"] == lot)
+        assert row.any(), (account_name, lot)
+        for column, value in columns.items():
+            values.loc[row, column] = value
+        values.to_csv(path, index=False)
+    return _update
+
+
+@pytest.fixture(scope="function")
 def set_brokerage_lots(retire_alice_csv: Callable[[str], Path]) -> Callable[[list[dict[str, str]]], None]:
     """Replace Asset_Brokerage_Joint's account_values row with the given lots
     (dicts of account_values.csv columns; ``account_name`` is filled in)."""

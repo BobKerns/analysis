@@ -75,15 +75,10 @@ def _edit(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1))
 
 
-def _append_line(path: Path, line: str) -> None:
-    text = path.read_text()
-    path.write_text(text + ("" if text.endswith("\n") else "\n") + line + "\n")
-
-
 def test_duplicate_account_and_lot_rejected(
-    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+    add_account_value: Callable[..., None], load_test_copy: Callable[[], LoadResult]
 ) -> None:
-    _append_line(retire_alice_csv("account_values.csv"), "Asset_Checking,,1.00,,")
+    add_account_value("Asset_Checking", opening_balance="1.00")
     with pytest.raises(LoadError, match="duplicate account_name and lot"):
         load_test_copy()
 
@@ -122,33 +117,29 @@ def test_unknown_lot_reference_rejected(
         load_test_copy()
 
 
-def _split_lot(retire_alice_csv: Callable[[str], Path], account: str, second_row: str) -> None:
-    _append_line(retire_alice_csv("account_values.csv"), second_row)
-
-
 def test_rmd_on_multi_lot_account_rejected(
-    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+    add_account_value: Callable[..., None], load_test_copy: Callable[[], LoadResult]
 ) -> None:
-    _split_lot(retire_alice_csv, "Asset_TraditionalIRA_Alice",
-               "Asset_TraditionalIRA_Alice,b,10000.00,,9000.00")
+    add_account_value("Asset_TraditionalIRA_Alice", lot="b", opening_balance="10000.00",
+                      prior_year_end_balance="9000.00")
     with pytest.raises(LoadError, match="rmd on multi-lot account 'Asset_TraditionalIRA_Alice'"):
         load_test_copy()
 
 
 def test_prior_year_end_balance_is_all_or_none_per_account(
-    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+    add_account_value: Callable[..., None], update_account_value: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    _split_lot(retire_alice_csv, "Asset_Roth_Alice", "Asset_Roth_Alice,b,10000.00,,")
-    _edit(retire_alice_csv("account_values.csv"), "Asset_Roth_Alice,default,100000.00,,",
-          "Asset_Roth_Alice,default,100000.00,,90000.00")
+    add_account_value("Asset_Roth_Alice", lot="b", opening_balance="10000.00")
+    update_account_value("Asset_Roth_Alice", "default", prior_year_end_balance="90000.00")
     with pytest.raises(LoadError, match="prior_year_end_balance must be set on every lot"):
         load_test_copy()
 
 
 def test_cash_management_only_on_single_lot_accounts(
-    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+    add_account_value: Callable[..., None], load_test_copy: Callable[[], LoadResult]
 ) -> None:
-    _split_lot(retire_alice_csv, "Asset_Checking", "Asset_Checking,b,10.00,,")
+    add_account_value("Asset_Checking", lot="b", opening_balance="10.00")
     with pytest.raises(LoadError, match=r"Asset_Checking\): minimum_balance.*single-lot accounts"):
         load_test_copy()
 
@@ -388,3 +379,15 @@ def test_scheduled_list_and_accounts_view_handle_multi_lot_accounts(
     assert brokerage.opening_balance == 300_000.0
     assert brokerage.cost_basis == 200_000.0
     assert brokerage.rate_series is not None
+
+
+def test_shipped_account_values_files_carry_every_lot_column(
+    repo_root: Path, prototype_data: Path
+) -> None:
+    from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER
+
+    for path in (
+        prototype_data / "scenarios" / "retire_alice" / "account_values.csv",
+        repo_root / "templates" / "scenarios" / "template" / "account_values.csv",
+    ):
+        assert tuple(path.read_text().splitlines()[0].split(",")) == ACCOUNT_VALUES_CSV_HEADER, path
