@@ -9,7 +9,7 @@ from contextlib import contextmanager
 import os
 import sqlite3
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -24,7 +24,7 @@ from analysis.expenses.baseline import (
     load_expense_account_map,
     replace_generated_scheduled_rows,
 )
-from analysis.sim import registries
+from analysis.sim import prices, registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import open_run, open_scenario
 from analysis.sim.holdings import (
@@ -2349,6 +2349,67 @@ def _scenario_write(
 
 
 # ---------- scenario: create derived scenarios ----------
+
+
+@sim_group_command.group(name="prices")
+def prices_group_command() -> None:
+    """Security prices for the lots that have a quantity."""
+
+
+@prices_group_command.command("fetch")
+@click.argument("symbols", nargs=-1)
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+@click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
+              help="Earliest date to fetch (default: the month before the earliest scenario start).")
+@click.option("--provider", "provider_name", default="yahoo", show_default=True,
+              type=click.Choice(sorted(prices.PRICE_PROVIDERS)), help="Where prices come from.")
+@click.option("--refresh", is_flag=True,
+              help="Overwrite prices already in the files (default: only add new dates).")
+@click.option("--dry-run", is_flag=True, help="Show what would change without writing files.")
+def prices_fetch_command(
+    symbols: tuple[str, ...], data_dir: Path | None,
+    since_text: str | None, provider_name: str, refresh: bool, dry_run: bool,
+) -> None:
+    """Fetch prices into aux/security_price__<SYMBOL>.csv.
+
+    With no SYMBOLS, fetches every symbol on a lot that has a quantity in any
+    scenario (CASH is skipped). Stores each month's last close since the month before the earliest
+    scenario start, plus the latest close. Only the ticker symbols are sent to
+    the provider.
+    """
+    data = _resolve_data_dir(data_dir)
+    scenarios_dir = data / "scenarios"
+    if not scenarios_dir.is_dir():
+        raise click.ClickException(f"no scenarios/ in {data}")
+    use = prices.prices_in_use(scenarios_dir)
+    chosen = list(symbols) or use.symbols
+    if not chosen:
+        click.echo("no symbol on a lot with a quantity; nothing to fetch")
+        return
+    today = datetime.now(UTC).date()
+    try:
+        since = (date.fromisoformat(since_text) if since_text
+                 else prices.default_since(use.earliest_start, today))
+    except ValueError:
+        raise click.ClickException(f"--since {since_text!r} is not a YYYY-MM-DD date") from None
+    provider = prices.PRICE_PROVIDERS[provider_name]()
+    results = prices.fetch_prices(
+        data / "aux", chosen, provider, since=since, today=today, refresh=refresh, dry_run=dry_run,
+    )
+    failed = 0
+    for r in results:
+        if r.error:
+            failed += 1
+            click.echo(f"{r.symbol}: {r.error}", err=True)
+            continue
+        day, price = r.latest
+        change = f"{r.added} added" + (f", {r.changed} changed" if r.changed else "")
+        click.echo(f"{r.symbol}: {change} (latest {prices.format_price(price)} on {day})")
+    if dry_run:
+        click.echo("dry run: no files written")
+    if failed:
+        raise click.ClickException(f"{failed} of {len(results)} symbol(s) failed")
 
 
 @sim_group_command.group(name="scenario")
