@@ -1032,3 +1032,24 @@ def test_sim_run_finds_state_through_the_activated_data_dir(
     assert result.exit_code == 0, result.output
     assert len(list((tmp_path / "state" / "runs").glob("*.sqlite3"))) == 1
     assert not (tmp_path / "runs").exists()
+
+
+def test_transfer_list_shows_calendar_and_scheduled_one_offs(test_data_dir: Path) -> None:
+    runner = CliRunner()
+    added = runner.invoke(main, [
+        "sim", "scheduled", "add", "2030-03-15", "Asset_Checking", "Asset_Savings", "75.00",
+        "--cadence", "one_off", "--description", "Moving money", "--scenario", "retire_alice",
+        "--data-dir", str(test_data_dir),
+    ])
+    assert added.exit_code == 0, added.output
+
+    result = runner.invoke(main, [
+        "sim", "transfer", "list", "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
+    ], env={"COLUMNS": "300"})
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if "│" in line]
+    inheritance = next(line for line in lines if "inheritance" in line)
+    moving = next(line for line in lines if "Moving money" in line)
+    assert "calendar" in inheritance and "Asset_Brokerage_Joint (default)" in inheritance
+    assert "scheduled" in moving and "Asset_Savings" in moving and "$75.00" in moving
+    assert lines.index(inheritance) < lines.index(moving)  # dated 2029 before 2030

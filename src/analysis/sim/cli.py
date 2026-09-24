@@ -675,11 +675,11 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
 
 
 def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
-    """``name``, plus ``[lot]`` where the lot is worth showing."""
+    """``name``, plus ``(lot)`` where the lot is worth showing."""
     if not name:
         return ""
     if lot and (subkind in INVESTMENT_ASSET_SUBKINDS or lot != registries.DEFAULT_LOT):
-        return f"{name} [{lot}]"
+        return f"{name} ({lot})"
     return name
 
 
@@ -2090,7 +2090,8 @@ def import_quicken(
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
-    """List one-off (calendar) transfers."""
+    """List one-time transfers: calendar one_off_transfer events and scheduled
+    rows with cadence one_off."""
     from rich.console import Console
     from rich.table import Table
 
@@ -2098,12 +2099,14 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
     with open_intent_db(data_dir_p, scenario) as (con, scen_name):
         table = Table(title=f"transfers ({data_dir_p.name} / {scen_name})")
         table.add_column("Date")
+        table.add_column("Source")
         table.add_column("From")
         table.add_column("To")
         table.add_column("Amount", justify="right")
         table.add_column("Tax")
         table.add_column("Description")
 
+        rows: list[tuple[str, ...]] = []
         for row in con.execute(
             "SELECT ce.date, ce.amount, "
             "       COALESCE(ce.tax_character, '') AS tax_character, "
@@ -2118,15 +2121,40 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
             "LEFT JOIN account_model_member m2 ON m2.id = c2.lot_id "
             "LEFT JOIN account a2 ON a2.id = c2.account_id "
             "WHERE ce.kind = 'one_off_transfer' "
-            "ORDER BY ce.date"
         ):
-            amt = _fmt_cents(row["amount"]).strip() if row["amount"] is not None else ""
-            table.add_row(
-                row["date"],
+            rows.append((
+                row["date"], "calendar",
                 _account_with_lot(row["name_1"], row["subkind_1"], row["lot_1"]),
                 _account_with_lot(row["name_2"], row["subkind_2"], row["lot_2"]),
+                _fmt_cents(row["amount"]).strip() if row["amount"] is not None else "",
+                row["tax_character"], row["description"],
+            ))
+        for row in con.execute(
+            "SELECT s.start AS date, s.amount_cents, s.amount_rule_kind, s.tax_character, "
+            "       COALESCE(s.description, s.name) AS description, "
+            "       c1.name AS chain_1, a1.name AS name_1, a1.subkind AS subkind_1, m1.lot AS lot_1, "
+            "       c2.name AS chain_2, a2.name AS name_2, a2.subkind AS subkind_2, m2.lot AS lot_2 "
+            "FROM scheduled_transaction s "
+            "JOIN chain c1 ON c1.id = s.from_account "
+            "LEFT JOIN account_model_member m1 ON m1.id = c1.lot_id "
+            "LEFT JOIN account a1 ON a1.id = c1.account_id "
+            "JOIN chain c2 ON c2.id = s.to_account "
+            "LEFT JOIN account_model_member m2 ON m2.id = c2.lot_id "
+            "LEFT JOIN account a2 ON a2.id = c2.account_id "
+            "WHERE s.cadence = 'one_off' AND s.created_by_event_id IS NULL"
+        ):
+            if row["amount_cents"] is not None:
+                amt = _fmt_cents(row["amount_cents"]).strip()
+            else:
+                amt = row["amount_rule_kind"]
+            rows.append((
+                row["date"], "scheduled",
+                _account_with_lot(row["name_1"] or row["chain_1"], row["subkind_1"], row["lot_1"]),
+                _account_with_lot(row["name_2"] or row["chain_2"], row["subkind_2"], row["lot_2"]),
                 amt, row["tax_character"], row["description"],
-            )
+            ))
+        for record in sorted(rows, key=lambda r: (r[0], r[1])):
+            table.add_row(*record)
 
     Console().print(table)
 
