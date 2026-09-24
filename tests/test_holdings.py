@@ -40,9 +40,10 @@ def test_account_holdings_lists_each_lot_at_the_final_month(two_lot_run: RunConn
     assert list(frame["symbol"]) == ["AAA", "BBB"]
     assert frame["as_of"].nunique() == 1 and frame["as_of"].iloc[0] == holding_months(two_lot_run)[-1]
     a = frame.set_index("lot").loc["a"]
-    assert a["quantity"] == 1000.0
-    assert a["price"] == pytest.approx(a["balance"] / 1000)
-    assert a["unrealized_gain"] == pytest.approx(a["balance"] - 60_000.0)
+    assert a["quantity"] > 1000.0  # the 2029 inheritance bought more shares
+    assert a["price"] == pytest.approx(a["balance"] / a["quantity"])
+    assert a["cost_basis"] == 110_000.0  # $60,000 plus the $50,000 inheritance
+    assert a["unrealized_gain"] == pytest.approx(a["balance"] - 110_000.0)
 
 
 def test_totals_add_lots_and_lose_basis_if_any_is_unknown() -> None:
@@ -183,7 +184,7 @@ def test_symbol_holders_view_totals_quantity(two_lot_run: RunConnection) -> None
     assert heading.startswith("**AAA** (Alpha Growth Fund) as of ")
     assert table.index[0] == (BROKERAGE, "a")
     assert table.index[-1][0] == "Total"
-    assert table.iloc[-1]["quantity"] == 1000.0
+    assert table.iloc[-1]["quantity"] == table.iloc[0]["quantity"] > 1000.0
 
 
 def test_account_holdings_widget_redraws_when_the_account_or_month_changes(

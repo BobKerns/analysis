@@ -780,7 +780,7 @@
 2029-02-28,Liability_Mortgage,22782348,
 2029-02-28,capital_gains,-5544067,
 2029-02-28,interest_income,-1680564,
-2029-03-31,Asset_Brokerage_Joint,40746787,20000000
+2029-03-31,Asset_Brokerage_Joint,40746787,25000000
 2029-03-31,Asset_Checking,22428985,
 2029-03-31,Asset_Home,60000000,40000000
 2029-03-31,Asset_Roth_Alice,10000000,
@@ -803,7 +803,7 @@
 2029-03-31,Liability_Mortgage,22711259,
 2029-03-31,capital_gains,-5746787,
 2029-03-31,interest_income,-1764623,
-2029-04-30,Asset_Brokerage_Joint,40950520,20000000
+2029-04-30,Asset_Brokerage_Joint,40950520,25000000
 2029-04-30,Asset_Checking,22442445,
 2029-04-30,Asset_Home,60000000,40000000
 2029-04-30,Asset_Roth_Alice,10000000,
@@ -826,7 +826,7 @@
 2029-04-30,Liability_Mortgage,22639815,
 2029-04-30,capital_gains,-5950520,
 2029-04-30,interest_income,-1848731,
-2029-05-31,Asset_Brokerage_Joint,41155272,20000000
+2029-05-31,Asset_Brokerage_Joint,41155272,25000000
 2029-05-31,Asset_Checking,22456194,
 2029-05-31,Asset_Home,60000000,40000000
 2029-05-31,Asset_Roth_Alice,10000000,
@@ -849,7 +849,7 @@
 2029-05-31,Liability_Mortgage,22568014,
 2029-05-31,capital_gains,-6155272,
 2029-05-31,interest_income,-1932890,
-2029-06-30,Asset_Brokerage_Joint,41361048,20000000
+2029-06-30,Asset_Brokerage_Joint,41361048,25000000
 2029-06-30,Asset_Checking,22470232,
 2029-06-30,Asset_Home,60000000,40000000
 2029-06-30,Asset_Roth_Alice,10000000,
@@ -872,7 +872,7 @@
 2029-06-30,Liability_Mortgage,22495854,
 2029-06-30,capital_gains,-6361048,
 2029-06-30,interest_income,-2017100,
-2029-07-31,Asset_Brokerage_Joint,41567853,20000000
+2029-07-31,Asset_Brokerage_Joint,41567853,25000000
 2029-07-31,Asset_Checking,22484563,
 2029-07-31,Asset_Home,60000000,40000000
 2029-07-31,Asset_Roth_Alice,10000000,
@@ -895,7 +895,7 @@
 2029-07-31,Liability_Mortgage,22423333,
 2029-07-31,capital_gains,-6567853,
 2029-07-31,interest_income,-2101363,
-2029-08-31,Asset_Brokerage_Joint,41775692,20000000
+2029-08-31,Asset_Brokerage_Joint,41775692,25000000
 2029-08-31,Asset_Checking,22499188,
 2029-08-31,Asset_Home,60000000,40000000
 2029-08-31,Asset_Roth_Alice,10000000,
@@ -918,7 +918,7 @@
 2029-08-31,Liability_Mortgage,22350449,
 2029-08-31,capital_gains,-6775692,
 2029-08-31,interest_income,-2185680,
-2029-09-30,Asset_Brokerage_Joint,41984570,20000000
+2029-09-30,Asset_Brokerage_Joint,41984570,25000000
 2029-09-30,Asset_Checking,22514106,
 2029-09-30,Asset_Home,60000000,40000000
 2029-09-30,Asset_Roth_Alice,10000000,
@@ -941,7 +941,7 @@
 2029-09-30,Liability_Mortgage,22277201,
 2029-09-30,capital_gains,-6984570,
 2029-09-30,interest_income,-2270051,
-2029-10-31,Asset_Brokerage_Joint,42194492,20000000
+2029-10-31,Asset_Brokerage_Joint,42194492,25000000
 2029-10-31,Asset_Checking,22529321,
 2029-10-31,Asset_Home,60000000,40000000
 2029-10-31,Asset_Roth_Alice,10000000,
@@ -964,7 +964,7 @@
 2029-10-31,Liability_Mortgage,22203587,
 2029-10-31,capital_gains,-7194492,
 2029-10-31,interest_income,-2354478,
-2029-11-30,Asset_Brokerage_Joint,42405464,20000000
+2029-11-30,Asset_Brokerage_Joint,42405464,25000000
 2029-11-30,Asset_Checking,22544835,
 2029-11-30,Asset_Home,60000000,40000000
 2029-11-30,Asset_Roth_Alice,10000000,
@@ -987,7 +987,7 @@
 2029-11-30,Liability_Mortgage,22129604,
 2029-11-30,capital_gains,-7405464,
 2029-11-30,interest_income,-2438962,
-2029-12-31,Asset_Brokerage_Joint,42617491,20000000
+2029-12-31,Asset_Brokerage_Joint,42617491,25000000
 2029-12-31,Asset_Checking,22560650,
 2029-12-31,Asset_Home,60000000,40000000
 2029-12-31,Asset_Roth_Alice,10000000,
@@ -1010,7 +1010,7 @@
 2029-12-31,Liability_Mortgage,22055252,
 2029-12-31,capital_gains,-7617491,
 2029-12-31,interest_income,-2523505,
-2030-01-31,Asset_Brokerage_Joint,42830578,20000000
+2030-01-31,Asset_Brokerage_Joint,42830578,25000000
 2030-01-31,Asset_Checking,22576766,
 2030-01-31,Asset_Home,60000000,40000000
 2030-01-31,Asset_Roth_Alice,10000000,
@@ -1033,7 +1033,7 @@
 2030-01-31,Liability_Mortgage,21980528,
 2030-01-31,capital_gains,-7830578,
 2030-01-31,interest_income,-2608107,
-2030-02-28,Asset_Brokerage_Joint,43044730,20000000
+2030-02-28,Asset_Brokerage_Joint,43044730,25000000
 2030-02-28,Asset_Checking,22593184,
 2030-02-28,Asset_Home,60000000,40000000
 2030-02-28,Asset_Roth_Alice,10000000,
@@ -1056,7 +1056,7 @@
 2030-02-28,Liability_Mortgage,21905430,
 2030-02-28,capital_gains,-8044730,
 2030-02-28,interest_income,-2692769,
-2030-03-31,Asset_Brokerage_Joint,43259953,20000000
+2030-03-31,Asset_Brokerage_Joint,43259953,25000000
 2030-03-31,Asset_Checking,22609907,
 2030-03-31,Asset_Home,60000000,40000000
 2030-03-31,Asset_Roth_Alice,10000000,
@@ -1079,7 +1079,7 @@
 2030-03-31,Liability_Mortgage,21829957,
 2030-03-31,capital_gains,-8259953,
 2030-03-31,interest_income,-2777493,
-2030-04-30,Asset_Brokerage_Joint,43476252,20000000
+2030-04-30,Asset_Brokerage_Joint,43476252,25000000
 2030-04-30,Asset_Checking,22626938,
 2030-04-30,Asset_Home,60000000,40000000
 2030-04-30,Asset_Roth_Alice,10000000,
@@ -1102,7 +1102,7 @@
 2030-04-30,Liability_Mortgage,21754106,
 2030-04-30,capital_gains,-8476252,
 2030-04-30,interest_income,-2862280,
-2030-05-31,Asset_Brokerage_Joint,43693633,20000000
+2030-05-31,Asset_Brokerage_Joint,43693633,25000000
 2030-05-31,Asset_Checking,22644277,
 2030-05-31,Asset_Home,60000000,40000000
 2030-05-31,Asset_Roth_Alice,10000000,
@@ -1125,7 +1125,7 @@
 2030-05-31,Liability_Mortgage,21677876,
 2030-05-31,capital_gains,-8693633,
 2030-05-31,interest_income,-2947131,
-2030-06-30,Asset_Brokerage_Joint,43912101,20000000
+2030-06-30,Asset_Brokerage_Joint,43912101,25000000
 2030-06-30,Asset_Checking,22661925,
 2030-06-30,Asset_Home,60000000,40000000
 2030-06-30,Asset_Roth_Alice,10000000,
@@ -1148,7 +1148,7 @@
 2030-06-30,Liability_Mortgage,21601265,
 2030-06-30,capital_gains,-8912101,
 2030-06-30,interest_income,-3032047,
-2030-07-31,Asset_Brokerage_Joint,44131661,20000000
+2030-07-31,Asset_Brokerage_Joint,44131661,25000000
 2030-07-31,Asset_Checking,22679884,
 2030-07-31,Asset_Home,60000000,40000000
 2030-07-31,Asset_Roth_Alice,10000000,
@@ -1171,7 +1171,7 @@
 2030-07-31,Liability_Mortgage,21524271,
 2030-07-31,capital_gains,-9131661,
 2030-07-31,interest_income,-3117029,
-2030-08-31,Asset_Brokerage_Joint,44352319,20000000
+2030-08-31,Asset_Brokerage_Joint,44352319,25000000
 2030-08-31,Asset_Checking,22698156,
 2030-08-31,Asset_Home,60000000,40000000
 2030-08-31,Asset_Roth_Alice,10000000,
@@ -1194,7 +1194,7 @@
 2030-08-31,Liability_Mortgage,21446892,
 2030-08-31,capital_gains,-9352319,
 2030-08-31,interest_income,-3202078,
-2030-09-30,Asset_Brokerage_Joint,44574080,20000000
+2030-09-30,Asset_Brokerage_Joint,44574080,25000000
 2030-09-30,Asset_Checking,22716743,
 2030-09-30,Asset_Home,60000000,40000000
 2030-09-30,Asset_Roth_Alice,10000000,
@@ -1217,7 +1217,7 @@
 2030-09-30,Liability_Mortgage,21369126,
 2030-09-30,capital_gains,-9574080,
 2030-09-30,interest_income,-3287196,
-2030-10-31,Asset_Brokerage_Joint,44796950,20000000
+2030-10-31,Asset_Brokerage_Joint,44796950,25000000
 2030-10-31,Asset_Checking,22735646,
 2030-10-31,Asset_Home,60000000,40000000
 2030-10-31,Asset_Roth_Alice,10000000,
@@ -1240,7 +1240,7 @@
 2030-10-31,Liability_Mortgage,21290971,
 2030-10-31,capital_gains,-9796950,
 2030-10-31,interest_income,-3372383,
-2030-11-30,Asset_Brokerage_Joint,45020934,20000000
+2030-11-30,Asset_Brokerage_Joint,45020934,25000000
 2030-11-30,Asset_Checking,22754867,
 2030-11-30,Asset_Home,60000000,40000000
 2030-11-30,Asset_Roth_Alice,10000000,
@@ -1263,7 +1263,7 @@
 2030-11-30,Liability_Mortgage,21212425,
 2030-11-30,capital_gains,-10020934,
 2030-11-30,interest_income,-3457641,
-2030-12-31,Asset_Brokerage_Joint,45246038,20000000
+2030-12-31,Asset_Brokerage_Joint,45246038,25000000
 2030-12-31,Asset_Checking,22774408,
 2030-12-31,Asset_Home,60000000,40000000
 2030-12-31,Asset_Roth_Alice,10000000,
@@ -1286,7 +1286,7 @@
 2030-12-31,Liability_Mortgage,21133487,
 2030-12-31,capital_gains,-10246038,
 2030-12-31,interest_income,-3542971,
-2031-01-31,Asset_Brokerage_Joint,45472268,20000000
+2031-01-31,Asset_Brokerage_Joint,45472268,25000000
 2031-01-31,Asset_Checking,21951586,
 2031-01-31,Asset_Home,60000000,40000000
 2031-01-31,Asset_Roth_Alice,10000000,
@@ -1309,7 +1309,7 @@
 2031-01-31,Liability_Mortgage,21054154,
 2031-01-31,capital_gains,-10472268,
 2031-01-31,interest_income,-3628375,
-2031-02-28,Asset_Brokerage_Joint,45699629,20000000
+2031-02-28,Asset_Brokerage_Joint,45699629,25000000
 2031-02-28,Asset_Checking,21124172,
 2031-02-28,Asset_Home,60000000,40000000
 2031-02-28,Asset_Roth_Alice,10000000,
@@ -1332,7 +1332,7 @@
 2031-02-28,Liability_Mortgage,20974424,
 2031-02-28,capital_gains,-10699629,
 2031-02-28,interest_income,-3710693,
-2031-03-31,Asset_Brokerage_Joint,45928127,20000000
+2031-03-31,Asset_Brokerage_Joint,45928127,25000000
 2031-03-31,Asset_Checking,20292146,
 2031-03-31,Asset_Home,60000000,40000000
 2031-03-31,Asset_Roth_Alice,10000000,
@@ -1355,7 +1355,7 @@
 2031-03-31,Liability_Mortgage,20894296,
 2031-03-31,capital_gains,-10928127,
 2031-03-31,interest_income,-3789908,
-2031-04-30,Asset_Brokerage_Joint,46157767,20000000
+2031-04-30,Asset_Brokerage_Joint,46157767,25000000
 2031-04-30,Asset_Checking,19455487,
 2031-04-30,Asset_Home,60000000,40000000
 2031-04-30,Asset_Roth_Alice,10000000,
@@ -1378,7 +1378,7 @@
 2031-04-30,Liability_Mortgage,20813767,
 2031-04-30,capital_gains,-11157767,
 2031-04-30,interest_income,-3866003,
-2031-05-31,Asset_Brokerage_Joint,46388555,20000000
+2031-05-31,Asset_Brokerage_Joint,46388555,25000000
 2031-05-31,Asset_Checking,18614176,
 2031-05-31,Asset_Home,60000000,40000000
 2031-05-31,Asset_Roth_Alice,10000000,
@@ -1401,7 +1401,7 @@
 2031-05-31,Liability_Mortgage,20732835,
 2031-05-31,capital_gains,-11388555,
 2031-05-31,interest_income,-3938961,
-2031-06-30,Asset_Brokerage_Joint,46620497,20000000
+2031-06-30,Asset_Brokerage_Joint,46620497,25000000
 2031-06-30,Asset_Checking,17768190,
 2031-06-30,Asset_Home,60000000,40000000
 2031-06-30,Asset_Roth_Alice,10000000,
@@ -1424,7 +1424,7 @@
 2031-06-30,Liability_Mortgage,20651499,
 2031-06-30,capital_gains,-11620497,
 2031-06-30,interest_income,-4008764,
-2031-07-31,Asset_Brokerage_Joint,46853599,20000000
+2031-07-31,Asset_Brokerage_Joint,46853599,25000000
 2031-07-31,Asset_Checking,16917510,
 2031-07-31,Asset_Home,60000000,40000000
 2031-07-31,Asset_Roth_Alice,10000000,
@@ -1447,7 +1447,7 @@
 2031-07-31,Liability_Mortgage,20569756,
 2031-07-31,capital_gains,-11853599,
 2031-07-31,interest_income,-4075394,
-2031-08-31,Asset_Brokerage_Joint,47087866,20000000
+2031-08-31,Asset_Brokerage_Joint,47087866,25000000
 2031-08-31,Asset_Checking,16062113,
 2031-08-31,Asset_Home,60000000,40000000
 2031-08-31,Asset_Roth_Alice,10000000,
@@ -1470,7 +1470,7 @@
 2031-08-31,Liability_Mortgage,20487604,
 2031-08-31,capital_gains,-12087866,
 2031-08-31,interest_income,-4138834,
-2031-09-30,Asset_Brokerage_Joint,47323305,20000000
+2031-09-30,Asset_Brokerage_Joint,47323305,25000000
 2031-09-30,Asset_Checking,15201979,
 2031-09-30,Asset_Home,60000000,40000000
 2031-09-30,Asset_Roth_Alice,10000000,
@@ -1493,7 +1493,7 @@
 2031-09-30,Liability_Mortgage,20405042,
 2031-09-30,capital_gains,-12323305,
 2031-09-30,interest_income,-4199066,
-2031-10-31,Asset_Brokerage_Joint,47559921,20000000
+2031-10-31,Asset_Brokerage_Joint,47559921,25000000
 2031-10-31,Asset_Checking,14337089,
 2031-10-31,Asset_Home,60000000,40000000
 2031-10-31,Asset_Roth_Alice,10000000,
@@ -1516,7 +1516,7 @@
 2031-10-31,Liability_Mortgage,20322067,
 2031-10-31,capital_gains,-12559921,
 2031-10-31,interest_income,-4256073,
-2031-11-30,Asset_Brokerage_Joint,47797720,20000000
+2031-11-30,Asset_Brokerage_Joint,47797720,25000000
 2031-11-30,Asset_Checking,13467421,
 2031-11-30,Asset_Home,60000000,40000000
 2031-11-30,Asset_Roth_Alice,10000000,
@@ -1539,7 +1539,7 @@
 2031-11-30,Liability_Mortgage,20238677,
 2031-11-30,capital_gains,-12797720,
 2031-11-30,interest_income,-4309837,
-2031-12-31,Asset_Brokerage_Joint,48036708,20000000
+2031-12-31,Asset_Brokerage_Joint,48036708,25000000
 2031-12-31,Asset_Checking,12592953,
 2031-12-31,Asset_Home,60000000,40000000
 2031-12-31,Asset_Roth_Alice,10000000,
@@ -1562,7 +1562,7 @@
 2031-12-31,Liability_Mortgage,20154870,
 2031-12-31,capital_gains,-13036708,
 2031-12-31,interest_income,-4360339,
-2032-01-31,Asset_Brokerage_Joint,48276891,20000000
+2032-01-31,Asset_Brokerage_Joint,48276891,25000000
 2032-01-31,Asset_Checking,11713664,
 2032-01-31,Asset_Home,60000000,40000000
 2032-01-31,Asset_Roth_Alice,10000000,
@@ -1585,7 +1585,7 @@
 2032-01-31,Liability_Mortgage,20070644,
 2032-01-31,capital_gains,-13276891,
 2032-01-31,interest_income,-4407562,
-2032-02-29,Asset_Brokerage_Joint,48518275,20000000
+2032-02-29,Asset_Brokerage_Joint,48518275,25000000
 2032-02-29,Asset_Checking,10829534,
 2032-02-29,Asset_Home,60000000,40000000
 2032-02-29,Asset_Roth_Alice,10000000,
@@ -1608,7 +1608,7 @@
 2032-02-29,Liability_Mortgage,19985997,
 2032-02-29,capital_gains,-13518275,
 2032-02-29,interest_income,-4451488,
-2032-03-31,Asset_Brokerage_Joint,48760866,20000000
+2032-03-31,Asset_Brokerage_Joint,48760866,25000000
 2032-03-31,Asset_Checking,10240541,
 2032-03-31,Asset_Home,60000000,40000000
 2032-03-31,Asset_Roth_Alice,10000000,
@@ -1631,7 +1631,7 @@
 2032-03-31,Liability_Mortgage,19900926,
 2032-03-31,capital_gains,-13760866,
 2032-03-31,interest_income,-4492098,
-2032-04-30,Asset_Brokerage_Joint,49004670,20000000
+2032-04-30,Asset_Brokerage_Joint,49004670,25000000
 2032-04-30,Asset_Checking,9647789,
 2032-04-30,Asset_Home,60000000,40000000
 2032-04-30,Asset_Roth_Alice,10000000,
@@ -1654,7 +1654,7 @@
 2032-04-30,Liability_Mortgage,19815430,
 2032-04-30,capital_gains,-14004670,
 2032-04-30,interest_income,-4530500,
-2032-05-31,Asset_Brokerage_Joint,49249693,20000000
+2032-05-31,Asset_Brokerage_Joint,49249693,25000000
 2032-05-31,Asset_Checking,9051259,
 2032-05-31,Asset_Home,60000000,40000000
 2032-05-31,Asset_Roth_Alice,10000000,
@@ -1677,7 +1677,7 @@
 2032-05-31,Liability_Mortgage,19729507,
 2032-05-31,capital_gains,-14249693,
 2032-05-31,interest_income,-4566679,
-2032-06-30,Asset_Brokerage_Joint,49495941,20000000
+2032-06-30,Asset_Brokerage_Joint,49495941,25000000
 2032-06-30,Asset_Checking,8450935,
 2032-06-30,Asset_Home,60000000,40000000
 2032-06-30,Asset_Roth_Alice,10000000,
@@ -1700,7 +1700,7 @@
 2032-06-30,Liability_Mortgage,19643154,
 2032-06-30,capital_gains,-14495941,
 2032-06-30,interest_income,-4600621,
-2032-07-31,Asset_Brokerage_Joint,49743420,20000000
+2032-07-31,Asset_Brokerage_Joint,49743420,25000000
 2032-07-31,Asset_Checking,7846800,
 2032-07-31,Asset_Home,60000000,40000000
 2032-07-31,Asset_Roth_Alice,10000000,
@@ -1723,7 +1723,7 @@
 2032-07-31,Liability_Mortgage,19556369,
 2032-07-31,capital_gains,-14743420,
 2032-07-31,interest_income,-4632312,
-2032-08-31,Asset_Brokerage_Joint,49992137,20000000
+2032-08-31,Asset_Brokerage_Joint,49992137,25000000
 2032-08-31,Asset_Checking,7238834,
 2032-08-31,Asset_Home,60000000,40000000
 2032-08-31,Asset_Roth_Alice,10000000,
@@ -1746,7 +1746,7 @@
 2032-08-31,Liability_Mortgage,19469150,
 2032-08-31,capital_gains,-14992137,
 2032-08-31,interest_income,-4661737,
-2032-09-30,Asset_Brokerage_Joint,50242097,20000000
+2032-09-30,Asset_Brokerage_Joint,50242097,25000000
 2032-09-30,Asset_Checking,6627021,
 2032-09-30,Asset_Home,60000000,40000000
 2032-09-30,Asset_Roth_Alice,10000000,
@@ -1769,7 +1769,7 @@
 2032-09-30,Liability_Mortgage,19381495,
 2032-09-30,capital_gains,-15242097,
 2032-09-30,interest_income,-4688882,
-2032-10-31,Asset_Brokerage_Joint,50493307,20000000
+2032-10-31,Asset_Brokerage_Joint,50493307,25000000
 2032-10-31,Asset_Checking,6011343,
 2032-10-31,Asset_Home,60000000,40000000
 2032-10-31,Asset_Roth_Alice,10000000,
@@ -1792,7 +1792,7 @@
 2032-10-31,Liability_Mortgage,19293402,
 2032-10-31,capital_gains,-15493307,
 2032-10-31,interest_income,-4713733,
-2032-11-30,Asset_Brokerage_Joint,50745773,20000000
+2032-11-30,Asset_Brokerage_Joint,50745773,25000000
 2032-11-30,Asset_Checking,5391783,
 2032-11-30,Asset_Home,60000000,40000000
 2032-11-30,Asset_Roth_Alice,10000000,
@@ -1815,7 +1815,7 @@
 2032-11-30,Liability_Mortgage,19204869,
 2032-11-30,capital_gains,-15745773,
 2032-11-30,interest_income,-4736275,
-2032-12-31,Asset_Brokerage_Joint,50999501,20000000
+2032-12-31,Asset_Brokerage_Joint,50999501,25000000
 2032-12-31,Asset_Checking,4768323,
 2032-12-31,Asset_Home,60000000,40000000
 2032-12-31,Asset_Roth_Alice,10000000,
@@ -1838,7 +1838,7 @@
 2032-12-31,Liability_Mortgage,19115893,
 2032-12-31,capital_gains,-15999501,
 2032-12-31,interest_income,-4756494,
-2033-01-31,Asset_Brokerage_Joint,51254498,20000000
+2033-01-31,Asset_Brokerage_Joint,51254498,25000000
 2033-01-31,Asset_Checking,4148444,
 2033-01-31,Asset_Home,60000000,40000000
 2033-01-31,Asset_Roth_Alice,10000000,
@@ -1861,7 +1861,7 @@
 2033-01-31,Liability_Mortgage,19026472,
 2033-01-31,capital_gains,-16254498,
 2033-01-31,interest_income,-4774375,
-2033-02-28,Asset_Brokerage_Joint,51510770,20000000
+2033-02-28,Asset_Brokerage_Joint,51510770,25000000
 2033-02-28,Asset_Checking,3524656,
 2033-02-28,Asset_Home,60000000,40000000
 2033-02-28,Asset_Roth_Alice,10000000,
@@ -1884,7 +1884,7 @@
 2033-02-28,Liability_Mortgage,18936604,
 2033-02-28,capital_gains,-16510770,
 2033-02-28,interest_income,-4789931,
-2033-03-31,Asset_Brokerage_Joint,51768323,20000000
+2033-03-31,Asset_Brokerage_Joint,51768323,25000000
 2033-03-31,Asset_Checking,2896943,
 2033-03-31,Asset_Home,60000000,40000000
 2033-03-31,Asset_Roth_Alice,10000000,
@@ -1907,7 +1907,7 @@
 2033-03-31,Liability_Mortgage,18846287,
 2033-03-31,capital_gains,-16768323,
 2033-03-31,interest_income,-4803148,
-2033-04-30,Asset_Brokerage_Joint,52027164,20000000
+2033-04-30,Asset_Brokerage_Joint,52027164,25000000
 2033-04-30,Asset_Checking,2265287,
 2033-04-30,Asset_Home,60000000,40000000
 2033-04-30,Asset_Roth_Alice,10000000,
@@ -1930,7 +1930,7 @@
 2033-04-30,Liability_Mortgage,18755518,
 2033-04-30,capital_gains,-17027164,
 2033-04-30,interest_income,-4814011,
-2033-05-31,Asset_Brokerage_Joint,52287299,20000000
+2033-05-31,Asset_Brokerage_Joint,52287299,25000000
 2033-05-31,Asset_Checking,1629668,
 2033-05-31,Asset_Home,60000000,40000000
 2033-05-31,Asset_Roth_Alice,10000000,
@@ -1953,7 +1953,7 @@
 2033-05-31,Liability_Mortgage,18664295,
 2033-05-31,capital_gains,-17287299,
 2033-05-31,interest_income,-4822505,
-2033-06-30,Asset_Brokerage_Joint,52548735,20000000
+2033-06-30,Asset_Brokerage_Joint,52548735,25000000
 2033-06-30,Asset_Checking,990069,
 2033-06-30,Asset_Home,60000000,40000000
 2033-06-30,Asset_Roth_Alice,10000000,
@@ -1976,7 +1976,7 @@
 2033-06-30,Liability_Mortgage,18572616,
 2033-06-30,capital_gains,-17548735,
 2033-06-30,interest_income,-4828616,
-2033-07-31,Asset_Brokerage_Joint,52811478,20000000
+2033-07-31,Asset_Brokerage_Joint,52811478,25000000
 2033-07-31,Asset_Checking,346470,
 2033-07-31,Asset_Home,60000000,40000000
 2033-07-31,Asset_Roth_Alice,10000000,
@@ -1999,7 +1999,7 @@
 2033-07-31,Liability_Mortgage,18480479,
 2033-07-31,capital_gains,-17811478,
 2033-07-31,interest_income,-4832328,
-2033-08-31,Asset_Brokerage_Joint,53075535,20000000
+2033-08-31,Asset_Brokerage_Joint,53075535,25000000
 2033-08-31,Asset_Checking,322500,
 2033-08-31,Asset_Home,60000000,40000000
 2033-08-31,Asset_Roth_Alice,10000000,
@@ -2022,7 +2022,7 @@
 2033-08-31,Liability_Mortgage,18387881,
 2033-08-31,capital_gains,-18075535,
 2033-08-31,interest_income,-4833627,
-2033-09-30,Asset_Brokerage_Joint,53340912,20000000
+2033-09-30,Asset_Brokerage_Joint,53340912,25000000
 2033-09-30,Asset_Checking,322500,
 2033-09-30,Asset_Home,60000000,40000000
 2033-09-30,Asset_Roth_Alice,10000000,
@@ -2045,7 +2045,7 @@
 2033-09-30,Liability_Mortgage,18294820,
 2033-09-30,capital_gains,-18340912,
 2033-09-30,interest_income,-4834836,
-2033-10-31,Asset_Brokerage_Joint,53607616,20000000
+2033-10-31,Asset_Brokerage_Joint,53607616,25000000
 2033-10-31,Asset_Checking,322500,
 2033-10-31,Asset_Home,60000000,40000000
 2033-10-31,Asset_Roth_Alice,10000000,
@@ -2068,7 +2068,7 @@
 2033-10-31,Liability_Mortgage,18201294,
 2033-10-31,capital_gains,-18607616,
 2033-10-31,interest_income,-4836045,
-2033-11-30,Asset_Brokerage_Joint,53875654,20000000
+2033-11-30,Asset_Brokerage_Joint,53875654,25000000
 2033-11-30,Asset_Checking,322500,
 2033-11-30,Asset_Home,60000000,40000000
 2033-11-30,Asset_Roth_Alice,10000000,
@@ -2091,7 +2091,7 @@
 2033-11-30,Liability_Mortgage,18107300,
 2033-11-30,capital_gains,-18875654,
 2033-11-30,interest_income,-4837254,
-2033-12-31,Asset_Brokerage_Joint,54145032,20000000
+2033-12-31,Asset_Brokerage_Joint,54145032,25000000
 2033-12-31,Asset_Checking,322500,
 2033-12-31,Asset_Home,60000000,40000000
 2033-12-31,Asset_Roth_Alice,10000000,
@@ -2114,7 +2114,7 @@
 2033-12-31,Liability_Mortgage,18012836,
 2033-12-31,capital_gains,-19145032,
 2033-12-31,interest_income,-4838463,
-2034-01-31,Asset_Brokerage_Joint,54415757,20000000
+2034-01-31,Asset_Brokerage_Joint,54415757,25000000
 2034-01-31,Asset_Checking,330187,
 2034-01-31,Asset_Home,60000000,40000000
 2034-01-31,Asset_Roth_Alice,10000000,
@@ -2137,7 +2137,7 @@
 2034-01-31,Liability_Mortgage,17917900,
 2034-01-31,capital_gains,-19415757,
 2034-01-31,interest_income,-4839672,
-2034-02-28,Asset_Brokerage_Joint,54687835,20000000
+2034-02-28,Asset_Brokerage_Joint,54687835,25000000
 2034-02-28,Asset_Checking,330187,
 2034-02-28,Asset_Home,60000000,40000000
 2034-02-28,Asset_Roth_Alice,10000000,
@@ -2160,7 +2160,7 @@
 2034-02-28,Liability_Mortgage,17822489,
 2034-02-28,capital_gains,-19687835,
 2034-02-28,interest_income,-4840910,
-2034-03-31,Asset_Brokerage_Joint,54961274,20000000
+2034-03-31,Asset_Brokerage_Joint,54961274,25000000
 2034-03-31,Asset_Checking,330187,
 2034-03-31,Asset_Home,60000000,40000000
 2034-03-31,Asset_Roth_Alice,10000000,
@@ -2183,7 +2183,7 @@
 2034-03-31,Liability_Mortgage,17726601,
 2034-03-31,capital_gains,-19961274,
 2034-03-31,interest_income,-4842148,
-2034-04-30,Asset_Brokerage_Joint,55236080,20000000
+2034-04-30,Asset_Brokerage_Joint,55236080,25000000
 2034-04-30,Asset_Checking,330187,
 2034-04-30,Asset_Home,60000000,40000000
 2034-04-30,Asset_Roth_Alice,10000000,
@@ -2206,7 +2206,7 @@
 2034-04-30,Liability_Mortgage,17630234,
 2034-04-30,capital_gains,-20236080,
 2034-04-30,interest_income,-4843386,
-2034-05-31,Asset_Brokerage_Joint,55512260,20000000
+2034-05-31,Asset_Brokerage_Joint,55512260,25000000
 2034-05-31,Asset_Checking,330187,
 2034-05-31,Asset_Home,60000000,40000000
 2034-05-31,Asset_Roth_Alice,10000000,
@@ -2229,7 +2229,7 @@
 2034-05-31,Liability_Mortgage,17533385,
 2034-05-31,capital_gains,-20512260,
 2034-05-31,interest_income,-4844624,
-2034-06-30,Asset_Brokerage_Joint,55789821,20000000
+2034-06-30,Asset_Brokerage_Joint,55789821,25000000
 2034-06-30,Asset_Checking,330187,
 2034-06-30,Asset_Home,60000000,40000000
 2034-06-30,Asset_Roth_Alice,10000000,
@@ -2252,7 +2252,7 @@
 2034-06-30,Liability_Mortgage,17436051,
 2034-06-30,capital_gains,-20789821,
 2034-06-30,interest_income,-4845862,
-2034-07-31,Asset_Brokerage_Joint,56068770,20000000
+2034-07-31,Asset_Brokerage_Joint,56068770,25000000
 2034-07-31,Asset_Checking,330187,
 2034-07-31,Asset_Home,60000000,40000000
 2034-07-31,Asset_Roth_Alice,10000000,
@@ -2275,7 +2275,7 @@
 2034-07-31,Liability_Mortgage,17338231,
 2034-07-31,capital_gains,-21068770,
 2034-07-31,interest_income,-4847100,
-2034-08-31,Asset_Brokerage_Joint,56349113,20000000
+2034-08-31,Asset_Brokerage_Joint,56349113,25000000
 2034-08-31,Asset_Checking,330187,
 2034-08-31,Asset_Home,60000000,40000000
 2034-08-31,Asset_Roth_Alice,10000000,
@@ -2298,7 +2298,7 @@
 2034-08-31,Liability_Mortgage,17239922,
 2034-08-31,capital_gains,-21349113,
 2034-08-31,interest_income,-4848338,
-2034-09-30,Asset_Brokerage_Joint,56630858,20000000
+2034-09-30,Asset_Brokerage_Joint,56630858,25000000
 2034-09-30,Asset_Checking,330187,
 2034-09-30,Asset_Home,60000000,40000000
 2034-09-30,Asset_Roth_Alice,10000000,
@@ -2321,7 +2321,7 @@
 2034-09-30,Liability_Mortgage,17141121,
 2034-09-30,capital_gains,-21630858,
 2034-09-30,interest_income,-4849576,
-2034-10-31,Asset_Brokerage_Joint,56914012,20000000
+2034-10-31,Asset_Brokerage_Joint,56914012,25000000
 2034-10-31,Asset_Checking,330187,
 2034-10-31,Asset_Home,60000000,40000000
 2034-10-31,Asset_Roth_Alice,10000000,
@@ -2344,7 +2344,7 @@
 2034-10-31,Liability_Mortgage,17041826,
 2034-10-31,capital_gains,-21914012,
 2034-10-31,interest_income,-4850814,
-2034-11-30,Asset_Brokerage_Joint,57198582,20000000
+2034-11-30,Asset_Brokerage_Joint,57198582,25000000
 2034-11-30,Asset_Checking,330187,
 2034-11-30,Asset_Home,60000000,40000000
 2034-11-30,Asset_Roth_Alice,10000000,
@@ -2367,7 +2367,7 @@
 2034-11-30,Liability_Mortgage,16942035,
 2034-11-30,capital_gains,-22198582,
 2034-11-30,interest_income,-4852052,
-2034-12-31,Asset_Brokerage_Joint,57484574,20000000
+2034-12-31,Asset_Brokerage_Joint,57484574,25000000
 2034-12-31,Asset_Checking,330187,
 2034-12-31,Asset_Home,60000000,40000000
 2034-12-31,Asset_Roth_Alice,10000000,
@@ -2390,7 +2390,7 @@
 2034-12-31,Liability_Mortgage,16841745,
 2034-12-31,capital_gains,-22484574,
 2034-12-31,interest_income,-4853290,
-2035-01-31,Asset_Brokerage_Joint,57771996,20000000
+2035-01-31,Asset_Brokerage_Joint,57771996,25000000
 2035-01-31,Asset_Checking,338067,
 2035-01-31,Asset_Home,60000000,40000000
 2035-01-31,Asset_Roth_Alice,10000000,
@@ -2413,7 +2413,7 @@
 2035-01-31,Liability_Mortgage,16740953,
 2035-01-31,capital_gains,-22771996,
 2035-01-31,interest_income,-4854528,
-2035-02-28,Asset_Brokerage_Joint,58060855,20000000
+2035-02-28,Asset_Brokerage_Joint,58060855,25000000
 2035-02-28,Asset_Checking,338067,
 2035-02-28,Asset_Home,60000000,40000000
 2035-02-28,Asset_Roth_Alice,10000000,
@@ -2436,7 +2436,7 @@
 2035-02-28,Liability_Mortgage,16639657,
 2035-02-28,capital_gains,-23060855,
 2035-02-28,interest_income,-4855795,
-2035-03-31,Asset_Brokerage_Joint,58351159,20000000
+2035-03-31,Asset_Brokerage_Joint,58351159,25000000
 2035-03-31,Asset_Checking,338067,
 2035-03-31,Asset_Home,60000000,40000000
 2035-03-31,Asset_Roth_Alice,10000000,
@@ -2459,7 +2459,7 @@
 2035-03-31,Liability_Mortgage,16537855,
 2035-03-31,capital_gains,-23351159,
 2035-03-31,interest_income,-4857062,
-2035-04-30,Asset_Brokerage_Joint,58642914,20000000
+2035-04-30,Asset_Brokerage_Joint,58642914,25000000
 2035-04-30,Asset_Checking,338067,
 2035-04-30,Asset_Home,60000000,40000000
 2035-04-30,Asset_Roth_Alice,10000000,
@@ -2482,7 +2482,7 @@
 2035-04-30,Liability_Mortgage,16435544,
 2035-04-30,capital_gains,-23642914,
 2035-04-30,interest_income,-4858329,
-2035-05-31,Asset_Brokerage_Joint,58936128,20000000
+2035-05-31,Asset_Brokerage_Joint,58936128,25000000
 2035-05-31,Asset_Checking,338067,
 2035-05-31,Asset_Home,60000000,40000000
 2035-05-31,Asset_Roth_Alice,10000000,
@@ -2505,7 +2505,7 @@
 2035-05-31,Liability_Mortgage,16332721,
 2035-05-31,capital_gains,-23936128,
 2035-05-31,interest_income,-4859596,
-2035-06-30,Asset_Brokerage_Joint,59230808,20000000
+2035-06-30,Asset_Brokerage_Joint,59230808,25000000
 2035-06-30,Asset_Checking,338067,
 2035-06-30,Asset_Home,60000000,40000000
 2035-06-30,Asset_Roth_Alice,10000000,
@@ -2528,7 +2528,7 @@
 2035-06-30,Liability_Mortgage,16229384,
 2035-06-30,capital_gains,-24230808,
 2035-06-30,interest_income,-4860863,
-2035-07-31,Asset_Brokerage_Joint,59526962,20000000
+2035-07-31,Asset_Brokerage_Joint,59526962,25000000
 2035-07-31,Asset_Checking,338067,
 2035-07-31,Asset_Home,60000000,40000000
 2035-07-31,Asset_Roth_Alice,10000000,
@@ -2551,7 +2551,7 @@
 2035-07-31,Liability_Mortgage,16125530,
 2035-07-31,capital_gains,-24526962,
 2035-07-31,interest_income,-4862130,
-2035-08-31,Asset_Brokerage_Joint,59824596,20000000
+2035-08-31,Asset_Brokerage_Joint,59824596,25000000
 2035-08-31,Asset_Checking,338067,
 2035-08-31,Asset_Home,60000000,40000000
 2035-08-31,Asset_Roth_Alice,10000000,
@@ -2574,7 +2574,7 @@
 2035-08-31,Liability_Mortgage,16021157,
 2035-08-31,capital_gains,-24824596,
 2035-08-31,interest_income,-4863397,
-2035-09-30,Asset_Brokerage_Joint,60123718,20000000
+2035-09-30,Asset_Brokerage_Joint,60123718,25000000
 2035-09-30,Asset_Checking,338067,
 2035-09-30,Asset_Home,60000000,40000000
 2035-09-30,Asset_Roth_Alice,10000000,
@@ -2597,7 +2597,7 @@
 2035-09-30,Liability_Mortgage,15916262,
 2035-09-30,capital_gains,-25123718,
 2035-09-30,interest_income,-4864664,
-2035-10-31,Asset_Brokerage_Joint,60424336,20000000
+2035-10-31,Asset_Brokerage_Joint,60424336,25000000
 2035-10-31,Asset_Checking,338067,
 2035-10-31,Asset_Home,60000000,40000000
 2035-10-31,Asset_Roth_Alice,10000000,
@@ -2620,7 +2620,7 @@
 2035-10-31,Liability_Mortgage,15810843,
 2035-10-31,capital_gains,-25424336,
 2035-10-31,interest_income,-4865931,
-2035-11-30,Asset_Brokerage_Joint,60726457,20000000
+2035-11-30,Asset_Brokerage_Joint,60726457,25000000
 2035-11-30,Asset_Checking,338067,
 2035-11-30,Asset_Home,60000000,40000000
 2035-11-30,Asset_Roth_Alice,10000000,
@@ -2643,7 +2643,7 @@
 2035-11-30,Liability_Mortgage,15704897,
 2035-11-30,capital_gains,-25726457,
 2035-11-30,interest_income,-4867198,
-2035-12-31,Asset_Brokerage_Joint,61030089,20000000
+2035-12-31,Asset_Brokerage_Joint,61030089,25000000
 2035-12-31,Asset_Checking,338067,
 2035-12-31,Asset_Home,60000000,40000000
 2035-12-31,Asset_Roth_Alice,10000000,
@@ -2666,7 +2666,7 @@
 2035-12-31,Liability_Mortgage,15598421,
 2035-12-31,capital_gains,-26030089,
 2035-12-31,interest_income,-4868465,
-2036-01-31,Asset_Brokerage_Joint,61335239,20000000
+2036-01-31,Asset_Brokerage_Joint,61335239,25000000
 2036-01-31,Asset_Checking,346143,
 2036-01-31,Asset_Home,60000000,40000000
 2036-01-31,Asset_Roth_Alice,10000000,
@@ -2689,7 +2689,7 @@
 2036-01-31,Liability_Mortgage,15491413,
 2036-01-31,capital_gains,-26335239,
 2036-01-31,interest_income,-4869732,
-2036-02-29,Asset_Brokerage_Joint,61641915,20000000
+2036-02-29,Asset_Brokerage_Joint,61641915,25000000
 2036-02-29,Asset_Checking,346143,
 2036-02-29,Asset_Home,60000000,40000000
 2036-02-29,Asset_Roth_Alice,10000000,
@@ -2712,7 +2712,7 @@
 2036-02-29,Liability_Mortgage,15383870,
 2036-02-29,capital_gains,-26641915,
 2036-02-29,interest_income,-4871030,
-2036-03-31,Asset_Brokerage_Joint,61950124,20000000
+2036-03-31,Asset_Brokerage_Joint,61950124,25000000
 2036-03-31,Asset_Checking,346143,
 2036-03-31,Asset_Home,60000000,40000000
 2036-03-31,Asset_Roth_Alice,10000000,
@@ -2735,7 +2735,7 @@
 2036-03-31,Liability_Mortgage,15275789,
 2036-03-31,capital_gains,-26950124,
 2036-03-31,interest_income,-4872328,
-2036-04-30,Asset_Brokerage_Joint,62259874,20000000
+2036-04-30,Asset_Brokerage_Joint,62259874,25000000
 2036-04-30,Asset_Checking,346143,
 2036-04-30,Asset_Home,60000000,40000000
 2036-04-30,Asset_Roth_Alice,10000000,
@@ -2758,7 +2758,7 @@
 2036-04-30,Liability_Mortgage,15167167,
 2036-04-30,capital_gains,-27259874,
 2036-04-30,interest_income,-4873626,
-2036-05-31,Asset_Brokerage_Joint,62571173,20000000
+2036-05-31,Asset_Brokerage_Joint,62571173,25000000
 2036-05-31,Asset_Checking,346143,
 2036-05-31,Asset_Home,60000000,40000000
 2036-05-31,Asset_Roth_Alice,10000000,
@@ -2781,7 +2781,7 @@
 2036-05-31,Liability_Mortgage,15058002,
 2036-05-31,capital_gains,-27571173,
 2036-05-31,interest_income,-4874924,
-2036-06-30,Asset_Brokerage_Joint,62884028,20000000
+2036-06-30,Asset_Brokerage_Joint,62884028,25000000
 2036-06-30,Asset_Checking,346143,
 2036-06-30,Asset_Home,60000000,40000000
 2036-06-30,Asset_Roth_Alice,10000000,
@@ -2804,7 +2804,7 @@
 2036-06-30,Liability_Mortgage,14948292,
 2036-06-30,capital_gains,-27884028,
 2036-06-30,interest_income,-4876222,
-2036-07-31,Asset_Brokerage_Joint,63198448,20000000
+2036-07-31,Asset_Brokerage_Joint,63198448,25000000
 2036-07-31,Asset_Checking,346143,
 2036-07-31,Asset_Home,60000000,40000000
 2036-07-31,Asset_Roth_Alice,10000000,
@@ -2827,7 +2827,7 @@
 2036-07-31,Liability_Mortgage,14838033,
 2036-07-31,capital_gains,-28198448,
 2036-07-31,interest_income,-4877520,
-2036-08-31,Asset_Brokerage_Joint,63514440,20000000
+2036-08-31,Asset_Brokerage_Joint,63514440,25000000
 2036-08-31,Asset_Checking,346143,
 2036-08-31,Asset_Home,60000000,40000000
 2036-08-31,Asset_Roth_Alice,10000000,
@@ -2850,7 +2850,7 @@
 2036-08-31,Liability_Mortgage,14727223,
 2036-08-31,capital_gains,-28514440,
 2036-08-31,interest_income,-4878818,
-2036-09-30,Asset_Brokerage_Joint,63832012,20000000
+2036-09-30,Asset_Brokerage_Joint,63832012,25000000
 2036-09-30,Asset_Checking,346143,
 2036-09-30,Asset_Home,60000000,40000000
 2036-09-30,Asset_Roth_Alice,10000000,
@@ -2873,7 +2873,7 @@
 2036-09-30,Liability_Mortgage,14615859,
 2036-09-30,capital_gains,-28832012,
 2036-09-30,interest_income,-4880116,
-2036-10-31,Asset_Brokerage_Joint,64151172,20000000
+2036-10-31,Asset_Brokerage_Joint,64151172,25000000
 2036-10-31,Asset_Checking,346143,
 2036-10-31,Asset_Home,60000000,40000000
 2036-10-31,Asset_Roth_Alice,10000000,
@@ -2896,7 +2896,7 @@
 2036-10-31,Liability_Mortgage,14503938,
 2036-10-31,capital_gains,-29151172,
 2036-10-31,interest_income,-4881414,
-2036-11-30,Asset_Brokerage_Joint,64471927,20000000
+2036-11-30,Asset_Brokerage_Joint,64471927,25000000
 2036-11-30,Asset_Checking,346143,
 2036-11-30,Asset_Home,60000000,40000000
 2036-11-30,Asset_Roth_Alice,10000000,
@@ -2919,7 +2919,7 @@
 2036-11-30,Liability_Mortgage,14391457,
 2036-11-30,capital_gains,-29471927,
 2036-11-30,interest_income,-4882712,
-2036-12-31,Asset_Brokerage_Joint,64794286,20000000
+2036-12-31,Asset_Brokerage_Joint,64794286,25000000
 2036-12-31,Asset_Checking,346143,
 2036-12-31,Asset_Home,60000000,40000000
 2036-12-31,Asset_Roth_Alice,10000000,
@@ -2942,7 +2942,7 @@
 2036-12-31,Liability_Mortgage,14278414,
 2036-12-31,capital_gains,-29794286,
 2036-12-31,interest_income,-4884010,
-2037-01-31,Asset_Brokerage_Joint,65118257,20000000
+2037-01-31,Asset_Brokerage_Joint,65118257,25000000
 2037-01-31,Asset_Checking,354422,
 2037-01-31,Asset_Home,60000000,40000000
 2037-01-31,Asset_Roth_Alice,10000000,
@@ -2965,7 +2965,7 @@
 2037-01-31,Liability_Mortgage,14164806,
 2037-01-31,capital_gains,-30118257,
 2037-01-31,interest_income,-4885308,
-2037-02-28,Asset_Brokerage_Joint,65443848,20000000
+2037-02-28,Asset_Brokerage_Joint,65443848,25000000
 2037-02-28,Asset_Checking,354422,
 2037-02-28,Asset_Home,60000000,40000000
 2037-02-28,Asset_Roth_Alice,10000000,
@@ -2988,7 +2988,7 @@
 2037-02-28,Liability_Mortgage,14050630,
 2037-02-28,capital_gains,-30443848,
 2037-02-28,interest_income,-4886637,
-2037-03-31,Asset_Brokerage_Joint,65771067,20000000
+2037-03-31,Asset_Brokerage_Joint,65771067,25000000
 2037-03-31,Asset_Checking,354422,
 2037-03-31,Asset_Home,60000000,40000000
 2037-03-31,Asset_Roth_Alice,10000000,
@@ -3011,7 +3011,7 @@
 2037-03-31,Liability_Mortgage,13935883,
 2037-03-31,capital_gains,-30771067,
 2037-03-31,interest_income,-4887966,
-2037-04-30,Asset_Brokerage_Joint,66099922,20000000
+2037-04-30,Asset_Brokerage_Joint,66099922,25000000
 2037-04-30,Asset_Checking,354422,
 2037-04-30,Asset_Home,60000000,40000000
 2037-04-30,Asset_Roth_Alice,10000000,
@@ -3034,7 +3034,7 @@
 2037-04-30,Liability_Mortgage,13820562,
 2037-04-30,capital_gains,-31099922,
 2037-04-30,interest_income,-4889295,
-2037-05-31,Asset_Brokerage_Joint,66430421,20000000
+2037-05-31,Asset_Brokerage_Joint,66430421,25000000
 2037-05-31,Asset_Checking,354422,
 2037-05-31,Asset_Home,60000000,40000000
 2037-05-31,Asset_Roth_Alice,10000000,
@@ -3057,7 +3057,7 @@
 2037-05-31,Liability_Mortgage,13704664,
 2037-05-31,capital_gains,-31430421,
 2037-05-31,interest_income,-4890624,
-2037-06-30,Asset_Brokerage_Joint,66762573,20000000
+2037-06-30,Asset_Brokerage_Joint,66762573,25000000
 2037-06-30,Asset_Checking,354422,
 2037-06-30,Asset_Home,60000000,40000000
 2037-06-30,Asset_Roth_Alice,10000000,
@@ -3080,7 +3080,7 @@
 2037-06-30,Liability_Mortgage,13588187,
 2037-06-30,capital_gains,-31762573,
 2037-06-30,interest_income,-4891953,
-2037-07-31,Asset_Brokerage_Joint,67096385,20000000
+2037-07-31,Asset_Brokerage_Joint,67096385,25000000
 2037-07-31,Asset_Checking,354422,
 2037-07-31,Asset_Home,60000000,40000000
 2037-07-31,Asset_Roth_Alice,10000000,
@@ -3103,7 +3103,7 @@
 2037-07-31,Liability_Mortgage,13471127,
 2037-07-31,capital_gains,-32096385,
 2037-07-31,interest_income,-4893282,
-2037-08-31,Asset_Brokerage_Joint,67431866,20000000
+2037-08-31,Asset_Brokerage_Joint,67431866,25000000
 2037-08-31,Asset_Checking,788422,
 2037-08-31,Asset_Home,60000000,40000000
 2037-08-31,Asset_Roth_Alice,10000000,
@@ -3126,7 +3126,7 @@
 2037-08-31,Liability_Mortgage,13353482,
 2037-08-31,capital_gains,-32431866,
 2037-08-31,interest_income,-4894611,
-2037-09-30,Asset_Brokerage_Joint,67769025,20000000
+2037-09-30,Asset_Brokerage_Joint,67769025,25000000
 2037-09-30,Asset_Checking,788422,
 2037-09-30,Asset_Home,60000000,40000000
 2037-09-30,Asset_Roth_Alice,10000000,
@@ -3149,7 +3149,7 @@
 2037-09-30,Liability_Mortgage,13235249,
 2037-09-30,capital_gains,-32769025,
 2037-09-30,interest_income,-4897567,
-2037-10-31,Asset_Brokerage_Joint,68107870,20000000
+2037-10-31,Asset_Brokerage_Joint,68107870,25000000
 2037-10-31,Asset_Checking,788422,
 2037-10-31,Asset_Home,60000000,40000000
 2037-10-31,Asset_Roth_Alice,10000000,
@@ -3172,7 +3172,7 @@
 2037-10-31,Liability_Mortgage,13116425,
 2037-10-31,capital_gains,-33107870,
 2037-10-31,interest_income,-4900523,
-2037-11-30,Asset_Brokerage_Joint,68448409,20000000
+2037-11-30,Asset_Brokerage_Joint,68448409,25000000
 2037-11-30,Asset_Checking,788422,
 2037-11-30,Asset_Home,60000000,40000000
 2037-11-30,Asset_Roth_Alice,10000000,
@@ -3195,7 +3195,7 @@
 2037-11-30,Liability_Mortgage,12997007,
 2037-11-30,capital_gains,-33448409,
 2037-11-30,interest_income,-4903479,
-2037-12-31,Asset_Brokerage_Joint,68790651,20000000
+2037-12-31,Asset_Brokerage_Joint,68790651,25000000
 2037-12-31,Asset_Checking,788422,
 2037-12-31,Asset_Home,60000000,40000000
 2037-12-31,Asset_Roth_Alice,10000000,
@@ -3218,7 +3218,7 @@
 2037-12-31,Liability_Mortgage,12876992,
 2037-12-31,capital_gains,-33790651,
 2037-12-31,interest_income,-4906435,
-2038-01-31,Asset_Brokerage_Joint,69134604,20000000
+2038-01-31,Asset_Brokerage_Joint,69134604,25000000
 2038-01-31,Asset_Checking,807757,
 2038-01-31,Asset_Home,60000000,40000000
 2038-01-31,Asset_Roth_Alice,10000000,
@@ -3241,7 +3241,7 @@
 2038-01-31,Liability_Mortgage,12756376,
 2038-01-31,capital_gains,-34134604,
 2038-01-31,interest_income,-4909391,
-2038-02-28,Asset_Brokerage_Joint,69480277,20000000
+2038-02-28,Asset_Brokerage_Joint,69480277,25000000
 2038-02-28,Asset_Checking,807757,
 2038-02-28,Asset_Home,60000000,40000000
 2038-02-28,Asset_Roth_Alice,10000000,
@@ -3264,7 +3264,7 @@
 2038-02-28,Liability_Mortgage,12635157,
 2038-02-28,capital_gains,-34480277,
 2038-02-28,interest_income,-4912420,
-2038-03-31,Asset_Brokerage_Joint,69827678,20000000
+2038-03-31,Asset_Brokerage_Joint,69827678,25000000
 2038-03-31,Asset_Checking,807757,
 2038-03-31,Asset_Home,60000000,40000000
 2038-03-31,Asset_Roth_Alice,10000000,
@@ -3287,7 +3287,7 @@
 2038-03-31,Liability_Mortgage,12513332,
 2038-03-31,capital_gains,-34827678,
 2038-03-31,interest_income,-4915449,
-2038-04-30,Asset_Brokerage_Joint,70176816,20000000
+2038-04-30,Asset_Brokerage_Joint,70176816,25000000
 2038-04-30,Asset_Checking,807757,
 2038-04-30,Asset_Home,60000000,40000000
 2038-04-30,Asset_Roth_Alice,10000000,
@@ -3310,7 +3310,7 @@
 2038-04-30,Liability_Mortgage,12390898,
 2038-04-30,capital_gains,-35176816,
 2038-04-30,interest_income,-4918478,
-2038-05-31,Asset_Brokerage_Joint,70527700,20000000
+2038-05-31,Asset_Brokerage_Joint,70527700,25000000
 2038-05-31,Asset_Checking,807757,
 2038-05-31,Asset_Home,60000000,40000000
 2038-05-31,Asset_Roth_Alice,10000000,
@@ -3333,7 +3333,7 @@
 2038-05-31,Liability_Mortgage,12267852,
 2038-05-31,capital_gains,-35527700,
 2038-05-31,interest_income,-4921507,
-2038-06-30,Asset_Brokerage_Joint,70880338,20000000
+2038-06-30,Asset_Brokerage_Joint,70880338,25000000
 2038-06-30,Asset_Checking,807757,
 2038-06-30,Asset_Home,60000000,40000000
 2038-06-30,Asset_Roth_Alice,10000000,
@@ -3356,7 +3356,7 @@
 2038-06-30,Liability_Mortgage,12144191,
 2038-06-30,capital_gains,-35880338,
 2038-06-30,interest_income,-4924536,
-2038-07-31,Asset_Brokerage_Joint,71234739,20000000
+2038-07-31,Asset_Brokerage_Joint,71234739,25000000
 2038-07-31,Asset_Checking,807757,
 2038-07-31,Asset_Home,60000000,40000000
 2038-07-31,Asset_Roth_Alice,10000000,
@@ -3379,7 +3379,7 @@
 2038-07-31,Liability_Mortgage,12019911,
 2038-07-31,capital_gains,-36234739,
 2038-07-31,interest_income,-4927565,
-2038-08-31,Asset_Brokerage_Joint,71590912,20000000
+2038-08-31,Asset_Brokerage_Joint,71590912,25000000
 2038-08-31,Asset_Checking,807757,
 2038-08-31,Asset_Home,60000000,40000000
 2038-08-31,Asset_Roth_Alice,10000000,
@@ -3402,7 +3402,7 @@
 2038-08-31,Liability_Mortgage,11895010,
 2038-08-31,capital_gains,-36590912,
 2038-08-31,interest_income,-4930594,
-2038-09-30,Asset_Brokerage_Joint,71948866,20000000
+2038-09-30,Asset_Brokerage_Joint,71948866,25000000
 2038-09-30,Asset_Checking,807757,
 2038-09-30,Asset_Home,60000000,40000000
 2038-09-30,Asset_Roth_Alice,10000000,
@@ -3425,7 +3425,7 @@
 2038-09-30,Liability_Mortgage,11769485,
 2038-09-30,capital_gains,-36948866,
 2038-09-30,interest_income,-4933623,
-2038-10-31,Asset_Brokerage_Joint,72308610,20000000
+2038-10-31,Asset_Brokerage_Joint,72308610,25000000
 2038-10-31,Asset_Checking,807757,
 2038-10-31,Asset_Home,60000000,40000000
 2038-10-31,Asset_Roth_Alice,10000000,
@@ -3448,7 +3448,7 @@
 2038-10-31,Liability_Mortgage,11643332,
 2038-10-31,capital_gains,-37308610,
 2038-10-31,interest_income,-4936652,
-2038-11-30,Asset_Brokerage_Joint,72670153,20000000
+2038-11-30,Asset_Brokerage_Joint,72670153,25000000
 2038-11-30,Asset_Checking,807757,
 2038-11-30,Asset_Home,60000000,40000000
 2038-11-30,Asset_Roth_Alice,10000000,
@@ -3471,7 +3471,7 @@
 2038-11-30,Liability_Mortgage,11516548,
 2038-11-30,capital_gains,-37670153,
 2038-11-30,interest_income,-4939681,
-2038-12-31,Asset_Brokerage_Joint,73033503,20000000
+2038-12-31,Asset_Brokerage_Joint,73033503,25000000
 2038-12-31,Asset_Checking,1489299,
 2038-12-31,Asset_Home,60000000,40000000
 2038-12-31,Asset_Roth_Alice,10000000,
@@ -3494,7 +3494,7 @@
 2038-12-31,Liability_Mortgage,11389130,
 2038-12-31,capital_gains,-38033503,
 2038-12-31,interest_income,-4942710,
-2039-01-31,Asset_Brokerage_Joint,73398670,20000000
+2039-01-31,Asset_Brokerage_Joint,73398670,25000000
 2039-01-31,Asset_Checking,1239325,
 2039-01-31,Asset_Home,60000000,40000000
 2039-01-31,Asset_Roth_Alice,10000000,
@@ -3517,7 +3517,7 @@
 2039-01-31,Liability_Mortgage,11261075,
 2039-01-31,capital_gains,-38398670,
 2039-01-31,interest_income,-4948294,
-2039-02-28,Asset_Brokerage_Joint,73765663,20000000
+2039-02-28,Asset_Brokerage_Joint,73765663,25000000
 2039-02-28,Asset_Checking,986574,
 2039-02-28,Asset_Home,60000000,40000000
 2039-02-28,Asset_Roth_Alice,10000000,
@@ -3540,7 +3540,7 @@
 2039-02-28,Liability_Mortgage,11132380,
 2039-02-28,capital_gains,-38765663,
 2039-02-28,interest_income,-4952941,
-2039-03-31,Asset_Brokerage_Joint,74134491,20000000
+2039-03-31,Asset_Brokerage_Joint,74134491,25000000
 2039-03-31,Asset_Checking,827576,
 2039-03-31,Asset_Home,60000000,40000000
 2039-03-31,Asset_Roth_Alice,10000000,
@@ -3563,7 +3563,7 @@
 2039-03-31,Liability_Mortgage,11003041,
 2039-03-31,capital_gains,-39134491,
 2039-03-31,interest_income,-4956640,
-2039-04-30,Asset_Brokerage_Joint,74505163,20000000
+2039-04-30,Asset_Brokerage_Joint,74505163,25000000
 2039-04-30,Asset_Checking,827576,
 2039-04-30,Asset_Home,60000000,40000000
 2039-04-30,Asset_Roth_Alice,10000000,
@@ -3586,7 +3586,7 @@
 2039-04-30,Liability_Mortgage,10873056,
 2039-04-30,capital_gains,-39505163,
 2039-04-30,interest_income,-4959743,
-2039-05-31,Asset_Brokerage_Joint,74877688,20000000
+2039-05-31,Asset_Brokerage_Joint,74877688,25000000
 2039-05-31,Asset_Checking,827576,
 2039-05-31,Asset_Home,60000000,40000000
 2039-05-31,Asset_Roth_Alice,10000000,
@@ -3609,7 +3609,7 @@
 2039-05-31,Liability_Mortgage,10742421,
 2039-05-31,capital_gains,-39877688,
 2039-05-31,interest_income,-4962846,
-2039-06-30,Asset_Brokerage_Joint,75252076,20000000
+2039-06-30,Asset_Brokerage_Joint,75252076,25000000
 2039-06-30,Asset_Checking,827576,
 2039-06-30,Asset_Home,60000000,40000000
 2039-06-30,Asset_Roth_Alice,10000000,
@@ -3632,7 +3632,7 @@
 2039-06-30,Liability_Mortgage,10611133,
 2039-06-30,capital_gains,-40252076,
 2039-06-30,interest_income,-4965949,
-2039-07-31,Asset_Brokerage_Joint,75628336,20000000
+2039-07-31,Asset_Brokerage_Joint,75628336,25000000
 2039-07-31,Asset_Checking,827576,
 2039-07-31,Asset_Home,60000000,40000000
 2039-07-31,Asset_Roth_Alice,10000000,
@@ -3655,7 +3655,7 @@
 2039-07-31,Liability_Mortgage,10479188,
 2039-07-31,capital_gains,-40628336,
 2039-07-31,interest_income,-4969052,
-2039-08-31,Asset_Brokerage_Joint,76006477,20000000
+2039-08-31,Asset_Brokerage_Joint,76006477,25000000
 2039-08-31,Asset_Checking,827576,
 2039-08-31,Asset_Home,60000000,40000000
 2039-08-31,Asset_Roth_Alice,10000000,
@@ -3678,7 +3678,7 @@
 2039-08-31,Liability_Mortgage,10346583,
 2039-08-31,capital_gains,-41006477,
 2039-08-31,interest_income,-4972155,
-2039-09-30,Asset_Brokerage_Joint,76386509,20000000
+2039-09-30,Asset_Brokerage_Joint,76386509,25000000
 2039-09-30,Asset_Checking,827576,
 2039-09-30,Asset_Home,60000000,40000000
 2039-09-30,Asset_Roth_Alice,10000000,
@@ -3701,7 +3701,7 @@
 2039-09-30,Liability_Mortgage,10213315,
 2039-09-30,capital_gains,-41386509,
 2039-09-30,interest_income,-4975258,
-2039-10-31,Asset_Brokerage_Joint,76768441,20000000
+2039-10-31,Asset_Brokerage_Joint,76768441,25000000
 2039-10-31,Asset_Checking,827576,
 2039-10-31,Asset_Home,60000000,40000000
 2039-10-31,Asset_Roth_Alice,10000000,
@@ -3724,7 +3724,7 @@
 2039-10-31,Liability_Mortgage,10079381,
 2039-10-31,capital_gains,-41768441,
 2039-10-31,interest_income,-4978361,
-2039-11-30,Asset_Brokerage_Joint,77152283,20000000
+2039-11-30,Asset_Brokerage_Joint,77152283,25000000
 2039-11-30,Asset_Checking,827576,
 2039-11-30,Asset_Home,60000000,40000000
 2039-11-30,Asset_Roth_Alice,10000000,
@@ -3747,7 +3747,7 @@
 2039-11-30,Liability_Mortgage,9944777,
 2039-11-30,capital_gains,-42152283,
 2039-11-30,interest_income,-4981464,
-2039-12-31,Asset_Brokerage_Joint,77538044,20000000
+2039-12-31,Asset_Brokerage_Joint,77538044,25000000
 2039-12-31,Asset_Checking,1385766,
 2039-12-31,Asset_Home,60000000,40000000
 2039-12-31,Asset_Roth_Alice,10000000,
@@ -3770,7 +3770,7 @@
 2039-12-31,Liability_Mortgage,9809500,
 2039-12-31,capital_gains,-42538044,
 2039-12-31,interest_income,-4984567,
-2040-01-31,Asset_Brokerage_Joint,77925734,20000000
+2040-01-31,Asset_Brokerage_Joint,77925734,25000000
 2040-01-31,Asset_Checking,1133387,
 2040-01-31,Asset_Home,60000000,40000000
 2040-01-31,Asset_Roth_Alice,10000000,
@@ -3793,7 +3793,7 @@
 2040-01-31,Liability_Mortgage,9673547,
 2040-01-31,capital_gains,-42925734,
 2040-01-31,interest_income,-4989763,
-2040-02-29,Asset_Brokerage_Joint,78315362,20000000
+2040-02-29,Asset_Brokerage_Joint,78315362,25000000
 2040-02-29,Asset_Checking,878177,
 2040-02-29,Asset_Home,60000000,40000000
 2040-02-29,Asset_Roth_Alice,10000000,
@@ -3816,7 +3816,7 @@
 2040-02-29,Liability_Mortgage,9536914,
 2040-02-29,capital_gains,-43315362,
 2040-02-29,interest_income,-4994013,
-2040-03-31,Asset_Brokerage_Joint,78706938,20000000
+2040-03-31,Asset_Brokerage_Joint,78706938,25000000
 2040-03-31,Asset_Checking,847890,
 2040-03-31,Asset_Home,60000000,40000000
 2040-03-31,Asset_Roth_Alice,10000000,
@@ -3839,7 +3839,7 @@
 2040-03-31,Liability_Mortgage,9399598,
 2040-03-31,capital_gains,-43706938,
 2040-03-31,interest_income,-4997306,
-2040-04-30,Asset_Brokerage_Joint,79100472,20000000
+2040-04-30,Asset_Brokerage_Joint,79100472,25000000
 2040-04-30,Asset_Checking,847890,
 2040-04-30,Asset_Home,60000000,40000000
 2040-04-30,Asset_Roth_Alice,10000000,
@@ -3862,7 +3862,7 @@
 2040-04-30,Liability_Mortgage,9261595,
 2040-04-30,capital_gains,-44100472,
 2040-04-30,interest_income,-5000485,
-2040-05-31,Asset_Brokerage_Joint,79495974,20000000
+2040-05-31,Asset_Brokerage_Joint,79495974,25000000
 2040-05-31,Asset_Checking,847890,
 2040-05-31,Asset_Home,60000000,40000000
 2040-05-31,Asset_Roth_Alice,10000000,
@@ -3885,7 +3885,7 @@
 2040-05-31,Liability_Mortgage,9122902,
 2040-05-31,capital_gains,-44495974,
 2040-05-31,interest_income,-5003664,
-2040-06-30,Asset_Brokerage_Joint,79893453,20000000
+2040-06-30,Asset_Brokerage_Joint,79893453,25000000
 2040-06-30,Asset_Checking,847890,
 2040-06-30,Asset_Home,60000000,40000000
 2040-06-30,Asset_Roth_Alice,10000000,
@@ -3908,7 +3908,7 @@
 2040-06-30,Liability_Mortgage,8983516,
 2040-06-30,capital_gains,-44893453,
 2040-06-30,interest_income,-5006843,
-2040-07-31,Asset_Brokerage_Joint,80292920,20000000
+2040-07-31,Asset_Brokerage_Joint,80292920,25000000
 2040-07-31,Asset_Checking,847890,
 2040-07-31,Asset_Home,60000000,40000000
 2040-07-31,Asset_Roth_Alice,10000000,
@@ -3931,7 +3931,7 @@
 2040-07-31,Liability_Mortgage,8843433,
 2040-07-31,capital_gains,-45292920,
 2040-07-31,interest_income,-5010022,
-2040-08-31,Asset_Brokerage_Joint,80694384,20000000
+2040-08-31,Asset_Brokerage_Joint,80694384,25000000
 2040-08-31,Asset_Checking,847890,
 2040-08-31,Asset_Home,60000000,40000000
 2040-08-31,Asset_Roth_Alice,10000000,
@@ -3954,7 +3954,7 @@
 2040-08-31,Liability_Mortgage,8702650,
 2040-08-31,capital_gains,-45694384,
 2040-08-31,interest_income,-5013201,
-2040-09-30,Asset_Brokerage_Joint,81097855,20000000
+2040-09-30,Asset_Brokerage_Joint,81097855,25000000
 2040-09-30,Asset_Checking,847890,
 2040-09-30,Asset_Home,60000000,40000000
 2040-09-30,Asset_Roth_Alice,10000000,
@@ -3977,7 +3977,7 @@
 2040-09-30,Liability_Mortgage,8561163,
 2040-09-30,capital_gains,-46097855,
 2040-09-30,interest_income,-5016380,
-2040-10-31,Asset_Brokerage_Joint,81503344,20000000
+2040-10-31,Asset_Brokerage_Joint,81503344,25000000
 2040-10-31,Asset_Checking,847890,
 2040-10-31,Asset_Home,60000000,40000000
 2040-10-31,Asset_Roth_Alice,10000000,
@@ -4000,7 +4000,7 @@
 2040-10-31,Liability_Mortgage,8418968,
 2040-10-31,capital_gains,-46503344,
 2040-10-31,interest_income,-5019559,
-2040-11-30,Asset_Brokerage_Joint,81910860,20000000
+2040-11-30,Asset_Brokerage_Joint,81910860,25000000
 2040-11-30,Asset_Checking,847890,
 2040-11-30,Asset_Home,60000000,40000000
 2040-11-30,Asset_Roth_Alice,10000000,
@@ -4023,7 +4023,7 @@
 2040-11-30,Liability_Mortgage,8276062,
 2040-11-30,capital_gains,-46910860,
 2040-11-30,interest_income,-5022738,
-2040-12-31,Asset_Brokerage_Joint,82320414,20000000
+2040-12-31,Asset_Brokerage_Joint,82320414,25000000
 2040-12-31,Asset_Checking,1302779,
 2040-12-31,Asset_Home,60000000,40000000
 2040-12-31,Asset_Roth_Alice,10000000,

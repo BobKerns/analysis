@@ -104,6 +104,8 @@ To split an account, give it several rows with different `lot` values, each with
 
 **Viewing holdings.** `sim account holdings <account>` lists an account's lots (symbol, acquired, quantity, implied price, balance, basis, unrealized gain, with totals), and `sim account holders <symbol>` lists every account holding a symbol. Both read the scenario's latest run at its last month; use `--month YYYY-MM` for another month, `--runfile` for a specific run, or `--opening` for the opening values (also what you get when there is no run yet). In a notebook, `account_holdings_widget(rc)` and `symbol_holders_widget(rc)` from `analysis.sim.notebook_ui.holdings_widgets` show the same tables with dropdowns; the widgets only offer investment accounts and the symbols held in them, while the commands accept any account.
 
+**Purchases and growth.** Money you move into a taxable lot (a purchase from checking, an inheritance) adds that amount to its basis, and to its shares if `quantity` is filled in. The lot's own growth does not: it is total return, so reinvested dividends are not split out. To buy a position later in the scenario, add a lot with `opening_balance` 0 and the purchase date in `acquired`, and schedule the purchase into it. Leave `quantity` blank for dollar-denominated funds such as money markets.
+
 Limits for now: `minimum_balance`, refill and overflow are only allowed on single-lot accounts, and an `rmd` rule can't draw from an account with more than one lot.
 
 ### Importing balances from Quicken

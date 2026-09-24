@@ -91,7 +91,7 @@ def run_scenario(
         lots = con.execute(
             "SELECT m.id, m.opening_balance, m.opening_cost_basis, "
             "       m.prior_year_end_balance, a.kind, a.subkind, a.tax_treatment, "
-            "       a.owner, m.quantity_micros "
+            "       a.owner, m.quantity_micros, a.name "
             "FROM account_model_member m "
             "JOIN account a ON a.id = m.account_id "
             "WHERE m.model_id = ? ORDER BY m.id",
@@ -107,6 +107,15 @@ def run_scenario(
         account_tax_treatment: dict[int, str | None] = {r[0]: r[6] for r in lots}
         account_owner: dict[int, str | None] = {r[0]: r[7] for r in lots}
         quantities: dict[int, int | None] = {r[0]: r[8] for r in lots}
+        # A lot declared up front for a future purchase starts with no basis.
+        for r in lots:
+            if (
+                cost_bases[r[0]] is None and r[1] == 0 and r[4] == "asset"
+                and registries.withdrawal_tax_character(r[6], r[5]) is None
+            ):
+                cost_bases[r[0]] = 0
+        growth_names = {c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()}
+        growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names)
         account_id_by_name: dict[str, int] = {
             r[0]: r[1] for r in con.execute(
                 "SELECT name, lot_id FROM chain WHERE lot_id IS NOT NULL"
@@ -160,7 +169,7 @@ def run_scenario(
         refill_ctx = RefillContext(
             chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
             account_tax_treatment, account_subkind, account_name, cost_bases,
-            quantities,
+            quantities, growth_sources,
         )
 
         skipped_counts: dict[str, int] = {}
@@ -518,8 +527,8 @@ class RefillContext:
 
     __slots__ = ("graph", "aux", "chain_base_date", "inflation_factor_cache",
                  "account_tax_treatment", "account_subkind", "account_name",
-                 "cost_bases", "quantities", "refilling", "negative_since",
-                 "negative_events")
+                 "cost_bases", "quantities", "growth_sources", "refilling",
+                 "negative_since", "negative_events")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
@@ -528,6 +537,7 @@ class RefillContext:
         account_subkind: dict[int, str], account_name: dict[int, str],
         cost_bases: dict[int, int | None],
         quantities: dict[int, int | None] | None = None,
+        growth_sources: frozenset[int] = frozenset(),
     ) -> None:
         self.graph = graph
         self.aux = aux
@@ -538,6 +548,7 @@ class RefillContext:
         self.account_name = account_name
         self.cost_bases = cost_bases
         self.quantities = quantities if quantities is not None else {}
+        self.growth_sources = growth_sources
         self.refilling: set[int] = set()  # reentrancy guard against refill cycles
         self.negative_since: dict[int, bool] = {}
         self.negative_events: list[tuple[str, str, int]] = []
@@ -666,11 +677,30 @@ def _post_transfer(
             refill_ctx.quantities[from_id] = quantity - min(
                 quantity, quantity * amount // prior_balance
             )
+    if refill_ctx is not None and amount > 0 and account_kinds[to_id] == "asset":
+        _record_purchase(refill_ctx, balances, from_id, to_id, amount)
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
     if refill_ctx is not None:
         _warn_if_negative(refill_ctx, account_kinds, from_id, balances, month_s)
     return cur.lastrowid
+
+
+def _record_purchase(
+    ctx: RefillContext, balances: dict[int, int], from_id: int, to_id: int, amount: int,
+) -> None:
+    """Money moved into a lot that tracks cost basis buys into it: a purchase, an
+    inheritance, proceeds from another taxable lot. Its basis rises by the amount
+    and, if shares are tracked, they rise at the lot's implied price. Growth
+    from the built-in counterparties is appreciation and changes neither.
+    """
+    basis = ctx.cost_bases.get(to_id)
+    if basis is None or from_id in ctx.growth_sources:
+        return
+    ctx.cost_bases[to_id] = basis + amount
+    quantity, prior = ctx.quantities.get(to_id), balances.get(to_id, 0)
+    if quantity and prior > 0:
+        ctx.quantities[to_id] = quantity + quantity * amount // prior
 
 
 def _delta(kind: str, raw: int) -> int:

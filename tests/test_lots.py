@@ -198,7 +198,10 @@ def test_sale_from_one_lot_leaves_the_other_lots_basis_alone(two_lot_run_file: P
             return [r[0] for r in con.execute(
                 "SELECT cost_basis FROM lot_state WHERE lot_id = ? ORDER BY step_id",
                 (lots[lot],))]
-        assert set(basis("a")) == {6_000_000}
+        # Lot a is never sold from; its only change is the 2029 inheritance
+        # (+$50,000), a purchase into it.
+        assert sorted(set(basis("a"))) == [6_000_000, 11_000_000]
+        assert basis("a") == sorted(basis("a"))
         b = basis("b")
         assert b[0] < 14_000_000 and b == sorted(b, reverse=True) and b[-1] > 0
 
@@ -218,7 +221,7 @@ def test_sale_from_one_lot_leaves_the_other_lots_basis_alone(two_lot_run_file: P
             "SELECT cost_basis FROM account_state ast JOIN account a ON a.id = ast.account_id "
             "WHERE a.name = 'Asset_Brokerage_Joint' ORDER BY ast.step_id DESC LIMIT 1"
         ).fetchone()[0]
-        assert account_basis == 6_000_000 + b[-1]
+        assert account_basis == basis("a")[-1] + b[-1]
     finally:
         con.close()
 
@@ -233,7 +236,9 @@ def test_sale_reduces_only_that_lots_quantity(two_lot_run_file: Path) -> None:
                 "JOIN account a ON a.id = m.account_id "
                 "WHERE a.name = 'Asset_Brokerage_Joint' AND m.lot = ? "
                 "ORDER BY ls.step_id", (lot,))]
-        assert set(quantities("a")) == {1_000_000_000}
+        # Lot a is only ever bought into (the inheritance), so its shares only rise.
+        a = quantities("a")
+        assert a[0] == 1_000_000_000 and a == sorted(a) and a[-1] > a[0]
         b = quantities("b")
         assert b == sorted(b, reverse=True)
         assert 0 < b[-1] < b[0] <= 2_000_500_000
@@ -403,7 +408,7 @@ def test_explain_lists_each_lot_with_its_symbol_and_quantity(two_lot_run_file: P
     section = result.output.split("lots at the final step:")[1].split("year-end net worth:")[0]
     a = next(line for line in section.splitlines() if "Asset_Brokerage_Joint (a)" in line)
     b = next(line for line in section.splitlines() if "Asset_Brokerage_Joint (b)" in line)
-    assert "AAA" in a and " 1,000 " in a
+    assert "AAA" in a and "110,000.00" in a  # basis: $60,000 plus the $50,000 inheritance
     assert "BBB" in b and "2,000.5" not in b  # part of it was sold
     assert "Asset_TraditionalIRA_Alice (default)" in section  # investment accounts always listed
 
@@ -436,7 +441,79 @@ def test_lot_balance_item_and_member_columns(two_lot_run_file: Path, test_data_d
             held = run.items("lot_balance", account="Asset_Brokerage_Joint")
             assert set(held["lot"]) == {"a", "b"}
             last = held[held["month"] == held["month"].max()].set_index("lot")
-            assert last.loc["a", "symbol"] == "AAA" and last.loc["a", "quantity_micros"] == 1_000_000_000
+            assert last.loc["a", "symbol"] == "AAA" and last.loc["a", "quantity_micros"] > 1_000_000_000
             members = run.items("account_model_member", symbol="BBB")
             assert list(members["account"]) == ["Asset_Brokerage_Joint"]
             assert members.iloc[0]["quantity_micros"] == 2_000_500_000
+
+
+def _ctx(cost_bases, quantities, growth_sources=frozenset()):
+    from analysis.sim.engine import ChainGraph, RefillContext
+
+    return RefillContext(
+        ChainGraph({}, {}, {}, {}, {}, {}, {}, {}), {}, date(2026, 5, 31), {},
+        {}, {}, {}, cost_bases, quantities, growth_sources,
+    )
+
+
+def test_money_into_a_basis_tracked_lot_raises_basis_and_shares(ledger_con: sqlite3.Connection) -> None:
+    ctx = _ctx({2: 500_00}, {2: 100_000_000})  # basis $500, 100 shares
+    balances = {1: 1_000_00, 2: 800_00}
+    kinds = {1: "asset", 2: "asset"}
+    _post_transfer(ledger_con, balances, kinds, 1, "2026-05-31", 1, 2, 200_00, "none", 9,
+                   refill_ctx=ctx)
+    assert ctx.cost_bases[2] == 700_00
+    assert ctx.quantities[2] == 125_000_000  # 200 / 800 more: 25 shares at the implied $8
+
+
+def test_appreciation_from_a_growth_counterparty_changes_neither(ledger_con: sqlite3.Connection) -> None:
+    ctx = _ctx({2: 500_00}, {2: 100_000_000}, growth_sources=frozenset({1}))
+    balances = {1: 0, 2: 800_00}
+    kinds = {1: "income", 2: "asset"}
+    _post_transfer(ledger_con, balances, kinds, 1, "2026-05-31", 1, 2, 200_00, "gains", 9,
+                   refill_ctx=ctx)
+    assert (ctx.cost_bases[2], ctx.quantities[2]) == (500_00, 100_000_000)
+    assert balances[2] == 1_000_00
+
+
+def test_untracked_basis_and_liabilities_are_left_alone(ledger_con: sqlite3.Connection) -> None:
+    ctx = _ctx({2: None, 3: 100_00}, {})
+    balances = {1: 1_000_00, 2: 0, 3: 300_00}
+    kinds = {1: "asset", 2: "asset", 3: "liability"}
+    _post_transfer(ledger_con, balances, kinds, 1, "2026-05-31", 1, 2, 50_00, "none", 9, refill_ctx=ctx)
+    _post_transfer(ledger_con, balances, kinds, 1, "2026-05-31", 1, 3, 50_00, "none", 9, refill_ctx=ctx)
+    assert ctx.cost_bases == {2: None, 3: 100_00}
+
+
+def test_a_lot_declared_for_a_future_purchase_accumulates_basis(
+    retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    from analysis.sim.engine import run_scenario
+
+    add_account_value("Asset_Brokerage_Joint", lot="new", acquired="2027-01-31", opening_balance="0")
+    _append_scheduled_row(
+        retire_alice_csv("scheduled.csv"), name="buy_new", from_account="Asset_Checking",
+        to_account="Asset_Brokerage_Joint", to_lot="new", cadence="monthly",
+        amount_rule_kind="fixed_amount", amount="100.00", tax_character="none",
+        start="2027-01-31", priority="500", meta_json="{}",
+    )
+    run = run_scenario(load_test_copy().intent_path, runs_dir / "buy.sqlite3", run_by="T",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    con = sqlite3.connect(run)
+    try:
+        rows = con.execute(
+            "SELECT s.month, ls.balance, ls.cost_basis FROM lot_state ls "
+            "JOIN simulation_step s ON s.id = ls.step_id "
+            "JOIN account_model_member m ON m.id = ls.lot_id "
+            "JOIN account a ON a.id = m.account_id "
+            "WHERE a.name = 'Asset_Brokerage_Joint' AND m.lot = 'new' ORDER BY s.step_index"
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows[0][2] == 0                               # empty before the first purchase
+    months = [r for r in rows if r[0] >= "2027-01-31"]
+    for n, (_month, balance, basis) in enumerate(months[:12], start=1):
+        assert basis == n * 10_000                       # each $100 purchase adds basis
+        assert balance >= basis                          # growth adds balance, never basis
+    assert months[11][1] > months[11][2]                 # ... so a gain builds up
