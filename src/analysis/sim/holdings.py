@@ -118,12 +118,14 @@ def _investment(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def holding_accounts(source: RunConnection | ScenarioConnection) -> list[str]:
-    """Names of the investment accounts, sorted: what the holdings widgets offer."""
-    return sorted(set(_investment(lots_frame(source))["account"]))
+    """Names of the asset and liability accounts, sorted: what the account
+    holdings widget offers. Any account can have several lots."""
+    return sorted(set(lots_frame(source)["account"]))
 
 
 def holding_symbols(source: RunConnection | ScenarioConnection) -> list[str]:
-    """Symbols held in investment accounts, sorted: what the holders widget offers."""
+    """Symbols held in investment accounts, sorted: what the holders widget offers
+    (a symbol on a cash lot, such as a money-market fund, is left out)."""
     symbols = _investment(lots_frame(source))["symbol"]
     return sorted(set(symbols[symbols.notna() & (symbols != "")]))
 
