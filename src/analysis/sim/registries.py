@@ -178,6 +178,10 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "inflation": ("effective_date", "annual_rate_micros"),
     "filing_status": ("effective_date", "filing_status"),
     "rmd_start_age": ("effective_date", "start_age"),
+    # A security's price in decimal dollars (up to 6 places), one series per
+    # symbol; stored in the payload as `price_micros`. Used only to derive a
+    # lot's opening_balance from its quantity (ADR-005 §6), never monthly.
+    "security_price": ("effective_date", "price"),
     # One row per (category, effective_date): a federal/state credit or
     # rebate schedule that appears and disappears on its own timeline (25C,
     # 25D, 30C all had different 2025/2026 sunset dates under OBBBA).
@@ -190,6 +194,12 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
 
 # Per-aux-kind set of column names that hold dollar amounts in the CSV and must
 # be converted to integer cents during load.
+# Columns authored as decimal dollars but stored as integer micros of a dollar
+# (sub-cent precision), by kind: {kind: {csv column: payload key}}.
+AUX_DOLLAR_MICROS_COLUMNS: dict[str, dict[str, str]] = {
+    "security_price": {"price": "price_micros"},
+}
+
 AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "federal_brackets": frozenset({"floor"}),
     "state_brackets": frozenset({"floor"}),

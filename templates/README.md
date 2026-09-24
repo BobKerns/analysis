@@ -98,6 +98,8 @@ Each `account_values.csv` row is one **lot**: a position inside one account. An 
 
 To split an account, give it several rows with different `lot` values, each with its own `opening_balance` and `opening_cost_basis`. Optional columns: `symbol`, `acquired` (ISO date), `quantity` (shares), and `series` (the lot's growth-rate series). A lot grows at its `series`, else at a rate series named for its `symbol`, else at the account's `series`. A withdrawal drawn from one lot (through a chain that lists it) splits that lot's basis pro-rata and leaves the other lots alone.
 
+**Prices and derived balances.** Leave a lot's `opening_balance` blank and give its `symbol` and `quantity`, and the loader fills it in as `quantity × price`, using the latest price on or before the scenario start from `aux/security_price__<SYMBOL>.csv` (columns `effective_date,price`; price is decimal dollars, up to 6 places). If you fill in `opening_balance` yourself it is used as given and no price is needed. A symbol may not be the same as an account name. Prices are only used for this opening value; after that a lot grows by its rate series, not by price.
+
 Limits for now: `minimum_balance`, refill and overflow are only allowed on single-lot accounts, and an `rmd` rule can't draw from an account with more than one lot.
 
 ### Importing balances from Quicken

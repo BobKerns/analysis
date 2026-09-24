@@ -196,3 +196,11 @@ Authoritative sources the AI should pull from:
   column lists and the kind/series naming rules.
 - `docs/architecture/ADR-002-storage-schema.md` — how aux rows land in SQLite.
 - `templates/README.md` — the data repo as a whole.
+
+## Security prices
+
+`security_price__<SYMBOL>.csv` holds one security's price history (`effective_date,price`,
+price in decimal dollars with up to 6 decimal places). The loader uses the latest price on or
+before the scenario start to turn a lot's `quantity` into an `opening_balance` when that
+balance is left blank in `account_values.csv`; it is not used month to month. To give a
+security its own growth rate, add `rate__<SYMBOL>.csv` (same series name).

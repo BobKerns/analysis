@@ -524,6 +524,7 @@ def load_scenario(
 
     aux_rows = _read_aux_dir(data_dir / "aux", issues, money_resolver=money_resolver)
 
+    _derive_opening_balances(model_rows, aux_rows, scenario_row, issues)
     _expand_account_growth(
         accounts, model_rows, scheduled_rows, scenario_row, aux_rows, issues,
     )
@@ -657,6 +658,7 @@ def _read_aux_dir(
             continue
         cols = registries.AUX_KIND_COLUMNS[kind]
         money_cols = registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
+        micros_cols = registries.AUX_DOLLAR_MICROS_COLUMNS.get(kind, {})
         for i, row in enumerate(_read_csv(csv_path, issues), start=2):
             missing = [c for c in cols if c not in row]
             if missing:
@@ -670,7 +672,14 @@ def _read_aux_dir(
                 if c == "effective_date":
                     continue
                 raw = row[c]
-                if c in money_cols:
+                if c in micros_cols:
+                    try:
+                        payload[micros_cols[c]] = _dollars_to_micros(raw)
+                    except (ValueError, InvalidOperation) as e:
+                        issues.append(f"aux/{csv_path.name} row {i} ({c}): {e}")
+                        row_ok = False
+                        break
+                elif c in money_cols:
                     if raw != "":
                         try:
                             payload[c] = _dollars_to_cents(raw, resolver=money_resolver)
@@ -1109,7 +1118,8 @@ def _validate_account_model_money(
         ob = row.get("opening_balance", "")
         if ob == "":
             issues.append(
-                f"account_values.csv row {i} ({name}): opening_balance is required"
+                f"account_values.csv row {i} ({name}): opening_balance is required "
+                "(or give quantity, symbol and a security_price)"
             )
         else:
             try:
@@ -1134,6 +1144,11 @@ def _validate_account_model_money(
                 issues.append(
                     f"account_values.csv row {i} ({name}): prior_year_end_balance {e}"
                 )
+        if row.get("symbol") in account_names:
+            issues.append(
+                f"account_values.csv row {i} ({name}): symbol '{row['symbol']}' is also "
+                "an account name, so its rate series would be ambiguous"
+            )
         acquired = row.get("acquired", "")
         if acquired:
             try:
@@ -1178,6 +1193,54 @@ def _validate_account_model_money(
                 f"account_values.csv ({name}): prior_year_end_balance must be set "
                 "on every lot of an account or on none"
             )
+
+
+def _dollars_to_micros(raw: str) -> int:
+    """Decimal dollars to integer micros of a dollar; positive, at most 6 places."""
+    value = Decimal(raw.strip().lstrip("$").replace(",", "")) * 1_000_000
+    if value <= 0 or value != value.to_integral_value():
+        raise ValueError(f"'{raw}' must be a positive amount with at most 6 decimal places")
+    return int(value)
+
+
+def _derive_opening_balances(
+    model_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    scenario_row: dict[str, str],
+    issues: list[str],
+) -> None:
+    """Fill a lot's blank ``opening_balance`` from ``quantity`` x the latest
+    ``security_price`` for its ``symbol`` on or before the scenario start
+    (ADR-005 §4). A given balance is left alone: it stays authoritative."""
+    start = scenario_row.get("start", "")
+    prices: dict[str, list[tuple[str, int]]] = {}
+    for kind, series, payload, effective in aux_rows:
+        if kind == "security_price":
+            prices.setdefault(series or "", []).append((effective, payload["price_micros"]))
+    for i, row in enumerate(model_rows, start=2):
+        if row.get("opening_balance") or not row.get("quantity"):
+            continue
+        name, symbol = row.get("account_name", ""), row.get("symbol", "")
+        try:
+            quantity = _quantity_to_micros(row["quantity"])
+        except (ValueError, InvalidOperation):
+            continue
+        if not symbol:
+            issues.append(
+                f"account_values.csv row {i} ({name}): quantity without "
+                "opening_balance needs a symbol"
+            )
+            continue
+        known = [p for p in prices.get(symbol.replace("_", " "), []) if p[0] <= start]
+        if not known:
+            issues.append(
+                f"account_values.csv row {i} ({name}): no security_price for "
+                f"'{symbol}' on or before {start} (aux/security_price__{symbol}.csv)"
+            )
+            continue
+        price = max(known)[1]
+        cents = (quantity * price + 5_000_000_000) // 10_000_000_000
+        row["opening_balance"] = f"{cents // 100}.{cents % 100:02d}"
 
 
 def _quantity_to_micros(raw: str) -> int:

@@ -407,24 +407,43 @@ def load_test_copy(test_data_dir: Path, test_scenarios_dir: Path,
 
 
 @pytest.fixture(scope="function")
+def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
+    """Write a file into the private data copy's ``aux/`` directory."""
+    def _write(filename: str, text: str) -> Path:
+        path = test_data_dir / "aux" / filename
+        path.write_text(text)
+        return path
+    return _write
+
+
+@pytest.fixture(scope="function")
+def set_brokerage_lots(retire_alice_csv: Callable[[str], Path]) -> Callable[[list[dict[str, str]]], None]:
+    """Replace Asset_Brokerage_Joint's account_values row with the given lots
+    (dicts of account_values.csv columns; ``account_name`` is filled in)."""
+    def _set(lots: list[dict[str, str]]) -> None:
+        values = pd.read_csv(retire_alice_csv("account_values.csv"), dtype=str, keep_default_na=False)
+        values = values[values["account_name"] != "Asset_Brokerage_Joint"]
+        for column in ("symbol", "quantity"):
+            values[column] = ""
+        rows = pd.DataFrame([{"account_name": "Asset_Brokerage_Joint", **lot} for lot in lots])
+        pd.concat([values, rows], ignore_index=True).fillna("").to_csv(
+            retire_alice_csv("account_values.csv"), index=False)
+    return _set
+
+
+@pytest.fixture(scope="function")
 def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+                     set_brokerage_lots: Callable[[list[dict[str, str]]], None],
                      load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:
     """Run of a retire_alice copy whose brokerage is split into lots ``a`` (symbol
-    AAA, 1000 shares, with its own growth series) and ``b`` (BBB, 2000.5 shares), with a monthly draw from lot b."""
-    values = pd.read_csv(retire_alice_csv("account_values.csv"), dtype=str, keep_default_na=False)
-    values = values[values["account_name"] != "Asset_Brokerage_Joint"]
-    values["symbol"] = ""
-    values["quantity"] = ""
-    lots = pd.DataFrame([
-        {"account_name": "Asset_Brokerage_Joint", "lot": "a", "symbol": "AAA",
-         "quantity": "1000", "opening_balance": "100000.00",
+    AAA, 1000 shares, with its own growth series) and ``b`` (BBB, 2000.5 shares),
+    with a monthly draw from lot b."""
+    set_brokerage_lots([
+        {"lot": "a", "symbol": "AAA", "quantity": "1000", "opening_balance": "100000.00",
          "opening_cost_basis": "60000.00"},
-        {"account_name": "Asset_Brokerage_Joint", "lot": "b", "symbol": "BBB",
-         "quantity": "2,000.5", "opening_balance": "200000.00",
+        {"lot": "b", "symbol": "BBB", "quantity": "2,000.5", "opening_balance": "200000.00",
          "opening_cost_basis": "140000.00"},
     ])
-    pd.concat([values, lots], ignore_index=True).fillna("").to_csv(
-        retire_alice_csv("account_values.csv"), index=False)
 
     calendar = retire_alice_csv("calendar.csv")
     calendar.write_text(calendar.read_text().replace(
