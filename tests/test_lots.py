@@ -391,3 +391,52 @@ def test_shipped_account_values_files_carry_every_lot_column(
         repo_root / "templates" / "scenarios" / "template" / "account_values.csv",
     ):
         assert tuple(path.read_text().splitlines()[0].split(",")) == ACCOUNT_VALUES_CSV_HEADER, path
+
+
+def test_explain_lists_each_lot_with_its_symbol_and_quantity(two_lot_run_file: Path) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    result = CliRunner().invoke(main, ["sim", "explain", str(two_lot_run_file)])
+    assert result.exit_code == 0, result.output
+    section = result.output.split("lots at the final step:")[1].split("year-end net worth:")[0]
+    a = next(line for line in section.splitlines() if "Asset_Brokerage_Joint (a)" in line)
+    b = next(line for line in section.splitlines() if "Asset_Brokerage_Joint (b)" in line)
+    assert "AAA" in a and " 1,000 " in a
+    assert "BBB" in b and "2,000.5" not in b  # part of it was sold
+    assert "Asset_TraditionalIRA_Alice (default)" in section  # investment accounts always listed
+
+
+def test_items_can_be_limited_to_one_lot(two_lot_run_file: Path) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    def items(lot: str):
+        return CliRunner().invoke(main, [
+            "sim", "items", "--account", "Asset_Brokerage_Joint", "--lot", lot,
+            "--start", "2026-05-31", "--months", "3", "--runfile", str(two_lot_run_file),
+        ])
+
+    lot_b, lot_a = items("b"), items("a")
+    assert lot_b.exit_code == 0, lot_b.output
+    assert "(lot b)" in lot_b.output and "return_of_capital" in lot_b.output
+    assert lot_a.exit_code == 0, lot_a.output
+    assert "return_of_capital" not in lot_a.output
+    assert "growth_asset_brokerage_joint_a" in lot_a.output
+    assert items("nope").exit_code != 0
+
+
+def test_lot_balance_item_and_member_columns(two_lot_run_file: Path, test_data_dir: Path) -> None:
+    from analysis.sim.connection import open_run, open_scenario
+
+    with open_scenario(test_data_dir, "retire_alice") as sc:
+        with open_run(two_lot_run_file, sc, scenarios_dir=test_data_dir / "scenarios") as run:
+            held = run.items("lot_balance", account="Asset_Brokerage_Joint")
+            assert set(held["lot"]) == {"a", "b"}
+            last = held[held["month"] == held["month"].max()].set_index("lot")
+            assert last.loc["a", "symbol"] == "AAA" and last.loc["a", "quantity_micros"] == 1_000_000_000
+            members = run.items("account_model_member", symbol="BBB")
+            assert list(members["account"]) == ["Asset_Brokerage_Joint"]
+            assert members.iloc[0]["quantity_micros"] == 2_000_500_000

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -458,6 +458,16 @@ SELECT s.month, a.id AS account_id, a.name, a.kind, a.subkind,
 FROM simulation_step s
 JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
+WHERE a.kind IN ('asset','liability');
+
+-- One row per lot per month: the holdings inside each account.
+CREATE VIEW balance_by_lot AS
+SELECT s.month, a.id AS account_id, a.name AS account, m.id AS lot_id, m.lot,
+       m.symbol, a.kind, a.subkind, ls.balance, ls.cost_basis, ls.quantity_micros
+FROM simulation_step s
+JOIN lot_state ls ON ls.step_id = s.id
+JOIN account_model_member m ON m.id = ls.lot_id
+JOIN account a ON a.id = m.account_id
 WHERE a.kind IN ('asset','liability');
 
 CREATE VIEW balance_by_subkind AS

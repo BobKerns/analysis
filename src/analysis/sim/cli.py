@@ -443,6 +443,31 @@ def explain(runfile: Path) -> None:
             f"counts:         steps={steps}  account_states={states}  transfers={xfers}"
         )
 
+        lots = con.execute(
+            "SELECT a.name, a.subkind, m.lot, m.symbol, ls.quantity_micros, "
+            "       ls.balance, ls.cost_basis "
+            "FROM account_model_member m "
+            "JOIN account a ON a.id = m.account_id "
+            "JOIN lot_state ls ON ls.lot_id = m.id AND ls.step_id = "
+            "  (SELECT id FROM simulation_step ORDER BY step_index DESC LIMIT 1) "
+            "WHERE a.subkind IN ({}) OR a.id IN "
+            "  (SELECT account_id FROM account_model_member "
+            "   GROUP BY account_id HAVING COUNT(*) > 1) "
+            "ORDER BY a.name, m.id".format(
+                ",".join("?" * len(INVESTMENT_ASSET_SUBKINDS))
+            ),
+            sorted(INVESTMENT_ASSET_SUBKINDS),
+        ).fetchall()
+        if lots:
+            click.echo("")
+            click.echo("lots at the final step:")
+            for name, subkind, lot, symbol, quantity, balance, basis in lots:
+                click.echo(
+                    f"  {_account_with_lot(name, subkind, lot):<44}"
+                    f"{(symbol or '-'):<8}{_fmt_quantity(quantity):>16}"
+                    f"  balance {_fmt_cents(balance)}  basis {_fmt_cents(basis)}"
+                )
+
         click.echo("")
         click.echo("year-end net worth:")
         rows = con.execute(
@@ -462,6 +487,8 @@ def explain(runfile: Path) -> None:
 
 @sim_group_command.command("items")
 @click.option("--account", required=True, help="Account name in the selected run.")
+@click.option("--lot", default=None,
+              help="Only events touching this lot of the account (default: every lot).")
 @click.option("--start", required=True, help="First month (YYYY-MM-DD).")
 @click.option("--end", default=None, help="Last month (YYYY-MM-DD); overrides --months.")
 @click.option("--months", default=1, show_default=True, type=click.IntRange(min=1),
@@ -476,6 +503,7 @@ def explain(runfile: Path) -> None:
               help="Directory to search for the latest run.")
 def items(
     account: str,
+    lot: str | None,
     start: str,
     end: str | None,
     months: int,
@@ -511,25 +539,40 @@ def items(
         if account_row is None:
             raise click.ClickException(f"unknown account in run: {account!r}")
         account_id = account_row[0]
+        lot_id = None
+        if lot is not None:
+            lot_row = con.execute(
+                "SELECT id FROM account_model_member WHERE account_id = ? AND lot = ?",
+                (account_id, lot),
+            ).fetchone()
+            if lot_row is None:
+                raise click.ClickException(f"unknown lot {lot!r} of account {account!r}")
+            lot_id = lot_row[0]
         rows = con.execute(
-            "SELECT te.date, fa.name, ta.name, te.amount, te.requested_cents, "
-            "te.remainder_cents, te.tax_character, "
+            "SELECT te.date, fa.name, fa.subkind, fm.lot, te.from_account, te.from_lot_id, "
+            "ta.name, ta.subkind, tm.lot, te.to_account, te.to_lot_id, "
+            "te.amount, te.requested_cents, te.remainder_cents, te.tax_character, "
             "te.reason_kind, s.name, s.amount_rule_kind "
             "FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account "
             "JOIN account ta ON ta.id = te.to_account "
+            "JOIN account_model_member fm ON fm.id = te.from_lot_id "
+            "JOIN account_model_member tm ON tm.id = te.to_lot_id "
             "LEFT JOIN scheduled_transaction s "
             "  ON s.id = te.reason_id AND te.reason_kind IN ('rule', 'ytd_rule') "
-            "WHERE ? IN (te.from_account, te.to_account) "
+            "WHERE ((? IS NULL AND ? IN (te.from_account, te.to_account)) "
+            "       OR ? IN (te.from_lot_id, te.to_lot_id)) "
             "  AND te.date BETWEEN ? AND ? "
             "ORDER BY te.date, te.id",
-            (account_id, start, end),
+            (lot_id, account_id, lot_id, start, end),
         ).fetchall()
     finally:
         con.close()
 
     click.echo(f"run: {runfile}")
-    click.echo(f"account: {account}  window: {start} through {end}")
+    click.echo(
+        f"account: {account}{f' (lot {lot})' if lot else ''}  window: {start} through {end}"
+    )
     if not rows:
         click.echo("(no matching ledger events)")
         return
@@ -539,26 +582,45 @@ def items(
 
     table = Table(title=f"ledger events ({account})")
     table.add_column("Date")
+    table.add_column("Lot")
     table.add_column("Direction")
     table.add_column("Amount", justify="right")
     table.add_column("Requested", justify="right")
     table.add_column("Remainder", justify="right")
     table.add_column("Tax")
     table.add_column("Origin")
-    for (date, from_name, to_name, amount, requested, remainder, tax_character,
+    for (date, from_name, from_subkind, from_lot, from_account_id, from_lot_id,
+         to_name, to_subkind, to_lot, to_account_id, to_lot_id,
+         amount, requested, remainder, tax_character,
          reason_kind, rule_name, rule_kind) in rows:
-        direction = f"to {to_name}" if from_name == account else f"from {from_name}"
+        own_is_from = (from_lot_id == lot_id) if lot_id is not None else (
+            from_account_id == account_id
+        )
+        if own_is_from:
+            direction = "to " + _account_with_lot(to_name, to_subkind, to_lot)
+            own = from_lot
+        else:
+            direction = "from " + _account_with_lot(from_name, from_subkind, from_lot)
+            own = to_lot
         origin = (
             f"{reason_kind}: {rule_name} ({rule_kind})"
             if rule_name is not None
             else reason_kind
         )
         table.add_row(
-            date, direction, _fmt_cents(amount).strip(),
+            date, own, direction, _fmt_cents(amount).strip(),
             _fmt_cents(requested).strip(), _fmt_cents(remainder).strip(),
             tax_character, origin,
         )
     Console(width=200).print(table)
+
+
+def _fmt_quantity(micros: int | None) -> str:
+    """Shares from micros, with trailing zeros dropped (``-`` when untracked)."""
+    if micros is None:
+        return "-"
+    text = f"{micros / 1_000_000:,.6f}".rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _fmt_cents(cents: int | None) -> str:

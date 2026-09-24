@@ -227,8 +227,10 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account a         ON a.id = ast.account_id "
         "ORDER BY s.month, a.name"
     ),
+    "lot_balance": "SELECT * FROM balance_by_lot ORDER BY month, account, lot_id",
     "account_model_member": (
-        "SELECT a.name AS account, m.lot, a.kind, a.subkind, a.tax_treatment, "
+        "SELECT a.name AS account, m.lot, m.symbol, m.acquired, m.quantity_micros, "
+        "       m.series, a.kind, a.subkind, a.tax_treatment, "
         "       m.opening_balance, m.opening_cost_basis, "
         "       m.prior_year_end_balance "
         "FROM account_model_member m "

@@ -63,9 +63,12 @@ Exit: tests for derived balance, rounding, missing price, and precedence.
 
 ## Phase 4 — Tooling and reporting
 
-1. `cli.py`: `add_account` (writes the `lot` column, prompts for it on investment subkinds, around `cli.py:1160-1269`); the account_values sync command (around `cli.py:1783-1830`) creates one row per lot; the Quicken import (around `cli.py:1850-1987`) updates single-lot accounts and skips multi-lot accounts with a warning until a per-security import exists. `sim explain` gains a per-lot listing.
-2. `connection.py`: `account_model_member` item type exposes the new columns; add a `lot_state` item type and a per-lot balance view (`balance_by_lot`).
-3. `accounts.py` / notebook UI: account view stays aggregated; add a lot breakdown widget (account → lots, balance, basis, unrealized gain).
+1. **CLI tooling for lots: done** (built with Phase 2 because renames, deletes and completions would otherwise break): `--from-lot`/`--to-lot` on `transfer add`/`scheduled add`, `--from-lot` on `import-baseline`, lot shown in `transfer list`, `account add`/`sync` write the lot columns, `import-quicken` skips multi-lot accounts.
+2. **Data layer and per-lot listings: done.** `balance_by_lot` view (schema 19), a `lot_balance` item type (month, account, lot, symbol, balance, basis, quantity), the `account_model_member` item now carries `symbol`, `acquired`, `quantity_micros` and `series`; `sim explain` lists each lot of investment and multi-lot accounts at the final step; `sim items --account A --lot L` limits ledger events to one lot and shows the lot on each row.
+3. **Holdings views: not started.** Both are built on `lot_balance` / `account_model_member`:
+   - `sim account holdings <account>` and a notebook widget: the lots in one account (lot, symbol, acquired, quantity, balance, basis, unrealized gain), from a run at a chosen month or, with no run, from the opening values.
+   - `sim account holders <symbol>` and a notebook widget: every account holding a symbol (account, lot, quantity, balance, basis, tax treatment), with a total across accounts.
+4. **Scenario comparison of holdings: design needed.** Decide how `notebooks/scenario_compare.ipynb` shows lot-level differences between scenarios before building it. Open questions: compare by `(account, lot)` or by symbol across accounts; how to show a lot that exists in only one scenario; which columns (quantity, balance, basis, unrealized gain) and whether as absolute values or differences; how it fits with the existing account comparison functions and the account picker (`compare_plots.py`, `accounts_plots.py`, `AccountPicker`).
 
 Exit: CLI tests for each command; notebook UI tests using the existing fixtures.
 
