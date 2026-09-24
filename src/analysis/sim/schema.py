@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -33,21 +33,6 @@ CREATE TABLE account (
                         ('taxable','tax_deferred','tax_free','none')),
     opened          TEXT,
     closed          TEXT,
-    -- Balance management (ADR-003 §4.7): a debit that would drop the balance
-    -- below minimum_balance_cents triggers a look-ahead draw on refill_chain_id
-    -- BEFORE the debit posts (not a month-end reconciliation); when it would
-    -- exceed maximum_balance_cents (NULL = unbounded), sweep the excess into
-    -- overflow_chain_id at month end. Both chains are resolved recursively.
-    -- refill_target_cents/refill_amount_cents are mutually exclusive: the
-    -- former refills to that fixed level, the latter by that fixed amount (or
-    -- enough to reach minimum_balance_cents if that is greater); neither set
-    -- means refill exactly to minimum_balance_cents.
-    minimum_balance_cents  INTEGER NOT NULL DEFAULT 0,
-    refill_chain_id        INTEGER REFERENCES chain(id),
-    refill_target_cents    INTEGER,
-    refill_amount_cents    INTEGER,
-    maximum_balance_cents  INTEGER,
-    overflow_chain_id      INTEGER REFERENCES chain(id),
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
         (kind = 'asset' AND subkind IN ('checking','savings','brokerage_taxable',
@@ -117,6 +102,17 @@ CREATE TABLE account_model (
 -- One row per lot (ADR-005): a lot is a position inside one account, and the
 -- engine keys balances, basis and quantity on `id`. Accounts that are not split
 -- have a single lot labelled 'default'.
+--
+-- Balance management is per lot (ADR-003 §4.3): a debit that would drop the
+-- lot's balance below minimum_balance_cents triggers a look-ahead draw on
+-- refill_chain_id BEFORE the debit posts (not a month-end reconciliation);
+-- when it would exceed maximum_balance_cents (NULL = unbounded), the excess is
+-- swept into overflow_chain_id at month end. Both chains are resolved
+-- recursively, and may name other lots of the same account.
+-- refill_target_cents/refill_amount_cents are mutually exclusive: the former
+-- refills to that fixed level, the latter by that fixed amount (or enough to
+-- reach minimum_balance_cents if that is greater); neither set means refill
+-- exactly to minimum_balance_cents.
 CREATE TABLE account_model_member (
     id                      INTEGER PRIMARY KEY,
     model_id                INTEGER NOT NULL REFERENCES account_model(id),
@@ -129,6 +125,12 @@ CREATE TABLE account_model_member (
     opening_balance         INTEGER NOT NULL,
     opening_cost_basis      INTEGER,
     prior_year_end_balance  INTEGER,
+    minimum_balance_cents   INTEGER NOT NULL DEFAULT 0,
+    refill_chain_id         INTEGER REFERENCES chain(id),
+    refill_target_cents     INTEGER,
+    refill_amount_cents     INTEGER,
+    maximum_balance_cents   INTEGER,
+    overflow_chain_id       INTEGER REFERENCES chain(id),
     UNIQUE (model_id, account_id, lot)
 );
 

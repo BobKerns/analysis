@@ -70,8 +70,8 @@ Exit: tests for derived balance, rounding, missing price, and precedence.
 4. **Scenario comparison of lots: done** (`notebook_ui/lot_compare.py`, and two new sections in `notebooks/scenario_compare.ipynb`). Differences from the design: the lot diff has a measure toggle from the start (balance, cost basis, quantity), and the `account` item also lists chain names. Two new widgets in a new module `notebook_ui/lot_compare.py`, called like the existing ones (`CONNECTIONS.show(widget, ...)`, same `container, connections, scenarios, variants, baseline` arguments). `compare_plots.py` is left alone.
 
    **a. `account_definitions_widget`, after "What actually differs?"** Shows only what differs from the baseline, in the shape of `rules_and_events_widget`: rows `(account, lot, field)`, one column per scenario, `—` where a scenario has no value. A lot present in only some scenarios gets a `(exists)` row plus its fields.
-   - *Account-level rows* (lot blank, listed above the account's lots): `kind`, `subkind`, `owner`, `tax_treatment`, `opened`, `closed`, minimum/maximum balance, refill target/amount, refill and overflow chain *names*, tags. Built-in and `diff: transient` accounts are left out, as in the balance diffs.
-   - *Lot rows* (one sub-row per lot): `symbol`, `acquired`, `quantity`, `series`, `opening_balance`, `opening_cost_basis`, `prior_year_end_balance`. `opening_balance` is the stored value, so a balance derived from quantity and price is compared as derived.
+   - *Account-level rows* (lot blank, listed above the account's lots): `kind`, `subkind`, `owner`, `tax_treatment`, `opened`, `closed`, tags. Built-in and `diff: transient` accounts are left out, as in the balance diffs.
+   - *Lot rows* (one sub-row per lot): `symbol`, `acquired`, `quantity`, `series`, `opening_balance`, `opening_cost_basis`, `prior_year_end_balance`, and the per-lot balance-management fields (Phase 7). `opening_balance` is the stored value, so a balance derived from quantity and price is compared as derived.
    - *Year-to-date rows*, a second table keyed by the `year_to_date.csv` row name: from and to (account and lot), amount, tax character, year.
    - Needs two small item changes: the `account` item exposes refill/overflow chain names (their ids differ between scenarios), and the `year_to_date` item exposes lot labels.
 
@@ -97,6 +97,10 @@ Implemented as designed: `subject_account` lives in `params_json` (where `factor
 ## Phase 6 — Documentation (done)
 
 Apply the ADR-005 "Amendments to apply" list to ADR-001, ADR-002, and ADR-003 (the DDL in ADR-002 must match `schema.py`); mark ADR-005 Accepted; update the `schema_overview` rows and `prototype_data` README text for the new columns.
+
+## Phase 7 — Per-lot cash management (done)
+
+Lifts the Phase 2 restriction that `minimum_balance`, refill and overflow are only for single-lot accounts. The engine already kept these settings in dicts keyed by lot id, so the change is in the data model: the six columns moved from `account` to `account_model_member` (schema 22), and from `accounts.csv` to `account_values.csv`, which gained `refill_lot` and `overflow_lot` so a chain reference follows the same explicit-lot rule as every other reference (a value left in `accounts.csv` is a load error naming the new place). The `account` item no longer carries them; the `account_model_member` item exposes them with the chain name and lot split out, and the lot-definitions comparison shows them per lot. `account delete`/`rename` follow the columns. A lot may refill from a sibling lot of its own account (`tests/test_lot_refill.py`). Motivating cases: refilling an HSA's cash lot from its funds, and consolidating several bank accounts into lots of one account when only some refill.
 
 ## Risks
 

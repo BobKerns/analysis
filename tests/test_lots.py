@@ -138,14 +138,6 @@ def test_prior_year_end_balance_is_all_or_none_per_account(
         load_test_copy()
 
 
-def test_cash_management_only_on_single_lot_accounts(
-    add_account_value: Callable[..., None], load_test_copy: Callable[[], LoadResult]
-) -> None:
-    add_account_value("Asset_Checking", lot="b", opening_balance="10.00")
-    with pytest.raises(LoadError, match=r"Asset_Checking\): minimum_balance.*single-lot accounts"):
-        load_test_copy()
-
-
 def test_two_lot_account_has_a_lot_state_row_per_lot(two_lot_run_file: Path) -> None:
     con = sqlite3.connect(two_lot_run_file)
     try:

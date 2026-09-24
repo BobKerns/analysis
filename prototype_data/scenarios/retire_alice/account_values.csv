@@ -1,9 +1,9 @@
-account_name,lot,symbol,acquired,quantity,series,opening_balance,opening_cost_basis,prior_year_end_balance
-Asset_Checking,,,,,,5000.00,,
-Asset_Savings,,,,,,20000.00,,
-Asset_Brokerage_Joint,default,,,,,300000.00,200000.00,
-Asset_TraditionalIRA_Alice,default,,,,,500000.00,,480000.00
-Asset_Roth_Alice,default,,,,,100000.00,,
-Asset_Roth_Bob,default,,,,,80000.00,,
-Asset_Home,,,,,,600000.00,400000.00,
-Liability_Mortgage,,,,,,250000.00,,
+account_name,lot,symbol,acquired,quantity,series,opening_balance,opening_cost_basis,prior_year_end_balance,minimum_balance,maximum_balance,refill_chain,refill_lot,refill_target,refill_amount,overflow_chain,overflow_lot
+Asset_Checking,,,,,,5000.00,,,2000.00,,asset checking liquidity,,,,,
+Asset_Savings,,,,,,20000.00,,,,,,,,,,
+Asset_Brokerage_Joint,default,,,,,300000.00,200000.00,,,,,,,,,
+Asset_TraditionalIRA_Alice,default,,,,,500000.00,,480000.00,,,,,,,,
+Asset_Roth_Alice,default,,,,,100000.00,,,,,,,,,,
+Asset_Roth_Bob,default,,,,,80000.00,,,,,,,,,,
+Asset_Home,,,,,,600000.00,400000.00,,,,,,,,,
+Liability_Mortgage,,,,,,250000.00,,,,,,,,,,

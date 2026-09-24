@@ -543,7 +543,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_calendar(calendar_rows, leaves, issues)
-    _validate_chains(chains, accounts, leaves, issues, money_resolver=money_resolver)
+    _validate_chains(chains, model_rows, leaves, issues, money_resolver=money_resolver)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
     _validate_lifespan(lifespan_rows, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
@@ -1011,24 +1011,11 @@ def _validate_accounts(
         tt = row.get("tax_treatment", "")
         if tt and tt not in registries.TAX_TREATMENTS:
             issues.append(f"accounts.csv row {i} ({name}): unknown tax_treatment '{tt}'")
-        for column in ("minimum_balance", "maximum_balance", "refill_target", "refill_amount"):
-            value = row.get(column, "")
-            if value:
-                try:
-                    _dollars_to_cents(value, resolver=money_resolver)
-                except ValueError as e:
-                    issues.append(f"accounts.csv row {i} ({name}): {column} {e}")
-        refill_target = row.get("refill_target", "")
-        refill_amount = row.get("refill_amount", "")
-        if refill_target and refill_amount:
+        moved = [c for c in registries.CASH_MANAGEMENT_COLUMNS if row.get(c)]
+        if moved:
             issues.append(
-                f"accounts.csv row {i} ({name}): refill_target and refill_amount "
-                "are mutually exclusive; set at most one"
-            )
-        if (refill_target or refill_amount) and not row.get("refill_chain", ""):
-            issues.append(
-                f"accounts.csv row {i} ({name}): refill_target/refill_amount "
-                "requires refill_chain to be set"
+                f"accounts.csv row {i} ({name}): {', '.join(moved)} moved to "
+                "account_values.csv, where each lot has its own"
             )
         _validate_tags("accounts.csv", i, name, row.get("tags", ""), issues)
 
@@ -1173,6 +1160,8 @@ def _validate_account_model_money(
                 issues.append(
                     f"account_values.csv row {i} ({name}): opening_cost_basis {e}"
                 )
+        _validate_cash_management(row, f"account_values.csv row {i} ({name})",
+                                  issues, money_resolver=money_resolver)
         pyeb = row.get("prior_year_end_balance", "")
         if pyeb != "":
             try:
@@ -1209,27 +1198,40 @@ def _validate_account_model_money(
     rows_by_account: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         rows_by_account.setdefault(row.get("account_name", ""), []).append(row)
-    cash_management = (
-        "minimum_balance", "maximum_balance", "refill_chain", "refill_target",
-        "refill_amount", "overflow_chain",
-    )
     for a in accounts:
         lots = rows_by_account.get(a.get("name", ""), [])
         if len(lots) < 2:
             continue
         name = a["name"]
-        used = [c for c in cash_management if a.get(c)]
-        if used:
-            issues.append(
-                f"accounts.csv ({name}): {', '.join(used)} only supported on "
-                f"single-lot accounts ({len(lots)} lots in account_values.csv)"
-            )
         with_pyeb = sum(1 for r in lots if r.get("prior_year_end_balance"))
         if 0 < with_pyeb < len(lots):
             issues.append(
                 f"account_values.csv ({name}): prior_year_end_balance must be set "
                 "on every lot of an account or on none"
             )
+
+
+def _validate_cash_management(
+    row: dict[str, str], where: str, issues: list[str],
+    *, money_resolver: _MoneyReferenceResolver,
+) -> None:
+    """The per-lot balance-management columns, apart from the chain references
+    (which need the chain names; see ``_validate_chains``)."""
+    for column in ("minimum_balance", "maximum_balance", "refill_target", "refill_amount"):
+        value = row.get(column, "")
+        if value:
+            try:
+                _dollars_to_cents(value, resolver=money_resolver)
+            except ValueError as e:
+                issues.append(f"{where}: {column} {e}")
+    target, amount = row.get("refill_target", ""), row.get("refill_amount", "")
+    if target and amount:
+        issues.append(f"{where}: refill_target and refill_amount are mutually exclusive; set at most one")
+    if (target or amount) and not row.get("refill_chain", ""):
+        issues.append(f"{where}: refill_target/refill_amount requires refill_chain to be set")
+    for chain_col, lot_col in (("refill_chain", "refill_lot"), ("overflow_chain", "overflow_lot")):
+        if row.get(lot_col) and not row.get(chain_col):
+            issues.append(f"{where}: {lot_col} set without {chain_col}")
 
 
 def _dollars_to_micros(raw: str) -> int:
@@ -1508,7 +1510,7 @@ def _reject_cycles(edges: dict[str, set[str]], issues: list[str], *, label: str)
 
 def _validate_chains(
     chains: dict[str, tuple[str, list[dict[str, str]]]],
-    accounts: list[dict[str, str]],
+    model_rows: list[dict[str, str]],
     leaves: _LeafIndex,
     issues: list[str],
     *,
@@ -1566,18 +1568,23 @@ def _validate_chains(
                     f"chains/{kind}__{name}.csv row {i}: series requires maximum"
                 )
 
-    for a in accounts:
-        for column in ("refill_chain", "overflow_chain"):
-            target = a.get(column, "")
-            if not target:
+    for i, row in enumerate(model_rows, start=2):
+        holder = leaves.leaf_of.get(
+            (row.get("account_name", ""), row.get("lot") or registries.DEFAULT_LOT)
+        )
+        for column, lot_column in (
+            ("refill_chain", "refill_lot"), ("overflow_chain", "overflow_lot"),
+        ):
+            if not row.get(column):
                 continue
-            if target not in resolvable:
+            problem = _resolve_ref(row, column, lot_column, leaves, set(chains))
+            if problem:
                 issues.append(
-                    f"accounts.csv ({a.get('name', '')}): {column} "
-                    f"{_ref_problem(target, leaves, frozenset())}"
+                    f"account_values.csv row {i} ({row.get('account_name', '')}): "
+                    f"{column} {problem}"
                 )
-            elif target in chains:
-                edges.setdefault(a["name"], set()).add(target)
+            elif row[column] in chains and holder:
+                edges.setdefault(holder, set()).add(row[column])
 
     _reject_cycles(edges, issues, label="chains/*.csv")
 
@@ -1672,21 +1679,11 @@ def _write_intent(
     for a in accounts:
         cur = con.execute(
             "INSERT INTO account(name, kind, subkind, owner, tax_treatment, "
-            "opened, closed, minimum_balance_cents, maximum_balance_cents, "
-            "refill_target_cents, refill_amount_cents, "
-            "meta_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "opened, closed, meta_json) VALUES (?,?,?,?,?,?,?,?)",
             (
                 a["name"], a["kind"], a["subkind"],
                 a.get("owner") or None, a.get("tax_treatment") or None,
                 a.get("opened") or None, a.get("closed") or None,
-                _dollars_to_cents(a["minimum_balance"], resolver=money_resolver)
-                if a.get("minimum_balance") else 0,
-                _dollars_to_cents(a["maximum_balance"], resolver=money_resolver)
-                if a.get("maximum_balance") else None,
-                _dollars_to_cents(a["refill_target"], resolver=money_resolver)
-                if a.get("refill_target") else None,
-                _dollars_to_cents(a["refill_amount"], resolver=money_resolver)
-                if a.get("refill_amount") else None,
                 a.get("meta_json") or "{}",
             ),
         )
@@ -1709,6 +1706,7 @@ def _write_intent(
         rows_by_account.setdefault(m["account_name"], []).append(m)
     lot_ids: dict[str, int] = {}
     lot_account: dict[str, str] = {}
+    lot_rows: dict[str, dict[str, str]] = {}
     member_count = 0
     for a in accounts:
         for m in rows_by_account.get(a["name"]) or [
@@ -1719,7 +1717,9 @@ def _write_intent(
                 "INSERT INTO account_model_member("
                 "model_id, account_id, lot, symbol, acquired, quantity_micros, "
                 "series, opening_balance, opening_cost_basis, "
-                "prior_year_end_balance) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "prior_year_end_balance, minimum_balance_cents, "
+                "maximum_balance_cents, refill_target_cents, refill_amount_cents) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     model_id,
                     account_ids[a["name"]],
@@ -1733,10 +1733,19 @@ def _write_intent(
                     if m.get("opening_cost_basis") else None,
                     _dollars_to_cents(m["prior_year_end_balance"], resolver=money_resolver)
                     if m.get("prior_year_end_balance") else None,
+                    _dollars_to_cents(m["minimum_balance"], resolver=money_resolver)
+                    if m.get("minimum_balance") else 0,
+                    _dollars_to_cents(m["maximum_balance"], resolver=money_resolver)
+                    if m.get("maximum_balance") else None,
+                    _dollars_to_cents(m["refill_target"], resolver=money_resolver)
+                    if m.get("refill_target") else None,
+                    _dollars_to_cents(m["refill_amount"], resolver=money_resolver)
+                    if m.get("refill_amount") else None,
                 ),
             )
             leaf = registries.leaf_chain_name(a["name"], lot, a["subkind"])
             lot_ids[leaf] = cur.lastrowid
+            lot_rows[leaf] = m
             lot_account[leaf] = a["name"]
             member_count += 1
     counts["account_model_member"] = member_count
@@ -1780,20 +1789,19 @@ def _write_intent(
             step_count += 1
     counts["chain_steps"] = step_count
 
-    for a in accounts:
-        refill = a.get("refill_chain") or None
-        overflow = a.get("overflow_chain") or None
+    for leaf, m in lot_rows.items():
+        refill = m.get("refill_chain") or None
+        overflow = m.get("overflow_chain") or None
         if refill or overflow:
             con.execute(
-                "UPDATE account SET refill_chain_id = ?, overflow_chain_id = ? "
-                "WHERE id = ?",
+                "UPDATE account_model_member SET refill_chain_id = ?, "
+                "overflow_chain_id = ? WHERE id = ?",
                 (
                     chain_ids[refill] if refill else None,
                     chain_ids[overflow] if overflow else None,
-                    account_ids[a["name"]],
+                    lot_ids[leaf],
                 ),
             )
-
 
     cur = con.execute(
         "INSERT INTO calendar(name, description, created_at) VALUES (?,?,?)",

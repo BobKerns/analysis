@@ -1,1 +1,1 @@
-name,kind,subkind,owner,tax_treatment,series,tax_character,minimum_balance,refill_chain,refill_target,refill_amount,maximum_balance,overflow_chain,opened,closed,meta_json,tags
+name,kind,subkind,owner,tax_treatment,series,tax_character,opened,closed,meta_json,tags

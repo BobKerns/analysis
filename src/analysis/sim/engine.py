@@ -1529,10 +1529,10 @@ def _load_chain_graph(con) -> ChainGraph:
     maximum_of: dict[int, int | None] = {}
     overflow_chain_of: dict[int, int | None] = {}
     for a_id, minimum, refill, refill_target, refill_amount, maximum, overflow in con.execute(
-        "SELECT m.id, a.minimum_balance_cents, a.refill_chain_id, "
-        "       a.refill_target_cents, a.refill_amount_cents, "
-        "       a.maximum_balance_cents, a.overflow_chain_id "
-        "FROM account_model_member m JOIN account a ON a.id = m.account_id"
+        "SELECT id, minimum_balance_cents, refill_chain_id, "
+        "       refill_target_cents, refill_amount_cents, "
+        "       maximum_balance_cents, overflow_chain_id "
+        "FROM account_model_member"
     ):
         minimum_of[a_id] = minimum
         refill_chain_of[a_id] = refill

@@ -325,13 +325,16 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (scenario_dir / "accounts.csv").write_text(
-        "name,kind,subkind,owner,tax_treatment,series,tax_character,minimum_balance,"
-        "refill_chain,maximum_balance,overflow_chain,opened,closed,meta_json,tags\n"
-        "Asset_Checking,asset,checking,,taxable,,,,missing,,,,,{}\n",
+        "name,kind,subkind,owner,tax_treatment,series,tax_character,opened,closed,"
+        "meta_json,tags\n"
+        "Asset_Checking,asset,checking,,taxable,,,,,{},\n",
         encoding="utf-8",
     )
     for filename, header in {
-        "account_values.csv": "account_name,opening_balance,opening_cost_basis,prior_year_end_balance",
+        "account_values.csv": (
+            "account_name,opening_balance,opening_cost_basis,prior_year_end_balance,"
+            "refill_chain\nAsset_Checking,100.00,,,missing"
+        ),
         "scheduled.csv": (
             "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,interest_account"
             ",person,series,rate_micros,claim_age,amount,base_date,inflation_cadence,tax_character"

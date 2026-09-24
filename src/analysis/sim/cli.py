@@ -1435,10 +1435,11 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
 
     changed = False
     accounts_path = scenario_dir / "accounts.csv"
+    changed |= _rename_account_row_values(accounts_path, ("name",), old_name, new_name)
     changed |= _rename_account_row_values(
-        accounts_path, ("name", "refill_chain", "overflow_chain"), old_name, new_name,
+        scenario_dir / "account_values.csv",
+        ("account_name", "refill_chain", "overflow_chain"), old_name, new_name,
     )
-    changed |= _rename_account_row_values(scenario_dir / "account_values.csv", ("account_name",), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "scheduled.csv",
                                           ("from_account", "to_account", "interest_account"),
                                           old_name, new_name)
@@ -1458,6 +1459,8 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
     click.echo(f"renamed account '{old_name}' to '{new_name}' in {scenario_dir}")
 
 
+_LOT_CHAIN_FIELDS = ("refill_chain", "overflow_chain")
+
 _ACCOUNT_REFERENCE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("account_values.csv", ("account_name",)),
     ("scheduled.csv", ("from_account", "to_account", "interest_account")),
@@ -1470,19 +1473,19 @@ _ACCOUNT_REFERENCE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
     """Return direct CSV references to an account in deterministic display order."""
     references: list[str] = []
-    accounts_path = scenario_dir / "accounts.csv"
-    if accounts_path.exists():
-        accounts = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    values_path = scenario_dir / "account_values.csv"
+    if values_path.exists():
+        values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
         chain_fields = [
-            field for field in ("refill_chain", "overflow_chain") if field in accounts.columns
+            field for field in _LOT_CHAIN_FIELDS if field in values.columns
         ]
-        for idx, row in accounts.iterrows():
-            if row.get("name") == name:
+        for idx, row in values.iterrows():
+            if row.get("account_name") == name:
                 continue
             matched_fields = [field for field in chain_fields if row[field] == name]
             if matched_fields:
                 references.append(
-                    f"  accounts.csv row {idx + 2}: {', '.join(matched_fields)}"
+                    f"  account_values.csv row {idx + 2}: {', '.join(matched_fields)}"
                 )
 
     paths = [
@@ -1529,11 +1532,21 @@ def _delete_account_references(scenario_dir: Path, name: str) -> None:
         if not keep.all():
             df.loc[keep].to_csv(path, index=False)
 
+    values_path = scenario_dir / "account_values.csv"
+    if values_path.exists():
+        values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+        blanked = False
+        for field, lot_field in (("refill_chain", "refill_lot"), ("overflow_chain", "overflow_lot")):
+            if field in values.columns:
+                hit = values[field] == name
+                if hit.any():
+                    values.loc[hit, [field, lot_field]] = ""
+                    blanked = True
+        if blanked:
+            values.to_csv(values_path, index=False)
+
     accounts_path = scenario_dir / "accounts.csv"
     df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
-    for field in ("refill_chain", "overflow_chain"):
-        if field in df.columns:
-            df.loc[df[field] == name, field] = ""
     keep = df["name"] != name
     if not keep.all():
         df.loc[keep].to_csv(accounts_path, index=False)

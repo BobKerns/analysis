@@ -78,7 +78,7 @@ The loader resolves each `(account, lot)` pair to that lot's leaf chain and repo
 - For **investment subkinds** (`types.INVESTMENT_ASSET_SUBKINDS`: `brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) a blank lot is a **load error** that lists the account's lots (`'Asset_Brokerage' is an investment account and needs a to_lot (its lots: default)`). There is no defaulting and no implicit chain over an account's lots.
 - For all other subkinds a blank lot means `default`.
 - `:` is reserved: account names, chain names and lot labels may not contain it.
-- `accounts.csv` `refill_chain`/`overflow_chain` name a chain or a non-investment account; an investment account's lots are reached through a chain file.
+- `refill_chain`/`overflow_chain` (on the lot, see §4) name a chain or an account, completed by `refill_lot`/`overflow_lot` under the same rule as every other reference.
 
 The rule depends only on subkind, never on the current lot count, so adding a lot never changes what an existing row means. Splitting lot `default` into, say, `2024-03` and `2025-06` leaves rows saying `lot=default` valid and still meaning that one lot only; the author is responsible for revisiting them.
 
@@ -89,7 +89,7 @@ The rule depends only on subkind, never on the current lot count, so adding a lo
 - `opening_balance` may be blank if `quantity`, `symbol`, and a price (§6) are all present; it is then `quantity × price` at `scenario.start`, rounded to cents. If both balance and quantity are given, the balance is authoritative and no price is consulted.
 - `prior_year_end_balance` is summed across an account's lots for RMD. Either every lot of an account has it or none does.
 - `opening_cost_basis` requirements are unchanged, now per lot.
-- Cash-management attributes on `accounts.csv` (`minimum_balance`, `refill_*`, `maximum_balance`, `overflow`) are permitted only on accounts with a single lot. Load error otherwise.
+- Cash-management attributes (`minimum_balance`, `refill_*`, `maximum_balance`, `overflow_*`) are per lot: they moved from `accounts.csv` to `account_values.csv` (plan Phase 7), and the engine, which already keyed them by lot id, is unchanged. A lot may refill from a sibling lot of its own account.
 
 ### 5. Growth is per lot
 
@@ -136,7 +136,6 @@ Applied to ADR-001, ADR-002 and ADR-003 (Phase 6).
 ## Open questions deferred
 
 - Runtime-created lots, and cost-basis lot selection (FIFO / HIFO / specific) as a policy on multi-lot withdrawals.
-- Cash-management attributes (`minimum_balance`, refill, overflow) on multi-lot accounts. Motivating case: an HSA whose money-market position is refilled from its mutual funds, currently modelled as two accounts. Revisit once lots exist; the open design question is whether these attach to a lot or to the account.
 - `on_death` sweeps and the other account-level rule kinds (`ss_benefit`, `tax_accumulator`, `mortgage_payment`) all need auditing for one-balance-per-account assumptions; the plan's Phase 0 does this.
 - Namespace collision between account names and symbols in `aux_table` rate series (lookup order in §5 covers it, but an account and a ticker with the same name would be ambiguous).
 - Quicken import is per account; multi-lot accounts need a per-security import.

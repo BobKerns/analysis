@@ -42,12 +42,13 @@ ABSENT = "—"
 LOT_MEASURE_LABELS = {"balance": "Balance", "cost_basis": "Cost basis", "quantity": "Quantity"}
 
 _ACCOUNT_TEXT_FIELDS = ("kind", "subkind", "owner", "tax_treatment", "opened", "closed")
-_ACCOUNT_MONEY_FIELDS = ("minimum_balance", "maximum_balance", "refill_target", "refill_amount")
-_ACCOUNT_CHAIN_FIELDS = ("refill_chain", "overflow_chain", "tags")
-_ACCOUNT_FIELDS = (*_ACCOUNT_TEXT_FIELDS, *_ACCOUNT_MONEY_FIELDS, *_ACCOUNT_CHAIN_FIELDS)
+_ACCOUNT_FIELDS = (*_ACCOUNT_TEXT_FIELDS, "tags")
+_LOT_MONEY_FIELDS = ("minimum_balance", "maximum_balance", "refill_target", "refill_amount")
+_LOT_CHAIN_FIELDS = ("refill_chain", "refill_lot", "overflow_chain", "overflow_lot")
 _LOT_FIELDS = (
     "symbol", "acquired", "quantity", "series", "opening_balance",
     "opening_cost_basis", "prior_year_end_balance",
+    *_LOT_MONEY_FIELDS, *_LOT_CHAIN_FIELDS,
 )
 _YEAR_TO_DATE_FIELDS = ("from", "to", "amount", "tax_character", "year")
 _EXISTS = "(exists)"
@@ -103,10 +104,8 @@ def _definition_values(connection: RunConnection, excluded: set[str]) -> pd.Seri
         if row.name in excluded:
             continue
         put(row.name, "", _EXISTS, "yes")
-        for field in (*_ACCOUNT_TEXT_FIELDS, *_ACCOUNT_CHAIN_FIELDS):
+        for field in _ACCOUNT_FIELDS:
             put(row.name, "", field, _text(getattr(row, field)))
-        for field in _ACCOUNT_MONEY_FIELDS:
-            put(row.name, "", field, _dollars(getattr(row, f"{field}_cents")))
     for row in connection.items("account_model_member").itertuples():
         if row.account in excluded:
             continue
@@ -119,6 +118,13 @@ def _definition_values(connection: RunConnection, excluded: set[str]) -> pd.Seri
         put(row.account, row.lot, "opening_balance", _dollars(row.opening_balance))
         put(row.account, row.lot, "opening_cost_basis", _dollars(row.opening_cost_basis))
         put(row.account, row.lot, "prior_year_end_balance", _dollars(row.prior_year_end_balance))
+        for field in _LOT_MONEY_FIELDS:
+            cents = getattr(row, f"{field}_cents")
+            # a minimum of zero is the default, so it is not worth showing
+            put(row.account, row.lot, field,
+                None if field == "minimum_balance" and cents == 0 else _dollars(cents))
+        for field in _LOT_CHAIN_FIELDS:
+            put(row.account, row.lot, field, _text(getattr(row, field)))
     index = pd.MultiIndex.from_arrays(
         [[k[i] for k in values] for i in range(3)], names=["account", "lot", "field"],
     )

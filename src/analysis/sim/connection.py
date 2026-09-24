@@ -149,11 +149,9 @@ def _split_tag_selectors(
 
 _ITEM_SQL: dict[str, str] = {
     "account": (
-        "SELECT a.*, rc.name AS refill_chain, oc.name AS overflow_chain, "
+        "SELECT a.*, "
         "  COALESCE(GROUP_CONCAT(t.role || ':' || t.name, ' '), '') AS tags "
         "FROM account a "
-        "LEFT JOIN chain rc ON rc.id = a.refill_chain_id "
-        "LEFT JOIN chain oc ON oc.id = a.overflow_chain_id "
         "LEFT JOIN account_tag x ON x.account_id = a.id "
         "LEFT JOIN tag t ON t.id = x.tag_id "
         "GROUP BY a.id ORDER BY a.id"
@@ -239,9 +237,21 @@ _ITEM_SQL: dict[str, str] = {
         "SELECT a.name AS account, m.lot, m.symbol, m.acquired, m.quantity_micros, "
         "       m.series, a.kind, a.subkind, a.tax_treatment, "
         "       m.opening_balance, m.opening_cost_basis, "
-        "       m.prior_year_end_balance "
+        "       m.prior_year_end_balance, "
+        "       m.minimum_balance_cents, m.maximum_balance_cents, "
+        "       m.refill_target_cents, m.refill_amount_cents, "
+        "       CASE WHEN rc.account_id IS NULL THEN rc.name ELSE ra.name END "
+        "         AS refill_chain, rm.lot AS refill_lot, "
+        "       CASE WHEN oc.account_id IS NULL THEN oc.name ELSE oa.name END "
+        "         AS overflow_chain, om.lot AS overflow_lot "
         "FROM account_model_member m "
         "JOIN account a ON a.id = m.account_id "
+        "LEFT JOIN chain rc ON rc.id = m.refill_chain_id "
+        "LEFT JOIN account ra ON ra.id = rc.account_id "
+        "LEFT JOIN account_model_member rm ON rm.id = rc.lot_id "
+        "LEFT JOIN chain oc ON oc.id = m.overflow_chain_id "
+        "LEFT JOIN account oa ON oa.id = oc.account_id "
+        "LEFT JOIN account_model_member om ON om.id = oc.lot_id "
         "ORDER BY a.name, m.id"
     ),
     "aux_table": "SELECT * FROM aux_table ORDER BY kind, series, effective_date",

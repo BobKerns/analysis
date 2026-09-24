@@ -101,9 +101,7 @@ TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 # Canonical accounts.csv column order (ADR-003 §4.2).
 ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
     "name", "kind", "subkind", "owner", "tax_treatment", "series",
-    "tax_character", "minimum_balance", "refill_chain", "refill_target",
-    "refill_amount", "maximum_balance", "overflow_chain",
-    "opened", "closed", "meta_json", "tags",
+    "tax_character", "opened", "closed", "meta_json", "tags",
 )
 
 # Kinds a chains/<kind>__<name>.csv file may declare (ADR-003 §4.7); a closed
@@ -238,6 +236,14 @@ PERSONS_CSV_HEADER: tuple[str, ...] = (
 ACCOUNT_VALUES_CSV_HEADER: tuple[str, ...] = (
     "account_name", "lot", "symbol", "acquired", "quantity", "series",
     "opening_balance", "opening_cost_basis", "prior_year_end_balance",
+    "minimum_balance", "maximum_balance", "refill_chain", "refill_lot",
+    "refill_target", "refill_amount", "overflow_chain", "overflow_lot",
+)
+
+# The per-lot balance-management columns of account_values.csv (ADR-003 §4.3).
+CASH_MANAGEMENT_COLUMNS: tuple[str, ...] = (
+    "minimum_balance", "maximum_balance", "refill_chain", "refill_lot",
+    "refill_target", "refill_amount", "overflow_chain", "overflow_lot",
 )
 
 

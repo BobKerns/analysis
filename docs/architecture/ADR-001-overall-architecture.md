@@ -73,7 +73,7 @@ Within-month ordering is **strictly by rule priority**, never by date. Priority 
 
 Liquidity is *not* a priority band. Refilling a drawn-down account is a
 look-ahead check on each debit, and overflow is a month-end sweep, both driven
-by the account's own `refill_chain`/`overflow_chain` rather than by a rule that
+by the lot's own `refill_chain`/`overflow_chain` (ADR-003 §4.3) rather than by a rule that
 has to be ordered last — see ADR-003 §4.7.
 
 ### Cross-cutting principles

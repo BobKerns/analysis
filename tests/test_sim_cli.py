@@ -534,9 +534,10 @@ def test_sim_account_delete_lists_references_and_removes_them(tmp_path: Path) ->
 
     data = _copy_prototype(tmp_path)
     accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
-    accounts = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
-    accounts.loc[accounts["name"] == "Asset_Savings", "refill_chain"] = "Asset_Checking"
-    accounts.to_csv(accounts_path, index=False)
+    values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
+    values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+    values.loc[values["account_name"] == "Asset_Savings", "refill_chain"] = "Asset_Checking"
+    values.to_csv(values_path, index=False)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -548,7 +549,7 @@ def test_sim_account_delete_lists_references_and_removes_them(tmp_path: Path) ->
     )
     assert result.exit_code == 0, result.output
     assert "account 'Asset_Checking' is referenced by:" in result.output
-    assert "accounts.csv row 3: refill_chain" in result.output
+    assert "account_values.csv row 3: refill_chain" in result.output
     assert "account_values.csv row 2: account_name" in result.output
     assert "scheduled.csv row 2: to_account" in result.output
     assert "deleted account 'Asset_Checking'" in result.output
@@ -558,7 +559,9 @@ def test_sim_account_delete_lists_references_and_removes_them(tmp_path: Path) ->
     ) as fh:
         accounts = list(csv.DictReader(fh))
     assert "Asset_Checking" not in {row["name"] for row in accounts}
-    assert next(row for row in accounts if row["name"] == "Asset_Savings")["refill_chain"] == ""
+    with values_path.open(newline="", encoding="utf-8") as fh:
+        values = list(csv.DictReader(fh))
+    assert next(row for row in values if row["account_name"] == "Asset_Savings")["refill_chain"] == ""
 
     check = runner.invoke(
         main, ["sim", "check", "retire_alice", "--data-dir", str(data)]

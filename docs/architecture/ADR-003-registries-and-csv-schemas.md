@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** ADR-005 (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account.
+- **Amended by:** ADR-005 (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3).
 - **Related:** ADR-001 (overall architecture), ADR-002 (storage schema), ADR-004 (reproducibility).
 
 ## Context
@@ -185,13 +185,13 @@ Monthly P&I against a mortgage liability account.
   2. **Principal leg:** `from_account = Asset_Checking`, `to_account = <liability>` (the row's `to_account`, reducing the liability balance), amount = `principal`, tax_character = `'none'`, `parent_event_id` linked to the interest leg.
 - **Use:** one row per active mortgage. Retired by a `retire_scheduled` calendar event when the home is sold (see §3.4).
 
-#### 2.8 `refill_transfer` — **removed** (superseded by account-level refill, §4.2/§4.7)
+#### 2.8 `refill_transfer` — **removed** (superseded by per-lot refill, §4.3/§4.7)
 
 Originally: a scheduled rule that topped `to_account` up by a fixed `amount` whenever its balance was below `params_json.threshold_cents` at fire time.
 
 Removed for the same reason as §2.4, plus one of its own: as a *scheduled* rule it only fired on its own cadence, so an account could sit below its floor for the rest of the month. The replacement — `minimum_balance` + `refill_chain` on the account itself (§4.2) — is a look-ahead check on **every** debit against that account, so the floor is maintained continuously rather than sampled monthly.
 
-Migration: drop the rule row; set `minimum_balance` (the old threshold) and `refill_chain` on the target account, plus `refill_amount` to reproduce the old fixed top-up size (or `refill_target` to fill to a fixed level instead).
+Migration: drop the rule row; set `minimum_balance` (the old threshold) and `refill_chain` on the target lot, plus `refill_amount` to reproduce the old fixed top-up size (or `refill_target` to fill to a fixed level instead).
 
 #### 2.9 `on_death` (priority band: author's choice; recommend 900)
 
@@ -341,12 +341,6 @@ Required in a root scenario; optional in a derived one, where it overlays the pa
 | `tax_treatment` | enum | | `taxable`, `tax_deferred`, `tax_free`, `none` |
 | `series` | text | | asset accounts only: aux rate-series driving monthly growth; synthesizes a `percent_of_balance` rule (§2.2) |
 | `tax_character` | enum | | required with `series`, and only meaningful with it: `ordinary`, `gains`, `deferred`, `tax_free` — selects the built-in income account that funds the growth (§2.2) |
-| `minimum_balance` | dollars | | look-ahead refill floor (§4.7): a debit that would drop the balance below this triggers a draw on `refill_chain` *before* the debit posts. `0`/blank means no floor. |
-| `refill_chain` | text | | account or named `chains/*.csv` chain to draw from when `minimum_balance` would be breached; required for `refill_target`/`refill_amount` to have any effect |
-| `refill_target` | dollars | | when set, a triggered refill draws enough to bring the balance up to this fixed level (must be >= `minimum_balance`). Mutually exclusive with `refill_amount`. |
-| `refill_amount` | dollars | | when set, a triggered refill draws this fixed amount, or more if needed to reach `minimum_balance`. Mutually exclusive with `refill_target`. Neither set means refill exactly to `minimum_balance`. |
-| `maximum_balance` | dollars | | month-end overflow ceiling (§4.7): after each month's rules post, any excess above this is swept into `overflow_chain`. `NULL`/blank means unbounded. |
-| `overflow_chain` | text | | account or named `chains/*.csv` chain to sweep excess into |
 | `opened` | YYYY-MM | | informational |
 | `closed` | YYYY-MM | | informational |
 | `meta_json` | json | | default `{}` |
@@ -367,7 +361,18 @@ Opening state for the accounts declared in §4.2, **one row per lot** (ADR-005):
 | `opening_cost_basis` | dollars | | required for lots in `tax_treatment IN ('taxable')` accounts holding appreciable assets. A taxable asset lot with a zero balance and no basis starts at basis 0 |
 | `prior_year_end_balance` | dollars | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` accounts whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. Set on every lot of an account or on none. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
 
-`minimum_balance`, refill and overflow (§4.2) are only allowed on accounts with a single lot.
+**Balance management is per lot.** The columns below used to be on `accounts.csv` (§4.2); they are now on the lot, so the lots of one account can differ (a cash lot that refills from the fund lots beside it, next to a lot that does not). Moving them is the only change to existing data: put each account's values on its `account_values.csv` row, and remove the columns from `accounts.csv`, where a value is now a load error. The chain columns follow the same lot rule as every other reference: a `refill_chain` or `overflow_chain` that names an account is completed by `refill_lot` / `overflow_lot` (required for investment subkinds, blank meaning `default` otherwise, and blank when the name is a chain).
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `minimum_balance` | dollars | | look-ahead refill floor (§4.7): a debit that would drop the lot's balance below this triggers a draw on `refill_chain` *before* the debit posts. `0`/blank means no floor. |
+| `refill_chain` | text | | account or named `chains/*.csv` chain to draw from when `minimum_balance` would be breached; required for `refill_target`/`refill_amount` to have any effect. May name another lot of the same account. |
+| `refill_lot` | text | | the lot of `refill_chain`, when it names an account |
+| `refill_target` | dollars | | when set, a triggered refill draws enough to bring the balance up to this fixed level (must be >= `minimum_balance`). Mutually exclusive with `refill_amount`. |
+| `refill_amount` | dollars | | when set, a triggered refill draws this fixed amount, or more if needed to reach `minimum_balance`. Mutually exclusive with `refill_target`. Neither set means refill exactly to `minimum_balance`. |
+| `maximum_balance` | dollars | | month-end overflow ceiling (§4.7): after each month's rules post, any excess above this is swept into `overflow_chain`. `NULL`/blank means unbounded. |
+| `overflow_chain` | text | | account or named `chains/*.csv` chain to sweep excess into |
+| `overflow_lot` | text | | the lot of `overflow_chain`, when it names an account |
 
 #### 4.4 Shared: `data_repo/aux/<kind>[__<series>].csv`
 
@@ -474,7 +479,7 @@ Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` in
 
 Steps are scanned in file order. Each step's allocation is `percent` of whatever amount is still outstanding when the scan reaches it (default 100%, so an unallocated step consumes all of it), capped at `maximum` if set — the two may be combined, e.g. "up to $X, or Y% of what's left, whichever is smaller." Whatever a step doesn't supply — whether because its own account (after any refill_chain draw, see below) is exhausted or because the step's percent/maximum allocation was smaller than what's still needed — falls through to the next step. A cascading sequence of percentages (e.g. 50%, then 100% of what's left) distributes a draw across multiple steps in parallel rather than draining each one in turn; ordinary rows with neither field preserve the original "drain each step fully before moving on" liquidity-chain behavior. Chain names share one namespace with account names (the loader rejects a chain whose name collides with an account, since every real account already has an implicit leaf chain of its own name). A chain file's `<kind>` is drawn from a closed registry, currently `asset` and `income`; the kind is extensible without engine changes.
 
-There is deliberately no per-step reserve column: a step's account is "exhausted" once it is at or below its own `minimum_balance` (§4.2, default 0) — checked *after* that account's own `refill_chain` (if any) has been drawn, not before. This is why `minimum_balance`/`refill_chain` live on the account, not the chain step: the same floor applies no matter which chain reaches the account, and refilling is handled once, in one place.
+There is deliberately no per-step reserve column: a step's account is "exhausted" once it is at or below its own `minimum_balance` (§4.3, default 0) — checked *after* that lot's own `refill_chain` (if any) has been drawn, not before. This is why `minimum_balance`/`refill_chain` live on the lot (§4.3), not the chain step: the same floor applies no matter which chain reaches the lot, and refilling is handled once, in one place.
 
 Refill (`minimum_balance`/`refill_chain`, optionally `refill_target`/`refill_amount`) is a **look-ahead, per-transaction** check, not a month-end reconciliation: every debit against a protected account is checked before it posts, and the chain is drawn first if the debit would breach `minimum_balance`. It is not an error for the chain to be unable to fully cover the shortfall -- the debit still posts and may leave the account negative. An asset account going negative should only happen once its own refill chain is exhausted; the engine warns once per negative transition (not every month it stays negative) via `RuntimeWarning`, and also records `{month, account, balance_cents}` entries under `simulation_run.run_args_json.$.negative_balance_warnings`.
 
@@ -633,7 +638,7 @@ draft. Section numbers are never reused, so cross-references from code comments
 and older notes stay valid.
 
 1. **`waterfall_fill` (§2.4) and `refill_transfer` (§2.8) removed**, superseded by
-   liquidity chains (§4.7) and account-level refill/overflow (§4.2). The rule
+   liquidity chains (§4.7) and per-lot refill/overflow (§4.3). The rule
    registry is seven kinds, not nine. Both sections are retained as tombstones
    carrying the rationale and a migration note.
 2. **`accounts.csv` (§4.2) and `account_values.csv` (§4.3) are per-scenario, not
