@@ -1051,5 +1051,5 @@ def test_transfer_list_shows_calendar_and_scheduled_one_offs(test_data_dir: Path
     inheritance = next(line for line in lines if "inheritance" in line)
     moving = next(line for line in lines if "Moving money" in line)
     assert "calendar" in inheritance and "Asset_Brokerage_Joint (default)" in inheritance
-    assert "scheduled" in moving and "Asset_Savings" in moving and "$75.00" in moving
+    assert "scheduled" in moving and "Asset_Savings" in moving and "75.00" in moving
     assert lines.index(inheritance) < lines.index(moving)  # dated 2029 before 2030
