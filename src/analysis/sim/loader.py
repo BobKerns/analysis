@@ -538,6 +538,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_calendar(calendar_rows, leaves, issues)
+    _resolve_chain_lots(chains, leaves, issues)
     _validate_chains(chains, accounts, leaves, issues, money_resolver=money_resolver)
     _validate_lifespan(lifespan_rows, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
@@ -780,6 +781,33 @@ def _leaf_index(
             if a.get("name") and a.get("subkind") in INVESTMENT_ASSET_SUBKINDS
         ),
     )
+
+
+def _resolve_chain_lots(
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
+    leaves: _LeafIndex, issues: list[str],
+) -> None:
+    """Fold a chain row's optional ``lot`` column into its ``account_name``, so
+    ``Bob HSA,default`` and ``Bob HSA:default`` mean the same lot."""
+    for name, (kind, rows) in chains.items():
+        for i, row in enumerate(rows, start=2):
+            lot = row.get("lot", "")
+            member = row.get("account_name", "")
+            if not lot or not member:
+                continue
+            if ":" in member:
+                issues.append(
+                    f"chains/{kind}__{name}.csv row {i}: '{member}' already names a "
+                    f"lot; drop the lot column value '{lot}'"
+                )
+                continue
+            qualified = f"{member}:{lot}"
+            if qualified in leaves.names:
+                row["account_name"] = qualified
+            elif lot == registries.DEFAULT_LOT and member in leaves.names:
+                row["account_name"] = member
+            else:
+                row["account_name"] = qualified
 
 
 def _ref_problem(ref: str, leaves: _LeafIndex, chain_names: set[str] | frozenset[str]) -> str | None:

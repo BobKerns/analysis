@@ -267,3 +267,49 @@ def test_post_transfer_reduces_quantity_pro_rata_and_zeroes_on_full_drain(
     _post_transfer(ledger_con, balances, kinds, 1, "2026-06-30", 1, 2, 750_00, "none", 9,
                    refill_ctx=ctx)
     assert ctx.quantities[1] == 0
+
+
+def _liquidity_chain(retire_alice_csv: Callable[[str], Path]) -> Path:
+    return retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv"
+
+
+def test_chain_file_lot_column_matches_account_lot_spelling(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+) -> None:
+    _liquidity_chain(retire_alice_csv).write_text(
+        "account_name,lot,maximum,percent,series,cadence\n"
+        "Asset_Savings,default,,,,\n"
+        "Asset_TraditionalIRA_Alice,default,,,,\n"
+    )
+    con = sqlite3.connect(load_test_copy().intent_path)
+    try:
+        draws = [r[0] for r in con.execute(
+            "SELECT c.name FROM chain_steps cs JOIN chain c ON c.id = cs.draw_from_chain_id "
+            "JOIN chain owner ON owner.id = cs.chain_id "
+            "WHERE owner.name = 'asset checking liquidity' ORDER BY cs.step_order"
+        )]
+        assert draws == ["Asset_Savings", "Asset_TraditionalIRA_Alice:default"]
+    finally:
+        con.close()
+
+
+def test_chain_file_investment_row_without_lot_is_still_rejected(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+) -> None:
+    _liquidity_chain(retire_alice_csv).write_text(
+        "account_name,lot,maximum,percent,series,cadence\n"
+        "Asset_TraditionalIRA_Alice,,,,,\n"
+    )
+    with pytest.raises(LoadError, match="needs an explicit lot"):
+        load_test_copy()
+
+
+def test_chain_file_rejects_lot_given_twice(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+) -> None:
+    _liquidity_chain(retire_alice_csv).write_text(
+        "account_name,lot,maximum,percent,series,cadence\n"
+        "Asset_TraditionalIRA_Alice:default,default,,,,\n"
+    )
+    with pytest.raises(LoadError, match="already names a lot"):
+        load_test_copy()
