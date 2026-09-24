@@ -14,11 +14,22 @@ def truncate(width):
     return lambda value: str(value)[:width]
 
 
-def _no_wrap(styled, skip: Collection[str] = ()):
-    """Keep every cell on one line (except columns in ``skip``), so a wide table
-    scrolls sideways instead of wrapping into tall rows."""
-    columns = [c for c in styled.data.columns if c not in skip]
-    return styled.set_properties(subset=columns, **{"white-space": "nowrap"})
+def _breakable(value) -> str:
+    """Text whose underscores are line-break opportunities, so a long name wraps
+    instead of widening the table past the page (a renderer that cannot scroll
+    would clip it)."""
+    return str(value).replace("_", "_<wbr>")
+
+
+def _fit_to_width(styled, nowrap: Collection[str]):
+    """Let every column wrap except ``nowrap`` (numbers and dates), and tighten the
+    cell padding, so the table shrinks to fit a narrow window."""
+    present = [c for c in styled.data.columns if c in nowrap]
+    if present:
+        styled = styled.set_properties(subset=present, **{"white-space": "nowrap"})
+    return styled.set_table_styles(
+        [{"selector": "th, td", "props": [("padding", "2px 6px")]}], overwrite=False,
+    )
 
 
 def scrollable_output() -> widgets.Output:
@@ -47,30 +58,38 @@ def show_chains(sc):
     interior_chains["maximum"] = interior_chains["maximum"].mask(interior_chains["maximum"] == 0)
     styled = interior_chains.style.format({"maximum": "${:,.2f}",
                                   "amount": "${:,.2f}",
-                                  "percent": "{:,.2f}%"},
+                                  "percent": "{:,.2f}%",
+                                  "chain": _breakable, "draw_from": _breakable,
+                                  "lot": _breakable, "series": _breakable},
                                  na_rep="-").hide(axis="index")
-    return scrollable(_no_wrap(styled))
+    return scrollable(_fit_to_width(styled, nowrap=["step", "maximum", "percent", "cadence"]))
 
 
 SCHEDULED_OPTIONAL_COLUMNS = {"id": False, "name": True, "priority": False, "description": True}
 """Scheduled-view columns a checkbox can hide, with whether each starts shown."""
 
 
+_SCHEDULED_TEXT_COLUMNS = [
+    "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
+    "amount_rule_kind", "tax_character", "description",
+]
+_SCHEDULED_NOWRAP_COLUMNS = ["id", "priority", "amount", "start", "end"]
+
+
 def scheduled_styler(view: pd.DataFrame, hidden: Collection[str] = ()):
     """The scheduled view as a styled table, without the ``hidden`` columns and
-    without the row numbers. Cells stay on one line, except the description,
-    which may wrap."""
+    without the row numbers. Text wraps (at underscores and spaces) and the
+    padding is tight, so the table fits a narrow window; numbers and dates stay
+    on one line."""
     shown = view.drop(columns=list(hidden))
-    styled = shown.style.format(
-        {"amount": "${:,.2f}", "start": truncate(7), "end": truncate(7)}, na_rep="-",
-    ).hide(axis="index")
-    styled = _no_wrap(styled, skip=["description"])
-    styled = styled.set_properties(subset=["start", "end"], **{"width": "7ch"})
-    if "description" in shown.columns:
-        styled = styled.set_properties(
-            subset=["description"], **{"white-space": "normal", "min-width": "30ch"},
-        )
-    return styled
+    formats = {
+        "amount": "${:,.2f}", "start": truncate(7), "end": truncate(7),
+        **{column: _breakable for column in _SCHEDULED_TEXT_COLUMNS if column in shown.columns},
+    }
+    styled = shown.style.format(formats, na_rep="-").hide(axis="index")
+    styled = _fit_to_width(styled, nowrap=_SCHEDULED_NOWRAP_COLUMNS)
+    dates = [c for c in ("start", "end") if c in shown.columns]
+    return styled.set_properties(subset=dates, **{"width": "7ch"}) if dates else styled
 
 
 def show_scheduled_view(sc):
@@ -108,8 +127,12 @@ def show_calendar_view(sc):
     """
     Show the calendar items from the scenario connection `sc`.
     """
-    styled = calendar_view(sc).style.format(
-        {"amount": "${:,.2f}", "date": truncate(7)}, na_rep="-"
-    ).hide(axis="index")
-    styled = _no_wrap(styled, skip=["description"])
+    view = calendar_view(sc)
+    formats = {
+        "amount": "${:,.2f}", "date": truncate(7),
+        **{c: _breakable for c in ("kind", "scheduled_name", "account_1", "lot_1",
+                                   "account_2", "lot_2", "description")},
+    }
+    styled = view.style.format(formats, na_rep="-").hide(axis="index")
+    styled = _fit_to_width(styled, nowrap=["date", "amount"])
     return scrollable(styled.set_properties(subset=["date"], **{"width": "7ch"}))

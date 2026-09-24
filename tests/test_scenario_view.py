@@ -163,17 +163,25 @@ def _columns_with(html: str, declaration: str) -> set[int]:
     return columns
 
 
-def test_cells_stay_on_one_line_except_the_description(test_data_dir: Path) -> None:
+def test_only_numbers_and_dates_are_kept_on_one_line(test_data_dir: Path) -> None:
+    """A renderer that cannot scroll clips a wide table, so text has to wrap."""
     with open_scenario(test_data_dir, "retire_alice") as scenario:
         view = scheduled_view(scenario)
-    description = list(view.columns).index("description")
+    columns = list(view.columns)
     html = scheduled_styler(view).to_html()
-    nowrap = _columns_with(html, "white-space: nowrap")
-    assert nowrap == set(range(len(view.columns))) - {description}
-    assert _columns_with(html, "white-space: normal") == {description}
-    assert _columns_with(html, "min-width: 30ch") == {description}
-    hidden = scheduled_styler(view, hidden=["description"]).to_html()
-    assert _columns_with(hidden, "white-space: normal") == set()
+    assert _columns_with(html, "white-space: nowrap") == {
+        columns.index(c) for c in ("id", "priority", "amount", "start", "end")
+    }
+    assert "padding: 2px 6px" in html            # tight cells
+
+
+def test_long_names_can_break_after_underscores(test_data_dir: Path) -> None:
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = scheduled_view(scenario)
+    html = scheduled_styler(view).to_html()
+    assert "percent_<wbr>of_<wbr>balance" in html
+    assert "Asset_<wbr>Brokerage_<wbr>Joint" in html
+    assert "<wbr>" not in scheduled_styler(view[["id", "priority"]]).to_html()
 
 
 def test_tables_scroll_sideways_instead_of_overflowing(test_data_dir: Path) -> None:
