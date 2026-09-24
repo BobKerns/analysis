@@ -70,6 +70,7 @@ from analysis.sim.engine import run_scenario
 from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
+from analysis.sim.provenance import CodeStamps
 
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
@@ -81,6 +82,24 @@ _ANALYSIS_ENV_VARS = (
 def _no_ambient_analysis_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _ANALYSIS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+_STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_REPO")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _stable_code_stamps() -> Generator[None, None, None]:
+    """Stamp runs with a fixed code version instead of asking git.
+
+    ``provenance.code_stamps`` runs ``git status`` on this repo for every load
+    and run, so a test's result and its speed would depend on the state of the
+    working tree (a large uncommitted notebook made the suite ~10x slower).
+    Patched once per session, since nothing a test does can change the stub.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        for name in ("analysis.sim.runs.code_stamps", "analysis.sim.loader.code_stamps"):
+            patch.setattr(name, lambda: _STABLE_CODE_STAMPS)
+        yield
 
 
 @pytest.fixture(autouse=True)
