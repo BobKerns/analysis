@@ -1,6 +1,6 @@
 # ADR-005: Lots and per-lot state
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-23
 - **Supersedes:** the reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` (ADR-002 §Reserved schema); the "account-level running cost basis" limitation noted in ADR-003 §Later amendments #8.
 - **Related:** ADR-001 (domain objects, `AccountState`), ADR-002 (storage schema), ADR-003 (registries, CSV layouts, chains §4.7, `rmd` §2.3, `sell_asset` §3.7).
@@ -116,11 +116,11 @@ An `rmd` rule's amount comes from its **subject account**: the total of all its 
 - a single lot, when the subject account has one lot (`subject_account` is then optional, and the rule behaves as before); or
 - an **explicit chain**, with `{"subject_account": "<account>"}` in `params_json`, drawn in the chain's own order, so which lots fund the RMD is written down rather than inferred.
 
-On an account with several lots a single-lot source is a load error, as is a chain that draws from anything but the subject account's lots. There are no implicit chains. Aggregation across several of an owner's IRAs is out of scope.
+On an account with several lots a single-lot source is a load error, as is a chain that draws from anything but the subject account's lots. There are no implicit chains. Aggregation across several of an owner's IRAs is deliberately not modelled: a brokerage distributes per account, without regard to distributions taken elsewhere, so each RMD is computed from its own account's lots.
 
-### Amendments to apply on acceptance
+### Amendments applied on acceptance
 
-These change what ADR-002 and ADR-003 describe, so they are applied to those documents when the code lands, not before.
+Applied to ADR-001, ADR-002 and ADR-003 (Phase 6).
 
 - ADR-002: replace the `holding`/`lot` reserved schema and `schema_overview` rows with the §1–§2 DDL; `account_model_member` and `transfer_event` changes; `account_state` view; `SCHEMA_VERSION` 17 → 18.
 - ADR-003: §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §Later amendments #8 revised.

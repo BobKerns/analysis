@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
+- **Amended by:** ADR-005 (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account.
 - **Related:** ADR-001 (overall architecture), ADR-002 (storage schema), ADR-004 (reproducibility).
 
 ## Context
@@ -98,7 +99,7 @@ Accrue interest, dividends, appreciation against a source account's balance.
 - **Emits:** one event. Typical: `from_account = <income account>` (e.g. `interest_income`), `to_account = <balance-bearing account>` (interest credits to the asset). For depreciation, swap signs by routing through an expense account.
 - **Use:** money-market interest, bond coupon approximations, portfolio appreciation per asset, real-estate appreciation.
 
-**Authored on the account, not in `scheduled.csv`.** An asset account's growth is a property of the account, so it is declared by the `series` + `tax_character` columns on `accounts.csv` (§4.2) and the loader synthesizes the rule: `cadence='monthly'`, priority 100, `start = scenario.start`, `to_account` = the account itself, and `name = growth_<abbreviated account name>` (each word trimmed to four letters, plus the lot for a non-default lot; see ADR-005 §5). Hand-writing an equivalent `percent_of_balance` row is still legal, but the loader rejects one whose name collides with a synthesized rule.
+**Authored on the account, not in `scheduled.csv`.** An asset account's growth is a property of the account, so it is declared by the `series` + `tax_character` columns on `accounts.csv` (§4.2) and the loader synthesizes one rule **per lot** (ADR-005 §5; a lot's own `series`, or a rate series named for its `symbol`, takes precedence over the account's): `cadence='monthly'`, priority 100, `start = scenario.start`, `to_account` = the account itself, and `name = growth_<abbreviated account name>` (each word trimmed to four letters, plus the lot for a non-default lot; see ADR-005 §5). Hand-writing an equivalent `percent_of_balance` row is still legal, but the loader rejects one whose name collides with a synthesized rule.
 
 The income side is **not** author-supplied. Each growth `tax_character` has one reserved counterparty account, created on first use so a scenario cannot mis-wire or omit it:
 
@@ -120,7 +121,7 @@ Depreciation is a book entry, not spending. Reporting that totals cash outflows 
 
 IRS Required Minimum Distribution.
 
-- **Params:** the row's `from_account` is the subject IRA/401k account (the one being drawn down) and `person` = person id. When the subject account has several lots (ADR-005), `from_account` is instead a chain listing the lots to draw from, in order, and `params_json` names the account the RMD is for: `{"subject_account": "<account>"}`; the chain may only draw from that account's lots. Factor table is `rmd_factors`; start-age series is `rmd_start_age` (both fixed aux references).
+- **Params:** the row's `from_account` is the subject IRA/401k account (the one being drawn down) and `person` = person id. When the subject account has several lots (ADR-005), `from_account` is instead a chain listing the lots to draw from, in order, and `params_json` names the account the RMD is for: `{"subject_account": "<account>"}`; the chain may only draw from that account's lots. The amount is that account's total on the prior Dec 31 over the age factor. Aggregation across an owner's several IRAs is deliberately not modelled: a brokerage distributes per account, without regard to distributions taken elsewhere. Factor table is `rmd_factors`; start-age series is `rmd_start_age` (both fixed aux references).
 - **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state` (the subject account's lots added together); for the partial first year it comes from `account_model_member.prior_year_end_balance` (which the author must supply for any `traditional_ira` / `traditional_401k` account whose owner reaches RMD age during the scenario's first calendar year).
 - **Start semantics:** the row's `start` column is a lower bound on candidate fire dates. The actual first fire is `max(row.start, year-end of the year person reaches start_age)`. Authors typically set `start = scenario.start` and let the age gate dominate.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
@@ -169,7 +170,7 @@ For a single gross benefit with multiple destinations, use one `ss_benefit` row 
 A placeholder rule that marks "compute taxes for the prior tax year" at a specific calendar point. Fires at year-end (December) for accrual and in April for reconciliation.
 
 - **Params:** `{ "year": "previous", "scope": "federal" | "state", "filing_status_aux": "filing_status", "bracket_aux": "federal_brackets" }`.
-- **Compute:** delegates to `tax.py`. Scans `transfer_event` rows for the relevant year by `tax_character`, applies brackets and deductions from aux tables, and computes net tax owed.
+- **Compute:** delegates to `tax.py`. Scans `transfer_event` rows for the relevant year by `tax_character` (`stcg` counts as ordinary income), applies brackets and deductions from aux tables, and computes net tax owed. **Filing status** is the `filing_status` aux table's row for the tax year, except that `MFJ`/`MFS` become `Single` from the year after a `role = 'primary'` person's `lifespan.csv` `final_month` (§4.9); the aux table needs no row for it. For `scope = federal`, if an `ltcg_brackets` aux table exists, the long-term gain is stacked on top of ordinary taxable income and taxed at that table's rates (§4.4); without it long-term gains are taxed as ordinary income, and `scope = state` always does.
 - **Emits:** one event in April: `from_account = Asset_Checking`, `to_account = Expense_Taxes_Federal` (or `_State`), amount = computed tax minus withholding already paid via `fixed_amount` rules through the year. The December firing typically emits zero (it only writes `tax_year_summary` rows for visibility) but may emit a true-up if estimated payments are part of the scenario.
 - **Use:** one per (year, scope) pair, authored as `cadence = annual`.
 
@@ -271,6 +272,7 @@ Realize a sale. Each sub-step below is a separately synthesized `cadence='one_of
   5. **Asset zero-out** is the side-effect of step 1 (the basis transfer empties the asset) — no extra rule.
   6. If `associated_liability_account` is set: also emit an intent-mutating side-action equivalent to `retire_scheduled` against the mortgage_payment rule referencing it (recorded as a secondary `applied_calendar_event`).
 - **Use:** home sale; large brokerage liquidation.
+- **Lots (ADR-005):** for an account that has lots the payload names one (`asset_account` plus its lot), and the sale liquidates that lot; liquidating a whole account is one sale per lot. The engine does not implement `sell_asset` yet (it is skipped), so payload account references are not validated.
 
 #### 3.8 `buy_asset` (rule-synthesizing)
 
@@ -315,6 +317,17 @@ Single identity list for the household: account owners *and* operator identities
 | `role` | text | | informational; conventional values `primary`, `secondary`; NULL = person-not-operator |
 | `meta_json` | json | | default `{}` |
 
+#### 4.1a Shared base: `data_repo/securities.csv` (optional)
+
+Names for the symbols lots hold (ADR-005). Shared by every scenario, inside the provenance scope, and loaded into the `security` table.
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `symbol` | text | ✓ | unique; matches a lot's `symbol` |
+| `name` | text | ✓ | the security's name, shown next to the symbol in holdings views |
+
+The file may be omitted, and a symbol with no row is simply unnamed.
+
 #### 4.2 Per-scenario: `data_repo/scenarios/<name>/accounts.csv`
 
 Required in a root scenario; optional in a derived one, where it overlays the parent's rows by `name` (§4.5).
@@ -340,14 +353,21 @@ Required in a root scenario; optional in a derived one, where it overlays the pa
 
 #### 4.3 Per-scenario: `data_repo/scenarios/<name>/account_values.csv`
 
-Opening state for the accounts declared in §4.2 — one row per account. Required in a root scenario; optional in a derived one, where it overlays the parent's rows by `account_name` (§4.5). `scenario.csv`'s `account_model` column names the resulting model.
+Opening state for the accounts declared in §4.2, **one row per lot** (ADR-005): a position inside one account. An account that is not split has one lot named `default`, for which the `lot` column may be left blank. Required in a root scenario; optional in a derived one, where it overlays the parent's rows by (`account_name`, `lot`) (§4.5). `scenario.csv`'s `account_model` column names the resulting model.
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `account_name` | text | ✓ | resolves to `account.id` |
-| `opening_balance` | dollars | ✓ | balance at the model's effective start |
-| `opening_cost_basis` | dollars | | required for accounts with `tax_treatment IN ('taxable')` holding appreciable assets |
-| `prior_year_end_balance` | dollars | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` accounts whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
+| `lot` | text | | free-form label, unique within the account, without `:`; blank means `default`. **Required for investment subkinds** (`brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) |
+| `symbol` | text | | the security held; names its rate series (§2.2) and its price (§4.4) |
+| `acquired` | YYYY-MM-DD | | starts the holding period: a sale within a year of it books its gain as `stcg`, later as `ltcg`; blank means long-term |
+| `quantity` | number | | shares; tracked through withdrawals and purchases. Leave blank for dollar-denominated funds |
+| `series` | text | | growth-rate series for this lot, overriding the symbol's and the account's |
+| `opening_balance` | dollars | ✓ unless derivable | balance at the model's effective start. May be left blank when `quantity`, `symbol` and a `security_price` are given: it is then `quantity × price` on or before `scenario.start`. A given balance is used as written |
+| `opening_cost_basis` | dollars | | required for lots in `tax_treatment IN ('taxable')` accounts holding appreciable assets. A taxable asset lot with a zero balance and no basis starts at basis 0 |
+| `prior_year_end_balance` | dollars | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` accounts whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. Set on every lot of an account or on none. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
+
+`minimum_balance`, refill and overflow (§4.2) are only allowed on accounts with a single lot.
 
 #### 4.4 Shared: `data_repo/aux/<kind>[__<series>].csv`
 
@@ -369,6 +389,8 @@ One file per (kind) or (kind, series). Filename pattern: `federal_brackets.csv`,
   `effective_date`, `filing_status` (rows reflect transitions; one row per change)
 - **`rmd_start_age.csv`**:
   `effective_date`, `start_age`
+- **`ltcg_brackets.csv`** (optional): `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate_micros`. Federal long-term capital gain rates in the shape of `federal_brackets.csv`, but a band's `floor` is the taxable income, gain included, at which its rate starts (0%, 15%, 20%). See §2.6.
+- **`security_price__<symbol>.csv`**: `effective_date`, `price` (decimal dollars, up to six places; stored as `price_micros`). Used only to derive a lot's `opening_balance` from its `quantity`, never month to month.
 
 #### 4.5 Per-scenario: `data_repo/scenarios/<name>/scenario.csv`
 
@@ -411,8 +433,10 @@ A child row with a new key is appended; one whose key matches the parent replace
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `name` | text | ✓ | unique within scenario |
-| `from_account` | text | ✓ | primary leg from |
-| `to_account` | text | ✓ | primary leg to |
+| `from_account` | text | ✓ | primary leg from: an account or a chain |
+| `from_lot` | text | | the lot of `from_account`; **required for investment subkinds**, blank (meaning `default`) otherwise, and blank when `from_account` is a chain |
+| `to_account` | text | ✓ | primary leg to: an account or a chain |
+| `to_lot` | text | | the lot of `to_account`, as for `from_lot` |
 | `cadence` | enum | ✓ | `monthly`, `quarterly`, `annual`, `one_off` |
 | `month_of_year` | int 1-12 | | required for `annual`; ignored otherwise |
 | `amount_rule_kind` | enum | ✓ | one of §2 |
@@ -424,7 +448,7 @@ A child row with a new key is appended; one whose key matches the parent replace
 | `amount` | dollars | | interpreted per `amount_rule_kind`: base amount for `fixed_amount`, monthly P&I for `mortgage_payment`, or PIA at FRA for `ss_benefit`; decimal string e.g. `1234.56`; loader converts to integer cents |
 | `base_date` | YYYY-MM | | required when `series` names an inflation series |
 | `inflation_cadence` | enum | | `monthly` (default) compounds every month; `annual` steps once per calendar year crossed (each January) instead of drifting smoothly — use for COLA-style adjustments (e.g. Social Security) that jump once a year rather than continuously; requires `series` to be set |
-| `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `gains`, `deferred`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field. |
+| `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `stcg`, `gains`, `deferred`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`, `excluded_gain`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field. |
 | `tax_year` | int | | optional designated tax year for the transfer; when present, tax aggregation uses this value instead of the transfer date's calendar year (for example, a 2026 IRA contribution made in early 2027) |
 | `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |
@@ -442,6 +466,7 @@ Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` in
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `account_name` | text | ✓ | account or another named chain to visit at this step |
+| `lot` | text | | the lot of `account_name`; **required for investment subkinds**, blank (meaning `default`) otherwise, and blank when the step is another chain. Every lot has an implicit leaf chain, named internally by account and lot, in the one chain namespace |
 | `maximum` | dollars | | ceiling on how much this step supplies; may be combined with `percent` |
 | `percent` | percentage | | percentage of the amount still outstanding when this step is reached; default 100% |
 | `series` | text | | optional inflation series for `maximum`; the amount is based at the scenario start month; only meaningful when `maximum` is set |
@@ -463,7 +488,9 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `kind` | enum | ✓ | one of §3 |
 | `scheduled_name` | text | | name of target scheduled transaction; required for `retire_scheduled`, `set_amount` |
 | `account_1` | text | | first event-specific account (e.g. `from_account` for `one_off_transfer`) |
+| `lot_1` | text | | the lot of `account_1`, as for `from_lot` in §4.6 |
 | `account_2` | text | | second event-specific account (e.g. `to_account` for `one_off_transfer`) |
+| `lot_2` | text | | the lot of `account_2` |
 | `series` | text | | rate series name; required for `set_rate` |
 | `amount` | int | | amount in appropriate units (micros for `set_rate`, cents for `one_off_transfer`, cents for `set_amount`) |
 | `param_date` | YYYY-MM | | effective date for `set_amount` new base |
@@ -501,7 +528,9 @@ Two mechanisms cover this, both posting **balance-neutral** `transfer_event` row
 | --- | --- | --- | --- |
 | `name` | text | ✓ | unique within scenario; identifies the row for `reason_id` provenance |
 | `from_account` | text | ✓ | mirrors `one_off_transfer`'s `account_1`. For a pure tax-bucket adjustment with no natural real-world transfer (e.g. a loss carryforward), use the same account for `from_account` and `to_account` — self-canceling, contributes only to the tax_character sum |
+| `from_lot` | text | | the lot of `from_account`, as for `from_lot` in §4.6 |
 | `to_account` | text | ✓ | mirrors `one_off_transfer`'s `account_2` |
+| `to_lot` | text | | the lot of `to_account` |
 | `amount` | dollars | ✓ | decimal string; loader converts to integer cents. May be negative (e.g. a loss carryforward reducing that year's `ltcg` bucket) |
 | `tax_character` | enum | ✓ | per ADR-002 |
 | `year` | int | | defaults to `scenario.start`'s year (dated the month before start, as above). An explicit different year is dated that year's Dec 31 — for facts belonging to a fully-prior tax year (not the scenario's own partial first year) |
@@ -636,20 +665,21 @@ and older notes stay valid.
    `minimum_balance` (§4.2) *after* that account's own `refill_chain` has
    been drawn, which is what `threshold` was really trying to express one
    step at a time.
-8. **A chain draw/sweep leg from a `taxable` non-cash account (e.g.
-   `brokerage_taxable`) now splits into `return_of_capital` + `ltcg` legs**
-   (`engine._post_withdrawal`), rather than raising. This is ADR-001's
-   already-documented v1 design (account-level running cost basis, not full
-   holding/lot tracking) actually wired up: the split is pro-rata to the
-   fraction of the account's balance withdrawn (`basis_out = cost_basis *
-   amount // balance`), and mutates that running `cost_basis` (originally
-   seeded from `account_model_member.opening_cost_basis`) by the basis
-   consumed. A realized loss (basis exceeds proceeds) is a negative `ltcg`
-   leg, same convention as a `year_to_date.csv` loss carryforward. Still
-   requires `opening_cost_basis` to be set for the account -- an untracked
-   basis (`NULL`) raises, telling the author to add it to
-   `account_values.csv`, same posture as `sell_asset`'s existing
-   `cost_basis_override` requirement (§3.7).
+8. **A chain draw/sweep leg from a `taxable` non-cash lot (e.g. in a
+   `brokerage_taxable` account) splits into `return_of_capital` + gain legs**
+   (`engine._post_withdrawal`), rather than raising. Basis is tracked **per
+   lot** (ADR-005; ADR-001's earlier account-level running basis is now the
+   sum over lots, the `account_state` view). The split is pro-rata to the
+   fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount
+   // balance`), mutates that lot's basis, and reduces its `quantity` when
+   tracked. The gain leg is `stcg` if the lot was acquired a year or less
+   before the sale, else `ltcg`. Money moved into a basis-tracked lot adds
+   to its basis (and shares), except built-in growth, which is total return
+   and leaves basis alone. A realized loss (basis exceeds proceeds) is a
+   negative gain leg, same convention as a `year_to_date.csv` loss
+   carryforward. Still requires `opening_cost_basis` on the lot (a zero
+   balance starts at basis 0); an untracked basis (`NULL`) raises, telling
+   the author to add it to `account_values.csv`.
 
 ## Open questions deferred
 

@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
+- **Amended by:** ADR-005 (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed.
 - **Related:** ADR-001 (overall architecture), ADR-003 (rule and event-kind registries — referenced by `amount_rule_kind` and `calendar_event.kind` values used below), ADR-004 (reproducibility stamps on the run manifest).
 
 ## Context
@@ -14,7 +15,7 @@ The schema must:
 - Be queryable ad-hoc by both humans and LLMs (long-narrow tables, descriptive names, stable shape).
 - Support `GROUP BY`-driven reporting at any grain: account, subkind, owner, year, reason.
 - Make money operations exact (`INTEGER` cents, no floats).
-- Reserve affordances for features deferred to later phases (holdings/lots, forking) without future migration.
+- Reserve affordances for features deferred to later phases (forking) without future migration. Holdings and lots were reserved here and are now built, differently: see ADR-005.
 - Carry enough provenance on every run file to regenerate any chart.
 - Support cross-run comparison via `ATTACH DATABASE` rather than by sharing a database.
 
@@ -36,7 +37,7 @@ data_repo/
         retire_2030/
             scenario.csv    # one-row scenario header (incl. parent_scenario)
             accounts.csv    # every Account this scenario models (ADR-003 §4.2)
-            account_values.csv # opening balances/bases (ADR-003 §4.3)
+            account_values.csv # opening balances/bases, one row per lot (ADR-003 §4.3, ADR-005)
             scheduled.csv   # this scenario's ScheduledTransactions
             calendar.csv    # CalendarEvents
             lifespan.csv    # per-person final month
@@ -92,7 +93,7 @@ state/
 
 | Table | Intent file | Run file |
 | --- | --- | --- |
-| `person`, `account` | ✓ | ✓ (snapshot) |
+| `person`, `account`, `security` | ✓ | ✓ (snapshot) |
 | `account_model`, `account_model_member` | ✓ | ✓ (snapshot) |
 | `scheduled_transaction` | ✓ | ✓ (snapshot) |
 | `chain`, `chain_steps` | ✓ | ✓ (snapshot) |
@@ -103,10 +104,9 @@ state/
 | `year_to_date` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `account_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary` | — | ✓ |
-| `holding`, `lot` (reserved) | ✓ | ✓ (snapshot) |
+| `simulation_step`, `lot_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary` | — | ✓ |
 | `schema_overview` | ✓ | ✓ |
-| Views (`net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
+| Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
 The snapshot in a run file is byte-comparable to the corresponding intent file's tables at run time — and is the audit trail of what intent the run actually used.
 
@@ -163,17 +163,34 @@ CREATE TABLE account_model (
     created_at  TEXT NOT NULL
 );
 
+-- One row per lot (ADR-005): a position inside one account. An account that is
+-- not split has a single lot labelled 'default'. `id` is the lot id the engine
+-- keys balances, basis and quantity on; every account has at least one lot.
 CREATE TABLE account_model_member (
+    id                      INTEGER PRIMARY KEY,
     model_id                INTEGER NOT NULL REFERENCES account_model(id),
     account_id              INTEGER NOT NULL REFERENCES account(id),
+    lot                     TEXT NOT NULL DEFAULT 'default',  -- free-form label, no ':'
+    symbol                  TEXT,                 -- security held, if any
+    acquired                TEXT,                 -- ISO date; starts the holding period
+    quantity_micros         INTEGER,              -- shares x 1e6; NULL when not tracked
+    series                  TEXT,                 -- growth-rate series for this lot
     opening_balance         INTEGER NOT NULL,     -- cents
     opening_cost_basis      INTEGER,              -- cents; NULL when basis is not tracked
     prior_year_end_balance  INTEGER,              -- cents at Dec 31 preceding scenario.start;
                                                   -- required for traditional_ira / traditional_401k
                                                   -- so the partial-first-year RMD has a Dec-31
                                                   -- balance to divide by (after year 1 the engine
-                                                  -- reads it from account_state). NULL otherwise.
-    PRIMARY KEY (model_id, account_id)
+                                                  -- reads it from lot_state). Set on every lot of
+                                                  -- an account or on none. NULL otherwise.
+    UNIQUE (model_id, account_id, lot)
+);
+
+-- Names for the symbols lots hold (data repo securities.csv); shared reference
+-- data like `person`. A symbol with no row is simply unnamed.
+CREATE TABLE security (
+    symbol  TEXT PRIMARY KEY,
+    name    TEXT NOT NULL
 );
 
 -- ScheduledTransaction: a rule that emits transfers on a cadence.
@@ -196,10 +213,11 @@ CREATE TABLE scheduled_transaction (
     base_date               TEXT,             -- for inflated rules
     series                  TEXT,             -- inflation/rate/COLA series per amount_rule_kind; 'fixed' = no inflation
     tax_character           TEXT NOT NULL CHECK (tax_character IN
-                                ('ordinary','ltcg','gains','deferred',
+                                ('ordinary','ltcg','stcg','gains','deferred',
                                  'ss_benefit','tax_free',
                                  'tax_deferred_in','tax_deferred_out',
-                                 'return_of_capital','property_tax','none')),
+                                 'return_of_capital','property_tax','none',
+                                 'excluded_gain')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,             -- NULL = open-ended
     priority                INTEGER NOT NULL DEFAULT 500,
@@ -226,7 +244,8 @@ CREATE TABLE chain (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
     kind       TEXT NOT NULL,
-    account_id INTEGER REFERENCES account(id)
+    account_id INTEGER REFERENCES account(id),                -- leaf chains only
+    lot_id     INTEGER REFERENCES account_model_member(id)    -- leaf chains only: one per lot
 );
 CREATE INDEX idx_chain_account ON chain(account_id);
 
@@ -379,14 +398,27 @@ CREATE TABLE simulation_step (
 );
 CREATE INDEX idx_step_month ON simulation_step(month);
 
-CREATE TABLE account_state (
-    step_id     INTEGER NOT NULL REFERENCES simulation_step(id),
-    account_id  INTEGER NOT NULL REFERENCES account(id),
-    balance     INTEGER NOT NULL,             -- cents
-    cost_basis  INTEGER,                      -- cents; NULL when basis is not tracked
-    PRIMARY KEY (step_id, account_id)
+-- The engine's state: one row per lot per step (ADR-005).
+CREATE TABLE lot_state (
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    lot_id          INTEGER NOT NULL REFERENCES account_model_member(id),
+    balance         INTEGER NOT NULL,         -- cents
+    cost_basis      INTEGER,                  -- cents; NULL when basis is not tracked
+    quantity_micros INTEGER,                  -- shares x 1e6; NULL when not tracked
+    PRIMARY KEY (step_id, lot_id)
 );
-CREATE INDEX idx_state_account ON account_state(account_id, step_id);
+CREATE INDEX idx_lot_state_lot ON lot_state(lot_id, step_id);
+
+-- Account-level view of lot_state, with the columns the table of this name
+-- used to have. Basis is NULL if any lot's basis is unknown, rather than
+-- under-reporting.
+CREATE VIEW account_state AS
+SELECT ls.step_id, m.account_id, SUM(ls.balance) AS balance,
+       CASE WHEN COUNT(ls.cost_basis) < COUNT(*) THEN NULL
+            ELSE SUM(ls.cost_basis) END AS cost_basis
+FROM lot_state ls
+JOIN account_model_member m ON m.id = ls.lot_id
+GROUP BY ls.step_id, m.account_id;
 
 -- Atomic ledger entries; one row per dollar movement.
 -- Per ADR-003 §2, every row traces to exactly one rule: reason_kind='rule' with
@@ -396,7 +428,7 @@ CREATE TABLE transfer_event (
     id              INTEGER PRIMARY KEY,
     step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
     date            TEXT NOT NULL,            -- month-end
-    from_account    INTEGER NOT NULL REFERENCES account(id),
+    from_account    INTEGER NOT NULL REFERENCES account(id),  -- the lot's account, for reporting
     to_account      INTEGER NOT NULL REFERENCES account(id),
     amount          INTEGER NOT NULL,         -- cents, always non-negative
     requested_cents INTEGER NOT NULL,         -- original triggering rule's ask; same on every leg of one draw
@@ -406,8 +438,8 @@ CREATE TABLE transfer_event (
     reason_id       INTEGER,                  -- scheduled_transaction.id when 'rule';
                                               -- opaque per-account id when 'initial'
     parent_event_id INTEGER REFERENCES transfer_event(id),  -- groups multi-leg siblings from one rule firing
-    from_holding_id INTEGER REFERENCES holding(id),  -- reserved; NULL in v1
-    to_holding_id   INTEGER REFERENCES holding(id),  -- reserved; NULL in v1
+    from_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
+    to_lot_id       INTEGER NOT NULL REFERENCES account_model_member(id),
     meta_json       TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
@@ -434,32 +466,9 @@ CREATE TABLE tax_year_summary (
 );
 ```
 
-### Reserved schema (present in both file kinds; v1 unused)
+### Holdings and lots
 
-```sql
--- Holdings + lots: enable rebalancing analysis later without migration.
--- Defined in both intent and run files so the snapshot stays consistent.
-CREATE TABLE holding (
-    id          INTEGER PRIMARY KEY,
-    account_id  INTEGER NOT NULL REFERENCES account(id),
-    symbol      TEXT NOT NULL,
-    name        TEXT,
-    asset_class TEXT,
-    meta_json   TEXT NOT NULL DEFAULT '{}',
-    UNIQUE (account_id, symbol)
-);
-
-CREATE TABLE lot (
-    id                INTEGER PRIMARY KEY,
-    holding_id        INTEGER NOT NULL REFERENCES holding(id),
-    acquired          TEXT NOT NULL,
-    quantity_micros   INTEGER NOT NULL,       -- shares × 1e6 (fractional shares)
-    cost_basis_total  INTEGER NOT NULL,       -- cents
-    source_note       TEXT
-);
-```
-
-The `from_holding_id` / `to_holding_id` columns on `transfer_event` are inlined into its `CREATE TABLE` above so v1 ships with no follow-up `ALTER TABLE`s.
+This ADR originally reserved `holding` and `lot` tables and `transfer_event.from_holding_id` / `to_holding_id`. They were never used and are gone. A lot is a row of `account_model_member` (above), the engine's state is `lot_state`, and `transfer_event` records the lots a transfer moves between; ADR-005 has the design.
 
 ### Schema priming (both file kinds)
 
@@ -479,9 +488,10 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `person` | Account owners; carries birthdate for RMD-age calculations and life-transition events. |
 | `account` | One row per real-world place money sits; `kind` is the bookkeeping root (asset/liability/income/expense), `subkind` carries tax/usage semantics. |
 | `account_model` | The account bundle this scenario uses (one row per intent/run file). |
-| `account_model_member` | Opening balance, opening cost basis, and prior-Dec-31 balance (for partial-first-year RMD) for each account in the model. |
+| `account_model_member` | One row per lot: symbol, acquired date, quantity, opening balance, opening cost basis, and prior-Dec-31 balance (for partial-first-year RMD) of each position in each account in the model. |
+| `security` | The name of each symbol lots hold (from `securities.csv`). |
 | `scheduled_transaction` | Recurring or one-off rule that emits transfer events on a cadence; `amount_rule_kind` selects the formula. |
-| `chain` | A place money can be drawn from or deposited into: either a leaf (one account) or a named, ordered, reusable liquidity chain. One namespace over both. |
+| `chain` | A place money can be drawn from or deposited into: either a leaf (one lot) or a named, ordered, reusable liquidity chain. One namespace over both. |
 | `chain_steps` | The ordered steps of an interior chain — which chain each step draws from, and the maximum/percent allocation limiting that step. |
 | `calendar` | The patch sequence this scenario applies to the running model (one row per intent/run file). |
 | `calendar_event` | One patch on one date; `kind` selects the semantics, `payload_json` carries the parameters. |
@@ -490,12 +500,10 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `person_lifespan` | Optional per-person final_month override for a scenario (ADR-003 §4.9). |
 | `year_to_date` | Partial-first-year catch-up facts (ADR-003 §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
 | `simulation_step` | One month inside the run; links to the previous step. |
-| `account_state` | Per-account balance and cost basis at the end of one step; long-narrow for pivoting. |
+| `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
-| `holding` | Per-account holdings (reserved; unused in v1). |
-| `lot` | Tax lots within a holding (reserved; unused in v1). |
 | `schema_overview` | This table; one short description per table, for human and LLM readers. |
 
 ### Views
@@ -522,6 +530,16 @@ SELECT s.month, a.id AS account_id, a.name, a.kind, a.subkind,
 FROM simulation_step s
 JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
+WHERE a.kind IN ('asset','liability');
+
+-- One row per lot per month: the holdings inside each account.
+CREATE VIEW balance_by_lot AS
+SELECT s.month, a.id AS account_id, a.name AS account, m.id AS lot_id, m.lot,
+       m.symbol, a.kind, a.subkind, ls.balance, ls.cost_basis, ls.quantity_micros
+FROM simulation_step s
+JOIN lot_state ls ON ls.step_id = s.id
+JOIN account_model_member m ON m.id = ls.lot_id
+JOIN account a ON a.id = m.account_id
 WHERE a.kind IN ('asset','liability');
 
 -- Aggregated by subkind: "tax-deferred vs. taxable vs. Roth vs. cash vs. real estate".
@@ -615,9 +633,9 @@ Both seed their respective `schema_overview` rows. A `_schema_version` table tra
 - **Cross-file `ATTACH` schema skew.** Comparing runs from different schema versions can fail on views that reference dropped/renamed columns. Mitigation: lazy additive migration on open; comparisons across major schema versions are best-effort with a header warning, as already planned in Q12.
 - **JSON columns not strongly queryable.** SQLite's `json_extract` is available but ergonomically weak. The variable-shape pieces genuinely vary; `kind` columns let queries filter before extracting JSON.
 - **No row-level CHECK on `payload_json` shape matching `kind`.** Validation lives in `loaders.py` and `expansions.py`. If shape drift becomes a problem, JSON-Schema validation at load time is the response.
-- **`account_state` writes O(accounts × months) rows per run.** For ~40 accounts × 40 years × 12 months that's ~19k rows — trivially small.
+- **`lot_state` writes O(lots × months) rows per run.** For ~75 lots × 15 years × 12 months that's ~13k rows — trivially small.
 - **The `flow_by_account` view double-counts an account's own internal flows if `from_account = to_account`**, which the engine never emits. Documenting rather than guarding.
-- **Reserved columns are dead weight in v1.** `parent_run_path`, `fork_month`, `seed`, `holding`/`lot` tables, the `*_holding_id` columns on `transfer_event`. Worth it to avoid future migrations of the ledger tables, which dominate file size.
+- **Reserved columns are dead weight in v1.** `parent_run_path`, `fork_month`, `seed`. Worth it to avoid future migrations of the ledger tables, which dominate file size.
 
 ## Open questions deferred to later ADRs
 

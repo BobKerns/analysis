@@ -94,7 +94,7 @@ Implemented as designed: `subject_account` lives in `params_json` (where `factor
 2. Loader: require an explicit chain on multi-lot subject accounts, reject chain leaves outside the subject account, remove the Phase 2 guard.
 3. Tests: the existing three RMD values with a single-lot IRA reached via a chain, plus a two-lot IRA drawn in the chain's declared order.
 
-## Phase 6 — Documentation
+## Phase 6 — Documentation (done)
 
 Apply the ADR-005 "Amendments to apply" list to ADR-001, ADR-002, and ADR-003 (the DDL in ADR-002 must match `schema.py`); mark ADR-005 Accepted; update the `schema_overview` rows and `prototype_data` README text for the new columns.
 
