@@ -1,5 +1,6 @@
 """Holdings notebook widgets: the lots in one account, and the accounts holding
-one symbol. Both take a run (month-end balances) or a scenario (opening values).
+one symbol. Both take a run (month-end balances) or a scenario (opening values),
+and only offer investment accounts.
 """
 
 from __future__ import annotations
@@ -15,8 +16,9 @@ from analysis.sim.holdings import (
     holding_months,
     holding_symbols,
     holdings_totals,
-    symbol_holders,
+    lots_frame,
 )
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
     "account_holdings_view", "account_holdings_widget",
@@ -76,13 +78,17 @@ def symbol_holders_view(
     source: RunConnection | ScenarioConnection, symbol: str, month: str | None = None,
 ) -> tuple[str, pd.DataFrame]:
     """Heading and table (lots by account, with a Total row) the symbol widget shows."""
-    frame = symbol_holders(source, symbol, month=month)
+    everything = lots_frame(source, month)
+    frame = everything[
+        (everything["symbol"] == symbol)
+        & everything["subkind"].isin(INVESTMENT_ASSET_SUBKINDS)
+    ]
     shown = _with_total(
         frame[["account", "lot", "tax_treatment", "quantity", "price", "balance",
                "cost_basis", "unrealized_gain"]],
         "account", quantity=True,
     )
-    heading = f"**{symbol}** as of {frame['as_of'].iloc[0]} ({_label(source)})"
+    heading = f"**{symbol}** as of {everything['as_of'].iloc[0]} ({_label(source)})"
     return heading, shown.set_index(["account", "lot"])
 
 

@@ -98,14 +98,20 @@ def test_scenario_source_shows_opening_values_and_refuses_a_month(
             lots_frame(scenario, month="2026-05")
 
 
-def test_accounts_and_symbols_to_choose_from(two_lot_run: RunConnection) -> None:
-    accounts = holding_accounts(two_lot_run)
-    assert accounts[0] == BROKERAGE or accounts[:4] == sorted(accounts[:4])  # investment first
-    assert set(accounts[:4]) == {
+def test_widgets_only_offer_investment_accounts_and_their_symbols(
+    two_lot_run: RunConnection, test_data_dir: Path, update_account_value,
+) -> None:
+    assert holding_accounts(two_lot_run) == [
         BROKERAGE, "Asset_Roth_Alice", "Asset_Roth_Bob", "Asset_TraditionalIRA_Alice",
-    }
-    assert "Asset_Checking" in accounts[4:]
+    ]
     assert holding_symbols(two_lot_run) == ["AAA", "BBB"]
+    update_account_value("Asset_Checking", "", symbol="MMF")  # not an investment account
+    with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
+        assert "Asset_Checking" not in holding_accounts(scenario)
+        assert "MMF" not in holding_symbols(scenario)
+        assert not symbol_holders(scenario, "MMF").empty  # the data function stays general
+        _, table = symbol_holders_view(scenario, "MMF")
+        assert list(table.index)[:-1] == []  # the widget's table leaves it out
 
 
 def test_holdings_command_shows_lots_and_totals(two_lot_run_file: Path, test_data_dir: Path) -> None:

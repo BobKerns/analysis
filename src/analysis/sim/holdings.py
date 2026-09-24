@@ -105,18 +105,18 @@ def symbol_holders(
     return frame[frame["symbol"] == symbol].reset_index(drop=True)
 
 
+def _investment(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame[frame["subkind"].isin(INVESTMENT_ASSET_SUBKINDS)]
+
+
 def holding_accounts(source: RunConnection | ScenarioConnection) -> list[str]:
-    """Names of accounts that have lots: investment accounts first, then the rest."""
-    frame = lots_frame(source)
-    investment = frame["subkind"].isin(INVESTMENT_ASSET_SUBKINDS)
-    return sorted(set(frame.loc[investment, "account"])) + sorted(
-        set(frame.loc[~investment, "account"]) - set(frame.loc[investment, "account"])
-    )
+    """Names of the investment accounts, sorted: what the holdings widgets offer."""
+    return sorted(set(_investment(lots_frame(source))["account"]))
 
 
 def holding_symbols(source: RunConnection | ScenarioConnection) -> list[str]:
-    """Symbols any lot holds, sorted."""
-    symbols = lots_frame(source)["symbol"]
+    """Symbols held in investment accounts, sorted: what the holders widget offers."""
+    symbols = _investment(lots_frame(source))["symbol"]
     return sorted(set(symbols[symbols.notna() & (symbols != "")]))
 
 
