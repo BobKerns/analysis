@@ -1,4 +1,5 @@
-"""chains_view / show_chains: which lot a chain step draws from."""
+"""Scenario overview views: chains, scheduled rules and calendar events, with the lot
+in its own column."""
 
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ matplotlib.use("Agg")
 
 from analysis.sim.connection import open_scenario
 from analysis.sim.notebook_ui.scenario_plots import show_chains
-from analysis.sim.notebook_ui.scenario_view import chains_view
+from analysis.sim.notebook_ui.scenario_view import calendar_view, chains_view, scheduled_view
 
 
 def _steps(test_data_dir: Path):
@@ -77,3 +78,35 @@ def test_show_chains_displays_the_lot_column(test_data_dir: Path, monkeypatch) -
     columns = list(shown[0].data.columns)
     assert columns.index("lot") == columns.index("draw_from") + 1
     assert set(shown[0].data["step"].dropna()) == {1, 2}  # interior chains only
+
+
+def test_scheduled_view_has_separate_account_and_lot_columns(
+    two_lot_run_file: Path, test_data_dir: Path,
+) -> None:
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = scheduled_view(scenario).set_index("name")
+    columns = list(view.columns)
+    assert columns[:5] == ["from_account", "from_lot", "to_account", "to_lot", "cadence"]
+    assert "from_name" not in columns and "to_name" not in columns
+    # An account with several lots names the lot; single-lot accounts and chains show '-'.
+    growth = view[view["to_account"] == "Asset_Brokerage_Joint"]
+    assert sorted(growth["to_lot"]) == ["a", "b"]
+    draw = view.loc["lot_b_draw"]
+    assert (draw["from_account"], draw["from_lot"]) == ("lotb", "-")      # a chain
+    assert (draw["to_account"], draw["to_lot"]) == ("Asset_Checking", "-")  # one lot
+    assert not any(":" in str(v) for v in (*view["from_account"], *view["to_account"]))
+    assert view.loc["rmd_alice", "from_lot"] == "-"                       # the IRA has one lot
+
+
+def test_calendar_view_has_separate_account_and_lot_columns(
+    two_lot_run_file: Path, test_data_dir: Path,
+) -> None:
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = calendar_view(scenario)
+    assert list(view.columns)[3:7] == ["account_1", "lot_1", "account_2", "lot_2"]
+    inheritance = view[view["account_2"] == "Asset_Brokerage_Joint"].iloc[0]
+    assert (inheritance["account_1"], inheritance["lot_1"]) == ("Income_Inheritance", "-")
+    assert inheritance["lot_2"] == "a"
+    events_without_accounts = view[view["account_1"] == "-"]
+    assert not events_without_accounts.empty
+    assert set(events_without_accounts["lot_1"]) == {"-"}

@@ -1179,37 +1179,30 @@ def scheduled_list(scenario: str | None, data_dir: Path | None) -> None:
     from rich.console import Console
     from rich.table import Table
 
+    from analysis.sim.notebook_ui.scenario_view import scheduled_view
+
     data_dir_p = _resolve_data_dir(data_dir)
-    with open_intent_db(data_dir_p, scenario) as (con, scen_name):
-        table = Table(title=f"scheduled ({data_dir_p.name} / {scen_name})")
-        table.add_column("Name")
-        table.add_column("Cadence")
-        table.add_column("From")
-        table.add_column("To")
-        table.add_column("Amount", justify="right")
-        table.add_column("Start")
-        table.add_column("End")
-        for row in con.execute(
-            "SELECT s.name, s.cadence, s.start, s.\"end\" AS end_date, "
-            "       s.amount_rule_kind, s.amount_cents, "
-            "       fa.name AS from_name, ta.name AS to_name "
-            "FROM scheduled_transaction s "
-            "JOIN chain fa ON fa.id = s.from_account "
-            "JOIN chain ta ON ta.id = s.to_account "
-            "ORDER BY s.priority, s.name"
-        ):
-            rule = row["amount_rule_kind"]
-            if rule == "fixed_amount" and row["amount_cents"] is not None:
-                amt = _fmt_cents(row["amount_cents"]).strip()
-            elif rule == "percent_of_balance":
-                amt = "% of bal"
-            else:
-                amt = rule
-            table.add_row(
-                row["name"], row["cadence"],
-                row["from_name"], row["to_name"],
-                amt, row["start"], row["end_date"] or "",
-            )
+    with open_scenario(data_dir_p, scenario) as sc:
+        scen_name = sc.name
+        rows = scheduled_view(sc)
+    table = Table(title=f"scheduled ({data_dir_p.name} / {scen_name})")
+    for column, justify in (
+        ("Name", "left"), ("Cadence", "left"), ("From", "left"), ("Lot", "left"),
+        ("To", "left"), ("Lot", "left"), ("Amount", "right"), ("Start", "left"),
+        ("End", "left"),
+    ):
+        table.add_column(column, justify=justify)
+    for row in rows.itertuples():
+        if row.amount_rule_kind == "fixed_amount" and pd.notna(row.amount):
+            amt = _fmt_cents(round(row.amount * 100)).strip()
+        elif row.amount_rule_kind == "percent_of_balance":
+            amt = "% of bal"
+        else:
+            amt = row.amount_rule_kind
+        table.add_row(
+            row.name, row.cadence, row.from_account, row.from_lot,
+            row.to_account, row.to_lot, amt, row.start, "" if row.end == "-" else row.end,
+        )
     Console().print(table)
 
 

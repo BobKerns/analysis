@@ -13,7 +13,7 @@ import re
 import socket
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -42,6 +42,7 @@ __all__ = [
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
     "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "resolve_scenario_name", "find_state_dir",
+    "growth_rule_name",
     "write_current_scenario",
 ]
 
@@ -845,6 +846,30 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
 
 
+_NAME_WORD_WIDTH = 4
+
+
+def _abbreviate(name: str, width: int) -> str:
+    """``name`` as a slug with each word cut to its first ``width`` letters."""
+    return "_".join(word[:width] for word in _slug(name).split("_"))
+
+
+def growth_rule_name(account: str, lot: str, taken: Collection[str] = ()) -> str:
+    """Name of the rule generated for one lot's growth: ``growth_`` and the account
+    and lot with each word trimmed to four letters, so ``Bob Vanguard Rollover`` /
+    ``settlement`` is ``growth_bob_vang_roll_sett``. If that is already ``taken``,
+    words are trimmed less until it is free (the full names, at the widest)."""
+    widest = max(len(word) for word in _slug(f"{account}_{lot}").split("_"))
+    for width in range(_NAME_WORD_WIDTH, max(widest, _NAME_WORD_WIDTH) + 1):
+        parts = [_abbreviate(account, width)]
+        if lot != registries.DEFAULT_LOT:
+            parts.append(_abbreviate(lot, width))
+        name = "growth_" + "_".join(parts)
+        if name not in taken:
+            return name
+    return name
+
+
 def _expand_account_growth(
     accounts: list[dict[str, str]],
     model_rows: list[dict[str, str]],
@@ -859,8 +884,7 @@ def _expand_account_growth(
     ``symbol``, else its account's ``series`` (ADR-005 §5). The income side is
     the built-in account for the account's ``tax_character`` (ADR-003 §2.2),
     created here on first use so scenarios never wire it up by hand. Rules are
-    named ``growth_<account slug>`` (``_<lot slug>`` too unless the lot is
-    ``default``).
+    named by :func:`growth_rule_name`.
     """
     account_names = {row.get("name", "") for row in accounts}
     rule_names = {row.get("name", "") for row in scheduled_rows}
@@ -919,9 +943,7 @@ def _expand_account_growth(
         for lot, series in lot_series:
             if not series:
                 continue
-            rule_name = f"growth_{_slug(name)}"
-            if lot != registries.DEFAULT_LOT:
-                rule_name += f"_{_slug(lot)}"
+            rule_name = growth_rule_name(name, lot, rule_names)
             if rule_name in rule_names:
                 issues.append(
                     f"accounts.csv row {i} ({name}): series would synthesize rule "
@@ -940,7 +962,11 @@ def _expand_account_growth(
                 "series": series,
                 "tax_character": counterparty.tax_character,
                 "start": start,
-                "description": f"Growth on {leaf} ({series})",
+                "description": (
+                    f"Growth on {name}"
+                    + (f" / {lot}" if lot != registries.DEFAULT_LOT else "")
+                    + f" ({series})"
+                ),
             })
 
 

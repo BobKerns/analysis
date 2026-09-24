@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from analysis.sim.engine import run_scenario
-from analysis.sim.loader import load_scenario
+from analysis.sim.loader import growth_rule_name, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -305,8 +305,8 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         assert per_rule["living"] == 176
         assert per_rule["housing"] == 176
         assert per_rule["healthcare"] == 176
-        assert per_rule["growth_asset_checking"] == 176
-        assert per_rule["growth_asset_brokerage_joint"] == 176
+        assert per_rule[growth_rule_name("Asset_Checking", "default")] == 176
+        assert per_rule[growth_rule_name("Asset_Brokerage_Joint", "default")] == 176
         assert per_rule["ss_alice"] == 176 - 70
         assert per_rule["ss_bob"] == 176 - 135
         assert per_rule["rmd_alice"] == 3
@@ -942,8 +942,9 @@ def test_negative_rate_depreciates_asset_into_expense(tmp_path: Path) -> None:
             "JOIN account fa ON fa.id = te.from_account "
             "JOIN account ta ON ta.id = te.to_account "
             "JOIN scheduled_transaction st ON st.id = te.reason_id "
-            "WHERE st.name = 'growth_asset_car' AND te.reason_kind = 'rule' "
-            "ORDER BY te.date"
+            "WHERE st.name = ? AND te.reason_kind = 'rule' "
+            "ORDER BY te.date",
+            (growth_rule_name("Asset_Car", "default"),),
         ).fetchall()
         assert legs, "depreciation should post transfers"
         # Value leaves the asset for the expense account, not the reverse.
@@ -1069,7 +1070,7 @@ def test_person_lifespan_stops_associated_transfers(tmp_path: Path) -> None:
             con.execute(
                 "SELECT id FROM scheduled_transaction WHERE name=?", (name,)
             ).fetchone()[0]
-            for name in ("salary_alice", "ss_alice", "growth_asset_checking")
+            for name in ("salary_alice", "ss_alice", growth_rule_name("Asset_Checking", "default"))
         )
 
         # Alice-owned rule: nothing fires after her final_month.
@@ -1134,7 +1135,8 @@ def test_person_lifespan_does_not_stop_solely_owned_asset_growth(tmp_path: Path)
     con = sqlite3.connect(run_path)
     try:
         growth_id = con.execute(
-            "SELECT id FROM scheduled_transaction WHERE name='growth_asset_traditionalira_alice'"
+            "SELECT id FROM scheduled_transaction WHERE name = ?",
+            (growth_rule_name("Asset_TraditionalIRA_Alice", "default"),),
         ).fetchone()[0]
         growth_after = con.execute(
             "SELECT COUNT(*) FROM transfer_event "

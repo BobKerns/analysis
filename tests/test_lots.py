@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 
 from analysis.sim.engine import _post_transfer
-from analysis.sim.loader import LoadError, LoadResult
+from analysis.sim.loader import LoadError, LoadResult, growth_rule_name
+
+BROKERAGE = "Asset_Brokerage_Joint"
 
 
 def test_every_account_has_a_default_lot_and_leaf_chain(retire_alice_intent_file: Path) -> None:
@@ -177,12 +179,10 @@ def test_each_lot_grows_at_its_own_series(two_lot_run_file: Path) -> None:
     con = sqlite3.connect(two_lot_run_file)
     try:
         rules = dict(con.execute(
-            "SELECT name, series FROM scheduled_transaction WHERE name LIKE 'growth_asset_brokerage_joint%'"
+            "SELECT name, series FROM scheduled_transaction WHERE name LIKE 'growth_%'"
         ).fetchall())
-        assert rules == {
-            "growth_asset_brokerage_joint_a": "AAA",
-            "growth_asset_brokerage_joint_b": "brokerage growth",
-        }
+        assert rules[growth_rule_name(BROKERAGE, "a")] == "AAA"
+        assert rules[growth_rule_name(BROKERAGE, "b")] == "brokerage growth"
     finally:
         con.close()
 
@@ -376,8 +376,8 @@ def test_scheduled_list_and_accounts_view_handle_multi_lot_accounts(
         "--data-dir", str(test_data_dir),
     ], env={"COLUMNS": "300"})
     assert result.exit_code == 0, result.output
-    assert "growth_asset_brokerage_joint_a" in result.output
-    assert "Asset_Brokerage_Joint:b" in result.output
+    assert growth_rule_name(BROKERAGE, "a") in result.output
+    assert "Asset_Brokerage_Joint:" not in result.output  # lots are their own column, not spelled as a name
 
     with open_scenario(test_data_dir, "retire_alice") as sc:
         brokerage = next(r for r in load_accounts_view(sc) if r.name == "Asset_Brokerage_Joint")
@@ -429,7 +429,7 @@ def test_items_can_be_limited_to_one_lot(two_lot_run_file: Path) -> None:
     assert "(lot b)" in lot_b.output and "return_of_capital" in lot_b.output
     assert lot_a.exit_code == 0, lot_a.output
     assert "return_of_capital" not in lot_a.output
-    assert "growth_asset_brokerage_joint_a" in lot_a.output
+    assert growth_rule_name(BROKERAGE, "a") in lot_a.output
     assert items("nope").exit_code != 0
 
 
@@ -703,3 +703,47 @@ def test_state_tax_still_treats_gains_as_ordinary(
     with_table = state_liability("with.sqlite3")
     (test_data_dir / "aux" / "ltcg_brackets.csv").unlink()
     assert state_liability("without.sqlite3") == with_table > 0
+
+
+@pytest.mark.parametrize(("account", "lot", "expected"), [
+    ("Bob Vanguard Rollover", "settlement", "growth_bob_vang_roll_sett"),
+    ("Asset_Checking", "default", "growth_asse_chec"),      # the default lot adds nothing
+    ("Asset_Brokerage_Joint", "2024-03", "growth_asse_brok_join_2024_03"),
+    ("IRA", "a", "growth_ira_a"),                           # short words are kept whole
+])
+def test_generated_growth_rule_names_trim_each_word(account: str, lot: str, expected: str) -> None:
+    assert growth_rule_name(account, lot) == expected
+
+
+def test_a_taken_growth_rule_name_widens_until_it_is_free() -> None:
+    taken: set[str] = set()
+    names = []
+    for _ in range(7):
+        names.append(growth_rule_name("Vanguard Rollover", "settlement", taken))
+        taken.add(names[-1])
+    assert names[:3] == [
+        "growth_vang_roll_sett", "growth_vangu_rollo_settl", "growth_vangua_rollov_settle",
+    ]
+    assert names[-1] == "growth_vanguard_rollover_settlement"   # the untrimmed names, at the widest
+    assert len(set(names)) == len(names)
+
+
+def test_lots_whose_names_abbreviate_alike_still_get_distinct_rules(
+    add_account_value: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    # 'settlement' and 'settled' both trim to 'sett'.
+    add_account_value("Asset_Brokerage_Joint", lot="settlement", opening_balance="10.00")
+    add_account_value("Asset_Brokerage_Joint", lot="settled", opening_balance="10.00")
+    con = sqlite3.connect(load_test_copy().intent_path)
+    try:
+        names = [r[0] for r in con.execute(
+            "SELECT name FROM scheduled_transaction "
+            "WHERE name LIKE 'growth_asse_brok%' OR name LIKE 'growth_asset_broke%'"
+        )]
+    finally:
+        con.close()
+    assert sorted(names) == sorted([
+        growth_rule_name(BROKERAGE, "default"),
+        "growth_asse_brok_join_sett",
+        "growth_asset_broke_joint_settl",   # the second lot to want 'sett' is trimmed less
+    ])

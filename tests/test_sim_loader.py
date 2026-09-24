@@ -14,6 +14,7 @@ from analysis.sim.loader import (
     DEFAULT_SCENARIO_NAME,
     DataDirtyRefused,
     LoadError,
+    growth_rule_name,
     load_scenario,
     read_current_scenario,
     resolve_scenario_name,
@@ -228,7 +229,8 @@ def test_account_series_synthesizes_growth_rule_and_income_account(
             "FROM scheduled_transaction s "
             "JOIN account fa ON fa.id = s.from_account "
             "JOIN account ta ON ta.id = s.to_account "
-            "WHERE s.name = 'growth_asset_traditionalira_alice'"
+            "WHERE s.name = ?",
+            (growth_rule_name("Asset_TraditionalIRA_Alice", "default"),),
         ).fetchone()
         assert rule["amount_rule_kind"] == "percent_of_balance"
         assert rule["series"] == "Brokerage Growth"

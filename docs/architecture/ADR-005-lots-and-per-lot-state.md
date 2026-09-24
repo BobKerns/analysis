@@ -93,7 +93,7 @@ The rule depends only on subkind, never on the current lot count, so adding a lo
 
 ### 5. Growth is per lot
 
-`_expand_account_growth` already turns an account's `series` into a `percent_of_balance` rule. It now emits one rule per lot, named `growth_<account>_<lot>`, into that lot's leaf chain. Rate series for a lot resolve in order: the lot's `series`, then a rate series named for the lot's `symbol`, then the account's `series`. The income counterparty and `tax_character` remain account-level. Accrual is an ordinary transfer from an income account into the lot, so growth moves the balance and not the basis, and the ledger stays event-sourced and zero-sum. The engine never marks positions to market.
+`_expand_account_growth` already turns an account's `series` into a `percent_of_balance` rule. It now emits one rule per lot, named `growth_` plus the account and lot with each word trimmed to four letters (`growth_bob_vang_roll_sett`), widening the trimming only if that name is already taken (`loader.growth_rule_name`), into that lot's leaf chain. Rate series for a lot resolve in order: the lot's `series`, then a rate series named for the lot's `symbol`, then the account's `series`. The income counterparty and `tax_character` remain account-level. Accrual is an ordinary transfer from an income account into the lot, so growth moves the balance and not the basis, and the ledger stays event-sourced and zero-sum. The engine never marks positions to market.
 
 ### 6. Prices
 
