@@ -26,6 +26,8 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | one-time transfers | `analysis sim transfer list` |
 | a run's year-end net worth, and lots | `analysis sim explain <runfile>` |
 
+Views with no terminal equivalent yet are listed in [TODO.md](../TODO.md), which also asks for a periodic review of what is missing.
+
 ## Git status shows a notebook as modified after running it
 
 Notebook outputs are private (they can contain real financial figures), so
