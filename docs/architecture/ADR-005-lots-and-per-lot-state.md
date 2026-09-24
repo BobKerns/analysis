@@ -26,7 +26,7 @@ ADR-002 reserved `holding` / `lot` tables and `transfer_event.from_holding_id` /
 | --- | --- | --- |
 | `id` | int PK | the **lot id**; the engine keys balances, basis and quantity on it |
 | `model_id`, `account_id` | int | as today |
-| `lot` | text NOT NULL | label, unique within the account; `'1'` for accounts that are not split |
+| `lot` | text NOT NULL | free-form label, unique within the account; `'default'` for accounts that are not split. Sequential numbers (`1`, `2`) are a fine convention, and so are acquisition dates or any other name without `:` |
 | `symbol` | text | optional security identifier |
 | `acquired` | text | optional ISO date; enables short/long-term treatment later |
 | `quantity_micros` | int | optional; shares × 1e6 |
@@ -65,11 +65,11 @@ Quantity cannot be derived from balance once growth has occurred, so `lot_state`
 Leaf chains are per lot (ADR-003 §4.7 already gives every account a leaf chain in the one chain namespace). Each lot's leaf chain is named `Account:lot`, and `chain` gains `lot_id` (its `account_id` stays, derived). `ChainGraph.leaf_account` becomes `leaf_lot`.
 
 - Anywhere a CSV or payload names an account (`scheduled.csv`, chain steps, `calendar.csv` payloads, `year_to_date.csv`, `sell_asset`), `Account:lot` names a specific lot.
-- For **investment subkinds** (`types.INVESTMENT_ASSET_SUBKINDS`: `brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) an unqualified reference is a **load error**, and `account_values.csv` must state `lot`. The error message names the fix (`Asset_Brokerage: investment account requires an explicit lot, e.g. Asset_Brokerage:1`). There is no defaulting and no implicit chain over an account's lots.
-- For all other subkinds a bare account name means lot `'1'`.
+- For **investment subkinds** (`types.INVESTMENT_ASSET_SUBKINDS`: `brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) an unqualified reference is a **load error**, and `account_values.csv` must state `lot`. The error message names the fix (`Asset_Brokerage: investment account requires an explicit lot, e.g. Asset_Brokerage:default`). There is no defaulting and no implicit chain over an account's lots.
+- For all other subkinds a bare account name means lot `'default'`.
 - `:` is reserved: account names and chain names may not contain it.
 
-The rule depends only on subkind, never on the current lot count, so adding a lot never changes what an existing reference means. Splitting lot `1` into `1` and `2` leaves `Account:1` references valid and still meaning lot 1 only; the author is responsible for revisiting them.
+The rule depends only on subkind, never on the current lot count, so adding a lot never changes what an existing reference means. Splitting lot `default` into, say, `2024-03` and `2025-06` leaves `Account:default` references valid and still meaning that one lot only; the author is responsible for revisiting them.
 
 ### 4. CSV layout
 
@@ -107,7 +107,7 @@ These change what ADR-002 and ADR-003 describe, so they are applied to those doc
 ## Consequences
 
 - Positive: lot-level sales and per-security growth with no price path in the engine; reporting is untouched through the view; one file (`account_values.csv`) carries opening state; the ledger stays zero-sum and event-sourced.
-- Negative: every engine site keyed on account id changes to lot id; investment-account references in existing data need `:1` added once; row counts in `lot_state` scale with lots × months.
+- Negative: every engine site keyed on account id changes to lot id; investment-account references in existing data need `:default` added once (or the lot renamed at the same time); row counts in `lot_state` scale with lots × months.
 - Runtime lot creation (a `buy_asset` into a brokerage opening a new lot) is not supported; buys add to a named existing lot.
 
 ## Open questions deferred
