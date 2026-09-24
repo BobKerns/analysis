@@ -59,13 +59,14 @@ from __future__ import annotations
 from collections.abc import Callable, Generator
 from pathlib import Path
 import shutil
+import sqlite3
 
 import pytest
-from rich import scope
 
 from analysis.sim import scenario
 from analysis.sim.connection import RunConnection, ScenarioConnection, open_scenario, open_run
 from analysis.sim.engine import run_scenario
+from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 
@@ -368,3 +369,20 @@ def bad_subkind_data(test_data: Path) -> Path:
     """Fixture to provide the path to the bad_subkind data within the test data directory."""
     return test_data / "sim/bad_subkind"
 
+
+@pytest.fixture(scope="function")
+def ledger_con() -> Generator[sqlite3.Connection, None, None]:
+    """In-memory run-schema database for engine unit tests that call
+    ledger-posting helpers directly. Lot ids 1..99 exist, each belonging to the
+    account with the same id, so tests can use small ints as account/lot ids."""
+    con = sqlite3.connect(":memory:")
+    apply_run_schema(con)
+    con.executemany(
+        "INSERT INTO account_model_member(id, model_id, account_id, lot, opening_balance) "
+        "VALUES (?, 1, ?, 'default', 0)",
+        [(i, i) for i in range(1, 100)],
+    )
+    try:
+        yield con
+    finally:
+        con.close()

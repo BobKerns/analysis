@@ -245,3 +245,12 @@ def parse_tags(raw: str) -> list[tuple[str, str]]:
 def format_tags(tags: list[tuple[str, str]]) -> str:
     """Inverse of ``parse_tags``: render a sorted, de-duplicated tag string."""
     return " ".join(f"{r}:{n}" for r, n in sorted(set(tags)))
+
+
+DEFAULT_LOT = "default"
+
+
+def leaf_chain_name(account: str, lot: str) -> str:
+    """Name of the leaf chain for one lot: the bare account name for its
+    default lot, ``account:lot`` otherwise (ADR-005 §3)."""
+    return account if lot == DEFAULT_LOT else f"{account}:{lot}"

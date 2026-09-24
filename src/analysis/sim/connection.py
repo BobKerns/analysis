@@ -228,12 +228,12 @@ _ITEM_SQL: dict[str, str] = {
         "ORDER BY s.month, a.name"
     ),
     "account_model_member": (
-        "SELECT a.name AS account, a.kind, a.subkind, a.tax_treatment, "
+        "SELECT a.name AS account, m.lot, a.kind, a.subkind, a.tax_treatment, "
         "       m.opening_balance, m.opening_cost_basis, "
         "       m.prior_year_end_balance "
         "FROM account_model_member m "
         "JOIN account a ON a.id = m.account_id "
-        "ORDER BY a.name"
+        "ORDER BY a.name, m.id"
     ),
     "aux_table": "SELECT * FROM aux_table ORDER BY kind, series, effective_date",
     # Intent-file-only: not copied into run files (SNAPSHOT_TABLES), so this

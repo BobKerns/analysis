@@ -389,38 +389,29 @@ def _append_scheduled(path: Path, **fields: str) -> None:
     df.to_csv(path, index=False)
 
 
-def test_post_transfer_caps_payment_to_liability_balance() -> None:
+def test_post_transfer_caps_payment_to_liability_balance(ledger_con: sqlite3.Connection) -> None:
     from analysis.sim.engine import _post_transfer
 
     balances = {1: 1_000_00, 2: 300_00}
     account_kinds = {1: "asset", 2: "liability"}
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    event_id = _post_transfer(
+        ledger_con, balances, account_kinds, 1, "2026-05-31",
+        1, 2, 500_00, "none", 99,
     )
-    try:
-        event_id = _post_transfer(
-            con, balances, account_kinds, 1, "2026-05-31",
-            1, 2, 500_00, "none", 99,
-        )
-        assert event_id == 1
-        assert balances == {1: 700_00, 2: 0}
-        assert con.execute("SELECT amount FROM transfer_event").fetchone() == (300_00,)
+    assert event_id == 1
+    assert balances == {1: 700_00, 2: 0}
+    assert ledger_con.execute("SELECT amount FROM transfer_event").fetchone() == (300_00,)
 
-        event_id = _post_transfer(
-            con, balances, account_kinds, 2, "2026-06-30",
-            1, 2, 100_00, "none", 99,
-        )
-        assert event_id is None
-        assert balances == {1: 700_00, 2: 0}
-        assert con.execute("SELECT COUNT(*) FROM transfer_event").fetchone() == (1,)
-    finally:
-        con.close()
+    event_id = _post_transfer(
+        ledger_con, balances, account_kinds, 2, "2026-06-30",
+        1, 2, 100_00, "none", 99,
+    )
+    assert event_id is None
+    assert balances == {1: 700_00, 2: 0}
+    assert ledger_con.execute("SELECT COUNT(*) FROM transfer_event").fetchone() == (1,)
 
 
-def test_chain_draw_single_leaf_account_respects_minimum_balance() -> None:
+def test_chain_draw_single_leaf_account_respects_minimum_balance(ledger_con: sqlite3.Connection) -> None:
     """_chain_draw on a bare leaf chain (a real account) draws only down to
     its own minimum_balance_cents floor, and never draws the target from
     itself."""
@@ -432,54 +423,36 @@ def test_chain_draw_single_leaf_account_respects_minimum_balance() -> None:
     account_subkind = {1: "checking", 2: "savings"}
     account_name = {1: "Checking", 2: "Savings"}
     graph = ChainGraph({}, {10: 2}, {2: 100_000}, {}, {}, {}, {}, {})
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=10, amount_needed=1_000_000, target_account_id=1,
     )
-    try:
-        taken = _chain_draw(
-            con, balances, account_kinds, account_tax_treatment, account_subkind,
-            account_name, step_id=1, month_s="2026-05-31", graph=graph,
-            chain_id=10, amount_needed=1_000_000, target_account_id=1,
-        )
-        assert taken == 400_000  # 500_000 available above the 100_000 floor
-        assert balances[2] == 100_000
-        assert balances[1] == 500_000
-        row = con.execute(
-            "SELECT from_account, to_account, amount, tax_character, reason_kind "
-            "FROM transfer_event"
-        ).fetchone()
-        assert row == (2, 1, 400_000, "none", "refill")
-    finally:
-        con.close()
+    assert taken == 400_000  # 500_000 available above the 100_000 floor
+    assert balances[2] == 100_000
+    assert balances[1] == 500_000
+    row = ledger_con.execute(
+        "SELECT from_account, to_account, amount, tax_character, reason_kind "
+        "FROM transfer_event"
+    ).fetchone()
+    assert row == (2, 1, 400_000, "none", "refill")
 
 
-def test_chain_draw_never_draws_target_from_itself() -> None:
+def test_chain_draw_never_draws_target_from_itself(ledger_con: sqlite3.Connection) -> None:
     from analysis.sim.engine import ChainGraph, _chain_draw
 
     balances = {1: 100_000}
     graph = ChainGraph({}, {10: 1}, {}, {}, {}, {}, {}, {})
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    taken = _chain_draw(
+        ledger_con, balances, {1: "asset"}, {1: "taxable"}, {1: "checking"},
+        {1: "Checking"}, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=10, amount_needed=50_000, target_account_id=1,
     )
-    try:
-        taken = _chain_draw(
-            con, balances, {1: "asset"}, {1: "taxable"}, {1: "checking"},
-            {1: "Checking"}, step_id=1, month_s="2026-05-31", graph=graph,
-            chain_id=10, amount_needed=50_000, target_account_id=1,
-        )
-        assert taken == 0
-        assert con.execute("SELECT COUNT(*) FROM transfer_event").fetchone()[0] == 0
-    finally:
-        con.close()
+    assert taken == 0
+    assert ledger_con.execute("SELECT COUNT(*) FROM transfer_event").fetchone()[0] == 0
 
 
-def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character() -> None:
+def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character(ledger_con: sqlite3.Connection) -> None:
     """A chain with an interior step and two leaves drains them in
     step_order, and each leg's tax_character is derived from the source
     account it actually drew from (ADR-003 §4.7's core correctness goal)."""
@@ -495,42 +468,33 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character()
     # leaf chains share ids with their account for simplicity in this test.
     graph = ChainGraph(
         members={100: [(2,), (3,)]},
-        leaf_account={2: 2, 3: 3},
+        leaf_lot={2: 2, 3: 3},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
         maximum_of={}, overflow_chain_of={},
     )
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=100, amount_needed=500_000, target_account_id=1,
+        reason_kind="rule", reason_id=99,
     )
-    try:
-        taken = _chain_draw(
-            con, balances, account_kinds, account_tax_treatment, account_subkind,
-            account_name, step_id=1, month_s="2026-05-31", graph=graph,
-            chain_id=100, amount_needed=500_000, target_account_id=1,
-            reason_kind="rule", reason_id=99,
-        )
-        assert taken == 500_000
-        assert balances[2] == 0        # savings drained first, fully
-        assert balances[3] == 700_000  # IRA supplies the remaining 300_000
-        assert balances[1] == 500_000
-        legs = con.execute(
-            "SELECT from_account, amount, tax_character, reason_kind, reason_id "
-            "FROM transfer_event "
-            "ORDER BY id"
-        ).fetchall()
-        assert legs == [
-            (2, 200_000, "none", "rule", 99),
-            (3, 300_000, "tax_deferred_out", "rule", 99),
-        ]
-    finally:
-        con.close()
+    assert taken == 500_000
+    assert balances[2] == 0        # savings drained first, fully
+    assert balances[3] == 700_000  # IRA supplies the remaining 300_000
+    assert balances[1] == 500_000
+    legs = ledger_con.execute(
+        "SELECT from_account, amount, tax_character, reason_kind, reason_id "
+        "FROM transfer_event "
+        "ORDER BY id"
+    ).fetchall()
+    assert legs == [
+        (2, 200_000, "none", "rule", 99),
+        (3, 300_000, "tax_deferred_out", "rule", 99),
+    ]
 
 
-def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhausted() -> None:
+def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhausted(ledger_con: sqlite3.Connection) -> None:
     """Step 2 requests 1% of what's still outstanding, step 3 the default
     100% of whatever's left -- absent a shortfall this is a cascading
     near-even split, but step 2 (Hiromi Vanguard) is nearly empty here, so
@@ -547,31 +511,22 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     account_name = {1: "Target", 2: "Hiromi Vanguard", 3: "Bob Vanguard"}
     graph = ChainGraph(
         members={100: [(2, None, 10_000), (3,)]},  # 2: percent=1%, 3: default 100%
-        leaf_account={2: 2, 3: 3},
+        leaf_lot={2: 2, 3: 3},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
         maximum_of={}, overflow_chain_of={},
     )
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=100, amount_needed=500_000, target_account_id=1,
     )
-    try:
-        taken = _chain_draw(
-            con, balances, account_kinds, account_tax_treatment, account_subkind,
-            account_name, step_id=1, month_s="2026-05-31", graph=graph,
-            chain_id=100, amount_needed=500_000, target_account_id=1,
-        )
-        assert taken == 500_000
-        assert balances[2] == 0        # step 2's 1% target (5_000) exceeded its 1_000 balance
-        assert balances[3] == 501_000  # 1_000_000 - (500_000 - 1_000)
-    finally:
-        con.close()
+    assert taken == 500_000
+    assert balances[2] == 0        # step 2's 1% target (5_000) exceeded its 1_000 balance
+    assert balances[3] == 501_000  # 1_000_000 - (500_000 - 1_000)
 
 
-def test_chain_draw_step_maximum_caps_allocation_even_when_more_is_available() -> None:
+def test_chain_draw_step_maximum_caps_allocation_even_when_more_is_available(ledger_con: sqlite3.Connection) -> None:
     """The `amount`/`maximum` column is a per-step ceiling, not a target: once
     a step has supplied its cap, the remainder moves to the next step even
     though the source account could have covered more."""
@@ -584,31 +539,22 @@ def test_chain_draw_step_maximum_caps_allocation_even_when_more_is_available() -
     account_name = {1: "Target", 2: "First", 3: "Second"}
     graph = ChainGraph(
         members={100: [(2, 200_000), (3,)]},  # step 2 capped at 200_000
-        leaf_account={2: 2, 3: 3},
+        leaf_lot={2: 2, 3: 3},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
         maximum_of={}, overflow_chain_of={},
     )
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=100, amount_needed=500_000, target_account_id=1,
     )
-    try:
-        taken = _chain_draw(
-            con, balances, account_kinds, account_tax_treatment, account_subkind,
-            account_name, step_id=1, month_s="2026-05-31", graph=graph,
-            chain_id=100, amount_needed=500_000, target_account_id=1,
-        )
-        assert taken == 500_000
-        assert balances[2] == 800_000  # only the 200_000 cap was drawn
-        assert balances[3] == 700_000  # the remaining 300_000 fell through
-    finally:
-        con.close()
+    assert taken == 500_000
+    assert balances[2] == 800_000  # only the 200_000 cap was drawn
+    assert balances[3] == 700_000  # the remaining 300_000 fell through
 
 
-def test_chain_draw_refills_source_before_checking_availability() -> None:
+def test_chain_draw_refills_source_before_checking_availability(ledger_con: sqlite3.Connection) -> None:
     """A leaf's refill_chain is drawn *before* computing how much it can
     supply, so a source that's below its own minimum_balance still
     contributes up to what its refill chain can restore, rather than falling
@@ -623,50 +569,35 @@ def test_chain_draw_refills_source_before_checking_availability() -> None:
     account_name = {1: "Target", 2: "Source", 3: "Refill"}
     graph = ChainGraph(
         members={},
-        leaf_account={10: 2, 20: 3},
+        leaf_lot={10: 2, 20: 3},
         minimum_of={2: 0}, refill_chain_of={2: 20},
         refill_target_of={2: None}, refill_amount_of={2: None},
         maximum_of={}, overflow_chain_of={},
-    )
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
     )
     refill_ctx = RefillContext(
         graph, aux=None, chain_base_date=date(2026, 5, 31),
         inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
         account_subkind=account_subkind, account_name=account_name, cost_bases={},
     )
-    try:
-        taken = _chain_draw(
-            con, balances, account_kinds, account_tax_treatment, account_subkind,
-            account_name, step_id=1, month_s="2026-05-31", graph=graph,
-            chain_id=10, amount_needed=50_000, target_account_id=1,
-            refill_ctx=refill_ctx,
-        )
-        assert taken == 50_000
-        assert balances[1] == 50_000
-        assert balances[2] == 0
-        assert balances[3] == 1_000_000 - 49_500  # refilled just enough to cover the draw
-    finally:
-        con.close()
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=10, amount_needed=50_000, target_account_id=1,
+        refill_ctx=refill_ctx,
+    )
+    assert taken == 50_000
+    assert balances[1] == 50_000
+    assert balances[2] == 0
+    assert balances[3] == 1_000_000 - 49_500  # refilled just enough to cover the draw
 
 
-def test_post_withdrawal_rejects_untracked_taxable_non_cash_account() -> None:
+def test_post_withdrawal_rejects_untracked_taxable_non_cash_account(ledger_con: sqlite3.Connection) -> None:
     from analysis.sim.engine import EngineError, _post_withdrawal
 
     balances = {3: 100_000, 4: 0}
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
-    )
     try:
         _post_withdrawal(
-            con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
+            ledger_con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
             {3: "brokerage_taxable"}, {3: "Brokerage"}, {3: None},
             step_id=1, month_s="2026-05-31", from_id=3, to_id=4, amount=1_000,
             reason_id=99,
@@ -676,11 +607,9 @@ def test_post_withdrawal_rejects_untracked_taxable_non_cash_account() -> None:
         assert "opening_cost_basis" in str(e)
     else:
         raise AssertionError("expected EngineError: opening_cost_basis never set")
-    finally:
-        con.close()
 
 
-def test_post_withdrawal_splits_return_of_capital_and_ltcg_pro_rata() -> None:
+def test_post_withdrawal_splits_return_of_capital_and_ltcg_pro_rata(ledger_con: sqlite3.Connection) -> None:
     """A taxable brokerage withdrawal with tracked cost basis splits into a
     return_of_capital leg (pro-rata basis) and an ltcg leg (the gain), and
     reduces the account's running cost basis by the basis consumed."""
@@ -688,74 +617,48 @@ def test_post_withdrawal_splits_return_of_capital_and_ltcg_pro_rata() -> None:
 
     balances = {3: 10_000_00, 4: 0}
     cost_bases = {3: 4_000_00}
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    _post_withdrawal(
+        ledger_con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
+        {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
+        step_id=1, month_s="2026-05-31", from_id=3, to_id=4, amount=3_000_00,
+        reason_id=99, requested=3_000_00, remainder=0,
     )
-    try:
-        _post_withdrawal(
-            con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
-            {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
-            step_id=1, month_s="2026-05-31", from_id=3, to_id=4, amount=3_000_00,
-            reason_id=99, requested=3_000_00, remainder=0,
-        )
-        legs = con.execute(
-            "SELECT amount, tax_character, parent_event_id FROM transfer_event "
-            "ORDER BY id"
-        ).fetchall()
-        # basis_out = 4_000_00 * 3_000_00 // 10_000_00 = 1_200_00; gain = 1_800_00.
-        assert legs == [
-            (1_200_00, "return_of_capital", None),
-            (1_800_00, "ltcg", 1),
-        ]
-        assert balances[3] == 10_000_00 - 3_000_00
-        assert balances[4] == 3_000_00
-        assert cost_bases[3] == 4_000_00 - 1_200_00
-    finally:
-        con.close()
+    legs = ledger_con.execute(
+        "SELECT amount, tax_character, parent_event_id FROM transfer_event "
+        "ORDER BY id"
+    ).fetchall()
+    # basis_out = 4_000_00 * 3_000_00 // 10_000_00 = 1_200_00; gain = 1_800_00.
+    assert legs == [
+        (1_200_00, "return_of_capital", None),
+        (1_800_00, "ltcg", 1),
+    ]
+    assert balances[3] == 10_000_00 - 3_000_00
+    assert balances[4] == 3_000_00
+    assert cost_bases[3] == 4_000_00 - 1_200_00
 
 
-def test_post_withdrawal_realizes_loss_as_negative_ltcg_leg() -> None:
+def test_post_withdrawal_realizes_loss_as_negative_ltcg_leg(ledger_con: sqlite3.Connection) -> None:
     """A withdrawal from a position underwater vs. its basis realizes a loss:
     the ltcg leg comes out negative rather than erroring or clamping to zero."""
     from analysis.sim.engine import _post_withdrawal
 
     balances = {3: 9_000_00, 4: 0}
     cost_bases = {3: 20_000_00}  # bought high, now worth less than basis
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    _post_withdrawal(
+        ledger_con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
+        {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
+        step_id=1, month_s="2026-05-31", from_id=3, to_id=4, amount=3_000_00,
+        reason_id=99,
     )
-    try:
-        _post_withdrawal(
-            con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
-            {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
-            step_id=1, month_s="2026-05-31", from_id=3, to_id=4, amount=3_000_00,
-            reason_id=99,
-        )
-        legs = con.execute(
-            "SELECT amount, tax_character FROM transfer_event ORDER BY id"
-        ).fetchall()
-        # basis_out = 20_000_00 * 3_000_00 // 9_000_00 = 6_666_66; gain = -3_666_66.
-        assert legs == [(6_666_66, "return_of_capital"), (-3_666_66, "ltcg")]
-        assert balances[4] == 3_000_00  # to_id still nets the full amount requested
-    finally:
-        con.close()
+    legs = ledger_con.execute(
+        "SELECT amount, tax_character FROM transfer_event ORDER BY id"
+    ).fetchall()
+    # basis_out = 20_000_00 * 3_000_00 // 9_000_00 = 6_666_66; gain = -3_666_66.
+    assert legs == [(6_666_66, "return_of_capital"), (-3_666_66, "ltcg")]
+    assert balances[4] == 3_000_00  # to_id still nets the full amount requested
 
 
-def _home_sale_transfer_event_table(con: sqlite3.Connection) -> None:
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
-    )
-
-
-def test_apply_home_sale_splits_basis_excluded_and_taxable_gain() -> None:
+def test_apply_home_sale_splits_basis_excluded_and_taxable_gain(ledger_con: sqlite3.Connection) -> None:
     """Sale price above basis + exclusion cap produces all three legs:
     return_of_capital (the basis), excluded_gain (gain up to the §121 cap,
     untaxed), and ltcg (gain above the cap, taxed)."""
@@ -763,61 +666,51 @@ def test_apply_home_sale_splits_basis_excluded_and_taxable_gain() -> None:
 
     balances = {5: 900_000_00, 6: 0}
     cost_bases = {5: 200_000_00}
-    con = sqlite3.connect(":memory:")
-    _home_sale_transfer_event_table(con)
-    try:
-        _apply_home_sale(
-            con, balances, {5: "asset", 6: "asset"}, cost_bases,
-            step_id=1, month_s="2026-06-30",
-            params={"exclusion_cap_cents": 500_000_00},
-            amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux={},
-        )
-        legs = con.execute(
-            "SELECT amount, tax_character, parent_event_id FROM transfer_event "
-            "ORDER BY id"
-        ).fetchall()
-        # gain = 900k - 200k = 700k; excluded = min(700k, 500k) = 500k;
-        # taxable = 200k.
-        assert legs == [
-            (200_000_00, "return_of_capital", None),
-            (500_000_00, "excluded_gain", 1),
-            (200_000_00, "ltcg", 2),
-        ]
-        assert balances[6] == 900_000_00
-        assert cost_bases[5] == 0
-    finally:
-        con.close()
+    _apply_home_sale(
+        ledger_con, balances, {5: "asset", 6: "asset"}, cost_bases,
+        step_id=1, month_s="2026-06-30",
+        params={"exclusion_cap_cents": 500_000_00},
+        amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux={},
+    )
+    legs = ledger_con.execute(
+        "SELECT amount, tax_character, parent_event_id FROM transfer_event "
+        "ORDER BY id"
+    ).fetchall()
+    # gain = 900k - 200k = 700k; excluded = min(700k, 500k) = 500k;
+    # taxable = 200k.
+    assert legs == [
+        (200_000_00, "return_of_capital", None),
+        (500_000_00, "excluded_gain", 1),
+        (200_000_00, "ltcg", 2),
+    ]
+    assert balances[6] == 900_000_00
+    assert cost_bases[5] == 0
 
 
-def test_apply_home_sale_excludes_entire_gain_when_under_cap() -> None:
+def test_apply_home_sale_excludes_entire_gain_when_under_cap(ledger_con: sqlite3.Connection) -> None:
     """Gain fully covered by the exclusion posts no ltcg leg at all -- not
     a zero-amount leg, no leg."""
     from analysis.sim.engine import _apply_home_sale
 
     balances = {5: 600_000_00, 6: 0}
     cost_bases = {5: 200_000_00}
-    con = sqlite3.connect(":memory:")
-    _home_sale_transfer_event_table(con)
-    try:
-        _apply_home_sale(
-            con, balances, {5: "asset", 6: "asset"}, cost_bases,
-            step_id=1, month_s="2026-06-30",
-            params={"exclusion_cap_cents": 500_000_00},
-            amount_cents=600_000_00, from_id=5, to_id=6, tid=42, aux={},
-        )
-        legs = con.execute(
-            "SELECT amount, tax_character FROM transfer_event ORDER BY id"
-        ).fetchall()
-        # gain = 400k, fully under the 500k cap -- no ltcg leg at all.
-        assert legs == [
-            (200_000_00, "return_of_capital"),
-            (400_000_00, "excluded_gain"),
-        ]
-    finally:
-        con.close()
+    _apply_home_sale(
+        ledger_con, balances, {5: "asset", 6: "asset"}, cost_bases,
+        step_id=1, month_s="2026-06-30",
+        params={"exclusion_cap_cents": 500_000_00},
+        amount_cents=600_000_00, from_id=5, to_id=6, tid=42, aux={},
+    )
+    legs = ledger_con.execute(
+        "SELECT amount, tax_character FROM transfer_event ORDER BY id"
+    ).fetchall()
+    # gain = 400k, fully under the 500k cap -- no ltcg leg at all.
+    assert legs == [
+        (200_000_00, "return_of_capital"),
+        (400_000_00, "excluded_gain"),
+    ]
 
 
-def test_apply_home_sale_looks_up_exclusion_from_aux_table_by_filing_status() -> None:
+def test_apply_home_sale_looks_up_exclusion_from_aux_table_by_filing_status(ledger_con: sqlite3.Connection) -> None:
     """With no explicit override, the exclusion cap comes from the
     home_sale_exclusion aux table, keyed by filing_status, using the same
     latest-effective-date-on-or-before convention as every other aux
@@ -832,38 +725,31 @@ def test_apply_home_sale_looks_up_exclusion_from_aux_table_by_filing_status() ->
             ("1997-05-07", {"filing_status": "MFJ", "amount": 500_000_00}),
         ],
     }
-    con = sqlite3.connect(":memory:")
-    _home_sale_transfer_event_table(con)
-    try:
-        _apply_home_sale(
-            con, balances, {5: "asset", 6: "asset"}, cost_bases,
-            step_id=1, month_s="2026-06-30",
-            params={"filing_status": "MFJ"},
-            amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux=aux,
-        )
-        legs = con.execute(
-            "SELECT amount, tax_character FROM transfer_event ORDER BY id"
-        ).fetchall()
-        assert legs == [
-            (200_000_00, "return_of_capital"),
-            (500_000_00, "excluded_gain"),
-            (200_000_00, "ltcg"),
-        ]
-    finally:
-        con.close()
+    _apply_home_sale(
+        ledger_con, balances, {5: "asset", 6: "asset"}, cost_bases,
+        step_id=1, month_s="2026-06-30",
+        params={"filing_status": "MFJ"},
+        amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux=aux,
+    )
+    legs = ledger_con.execute(
+        "SELECT amount, tax_character FROM transfer_event ORDER BY id"
+    ).fetchall()
+    assert legs == [
+        (200_000_00, "return_of_capital"),
+        (500_000_00, "excluded_gain"),
+        (200_000_00, "ltcg"),
+    ]
 
 
-def test_apply_home_sale_requires_cost_basis_tracking() -> None:
+def test_apply_home_sale_requires_cost_basis_tracking(ledger_con: sqlite3.Connection) -> None:
     """Selling an account with no opening_cost_basis set errors the same
     way an untracked brokerage withdrawal does, rather than silently
     treating the whole sale as tax-free."""
     from analysis.sim.engine import EngineError, _apply_home_sale
 
-    con = sqlite3.connect(":memory:")
-    _home_sale_transfer_event_table(con)
     try:
         _apply_home_sale(
-            con, {5: 900_000_00, 6: 0}, {5: "asset", 6: "asset"}, {5: None},
+            ledger_con, {5: 900_000_00, 6: 0}, {5: "asset", 6: "asset"}, {5: None},
             step_id=1, month_s="2026-06-30", params={},
             amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux={},
         )
@@ -871,11 +757,9 @@ def test_apply_home_sale_requires_cost_basis_tracking() -> None:
         assert "cost-basis tracking" in str(e)
     else:
         raise AssertionError("expected EngineError: opening_cost_basis never set")
-    finally:
-        con.close()
 
 
-def test_chain_sweep_allocates_fixed_then_percent_of_remainder() -> None:
+def test_chain_sweep_allocates_fixed_then_percent_of_remainder(ledger_con: sqlite3.Connection) -> None:
     from analysis.sim.engine import ChainGraph, _chain_sweep
 
     balances = {1: 1_000_000, 2: 0, 3: 0, 4: 0}
@@ -886,42 +770,33 @@ def test_chain_sweep_allocates_fixed_then_percent_of_remainder() -> None:
     graph = ChainGraph(
         members={100: [(2, 100_000, 1_000_000), (3, None, 500_000),
                        (4,)]},
-        leaf_account={2: 2, 3: 3, 4: 4},
+        leaf_lot={2: 2, 3: 3, 4: 4},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
         maximum_of={2: None, 3: None, 4: None},
         overflow_chain_of={},
     )
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    swept = _chain_sweep(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=100, amount_available=1_000_000, source_account_id=1,
     )
-    try:
-        swept = _chain_sweep(
-            con, balances, account_kinds, account_tax_treatment, account_subkind,
-            account_name, step_id=1, month_s="2026-05-31", graph=graph,
-            chain_id=100, amount_available=1_000_000, source_account_id=1,
-        )
-        assert swept == 1_000_000
-        assert balances[1] == 0
-        assert {account_id: balances[account_id] for account_id in (2, 3, 4)} == {
-            2: 100_000, 3: 450_000, 4: 450_000,
-        }
-        assert [row[2] for row in con.execute(
-            "SELECT from_account, to_account, amount FROM transfer_event ORDER BY id"
-        )] == [100_000, 450_000, 450_000]
-    finally:
-        con.close()
+    assert swept == 1_000_000
+    assert balances[1] == 0
+    assert {account_id: balances[account_id] for account_id in (2, 3, 4)} == {
+        2: 100_000, 3: 450_000, 4: 450_000,
+    }
+    assert [row[2] for row in ledger_con.execute(
+        "SELECT from_account, to_account, amount FROM transfer_event ORDER BY id"
+    )] == [100_000, 450_000, 450_000]
 
 
-def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
+def test_ytd_preroll_expands_interior_chain_month_by_month(ledger_con: sqlite3.Connection) -> None:
     from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
         members={100: [(2, 25_000), (3,)]},
-        leaf_account={1: 1, 2: 2, 3: 3},
+        leaf_lot={1: 1, 2: 2, 3: 3},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
         maximum_of={}, overflow_chain_of={},
@@ -931,33 +806,24 @@ def test_ytd_preroll_expands_interior_chain_month_by_month() -> None:
         None, "rwk", None, None, None, 100_000, None, "ss_benefit",
         None, "2026-01-31", None, 200, None, None, 1, None,
     ]
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
-    )
-    try:
-        _apply_ytd_catchups(con, 1, date(2026, 5, 31), [txn], [], graph)
-        rows = con.execute(
-            "SELECT date, to_account, amount FROM transfer_event ORDER BY id"
-        ).fetchall()
-        assert rows == [
-            ("2026-01-31", 2, 25_000), ("2026-01-31", 3, 75_000),
-            ("2026-02-28", 2, 25_000), ("2026-02-28", 3, 75_000),
-            ("2026-03-31", 2, 25_000), ("2026-03-31", 3, 75_000),
-            ("2026-04-30", 2, 25_000), ("2026-04-30", 3, 75_000),
-        ]
-    finally:
-        con.close()
+    _apply_ytd_catchups(ledger_con, 1, date(2026, 5, 31), [txn], [], graph)
+    rows = ledger_con.execute(
+        "SELECT date, to_account, amount FROM transfer_event ORDER BY id"
+    ).fetchall()
+    assert rows == [
+        ("2026-01-31", 2, 25_000), ("2026-01-31", 3, 75_000),
+        ("2026-02-28", 2, 25_000), ("2026-02-28", 3, 75_000),
+        ("2026-03-31", 2, 25_000), ("2026-03-31", 3, 75_000),
+        ("2026-04-30", 2, 25_000), ("2026-04-30", 3, 75_000),
+    ]
 
 
-def test_ytd_preroll_annual_fixed_amount_fires_only_if_month_has_passed() -> None:
+def test_ytd_preroll_annual_fixed_amount_fires_only_if_month_has_passed(ledger_con: sqlite3.Connection) -> None:
     from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
         members={},
-        leaf_account={1: 1, 2: 2},
+        leaf_lot={1: 1, 2: 2},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
         maximum_of={}, overflow_chain_of={},
@@ -972,28 +838,19 @@ def test_ytd_preroll_annual_fixed_amount_fires_only_if_month_has_passed() -> Non
         None, None, None, None, None, 580_000, None, "none",
         None, "2026-01-31", None, 200, None, None, 1, None,
     ]
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
-    )
-    try:
-        _apply_ytd_catchups(con, 1, date(2026, 5, 31), [apr_tax, dec_tax], [], graph)
-        rows = con.execute(
-            "SELECT date, reason_id, amount FROM transfer_event ORDER BY id"
-        ).fetchall()
-        assert rows == [("2026-04-30", 10, 580_000)]
-    finally:
-        con.close()
+    _apply_ytd_catchups(ledger_con, 1, date(2026, 5, 31), [apr_tax, dec_tax], [], graph)
+    rows = ledger_con.execute(
+        "SELECT date, reason_id, amount FROM transfer_event ORDER BY id"
+    ).fetchall()
+    assert rows == [("2026-04-30", 10, 580_000)]
 
 
-def test_ytd_amount_from_interior_source_chain_records_first_leaf_account() -> None:
+def test_ytd_amount_from_interior_source_chain_records_first_leaf_account(ledger_con: sqlite3.Connection) -> None:
     from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
         members={100: [(2,), (3,)]},
-        leaf_account={2: 2, 3: 3, 4: 4, 5: 5},
+        leaf_lot={2: 2, 3: 3, 4: 4, 5: 5},
         minimum_of={}, refill_chain_of={},
         refill_target_of={}, refill_amount_of={},
         maximum_of={}, overflow_chain_of={},
@@ -1003,27 +860,18 @@ def test_ytd_amount_from_interior_source_chain_records_first_leaf_account() -> N
         "Mortgage Interest", "joint", None, 60_000, None, 185_000, None, "none",
         None, "2026-01-31", None, 300, None, 370_000, 0, None,
     ]
-    con = sqlite3.connect(":memory:")
-    con.execute(
-        "CREATE TABLE transfer_event(id INTEGER PRIMARY KEY, step_id, date, "
-        "from_account, to_account, amount, requested_cents, remainder_cents, "
-        "tax_character, tax_year, reason_kind, reason_id, parent_event_id)"
+    _apply_ytd_catchups(
+        ledger_con, 1, date(2026, 5, 31), [txn], [], graph,
+        account_id_by_name={"Mortgage Interest": 5}, balances={4: 25_000_000},
     )
-    try:
-        _apply_ytd_catchups(
-            con, 1, date(2026, 5, 31), [txn], [], graph,
-            account_id_by_name={"Mortgage Interest": 5}, balances={4: 25_000_000},
-        )
-        rows = con.execute(
-            "SELECT from_account, to_account, amount, parent_event_id "
-            "FROM transfer_event ORDER BY id"
-        ).fetchall()
-        assert rows == [
-            (2, 5, 249_700, None),
-            (2, 4, 120_300, 1),
-        ]
-    finally:
-        con.close()
+    rows = ledger_con.execute(
+        "SELECT from_account, to_account, amount, parent_event_id "
+        "FROM transfer_event ORDER BY id"
+    ).fetchall()
+    assert rows == [
+        (2, 5, 249_700, None),
+        (2, 4, 120_300, 1),
+    ]
 
 
 def test_settle_order_settles_dependency_before_dependent() -> None:
@@ -1037,7 +885,7 @@ def test_settle_order_settles_dependency_before_dependent() -> None:
     # account 3 (IRA). So 2 must settle before 1.
     graph = ChainGraph(
         members={},
-        leaf_account={10: 2, 20: 3},
+        leaf_lot={10: 2, 20: 3},
         minimum_of={1: 100, 2: 100},
         refill_chain_of={1: 10, 2: 20},
         refill_target_of={}, refill_amount_of={},

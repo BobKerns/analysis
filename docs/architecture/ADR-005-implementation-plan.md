@@ -4,6 +4,18 @@ Companion to [ADR-005](ADR-005-lots-and-per-lot-state.md). Phases are ordered so
 
 Sizes of the files involved (lines): `engine.py` 2367, `loader.py` 1556, `connection.py` 1001, `cli.py` 2219, `accounts.py` 209, `quicken.py` 123. Test files touching `account_state` / `account_model_member`: `test_engine.py`, `test_sim_loader.py`, `test_sim_cli.py`, `test_runs.py`.
 
+## Status
+
+- **Phase 0: done.** `tests/test_retire_alice_baseline.py` pins net worth, per-account state and the full transfer ledger against `tests/data/sim/retire_alice_baseline/` (regenerate with `UPDATE_BASELINE=1` only for an intentional behavior change). Basis splitting is not exercised by `retire_alice`; it is covered by the `_post_withdrawal` unit tests.
+- **Phase 1: done, uncommitted.** The baseline is byte-identical and the suite is green. Where the implementation differs from the text below:
+  - The engine keeps its dict and parameter names (`balances`, `account_kinds`, `from_id`, ...) but their keys are now lot ids. Only `ChainGraph.leaf_account` was renamed (`leaf_lot`), because tests construct it directly.
+  - `transfer_event.from_account`/`to_account` are filled by a sub-select on `account_model_member` inside `_post_transfer`/`_post_ytd_transfer`, so no call site changed signature. The engine unit tests now use a `ledger_con` fixture (run schema plus identity lots 1..99) instead of hand-written DDL.
+  - Leaf chain names come from `registries.leaf_chain_name` (bare account name for the default lot, `account:lot` otherwise). Investment-subkind enforcement of explicit lots is Phase 2.
+  - `year_to_date` gained `from_lot_id`/`to_lot_id`; the tax accumulator's paid-tax query now filters on `to_lot_id`.
+  - Every account now gets a default lot row, including income and expense accounts that had no `account_values.csv` row. `accounts.py` sums per account (`_members_by_account`).
+  - Duplicate `(account_name, lot)` rows are flagged at read time. The old duplicate-`account_name` check in `_validate_account_model_money` could never fire, because the overlay merge collapses same-key rows first.
+- **Still to audit for Phase 2:** which rule kinds assume one balance per account (`on_death`, `_apply_home_sale`, `mortgage_payment`, `ss_benefit`, `tax_accumulator`, `_chain_sweep`, `_settle_accounts`). Phase 1 did not change their logic, only their keys.
+
 ## Phase 0 — Baseline and audit (no behavior change)
 
 1. Pin current behavior for `retire_alice` in a new test: net worth by month (`net_worth` view), per-account year-end balances, the brokerage `return_of_capital`/`ltcg` split, and the existing RMD values (681,542 / 558,190 / 454,889 in `test_engine.py`). These become the Phase 1 equivalence check.

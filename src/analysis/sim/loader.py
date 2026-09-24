@@ -313,6 +313,23 @@ def _default_scenario_name(data_dir: Path, scenarios: Path, scenarios_dir: Path 
     )
 
 
+def _default_lots(
+    rows: list[dict[str, str]], issues: list[str],
+) -> list[dict[str, str]]:
+    """Default each account_values.csv row's lot, and flag repeated (account, lot)
+    pairs here: the overlay merge that follows would silently collapse them."""
+    seen: set[tuple[str, str]] = set()
+    for i, row in enumerate(rows, start=2):
+        row["lot"] = row.get("lot") or registries.DEFAULT_LOT
+        key = (row.get("account_name", ""), row["lot"])
+        if key[0] and key in seen:
+            issues.append(
+                f"account_values.csv row {i} ({key[0]}): duplicate account_name and lot"
+            )
+        seen.add(key)
+    return rows
+
+
 def _merge_scenario_rows(
     parent_rows: list[dict[str, str]],
     child_rows: list[dict[str, str]],
@@ -393,7 +410,8 @@ def _read_scenario_inputs(
         parent_accounts, read_overlay("accounts.csv", required=True), ("name",)
     )
     model_rows = _merge_scenario_rows(
-        parent_models, read_overlay("account_values.csv", required=True), ("account_name",)
+        parent_models, _default_lots(read_overlay("account_values.csv", required=True), issues),
+        ("account_name", "lot"),
     )
     scheduled_rows = _merge_scenario_rows(
         parent_scheduled, read_overlay("scheduled.csv", required=True), ("name",)
@@ -955,17 +973,16 @@ def _validate_account_model_money(
     accounts: list[dict[str, str]],
 ) -> None:
     account_names = {r.get("name", "") for r in accounts}
-    seen: set[str] = set()
     for i, row in enumerate(rows, start=2):
         name = row.get("account_name", "")
         if not name:
             issues.append(f"account_values.csv row {i}: missing account_name")
             continue
-        if name in seen:
+        lot = row.get("lot") or registries.DEFAULT_LOT
+        if ":" in lot:
             issues.append(
-                f"account_values.csv row {i} ({name}): duplicate account_name"
+                f"account_values.csv row {i} ({name}): lot '{lot}' may not contain ':'"
             )
-        seen.add(name)
         if name not in account_names:
             issues.append(
                 f"account_values.csv row {i} ({name}): account_name not in accounts.csv"
@@ -1330,18 +1347,61 @@ def _write_intent(
                      "account_tag", "account_id", tag_cache)
     counts["account"] = len(accounts)
 
-    # Liquidity chains (ADR-003 §4.7): one implicit leaf chain per real account,
-    # plus one interior chain per chains/*.csv file, in one shared name space.
-    chain_ids: dict[str, int] = {}
+    cur = con.execute(
+        "INSERT INTO account_model(name, description, created_at) VALUES (?,?,?)",
+        (account_model_name, None, now),
+    )
+    model_id = cur.lastrowid
+
+    # One account_model_member row per lot (ADR-005). An account with no
+    # account_values.csv row gets a single zero-balance default lot. Rows are
+    # written in accounts.csv order so lot ids follow account order.
+    rows_by_account: dict[str, list[dict[str, str]]] = {}
+    for m in account_model_rows:
+        rows_by_account.setdefault(m["account_name"], []).append(m)
+    lot_ids: dict[str, int] = {}
+    lot_account: dict[str, str] = {}
+    member_count = 0
     for a in accounts:
+        for m in rows_by_account.get(a["name"]) or [
+            {"account_name": a["name"], "opening_balance": "0.00"}
+        ]:
+            lot = m.get("lot") or registries.DEFAULT_LOT
+            cur = con.execute(
+                "INSERT INTO account_model_member("
+                "model_id, account_id, lot, opening_balance, opening_cost_basis, "
+                "prior_year_end_balance) VALUES (?,?,?,?,?,?)",
+                (
+                    model_id,
+                    account_ids[a["name"]],
+                    lot,
+                    _dollars_to_cents(m["opening_balance"], resolver=money_resolver),
+                    _dollars_to_cents(m["opening_cost_basis"], resolver=money_resolver)
+                    if m.get("opening_cost_basis") else None,
+                    _dollars_to_cents(m["prior_year_end_balance"], resolver=money_resolver)
+                    if m.get("prior_year_end_balance") else None,
+                ),
+            )
+            leaf = registries.leaf_chain_name(a["name"], lot)
+            lot_ids[leaf] = cur.lastrowid
+            lot_account[leaf] = a["name"]
+            member_count += 1
+    counts["account_model_member"] = member_count
+
+    # Liquidity chains (ADR-003 §4.7): one implicit leaf chain per lot, plus
+    # one interior chain per chains/*.csv file, in one shared name space.
+    chain_ids: dict[str, int] = {}
+    for leaf, lot_id in lot_ids.items():
+        account_name = lot_account[leaf]
+        account = next(a for a in accounts if a["name"] == account_name)
         cur = con.execute(
-            "INSERT INTO chain(name, kind, account_id) VALUES (?,?,?)",
-            (a["name"], a["kind"], account_ids[a["name"]]),
+            "INSERT INTO chain(name, kind, account_id, lot_id) VALUES (?,?,?,?)",
+            (leaf, account["kind"], account_ids[account_name], lot_id),
         )
-        chain_ids[a["name"]] = cur.lastrowid
+        chain_ids[leaf] = cur.lastrowid
     for name, (kind, _rows) in chains.items():
         cur = con.execute(
-            "INSERT INTO chain(name, kind, account_id) VALUES (?,?,NULL)",
+            "INSERT INTO chain(name, kind, account_id, lot_id) VALUES (?,?,NULL,NULL)",
             (name, kind),
         )
         chain_ids[name] = cur.lastrowid
@@ -1381,27 +1441,6 @@ def _write_intent(
                 ),
             )
 
-    cur = con.execute(
-        "INSERT INTO account_model(name, description, created_at) VALUES (?,?,?)",
-        (account_model_name, None, now),
-    )
-    model_id = cur.lastrowid
-    for m in account_model_rows:
-        con.execute(
-            "INSERT INTO account_model_member("
-            "model_id, account_id, opening_balance, opening_cost_basis, "
-            "prior_year_end_balance) VALUES (?,?,?,?,?)",
-            (
-                model_id,
-                account_ids[m["account_name"]],
-                _dollars_to_cents(m["opening_balance"], resolver=money_resolver),
-                _dollars_to_cents(m["opening_cost_basis"], resolver=money_resolver)
-                if m.get("opening_cost_basis") else None,
-                _dollars_to_cents(m["prior_year_end_balance"], resolver=money_resolver)
-                if m.get("prior_year_end_balance") else None,
-            ),
-        )
-    counts["account_model_member"] = len(account_model_rows)
 
     cur = con.execute(
         "INSERT INTO calendar(name, description, created_at) VALUES (?,?,?)",
@@ -1515,11 +1554,12 @@ def _write_intent(
     for y in ytd_rows:
         con.execute(
             "INSERT INTO year_to_date("
-            "scenario_id, name, from_account, to_account, amount, "
-            "tax_character, year, description) VALUES (?,?,?,?,?,?,?,?)",
+            "scenario_id, name, from_account, to_account, from_lot_id, to_lot_id, "
+            "amount, tax_character, year, description) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 scenario_id, y["name"],
                 account_ids[y["from_account"]], account_ids[y["to_account"]],
+                lot_ids[y["from_account"]], lot_ids[y["to_account"]],
                 _dollars_to_cents(y["amount"], resolver=money_resolver),
                 y["tax_character"], _opt_int(y.get("year")), y.get("description") or None,
             ),

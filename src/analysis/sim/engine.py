@@ -85,34 +85,34 @@ def run_scenario(
         if not months:
             raise EngineError(f"scenario range is empty: start={start_s} end={end_s}")
 
-        accounts = con.execute(
-            "SELECT a.id, COALESCE(m.opening_balance, 0), m.opening_cost_basis "
-            "FROM account a "
-            "LEFT JOIN account_model_member m "
-            "  ON m.account_id = a.id AND m.model_id = ? "
-            "ORDER BY a.id",
+        # The engine's nodes are lots (ADR-005): every dict below is keyed by
+        # account_model_member.id, with each lot inheriting its account's kind,
+        # subkind, tax treatment, owner and name.
+        lots = con.execute(
+            "SELECT m.id, m.opening_balance, m.opening_cost_basis, "
+            "       m.prior_year_end_balance, a.kind, a.subkind, a.tax_treatment, "
+            "       a.owner, a.name, m.lot "
+            "FROM account_model_member m "
+            "JOIN account a ON a.id = m.account_id "
+            "WHERE m.model_id = ? ORDER BY m.id",
             (model_id,),
         ).fetchall()
-        balances: dict[int, int] = {a_id: bal for (a_id, bal, _basis) in accounts}
-        cost_bases: dict[int, int | None] = {a_id: cb for (a_id, _b, cb) in accounts}
-
-        account_kinds: dict[int, str] = {
-            r[0]: r[1] for r in con.execute("SELECT id, kind FROM account")
+        balances: dict[int, int] = {r[0]: r[1] for r in lots}
+        cost_bases: dict[int, int | None] = {r[0]: r[2] for r in lots}
+        prior_year_end_balances: dict[int, int] = {
+            r[0]: r[3] for r in lots if r[3] is not None
         }
-        account_subkind: dict[int, str] = {
-            r[0]: r[1] for r in con.execute("SELECT id, subkind FROM account")
-        }
-        account_tax_treatment: dict[int, str | None] = {
-            r[0]: r[1] for r in con.execute("SELECT id, tax_treatment FROM account")
-        }
+        account_kinds: dict[int, str] = {r[0]: r[4] for r in lots}
+        account_subkind: dict[int, str] = {r[0]: r[5] for r in lots}
+        account_tax_treatment: dict[int, str | None] = {r[0]: r[6] for r in lots}
+        account_owner: dict[int, str | None] = {r[0]: r[7] for r in lots}
         account_name: dict[int, str] = {
-            r[0]: r[1] for r in con.execute("SELECT id, name FROM account")
-        }
-        account_owner: dict[int, str | None] = {
-            r[0]: r[1] for r in con.execute("SELECT id, owner FROM account")
+            r[0]: registries.leaf_chain_name(r[8], r[9]) for r in lots
         }
         account_id_by_name: dict[str, int] = {
-            r[0]: r[1] for r in con.execute("SELECT name, id FROM account")
+            r[0]: r[1] for r in con.execute(
+                "SELECT name, lot_id FROM chain WHERE lot_id IS NOT NULL"
+            )
         }
         person_lifespan: dict[str, str] = {
             r[0]: r[1] for r in con.execute(
@@ -123,15 +123,6 @@ def run_scenario(
             r[0]: _parse_date(r[1])
             for r in con.execute("SELECT id, birthdate FROM person")
         }
-        prior_year_end_balances: dict[int, int] = {
-            r[0]: r[1] for r in con.execute(
-                "SELECT account_id, prior_year_end_balance "
-                "FROM account_model_member WHERE model_id = ? "
-                "AND prior_year_end_balance IS NOT NULL",
-                (model_id,),
-            )
-        }
-
         txns: list[list[Any]] = [
             list(r) for r in con.execute(
                 'SELECT id, name, from_account, to_account, cadence, month_of_year, '
@@ -149,7 +140,7 @@ def run_scenario(
         }
 
         year_to_date_rows = con.execute(
-            "SELECT id, from_account, to_account, amount, tax_character, year "
+            "SELECT id, from_lot_id, to_lot_id, amount, tax_character, year "
             "FROM year_to_date"
         ).fetchall()
 
@@ -237,8 +228,8 @@ def run_scenario(
                     _parse_scheduled_date(t_end, tid, _name, "end")
                     if t_end is not None else None
                 )
-                from_account = chain_graph.leaf_account.get(frm)
-                to = chain_graph.leaf_account.get(to_chain)
+                from_account = chain_graph.leaf_lot.get(frm)
+                to = chain_graph.leaf_lot.get(to_chain)
                 if to is None and rule_kind != "fixed_amount":
                     raise EngineError(
                         f"scheduled_transaction id={tid}: interior chain destination "
@@ -427,10 +418,10 @@ def run_scenario(
             )
 
             con.executemany(
-                "INSERT INTO account_state(step_id, account_id, balance, cost_basis) "
+                "INSERT INTO lot_state(step_id, lot_id, balance, cost_basis) "
                 "VALUES (?, ?, ?, ?)",
-                [(step_id, a_id, balances[a_id], cost_bases[a_id])
-                 for a_id in balances],
+                [(step_id, lot_id, balances[lot_id], cost_bases[lot_id])
+                 for lot_id in balances],
             )
             previous_step_id = step_id
 
@@ -459,7 +450,7 @@ def run_scenario(
                 )
                 if rule_kind != "tax_accumulator":
                     continue
-                tail_to = chain_graph.leaf_account.get(to_chain)
+                tail_to = chain_graph.leaf_lot.get(to_chain)
                 if tail_to is None:
                     raise EngineError(
                         f"tax_accumulator id={tid}: tax settlement destination must "
@@ -652,12 +643,15 @@ def _post_transfer(
         )
     cur = con.execute(
         "INSERT INTO transfer_event("
-        "  step_id, date, from_account, to_account, amount, requested_cents, "
-        "  remainder_cents, tax_character, tax_year, reason_kind, reason_id, "
-        "  parent_event_id"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (step_id, month_s, from_id, to_id, amount, requested, remainder, tax_char,
-         tax_year, reason_kind, reason_id, parent_event_id),
+        "  step_id, date, from_account, to_account, from_lot_id, to_lot_id, "
+        "  amount, requested_cents, remainder_cents, tax_character, tax_year, "
+        "  reason_kind, reason_id, parent_event_id"
+        ") VALUES (?, ?, "
+        "  (SELECT account_id FROM account_model_member WHERE id = ?), "
+        "  (SELECT account_id FROM account_model_member WHERE id = ?), "
+        "  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, month_s, from_id, to_id, from_id, to_id, amount, requested,
+         remainder, tax_char, tax_year, reason_kind, reason_id, parent_event_id),
     )
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
@@ -710,21 +704,25 @@ def _post_ytd_transfer(
         return None
     cur = con.execute(
         "INSERT INTO transfer_event("
-        "  step_id, date, from_account, to_account, amount, requested_cents, "
-        "  remainder_cents, tax_character, reason_kind, reason_id, parent_event_id"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (step_id, date_s, from_id, to_id, amount, amount, 0, tax_char, reason_kind,
-         reason_id, parent_event_id),
+        "  step_id, date, from_account, to_account, from_lot_id, to_lot_id, "
+        "  amount, requested_cents, remainder_cents, tax_character, reason_kind, "
+        "  reason_id, parent_event_id"
+        ") VALUES (?, ?, "
+        "  (SELECT account_id FROM account_model_member WHERE id = ?), "
+        "  (SELECT account_id FROM account_model_member WHERE id = ?), "
+        "  ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, date_s, from_id, to_id, from_id, to_id, amount, amount, 0,
+         tax_char, reason_kind, reason_id, parent_event_id),
     )
     return cur.lastrowid
 
 
-def _first_chain_leaf_account(graph: ChainGraph, chain_id: int) -> int | None:
-    account_id = graph.leaf_account.get(chain_id)
+def _first_chain_leaf_lot(graph: ChainGraph, chain_id: int) -> int | None:
+    account_id = graph.leaf_lot.get(chain_id)
     if account_id is not None:
         return account_id
     for next_chain_id, *_allocation in graph.members.get(chain_id, []):
-        account_id = _first_chain_leaf_account(graph, next_chain_id)
+        account_id = _first_chain_leaf_lot(graph, next_chain_id)
         if account_id is not None:
             return account_id
     return None
@@ -803,10 +801,10 @@ def _apply_ytd_catchups(
             continue
         if not posts:
             continue
-        from_account = _first_chain_leaf_account(graph, frm)
+        from_account = _first_chain_leaf_lot(graph, frm)
         if from_account is None:
             raise EngineError(f"scheduled_transaction id={tid}: YTD source chain has no leaf account")
-        to_account = graph.leaf_account.get(to_chain)
+        to_account = graph.leaf_lot.get(to_chain)
         if to_account is not None:
             if rule_kind == "mortgage_payment" and ytd_amount is not None:
                 if account_id_by_name is None or balances is None:
@@ -860,7 +858,7 @@ def _post_ytd_chain(
     """Expand one balance-neutral YTD amount through a destination chain."""
     if amount <= 0:
         return
-    account_id = graph.leaf_account.get(chain_id)
+    account_id = graph.leaf_lot.get(chain_id)
     if account_id is not None:
         _post_ytd_transfer(
             con, step_id, date_s, from_id, account_id, amount,
@@ -1140,7 +1138,9 @@ def _apply_rmd(
     row = con.execute(
         "SELECT ast.balance FROM account_state ast "
         "JOIN simulation_step s ON s.id = ast.step_id "
-        "WHERE ast.account_id = ? AND s.month = ?",
+        "WHERE ast.account_id = "
+        "  (SELECT account_id FROM account_model_member WHERE id = ?) "
+        "  AND s.month = ?",
         (subject_id, f"{prev_year}-12-31"),
     ).fetchone()
     if row is not None:
@@ -1373,7 +1373,7 @@ class ChainGraph:
     (``maximum=None``, ``percent=100%``, ``series=None``, ``cadence=None``).
     """
 
-    __slots__ = ("members", "leaf_account", "minimum_of", "refill_chain_of",
+    __slots__ = ("members", "leaf_lot", "minimum_of", "refill_chain_of",
                  "refill_target_of", "refill_amount_of",
                  "maximum_of", "overflow_chain_of")
 
@@ -1382,7 +1382,7 @@ class ChainGraph:
     def __init__(
         self,
         members: dict[int, list[tuple[int, ...]]],
-        leaf_account: dict[int, int],
+        leaf_lot: dict[int, int],
         minimum_of: dict[int, int],
         refill_chain_of: dict[int, int | None],
         refill_target_of: dict[int, int | None],
@@ -1394,7 +1394,7 @@ class ChainGraph:
             chain_id: [(*step, *self._STEP_DEFAULTS[len(step) - 1:]) for step in steps]
             for chain_id, steps in members.items()
         }
-        self.leaf_account = leaf_account
+        self.leaf_lot = leaf_lot
         self.minimum_of = minimum_of
         self.refill_chain_of = refill_chain_of
         self.refill_target_of = refill_target_of
@@ -1413,9 +1413,9 @@ def _load_chain_graph(con) -> ChainGraph:
         members.setdefault(chain_id, []).append(
             (draw_from_id, maximum, percent, series, cadence)
         )
-    leaf_account: dict[int, int] = {
+    leaf_lot: dict[int, int] = {
         r[0]: r[1] for r in con.execute(
-            "SELECT id, account_id FROM chain WHERE account_id IS NOT NULL"
+            "SELECT id, lot_id FROM chain WHERE lot_id IS NOT NULL"
         )
     }
     minimum_of: dict[int, int] = {}
@@ -1425,9 +1425,10 @@ def _load_chain_graph(con) -> ChainGraph:
     maximum_of: dict[int, int | None] = {}
     overflow_chain_of: dict[int, int | None] = {}
     for a_id, minimum, refill, refill_target, refill_amount, maximum, overflow in con.execute(
-        "SELECT id, minimum_balance_cents, refill_chain_id, "
-        "       refill_target_cents, refill_amount_cents, "
-        "       maximum_balance_cents, overflow_chain_id FROM account"
+        "SELECT m.id, a.minimum_balance_cents, a.refill_chain_id, "
+        "       a.refill_target_cents, a.refill_amount_cents, "
+        "       a.maximum_balance_cents, a.overflow_chain_id "
+        "FROM account_model_member m JOIN account a ON a.id = m.account_id"
     ):
         minimum_of[a_id] = minimum
         refill_chain_of[a_id] = refill
@@ -1435,7 +1436,7 @@ def _load_chain_graph(con) -> ChainGraph:
         refill_amount_of[a_id] = refill_amount
         maximum_of[a_id] = maximum
         overflow_chain_of[a_id] = overflow
-    return ChainGraph(members, leaf_account, minimum_of, refill_chain_of,
+    return ChainGraph(members, leaf_lot, minimum_of, refill_chain_of,
                        refill_target_of, refill_amount_of,
                        maximum_of, overflow_chain_of)
 
@@ -1445,7 +1446,7 @@ def _chain_leaves(chain_id: int, graph: ChainGraph, seen: set[int]) -> set[int]:
     if chain_id in seen:
         return set()  # graph is validated acyclic at load time; guard anyway
     seen.add(chain_id)
-    account_id = graph.leaf_account.get(chain_id)
+    account_id = graph.leaf_lot.get(chain_id)
     if account_id is not None:
         return {account_id}
     out: set[int] = set()
@@ -1631,7 +1632,7 @@ def _chain_draw(
             chain_base_date = refill_ctx.chain_base_date
         if inflation_factor_cache is None:
             inflation_factor_cache = refill_ctx.inflation_factor_cache
-    account_id = graph.leaf_account.get(chain_id)
+    account_id = graph.leaf_lot.get(chain_id)
     if account_id is not None:
         if account_id == target_account_id:
             return 0
@@ -1703,7 +1704,7 @@ def _chain_sweep(
         return 0
     if _progress is None:
         _progress = _ChainProgress(amount_available)
-    account_id = graph.leaf_account.get(chain_id)
+    account_id = graph.leaf_lot.get(chain_id)
     if account_id is not None:
         if account_id == source_account_id:
             return 0
@@ -1915,7 +1916,7 @@ def _apply_tax_accumulator(
     paid_transfers = con.execute(
         "SELECT COALESCE(SUM(amount), 0) "
         "FROM transfer_event "
-        "WHERE to_account = ? "
+        "WHERE to_lot_id = ? "
         "  AND COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ?",
         (to_id, tax_year),
     ).fetchone()[0]
