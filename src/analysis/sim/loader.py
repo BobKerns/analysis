@@ -544,6 +544,7 @@ def load_scenario(
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_calendar(calendar_rows, leaves, issues)
     _validate_chains(chains, accounts, leaves, issues, money_resolver=money_resolver)
+    _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
     _validate_lifespan(lifespan_rows, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
 
@@ -1091,13 +1092,6 @@ def _validate_scheduled(
             problem = _resolve_ref(row, col, lot_col, leaves, chain_names)
             if problem:
                 issues.append(f"scheduled.csv row {i} ({name}): {col} {problem}")
-        if kind == "rmd":
-            source_account = leaves.account_of.get(row.get("from_account", ""))
-            if source_account and len(leaves.lot_labels[source_account]) > 1:
-                issues.append(
-                    f"scheduled.csv row {i} ({name}): rmd on multi-lot account "
-                    f"'{source_account}' is not supported yet"
-                )
         params_json = row.get("amount_rule_params_json") or "{}"
         try:
             json.loads(params_json)
@@ -1310,6 +1304,76 @@ def _validate_scheduled_money(
                 _dollars_to_cents(ytd_amount, resolver=money_resolver)
             except ValueError as e:
                 issues.append(f"scheduled.csv row {i} ({name}): ytd_amount {e}")
+
+
+def _chain_leaf_names(
+    chain: str, chains: dict[str, tuple[str, list[dict[str, str]]]], seen: set[str] | None = None,
+) -> set[str]:
+    """Leaf (lot) names reachable through ``chain``'s steps, recursively."""
+    seen = seen if seen is not None else set()
+    if chain in seen or chain not in chains:
+        return set()
+    seen.add(chain)
+    leaves: set[str] = set()
+    for row in chains[chain][1]:
+        member = row.get("account_name", "")
+        leaves |= _chain_leaf_names(member, chains, seen) if member in chains else {member}
+    return leaves
+
+
+def _validate_rmd_rules(
+    rows: list[dict[str, str]],
+    leaves: _LeafIndex,
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
+    issues: list[str],
+) -> None:
+    """An ``rmd`` rule's amount comes from its *subject account* (all of its lots),
+    and the money comes from ``from_account``. On an account with several lots
+    the source must be an explicit chain, so which lots fund the RMD, and in what
+    order, is written down; the chain may only draw from the subject's own lots
+    (ADR-005 §8). Run after the rows' references have been resolved."""
+    for i, row in enumerate(rows, start=2):
+        if row.get("amount_rule_kind") != "rmd":
+            continue
+        where = f"scheduled.csv row {i} ({row.get('name', '')})"
+        try:
+            params = json.loads(row.get("params_json") or "{}")
+        except json.JSONDecodeError:
+            continue  # reported elsewhere
+        subject = params.get("subject_account")
+        source = row.get("from_account", "")
+        if subject is not None and subject not in leaves.lot_labels:
+            issues.append(f"{where}: subject_account '{subject}' is not an account")
+            continue
+        if source in leaves.account_of:
+            account = leaves.account_of[source]
+            if subject is not None and subject != account:
+                issues.append(
+                    f"{where}: subject_account '{subject}' is not the account "
+                    f"'{account}' that from_account draws from"
+                )
+            elif len(leaves.lot_labels[account]) > 1:
+                issues.append(
+                    f"{where}: rmd on multi-lot account '{account}' needs a chain as "
+                    "from_account, listing the lots it draws from in order, and "
+                    f"params_json {{\"subject_account\": \"{account}\"}}"
+                )
+        elif source in chains:
+            if subject is None:
+                issues.append(
+                    f"{where}: an rmd drawing from chain '{source}' needs "
+                    "params_json {\"subject_account\": <the account the RMD is for>}"
+                )
+                continue
+            outside = sorted(
+                leaf for leaf in _chain_leaf_names(source, chains)
+                if leaves.account_of.get(leaf) != subject
+            )
+            if outside:
+                issues.append(
+                    f"{where}: chain '{source}' draws from {', '.join(outside)}, "
+                    f"which are not lots of the subject account '{subject}'"
+                )
 
 
 def _validate_year_to_date(

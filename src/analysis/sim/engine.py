@@ -25,7 +25,7 @@ from __future__ import annotations
 import calendar
 import json
 import warnings
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -118,6 +118,10 @@ def run_scenario(
         acquired: dict[int, date | None] = {
             r[0]: _parse_date(r[10]) if r[10] else None for r in lots
         }
+        lot_account_name: dict[int, str] = {r[0]: r[9] for r in lots}
+        lots_by_account: dict[str, list[int]] = {}
+        for lot_id, owner in lot_account_name.items():
+            lots_by_account.setdefault(owner, []).append(lot_id)
         growth_names = {c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()}
         growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names)
         account_id_by_name: dict[str, int] = {
@@ -393,11 +397,25 @@ def run_scenario(
                             source_tax_year=tax_year, refill_ctx=refill_ctx,
                         )
                     case "rmd":
+                        subject = params.get("subject_account") or lot_account_name.get(from_account)
+                        if subject not in lots_by_account:
+                            raise EngineError(
+                                f"rmd id={tid}: subject_account {subject!r} is not an account "
+                                "(a chain source needs it in params_json)"
+                            )
                         _apply_rmd(
                             con, balances, account_kinds, step_id, month_s, month,
                             params, from_account, to,
                             person_birthdates, prior_year_end_balances, aux,
-                            tax_char, tid, refill_ctx=refill_ctx,
+                            tax_char, tid, subject_lots=lots_by_account[subject],
+                            graph=chain_graph, source_chain_id=frm,
+                            account_tax_treatment=account_tax_treatment,
+                            account_subkind=account_subkind, account_name=account_name,
+                            chain_context={
+                                "aux": aux, "chain_base_date": _parse_date(start_s),
+                                "inflation_factor_cache": inflation_factor_cache,
+                            },
+                            refill_ctx=refill_ctx,
                         )
                     case "on_death":
                         _apply_on_death(
@@ -1170,16 +1188,27 @@ def _apply_ss_benefit(
 def _apply_rmd(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str, month: date,
-    params: dict[str, Any], from_id: int, to_id: int,
+    params: dict[str, Any], from_id: int | None, to_id: int,
     person_birthdates: dict[str, date],
     prior_year_end_balances: dict[int, int],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    tax_char: str, tid: int, *, refill_ctx: RefillContext | None = None,
+    tax_char: str, tid: int, *, subject_lots: Sequence[int],
+    graph: ChainGraph | None = None, source_chain_id: int | None = None,
+    account_tax_treatment: dict[int, str | None] | None = None,
+    account_subkind: dict[int, str] | None = None,
+    account_name: dict[int, str] | None = None,
+    chain_context: dict[str, Any] | None = None,
+    refill_ctx: RefillContext | None = None,
 ) -> None:
-    """ADR-003 §2.3. Annual December RMD; age-gated by ``start_age_series``.
-    Subject account is the row's ``from_account`` (the IRA being drawn down).
-    ``dec31_prev_year_balance`` from prior-year-end ``account_state``, or
-    ``account_model_member.prior_year_end_balance`` when no such step exists.
+    """ADR-003 §2.3, ADR-005 §8. Annual December RMD; age-gated by
+    ``start_age_series``.
+
+    The subject account (``subject_lots`` are all of its lots) is the account the
+    row's ``from_account`` draws from, or ``params["subject_account"]`` when the
+    source is a chain. The amount is its total balance on the previous Dec 31
+    (from ``lot_state``, or the lots' ``prior_year_end_balance`` when no such
+    step exists) over the age factor. It is drawn from a single lot, or through
+    the source chain in the chain's own order.
     """
     person = params.get("person")
     factor_table = params.get("factor_table", "rmd_factors")
@@ -1191,7 +1220,6 @@ def _apply_rmd(
     bd = person_birthdates.get(person)
     if bd is None:
         raise EngineError(f"rmd id={tid}: unknown person {person!r}")
-    subject_id = from_id
     age_year_end = month.year - bd.year
     start_payload = _lookup_aux(aux, start_age_series, None, month_s)
     if start_payload is None or "start_age" not in start_payload:
@@ -1201,22 +1229,22 @@ def _apply_rmd(
     if age_year_end < int(start_payload["start_age"]):
         return
     prev_year = month.year - 1
-    row = con.execute(
-        "SELECT ast.balance FROM account_state ast "
-        "JOIN simulation_step s ON s.id = ast.step_id "
-        "WHERE ast.account_id = "
-        "  (SELECT account_id FROM account_model_member WHERE id = ?) "
-        "  AND s.month = ?",
-        (subject_id, f"{prev_year}-12-31"),
-    ).fetchone()
-    if row is not None:
-        prev_bal = int(row[0])
-    elif subject_id in prior_year_end_balances:
-        prev_bal = int(prior_year_end_balances[subject_id])
+    marks = ",".join("?" * len(subject_lots))
+    total = con.execute(
+        "SELECT SUM(ls.balance) FROM lot_state ls "
+        "JOIN simulation_step s ON s.id = ls.step_id "
+        f"WHERE ls.lot_id IN ({marks}) AND s.month = ?",
+        (*subject_lots, f"{prev_year}-12-31"),
+    ).fetchone()[0]
+    seeded = [prior_year_end_balances[lot] for lot in subject_lots if lot in prior_year_end_balances]
+    if total is not None:
+        prev_bal = int(total)
+    elif seeded:
+        prev_bal = sum(seeded)
     else:
         raise EngineError(
-            f"rmd id={tid}: no Dec-{prev_year} account_state and no "
-            f"prior_year_end_balance for from_account id={subject_id}"
+            f"rmd id={tid}: no Dec-{prev_year} lot_state and no "
+            f"prior_year_end_balance for the subject account's lots {list(subject_lots)}"
         )
     factor_payload = _lookup_rmd_factor(aux, factor_table, age_year_end, month_s)
     if factor_payload is None:
@@ -1226,11 +1254,21 @@ def _apply_rmd(
         )
     factor_micros = int(factor_payload["factor_micros"])
     amount = prev_bal * 1_000_000 // factor_micros
-    if amount > 0:
+    if amount <= 0:
+        return
+    if from_id is not None:
         _post_transfer(
             con, balances, account_kinds, step_id, month_s,
             from_id, to_id, amount, tax_char, tid, refill_ctx=refill_ctx,
         )
+        return
+    if graph is None or source_chain_id is None:
+        raise EngineError(f"rmd id={tid}: from_account is neither a lot nor a chain")
+    _chain_draw(
+        con, balances, account_kinds, account_tax_treatment or {}, account_subkind or {},
+        account_name or {}, step_id, month_s, graph, source_chain_id, amount, to_id,
+        reason_kind="rule", reason_id=tid, refill_ctx=refill_ctx, **(chain_context or {}),
+    )
 
 
 def _lookup_rmd_factor(

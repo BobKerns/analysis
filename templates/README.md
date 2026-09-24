@@ -108,7 +108,9 @@ To split an account, give it several rows with different `lot` values, each with
 
 **Purchases and growth.** Money you move into a taxable lot (a purchase from checking, an inheritance) adds that amount to its basis, and to its shares if `quantity` is filled in. The lot's own growth does not: it is total return, so reinvested dividends are not split out. To buy a position later in the scenario, add a lot with `opening_balance` 0 and the purchase date in `acquired`, and schedule the purchase into it. Leave `quantity` blank for dollar-denominated funds such as money markets.
 
-Limits for now: `minimum_balance`, refill and overflow are only allowed on single-lot accounts, and an `rmd` rule can't draw from an account with more than one lot.
+**RMDs from an account with several lots.** The `rmd` rule's amount is based on the whole account (all its lots together), and it must draw from a chain that lists the lots to take from, in order. Set `from_account` to the chain and put `{"subject_account": "<the IRA>"}` in `params_json`; the chain may only contain that account's lots.
+
+Limits for now: `minimum_balance`, refill and overflow are only allowed on single-lot accounts.
 
 ### Importing balances from Quicken
 

@@ -109,9 +109,14 @@ Money moved *into* a lot that tracks cost basis is a purchase: its basis rises b
 
 The gain leg of a sale from a lot is `ltcg` if the lot has been held more than a year at the sale date (its `acquired` date; no date means long-term) and `stcg` otherwise. `stcg` is taxed as ordinary income. A lot's `acquired` date does not move when money is added to it, so a purchase that should start its own holding period belongs in its own lot. For federal tax the accumulator can tax long-term gains at preferential rates: an optional `ltcg_brackets` aux table (same shape as `federal_brackets`, with a band's floor as the taxable income, gain included, at which its rate starts) stacks the gain on top of ordinary taxable income. Without that table long-term gains are taxed as ordinary income, and state tax never uses it. Netting is simplified: a net loss in either bucket reduces ordinary income.
 
-### 8. RMD (deferred)
+### 8. RMD
 
-Until the follow-up, the loader rejects an `rmd` rule whose `from_account` has more than one lot, so it cannot silently draw from one lot only. The follow-up requires an **explicit chain** as the draw source plus a `subject_account` param. The amount comes from that account's aggregate `account_state` balance, and the loader rejects any chain leaf that is not a lot of the subject account. Aggregation across several of an owner's IRAs is out of scope.
+An `rmd` rule's amount comes from its **subject account**: the total of all its lots' balances on the previous Dec 31 (or the lots' `prior_year_end_balance` values in the first year), over the age factor. The money comes from `from_account`:
+
+- a single lot, when the subject account has one lot (`subject_account` is then optional, and the rule behaves as before); or
+- an **explicit chain**, with `{"subject_account": "<account>"}` in `params_json`, drawn in the chain's own order, so which lots fund the RMD is written down rather than inferred.
+
+On an account with several lots a single-lot source is a load error, as is a chain that draws from anything but the subject account's lots. There are no implicit chains. Aggregation across several of an owner's IRAs is out of scope.
 
 ### Amendments to apply on acceptance
 

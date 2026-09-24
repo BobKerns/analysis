@@ -86,7 +86,9 @@ Exit: tests for derived balance, rounding, missing price, and precedence.
 
 Exit: CLI tests for each command; notebook UI tests using the existing fixtures.
 
-## Phase 5 — RMD by explicit chain
+## Phase 5 — RMD by explicit chain (done)
+
+Implemented as designed: `subject_account` lives in `params_json` (where `factor_table` and `start_age_series` already do); the amount is the sum of the subject account's lots in `lot_state` (or their `prior_year_end_balance` values); the source is one lot or a chain drawn with `_chain_draw`; the loader's `_validate_rmd_rules` replaces the Phase 2 guard. `tests/test_rmd_chain.py` covers a single-lot IRA through a chain (same amounts as direct), a two-lot IRA drawn in the chain's order with fall-through, and the load errors.
 
 1. Add `subject_account` to the `rmd` params; `_apply_rmd` takes the amount from the subject account's aggregate `account_state` balance (prior-year-end summed over lots) and draws through the explicit chain source.
 2. Loader: require an explicit chain on multi-lot subject accounts, reject chain leaves outside the subject account, remove the Phase 2 guard.
