@@ -29,6 +29,7 @@ from analysis.sim.engine import run_scenario
 from analysis.sim.loader import (
     DEFAULT_INTENT_DIR,
     DEFAULT_RUNS_DIR,
+    DEFAULT_STATE_DIR,
     DataDirtyRefused,
     LoadError,
     ScenarioRef,
@@ -48,8 +49,14 @@ import analysis.sim.scenario as sc
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 
-def _resolve_state_dir(directory: Path | None, default: Path) -> Path:
-    return directory if directory is not None else find_state_dir(None, default)
+def _resolve_state_dir(
+    directory: Path | None, default: Path, data_dir: Path | None = None,
+) -> Path:
+    """``directory`` if given, else ``default`` (``intent`` or ``runs``) under the
+    state dir beside the data repo (``data_dir``, else ``$ANALYSIS_DATA_DIR``)."""
+    if directory is not None:
+        return directory
+    return find_state_dir(data_dir, DEFAULT_STATE_DIR) / default
 
 
 @click.group(name="sim")
@@ -116,7 +123,7 @@ def load(
     """
     resolved = _resolve_data_dir(data_dir)
     explicit = scenario_name is not None
-    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
+    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved)
     ref = _resolve_scenario(resolved, scenario_name, intent_dir=resolved_intent_dir)
     try:
         result = load_scenario(
@@ -243,8 +250,8 @@ def run(
     if scenario_name is None:
         resolved_data_dir = resolved_data_dir or _resolve_data_dir(data_dir)
         scenario_name = _resolve_scenario(resolved_data_dir, None).name
-    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
-    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR)
+    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
+    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
     if not intent_path.exists():
         raise click.ClickException(

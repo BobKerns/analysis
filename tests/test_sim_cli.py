@@ -1004,3 +1004,31 @@ def test_sim_account_import_quicken_dry_run_does_not_write(tmp_path: Path) -> No
     assert result.exit_code == 0, result.output
     assert "dry run" in result.output
     assert values_path.read_text(encoding="utf-8") == before
+
+
+def test_sim_load_puts_state_beside_the_data_dir(tmp_path: Path, test_data_dir: Path) -> None:
+    result = CliRunner().invoke(
+        main, ["sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+               "--allow-dirty-data"],
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "state" / "intent" / "retire_alice.sqlite3").exists()
+    assert len(list((tmp_path / "state" / "runs").glob("*.sqlite3"))) == 1
+    assert not (tmp_path / "intent").exists()
+    assert not (tmp_path / "runs").exists()
+
+
+def test_sim_run_finds_state_through_the_activated_data_dir(
+    tmp_path: Path, test_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    loaded = runner.invoke(
+        main, ["sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+               "--allow-dirty-data", "--no-run"],
+    )
+    assert loaded.exit_code == 0, loaded.output
+    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(test_data_dir))
+    result = runner.invoke(main, ["sim", "run", "retire_alice"])
+    assert result.exit_code == 0, result.output
+    assert len(list((tmp_path / "state" / "runs").glob("*.sqlite3"))) == 1
+    assert not (tmp_path / "runs").exists()
