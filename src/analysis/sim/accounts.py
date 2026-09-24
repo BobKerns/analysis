@@ -12,13 +12,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
-from typing import Collection
+from typing import TYPE_CHECKING, Collection
 
 import pandas as pd
 from rich.console import Console
 
-from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.types import AccountKind
+
+if TYPE_CHECKING:
+    from analysis.sim.connection import RunConnection, ScenarioConnection
 
 
 def _or_empty(value) -> str:

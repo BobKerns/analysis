@@ -149,9 +149,11 @@ def _split_tag_selectors(
 
 _ITEM_SQL: dict[str, str] = {
     "account": (
-        "SELECT a.*, "
+        "SELECT a.*, rc.name AS refill_chain, oc.name AS overflow_chain, "
         "  COALESCE(GROUP_CONCAT(t.role || ':' || t.name, ' '), '') AS tags "
         "FROM account a "
+        "LEFT JOIN chain rc ON rc.id = a.refill_chain_id "
+        "LEFT JOIN chain oc ON oc.id = a.overflow_chain_id "
         "LEFT JOIN account_tag x ON x.account_id = a.id "
         "LEFT JOIN tag t ON t.id = x.tag_id "
         "GROUP BY a.id ORDER BY a.id"
@@ -214,10 +216,13 @@ _ITEM_SQL: dict[str, str] = {
         "SELECT * FROM net_worth_constant_cpi ORDER BY month"
     ),
     "year_to_date": (
-        "SELECT y.*, fa.name AS from_name, ta.name AS to_name "
+        "SELECT y.*, fa.name AS from_name, fm.lot AS from_lot, "
+        "       ta.name AS to_name, tm.lot AS to_lot "
         "FROM year_to_date y "
         "JOIN account fa ON fa.id = y.from_account "
-        "JOIN account ta ON ta.id = y.to_account"
+        "JOIN account_model_member fm ON fm.id = y.from_lot_id "
+        "JOIN account ta ON ta.id = y.to_account "
+        "JOIN account_model_member tm ON tm.id = y.to_lot_id"
     ),
     "tax_year_summary": "SELECT * FROM tax_year_summary ORDER BY year, bucket",
     "account_balance": (
@@ -554,6 +559,34 @@ class RunConnection(_TagReader):
             return self.to_cpi_constant(balances)
         monthly_flows = balances.diff().fillna(balances)
         return self.to_cpi_constant(monthly_flows).cumsum()
+
+    LOT_MEASURES = ("balance", "cost_basis", "quantity")
+
+    def lot_balance_pivot(self, measure: str = "balance") -> pd.DataFrame:
+        """Month x ``Account/lot`` pivot of asset lots: ``balance`` and ``cost_basis``
+        in dollars, ``quantity`` in shares (NaN where a lot's basis or quantity
+        is not tracked).
+        """
+        if measure not in self.LOT_MEASURES:
+            raise ValueError(f"measure must be one of {self.LOT_MEASURES}, got {measure!r}")
+
+        def _build() -> pd.DataFrame:
+            df = self.items("lot_balance")
+            df = df[df["kind"] == "asset"].copy()
+            df["month"] = pd.to_datetime(df["month"])
+            df["label"] = df["account"] + "/" + df["lot"]
+            df["value"] = (
+                df["quantity_micros"] / 1_000_000 if measure == "quantity"
+                else df[measure] / 100
+            )
+            return df.pivot(index="month", columns="label", values="value")
+
+        return self._cached(f"lot_balance_pivot_{measure}", _build)
+
+    def cpi_lot_balance_pivot(self, measure: str = "balance") -> pd.DataFrame:
+        """``lot_balance_pivot(measure)`` in CPI-constant dollars (shares are unchanged)."""
+        pivot = self.lot_balance_pivot(measure)
+        return pivot if measure == "quantity" else self.to_cpi_constant(pivot)
 
     def income_by_category(
         self, subkind_to_category: dict[str, str] = INCOME_SUBKIND_TO_CATEGORY,

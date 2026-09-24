@@ -71,6 +71,7 @@ from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
+from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER
 
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
@@ -375,6 +376,38 @@ def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunCon
         with open_run(two_lot_run_file, scenario_conn,
                       scenarios_dir=test_data_dir / "scenarios") as run:
             yield run
+
+
+@pytest.fixture(scope="function")
+def lot_variant_runs(
+    two_lot_run_file: Path, test_data_dir: Path, test_scenarios_dir: Path,
+    intent_dir: Path, runs_dir: Path,
+) -> Generator[tuple[RunConnection, dict[str, RunConnection]], None, None]:
+    """Runs of ``retire_alice`` (its brokerage split into lots a and b) and of a
+    derived ``variant`` that changes lot b's quantity, balance and basis, adds a
+    lot c, and changes one inherited year-to-date row."""
+    scenario.create_scenario(test_data_dir, "variant", "retire_alice")
+    header = ",".join(ACCOUNT_VALUES_CSV_HEADER)
+    variant_dir = test_scenarios_dir / "variant"
+    (variant_dir / "account_values.csv").write_text(
+        f"{header}\n"
+        "Asset_Brokerage_Joint,b,BBB,2026-01-15,1500,,150000.00,100000.00,\n"
+        "Asset_Brokerage_Joint,c,CCC,2027-06-30,,,25000.00,20000.00,\n"
+    )
+    (variant_dir / "year_to_date.csv").write_text(
+        "name,from_account,from_lot,to_account,to_lot,amount,tax_character,year,description\n"
+        "prior_ordinary_wages,Income_Salary_Alice,,Asset_Checking,,70000.00,ordinary,,\n"
+    )
+    loaded = load_scenario(test_data_dir, "variant", intent_dir=intent_dir,
+                           scenarios_dir=test_scenarios_dir, allow_dirty_data=True)
+    variant_run = run_scenario(loaded.intent_path, runs_dir / "variant.sqlite3", run_by="TEST",
+                               allow_dirty_data=True, allow_dirty_code=True)
+    scenarios_dir = test_data_dir / "scenarios"
+    with open_run(two_lot_run_file, "retire_alice", data_dir=test_data_dir,
+                  scenarios_dir=scenarios_dir) as base:
+        with open_run(variant_run, "variant", data_dir=test_data_dir,
+                      scenarios_dir=scenarios_dir) as variant:
+            yield base, {"variant": variant}
 
 
 @pytest.fixture(scope="function")
