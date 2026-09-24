@@ -14,6 +14,7 @@ from analysis.sim.connection import open_scenario
 from analysis.sim.notebook_ui.scenario_plots import (
     SCHEDULED_OPTIONAL_COLUMNS,
     scheduled_styler,
+    show_calendar_view,
     show_chains,
     show_scheduled_view,
 )
@@ -138,6 +139,46 @@ def test_hidden_columns_are_dropped_and_the_rest_are_formatted(test_data_dir: Pa
     assert "id" not in styled.data.columns and "priority" not in styled.data.columns
     assert "name" in styled.data.columns and "description" in styled.data.columns
     assert list(scheduled_styler(view).data.columns) == list(view.columns)
-    html = styled.to_html()
-    assert "$" in html                       # amounts are formatted
-    assert list(styled.data.index) == list(view.index)  # hiding columns does not reorder rows
+    assert "$" in styled.to_html()                       # amounts are formatted
+    assert list(styled.data.index) == list(view.index)   # hiding columns does not reorder rows
+
+
+def test_row_numbers_are_hidden_but_the_rule_id_can_be_shown(test_data_dir: Path) -> None:
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = scheduled_view(scenario)
+    html = scheduled_styler(view).to_html()
+    assert "row_heading" not in html                     # no 0, 1, 2 ... index column
+    assert ">id<" in html                                # the database id is a real column
+    assert f">{view['id'].iloc[0]}<" in html
+
+
+def _columns_with(html: str, declaration: str) -> set[int]:
+    """Column numbers whose cells the rendered stylesheet gives ``declaration``."""
+    import re
+
+    columns: set[int] = set()
+    for selectors, body in re.findall(r"([^{}]+)\{([^}]*)\}", html.split("</style>")[0]):
+        if declaration in body:
+            columns |= {int(n) for n in re.findall(r"_col(\d+)", selectors)}
+    return columns
+
+
+def test_cells_stay_on_one_line_except_the_description(test_data_dir: Path) -> None:
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = scheduled_view(scenario)
+    description = list(view.columns).index("description")
+    html = scheduled_styler(view).to_html()
+    nowrap = _columns_with(html, "white-space: nowrap")
+    assert nowrap == set(range(len(view.columns))) - {description}
+    assert _columns_with(html, "white-space: normal") == {description}
+    assert _columns_with(html, "min-width: 30ch") == {description}
+    hidden = scheduled_styler(view, hidden=["description"]).to_html()
+    assert _columns_with(hidden, "white-space: normal") == set()
+
+
+def test_tables_scroll_sideways_instead_of_overflowing(test_data_dir: Path) -> None:
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        chains, calendar = show_chains(scenario), show_calendar_view(scenario)
+        scheduled = show_scheduled_view(scenario)
+    for output in (chains, calendar, scheduled.children[1]):
+        assert output.layout.overflow == "auto" and output.layout.max_width == "100%"
