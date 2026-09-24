@@ -45,7 +45,10 @@ def _styled(frame: pd.DataFrame):
 
 
 def _with_total(frame: pd.DataFrame, label_column: str, *, quantity: bool) -> pd.DataFrame:
-    total = {column: float("nan") for column in frame.columns}
+    total = {
+        column: float("nan") if pd.api.types.is_numeric_dtype(frame[column]) else ""
+        for column in frame.columns
+    }
     total.update(holdings_totals(frame, quantity=quantity))
     total[label_column] = "Total"
     return pd.concat([frame, pd.DataFrame([total])], ignore_index=True)

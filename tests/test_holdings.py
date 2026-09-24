@@ -177,13 +177,14 @@ def test_account_holdings_view_has_a_heading_and_a_total_row(two_lot_run: RunCon
     assert list(table.index) == ["a", "b", "Total"]
     assert table.loc["Total", "balance"] == pytest.approx(table.loc[["a", "b"], "balance"].sum())
     assert "account" not in table.columns  # implied by the heading
+    assert table.loc["Total", "symbol"] == "" and table.loc["Total", "acquired"] == ""
 
 
 def test_symbol_holders_view_totals_quantity(two_lot_run: RunConnection) -> None:
     heading, table = symbol_holders_view(two_lot_run, "AAA")
     assert heading.startswith("**AAA** (Alpha Growth Fund) as of ")
     assert table.index[0] == (BROKERAGE, "a")
-    assert table.index[-1][0] == "Total"
+    assert table.index[-1] == ("Total", "")  # a blank lot, not NaN
     assert table.iloc[-1]["quantity"] == table.iloc[0]["quantity"] > 1000.0
 
 

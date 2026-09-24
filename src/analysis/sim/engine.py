@@ -25,6 +25,7 @@ from __future__ import annotations
 import calendar
 import json
 import warnings
+from collections.abc import Collection
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,10 @@ def run_scenario(
             r[0]: _parse_date(r[1])
             for r in con.execute("SELECT id, birthdate FROM person")
         }
+        # The people who file taxes: role 'primary', or everyone if none is marked.
+        taxpayers = {
+            r[0] for r in con.execute("SELECT id FROM person WHERE role = 'primary'")
+        } or set(person_birthdates)
         txns: list[list[Any]] = [
             list(r) for r in con.execute(
                 'SELECT id, name, from_account, to_account, cadence, month_of_year, '
@@ -419,7 +424,8 @@ def run_scenario(
                             account_tax_treatment=account_tax_treatment,
                             account_subkind=account_subkind, account_name=account_name,
                             tax_year=tax_year,
-                            person_lifespan=person_lifespan, refill_ctx=refill_ctx,
+                            person_lifespan=person_lifespan, taxpayers=taxpayers,
+                            refill_ctx=refill_ctx,
                         )
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
@@ -1869,6 +1875,7 @@ def _apply_tax_accumulator(
     graph=None, source_chain_id=None, account_tax_treatment=None,
     account_subkind=None, account_name=None, tax_year=None,
     person_lifespan: dict[str, str] | None = None,
+    taxpayers: Collection[str] = (),
     refill_ctx: RefillContext | None = None,
 ) -> None:
     """Compute and optionally pay forecasted income tax for a target year.
@@ -1920,7 +1927,8 @@ def _apply_tax_accumulator(
 
     as_of = f"{tax_year}-12-31"
     filing_status = _active_filing_status(
-        aux, filing_status_aux, as_of, tid, person_lifespan=person_lifespan,
+        aux, filing_status_aux, tax_year, tid,
+        person_lifespan=person_lifespan, taxpayers=taxpayers,
     )
 
     if bracket_aux == "state_brackets" and bracket_series is None:
@@ -2069,23 +2077,35 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
 def _active_filing_status(
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     filing_status_aux: str,
-    as_of: str,
+    tax_year: int,
     tid: int,
     *, person_lifespan: dict[str, str] | None = None,
+    taxpayers: Collection[str] = (),
 ) -> str:
-    if person_lifespan and any(final_month < as_of for final_month in person_lifespan.values()):
-        return "Single"
-    rows = _active_aux_rows(aux, filing_status_aux, None, as_of)
+    """Filing status for ``tax_year``: the filing_status aux table's latest row on
+    or before the year's end, except that a joint or separate filer becomes Single
+    the year after a taxpayer's ``lifespan.csv`` ``final_month`` (the survivor may
+    still file jointly for the year of death). The lifespan alone is enough; the
+    aux table needs no row for it.
+    """
+    died = any(
+        int(final_month[:4]) < tax_year
+        for person, final_month in (person_lifespan or {}).items()
+        if person in taxpayers
+    )
+    rows = _active_aux_rows(aux, filing_status_aux, None, f"{tax_year}-12-31")
     if not rows:
+        if died:
+            return "Single"
         raise EngineError(
-            f"tax_accumulator id={tid}: no filing_status row effective <= {as_of}"
+            f"tax_accumulator id={tid}: no filing_status row effective <= {tax_year}-12-31"
         )
     status = rows[0].get("filing_status")
     if not status:
         raise EngineError(
             f"tax_accumulator id={tid}: filing_status payload missing filing_status"
         )
-    return str(status)
+    return "Single" if died and status in ("MFJ", "MFS") else str(status)
 
 
 def _taxable_social_security_cents(
