@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv as _csv
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 import os
 import sqlite3
 import tempfile
@@ -24,7 +26,13 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
-from analysis.sim.connection import open_scenario
+from analysis.sim.connection import open_run, open_scenario
+from analysis.sim.holdings import (
+    account_holdings,
+    render_holders_table,
+    render_holdings_table,
+    symbol_holders,
+)
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import (
     DEFAULT_INTENT_DIR,
@@ -1805,6 +1813,91 @@ def list_accounts(
         title += f" / owner={owner}"
     title += ")"
     Console().print(render_accounts_table(rows, title=title))
+
+
+def _holdings_options(fn):
+    """The options ``account holdings`` and ``account holders`` share."""
+    for option in reversed([
+        click.option("--scenario", default=None,
+                     help="Scenario folder name (default: the only scenario in data-dir)."),
+        click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+                     default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
+        click.option("--month", default=None,
+                     help="Month of the run to show, YYYY-MM (default: the last month)."),
+        click.option("--opening", is_flag=True, default=False,
+                     help="Show the scenario's opening values instead of a run."),
+        click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+                     default=None, help="Run file (default: the scenario's latest run)."),
+    ]):
+        fn = option(fn)
+    return fn
+
+
+@contextmanager
+def _holdings_source(
+    scenario: str | None, data_dir: Path | None, month: str | None,
+    opening: bool, runfile: Path | None,
+) -> Iterator[tuple[object, str]]:
+    """The connection holdings are read from, and a description of it: the run
+    (latest, or ``--runfile``) when there is one, else the opening values."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data_dir_p, scenario)
+    with open_scenario(data_dir_p, ref.name, scenarios_dir=ref.scenarios_dir) as sc:
+        if opening:
+            if month or runfile:
+                raise click.ClickException("--opening cannot be combined with --month or --runfile")
+            yield sc, f"opening values, {ref.name}"
+            return
+        run_path = runfile or ref.run_path
+        if run_path is None:
+            if month:
+                raise click.ClickException(f"no runs for {ref.name!r}; run `sim run` first")
+            click.echo("(no run yet; showing opening values)", err=True)
+            yield sc, f"opening values, {ref.name}"
+            return
+        with open_run(run_path, sc, scenarios_dir=ref.scenarios_dir) as rc:
+            yield rc, f"{ref.name}, run {Path(run_path).name}"
+
+
+@account_group_command.command("holdings")
+@click.argument("account")
+@_holdings_options
+def account_holdings_command(
+    account: str, scenario: str | None, data_dir: Path | None, month: str | None,
+    opening: bool, runfile: Path | None,
+) -> None:
+    """Show the lots in ACCOUNT: symbol, quantity, balance, basis and unrealized gain."""
+    from rich.console import Console
+
+    with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
+        try:
+            frame = account_holdings(source, account, month=month)
+        except (KeyError, ValueError) as exc:
+            raise click.ClickException(exc.args[0]) from None
+    title = f"holdings of {account} ({described}; {frame['as_of'].iloc[0]})"
+    Console().print(render_holdings_table(frame, title=title))
+
+
+@account_group_command.command("holders")
+@click.argument("symbol")
+@_holdings_options
+def account_holders_command(
+    symbol: str, scenario: str | None, data_dir: Path | None, month: str | None,
+    opening: bool, runfile: Path | None,
+) -> None:
+    """Show every account holding SYMBOL, lot by lot, with totals."""
+    from rich.console import Console
+
+    with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
+        try:
+            frame = symbol_holders(source, symbol, month=month)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+    if frame.empty:
+        click.echo(f"no lot holds {symbol!r} ({described})")
+        return
+    title = f"accounts holding {symbol} ({described}; {frame['as_of'].iloc[0]})"
+    Console().print(render_holders_table(frame, title=title))
 
 
 @account_group_command.group(name="tag")

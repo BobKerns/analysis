@@ -369,6 +369,15 @@ def variant_a_scenario_create(data_dir: Path) -> Path:
     return scenario.create_scenario(data_dir, "variant_a", "retire_alice")
 
 @pytest.fixture(scope="function")
+def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunConnection, None, None]:
+    """Connection to the ``two_lot_run_file`` run."""
+    with open_scenario(test_data_dir, "retire_alice") as scenario_conn:
+        with open_run(two_lot_run_file, scenario_conn,
+                      scenarios_dir=test_data_dir / "scenarios") as run:
+            yield run
+
+
+@pytest.fixture(scope="function")
 def multi_connections(data_dir: Path,
                       retire_alice_run: RunConnection,
                       variant_a_run: RunConnection) -> MultiScenarioConnections:
