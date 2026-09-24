@@ -272,6 +272,7 @@ def build_scheduled_baseline_rows(
     from_account: AccountName,
     ignored_categories: Collection[CanonicalCategory] = (),
     *,
+    from_lot: str = "",
     series: str = "cpi",
     priority: int = 200,
 ) -> list[dict[str, str]]:
@@ -294,7 +295,9 @@ def build_scheduled_baseline_rows(
         rows.append({
             "name": f"baseline_expense_{slug}",
             "from_account": from_account,
+            "from_lot": from_lot,
             "to_account": to_account,
+            "to_lot": "",
             "cadence": "monthly",
             "month_of_year": "",
             "amount_rule_kind": "fixed_amount",

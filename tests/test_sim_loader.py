@@ -560,8 +560,8 @@ def test_year_to_date_csv_round_trip(tmp_path: Path) -> None:
 
     ytd = repo / "scenarios" / "retire_alice" / "year_to_date.csv"
     ytd.write_text(
-        "name,from_account,to_account,amount,tax_character,description\n"
-        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint:default,"
+        "name,from_account,to_account,to_lot,amount,tax_character,description\n"
+        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint,default,"
         "1234.56,ltcg,pre-simulation brokerage appreciation\n"
     )
 

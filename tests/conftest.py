@@ -428,11 +428,11 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
 
     calendar = retire_alice_csv("calendar.csv")
     calendar.write_text(calendar.read_text().replace(
-        "Asset_Brokerage_Joint:default", "Asset_Brokerage_Joint:a"))
+        ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,a,"))
     (test_data_dir / "aux" / "rate__AAA.csv").write_text(
         "effective_date,annual_rate_micros\n2026-01-31,20000\n")
     (retire_alice_csv("chains") / "asset__lotb.csv").write_text(
-        "account_name,maximum,percent,series,cadence\nAsset_Brokerage_Joint:b,,,,\n")
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Brokerage_Joint,b,,,,\n")
 
     scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)
     scheduled.loc[len(scheduled)] = {

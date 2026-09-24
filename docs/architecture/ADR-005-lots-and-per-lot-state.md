@@ -60,16 +60,27 @@ Quantity cannot be derived from balance once growth has occurred, so `lot_state`
 
 `transfer_event` keeps `from_account` / `to_account` (indexed, used by reporting) and replaces `from_holding_id` / `to_holding_id` with NOT NULL `from_lot_id` / `to_lot_id`. The zero-sum invariant is checked per step at lot level and at account level.
 
-### 3. References: `account:lot`
+### 3. References: a `lot` column beside every account column
 
-Leaf chains are per lot (ADR-003 §4.7 already gives every account a leaf chain in the one chain namespace). Each lot's leaf chain is named `Account:lot`, and `chain` gains `lot_id` (its `account_id` stays, derived). `ChainGraph.leaf_account` becomes `leaf_lot`.
+Leaf chains are per lot (ADR-003 §4.7 already gives every account a leaf chain in the one chain namespace), and `chain` gains `lot_id` (its `account_id` stays, derived). `ChainGraph.leaf_account` becomes `leaf_lot`. The leaf chain's name is internal: the bare account name for the default lot of a non-investment account, `account:lot` otherwise. **No CSV ever spells a lot that way.** Every place a CSV names an account has a `lot` column next to it:
 
-- Anywhere a CSV or payload names an account (`scheduled.csv`, chain steps, `calendar.csv` payloads, `year_to_date.csv`, `sell_asset`), `Account:lot` names a specific lot.
-- For **investment subkinds** (`types.INVESTMENT_ASSET_SUBKINDS`: `brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) an unqualified reference is a **load error**, and `account_values.csv` must state `lot`. The error message names the fix (`Asset_Brokerage: investment account requires an explicit lot, e.g. Asset_Brokerage:default`). There is no defaulting and no implicit chain over an account's lots.
-- For all other subkinds a bare account name means lot `'default'`.
-- `:` is reserved: account names and chain names may not contain it.
+| file | account column | lot column |
+| --- | --- | --- |
+| `account_values.csv` | `account_name` | `lot` |
+| `chains/*.csv` | `account_name` | `lot` |
+| `scheduled.csv` | `from_account`, `to_account` | `from_lot`, `to_lot` |
+| `year_to_date.csv` | `from_account`, `to_account` | `from_lot`, `to_lot` |
+| `calendar.csv` | `account_1`, `account_2` | `lot_1`, `lot_2` |
 
-The rule depends only on subkind, never on the current lot count, so adding a lot never changes what an existing reference means. Splitting lot `default` into, say, `2024-03` and `2025-06` leaves `Account:default` references valid and still meaning that one lot only; the author is responsible for revisiting them.
+The loader resolves each `(account, lot)` pair to that lot's leaf chain and reports a bad pair with the column names.
+
+- A chain named in an account column takes no lot; the lot column must be blank.
+- For **investment subkinds** (`types.INVESTMENT_ASSET_SUBKINDS`: `brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) a blank lot is a **load error** that lists the account's lots (`'Asset_Brokerage' is an investment account and needs a to_lot (its lots: default)`). There is no defaulting and no implicit chain over an account's lots.
+- For all other subkinds a blank lot means `default`.
+- `:` is reserved: account names, chain names and lot labels may not contain it.
+- `accounts.csv` `refill_chain`/`overflow_chain` name a chain or a non-investment account; an investment account's lots are reached through a chain file.
+
+The rule depends only on subkind, never on the current lot count, so adding a lot never changes what an existing row means. Splitting lot `default` into, say, `2024-03` and `2025-06` leaves rows saying `lot=default` valid and still meaning that one lot only; the author is responsible for revisiting them.
 
 ### 4. CSV layout
 
@@ -90,7 +101,7 @@ Prices live in `aux_table` (`kind='security_price'`, `series=<symbol>`, `payload
 
 ### 7. Sales and withdrawals
 
-A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, ADR-003 #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. `sell_asset` on an investment account requires `Account:lot` and liquidates that lot. Liquidating an account is one `sell_asset` per lot.
+A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, ADR-003 #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. `sell_asset` on an investment account names a lot and liquidates that lot. Liquidating an account is one `sell_asset` per lot.
 
 ### 8. RMD (deferred)
 
@@ -101,13 +112,13 @@ Until the follow-up, the loader rejects an `rmd` rule whose `from_account` has m
 These change what ADR-002 and ADR-003 describe, so they are applied to those documents when the code lands, not before.
 
 - ADR-002: replace the `holding`/`lot` reserved schema and `schema_overview` rows with the §1–§2 DDL; `account_model_member` and `transfer_event` changes; `account_state` view; `SCHEMA_VERSION` 17 → 18.
-- ADR-003: §4.3 new columns and overlay key; §4.7 leaf chains per lot and `account:lot` naming; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §Later amendments #8 revised.
+- ADR-003: §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §Later amendments #8 revised.
 - ADR-001: `AccountState` row in the domain-object table becomes a view over per-lot state.
 
 ## Consequences
 
 - Positive: lot-level sales and per-security growth with no price path in the engine; reporting is untouched through the view; one file (`account_values.csv`) carries opening state; the ledger stays zero-sum and event-sourced.
-- Negative: every engine site keyed on account id changes to lot id; investment-account references in existing data need `:default` added once (or the lot renamed at the same time); row counts in `lot_state` scale with lots × months.
+- Negative: every engine site keyed on account id changes to lot id; existing data needs a `lot` column on `account_values.csv` and chain files, and `from_lot`/`to_lot`/`lot_1`/`lot_2` columns filled in for investment accounts; row counts in `lot_state` scale with lots × months.
 - Runtime lot creation (a `buy_asset` into a brokerage opening a new lot) is not supported; buys add to a named existing lot.
 
 ## Open questions deferred

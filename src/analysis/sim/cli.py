@@ -641,11 +641,6 @@ def _validate_iso_date(s: str) -> str:
     return s
 
 
-def _refers_to(value: str, account: str) -> bool:
-    """Whether a CSV cell names ``account``, bare or as ``account:lot``."""
-    return value == account or value.startswith(account + ":")
-
-
 def _append_csv_row(path: Path, header: tuple[str, ...],
                     row: dict[str, str]) -> None:
     """Append a row to a CSV, aligning columns by name via pandas.
@@ -672,6 +667,43 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
     df.to_csv(path, index=False)
 
 
+def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
+    """``name``, plus ``[lot]`` where the lot is worth showing."""
+    if not name:
+        return ""
+    if lot and (subkind in INVESTMENT_ASSET_SUBKINDS or lot != registries.DEFAULT_LOT):
+        return f"{name} [{lot}]"
+    return name
+
+
+def _lot_info(con: sqlite3.Connection) -> dict[str, tuple[bool, list[str]]]:
+    """Per account: (is an investment account, its lot labels)."""
+    info: dict[str, tuple[bool, list[str]]] = {}
+    for name, subkind, lot in con.execute(
+        "SELECT a.name, a.subkind, m.lot FROM account_model_member m "
+        "JOIN account a ON a.id = m.account_id ORDER BY m.id"
+    ):
+        info.setdefault(name, (subkind in INVESTMENT_ASSET_SUBKINDS, []))[1].append(lot)
+    return info
+
+
+def _pick_lot(
+    info: dict[str, tuple[bool, list[str]]], account: str, lot: str | None, label: str,
+) -> str:
+    """The lot column value for ``account``: an explicit ``lot`` is checked, and
+    investment accounts prompt for one; other accounts leave it blank."""
+    investment, lots = info[account]
+    if lot:
+        if lot not in lots:
+            raise click.ClickException(
+                f"{account!r} has no lot {lot!r}; its lots: {', '.join(lots)}"
+            )
+        return lot
+    if investment:
+        return _prompt_with_completion(f"{label} lot", choices=lots)
+    return ""
+
+
 def _prompt_account(label: str, accounts: list[str]) -> str:
     return _prompt_with_completion(f"{label} account", choices=accounts)
 
@@ -686,6 +718,8 @@ def transfer_group_command() -> None:
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
+@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
+@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -700,6 +734,8 @@ def transfer_add(
     from_account: str | None,
     to_account: str | None,
     amount: str | None,
+    from_lot: str | None,
+    to_lot: str | None,
     scenario: str | None,
     data_dir: Path | None,
     tax_character: str,
@@ -710,9 +746,8 @@ def transfer_add(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
     with open_intent_db(data_dir_p, scenario) as (con, _name):
-        accounts = [r[0] for r in con.execute(
-            "SELECT name FROM chain WHERE lot_id IS NOT NULL ORDER BY name"
-        )]
+        accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
+        lot_info = _lot_info(con)
 
     if not date:
         date = _prompt_with_completion("date (YYYY-MM-DD)")
@@ -728,6 +763,8 @@ def transfer_add(
         to_account = _prompt_account("to", accounts)
     if to_account not in accounts:
         raise click.ClickException(f"unknown to account: {to_account!r}")
+    from_lot = _pick_lot(lot_info, from_account, from_lot, "from")
+    to_lot = _pick_lot(lot_info, to_account, to_lot, "to")
 
     if amount is None:
         amount = _prompt_with_completion("amount (dollars, e.g. 1234.56)")
@@ -753,7 +790,9 @@ def transfer_add(
         "date": date,
         "kind": "one_off_transfer",
         "account_1": from_account,
+        "lot_1": from_lot,
         "account_2": to_account,
+        "lot_2": to_lot,
         "series": series,
         "amount": str(cents),
         "tax_character": tax_character,
@@ -782,6 +821,8 @@ def scheduled_group_command() -> None:
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
+@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
+@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -807,6 +848,8 @@ def scheduled_add(
     from_account: str | None,
     to_account: str | None,
     amount: str | None,
+    from_lot: str | None,
+    to_lot: str | None,
     scenario: str | None,
     data_dir: Path | None,
     row_name: str | None,
@@ -827,9 +870,8 @@ def scheduled_add(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
     with open_intent_db(data_dir_p, scenario) as (con, _name):
-        accounts = [r[0] for r in con.execute(
-            "SELECT name FROM chain WHERE lot_id IS NOT NULL ORDER BY name"
-        )]
+        accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
+        lot_info = _lot_info(con)
         existing_names = {
             r[0] for r in con.execute("SELECT name FROM scheduled_transaction")
         }
@@ -850,6 +892,8 @@ def scheduled_add(
         to_account = _prompt_account("to", accounts)
     if to_account not in accounts:
         raise click.ClickException(f"unknown to account: {to_account!r}")
+    from_lot = _pick_lot(lot_info, from_account, from_lot, "from")
+    to_lot = _pick_lot(lot_info, to_account, to_lot, "to")
 
     if amount is None:
         amount = _prompt_with_completion("amount (dollars, e.g. 1234.56)")
@@ -868,8 +912,8 @@ def scheduled_add(
         )
 
     if not row_name:
-        slug_from = from_account.lower().replace(" ", "_").replace(":", "_")
-        slug_to = to_account.lower().replace(" ", "_").replace(":", "_")
+        slug_from = "_".join(filter(None, (from_account, from_lot))).lower().replace(" ", "_")
+        slug_to = "_".join(filter(None, (to_account, to_lot))).lower().replace(" ", "_")
         row_name = f"xfer_{slug_from}_to_{slug_to}_{date}"
     if row_name in existing_names:
         raise click.ClickException(
@@ -879,7 +923,9 @@ def scheduled_add(
     row = {
         "name": row_name,
         "from_account": from_account,
+        "from_lot": from_lot,
         "to_account": to_account,
+        "to_lot": to_lot,
         "cadence": cadence,
         "month_of_year": str(month_of_year) if month_of_year else "",
         "amount_rule_kind": "fixed_amount",
@@ -925,6 +971,8 @@ def scheduled_add(
               help="Optional category account map (default: sibling data-repo/quicken/expense_account_map.csv).")
 @click.option("--from-account", required=True,
               help="Scenario account that funds all generated expense rows.")
+@click.option("--from-lot", default="",
+              help="Lot of --from-account (required for investment accounts).")
 @click.option("--start", default=None,
               help="First scheduled month YYYY-MM-DD (default: scenario start).")
 @click.option("--series", default="cpi", show_default=True,
@@ -940,6 +988,7 @@ def scheduled_import_baseline(
     food_owner_account: str,
     account_map: Path | None,
     from_account: str,
+    from_lot: str,
     start: str | None,
     series: str,
     dry_run: bool,
@@ -981,11 +1030,7 @@ def scheduled_import_baseline(
         else {}
     )
     with open_intent_db(data_dir_p, scenario_name) as (con, _):
-        scenario_accounts = {
-            row[0] for row in con.execute(
-                "SELECT name FROM chain WHERE lot_id IS NOT NULL"
-            )
-        }
+        scenario_accounts = {row[0] for row in con.execute("SELECT name FROM account")}
         scenario_sources = scenario_accounts | {
             row[0] for row in con.execute("SELECT name FROM chain")
         }
@@ -1030,6 +1075,7 @@ def scheduled_import_baseline(
         start,
         from_account,
         ignored_categories=set(invalid_targets) | missing_mappings,
+        from_lot=from_lot,
         series=series,
     )
     scheduled_path = scenario_dir / "scheduled.csv"
@@ -1071,8 +1117,8 @@ def scheduled_list(scenario: str | None, data_dir: Path | None) -> None:
             "       s.amount_rule_kind, s.amount_cents, "
             "       fa.name AS from_name, ta.name AS to_name "
             "FROM scheduled_transaction s "
-            "JOIN account fa ON fa.id = s.from_account "
-            "JOIN account ta ON ta.id = s.to_account "
+            "JOIN chain fa ON fa.id = s.from_account "
+            "JOIN chain ta ON ta.id = s.to_account "
             "ORDER BY s.priority, s.name"
         ):
             rule = row["amount_rule_kind"]
@@ -1299,9 +1345,7 @@ def _rename_account_row_values(path: Path, field_names: tuple[str, ...], old_nam
         if field not in df.columns:
             continue
         before = df[field].copy()
-        df[field] = df[field].map(
-            lambda v: new_name + v[len(old_name):] if _refers_to(v, old_name) else v
-        )
+        df[field] = df[field].map(lambda v: new_name if v == old_name else v)
         changed = changed or not before.equals(df[field])
     if changed:
         df.to_csv(path, index=False)
@@ -1365,7 +1409,7 @@ def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
         for idx, row in accounts.iterrows():
             if row.get("name") == name:
                 continue
-            matched_fields = [field for field in chain_fields if _refers_to(row[field], name)]
+            matched_fields = [field for field in chain_fields if row[field] == name]
             if matched_fields:
                 references.append(
                     f"  accounts.csv row {idx + 2}: {', '.join(matched_fields)}"
@@ -1385,7 +1429,7 @@ def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
         available_fields = tuple(field for field in fields if field in df.columns)
         for idx, row in df.iterrows():
-            matched_fields = [field for field in available_fields if _refers_to(row[field], name)]
+            matched_fields = [field for field in available_fields if row[field] == name]
             if matched_fields:
                 references.append(
                     f"  {path.relative_to(scenario_dir)} row {idx + 2}: "
@@ -1411,9 +1455,7 @@ def _delete_account_references(scenario_dir: Path, name: str) -> None:
         available_fields = [field for field in fields if field in df.columns]
         if not available_fields:
             continue
-        keep = ~df[available_fields].apply(
-            lambda column: column.map(lambda v: _refers_to(v, name))
-        ).any(axis=1)
+        keep = ~df[available_fields].eq(name).any(axis=1)
         if not keep.all():
             df.loc[keep].to_csv(path, index=False)
 
@@ -2056,16 +2098,26 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
         table.add_column("Description")
 
         for row in con.execute(
-            "SELECT date, account_1, account_2, amount, "
-            "       COALESCE(tax_character, '') AS tax_character, "
-            "       COALESCE(description, '') AS description "
-            "FROM calendar_event WHERE kind = 'one_off_transfer' "
-            "ORDER BY date"
+            "SELECT ce.date, ce.amount, "
+            "       COALESCE(ce.tax_character, '') AS tax_character, "
+            "       COALESCE(ce.description, '') AS description, "
+            "       a1.name AS name_1, a1.subkind AS subkind_1, m1.lot AS lot_1, "
+            "       a2.name AS name_2, a2.subkind AS subkind_2, m2.lot AS lot_2 "
+            "FROM calendar_event ce "
+            "LEFT JOIN chain c1 ON c1.name = ce.account_1 "
+            "LEFT JOIN account_model_member m1 ON m1.id = c1.lot_id "
+            "LEFT JOIN account a1 ON a1.id = c1.account_id "
+            "LEFT JOIN chain c2 ON c2.name = ce.account_2 "
+            "LEFT JOIN account_model_member m2 ON m2.id = c2.lot_id "
+            "LEFT JOIN account a2 ON a2.id = c2.account_id "
+            "WHERE ce.kind = 'one_off_transfer' "
+            "ORDER BY ce.date"
         ):
             amt = _fmt_cents(row["amount"]).strip() if row["amount"] is not None else ""
             table.add_row(
                 row["date"],
-                row["account_1"] or "", row["account_2"] or "",
+                _account_with_lot(row["name_1"], row["subkind_1"], row["lot_1"]),
+                _account_with_lot(row["name_2"], row["subkind_2"], row["lot_2"]),
                 amt, row["tax_character"], row["description"],
             )
 

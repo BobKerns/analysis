@@ -340,7 +340,8 @@ def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> 
         main,
         [
             "sim", "transfer", "add",
-            "2030-06-30", "Asset_Checking", "Asset_Brokerage_Joint:default", "1500.00",
+            "2030-06-30", "Asset_Checking", "Asset_Brokerage_Joint", "1500.00",
+            "--to-lot", "default",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
             "--description", "Mid-year top-up",
@@ -372,7 +373,8 @@ def test_sim_add_scheduled_appends_row_with_defaults_and_check_passes(
         main,
         [
             "sim", "scheduled", "add",
-            "2030-01-31", "Asset_Checking", "Asset_Brokerage_Joint:default", "250.00",
+            "2030-01-31", "Asset_Checking", "Asset_Brokerage_Joint", "250.00",
+            "--to-lot", "default",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
             "--description", "Recurring sweep",
@@ -401,7 +403,8 @@ def test_sim_add_fixed_rejects_unknown_account(tmp_path: Path) -> None:
         main,
         [
             "sim", "transfer", "add",
-            "2030-06-30", "NopeAccount", "Asset_Brokerage_Joint:default", "100.00",
+            "2030-06-30", "NopeAccount", "Asset_Brokerage_Joint", "100.00",
+            "--to-lot", "default",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
         ],
@@ -417,7 +420,7 @@ def test_sim_add_fixed_prompts_when_args_missing(tmp_path: Path) -> None:
         main,
         ["sim", "transfer", "add", "--scenario", "retire_alice",
          "--data-dir", str(data)],
-        input="2030-06-30\nAsset_Checking\nAsset_Brokerage_Joint:default\n42.00\n",
+        input="2030-06-30\nAsset_Checking\nAsset_Brokerage_Joint\ndefault\n42.00\n",
     )
     assert result.exit_code == 0, result.output
     cal = (data / "scenarios" / "retire_alice" / "calendar.csv").read_text()

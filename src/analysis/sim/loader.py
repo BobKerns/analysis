@@ -428,7 +428,8 @@ def _read_scenario_inputs(
     )
     calendar_rows = _merge_scenario_rows(
         parent_calendar, read_overlay("calendar.csv"),
-        ("date", "kind", "scheduled_name", "account_1", "account_2", "series", "amount"),
+        ("date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
+         "series", "amount"),
         require_key=False,
     )
     lifespan_rows = _merge_scenario_rows(
@@ -538,7 +539,6 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_calendar(calendar_rows, leaves, issues)
-    _resolve_chain_lots(chains, leaves, issues)
     _validate_chains(chains, accounts, leaves, issues, money_resolver=money_resolver)
     _validate_lifespan(lifespan_rows, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
@@ -754,6 +754,7 @@ class _LeafIndex(NamedTuple):
     account_of: dict[str, str]
     lot_labels: dict[str, list[str]]
     investment_accounts: frozenset[str]
+    leaf_of: dict[tuple[str, str], str]
 
 
 def _leaf_index(
@@ -767,6 +768,7 @@ def _leaf_index(
     names: set[str] = set()
     account_of: dict[str, str] = {}
     lot_labels: dict[str, list[str]] = {}
+    leaf_of: dict[tuple[str, str], str] = {}
     for a in accounts:
         name = a.get("name", "")
         lot_labels[name] = labels.get(name) or [registries.DEFAULT_LOT]
@@ -774,52 +776,57 @@ def _leaf_index(
             leaf = registries.leaf_chain_name(name, lot, a.get("subkind", ""))
             names.add(leaf)
             account_of[leaf] = name
+            leaf_of[(name, lot)] = leaf
     return _LeafIndex(
         frozenset(names), account_of, lot_labels,
         frozenset(
             a["name"] for a in accounts
             if a.get("name") and a.get("subkind") in INVESTMENT_ASSET_SUBKINDS
         ),
+        leaf_of,
     )
 
 
-def _resolve_chain_lots(
-    chains: dict[str, tuple[str, list[dict[str, str]]]],
-    leaves: _LeafIndex, issues: list[str],
-) -> None:
-    """Fold a chain row's optional ``lot`` column into its ``account_name``, so
-    ``Bob HSA,default`` and ``Bob HSA:default`` mean the same lot."""
-    for name, (kind, rows) in chains.items():
-        for i, row in enumerate(rows, start=2):
-            lot = row.get("lot", "")
-            member = row.get("account_name", "")
-            if not lot or not member:
-                continue
-            if ":" in member:
-                issues.append(
-                    f"chains/{kind}__{name}.csv row {i}: '{member}' already names a "
-                    f"lot; drop the lot column value '{lot}'"
-                )
-                continue
-            qualified = f"{member}:{lot}"
-            if qualified in leaves.names:
-                row["account_name"] = qualified
-            elif lot == registries.DEFAULT_LOT and member in leaves.names:
-                row["account_name"] = member
-            else:
-                row["account_name"] = qualified
+def _resolve_ref(
+    row: dict[str, str], account_col: str, lot_col: str,
+    leaves: _LeafIndex, chain_names: set[str] | frozenset[str],
+) -> str | None:
+    """Fold ``row[lot_col]`` into ``row[account_col]``, leaving the internal name
+    of that lot's leaf chain there, and return why it can't be resolved (or None).
+
+    An interior chain takes no lot. An investment account must name its lot; any
+    other account may leave it blank, meaning ``default``.
+    """
+    ref, lot = row.get(account_col, ""), row.get(lot_col, "")
+    if ref in chain_names:
+        if lot:
+            return f"'{ref}' is a chain, so {lot_col} must be blank"
+        return None
+    labels = leaves.lot_labels.get(ref)
+    if labels is None:
+        return f"'{ref}' is not a known account or chain"
+    if not lot:
+        if ref in leaves.investment_accounts:
+            return (
+                f"'{ref}' is an investment account and needs a {lot_col} "
+                f"(its lots: {', '.join(labels)})"
+            )
+        lot = registries.DEFAULT_LOT
+    leaf = leaves.leaf_of.get((ref, lot))
+    if leaf is None:
+        return f"'{ref}' has no lot '{lot}' (its lots: {', '.join(labels)})"
+    row[account_col] = leaf
+    return None
 
 
 def _ref_problem(ref: str, leaves: _LeafIndex, chain_names: set[str] | frozenset[str]) -> str | None:
-    """Why ``ref`` is not a valid account/lot/chain reference, or None if it is."""
+    """Why ``ref`` (a bare account or chain name with no lot column) is not a
+    valid reference, or None if it is."""
     if ref and (ref in leaves.names or ref in chain_names):
         return None
     if ref in leaves.investment_accounts:
-        example = registries.leaf_chain_name(
-            ref, leaves.lot_labels[ref][0], "brokerage_taxable"
-        )
-        return f"'{ref}' is an investment account and needs an explicit lot, e.g. {example}"
-    return f"'{ref}' is not a known account, lot or chain"
+        return f"'{ref}' is an investment account; name a chain that lists its lot"
+    return f"'{ref}' is not a known account or chain"
 
 
 def _slug(name: str) -> str:
@@ -914,7 +921,8 @@ def _expand_account_growth(
             scheduled_rows.append({
                 "name": rule_name,
                 "from_account": counterparty.name,
-                "to_account": leaf,
+                "to_account": name,
+                "to_lot": lot,
                 "cadence": "monthly",
                 "amount_rule_kind": "percent_of_balance",
                 "series": series,
@@ -1027,8 +1035,8 @@ def _validate_scheduled(
                 f"use 'series'; it is only read by "
                 f"{', '.join(sorted(registries.SERIES_RULE_KINDS))}"
             )
-        for col in ("from_account", "to_account"):
-            problem = _ref_problem(row.get(col, ""), leaves, chain_names)
+        for col, lot_col in (("from_account", "from_lot"), ("to_account", "to_lot")):
+            problem = _resolve_ref(row, col, lot_col, leaves, chain_names)
             if problem:
                 issues.append(f"scheduled.csv row {i} ({name}): {col} {problem}")
         if kind == "rmd":
@@ -1214,8 +1222,8 @@ def _validate_year_to_date(
         if name in seen:
             issues.append(f"year_to_date.csv row {i} ({name}): duplicate name")
         seen.add(name)
-        for col in ("from_account", "to_account"):
-            problem = _ref_problem(row.get(col, ""), leaves, frozenset())
+        for col, lot_col in (("from_account", "from_lot"), ("to_account", "to_lot")):
+            problem = _resolve_ref(row, col, lot_col, leaves, frozenset())
             if problem:
                 issues.append(f"year_to_date.csv row {i} ({name}): {col} {problem}")
         tc = row.get("tax_character", "")
@@ -1245,8 +1253,8 @@ def _validate_calendar(
         if kind not in registries.CALENDAR_EVENT_KINDS:
             issues.append(f"calendar.csv row {i}: unknown event kind '{kind}'")
         if kind == "one_off_transfer":
-            for col in ("account_1", "account_2"):
-                problem = _ref_problem(row.get(col, ""), leaves, frozenset())
+            for col, lot_col in (("account_1", "lot_1"), ("account_2", "lot_2")):
+                problem = _resolve_ref(row, col, lot_col, leaves, frozenset())
                 if problem:
                     issues.append(f"calendar.csv row {i}: {col} {problem}")
         payload_json = row.get("payload_json") or "{}"
@@ -1356,11 +1364,9 @@ def _validate_chains(
             if not member:
                 issues.append(f"chains/{kind}__{name}.csv row {i}: missing account_name")
                 continue
-            if member not in resolvable:
-                issues.append(
-                    f"chains/{kind}__{name}.csv row {i}: "
-                    f"{_ref_problem(member, leaves, frozenset())}"
-                )
+            problem = _resolve_ref(row, "account_name", "lot", leaves, set(chains))
+            if problem:
+                issues.append(f"chains/{kind}__{name}.csv row {i}: {problem}")
             elif member in chains:
                 edges[name].add(member)
             maximum = row.get("maximum", "")

@@ -92,7 +92,9 @@ The loader enforces referential integrity (strict join validation), so missing o
 
 ### Lots
 
-Each `account_values.csv` row is one **lot**: a position inside one account. An account you don't split has a single lot named `default`, and you can leave the `lot` column blank for it. **Investment accounts** (`brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) must name their lot, and every reference to one is written `Account:lot`, for example `Asset_Brokerage_Joint:default`, in `scheduled.csv`, `calendar.csv`, `year_to_date.csv` and `chains/*.csv`. A chain file may instead use a separate `lot` column (`account_name,lot,...` with `Bob HSA,default`), which means the same thing. Lot names are free-form (`default`, `1`, `2024-03`, ...) but may not contain `:`.
+Each `account_values.csv` row is one **lot**: a position inside one account. An account you don't split has a single lot named `default`, and you can leave the `lot` column blank for it. Every file that names an account has a `lot` column beside it: `lot` in `account_values.csv` and `chains/*.csv`, `from_lot`/`to_lot` in `scheduled.csv` and `year_to_date.csv`, `lot_1`/`lot_2` in `calendar.csv`. Lot names are free-form (`default`, `1`, `2024-03`, ...) but may not contain `:`.
+
+**Investment accounts** (`brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) must always name their lot, everywhere; a blank lot is a load error that lists the account's lots. Other accounts can leave it blank. A chain named in an account column takes no lot.
 
 To split an account, give it several rows with different `lot` values, each with its own `opening_balance` and `opening_cost_basis`. Optional columns: `symbol`, `acquired` (ISO date), `quantity` (shares), and `series` (the lot's growth-rate series). A lot grows at its `series`, else at a rate series named for its `symbol`, else at the account's `series`. A withdrawal drawn from one lot (through a chain that lists it) splits that lot's basis pro-rata and leaves the other lots alone.
 

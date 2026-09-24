@@ -32,8 +32,8 @@ AMOUNT_RULE_KINDS: set[str] = {
 # Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
 # each interpreted per amount_rule_kind; see SERIES_RULE_KINDS below.
 SCHEDULED_CSV_HEADER: tuple[str, ...] = (
-    "name", "from_account", "to_account", "cadence", "month_of_year",
-    "amount_rule_kind", "interest_account", "person", "series",
+    "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
+    "month_of_year", "amount_rule_kind", "interest_account", "person", "series",
     "rate_micros", "claim_age", "amount", "base_date", "inflation_cadence",
     "tax_character", "tax_year", "start", "end", "priority", "ytd_amount", "ytd_preroll",
     "description", "meta_json", "params_json", "tags",
@@ -208,8 +208,8 @@ SCENARIO_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 CALENDAR_HEADER: tuple[str, ...] = (
-    "date", "kind", "scheduled_name", "account_1", "account_2", "series",
-    "amount", "param_date", "tax_character", "params_json", "description",
+    "date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
+    "series", "amount", "param_date", "tax_character", "params_json", "description",
     "tags",
 )
 

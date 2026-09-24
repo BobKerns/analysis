@@ -104,12 +104,12 @@ def test_investment_account_row_requires_explicit_lot(
         load_test_copy()
 
 
-def test_bare_investment_reference_names_the_fix(
+def test_investment_reference_without_a_lot_lists_its_lots(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
     _edit(retire_alice_csv("calendar.csv"),
-          "Asset_Brokerage_Joint:default", "Asset_Brokerage_Joint")
-    with pytest.raises(LoadError, match="needs an explicit lot, e.g. Asset_Brokerage_Joint:default"):
+          ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,,")
+    with pytest.raises(LoadError, match=r"needs a lot_2 \(its lots: default\)"):
         load_test_copy()
 
 
@@ -117,8 +117,8 @@ def test_unknown_lot_reference_rejected(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
     _edit(retire_alice_csv("calendar.csv"),
-          "Asset_Brokerage_Joint:default", "Asset_Brokerage_Joint:nope")
-    with pytest.raises(LoadError, match="not a known account, lot or chain"):
+          ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,nope,")
+    with pytest.raises(LoadError, match="has no lot 'nope'"):
         load_test_copy()
 
 
@@ -293,23 +293,98 @@ def test_chain_file_lot_column_matches_account_lot_spelling(
         con.close()
 
 
-def test_chain_file_investment_row_without_lot_is_still_rejected(
+def test_chain_file_investment_row_without_lot_is_rejected(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
     _liquidity_chain(retire_alice_csv).write_text(
         "account_name,lot,maximum,percent,series,cadence\n"
         "Asset_TraditionalIRA_Alice,,,,,\n"
     )
-    with pytest.raises(LoadError, match="needs an explicit lot"):
+    with pytest.raises(LoadError, match="needs a lot"):
         load_test_copy()
 
 
-def test_chain_file_rejects_lot_given_twice(
+def test_colon_spelling_is_not_a_reference(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
     _liquidity_chain(retire_alice_csv).write_text(
         "account_name,lot,maximum,percent,series,cadence\n"
-        "Asset_TraditionalIRA_Alice:default,default,,,,\n"
+        "Asset_TraditionalIRA_Alice:default,,,,,\n"
     )
-    with pytest.raises(LoadError, match="already names a lot"):
+    with pytest.raises(LoadError, match="'Asset_TraditionalIRA_Alice:default' is not a known account"):
         load_test_copy()
+
+
+def _append_scheduled_row(path: Path, **fields: str) -> None:
+    import pandas as pd
+
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df.loc[len(df)] = {**dict.fromkeys(df.columns, ""), **fields}
+    df.to_csv(path, index=False)
+
+
+def test_scheduled_row_to_investment_account_needs_a_to_lot(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+) -> None:
+    _append_scheduled_row(
+        retire_alice_csv("scheduled.csv"), name="sweep", from_account="Asset_Checking",
+        to_account="Asset_Brokerage_Joint", cadence="monthly",
+        amount_rule_kind="fixed_amount", amount="10.00", tax_character="none",
+        start="2026-05-31", priority="500", meta_json="{}",
+    )
+    with pytest.raises(LoadError, match=r"sweep\): to_account 'Asset_Brokerage_Joint' .* needs a to_lot"):
+        load_test_copy()
+
+
+def test_scheduled_row_lot_column_selects_that_lot(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+) -> None:
+    _append_scheduled_row(
+        retire_alice_csv("scheduled.csv"), name="sweep", from_account="Asset_Checking",
+        to_account="Asset_Brokerage_Joint", to_lot="default", cadence="monthly",
+        amount_rule_kind="fixed_amount", amount="10.00", tax_character="none",
+        start="2026-05-31", priority="500", meta_json="{}",
+    )
+    con = sqlite3.connect(load_test_copy().intent_path)
+    try:
+        assert con.execute(
+            "SELECT c.name FROM scheduled_transaction s JOIN chain c ON c.id = s.to_account "
+            "WHERE s.name = 'sweep'"
+        ).fetchone() == ("Asset_Brokerage_Joint:default",)
+    finally:
+        con.close()
+
+
+def test_year_to_date_row_lot_column_is_checked(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+) -> None:
+    retire_alice_csv("year_to_date.csv").write_text(
+        "name,from_account,to_account,to_lot,amount,tax_character\n"
+        "growth,Income_CapitalGain,Asset_Brokerage_Joint,nope,1.00,ltcg\n"
+    )
+    with pytest.raises(LoadError, match="has no lot 'nope'"):
+        load_test_copy()
+
+
+def test_scheduled_list_and_accounts_view_handle_multi_lot_accounts(
+    two_lot_run_file: Path, test_data_dir: Path
+) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.sim.accounts import load_accounts_view
+    from analysis.sim.connection import open_scenario
+
+    result = CliRunner().invoke(main, [
+        "sim", "scheduled", "list", "--scenario", "retire_alice",
+        "--data-dir", str(test_data_dir),
+    ], env={"COLUMNS": "300"})
+    assert result.exit_code == 0, result.output
+    assert "growth_asset_brokerage_joint_a" in result.output
+    assert "Asset_Brokerage_Joint:b" in result.output
+
+    with open_scenario(test_data_dir, "retire_alice") as sc:
+        brokerage = next(r for r in load_accounts_view(sc) if r.name == "Asset_Brokerage_Joint")
+    assert brokerage.opening_balance == 300_000.0
+    assert brokerage.cost_basis == 200_000.0
+    assert brokerage.rate_series is not None

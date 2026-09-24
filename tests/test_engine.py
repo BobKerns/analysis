@@ -1157,7 +1157,8 @@ def test_on_death_sweeps_full_balance_once(tmp_path: Path) -> None:
     _append_scheduled(
         scheduled_csv,
         name="sell_roth_alice",
-        from_account="Asset_Roth_Alice:default",
+        from_account="Asset_Roth_Alice",
+        from_lot="default",
         to_account="Asset_Checking",
         cadence="monthly",
         amount_rule_kind="on_death",
@@ -1364,8 +1365,8 @@ def test_year_to_date_csv_posts_balance_neutral_catchup(tmp_path: Path) -> None:
 
     ytd_csv = repo / "scenarios" / "retire_alice" / "year_to_date.csv"
     ytd_csv.write_text(
-        "name,from_account,to_account,amount,tax_character,description\n"
-        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint:default,"
+        "name,from_account,to_account,to_lot,amount,tax_character,description\n"
+        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint,default,"
         "1500.00,ltcg,pre-simulation appreciation\n"
     )
     intent_path = load_scenario(
