@@ -53,7 +53,7 @@ EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "other"]
 # depreciation is a book entry, not spending -- see ADR-002 gains/losses.
 NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 
-LIQUID_SUBKINDS = {"checking", "savings"}
+LIQUID_SUBKINDS = {"cash"}
 TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "stcg", "tax_deferred_out"}  # ss_benefit handled separately
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]

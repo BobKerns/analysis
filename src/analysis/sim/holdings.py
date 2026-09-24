@@ -113,8 +113,10 @@ def symbol_holders(
     return frame[frame["symbol"] == symbol].reset_index(drop=True)
 
 
-def _investment(frame: pd.DataFrame) -> pd.DataFrame:
-    return frame[frame["subkind"].isin(INVESTMENT_ASSET_SUBKINDS)]
+def _symbol_holders(frame: pd.DataFrame) -> pd.DataFrame:
+    """Lots whose symbol the symbol views list: those in investment accounts and
+    cash lots (by convention, symbol ``CASH``)."""
+    return frame[frame["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | {"cash"})]
 
 
 def holding_accounts(source: RunConnection | ScenarioConnection) -> list[str]:
@@ -124,9 +126,9 @@ def holding_accounts(source: RunConnection | ScenarioConnection) -> list[str]:
 
 
 def holding_symbols(source: RunConnection | ScenarioConnection) -> list[str]:
-    """Symbols held in investment accounts, sorted: what the holders widget offers
-    (a symbol on a cash lot, such as a money-market fund, is left out)."""
-    symbols = _investment(lots_frame(source))["symbol"]
+    """Symbols held in investment accounts or cash lots, sorted: what the holders
+    widget offers."""
+    symbols = _symbol_holders(lots_frame(source))["symbol"]
     return sorted(set(symbols[symbols.notna() & (symbols != "")]))
 
 

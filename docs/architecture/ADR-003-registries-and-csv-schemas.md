@@ -22,8 +22,7 @@ CHECK-constrained at load time (the loader validates; the DDL keeps `subkind` as
 
 | subkind | meaning |
 | --- | --- |
-| `checking` | demand deposit, primary cash |
-| `savings` | demand deposit, separate from checking |
+| `cash` | bank and money-market money: checking, savings, or any cash position (by convention its lots use the symbol `CASH`). Checking and savings were once separate subkinds, but the engine never distinguished them and one account can now hold both as lots |
 | `brokerage_taxable` | taxable investment account |
 | `traditional_ira` | pre-tax IRA |
 | `roth_ira` | post-tax IRA |

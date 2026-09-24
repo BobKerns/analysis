@@ -420,7 +420,7 @@ def test_chain_draw_single_leaf_account_respects_minimum_balance(ledger_con: sql
     balances = {1: 100_000, 2: 500_000}
     account_kinds = {1: "asset", 2: "asset"}
     account_tax_treatment = {1: "taxable", 2: "taxable"}
-    account_subkind = {1: "checking", 2: "savings"}
+    account_subkind = {1: "cash", 2: "cash"}
     account_name = {1: "Checking", 2: "Savings"}
     graph = ChainGraph({}, {10: 2}, {2: 100_000}, {}, {}, {}, {}, {})
     taken = _chain_draw(
@@ -444,7 +444,7 @@ def test_chain_draw_never_draws_target_from_itself(ledger_con: sqlite3.Connectio
     balances = {1: 100_000}
     graph = ChainGraph({}, {10: 1}, {}, {}, {}, {}, {}, {})
     taken = _chain_draw(
-        ledger_con, balances, {1: "asset"}, {1: "taxable"}, {1: "checking"},
+        ledger_con, balances, {1: "asset"}, {1: "taxable"}, {1: "cash"},
         {1: "Checking"}, step_id=1, month_s="2026-05-31", graph=graph,
         chain_id=10, amount_needed=50_000, target_account_id=1,
     )
@@ -462,7 +462,7 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character(l
     balances = {1: 0, 2: 200_000, 3: 1_000_000}
     account_kinds = {1: "asset", 2: "asset", 3: "asset"}
     account_tax_treatment = {1: "taxable", 2: "taxable", 3: "tax_deferred"}
-    account_subkind = {1: "checking", 2: "savings", 3: "traditional_ira"}
+    account_subkind = {1: "cash", 2: "cash", 3: "traditional_ira"}
     account_name = {1: "Checking", 2: "Savings", 3: "IRA"}
     # chain 100 = interior chain listing leaf chains 2 (savings) then 3 (IRA);
     # leaf chains share ids with their account for simplicity in this test.
@@ -507,7 +507,7 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     balances = {1: 0, 2: 1_000, 3: 1_000_000}
     account_kinds = dict.fromkeys(balances, "asset")
     account_tax_treatment = dict.fromkeys(balances, "taxable")
-    account_subkind = dict.fromkeys(balances, "savings")
+    account_subkind = dict.fromkeys(balances, "cash")
     account_name = {1: "Target", 2: "Hiromi Vanguard", 3: "Bob Vanguard"}
     graph = ChainGraph(
         members={100: [(2, None, 10_000), (3,)]},  # 2: percent=1%, 3: default 100%
@@ -535,7 +535,7 @@ def test_chain_draw_step_maximum_caps_allocation_even_when_more_is_available(led
     balances = {1: 0, 2: 1_000_000, 3: 1_000_000}
     account_kinds = dict.fromkeys(balances, "asset")
     account_tax_treatment = dict.fromkeys(balances, "taxable")
-    account_subkind = dict.fromkeys(balances, "savings")
+    account_subkind = dict.fromkeys(balances, "cash")
     account_name = {1: "Target", 2: "First", 3: "Second"}
     graph = ChainGraph(
         members={100: [(2, 200_000), (3,)]},  # step 2 capped at 200_000
@@ -565,7 +565,7 @@ def test_chain_draw_refills_source_before_checking_availability(ledger_con: sqli
     balances = {1: 0, 2: 500, 3: 1_000_000}
     account_kinds = dict.fromkeys(balances, "asset")
     account_tax_treatment = dict.fromkeys(balances, "taxable")
-    account_subkind = dict.fromkeys(balances, "savings")
+    account_subkind = dict.fromkeys(balances, "cash")
     account_name = {1: "Target", 2: "Source", 3: "Refill"}
     graph = ChainGraph(
         members={},
@@ -765,7 +765,7 @@ def test_chain_sweep_allocates_fixed_then_percent_of_remainder(ledger_con: sqlit
     balances = {1: 1_000_000, 2: 0, 3: 0, 4: 0}
     account_kinds = dict.fromkeys(balances, "asset")
     account_tax_treatment = dict.fromkeys(balances, "taxable")
-    account_subkind = {1: "checking", 2: "checking", 3: "savings", 4: "hsa"}
+    account_subkind = {1: "cash", 2: "cash", 3: "cash", 4: "hsa"}
     account_name = {1: "Income_SS", 2: "Checking", 3: "Savings", 4: "HSA"}
     graph = ChainGraph(
         members={100: [(2, 100_000, 1_000_000), (3, None, 500_000),

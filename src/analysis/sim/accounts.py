@@ -46,7 +46,7 @@ class AccountRow:
 
 
 def _rate_role(subkind: str) -> str:
-    cash = {"checking", "savings"}
+    cash = {"cash"}
     return "yield" if subkind in cash else "growth"
 
 

@@ -85,7 +85,7 @@ def symbol_holders_view(
     everything = lots_frame(source, month)
     frame = everything[
         (everything["symbol"] == symbol)
-        & everything["subkind"].isin(INVESTMENT_ASSET_SUBKINDS)
+        & everything["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | {"cash"})
     ]
     shown = _with_total(
         frame[["account", "lot", "tax_treatment", "quantity", "price", "balance",

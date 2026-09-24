@@ -100,7 +100,7 @@ def test_scenario_source_shows_opening_values_and_refuses_a_month(
             lots_frame(scenario, month="2026-05")
 
 
-def test_widgets_offer_every_account_but_only_investment_symbols(
+def test_widgets_offer_every_account_and_the_symbols_of_investment_and_cash_lots(
     two_lot_run: RunConnection, test_data_dir: Path, update_account_value,
 ) -> None:
     assert holding_accounts(two_lot_run) == sorted([
@@ -108,13 +108,16 @@ def test_widgets_offer_every_account_but_only_investment_symbols(
         "Asset_Savings", "Asset_TraditionalIRA_Alice", "Liability_Mortgage",
     ])
     assert holding_symbols(two_lot_run) == ["AAA", "BBB"]
-    update_account_value("Asset_Checking", "", symbol="MMF")  # not an investment account
+    update_account_value("Asset_Checking", "", symbol="CASH")
+    update_account_value("Asset_Home", "", symbol="HOUSE")  # neither investment nor cash
     with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
-        assert "Asset_Checking" in holding_accounts(scenario)  # a cash account can have lots
-        assert "MMF" not in holding_symbols(scenario)
-        assert not symbol_holders(scenario, "MMF").empty  # the data function stays general
-        _, table = symbol_holders_view(scenario, "MMF")
+        assert "CASH" in holding_symbols(scenario)
+        assert "HOUSE" not in holding_symbols(scenario)
+        assert not symbol_holders(scenario, "HOUSE").empty  # the data function stays general
+        _, table = symbol_holders_view(scenario, "HOUSE")
         assert list(table.index)[:-1] == []  # the widget's table leaves it out
+        _, cash = symbol_holders_view(scenario, "CASH")
+        assert list(cash.index)[0] == ("Asset_Checking", "default")
 
 
 def test_holdings_command_shows_lots_and_totals(two_lot_run_file: Path, test_data_dir: Path) -> None:

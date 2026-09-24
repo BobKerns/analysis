@@ -9,7 +9,7 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     "asset": {
-        "checking", "savings", "brokerage_taxable", "traditional_ira", "roth_ira",
+        "cash", "brokerage_taxable", "traditional_ira", "roth_ira",
         "traditional_401k", "roth_401k", "hsa", "real_estate", "vehicle", "other_asset",
     },
     "liability": {"mortgage", "heloc", "credit_card", "other_liability"},
@@ -50,7 +50,7 @@ SERIES_RULE_KINDS: dict[str, str] = {
 # character of a leg drawn from an account depends on which concrete account
 # actually supplied the money, so this is looked up per-leg at runtime rather
 # than authored on the scheduled_transaction row. 'taxable' is deliberately
-# absent: `checking`/`savings` withdrawals return already-taxed principal
+# absent: `cash` withdrawals return already-taxed principal
 # ('none'), but a taxable brokerage withdrawal splits into `return_of_capital`
 # / `ltcg` legs based on the account's running cost basis (see
 # `engine._post_withdrawal`) -- returning None here is how this function
@@ -65,7 +65,7 @@ TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER: dict[str, str] = {
 
 # Subkinds whose 'taxable' tax_treatment still withdraws tax-free (principal,
 # already taxed when earned) -- i.e. cash-like accounts, not brokerage.
-TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX: set[str] = {"checking", "savings"}
+TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX: set[str] = {"cash"}
 
 
 def withdrawal_tax_character(tax_treatment: str | None, subkind: str) -> str | None:

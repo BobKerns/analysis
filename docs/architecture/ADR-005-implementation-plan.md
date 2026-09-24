@@ -102,6 +102,10 @@ Apply the ADR-005 "Amendments to apply" list to ADR-001, ADR-002, and ADR-003 (t
 
 Lifts the Phase 2 restriction that `minimum_balance`, refill and overflow are only for single-lot accounts. The engine already kept these settings in dicts keyed by lot id, so the change is in the data model: the six columns moved from `account` to `account_model_member` (schema 22), and from `accounts.csv` to `account_values.csv`, which gained `refill_lot` and `overflow_lot` so a chain reference follows the same explicit-lot rule as every other reference (a value left in `accounts.csv` is a load error naming the new place). The `account` item no longer carries them; the `account_model_member` item exposes them with the chain name and lot split out, and the lot-definitions comparison shows them per lot. `account delete`/`rename` follow the columns. A lot may refill from a sibling lot of its own account (`tests/test_lot_refill.py`). Motivating cases: refilling an HSA's cash lot from its funds, and consolidating several bank accounts into lots of one account when only some refill.
 
+## Phase 8 — One cash subkind (done)
+
+Checking and savings were distinguished nowhere in the engine (both take the no-tax withdrawal path, count as cash for yield and for the realized-gain reports), and with lots one account holds both, so the subkinds `checking` and `savings` merge into `cash` (schema 23; `LIQUID_SUBKINDS`, `TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX` and the yield/growth rate role follow). Data migration is a rename of the `subkind` column. The symbol views (`holding_symbols`, `symbol_holders_view`) now include cash lots as well as investment lots, so a `CASH` symbol convention gives one view of all cash.
+
 ## Risks
 
 - **Engine surface (highest).** `run_scenario` has cx 54 and much of it is keyed on account ids. Phase 0's audit sizes this; if it is larger than expected, split Phase 1 by first introducing a lot-id alias for account id (one lot per account, identical values) and converting sites one rule kind at a time.

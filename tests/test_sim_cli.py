@@ -759,7 +759,7 @@ def test_sim_account_check_detects_missing_rows(tmp_path: Path) -> None:
     new_row = pd.DataFrame([{
         "name": "Asset_NewAccount",
         "kind": "asset",
-        "subkind": "checking",
+        "subkind": "cash",
         "owner": "joint",
         "tax_treatment": "taxable",
         "opened": "",

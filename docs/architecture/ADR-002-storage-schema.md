@@ -113,7 +113,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 22) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 23) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -143,7 +143,7 @@ CREATE TABLE account (
     closed          TEXT,
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
-        (kind = 'asset' AND subkind IN ('checking','savings','brokerage_taxable',
+        (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
             'traditional_ira','roth_ira','traditional_401k','roth_401k','hsa',
             'real_estate','vehicle','other_asset'))
         OR (kind = 'liability' AND subkind IN ('mortgage','heloc','credit_card',

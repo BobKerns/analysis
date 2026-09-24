@@ -1,6 +1,6 @@
 name,kind,subkind,owner,tax_treatment,series,tax_character,opened,closed,meta_json,tags
-Asset_Checking,asset,checking,joint,taxable,Asset Checking,ordinary,2020-01-31,,{},
-Asset_Savings,asset,savings,joint,taxable,,,2020-01-31,,{},
+Asset_Checking,asset,cash,joint,taxable,Asset Checking,ordinary,2020-01-31,,{},
+Asset_Savings,asset,cash,joint,taxable,,,2020-01-31,,{},
 Asset_Brokerage_Joint,asset,brokerage_taxable,joint,taxable,brokerage growth,gains,2020-01-31,,{},
 Asset_TraditionalIRA_Alice,asset,traditional_ira,alice,tax_deferred,,,2010-01-31,,{},
 Asset_Roth_Alice,asset,roth_ira,alice,tax_free,,,2015-01-31,,{},

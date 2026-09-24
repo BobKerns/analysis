@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -35,7 +35,7 @@ CREATE TABLE account (
     closed          TEXT,
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
-        (kind = 'asset' AND subkind IN ('checking','savings','brokerage_taxable',
+        (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
             'traditional_ira','roth_ira','traditional_401k','roth_401k','hsa',
             'real_estate','vehicle','other_asset'))
         OR (kind = 'liability' AND subkind IN ('mortgage','heloc','credit_card',

@@ -52,7 +52,7 @@ class InvestmentAssetSubkind(StrEnum):
 INVESTMENT_ASSET_SUBKINDS = frozenset(item.value for item in InvestmentAssetSubkind)
 """
 Subkinds eligible for prior_year_end_balance (the RMD-relevant investment
-holdings); checking/savings/vehicle/real_estate/other_asset are excluded.
+holdings); cash/vehicle/real_estate/other_asset are excluded.
 """
 
 

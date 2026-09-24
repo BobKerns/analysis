@@ -327,7 +327,7 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
     (scenario_dir / "accounts.csv").write_text(
         "name,kind,subkind,owner,tax_treatment,series,tax_character,opened,closed,"
         "meta_json,tags\n"
-        "Asset_Checking,asset,checking,,taxable,,,,,{},\n",
+        "Asset_Checking,asset,cash,,taxable,,,,,{},\n",
         encoding="utf-8",
     )
     for filename, header in {
