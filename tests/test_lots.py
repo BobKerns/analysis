@@ -447,12 +447,12 @@ def test_lot_balance_item_and_member_columns(two_lot_run_file: Path, test_data_d
             assert members.iloc[0]["quantity_micros"] == 2_000_500_000
 
 
-def _ctx(cost_bases, quantities, growth_sources=frozenset()):
+def _ctx(cost_bases, quantities, growth_sources=frozenset(), acquired=None):
     from analysis.sim.engine import ChainGraph, RefillContext
 
     return RefillContext(
         ChainGraph({}, {}, {}, {}, {}, {}, {}, {}), {}, date(2026, 5, 31), {},
-        {}, {}, {}, cost_bases, quantities, growth_sources,
+        {}, {}, {}, cost_bases, quantities, growth_sources, acquired,
     )
 
 
@@ -517,3 +517,189 @@ def test_a_lot_declared_for_a_future_purchase_accumulates_basis(
         assert basis == n * 10_000                       # each $100 purchase adds basis
         assert balance >= basis                          # growth adds balance, never basis
     assert months[11][1] > months[11][2]                 # ... so a gain builds up
+
+
+@pytest.mark.parametrize(("acquired", "sale", "long_term"), [
+    (None, "2026-05-31", True),                # no acquisition date: long-term
+    ("2025-01-31", "2026-01-31", False),       # exactly one year is not more than a year
+    ("2025-01-31", "2026-02-01", True),
+    ("2025-06-15", "2026-05-31", False),
+    ("2024-02-29", "2025-02-28", False),       # a Feb 29 acquisition anniversaries on Feb 28
+    ("2024-02-29", "2025-03-31", True),
+])
+def test_holding_period_is_more_than_a_year(acquired: str | None, sale: str, long_term: bool) -> None:
+    from analysis.sim.engine import _is_long_term
+
+    parsed = date.fromisoformat(acquired) if acquired else None
+    assert _is_long_term(parsed, date.fromisoformat(sale)) is long_term
+
+
+def _sell_from_lot(ledger_con: sqlite3.Connection, acquired: date | None, month: str):
+    from analysis.sim.engine import _post_withdrawal
+
+    ctx = _ctx({3: 60_000_00}, {}, acquired={3: acquired})
+    balances = {3: 100_000_00, 4: 0}
+    _post_withdrawal(
+        ledger_con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
+        {3: "brokerage_taxable"}, {3: "Brokerage"}, ctx.cost_bases,
+        step_id=1, month_s=month, from_id=3, to_id=4, amount=10_000_00, reason_id=9,
+        refill_ctx=ctx,
+    )
+    return ledger_con.execute("SELECT amount, tax_character FROM transfer_event ORDER BY id").fetchall()
+
+
+def test_gain_on_a_lot_held_a_year_or_less_is_short_term(ledger_con: sqlite3.Connection) -> None:
+    assert _sell_from_lot(ledger_con, date(2026, 1, 15), "2026-12-31") == [
+        (6_000_00, "return_of_capital"), (4_000_00, "stcg"),
+    ]
+
+
+def test_gain_on_a_lot_held_longer_is_long_term(ledger_con: sqlite3.Connection) -> None:
+    assert _sell_from_lot(ledger_con, date(2026, 1, 15), "2027-01-31")[1] == (4_000_00, "ltcg")
+    assert _sell_from_lot(ledger_con, None, "2026-12-31")[1] == (4_000_00, "ltcg")
+
+
+def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(ledger_con: sqlite3.Connection) -> None:
+    from analysis.sim.engine import _tax_year_income_buckets
+
+    for character, amount in (("ordinary", 100), ("stcg", 50), ("ltcg", 30), ("ss_benefit", 7)):
+        ledger_con.execute(
+            "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
+            "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
+            "VALUES (1, '2026-06-30', 1, 2, 1, 2, ?, ?, 0, ?, 'rule')",
+            (amount, amount, character),
+        )
+    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (150, 30, 7)
+
+
+def test_short_term_sales_then_long_term_sales_from_the_same_lot(two_lot_run_file: Path) -> None:
+    con = sqlite3.connect(two_lot_run_file)
+    try:
+        legs = con.execute(
+            "SELECT date, tax_character FROM transfer_event te "
+            "JOIN account_model_member m ON m.id = te.from_lot_id "
+            "WHERE m.lot = 'b' AND te.tax_character IN ('stcg', 'ltcg')"
+        ).fetchall()
+    finally:
+        con.close()
+    assert legs
+    for month, character in legs:
+        # Lot b was acquired 2026-01-15, so it turns long-term after 2027-01-15.
+        assert character == ("stcg" if month <= "2027-01-15" else "ltcg"), (month, character)
+    assert {c for _, c in legs} == {"stcg", "ltcg"}
+
+
+def _tax_by_bracket(income: int, brackets: list[tuple[int, int]]) -> int:
+    """Independent progressive tax: brackets are (floor_cents, rate_micros)."""
+    tax = 0
+    for i, (floor, rate) in enumerate(brackets):
+        upper = brackets[i + 1][0] if i + 1 < len(brackets) else income
+        tax += max(0, min(income, upper) - floor) * rate // 1_000_000
+    return tax
+
+
+def _bracket_rows(path: Path, status: str) -> list[tuple[int, int]]:
+    import csv
+
+    with path.open() as f:
+        rows = [r for r in csv.DictReader(f)
+                if r["filing_status"] == status and r["effective_date"] == "2026-01-31"]
+    return sorted((round(float(r["floor"]) * 100), int(r["marginal_rate_micros"])) for r in rows)
+
+
+def test_long_term_gains_are_taxed_at_the_preferential_rates(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    from analysis.sim.engine import run_scenario
+
+    _append_scheduled_row(
+        retire_alice_csv("scheduled.csv"), name="tax_federal_prev_year",
+        from_account="Asset_Checking", to_account="Expense_Taxes_Federal",
+        cadence="annual", month_of_year="4", amount_rule_kind="tax_accumulator",
+        tax_character="none", start="2027-04-30", priority="400", meta_json="{}",
+        params_json='{"year":"previous","scope":"federal"}',
+    )
+    retire_alice_csv("year_to_date.csv").write_text(
+        "name,from_account,to_account,amount,tax_character\n"
+        "gain,Income_CapitalGain,Asset_Checking,100000.00,ltcg\n"
+    )
+
+    def federal(name: str) -> dict[str, int]:
+        run = run_scenario(load_test_copy().intent_path, runs_dir / name, run_by="T",
+                           allow_dirty_data=True, allow_dirty_code=True)
+        con = sqlite3.connect(run)
+        try:
+            return dict(con.execute(
+                "SELECT bucket, amount FROM tax_year_summary WHERE year = 2026"
+            ).fetchall())
+        finally:
+            con.close()
+
+    aux = test_data_dir / "aux"
+    ltcg_file = aux / "ltcg_brackets.csv"
+    kept = ltcg_file.read_text()
+    ltcg_file.unlink()
+    as_ordinary = federal("ordinary.sqlite3")
+    ltcg_file.write_text(kept)
+    preferential = federal("preferential.sqlite3")
+
+    assert as_ordinary["federal_ltcg_income"] == 10_000_000 == preferential["federal_ltcg_income"]
+    taxable = preferential["federal_taxable_income"]
+    ordinary_brackets = _bracket_rows(aux / "federal_brackets.csv", "MFJ")
+    ltcg_brackets = _bracket_rows(aux / "ltcg_brackets.csv", "MFJ")
+    assert as_ordinary["federal_tax_liability"] == _tax_by_bracket(taxable, ordinary_brackets)
+
+    gain = min(10_000_000, taxable)
+    base = taxable - gain
+    expected = (
+        _tax_by_bracket(base, ordinary_brackets)
+        + _tax_by_bracket(taxable, ltcg_brackets) - _tax_by_bracket(base, ltcg_brackets)
+    )
+    assert preferential["federal_tax_liability"] == expected
+    assert preferential["federal_tax_liability"] < as_ordinary["federal_tax_liability"]
+
+
+def test_state_tax_still_treats_gains_as_ordinary(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """The preferential table is federal-only: state liability ignores it."""
+    import pandas as pd
+
+    from analysis.sim.engine import run_scenario
+
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts.loc[len(accounts)] = {
+        **dict.fromkeys(accounts.columns, ""), "name": "Expense_Taxes_State",
+        "kind": "expense", "subkind": "taxes_state", "owner": "joint", "tax_treatment": "none",
+        "meta_json": "{}",
+    }
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    _append_scheduled_row(
+        retire_alice_csv("scheduled.csv"), name="tax_state_prev_year",
+        from_account="Asset_Checking", to_account="Expense_Taxes_State", cadence="annual",
+        month_of_year="4", amount_rule_kind="tax_accumulator", tax_character="none",
+        start="2027-04-30", priority="400", meta_json="{}",
+        params_json='{"year":"previous","scope":"state"}',
+    )
+    retire_alice_csv("year_to_date.csv").write_text(
+        "name,from_account,to_account,amount,tax_character\n"
+        "gain,Income_CapitalGain,Asset_Checking,100000.00,ltcg\n"
+    )
+
+    def state_liability(name: str) -> int:
+        run = run_scenario(load_test_copy().intent_path, runs_dir / name, run_by="T",
+                           allow_dirty_data=True, allow_dirty_code=True)
+        con = sqlite3.connect(run)
+        try:
+            return con.execute(
+                "SELECT amount FROM tax_year_summary "
+                "WHERE year = 2026 AND bucket = 'state_tax_liability'"
+            ).fetchone()[0]
+        finally:
+            con.close()
+
+    with_table = state_liability("with.sqlite3")
+    (test_data_dir / "aux" / "ltcg_brackets.csv").unlink()
+    assert state_liability("without.sqlite3") == with_table > 0

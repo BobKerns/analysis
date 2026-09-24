@@ -54,7 +54,7 @@ EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "other"]
 NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 
 LIQUID_SUBKINDS = {"checking", "savings"}
-TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "tax_deferred_out"}  # ss_benefit handled separately
+TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "stcg", "tax_deferred_out"}  # ss_benefit handled separately
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 

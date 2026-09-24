@@ -91,7 +91,7 @@ def run_scenario(
         lots = con.execute(
             "SELECT m.id, m.opening_balance, m.opening_cost_basis, "
             "       m.prior_year_end_balance, a.kind, a.subkind, a.tax_treatment, "
-            "       a.owner, m.quantity_micros, a.name "
+            "       a.owner, m.quantity_micros, a.name, m.acquired "
             "FROM account_model_member m "
             "JOIN account a ON a.id = m.account_id "
             "WHERE m.model_id = ? ORDER BY m.id",
@@ -114,6 +114,9 @@ def run_scenario(
                 and registries.withdrawal_tax_character(r[6], r[5]) is None
             ):
                 cost_bases[r[0]] = 0
+        acquired: dict[int, date | None] = {
+            r[0]: _parse_date(r[10]) if r[10] else None for r in lots
+        }
         growth_names = {c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()}
         growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names)
         account_id_by_name: dict[str, int] = {
@@ -169,7 +172,7 @@ def run_scenario(
         refill_ctx = RefillContext(
             chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
             account_tax_treatment, account_subkind, account_name, cost_bases,
-            quantities, growth_sources,
+            quantities, growth_sources, acquired,
         )
 
         skipped_counts: dict[str, int] = {}
@@ -527,8 +530,8 @@ class RefillContext:
 
     __slots__ = ("graph", "aux", "chain_base_date", "inflation_factor_cache",
                  "account_tax_treatment", "account_subkind", "account_name",
-                 "cost_bases", "quantities", "growth_sources", "refilling",
-                 "negative_since", "negative_events")
+                 "cost_bases", "quantities", "growth_sources", "acquired",
+                 "refilling", "negative_since", "negative_events")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
@@ -538,6 +541,7 @@ class RefillContext:
         cost_bases: dict[int, int | None],
         quantities: dict[int, int | None] | None = None,
         growth_sources: frozenset[int] = frozenset(),
+        acquired: dict[int, date | None] | None = None,
     ) -> None:
         self.graph = graph
         self.aux = aux
@@ -549,6 +553,7 @@ class RefillContext:
         self.cost_bases = cost_bases
         self.quantities = quantities if quantities is not None else {}
         self.growth_sources = growth_sources
+        self.acquired = acquired if acquired is not None else {}
         self.refilling: set[int] = set()  # reentrancy guard against refill cycles
         self.negative_since: dict[int, bool] = {}
         self.negative_events: list[tuple[str, str, int]] = []
@@ -701,6 +706,18 @@ def _record_purchase(
     quantity, prior = ctx.quantities.get(to_id), balances.get(to_id, 0)
     if quantity and prior > 0:
         ctx.quantities[to_id] = quantity + quantity * amount // prior
+
+
+def _is_long_term(acquired: date | None, sale: date) -> bool:
+    """Held more than a year (IRC §1222): the sale falls after the first
+    anniversary of the acquisition. A lot with no acquisition date is long-term."""
+    if acquired is None:
+        return True
+    try:
+        anniversary = acquired.replace(year=acquired.year + 1)
+    except ValueError:  # Feb 29
+        anniversary = date(acquired.year + 1, 2, 28)
+    return sale > anniversary
 
 
 def _delta(kind: str, raw: int) -> int:
@@ -1582,9 +1599,15 @@ def _post_withdrawal(
         tax_year=tax_year, refill_ctx=refill_ctx,
         requested=requested, remainder=remainder,
     )
+    gain_character = (
+        "stcg"
+        if refill_ctx is not None
+        and not _is_long_term(refill_ctx.acquired.get(from_id), _parse_date(month_s))
+        else "ltcg"
+    )
     _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_id, to_id, gain,
-        "ltcg", reason_id, basis_leg_id if basis_leg_id is not None else parent_event_id,
+        gain_character, reason_id, basis_leg_id if basis_leg_id is not None else parent_event_id,
         reason_kind=reason_kind, tax_year=tax_year, refill_ctx=refill_ctx,
         requested=requested, remainder=remainder,
     )
@@ -1886,6 +1909,7 @@ def _apply_tax_accumulator(
     filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
     standard_deduction_aux = str(params.get("standard_deduction_aux", "standard_deduction"))
     ss_threshold_aux = str(params.get("ss_threshold_aux", "ss_taxation_thresholds"))
+    ltcg_bracket_aux = str(params.get("ltcg_bracket_aux", "ltcg_brackets"))
     bracket_aux = str(
         params.get(
             "bracket_aux",
@@ -1955,6 +1979,23 @@ def _apply_tax_accumulator(
         for r in bracket_rows
     )
     tax_liability = _progressive_tax_cents(taxable_income, brackets)
+    ltcg_rows = [
+        r for r in _active_aux_rows(aux, ltcg_bracket_aux, None, as_of)
+        if r.get("filing_status") == filing_status
+    ] if scope == "federal" else []
+    if ltcg_rows and ltcg_income > 0:
+        # Long-term gains sit on top of ordinary taxable income and are taxed at
+        # the preferential rates for the band each part lands in.
+        ltcg_brackets = sorted(
+            (int(r["floor"]), int(r["marginal_rate_micros"])) for r in ltcg_rows
+        )
+        gain_taxable = min(ltcg_income, taxable_income)
+        ordinary_taxable = taxable_income - gain_taxable
+        tax_liability = (
+            _progressive_tax_cents(ordinary_taxable, brackets)
+            + _progressive_tax_cents(taxable_income, ltcg_brackets)
+            - _progressive_tax_cents(ordinary_taxable, ltcg_brackets)
+        )
 
     paid_transfers = con.execute(
         "SELECT COALESCE(SUM(amount), 0) "
@@ -2016,6 +2057,7 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
     by_char = {k: int(v or 0) for k, v in rows}
     ordinary = (
         by_char.get("ordinary", 0)
+        + by_char.get("stcg", 0)
         + by_char.get("tax_deferred_out", 0)
         - by_char.get("tax_deferred_in", 0)
     )

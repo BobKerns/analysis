@@ -194,3 +194,12 @@ Authoritative sources the AI should pull from:
   column lists and the kind/series naming rules.
 - `docs/architecture/ADR-002-storage-schema.md` — how aux rows land in SQLite.
 - `templates/README.md` — the data repo as a whole.
+
+## Long-term capital gain rates
+
+`ltcg_brackets.csv` has the same shape as `federal_brackets.csv`, but a band's `floor` is the
+taxable income at which its rate starts, with the gain stacked on top of ordinary taxable
+income: the 0% band ends where the 15% band's floor begins, and so on (the shipped figures
+are the 2026 thresholds; check them against the current IRS tables). It is optional and only
+affects federal tax: without it long-term gains are taxed as ordinary income. Short-term
+gains (`stcg`, for a lot held a year or less) are always taxed as ordinary income.

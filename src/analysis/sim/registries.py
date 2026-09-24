@@ -88,7 +88,7 @@ CALENDAR_EVENT_KINDS: set[str] = {
 CADENCES: set[str] = {"monthly", "biweekly", "quarterly", "annual", "one_off"}
 
 TAX_CHARACTERS: set[str] = {
-    "ordinary", "ltcg", "gains", "deferred", "ss_benefit", "tax_free",
+    "ordinary", "ltcg", "stcg", "gains", "deferred", "ss_benefit", "tax_free",
     "tax_deferred_in", "tax_deferred_out", "return_of_capital", "property_tax", "none",
     # IRC §121 excluded portion of a home-sale gain: real gain, but not
     # taxed. Distinct from 'return_of_capital' (not gain at all) and from
@@ -170,6 +170,12 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
     "state_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
+    # Federal long-term capital gain rates: the same shape as federal_brackets,
+    # but a band's floor is the taxable income (ordinary income plus the gain,
+    # stacked on top) at which its rate starts. Optional: without it long-term
+    # gains are taxed as ordinary income.
+    "ltcg_brackets":
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
     "standard_deduction": ("effective_date", "filing_status", "amount"),
     "ss_taxation_thresholds":
         ("effective_date", "filing_status", "tier1_floor", "tier2_floor"),
@@ -202,6 +208,7 @@ AUX_DOLLAR_MICROS_COLUMNS: dict[str, dict[str, str]] = {
 
 AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "federal_brackets": frozenset({"floor"}),
+    "ltcg_brackets": frozenset({"floor"}),
     "state_brackets": frozenset({"floor"}),
     "standard_deduction": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),

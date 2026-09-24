@@ -147,6 +147,11 @@ def _shares(value: float) -> str:
     return "" if pd.isna(value) else (f"{value:,.6f}".rstrip("0").rstrip(".") or "0")
 
 
+def _text(value: object) -> str:
+    """A cell's text; missing values (None or NaN) are blank."""
+    return value if isinstance(value, str) else ""
+
+
 def _table(title: str, columns: list[tuple[str, str]]):
     from rich.table import Table
 
@@ -165,8 +170,8 @@ def render_holdings_table(frame: pd.DataFrame, title: str | None = None):
     ])
     for row in frame.itertuples():
         table.add_row(
-            row.lot, row.symbol or "", row.name if isinstance(row.name, str) else "",
-            row.acquired or "", _shares(row.quantity),
+            row.lot, _text(row.symbol), _text(row.name), _text(row.acquired),
+            _shares(row.quantity),
             _money(row.price, 4), _money(row.balance), _money(row.cost_basis),
             _money(row.unrealized_gain),
         )
@@ -186,7 +191,7 @@ def render_holders_table(frame: pd.DataFrame, title: str | None = None):
     ])
     for row in frame.itertuples():
         table.add_row(
-            row.account, row.lot, row.tax_treatment or "", _shares(row.quantity),
+            row.account, row.lot, _text(row.tax_treatment), _shares(row.quantity),
             _money(row.price, 4), _money(row.balance), _money(row.cost_basis),
             _money(row.unrealized_gain),
         )

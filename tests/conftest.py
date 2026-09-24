@@ -491,13 +491,14 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
                      set_brokerage_lots: Callable[[list[dict[str, str]]], None],
                      load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:
     """Run of a retire_alice copy whose brokerage is split into lots ``a`` (symbol
-    AAA, 1000 shares, with its own growth series) and ``b`` (BBB, 2000.5 shares),
+    AAA, 1000 shares, with its own growth series) and ``b`` (BBB, 2000.5 shares,
+    acquired 2026-01-15, so sales from it are short-term for a year),
     with a monthly draw from lot b."""
     set_brokerage_lots([
         {"lot": "a", "symbol": "AAA", "quantity": "1000", "opening_balance": "100000.00",
          "opening_cost_basis": "60000.00"},
-        {"lot": "b", "symbol": "BBB", "quantity": "2,000.5", "opening_balance": "200000.00",
-         "opening_cost_basis": "140000.00"},
+        {"lot": "b", "symbol": "BBB", "quantity": "2,000.5", "acquired": "2026-01-15",
+         "opening_balance": "200000.00", "opening_cost_basis": "140000.00"},
     ])
 
     (test_data_dir / "securities.csv").write_text(

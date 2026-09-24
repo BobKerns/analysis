@@ -107,6 +107,8 @@ A withdrawal from a lot applies the existing pro-rata split (`return_of_capital`
 
 Money moved *into* a lot that tracks cost basis is a purchase: its basis rises by the amount and, if shares are tracked, they rise at the lot's implied price (balance ÷ quantity). This covers purchases from cash, inheritances, and proceeds moved from another taxable lot. Growth generated from `accounts.csv` series (from the built-in counterparty accounts) is appreciation and changes neither. A taxable asset lot with a zero opening balance and no stated basis starts at basis 0, so a lot can be declared up front for a purchase the scenario makes later (with its `acquired` date), and taxable growth is total return: reinvested dividends are not split out, so tax on distributions is deferred to the sale.
 
+The gain leg of a sale from a lot is `ltcg` if the lot has been held more than a year at the sale date (its `acquired` date; no date means long-term) and `stcg` otherwise. `stcg` is taxed as ordinary income. A lot's `acquired` date does not move when money is added to it, so a purchase that should start its own holding period belongs in its own lot. For federal tax the accumulator can tax long-term gains at preferential rates: an optional `ltcg_brackets` aux table (same shape as `federal_brackets`, with a band's floor as the taxable income, gain included, at which its rate starts) stacks the gain on top of ordinary taxable income. Without that table long-term gains are taxed as ordinary income, and state tax never uses it. Netting is simplified: a net loss in either bucket reduces ordinary income.
+
 ### 8. RMD (deferred)
 
 Until the follow-up, the loader rejects an `rmd` rule whose `from_account` has more than one lot, so it cannot silently draw from one lot only. The follow-up requires an **explicit chain** as the draw source plus a `subject_account` param. The amount comes from that account's aggregate `account_state` balance, and the loader rejects any chain leaf that is not a lot of the subject account. Aggregation across several of an owner's IRAs is out of scope.
@@ -118,6 +120,7 @@ These change what ADR-002 and ADR-003 describe, so they are applied to those doc
 - ADR-002: replace the `holding`/`lot` reserved schema and `schema_overview` rows with the §1–§2 DDL; `account_model_member` and `transfer_event` changes; `account_state` view; `SCHEMA_VERSION` 17 → 18.
 - ADR-003: §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §Later amendments #8 revised.
 - ADR-001: `AccountState` row in the domain-object table becomes a view over per-lot state.
+- ADR-003: the `tax_character` registry gains `stcg`; §4.4 gains the `ltcg_brackets` aux kind; the `tax_accumulator` rule (§2.6) taxes long-term gains at those rates when present.
 
 ## Consequences
 
@@ -129,7 +132,6 @@ These change what ADR-002 and ADR-003 describe, so they are applied to those doc
 
 - Runtime-created lots, and cost-basis lot selection (FIFO / HIFO / specific) as a policy on multi-lot withdrawals.
 - Cash-management attributes (`minimum_balance`, refill, overflow) on multi-lot accounts. Motivating case: an HSA whose money-market position is refilled from its mutual funds, currently modelled as two accounts. Revisit once lots exist; the open design question is whether these attach to a lot or to the account.
-- Short-term vs long-term gain treatment using `acquired`. It only matters once the tax accumulator has preferential long-term rates: today it applies one bracket schedule to ordinary income plus long-term gains, so `ltcg` is already taxed at ordinary rates and a `stcg` character would change nothing in the computed tax. Do the two together.
 - `on_death` sweeps and the other account-level rule kinds (`ss_benefit`, `tax_accumulator`, `mortgage_payment`) all need auditing for one-balance-per-account assumptions; the plan's Phase 0 does this.
 - Namespace collision between account names and symbols in `aux_table` rate series (lookup order in §5 covers it, but an account and a ticker with the same name would be ambiguous).
 - Quicken import is per account; multi-lot accounts need a per-security import.

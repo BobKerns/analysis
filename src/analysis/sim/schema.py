@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -178,7 +178,7 @@ CREATE TABLE scheduled_transaction (
     params_json             TEXT,
     base_date               TEXT,
     tax_character           TEXT NOT NULL CHECK (tax_character IN
-                                ('ordinary','ltcg','gains','deferred',
+                                ('ordinary','ltcg','stcg','gains','deferred',
                                  'ss_benefit','tax_free',
                                  'tax_deferred_in','tax_deferred_out',
                                  'return_of_capital','property_tax','none',
@@ -254,7 +254,7 @@ CREATE TABLE year_to_date (
     to_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
     amount        INTEGER NOT NULL,
     tax_character TEXT NOT NULL CHECK (tax_character IN
-                        ('ordinary','ltcg','gains','deferred',
+                        ('ordinary','ltcg','stcg','gains','deferred',
                          'ss_benefit','tax_free',
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
