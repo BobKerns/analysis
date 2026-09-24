@@ -1,1 +1,1 @@
-account_name,opening_balance,opening_cost_basis,prior_year_end_balance
+account_name,lot,symbol,acquired,quantity,series,opening_balance,opening_cost_basis,prior_year_end_balance,minimum_balance,maximum_balance,refill_chain,refill_lot,refill_target,refill_amount,overflow_chain,overflow_lot

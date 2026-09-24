@@ -90,6 +90,30 @@ The CLI is interactive (tab completion on account names, prompts when arguments 
 
 The loader enforces referential integrity (strict join validation), so missing or mismatched account names will raise a clear error before the scenario loads.
 
+### Lots
+
+Each `account_values.csv` row is one **lot**: a position inside one account. An account you don't split has a single lot named `default`, and you can leave the `lot` column blank for it. Every file that names an account has a `lot` column beside it: `lot` in `account_values.csv` and `chains/*.csv`, `from_lot`/`to_lot` in `scheduled.csv` and `year_to_date.csv`, `lot_1`/`lot_2` in `calendar.csv`. Lot names are free-form (`default`, `1`, `2024-03`, ...) but may not contain `:`.
+
+**Investment accounts** (`brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) must always name their lot, everywhere; a blank lot is a load error that lists the account's lots. Other accounts can leave it blank. A chain named in an account column takes no lot.
+
+To split an account, give it several rows with different `lot` values, each with its own `opening_balance` and `opening_cost_basis`. The columns are `account_name, lot, symbol, acquired, quantity, series, opening_balance, opening_cost_basis, prior_year_end_balance`, then the balance-management columns described below. `symbol`, `acquired` (ISO date), `quantity` (shares) and `series` (the lot's growth-rate series) are optional and may stay blank; they are in the file so you can see where that information goes. A lot grows at its `series`, else at a rate series named for its `symbol`, else at the account's `series`. A withdrawal drawn from one lot (through a chain that lists it) splits that lot's basis pro-rata and leaves the other lots alone.
+
+**Prices and derived balances.** Leave a lot's `opening_balance` blank and give its `symbol` and `quantity`, and the loader fills it in as `quantity × price`, using the latest price on or before the scenario start from `aux/security_price__<SYMBOL>.csv` (columns `effective_date,price`; price is decimal dollars, up to 6 places). If you fill in `opening_balance` yourself it is used as given and no price is needed. A symbol may not be the same as an account name. Prices are only used for this opening value; after that a lot grows by its rate series, not by price.
+
+**Security names.** `securities.csv`, at the top of the data repo beside `persons.csv`, gives each symbol a name (`symbol,name`, one row per symbol, shared by all scenarios). It is optional, and a symbol without a row is simply shown unnamed. The holdings commands and widgets show the names.
+
+**Viewing holdings.** `sim account holdings <account>` lists an account's lots (symbol, acquired, quantity, implied price, balance, basis, unrealized gain, with totals), and `sim account holders <symbol>` lists every account holding a symbol. Both read the scenario's latest run at its last month; use `--month YYYY-MM` for another month, `--runfile` for a specific run, or `--opening` for the opening values (also what you get when there is no run yet). In a notebook, `account_holdings_widget(rc)` and `symbol_holders_widget(rc)` from `analysis.sim.notebook_ui.holdings_widgets` show the same tables with dropdowns; the account widget offers every asset and liability account, the symbol widget only the symbols held in investment accounts, and the commands accept any account or symbol.
+
+**Short-term and long-term.** A sale from a lot books its gain as long-term (`ltcg`) once the lot has been held more than a year, and short-term (`stcg`, taxed as ordinary income) before that, using the lot's `acquired` date; a lot with no `acquired` date is long-term. If `aux/ltcg_brackets.csv` exists, federal tax taxes long-term gains at its preferential rates; without it they are taxed as ordinary income. To draw long-term lots first, list them first in a chain.
+
+**Purchases and growth.** Money you move into a taxable lot (a purchase from checking, an inheritance) adds that amount to its basis, and to its shares if `quantity` is filled in. The lot's own growth does not: it is total return, so reinvested dividends are not split out. To buy a position later in the scenario, add a lot with `opening_balance` 0 and the purchase date in `acquired`, and schedule the purchase into it. Leave `quantity` blank for dollar-denominated funds such as money markets.
+
+**Cash accounts.** Bank accounts use the single subkind `cash`, and can have lots like any other account (for instance one lot per bank account under a single `Wells Fargo` account). By convention, give every cash lot the symbol `CASH`: then `sim account holders CASH` and the symbol widget list all your cash in one table. A lot grows at a rate series named for its symbol, so an `aux/rate__CASH.csv` would also become the default yield of every cash lot that has no series of its own.
+
+**RMDs from an account with several lots.** The `rmd` rule's amount is based on the whole account (all its lots together), and it must draw from a chain that lists the lots to take from, in order. Set `from_account` to the chain and put `{"subject_account": "<the IRA>"}` in `params_json`; the chain may only contain that account's lots.
+
+**Minimum balance, refill and overflow are per lot.** `minimum_balance`, `refill_chain`, `refill_lot`, `refill_target`, `refill_amount`, `maximum_balance`, `overflow_chain` and `overflow_lot` are the last columns of `account_values.csv` (they used to be on `accounts.csv`, where a value is now an error). A debit that would take a lot below its `minimum_balance` first draws from its `refill_chain`, which can be a named chain or another lot: `refill_chain` an account name with `refill_lot` its lot. The lots of one account can differ, so a cash lot can refill from the fund lots beside it, or several bank accounts can be lots of one account with only some of them refilling. `maximum_balance` and `overflow_chain` sweep a lot's excess at month end in the same way.
+
 ### Importing balances from Quicken
 
 `sim account import-quicken` updates `account_values.csv` from a Quicken account-tree

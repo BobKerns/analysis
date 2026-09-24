@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 23
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -14,6 +14,13 @@ CREATE TABLE person (
     birthdate   TEXT NOT NULL,
     role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}'
+);
+
+-- Names for the symbols lots hold (data repo securities.csv); shared reference
+-- data like `person`. A symbol without a row is simply unnamed.
+CREATE TABLE security (
+    symbol  TEXT PRIMARY KEY,
+    name    TEXT NOT NULL
 );
 
 CREATE TABLE account (
@@ -26,24 +33,9 @@ CREATE TABLE account (
                         ('taxable','tax_deferred','tax_free','none')),
     opened          TEXT,
     closed          TEXT,
-    -- Balance management (ADR-003 §4.7): a debit that would drop the balance
-    -- below minimum_balance_cents triggers a look-ahead draw on refill_chain_id
-    -- BEFORE the debit posts (not a month-end reconciliation); when it would
-    -- exceed maximum_balance_cents (NULL = unbounded), sweep the excess into
-    -- overflow_chain_id at month end. Both chains are resolved recursively.
-    -- refill_target_cents/refill_amount_cents are mutually exclusive: the
-    -- former refills to that fixed level, the latter by that fixed amount (or
-    -- enough to reach minimum_balance_cents if that is greater); neither set
-    -- means refill exactly to minimum_balance_cents.
-    minimum_balance_cents  INTEGER NOT NULL DEFAULT 0,
-    refill_chain_id        INTEGER REFERENCES chain(id),
-    refill_target_cents    INTEGER,
-    refill_amount_cents    INTEGER,
-    maximum_balance_cents  INTEGER,
-    overflow_chain_id      INTEGER REFERENCES chain(id),
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
-        (kind = 'asset' AND subkind IN ('checking','savings','brokerage_taxable',
+        (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
             'traditional_ira','roth_ira','traditional_401k','roth_401k','hsa',
             'real_estate','vehicle','other_asset'))
         OR (kind = 'liability' AND subkind IN ('mortgage','heloc','credit_card',
@@ -70,7 +62,8 @@ CREATE TABLE chain (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
     kind       TEXT NOT NULL,
-    account_id INTEGER REFERENCES account(id)
+    account_id INTEGER REFERENCES account(id),
+    lot_id     INTEGER REFERENCES account_model_member(id)
 );
 CREATE INDEX idx_chain_account ON chain(account_id);
 
@@ -106,13 +99,39 @@ CREATE TABLE account_model (
     created_at  TEXT NOT NULL
 );
 
+-- One row per lot (ADR-005): a lot is a position inside one account, and the
+-- engine keys balances, basis and quantity on `id`. Accounts that are not split
+-- have a single lot labelled 'default'.
+--
+-- Balance management is per lot (ADR-003 §4.3): a debit that would drop the
+-- lot's balance below minimum_balance_cents triggers a look-ahead draw on
+-- refill_chain_id BEFORE the debit posts (not a month-end reconciliation);
+-- when it would exceed maximum_balance_cents (NULL = unbounded), the excess is
+-- swept into overflow_chain_id at month end. Both chains are resolved
+-- recursively, and may name other lots of the same account.
+-- refill_target_cents/refill_amount_cents are mutually exclusive: the former
+-- refills to that fixed level, the latter by that fixed amount (or enough to
+-- reach minimum_balance_cents if that is greater); neither set means refill
+-- exactly to minimum_balance_cents.
 CREATE TABLE account_model_member (
+    id                      INTEGER PRIMARY KEY,
     model_id                INTEGER NOT NULL REFERENCES account_model(id),
     account_id              INTEGER NOT NULL REFERENCES account(id),
+    lot                     TEXT NOT NULL DEFAULT 'default',
+    symbol                  TEXT,
+    acquired                TEXT,
+    quantity_micros         INTEGER,
+    series                  TEXT,
     opening_balance         INTEGER NOT NULL,
     opening_cost_basis      INTEGER,
     prior_year_end_balance  INTEGER,
-    PRIMARY KEY (model_id, account_id)
+    minimum_balance_cents   INTEGER NOT NULL DEFAULT 0,
+    refill_chain_id         INTEGER REFERENCES chain(id),
+    refill_target_cents     INTEGER,
+    refill_amount_cents     INTEGER,
+    maximum_balance_cents   INTEGER,
+    overflow_chain_id       INTEGER REFERENCES chain(id),
+    UNIQUE (model_id, account_id, lot)
 );
 
 CREATE TABLE calendar (
@@ -161,7 +180,7 @@ CREATE TABLE scheduled_transaction (
     params_json             TEXT,
     base_date               TEXT,
     tax_character           TEXT NOT NULL CHECK (tax_character IN
-                                ('ordinary','ltcg','gains','deferred',
+                                ('ordinary','ltcg','stcg','gains','deferred',
                                  'ss_benefit','tax_free',
                                  'tax_deferred_in','tax_deferred_out',
                                  'return_of_capital','property_tax','none',
@@ -233,9 +252,11 @@ CREATE TABLE year_to_date (
     name          TEXT NOT NULL,
     from_account  INTEGER NOT NULL REFERENCES account(id),
     to_account    INTEGER NOT NULL REFERENCES account(id),
+    from_lot_id   INTEGER NOT NULL REFERENCES account_model_member(id),
+    to_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
     amount        INTEGER NOT NULL,
     tax_character TEXT NOT NULL CHECK (tax_character IN
-                        ('ordinary','ltcg','gains','deferred',
+                        ('ordinary','ltcg','stcg','gains','deferred',
                          'ss_benefit','tax_free',
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
@@ -268,28 +289,6 @@ CREATE TABLE calendar_event_tag (
     calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
     tag_id            INTEGER NOT NULL REFERENCES tag(id),
     PRIMARY KEY (calendar_event_id, tag_id)
-);
-"""
-
-# Reserved schema (present in both file kinds; unused in v1, per ADR-002).
-RESERVED_DDL = """
-CREATE TABLE holding (
-    id          INTEGER PRIMARY KEY,
-    account_id  INTEGER NOT NULL REFERENCES account(id),
-    symbol      TEXT NOT NULL,
-    name        TEXT,
-    asset_class TEXT,
-    meta_json   TEXT NOT NULL DEFAULT '{}',
-    UNIQUE (account_id, symbol)
-);
-
-CREATE TABLE lot (
-    id                INTEGER PRIMARY KEY,
-    holding_id        INTEGER NOT NULL REFERENCES holding(id),
-    acquired          TEXT NOT NULL,
-    quantity_micros   INTEGER NOT NULL,
-    cost_basis_total  INTEGER NOT NULL,
-    source_note       TEXT
 );
 """
 
@@ -349,14 +348,25 @@ CREATE TABLE simulation_step (
 );
 CREATE INDEX idx_step_month ON simulation_step(month);
 
-CREATE TABLE account_state (
-    step_id     INTEGER NOT NULL REFERENCES simulation_step(id),
-    account_id  INTEGER NOT NULL REFERENCES account(id),
-    balance     INTEGER NOT NULL,
-    cost_basis  INTEGER,
-    PRIMARY KEY (step_id, account_id)
+CREATE TABLE lot_state (
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    lot_id          INTEGER NOT NULL REFERENCES account_model_member(id),
+    balance         INTEGER NOT NULL,
+    cost_basis      INTEGER,
+    quantity_micros INTEGER,
+    PRIMARY KEY (step_id, lot_id)
 );
-CREATE INDEX idx_state_account ON account_state(account_id, step_id);
+CREATE INDEX idx_lot_state_lot ON lot_state(lot_id, step_id);
+
+-- Account-level view of lot_state. Basis is NULL if any lot's basis is
+-- unknown, rather than under-reporting.
+CREATE VIEW account_state AS
+SELECT ls.step_id, m.account_id, SUM(ls.balance) AS balance,
+       CASE WHEN COUNT(ls.cost_basis) < COUNT(*) THEN NULL
+            ELSE SUM(ls.cost_basis) END AS cost_basis
+FROM lot_state ls
+JOIN account_model_member m ON m.id = ls.lot_id
+GROUP BY ls.step_id, m.account_id;
 
 CREATE TABLE transfer_event (
     id              INTEGER PRIMARY KEY,
@@ -380,8 +390,8 @@ CREATE TABLE transfer_event (
                         ('rule','initial','ytd','ytd_rule','refill','overflow')),
     reason_id       INTEGER,
     parent_event_id INTEGER REFERENCES transfer_event(id),
-    from_holding_id INTEGER REFERENCES holding(id),
-    to_holding_id   INTEGER REFERENCES holding(id),
+    from_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
+    to_lot_id       INTEGER NOT NULL REFERENCES account_model_member(id),
     meta_json       TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
@@ -459,6 +469,16 @@ JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
 WHERE a.kind IN ('asset','liability');
 
+-- One row per lot per month: the holdings inside each account.
+CREATE VIEW balance_by_lot AS
+SELECT s.month, a.id AS account_id, a.name AS account, m.id AS lot_id, m.lot,
+       m.symbol, a.kind, a.subkind, ls.balance, ls.cost_basis, ls.quantity_micros
+FROM simulation_step s
+JOIN lot_state ls ON ls.step_id = s.id
+JOIN account_model_member m ON m.id = ls.lot_id
+JOIN account a ON a.id = m.account_id
+WHERE a.kind IN ('asset','liability');
+
 CREATE VIEW balance_by_subkind AS
 SELECT month, kind, subkind,
        SUM(CASE WHEN kind = 'asset' THEN balance
@@ -500,7 +520,7 @@ GROUP BY year, reason_kind, reason_id;
 """
 
 # Backward-compatible composite used by the intent loader.
-INTENT_DDL = INTENT_BASE_DDL + RESERVED_DDL + INTENT_MANIFEST_DDL
+INTENT_DDL = INTENT_BASE_DDL + INTENT_MANIFEST_DDL
 
 
 def apply_intent_schema(con: sqlite3.Connection) -> None:
@@ -508,12 +528,13 @@ def apply_intent_schema(con: sqlite3.Connection) -> None:
 
 
 def apply_run_schema(con: sqlite3.Connection) -> None:
-    con.executescript(INTENT_BASE_DDL + RESERVED_DDL + LEDGER_DDL + RUN_VIEWS_DDL + INTENT_MANIFEST_DDL)
+    con.executescript(INTENT_BASE_DDL + LEDGER_DDL + RUN_VIEWS_DDL + INTENT_MANIFEST_DDL)
 
 
 # Tables snapshotted from intent into run files. Order respects FK dependencies.
 SNAPSHOT_TABLES: tuple[str, ...] = (
     "person",
+    "security",
     "account",
     "chain",
     "chain_steps",
@@ -530,6 +551,4 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "account_tag",
     "scheduled_transaction_tag",
     "calendar_event_tag",
-    "holding",
-    "lot",
 )

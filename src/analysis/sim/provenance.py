@@ -88,6 +88,7 @@ def _scoped_paths(data_dir: Path, scenario_name: str) -> list[str]:
     candidates = [
         *(f"scenarios/{n}" for n in _scenario_lineage(data_dir, scenario_name)),
         "persons.csv",
+        "securities.csv",
         "aux",
         "itemizations",
     ]

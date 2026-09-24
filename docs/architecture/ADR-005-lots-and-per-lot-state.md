@@ -1,0 +1,141 @@
+# ADR-005: Lots and per-lot state
+
+- **Status:** Accepted
+- **Date:** 2026-09-23
+- **Supersedes:** the reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` (ADR-002 §Reserved schema); the "account-level running cost basis" limitation noted in ADR-003 §Later amendments #8.
+- **Related:** ADR-001 (domain objects, `AccountState`), ADR-002 (storage schema), ADR-003 (registries, CSV layouts, chains §4.7, `rmd` §2.3, `sell_asset` §3.7).
+
+## Context
+
+Every account is one balance with one running cost basis. A brokerage or IRA that holds several securities bought at different times cannot be modelled below the account: a withdrawal blends the whole account's basis pro-rata (`engine._post_withdrawal`), a `sell_asset` liquidates the entire account, and growth is one rate per account. We want to:
+
+1. Track individual positions (lots) inside investment accounts, including IRAs, and say which lot a sale comes from.
+2. Model growth per security rather than per account.
+3. Derive opening balances from quantities and prices when we have them.
+4. Change as little of the engine, reporting, and notebook code as possible.
+
+ADR-002 reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` for this, but nothing reads or writes them. They are replaced here, because a separate holding table adds a second file to author and a second identity to keep in step, for no information a `GROUP BY account, symbol` over lots doesn't give.
+
+## Decision
+
+### 1. A lot is a row of `account_model_member`
+
+`account_model_member` gains a surrogate `id` and becomes one row per **(model, account, lot)**.
+
+| column | type | notes |
+| --- | --- | --- |
+| `id` | int PK | the **lot id**; the engine keys balances, basis and quantity on it |
+| `model_id`, `account_id` | int | as today |
+| `lot` | text NOT NULL | free-form label, unique within the account; `'default'` for accounts that are not split. Sequential numbers (`1`, `2`) are a fine convention, and so are acquisition dates or any other name without `:` |
+| `symbol` | text | optional security identifier |
+| `acquired` | text | optional ISO date; enables short/long-term treatment later |
+| `quantity_micros` | int | optional; shares × 1e6 |
+| `series` | text | optional growth-rate series override (see §5) |
+| `opening_balance`, `opening_cost_basis`, `prior_year_end_balance` | int | as today, now per lot |
+
+`UNIQUE (model_id, account_id, lot)`. Every account has at least one lot. The `holding` and `lot` tables and `RESERVED_DDL` are removed. A "holding" is `GROUP BY account_id, symbol`. The same symbol in two accounts is two independent lots by construction, since a lot belongs to exactly one account.
+
+### 2. `lot_state` is the ledger's state; `account_state` becomes a view
+
+```sql
+CREATE TABLE lot_state (
+    step_id INTEGER NOT NULL REFERENCES simulation_step(id),
+    lot_id  INTEGER NOT NULL REFERENCES account_model_member(id),
+    balance INTEGER NOT NULL,
+    cost_basis INTEGER,
+    quantity_micros INTEGER,
+    PRIMARY KEY (step_id, lot_id)
+);
+CREATE VIEW account_state AS
+SELECT ls.step_id, m.account_id, SUM(ls.balance) AS balance,
+       CASE WHEN COUNT(ls.cost_basis) < COUNT(*) THEN NULL
+            ELSE SUM(ls.cost_basis) END AS cost_basis
+FROM lot_state ls JOIN account_model_member m ON m.id = ls.lot_id
+GROUP BY ls.step_id, m.account_id;
+```
+
+`account_state` keeps its current columns, so `net_worth`, `balance_by_account`, `balance_by_owner`, `connection.py`, and the notebooks read it unchanged. Basis is NULL if any lot's basis is unknown, rather than under-reporting. The engine reads and writes `lot_state` throughout.
+
+Quantity cannot be derived from balance once growth has occurred, so `lot_state` carries it. A sale of `amount` from a lot removes `quantity × amount / balance` shares (integer rounding, remainder to the last leg).
+
+`transfer_event` keeps `from_account` / `to_account` (indexed, used by reporting) and replaces `from_holding_id` / `to_holding_id` with NOT NULL `from_lot_id` / `to_lot_id`. The zero-sum invariant is checked per step at lot level and at account level.
+
+### 3. References: a `lot` column beside every account column
+
+Leaf chains are per lot (ADR-003 §4.7 already gives every account a leaf chain in the one chain namespace), and `chain` gains `lot_id` (its `account_id` stays, derived). `ChainGraph.leaf_account` becomes `leaf_lot`. The leaf chain's name is internal: the bare account name for the default lot of a non-investment account, `account:lot` otherwise. **No CSV ever spells a lot that way.** Every place a CSV names an account has a `lot` column next to it:
+
+| file | account column | lot column |
+| --- | --- | --- |
+| `account_values.csv` | `account_name` | `lot` |
+| `chains/*.csv` | `account_name` | `lot` |
+| `scheduled.csv` | `from_account`, `to_account` | `from_lot`, `to_lot` |
+| `year_to_date.csv` | `from_account`, `to_account` | `from_lot`, `to_lot` |
+| `calendar.csv` | `account_1`, `account_2` | `lot_1`, `lot_2` |
+
+The loader resolves each `(account, lot)` pair to that lot's leaf chain and reports a bad pair with the column names.
+
+- A chain named in an account column takes no lot; the lot column must be blank.
+- For **investment subkinds** (`types.INVESTMENT_ASSET_SUBKINDS`: `brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) a blank lot is a **load error** that lists the account's lots (`'Asset_Brokerage' is an investment account and needs a to_lot (its lots: default)`). There is no defaulting and no implicit chain over an account's lots.
+- For all other subkinds a blank lot means `default`.
+- `:` is reserved: account names, chain names and lot labels may not contain it.
+- `refill_chain`/`overflow_chain` (on the lot, see §4) name a chain or an account, completed by `refill_lot`/`overflow_lot` under the same rule as every other reference.
+
+The rule depends only on subkind, never on the current lot count, so adding a lot never changes what an existing row means. Splitting lot `default` into, say, `2024-03` and `2025-06` leaves rows saying `lot=default` valid and still meaning that one lot only; the author is responsible for revisiting them.
+
+### 4. CSV layout
+
+`account_values.csv` (ADR-003 §4.3) gains optional columns `lot`, `symbol`, `acquired`, `quantity`, `series`, with several rows per account allowed. In a derived scenario, rows overlay the parent's by **(`account_name`, `lot`)**.
+
+- `opening_balance` may be blank if `quantity`, `symbol`, and a price (§6) are all present; it is then `quantity × price` at `scenario.start`, rounded to cents. If both balance and quantity are given, the balance is authoritative and no price is consulted.
+- `prior_year_end_balance` is summed across an account's lots for RMD. Either every lot of an account has it or none does.
+- `opening_cost_basis` requirements are unchanged, now per lot.
+- Cash-management attributes (`minimum_balance`, `refill_*`, `maximum_balance`, `overflow_*`) are per lot: they moved from `accounts.csv` to `account_values.csv` (plan Phase 7), and the engine, which already keyed them by lot id, is unchanged. A lot may refill from a sibling lot of its own account.
+
+### 5. Growth is per lot
+
+`_expand_account_growth` already turns an account's `series` into a `percent_of_balance` rule. It now emits one rule per lot, named `growth_` plus the account and lot with each word trimmed to four letters (`growth_bob_vang_roll_sett`), widening the trimming only if that name is already taken (`loader.growth_rule_name`), into that lot's leaf chain. Rate series for a lot resolve in order: the lot's `series`, then a rate series named for the lot's `symbol`, then the account's `series`. The income counterparty and `tax_character` remain account-level. Accrual is an ordinary transfer from an income account into the lot, so growth moves the balance and not the basis, and the ledger stays event-sourced and zero-sum. The engine never marks positions to market.
+
+### 6. Prices
+
+Prices live in `aux_table` (`kind='security_price'`, `series=<symbol>`, `payload_json={"price_micros": N}`, dated by `effective_date`). They are snapshotted from intent into run files like any aux data, so a run records the prices it used. A fetcher, if we add one, only writes aux rows at load time. Prices are used to derive opening balances (§4); they are not a monthly engine input.
+
+Symbols get names from `securities.csv` (`symbol,name`), at the top of the data repo beside `persons.csv` and inside the provenance scope. It is loaded into a `security` table (`symbol` primary key, `name`) that is snapshotted into run files; the file is optional and a symbol with no row is unnamed. Reports show the name where they show the symbol.
+
+### 7. Sales and withdrawals
+
+A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, ADR-003 #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. `sell_asset` on an investment account names a lot and liquidates that lot. Liquidating an account is one `sell_asset` per lot.
+
+Money moved *into* a lot that tracks cost basis is a purchase: its basis rises by the amount and, if shares are tracked, they rise at the lot's implied price (balance ÷ quantity). This covers purchases from cash, inheritances, and proceeds moved from another taxable lot. Growth generated from `accounts.csv` series (from the built-in counterparty accounts) is appreciation and changes neither. A taxable asset lot with a zero opening balance and no stated basis starts at basis 0, so a lot can be declared up front for a purchase the scenario makes later (with its `acquired` date), and taxable growth is total return: reinvested dividends are not split out, so tax on distributions is deferred to the sale.
+
+The gain leg of a sale from a lot is `ltcg` if the lot has been held more than a year at the sale date (its `acquired` date; no date means long-term) and `stcg` otherwise. `stcg` is taxed as ordinary income. A lot's `acquired` date does not move when money is added to it, so a purchase that should start its own holding period belongs in its own lot. For federal tax the accumulator can tax long-term gains at preferential rates: an optional `ltcg_brackets` aux table (same shape as `federal_brackets`, with a band's floor as the taxable income, gain included, at which its rate starts) stacks the gain on top of ordinary taxable income. Without that table long-term gains are taxed as ordinary income, and state tax never uses it. Netting is simplified: a net loss in either bucket reduces ordinary income.
+
+### 8. RMD
+
+An `rmd` rule's amount comes from its **subject account**: the total of all its lots' balances on the previous Dec 31 (or the lots' `prior_year_end_balance` values in the first year), over the age factor. The money comes from `from_account`:
+
+- a single lot, when the subject account has one lot (`subject_account` is then optional, and the rule behaves as before); or
+- an **explicit chain**, with `{"subject_account": "<account>"}` in `params_json`, drawn in the chain's own order, so which lots fund the RMD is written down rather than inferred.
+
+On an account with several lots a single-lot source is a load error, as is a chain that draws from anything but the subject account's lots. There are no implicit chains. Aggregation across several of an owner's IRAs is deliberately not modelled: a brokerage distributes per account, without regard to distributions taken elsewhere, so each RMD is computed from its own account's lots.
+
+### Amendments applied on acceptance
+
+Applied to ADR-001, ADR-002 and ADR-003 (Phase 6).
+
+- ADR-002: replace the `holding`/`lot` reserved schema and `schema_overview` rows with the §1–§2 DDL; `account_model_member` and `transfer_event` changes; `account_state` view; `SCHEMA_VERSION` 17 → 18.
+- ADR-003: §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §Later amendments #8 revised.
+- ADR-001: `AccountState` row in the domain-object table becomes a view over per-lot state.
+- ADR-003: the `tax_character` registry gains `stcg`; §4.4 gains the `ltcg_brackets` aux kind; the `tax_accumulator` rule (§2.6) taxes long-term gains at those rates when present.
+
+## Consequences
+
+- Positive: lot-level sales and per-security growth with no price path in the engine; reporting is untouched through the view; one file (`account_values.csv`) carries opening state; the ledger stays zero-sum and event-sourced.
+- Negative: every engine site keyed on account id changes to lot id; existing data needs a `lot` column on `account_values.csv` and chain files, and `from_lot`/`to_lot`/`lot_1`/`lot_2` columns filled in for investment accounts; row counts in `lot_state` scale with lots × months.
+- Runtime lot creation (a `buy_asset` into a brokerage opening a new lot) is not supported; buys add to a named existing lot.
+
+## Open questions deferred
+
+- Runtime-created lots, and cost-basis lot selection (FIFO / HIFO / specific) as a policy on multi-lot withdrawals.
+- `on_death` sweeps and the other account-level rule kinds (`ss_benefit`, `tax_accumulator`, `mortgage_payment`) all need auditing for one-balance-per-account assumptions; the plan's Phase 0 does this.
+- Namespace collision between account names and symbols in `aux_table` rate series (lookup order in §5 covers it, but an account and a ticker with the same name would be ambiguous).
+- Quicken import is per account; multi-lot accounts need a per-security import.

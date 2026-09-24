@@ -53,8 +53,8 @@ EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "other"]
 # depreciation is a book entry, not spending -- see ADR-002 gains/losses.
 NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 
-LIQUID_SUBKINDS = {"checking", "savings"}
-TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "tax_deferred_out"}  # ss_benefit handled separately
+LIQUID_SUBKINDS = {"cash"}
+TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "stcg", "tax_deferred_out"}  # ss_benefit handled separately
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
@@ -168,11 +168,13 @@ _ITEM_SQL: dict[str, str] = {
         "GROUP BY s.id ORDER BY s.id"
     ),
     "person": "SELECT * FROM person ORDER BY id",
+    "security": "SELECT symbol, name FROM security ORDER BY symbol",
     "person_lifespan": "SELECT * FROM person_lifespan ORDER BY person",
     "chain": (
-        "SELECT c.*, a.name AS account_name, a.kind AS account_kind "
+        "SELECT c.*, a.name AS account_name, a.kind AS account_kind, m.lot AS lot "
         "FROM chain c "
         "LEFT JOIN account a ON a.id = c.account_id "
+        "LEFT JOIN account_model_member m ON m.id = c.lot_id "
         "ORDER BY c.id"
     ),
     "chain_steps": (
@@ -213,10 +215,13 @@ _ITEM_SQL: dict[str, str] = {
         "SELECT * FROM net_worth_constant_cpi ORDER BY month"
     ),
     "year_to_date": (
-        "SELECT y.*, fa.name AS from_name, ta.name AS to_name "
+        "SELECT y.*, fa.name AS from_name, fm.lot AS from_lot, "
+        "       ta.name AS to_name, tm.lot AS to_lot "
         "FROM year_to_date y "
         "JOIN account fa ON fa.id = y.from_account "
-        "JOIN account ta ON ta.id = y.to_account"
+        "JOIN account_model_member fm ON fm.id = y.from_lot_id "
+        "JOIN account ta ON ta.id = y.to_account "
+        "JOIN account_model_member tm ON tm.id = y.to_lot_id"
     ),
     "tax_year_summary": "SELECT * FROM tax_year_summary ORDER BY year, bucket",
     "account_balance": (
@@ -227,13 +232,27 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account a         ON a.id = ast.account_id "
         "ORDER BY s.month, a.name"
     ),
+    "lot_balance": "SELECT * FROM balance_by_lot ORDER BY month, account, lot_id",
     "account_model_member": (
-        "SELECT a.name AS account, a.kind, a.subkind, a.tax_treatment, "
+        "SELECT a.name AS account, m.lot, m.symbol, m.acquired, m.quantity_micros, "
+        "       m.series, a.kind, a.subkind, a.tax_treatment, "
         "       m.opening_balance, m.opening_cost_basis, "
-        "       m.prior_year_end_balance "
+        "       m.prior_year_end_balance, "
+        "       m.minimum_balance_cents, m.maximum_balance_cents, "
+        "       m.refill_target_cents, m.refill_amount_cents, "
+        "       CASE WHEN rc.account_id IS NULL THEN rc.name ELSE ra.name END "
+        "         AS refill_chain, rm.lot AS refill_lot, "
+        "       CASE WHEN oc.account_id IS NULL THEN oc.name ELSE oa.name END "
+        "         AS overflow_chain, om.lot AS overflow_lot "
         "FROM account_model_member m "
         "JOIN account a ON a.id = m.account_id "
-        "ORDER BY a.name"
+        "LEFT JOIN chain rc ON rc.id = m.refill_chain_id "
+        "LEFT JOIN account ra ON ra.id = rc.account_id "
+        "LEFT JOIN account_model_member rm ON rm.id = rc.lot_id "
+        "LEFT JOIN chain oc ON oc.id = m.overflow_chain_id "
+        "LEFT JOIN account oa ON oa.id = oc.account_id "
+        "LEFT JOIN account_model_member om ON om.id = oc.lot_id "
+        "ORDER BY a.name, m.id"
     ),
     "aux_table": "SELECT * FROM aux_table ORDER BY kind, series, effective_date",
     # Intent-file-only: not copied into run files (SNAPSHOT_TABLES), so this
@@ -551,6 +570,34 @@ class RunConnection(_TagReader):
             return self.to_cpi_constant(balances)
         monthly_flows = balances.diff().fillna(balances)
         return self.to_cpi_constant(monthly_flows).cumsum()
+
+    LOT_MEASURES = ("balance", "cost_basis", "quantity")
+
+    def lot_balance_pivot(self, measure: str = "balance") -> pd.DataFrame:
+        """Month x ``Account/lot`` pivot of asset lots: ``balance`` and ``cost_basis``
+        in dollars, ``quantity`` in shares (NaN where a lot's basis or quantity
+        is not tracked).
+        """
+        if measure not in self.LOT_MEASURES:
+            raise ValueError(f"measure must be one of {self.LOT_MEASURES}, got {measure!r}")
+
+        def _build() -> pd.DataFrame:
+            df = self.items("lot_balance")
+            df = df[df["kind"] == "asset"].copy()
+            df["month"] = pd.to_datetime(df["month"])
+            df["label"] = df["account"] + "/" + df["lot"]
+            df["value"] = (
+                df["quantity_micros"] / 1_000_000 if measure == "quantity"
+                else df[measure] / 100
+            )
+            return df.pivot(index="month", columns="label", values="value")
+
+        return self._cached(f"lot_balance_pivot_{measure}", _build)
+
+    def cpi_lot_balance_pivot(self, measure: str = "balance") -> pd.DataFrame:
+        """``lot_balance_pivot(measure)`` in CPI-constant dollars (shares are unchanged)."""
+        pivot = self.lot_balance_pivot(measure)
+        return pivot if measure == "quantity" else self.to_cpi_constant(pivot)
 
     def income_by_category(
         self, subkind_to_category: dict[str, str] = INCOME_SUBKIND_TO_CATEGORY,

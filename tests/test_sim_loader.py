@@ -14,6 +14,7 @@ from analysis.sim.loader import (
     DEFAULT_SCENARIO_NAME,
     DataDirtyRefused,
     LoadError,
+    growth_rule_name,
     load_scenario,
     read_current_scenario,
     resolve_scenario_name,
@@ -66,7 +67,7 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         assert {r[1] for r in chain_row} == {"asset checking liquidity"}
         assert chain_row[0][2] == con.execute("SELECT id FROM chain WHERE name = 'Asset_Savings'").fetchone()[0]
         assert chain_row[1][2] == (
-            con.execute("SELECT id FROM chain WHERE name = 'Asset_TraditionalIRA_Alice'").fetchone()[0]
+            con.execute("SELECT id FROM chain WHERE name = 'Asset_TraditionalIRA_Alice:default'").fetchone()[0]
         )
 
         rmd_rows = con.execute(
@@ -228,7 +229,8 @@ def test_account_series_synthesizes_growth_rule_and_income_account(
             "FROM scheduled_transaction s "
             "JOIN account fa ON fa.id = s.from_account "
             "JOIN account ta ON ta.id = s.to_account "
-            "WHERE s.name = 'growth_asset_traditionalira_alice'"
+            "WHERE s.name = ?",
+            (growth_rule_name("Asset_TraditionalIRA_Alice", "default"),),
         ).fetchone()
         assert rule["amount_rule_kind"] == "percent_of_balance"
         assert rule["series"] == "Brokerage Growth"
@@ -323,13 +325,16 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (scenario_dir / "accounts.csv").write_text(
-        "name,kind,subkind,owner,tax_treatment,series,tax_character,minimum_balance,"
-        "refill_chain,maximum_balance,overflow_chain,opened,closed,meta_json,tags\n"
-        "Asset_Checking,asset,checking,,taxable,,,,missing,,,,,{}\n",
+        "name,kind,subkind,owner,tax_treatment,series,tax_character,opened,closed,"
+        "meta_json,tags\n"
+        "Asset_Checking,asset,cash,,taxable,,,,,{},\n",
         encoding="utf-8",
     )
     for filename, header in {
-        "account_values.csv": "account_name,opening_balance,opening_cost_basis,prior_year_end_balance",
+        "account_values.csv": (
+            "account_name,opening_balance,opening_cost_basis,prior_year_end_balance,"
+            "refill_chain\nAsset_Checking,100.00,,,missing"
+        ),
         "scheduled.csv": (
             "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,interest_account"
             ",person,series,rate_micros,claim_age,amount,base_date,inflation_cadence,tax_character"
@@ -560,8 +565,8 @@ def test_year_to_date_csv_round_trip(tmp_path: Path) -> None:
 
     ytd = repo / "scenarios" / "retire_alice" / "year_to_date.csv"
     ytd.write_text(
-        "name,from_account,to_account,amount,tax_character,description\n"
-        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint,"
+        "name,from_account,to_account,to_lot,amount,tax_character,description\n"
+        "prior_brokerage_growth,Income_CapitalGain,Asset_Brokerage_Joint,default,"
         "1234.56,ltcg,pre-simulation brokerage appreciation\n"
     )
 
@@ -597,7 +602,7 @@ def test_year_to_date_unknown_account_rejected(tmp_path: Path) -> None:
         "bogus,Nonexistent_Account,Asset_Checking,100.00,none,\n"
     )
 
-    with pytest.raises(LoadError, match="not in accounts.csv"):
+    with pytest.raises(LoadError, match="not a known account"):
         load_scenario(
             repo, "retire_alice", intent_dir=tmp_path / "out",
             allow_dirty_data=True,

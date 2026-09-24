@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv as _csv
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 import os
 import sqlite3
 import tempfile
@@ -24,11 +26,18 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
-from analysis.sim.connection import open_scenario
+from analysis.sim.connection import open_run, open_scenario
+from analysis.sim.holdings import (
+    account_holdings,
+    render_holders_table,
+    render_holdings_table,
+    symbol_holders,
+)
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import (
     DEFAULT_INTENT_DIR,
     DEFAULT_RUNS_DIR,
+    DEFAULT_STATE_DIR,
     DataDirtyRefused,
     LoadError,
     ScenarioRef,
@@ -45,10 +54,17 @@ from analysis.sim.quicken import (
     parse_net_worth_export,
 )
 import analysis.sim.scenario as sc
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 
-def _resolve_state_dir(directory: Path | None, default: Path) -> Path:
-    return directory if directory is not None else find_state_dir(None, default)
+def _resolve_state_dir(
+    directory: Path | None, default: Path, data_dir: Path | None = None,
+) -> Path:
+    """``directory`` if given, else ``default`` (``intent`` or ``runs``) under the
+    state dir beside the data repo (``data_dir``, else ``$ANALYSIS_DATA_DIR``)."""
+    if directory is not None:
+        return directory
+    return find_state_dir(data_dir, DEFAULT_STATE_DIR) / default
 
 
 @click.group(name="sim")
@@ -115,7 +131,7 @@ def load(
     """
     resolved = _resolve_data_dir(data_dir)
     explicit = scenario_name is not None
-    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
+    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved)
     ref = _resolve_scenario(resolved, scenario_name, intent_dir=resolved_intent_dir)
     try:
         result = load_scenario(
@@ -242,8 +258,8 @@ def run(
     if scenario_name is None:
         resolved_data_dir = resolved_data_dir or _resolve_data_dir(data_dir)
         scenario_name = _resolve_scenario(resolved_data_dir, None).name
-    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR)
-    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR)
+    resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
+    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
     if not intent_path.exists():
         raise click.ClickException(
@@ -435,6 +451,31 @@ def explain(runfile: Path) -> None:
             f"counts:         steps={steps}  account_states={states}  transfers={xfers}"
         )
 
+        lots = con.execute(
+            "SELECT a.name, a.subkind, m.lot, m.symbol, ls.quantity_micros, "
+            "       ls.balance, ls.cost_basis "
+            "FROM account_model_member m "
+            "JOIN account a ON a.id = m.account_id "
+            "JOIN lot_state ls ON ls.lot_id = m.id AND ls.step_id = "
+            "  (SELECT id FROM simulation_step ORDER BY step_index DESC LIMIT 1) "
+            "WHERE a.subkind IN ({}) OR a.id IN "
+            "  (SELECT account_id FROM account_model_member "
+            "   GROUP BY account_id HAVING COUNT(*) > 1) "
+            "ORDER BY a.name, m.id".format(
+                ",".join("?" * len(INVESTMENT_ASSET_SUBKINDS))
+            ),
+            sorted(INVESTMENT_ASSET_SUBKINDS),
+        ).fetchall()
+        if lots:
+            click.echo("")
+            click.echo("lots at the final step:")
+            for name, subkind, lot, symbol, quantity, balance, basis in lots:
+                click.echo(
+                    f"  {_account_with_lot(name, subkind, lot):<44}"
+                    f"{(symbol or '-'):<8}{_fmt_quantity(quantity):>16}"
+                    f"  balance {_fmt_cents(balance)}  basis {_fmt_cents(basis)}"
+                )
+
         click.echo("")
         click.echo("year-end net worth:")
         rows = con.execute(
@@ -454,6 +495,8 @@ def explain(runfile: Path) -> None:
 
 @sim_group_command.command("items")
 @click.option("--account", required=True, help="Account name in the selected run.")
+@click.option("--lot", default=None,
+              help="Only events touching this lot of the account (default: every lot).")
 @click.option("--start", required=True, help="First month (YYYY-MM-DD).")
 @click.option("--end", default=None, help="Last month (YYYY-MM-DD); overrides --months.")
 @click.option("--months", default=1, show_default=True, type=click.IntRange(min=1),
@@ -468,6 +511,7 @@ def explain(runfile: Path) -> None:
               help="Directory to search for the latest run.")
 def items(
     account: str,
+    lot: str | None,
     start: str,
     end: str | None,
     months: int,
@@ -503,25 +547,40 @@ def items(
         if account_row is None:
             raise click.ClickException(f"unknown account in run: {account!r}")
         account_id = account_row[0]
+        lot_id = None
+        if lot is not None:
+            lot_row = con.execute(
+                "SELECT id FROM account_model_member WHERE account_id = ? AND lot = ?",
+                (account_id, lot),
+            ).fetchone()
+            if lot_row is None:
+                raise click.ClickException(f"unknown lot {lot!r} of account {account!r}")
+            lot_id = lot_row[0]
         rows = con.execute(
-            "SELECT te.date, fa.name, ta.name, te.amount, te.requested_cents, "
-            "te.remainder_cents, te.tax_character, "
+            "SELECT te.date, fa.name, fa.subkind, fm.lot, te.from_account, te.from_lot_id, "
+            "ta.name, ta.subkind, tm.lot, te.to_account, te.to_lot_id, "
+            "te.amount, te.requested_cents, te.remainder_cents, te.tax_character, "
             "te.reason_kind, s.name, s.amount_rule_kind "
             "FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account "
             "JOIN account ta ON ta.id = te.to_account "
+            "JOIN account_model_member fm ON fm.id = te.from_lot_id "
+            "JOIN account_model_member tm ON tm.id = te.to_lot_id "
             "LEFT JOIN scheduled_transaction s "
             "  ON s.id = te.reason_id AND te.reason_kind IN ('rule', 'ytd_rule') "
-            "WHERE ? IN (te.from_account, te.to_account) "
+            "WHERE ((? IS NULL AND ? IN (te.from_account, te.to_account)) "
+            "       OR ? IN (te.from_lot_id, te.to_lot_id)) "
             "  AND te.date BETWEEN ? AND ? "
             "ORDER BY te.date, te.id",
-            (account_id, start, end),
+            (lot_id, account_id, lot_id, start, end),
         ).fetchall()
     finally:
         con.close()
 
     click.echo(f"run: {runfile}")
-    click.echo(f"account: {account}  window: {start} through {end}")
+    click.echo(
+        f"account: {account}{f' (lot {lot})' if lot else ''}  window: {start} through {end}"
+    )
     if not rows:
         click.echo("(no matching ledger events)")
         return
@@ -531,26 +590,45 @@ def items(
 
     table = Table(title=f"ledger events ({account})")
     table.add_column("Date")
+    table.add_column("Lot")
     table.add_column("Direction")
     table.add_column("Amount", justify="right")
     table.add_column("Requested", justify="right")
     table.add_column("Remainder", justify="right")
     table.add_column("Tax")
     table.add_column("Origin")
-    for (date, from_name, to_name, amount, requested, remainder, tax_character,
+    for (date, from_name, from_subkind, from_lot, from_account_id, from_lot_id,
+         to_name, to_subkind, to_lot, to_account_id, to_lot_id,
+         amount, requested, remainder, tax_character,
          reason_kind, rule_name, rule_kind) in rows:
-        direction = f"to {to_name}" if from_name == account else f"from {from_name}"
+        own_is_from = (from_lot_id == lot_id) if lot_id is not None else (
+            from_account_id == account_id
+        )
+        if own_is_from:
+            direction = "to " + _account_with_lot(to_name, to_subkind, to_lot)
+            own = from_lot
+        else:
+            direction = "from " + _account_with_lot(from_name, from_subkind, from_lot)
+            own = to_lot
         origin = (
             f"{reason_kind}: {rule_name} ({rule_kind})"
             if rule_name is not None
             else reason_kind
         )
         table.add_row(
-            date, direction, _fmt_cents(amount).strip(),
+            date, own, direction, _fmt_cents(amount).strip(),
             _fmt_cents(requested).strip(), _fmt_cents(remainder).strip(),
             tax_character, origin,
         )
     Console(width=200).print(table)
+
+
+def _fmt_quantity(micros: int | None) -> str:
+    """Shares from micros, with trailing zeros dropped (``-`` when untracked)."""
+    if micros is None:
+        return "-"
+    text = f"{micros / 1_000_000:,.6f}".rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _fmt_cents(cents: int | None) -> str:
@@ -644,24 +722,63 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
                     row: dict[str, str]) -> None:
     """Append a row to a CSV, aligning columns by name via pandas.
 
-    If the file exists, its header must match ``header`` exactly; this catches
-    schema drift instead of silently writing misaligned columns.
+    If the file exists, its header must contain every column of ``header``
+    (extra optional columns are kept and left blank); this catches schema
+    drift instead of silently writing misaligned columns.
     """
     cols = list(header)
     if path.exists() and path.stat().st_size > 0:
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
         existing = tuple(df.columns)
-        if existing != header:
+        if not set(header) <= set(existing):
             raise click.ClickException(
                 f"CSV header mismatch in {path}\n"
                 f"  expected: {list(header)}\n"
                 f"  found:    {list(existing)}"
             )
+        cols = list(existing)
     else:
         df = pd.DataFrame(columns=cols)
     new_row = pd.DataFrame([{c: row.get(c, "") for c in cols}], columns=cols)
     df = pd.concat([df, new_row], ignore_index=True)
     df.to_csv(path, index=False)
+
+
+def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
+    """``name``, plus ``(lot)`` where the lot is worth showing."""
+    if not name:
+        return ""
+    if lot and (subkind in INVESTMENT_ASSET_SUBKINDS or lot != registries.DEFAULT_LOT):
+        return f"{name} ({lot})"
+    return name
+
+
+def _lot_info(con: sqlite3.Connection) -> dict[str, tuple[bool, list[str]]]:
+    """Per account: (is an investment account, its lot labels)."""
+    info: dict[str, tuple[bool, list[str]]] = {}
+    for name, subkind, lot in con.execute(
+        "SELECT a.name, a.subkind, m.lot FROM account_model_member m "
+        "JOIN account a ON a.id = m.account_id ORDER BY m.id"
+    ):
+        info.setdefault(name, (subkind in INVESTMENT_ASSET_SUBKINDS, []))[1].append(lot)
+    return info
+
+
+def _pick_lot(
+    info: dict[str, tuple[bool, list[str]]], account: str, lot: str | None, label: str,
+) -> str:
+    """The lot column value for ``account``: an explicit ``lot`` is checked, and
+    investment accounts prompt for one; other accounts leave it blank."""
+    investment, lots = info[account]
+    if lot:
+        if lot not in lots:
+            raise click.ClickException(
+                f"{account!r} has no lot {lot!r}; its lots: {', '.join(lots)}"
+            )
+        return lot
+    if investment:
+        return _prompt_with_completion(f"{label} lot", choices=lots)
+    return ""
 
 
 def _prompt_account(label: str, accounts: list[str]) -> str:
@@ -678,6 +795,8 @@ def transfer_group_command() -> None:
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
+@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
+@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -692,6 +811,8 @@ def transfer_add(
     from_account: str | None,
     to_account: str | None,
     amount: str | None,
+    from_lot: str | None,
+    to_lot: str | None,
     scenario: str | None,
     data_dir: Path | None,
     tax_character: str,
@@ -703,6 +824,7 @@ def transfer_add(
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
     with open_intent_db(data_dir_p, scenario) as (con, _name):
         accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
+        lot_info = _lot_info(con)
 
     if not date:
         date = _prompt_with_completion("date (YYYY-MM-DD)")
@@ -718,6 +840,8 @@ def transfer_add(
         to_account = _prompt_account("to", accounts)
     if to_account not in accounts:
         raise click.ClickException(f"unknown to account: {to_account!r}")
+    from_lot = _pick_lot(lot_info, from_account, from_lot, "from")
+    to_lot = _pick_lot(lot_info, to_account, to_lot, "to")
 
     if amount is None:
         amount = _prompt_with_completion("amount (dollars, e.g. 1234.56)")
@@ -743,7 +867,9 @@ def transfer_add(
         "date": date,
         "kind": "one_off_transfer",
         "account_1": from_account,
+        "lot_1": from_lot,
         "account_2": to_account,
+        "lot_2": to_lot,
         "series": series,
         "amount": str(cents),
         "tax_character": tax_character,
@@ -772,6 +898,8 @@ def scheduled_group_command() -> None:
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
+@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
+@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -797,6 +925,8 @@ def scheduled_add(
     from_account: str | None,
     to_account: str | None,
     amount: str | None,
+    from_lot: str | None,
+    to_lot: str | None,
     scenario: str | None,
     data_dir: Path | None,
     row_name: str | None,
@@ -818,6 +948,7 @@ def scheduled_add(
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
     with open_intent_db(data_dir_p, scenario) as (con, _name):
         accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
+        lot_info = _lot_info(con)
         existing_names = {
             r[0] for r in con.execute("SELECT name FROM scheduled_transaction")
         }
@@ -838,6 +969,8 @@ def scheduled_add(
         to_account = _prompt_account("to", accounts)
     if to_account not in accounts:
         raise click.ClickException(f"unknown to account: {to_account!r}")
+    from_lot = _pick_lot(lot_info, from_account, from_lot, "from")
+    to_lot = _pick_lot(lot_info, to_account, to_lot, "to")
 
     if amount is None:
         amount = _prompt_with_completion("amount (dollars, e.g. 1234.56)")
@@ -856,8 +989,8 @@ def scheduled_add(
         )
 
     if not row_name:
-        slug_from = from_account.lower().replace(" ", "_")
-        slug_to = to_account.lower().replace(" ", "_")
+        slug_from = "_".join(filter(None, (from_account, from_lot))).lower().replace(" ", "_")
+        slug_to = "_".join(filter(None, (to_account, to_lot))).lower().replace(" ", "_")
         row_name = f"xfer_{slug_from}_to_{slug_to}_{date}"
     if row_name in existing_names:
         raise click.ClickException(
@@ -867,7 +1000,9 @@ def scheduled_add(
     row = {
         "name": row_name,
         "from_account": from_account,
+        "from_lot": from_lot,
         "to_account": to_account,
+        "to_lot": to_lot,
         "cadence": cadence,
         "month_of_year": str(month_of_year) if month_of_year else "",
         "amount_rule_kind": "fixed_amount",
@@ -913,6 +1048,8 @@ def scheduled_add(
               help="Optional category account map (default: sibling data-repo/quicken/expense_account_map.csv).")
 @click.option("--from-account", required=True,
               help="Scenario account that funds all generated expense rows.")
+@click.option("--from-lot", default="",
+              help="Lot of --from-account (required for investment accounts).")
 @click.option("--start", default=None,
               help="First scheduled month YYYY-MM-DD (default: scenario start).")
 @click.option("--series", default="cpi", show_default=True,
@@ -928,6 +1065,7 @@ def scheduled_import_baseline(
     food_owner_account: str,
     account_map: Path | None,
     from_account: str,
+    from_lot: str,
     start: str | None,
     series: str,
     dry_run: bool,
@@ -969,9 +1107,7 @@ def scheduled_import_baseline(
         else {}
     )
     with open_intent_db(data_dir_p, scenario_name) as (con, _):
-        scenario_accounts = {
-            row[0] for row in con.execute("SELECT name FROM account")
-        }
+        scenario_accounts = {row[0] for row in con.execute("SELECT name FROM account")}
         scenario_sources = scenario_accounts | {
             row[0] for row in con.execute("SELECT name FROM chain")
         }
@@ -1016,6 +1152,7 @@ def scheduled_import_baseline(
         start,
         from_account,
         ignored_categories=set(invalid_targets) | missing_mappings,
+        from_lot=from_lot,
         series=series,
     )
     scheduled_path = scenario_dir / "scheduled.csv"
@@ -1042,37 +1179,30 @@ def scheduled_list(scenario: str | None, data_dir: Path | None) -> None:
     from rich.console import Console
     from rich.table import Table
 
+    from analysis.sim.notebook_ui.scenario_view import scheduled_view
+
     data_dir_p = _resolve_data_dir(data_dir)
-    with open_intent_db(data_dir_p, scenario) as (con, scen_name):
-        table = Table(title=f"scheduled ({data_dir_p.name} / {scen_name})")
-        table.add_column("Name")
-        table.add_column("Cadence")
-        table.add_column("From")
-        table.add_column("To")
-        table.add_column("Amount", justify="right")
-        table.add_column("Start")
-        table.add_column("End")
-        for row in con.execute(
-            "SELECT s.name, s.cadence, s.start, s.\"end\" AS end_date, "
-            "       s.amount_rule_kind, s.amount_cents, "
-            "       fa.name AS from_name, ta.name AS to_name "
-            "FROM scheduled_transaction s "
-            "JOIN account fa ON fa.id = s.from_account "
-            "JOIN account ta ON ta.id = s.to_account "
-            "ORDER BY s.priority, s.name"
-        ):
-            rule = row["amount_rule_kind"]
-            if rule == "fixed_amount" and row["amount_cents"] is not None:
-                amt = _fmt_cents(row["amount_cents"]).strip()
-            elif rule == "percent_of_balance":
-                amt = "% of bal"
-            else:
-                amt = rule
-            table.add_row(
-                row["name"], row["cadence"],
-                row["from_name"], row["to_name"],
-                amt, row["start"], row["end_date"] or "",
-            )
+    with open_scenario(data_dir_p, scenario) as sc:
+        scen_name = sc.name
+        rows = scheduled_view(sc)
+    table = Table(title=f"scheduled ({data_dir_p.name} / {scen_name})")
+    for column, justify in (
+        ("Name", "left"), ("Cadence", "left"), ("From", "left"), ("Lot", "left"),
+        ("To", "left"), ("Lot", "left"), ("Amount", "right"), ("Start", "left"),
+        ("End", "left"),
+    ):
+        table.add_column(column, justify=justify)
+    for row in rows.itertuples():
+        if row.amount_rule_kind == "fixed_amount" and pd.notna(row.amount):
+            amt = _fmt_cents(round(row.amount * 100)).strip()
+        elif row.amount_rule_kind == "percent_of_balance":
+            amt = "% of bal"
+        else:
+            amt = row.amount_rule_kind
+        table.add_row(
+            row.name, row.cadence, row.from_account, row.from_lot,
+            row.to_account, row.to_lot, amt, row.start, "" if row.end == "-" else row.end,
+        )
     Console().print(table)
 
 
@@ -1264,6 +1394,7 @@ def add_account(
             registries.ACCOUNT_VALUES_CSV_HEADER,
             {
                 "account_name": name,
+                "lot": registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else "",
                 "opening_balance": f"{cents // 100}.{cents % 100:02d}",
                 "opening_cost_basis": "",
                 "prior_year_end_balance": "",
@@ -1304,10 +1435,11 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
 
     changed = False
     accounts_path = scenario_dir / "accounts.csv"
+    changed |= _rename_account_row_values(accounts_path, ("name",), old_name, new_name)
     changed |= _rename_account_row_values(
-        accounts_path, ("name", "refill_chain", "overflow_chain"), old_name, new_name,
+        scenario_dir / "account_values.csv",
+        ("account_name", "refill_chain", "overflow_chain"), old_name, new_name,
     )
-    changed |= _rename_account_row_values(scenario_dir / "account_values.csv", ("account_name",), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "scheduled.csv",
                                           ("from_account", "to_account", "interest_account"),
                                           old_name, new_name)
@@ -1327,6 +1459,8 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
     click.echo(f"renamed account '{old_name}' to '{new_name}' in {scenario_dir}")
 
 
+_LOT_CHAIN_FIELDS = ("refill_chain", "overflow_chain")
+
 _ACCOUNT_REFERENCE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("account_values.csv", ("account_name",)),
     ("scheduled.csv", ("from_account", "to_account", "interest_account")),
@@ -1339,19 +1473,19 @@ _ACCOUNT_REFERENCE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
     """Return direct CSV references to an account in deterministic display order."""
     references: list[str] = []
-    accounts_path = scenario_dir / "accounts.csv"
-    if accounts_path.exists():
-        accounts = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    values_path = scenario_dir / "account_values.csv"
+    if values_path.exists():
+        values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
         chain_fields = [
-            field for field in ("refill_chain", "overflow_chain") if field in accounts.columns
+            field for field in _LOT_CHAIN_FIELDS if field in values.columns
         ]
-        for idx, row in accounts.iterrows():
-            if row.get("name") == name:
+        for idx, row in values.iterrows():
+            if row.get("account_name") == name:
                 continue
             matched_fields = [field for field in chain_fields if row[field] == name]
             if matched_fields:
                 references.append(
-                    f"  accounts.csv row {idx + 2}: {', '.join(matched_fields)}"
+                    f"  account_values.csv row {idx + 2}: {', '.join(matched_fields)}"
                 )
 
     paths = [
@@ -1398,11 +1532,21 @@ def _delete_account_references(scenario_dir: Path, name: str) -> None:
         if not keep.all():
             df.loc[keep].to_csv(path, index=False)
 
+    values_path = scenario_dir / "account_values.csv"
+    if values_path.exists():
+        values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+        blanked = False
+        for field, lot_field in (("refill_chain", "refill_lot"), ("overflow_chain", "overflow_lot")):
+            if field in values.columns:
+                hit = values[field] == name
+                if hit.any():
+                    values.loc[hit, [field, lot_field]] = ""
+                    blanked = True
+        if blanked:
+            values.to_csv(values_path, index=False)
+
     accounts_path = scenario_dir / "accounts.csv"
     df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
-    for field in ("refill_chain", "overflow_chain"):
-        if field in df.columns:
-            df.loc[df[field] == name, field] = ""
     keep = df["name"] != name
     if not keep.all():
         df.loc[keep].to_csv(accounts_path, index=False)
@@ -1677,6 +1821,93 @@ def list_accounts(
     Console().print(render_accounts_table(rows, title=title))
 
 
+def _holdings_options(fn):
+    """The options ``account holdings`` and ``account holders`` share."""
+    for option in reversed([
+        click.option("--scenario", default=None,
+                     help="Scenario folder name (default: the only scenario in data-dir)."),
+        click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+                     default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
+        click.option("--month", default=None,
+                     help="Month of the run to show, YYYY-MM (default: the last month)."),
+        click.option("--opening", is_flag=True, default=False,
+                     help="Show the scenario's opening values instead of a run."),
+        click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+                     default=None, help="Run file (default: the scenario's latest run)."),
+    ]):
+        fn = option(fn)
+    return fn
+
+
+@contextmanager
+def _holdings_source(
+    scenario: str | None, data_dir: Path | None, month: str | None,
+    opening: bool, runfile: Path | None,
+) -> Iterator[tuple[object, str]]:
+    """The connection holdings are read from, and a description of it: the run
+    (latest, or ``--runfile``) when there is one, else the opening values."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data_dir_p, scenario)
+    with open_scenario(data_dir_p, ref.name, scenarios_dir=ref.scenarios_dir) as sc:
+        if opening:
+            if month or runfile:
+                raise click.ClickException("--opening cannot be combined with --month or --runfile")
+            yield sc, f"opening values, {ref.name}"
+            return
+        run_path = runfile or ref.run_path
+        if run_path is None:
+            if month:
+                raise click.ClickException(f"no runs for {ref.name!r}; run `sim run` first")
+            click.echo("(no run yet; showing opening values)", err=True)
+            yield sc, f"opening values, {ref.name}"
+            return
+        with open_run(run_path, sc, scenarios_dir=ref.scenarios_dir) as rc:
+            yield rc, f"{ref.name}, run {Path(run_path).name}"
+
+
+@account_group_command.command("holdings")
+@click.argument("account")
+@_holdings_options
+def account_holdings_command(
+    account: str, scenario: str | None, data_dir: Path | None, month: str | None,
+    opening: bool, runfile: Path | None,
+) -> None:
+    """Show the lots in ACCOUNT: symbol, quantity, balance, basis and unrealized gain."""
+    from rich.console import Console
+
+    with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
+        try:
+            frame = account_holdings(source, account, month=month)
+        except (KeyError, ValueError) as exc:
+            raise click.ClickException(exc.args[0]) from None
+    title = f"holdings of {account} ({described}; {frame['as_of'].iloc[0]})"
+    Console().print(render_holdings_table(frame, title=title))
+
+
+@account_group_command.command("holders")
+@click.argument("symbol")
+@_holdings_options
+def account_holders_command(
+    symbol: str, scenario: str | None, data_dir: Path | None, month: str | None,
+    opening: bool, runfile: Path | None,
+) -> None:
+    """Show every account holding SYMBOL, lot by lot, with totals."""
+    from rich.console import Console
+
+    with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
+        try:
+            frame = symbol_holders(source, symbol, month=month)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+    if frame.empty:
+        click.echo(f"no lot holds {symbol!r} ({described})")
+        return
+    name = frame["name"].iloc[0]
+    named = f"{symbol} ({name})" if isinstance(name, str) else symbol
+    title = f"accounts holding {named} ({described}; {frame['as_of'].iloc[0]})"
+    Console().print(render_holders_table(frame, title=title))
+
+
 @account_group_command.group(name="tag")
 def account_tag_group() -> None:
     """Add or remove tags on an account."""
@@ -1750,16 +1981,19 @@ def check_account_values(
 
     # Read account_values
     values_accounts = {}
+    seen_lots: set[tuple[str, str]] = set()
     with values_path.open(newline="", encoding="utf-8") as f:
         reader = _csv.DictReader(f)
         if reader.fieldnames is None or "account_name" not in reader.fieldnames:
             raise click.ClickException("account_values.csv missing 'account_name' column")
         for i, row in enumerate(reader, start=2):
             acct = row.get("account_name", "")
-            if acct in values_accounts:
-                click.echo(f"  warning: duplicate account_name '{acct}' at row {i}", err=True)
-            else:
-                values_accounts[acct] = i
+            if (acct, row.get("lot", "")) in seen_lots:
+                click.echo(
+                    f"  warning: duplicate account_name and lot '{acct}' at row {i}", err=True
+                )
+            seen_lots.add((acct, row.get("lot", "")))
+            values_accounts.setdefault(acct, i)
             if acct and acct not in account_names:
                 click.echo(f"  warning: unknown account_name '{acct}' at row {i}", err=True)
 
@@ -1794,6 +2028,7 @@ def sync_account_values(
 
     # Read accounts
     account_names = []
+    account_subkinds: dict[str, str] = {}
     with accounts_path.open(newline="", encoding="utf-8") as f:
         reader = _csv.DictReader(f)
         if reader.fieldnames is None or "name" not in reader.fieldnames:
@@ -1801,6 +2036,7 @@ def sync_account_values(
         for row in reader:
             if row.get("name"):
                 account_names.append(row["name"])
+                account_subkinds[row["name"]] = row.get("subkind", "")
 
     # Read existing account_values
     values_accounts = set()
@@ -1825,6 +2061,7 @@ def sync_account_values(
     for name in missing:
         values_rows.append({
             "account_name": name,
+            "lot": registries.DEFAULT_LOT if account_subkinds.get(name) in INVESTMENT_ASSET_SUBKINDS else "",
             "opening_balance": "0.00",
             "opening_cost_basis": "",
             "prior_year_end_balance": "",
@@ -1832,7 +2069,7 @@ def sync_account_values(
 
     # Write back
     with values_path.open("w", newline="", encoding="utf-8") as f:
-        writer = _csv.DictWriter(f, fieldnames=values_header)
+        writer = _csv.DictWriter(f, fieldnames=values_header, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(values_rows)
 
@@ -1965,7 +2202,14 @@ def import_quicken(
                 f"mapped account not found in account_values.csv: {name!r}"
             )
         dollars = format_dollars(cents)
-        idx = df.index[df["account_name"] == name][0]
+        rows = df.index[df["account_name"] == name]
+        if len(rows) > 1:
+            click.echo(
+                f"warning: {name!r} has {len(rows)} lots; import-quicken only "
+                "updates single-lot accounts, so it was skipped", err=True,
+            )
+            continue
+        idx = rows[0]
 
         if year_end:
             old = df.at[idx, "prior_year_end_balance"]
@@ -2009,7 +2253,8 @@ def import_quicken(
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
-    """List one-off (calendar) transfers."""
+    """List one-time transfers: calendar one_off_transfer events and scheduled
+    rows with cadence one_off."""
     from rich.console import Console
     from rich.table import Table
 
@@ -2017,25 +2262,62 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
     with open_intent_db(data_dir_p, scenario) as (con, scen_name):
         table = Table(title=f"transfers ({data_dir_p.name} / {scen_name})")
         table.add_column("Date")
+        table.add_column("Source")
         table.add_column("From")
         table.add_column("To")
         table.add_column("Amount", justify="right")
         table.add_column("Tax")
         table.add_column("Description")
 
+        rows: list[tuple[str, ...]] = []
         for row in con.execute(
-            "SELECT date, account_1, account_2, amount, "
-            "       COALESCE(tax_character, '') AS tax_character, "
-            "       COALESCE(description, '') AS description "
-            "FROM calendar_event WHERE kind = 'one_off_transfer' "
-            "ORDER BY date"
+            "SELECT ce.date, ce.amount, "
+            "       COALESCE(ce.tax_character, '') AS tax_character, "
+            "       COALESCE(ce.description, '') AS description, "
+            "       a1.name AS name_1, a1.subkind AS subkind_1, m1.lot AS lot_1, "
+            "       a2.name AS name_2, a2.subkind AS subkind_2, m2.lot AS lot_2 "
+            "FROM calendar_event ce "
+            "LEFT JOIN chain c1 ON c1.name = ce.account_1 "
+            "LEFT JOIN account_model_member m1 ON m1.id = c1.lot_id "
+            "LEFT JOIN account a1 ON a1.id = c1.account_id "
+            "LEFT JOIN chain c2 ON c2.name = ce.account_2 "
+            "LEFT JOIN account_model_member m2 ON m2.id = c2.lot_id "
+            "LEFT JOIN account a2 ON a2.id = c2.account_id "
+            "WHERE ce.kind = 'one_off_transfer' "
         ):
-            amt = _fmt_cents(row["amount"]).strip() if row["amount"] is not None else ""
-            table.add_row(
-                row["date"],
-                row["account_1"] or "", row["account_2"] or "",
+            rows.append((
+                row["date"], "calendar",
+                _account_with_lot(row["name_1"], row["subkind_1"], row["lot_1"]),
+                _account_with_lot(row["name_2"], row["subkind_2"], row["lot_2"]),
+                _fmt_cents(row["amount"]).strip() if row["amount"] is not None else "",
+                row["tax_character"], row["description"],
+            ))
+        for row in con.execute(
+            "SELECT s.start AS date, s.amount_cents, s.amount_rule_kind, s.tax_character, "
+            "       COALESCE(s.description, s.name) AS description, "
+            "       c1.name AS chain_1, a1.name AS name_1, a1.subkind AS subkind_1, m1.lot AS lot_1, "
+            "       c2.name AS chain_2, a2.name AS name_2, a2.subkind AS subkind_2, m2.lot AS lot_2 "
+            "FROM scheduled_transaction s "
+            "JOIN chain c1 ON c1.id = s.from_account "
+            "LEFT JOIN account_model_member m1 ON m1.id = c1.lot_id "
+            "LEFT JOIN account a1 ON a1.id = c1.account_id "
+            "JOIN chain c2 ON c2.id = s.to_account "
+            "LEFT JOIN account_model_member m2 ON m2.id = c2.lot_id "
+            "LEFT JOIN account a2 ON a2.id = c2.account_id "
+            "WHERE s.cadence = 'one_off' AND s.created_by_event_id IS NULL"
+        ):
+            if row["amount_cents"] is not None:
+                amt = _fmt_cents(row["amount_cents"]).strip()
+            else:
+                amt = row["amount_rule_kind"]
+            rows.append((
+                row["date"], "scheduled",
+                _account_with_lot(row["name_1"] or row["chain_1"], row["subkind_1"], row["lot_1"]),
+                _account_with_lot(row["name_2"] or row["chain_2"], row["subkind_2"], row["lot_2"]),
                 amt, row["tax_character"], row["description"],
-            )
+            ))
+        for record in sorted(rows, key=lambda r: (r[0], r[1])):
+            table.add_row(*record)
 
     Console().print(table)
 

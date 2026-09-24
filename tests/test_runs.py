@@ -137,3 +137,13 @@ def test_simulation_run_status_check_constraint(tmp_path: Path) -> None:
             con.execute("UPDATE simulation_run SET status = 'bogus' WHERE id = 1")
     finally:
         con.close()
+
+
+def test_run_stamps_use_the_stubbed_code_version(retire_alice_run_file: Path) -> None:
+    con = sqlite3.connect(retire_alice_run_file)
+    try:
+        assert con.execute(
+            "SELECT code_version, code_dirty, code_repo_path FROM simulation_run"
+        ).fetchone() == ("0" * 40, 0, "CODE_REPO")
+    finally:
+        con.close()

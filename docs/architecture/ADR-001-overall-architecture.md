@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-17
+- **Amended by:** ADR-005 (lots and per-lot state): accounts are split into lots, and the engine's state is per lot.
 - **Scope:** New top-level subsystem `src/analysis/sim/`, sibling to the existing `amazon/` subsystem. Shares utility code (logging, sqlite helpers) but not data.
 
 ## Context
@@ -22,7 +23,7 @@ A monthly simulation step is sufficient resolution. Stochastic analysis is defer
 The architecture has exactly two layers, and the separation is load-bearing:
 
 1. **Intent layer** — what was *decided*. Authored content: `AccountModel`, `ScheduledTransaction`, `Calendar`, `CalendarEvent`, `AuxiliaryTable`, `Scenario`, `YearToDate`.
-2. **Ledger layer** — what *happened*. Run output: `SimulationRun`, `SimulationStep`, `AccountState`, `TransferEvent`, `TaxYearSummary`.
+2. **Ledger layer** — what *happened*. Run output: `SimulationRun`, `SimulationStep`, `LotState` (with `AccountState` as a view over it), `TransferEvent`, `TaxYearSummary`.
 
 Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to-account, amount, tax character, reason). Bundled high-level decisions (`sell_asset`, `life_transition`) live in the intent layer and **expand at run-time** into multiple primitive `TransferEvent`s, all linked via `reason_id` so reports can group at either level. Nothing in the ledger is "virtual" or "derived on the fly" — what's in the table is the truth.
 
@@ -31,8 +32,9 @@ Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to
 | Object | Layer | Sharing | Description |
 | --- | --- | --- | --- |
 | `Person` | Intent | Shared | Owner identity (id, display, birthdate). Needed for RMD ages and life-transition events. |
-| `Account` | Intent | Shared | One real-world place where money sits. `kind` ∈ {asset, liability, income, expense}; `subkind` carries tax/usage semantics; optional `owner`. |
-| `AccountModel` | Intent | Shared | A named set of `Account`s with opening balances and opening cost basis. Typically shared across scenarios. |
+| `Account` | Intent | Shared | One real-world place where money sits. `kind` ∈ {asset, liability, income, expense}; `subkind` carries tax/usage semantics; optional `owner`. Holds one or more `Lot`s. |
+| `Lot` | Intent | Per-scenario | A position inside one account: symbol, acquired date, quantity, opening balance and cost basis (ADR-005). An account that is not split has one lot, `default`. Chains, rules and events refer to a lot as an account plus a lot column. |
+| `AccountModel` | Intent | Shared | A named set of `Account`s with, per lot, opening balance and opening cost basis. Typically shared across scenarios. |
 | `ScheduledTransaction` | Intent | Mostly shared | A *rule* that emits `TransferEvent`s on a cadence. Amount is computed by a typed `amount_rule` (fixed, percent-of-balance, RMD, SS benefit, …) so interest accrual, SS payments, withdrawals, and tax reconciliation all use the same machinery. |
 | `Calendar` | Intent | Per-scenario | An ordered list of `CalendarEvent`s. Represents the assumptions being compared. |
 | `CalendarEvent` | Intent | Per-scenario | A *patch* to the running scenario on a given date: change a rate, add/retire a scheduled transaction, swap an aux table, sell an asset, apply a life transition, etc. Bounded set of kinds; see ADR-003. |
@@ -40,15 +42,15 @@ Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to
 | `Scenario` | Intent | Per-comparison | `(AccountModel, Calendar, AuxTables, YearToDate, start, end)`. Identified by name; runs are reproducible from it. |
 | `YearToDate` | Intent | Per-scenario | Partial-first-year catch-up facts (ADR-003 §4.10): YTD wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (e.g. loss carryforwards). Posted as balance-neutral `TransferEvent`s at run start. Account-level state facts (year-end balances for RMD, cost-basis estimates) live on `AccountModel` instead. |
 | `SimulationRun` | Ledger | — | One execution. Stamps code/data versions, acting user, host, status. |
-| `SimulationStep` | Ledger | — | One month. Links to previous step (nullable for initial state), to applied `CalendarEvent`s, and owns the `AccountState` snapshot and `TransferEvent`s emitted in its window. |
-| `AccountState` | Ledger | — | `(step_id, account_id) → balance, cost_basis`. Long-and-narrow for pivoting. |
+| `SimulationStep` | Ledger | — | One month. Links to previous step (nullable for initial state), to applied `CalendarEvent`s, and owns the `LotState` snapshot and `TransferEvent`s emitted in its window. |
+| `LotState` | Ledger | — | `(step_id, lot_id) → balance, cost_basis, quantity`. The engine's state. Long-and-narrow for pivoting. `AccountState`, `(step_id, account_id) → balance, cost_basis`, is a view that sums it. |
 | `TransferEvent` | Ledger | — | Atomic ledger entry. Tagged with `tax_character` so the retrospective tax scan can bucket without parallel bookkeeping. |
 | `TaxYearSummary` | Ledger | — | Cache/audit row for each (run, year, bucket); always recomputable from `TransferEvent` + active aux tables. |
 
 ### Monthly step algorithm
 
 ```text
-load initial AccountState from AccountModel → step 0 (previous_step_id = NULL); post YearToDate catch-ups as balance-neutral TransferEvents
+load initial LotState from AccountModel → step 0 (previous_step_id = NULL); post YearToDate catch-ups as balance-neutral TransferEvents
 for each month m in [start..end]:
     apply Calendar events dated within m (in calendar order)
         → expand high-level events into primitive TransferEvents and rule mutations
@@ -56,7 +58,7 @@ for each month m in [start..end]:
     fire active ScheduledTransactions for m, ordered by rule priority:
         evaluate amount_rule(current_state, aux_tables, date)
         emit TransferEvent, mutate balances and cost basis
-    snapshot AccountState as end-of-month
+    snapshot LotState as end-of-month
     persist SimulationStep referencing previous step and applied events
 ```
 
@@ -71,7 +73,7 @@ Within-month ordering is **strictly by rule priority**, never by date. Priority 
 
 Liquidity is *not* a priority band. Refilling a drawn-down account is a
 look-ahead check on each debit, and overflow is a month-end sweep, both driven
-by the account's own `refill_chain`/`overflow_chain` rather than by a rule that
+by the lot's own `refill_chain`/`overflow_chain` (ADR-003 §4.3) rather than by a rule that
 has to be ordered last — see ADR-003 §4.7.
 
 ### Cross-cutting principles
@@ -120,7 +122,7 @@ src/analysis/sim/
     aux.py            # tax brackets, RMD factors, SS thresholds, inflation series helpers
     rules.py          # amount_rule registry; see ADR-003
     expansions.py     # high-level CalendarEvent expanders (sell_asset, life_transition, …)
-    state.py          # in-memory AccountState; invariants
+    state.py          # in-memory lot state; invariants
     engine.py         # run(scenario) -> SimulationRun
     storage.py        # per-scenario intent DB + per-run ledger DB, schema, DAOs
     loaders.py        # CSV → intent DB (built per-scenario; silently rebuilt on staleness)
@@ -161,7 +163,7 @@ These mutating commands are convenience wrappers around the same CSV edits an AI
 - Authoring overhead: every recurring item is a row in `scheduled.csv`, every assumption is data. Deliberate tradeoff — the visibility builds trust and doubles as a survivor checklist.
 - Single currency (USD cents) in v1. JPY inheritance is documented as unaddressed in `data/known_exclusions.md`; revisit if/when it materializes.
 - Forking is deferred. Scenarios are independent runs; conceptual forking lives in git. Schema affordance (`parent_run_id`, `fork_month`) is reserved.
-- Holdings/lots are reserved schema (ADR-002) but the engine ignores them in v1. Cost basis tracked at account level via running `cost_basis` mutated by basis-tagged transfer events.
+- Holdings and lots are built (ADR-005). Cost basis is tracked per lot, mutated by basis-tagged transfer events: a withdrawal splits its lot's basis pro-rata, and money moved into a basis-tracked lot (a purchase, an inheritance) adds to it. Growth is total return: dividends are not split out.
 - Roth conversions, sub-monthly cadences, ISO valuation, and contribution-limit enforcement are explicitly out of scope for v1, with rationale captured in `data/known_exclusions.md`.
 
 ## Related ADRs

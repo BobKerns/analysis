@@ -12,13 +12,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
-from typing import Collection
+from typing import TYPE_CHECKING, Collection
 
 import pandas as pd
 from rich.console import Console
 
-from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.types import AccountKind
+
+if TYPE_CHECKING:
+    from analysis.sim.connection import RunConnection, ScenarioConnection
 
 
 def _or_empty(value) -> str:
@@ -44,7 +46,7 @@ class AccountRow:
 
 
 def _rate_role(subkind: str) -> str:
-    cash = {"checking", "savings"}
+    cash = {"cash"}
     return "yield" if subkind in cash else "growth"
 
 
@@ -68,16 +70,26 @@ def _latest_rate_micros(
     return int(v) if v is not None else None
 
 
+def _members_by_account(sc: ScenarioConnection) -> pd.DataFrame:
+    """Opening balance and cost basis summed over each account's lots. Basis is
+    missing if any lot's basis is."""
+    members = sc.items("account_model_member")
+    grouped = members.groupby("account", sort=False)
+    return pd.DataFrame({
+        "opening_balance": grouped["opening_balance"].sum(),
+        "opening_cost_basis": grouped["opening_cost_basis"].sum(min_count=1).where(
+            grouped["opening_cost_basis"].count() == grouped["opening_balance"].size()
+        ),
+    })
+
+
 def load_accounts_view(
     sc: ScenarioConnection, *, as_of: str | None = None,
 ) -> list[AccountRow]:
     """Return accounts joined with model opening balances and percent-of-balance rate rules."""
     accounts = sc.items("account")
-    members = sc.items("account_model_member")
-    opening = (
-        members.set_index("account")["opening_balance"] if not members.empty
-        else None
-    )
+    members = _members_by_account(sc)
+    opening = members["opening_balance"] if not members.empty else None
     basis = members["opening_cost_basis"]
 
 
@@ -128,8 +140,7 @@ def accounts_dataframe(sc: ScenarioConnection, *, as_of: str | None = None):
     """Return ``load_accounts_view`` as a pandas DataFrame for notebook display."""
     rows = load_accounts_view(sc, as_of=as_of)
     df = pd.DataFrame([r.__dict__ for r in rows]).set_index("name")
-    model = sc.items("account_model_member").copy().set_index("account")
-    values = model["opening_cost_basis"]
+    values = _members_by_account(sc)["opening_cost_basis"]
     if df.empty:
         return df
     df["annual_rate"] = df["annual_rate_micros"].apply(

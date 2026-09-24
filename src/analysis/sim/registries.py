@@ -5,9 +5,11 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+
 ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     "asset": {
-        "checking", "savings", "brokerage_taxable", "traditional_ira", "roth_ira",
+        "cash", "brokerage_taxable", "traditional_ira", "roth_ira",
         "traditional_401k", "roth_401k", "hsa", "real_estate", "vehicle", "other_asset",
     },
     "liability": {"mortgage", "heloc", "credit_card", "other_liability"},
@@ -30,8 +32,8 @@ AMOUNT_RULE_KINDS: set[str] = {
 # Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
 # each interpreted per amount_rule_kind; see SERIES_RULE_KINDS below.
 SCHEDULED_CSV_HEADER: tuple[str, ...] = (
-    "name", "from_account", "to_account", "cadence", "month_of_year",
-    "amount_rule_kind", "interest_account", "person", "series",
+    "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
+    "month_of_year", "amount_rule_kind", "interest_account", "person", "series",
     "rate_micros", "claim_age", "amount", "base_date", "inflation_cadence",
     "tax_character", "tax_year", "start", "end", "priority", "ytd_amount", "ytd_preroll",
     "description", "meta_json", "params_json", "tags",
@@ -48,7 +50,7 @@ SERIES_RULE_KINDS: dict[str, str] = {
 # character of a leg drawn from an account depends on which concrete account
 # actually supplied the money, so this is looked up per-leg at runtime rather
 # than authored on the scheduled_transaction row. 'taxable' is deliberately
-# absent: `checking`/`savings` withdrawals return already-taxed principal
+# absent: `cash` withdrawals return already-taxed principal
 # ('none'), but a taxable brokerage withdrawal splits into `return_of_capital`
 # / `ltcg` legs based on the account's running cost basis (see
 # `engine._post_withdrawal`) -- returning None here is how this function
@@ -63,7 +65,7 @@ TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER: dict[str, str] = {
 
 # Subkinds whose 'taxable' tax_treatment still withdraws tax-free (principal,
 # already taxed when earned) -- i.e. cash-like accounts, not brokerage.
-TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX: set[str] = {"checking", "savings"}
+TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX: set[str] = {"cash"}
 
 
 def withdrawal_tax_character(tax_treatment: str | None, subkind: str) -> str | None:
@@ -86,7 +88,7 @@ CALENDAR_EVENT_KINDS: set[str] = {
 CADENCES: set[str] = {"monthly", "biweekly", "quarterly", "annual", "one_off"}
 
 TAX_CHARACTERS: set[str] = {
-    "ordinary", "ltcg", "gains", "deferred", "ss_benefit", "tax_free",
+    "ordinary", "ltcg", "stcg", "gains", "deferred", "ss_benefit", "tax_free",
     "tax_deferred_in", "tax_deferred_out", "return_of_capital", "property_tax", "none",
     # IRC §121 excluded portion of a home-sale gain: real gain, but not
     # taxed. Distinct from 'return_of_capital' (not gain at all) and from
@@ -99,9 +101,7 @@ TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 # Canonical accounts.csv column order (ADR-003 §4.2).
 ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
     "name", "kind", "subkind", "owner", "tax_treatment", "series",
-    "tax_character", "minimum_balance", "refill_chain", "refill_target",
-    "refill_amount", "maximum_balance", "overflow_chain",
-    "opened", "closed", "meta_json", "tags",
+    "tax_character", "opened", "closed", "meta_json", "tags",
 )
 
 # Kinds a chains/<kind>__<name>.csv file may declare (ADR-003 §4.7); a closed
@@ -168,6 +168,12 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
     "state_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
+    # Federal long-term capital gain rates: the same shape as federal_brackets,
+    # but a band's floor is the taxable income (ordinary income plus the gain,
+    # stacked on top) at which its rate starts. Optional: without it long-term
+    # gains are taxed as ordinary income.
+    "ltcg_brackets":
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
     "standard_deduction": ("effective_date", "filing_status", "amount"),
     "ss_taxation_thresholds":
         ("effective_date", "filing_status", "tier1_floor", "tier2_floor"),
@@ -176,6 +182,10 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "inflation": ("effective_date", "annual_rate_micros"),
     "filing_status": ("effective_date", "filing_status"),
     "rmd_start_age": ("effective_date", "start_age"),
+    # A security's price in decimal dollars (up to 6 places), one series per
+    # symbol; stored in the payload as `price_micros`. Used only to derive a
+    # lot's opening_balance from its quantity (ADR-005 §6), never monthly.
+    "security_price": ("effective_date", "price"),
     # One row per (category, effective_date): a federal/state credit or
     # rebate schedule that appears and disappears on its own timeline (25C,
     # 25D, 30C all had different 2025/2026 sunset dates under OBBBA).
@@ -188,8 +198,15 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
 
 # Per-aux-kind set of column names that hold dollar amounts in the CSV and must
 # be converted to integer cents during load.
+# Columns authored as decimal dollars but stored as integer micros of a dollar
+# (sub-cent precision), by kind: {kind: {csv column: payload key}}.
+AUX_DOLLAR_MICROS_COLUMNS: dict[str, dict[str, str]] = {
+    "security_price": {"price": "price_micros"},
+}
+
 AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "federal_brackets": frozenset({"floor"}),
+    "ltcg_brackets": frozenset({"floor"}),
     "state_brackets": frozenset({"floor"}),
     "standard_deduction": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
@@ -206,8 +223,8 @@ SCENARIO_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 CALENDAR_HEADER: tuple[str, ...] = (
-    "date", "kind", "scheduled_name", "account_1", "account_2", "series",
-    "amount", "param_date", "tax_character", "params_json", "description",
+    "date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
+    "series", "amount", "param_date", "tax_character", "params_json", "description",
     "tags",
 )
 
@@ -217,7 +234,16 @@ PERSONS_CSV_HEADER: tuple[str, ...] = (
 )
 
 ACCOUNT_VALUES_CSV_HEADER: tuple[str, ...] = (
-    "account_name", "opening_balance", "opening_cost_basis", "prior_year_end_balance",
+    "account_name", "lot", "symbol", "acquired", "quantity", "series",
+    "opening_balance", "opening_cost_basis", "prior_year_end_balance",
+    "minimum_balance", "maximum_balance", "refill_chain", "refill_lot",
+    "refill_target", "refill_amount", "overflow_chain", "overflow_lot",
+)
+
+# The per-lot balance-management columns of account_values.csv (ADR-003 §4.3).
+CASH_MANAGEMENT_COLUMNS: tuple[str, ...] = (
+    "minimum_balance", "maximum_balance", "refill_chain", "refill_lot",
+    "refill_target", "refill_amount", "overflow_chain", "overflow_lot",
 )
 
 
@@ -245,3 +271,16 @@ def parse_tags(raw: str) -> list[tuple[str, str]]:
 def format_tags(tags: list[tuple[str, str]]) -> str:
     """Inverse of ``parse_tags``: render a sorted, de-duplicated tag string."""
     return " ".join(f"{r}:{n}" for r, n in sorted(set(tags)))
+
+
+DEFAULT_LOT = "default"
+
+
+def leaf_chain_name(account: str, lot: str, subkind: str = "") -> str:
+    """Name of the leaf chain for one lot (ADR-005 §3): the bare account name
+    for the default lot of a non-investment account, ``account:lot`` otherwise.
+    Investment accounts are always spelled ``account:lot``.
+    """
+    if lot == DEFAULT_LOT and subkind not in INVESTMENT_ASSET_SUBKINDS:
+        return account
+    return f"{account}:{lot}"

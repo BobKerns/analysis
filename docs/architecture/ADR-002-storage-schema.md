@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
+- **Amended by:** ADR-005 (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed.
 - **Related:** ADR-001 (overall architecture), ADR-003 (rule and event-kind registries — referenced by `amount_rule_kind` and `calendar_event.kind` values used below), ADR-004 (reproducibility stamps on the run manifest).
 
 ## Context
@@ -14,7 +15,7 @@ The schema must:
 - Be queryable ad-hoc by both humans and LLMs (long-narrow tables, descriptive names, stable shape).
 - Support `GROUP BY`-driven reporting at any grain: account, subkind, owner, year, reason.
 - Make money operations exact (`INTEGER` cents, no floats).
-- Reserve affordances for features deferred to later phases (holdings/lots, forking) without future migration.
+- Reserve affordances for features deferred to later phases (forking) without future migration. Holdings and lots were reserved here and are now built, differently: see ADR-005.
 - Carry enough provenance on every run file to regenerate any chart.
 - Support cross-run comparison via `ATTACH DATABASE` rather than by sharing a database.
 
@@ -36,7 +37,7 @@ data_repo/
         retire_2030/
             scenario.csv    # one-row scenario header (incl. parent_scenario)
             accounts.csv    # every Account this scenario models (ADR-003 §4.2)
-            account_values.csv # opening balances/bases (ADR-003 §4.3)
+            account_values.csv # opening balances/bases, one row per lot (ADR-003 §4.3, ADR-005)
             scheduled.csv   # this scenario's ScheduledTransactions
             calendar.csv    # CalendarEvents
             lifespan.csv    # per-person final month
@@ -92,7 +93,7 @@ state/
 
 | Table | Intent file | Run file |
 | --- | --- | --- |
-| `person`, `account` | ✓ | ✓ (snapshot) |
+| `person`, `account`, `security` | ✓ | ✓ (snapshot) |
 | `account_model`, `account_model_member` | ✓ | ✓ (snapshot) |
 | `scheduled_transaction` | ✓ | ✓ (snapshot) |
 | `chain`, `chain_steps` | ✓ | ✓ (snapshot) |
@@ -100,39 +101,41 @@ state/
 | `aux_table` | ✓ | ✓ (snapshot) |
 | `scenario` (one row) | ✓ | ✓ (snapshot) |
 | `person_lifespan` | ✓ | ✓ (snapshot) |
+| `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | ✓ | ✓ (snapshot) |
 | `year_to_date` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `account_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary` | — | ✓ |
-| `holding`, `lot` (reserved) | ✓ | ✓ (snapshot) |
-| `schema_overview` | ✓ | ✓ |
-| Views (`net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state` | — | ✓ |
+| `schema_overview` (planned; not yet created) | ✓ | ✓ |
+| Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
 The snapshot in a run file is byte-comparable to the corresponding intent file's tables at run time — and is the audit trail of what intent the run actually used.
 
 ### Intent layer DDL
 
-These tables exist in both intent files and (as snapshot) run files.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 23) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
--- People (owners of accounts; needed for RMD ages, life transitions).
--- Doubles as the operator-identity list: `$ANALYSIS_USER` must match a row id here.
 CREATE TABLE person (
-    id          TEXT PRIMARY KEY,             -- short id, e.g. 'rwk', 'mwk'
+    id          TEXT PRIMARY KEY,
     display     TEXT NOT NULL,
-    birthdate   TEXT NOT NULL,                -- ISO date
-    role        TEXT,                         -- informational; e.g. 'primary', 'secondary';
-                                              -- NULL for persons-not-operators (deceased
-                                              -- ancestors, household pseudo-rows, future heirs)
+    birthdate   TEXT NOT NULL,
+    role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}'
 );
 
--- Accounts: the four bookkeeping roots × subkind
+-- Names for the symbols lots hold (data repo securities.csv); shared reference
+-- data like `person`. A symbol without a row is simply unnamed.
+CREATE TABLE security (
+    symbol  TEXT PRIMARY KEY,
+    name    TEXT NOT NULL
+);
+
 CREATE TABLE account (
     id              INTEGER PRIMARY KEY,
     name            TEXT NOT NULL UNIQUE,
     kind            TEXT NOT NULL CHECK (kind IN ('asset','liability','income','expense')),
-    subkind         TEXT NOT NULL,            -- see ADR-003 §1
+    subkind         TEXT NOT NULL,
     owner           TEXT REFERENCES person(id),
     tax_treatment   TEXT CHECK (tax_treatment IN
                         ('taxable','tax_deferred','tax_free','none')),
@@ -140,7 +143,7 @@ CREATE TABLE account (
     closed          TEXT,
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
-        (kind = 'asset' AND subkind IN ('checking','savings','brokerage_taxable',
+        (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
             'traditional_ira','roth_ira','traditional_401k','roth_401k','hsa',
             'real_estate','vehicle','other_asset'))
         OR (kind = 'liability' AND subkind IN ('mortgage','heloc','credit_card',
@@ -155,78 +158,20 @@ CREATE TABLE account (
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
 CREATE INDEX idx_account_owner ON account(owner);
 
--- AccountModel: one row per intent file (the model this scenario uses)
-CREATE TABLE account_model (
-    id          INTEGER PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
-    description TEXT,
-    created_at  TEXT NOT NULL
-);
-
-CREATE TABLE account_model_member (
-    model_id                INTEGER NOT NULL REFERENCES account_model(id),
-    account_id              INTEGER NOT NULL REFERENCES account(id),
-    opening_balance         INTEGER NOT NULL,     -- cents
-    opening_cost_basis      INTEGER,              -- cents; NULL when basis is not tracked
-    prior_year_end_balance  INTEGER,              -- cents at Dec 31 preceding scenario.start;
-                                                  -- required for traditional_ira / traditional_401k
-                                                  -- so the partial-first-year RMD has a Dec-31
-                                                  -- balance to divide by (after year 1 the engine
-                                                  -- reads it from account_state). NULL otherwise.
-    PRIMARY KEY (model_id, account_id)
-);
-
--- ScheduledTransaction: a rule that emits transfers on a cadence.
--- Authored in scheduled.csv, or synthesized at expansion time by a calendar event
--- (in which case created_by_event_id points to that event — see ADR-003 §2 invariant).
-CREATE TABLE scheduled_transaction (
-    id                      INTEGER PRIMARY KEY,
-    model_id                INTEGER NOT NULL REFERENCES account_model(id),
-    name                    TEXT NOT NULL,
-    from_account            INTEGER NOT NULL REFERENCES account(id),
-    -- Destination is always a chain: real accounts have implicit leaf chains;
-    -- named liquidity chains are interior chains (ADR-003 §4.7).
-    to_account              INTEGER NOT NULL REFERENCES chain(id),
-    cadence                 TEXT NOT NULL CHECK (cadence IN
-                                ('monthly','quarterly','annual','one_off')),
-    month_of_year           INTEGER CHECK (month_of_year BETWEEN 1 AND 12),
-    amount_rule_kind        TEXT NOT NULL,    -- see ADR-003
-    amount_rule_params_json TEXT NOT NULL DEFAULT '{}',
-    amount_cents            INTEGER,          -- cents in DB; CSV `amount` uses decimal dollars (loader converts). Meaning per amount_rule_kind
-    base_date               TEXT,             -- for inflated rules
-    series                  TEXT,             -- inflation/rate/COLA series per amount_rule_kind; 'fixed' = no inflation
-    tax_character           TEXT NOT NULL CHECK (tax_character IN
-                                ('ordinary','ltcg','gains','deferred',
-                                 'ss_benefit','tax_free',
-                                 'tax_deferred_in','tax_deferred_out',
-                                 'return_of_capital','property_tax','none')),
-    start                   TEXT NOT NULL,
-    "end"                   TEXT,             -- NULL = open-ended
-    priority                INTEGER NOT NULL DEFAULT 500,
-    description             TEXT,
-    created_by_event_id     INTEGER REFERENCES calendar_event(id),
-                                              -- NULL for authored rows; set for
-                                              -- rules synthesized by calendar-event expansion
-    meta_json               TEXT NOT NULL DEFAULT '{}',
-    UNIQUE (model_id, name)
-);
-CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
-CREATE INDEX idx_sched_created_by ON scheduled_transaction(created_by_event_id);
-
 -- Liquidity chains (ADR-003 §4.7). A `chain` row is either a LEAF (account_id
 -- set: the chain IS that account) or an INTERIOR named chain (account_id NULL,
--- with >=1 chain_steps rows, walked in step_order until the amount need is
--- satisfied). Every real account gets an implicit leaf chain at load time
+-- with >=1 chain_steps rows, walked in step_order until a step's amount need
+-- is satisfied). Every real account gets an implicit leaf chain at load time
 -- (name = account.name, kind = account.kind), so `chain.name` is one namespace
--- covering both kinds -- account.refill_chain_id/overflow_chain_id,
--- chain_steps.draw_from_chain_id, and transfer_event.from_account/to_account
--- always reference `chain(id)`, never `account(id)` directly, so no
--- union-typed reference column is ever needed.
+-- covering both kinds -- account.refill_chain_id/overflow_chain_id and
+-- chain_steps.draw_from_chain_id always reference `chain(id)`, never
+-- `account(id)` directly, so no union-typed reference column is ever needed.
 CREATE TABLE chain (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
     kind       TEXT NOT NULL,
-    account_id INTEGER REFERENCES account(id)
+    account_id INTEGER REFERENCES account(id),
+    lot_id     INTEGER REFERENCES account_model_member(id)
 );
 CREATE INDEX idx_chain_account ON chain(account_id);
 
@@ -255,7 +200,48 @@ CREATE TABLE chain_steps (
     UNIQUE (chain_id, step_order)
 );
 
--- Calendar: ordered patches to a scenario (one calendar per intent file)
+CREATE TABLE account_model (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT,
+    created_at  TEXT NOT NULL
+);
+
+-- One row per lot (ADR-005): a lot is a position inside one account, and the
+-- engine keys balances, basis and quantity on `id`. Accounts that are not split
+-- have a single lot labelled 'default'.
+--
+-- Balance management is per lot (ADR-003 §4.3): a debit that would drop the
+-- lot's balance below minimum_balance_cents triggers a look-ahead draw on
+-- refill_chain_id BEFORE the debit posts (not a month-end reconciliation);
+-- when it would exceed maximum_balance_cents (NULL = unbounded), the excess is
+-- swept into overflow_chain_id at month end. Both chains are resolved
+-- recursively, and may name other lots of the same account.
+-- refill_target_cents/refill_amount_cents are mutually exclusive: the former
+-- refills to that fixed level, the latter by that fixed amount (or enough to
+-- reach minimum_balance_cents if that is greater); neither set means refill
+-- exactly to minimum_balance_cents.
+CREATE TABLE account_model_member (
+    id                      INTEGER PRIMARY KEY,
+    model_id                INTEGER NOT NULL REFERENCES account_model(id),
+    account_id              INTEGER NOT NULL REFERENCES account(id),
+    lot                     TEXT NOT NULL DEFAULT 'default',
+    symbol                  TEXT,
+    acquired                TEXT,
+    quantity_micros         INTEGER,
+    series                  TEXT,
+    opening_balance         INTEGER NOT NULL,
+    opening_cost_basis      INTEGER,
+    prior_year_end_balance  INTEGER,
+    minimum_balance_cents   INTEGER NOT NULL DEFAULT 0,
+    refill_chain_id         INTEGER REFERENCES chain(id),
+    refill_target_cents     INTEGER,
+    refill_amount_cents     INTEGER,
+    maximum_balance_cents   INTEGER,
+    overflow_chain_id       INTEGER REFERENCES chain(id),
+    UNIQUE (model_id, account_id, lot)
+);
+
 CREATE TABLE calendar (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
@@ -266,20 +252,62 @@ CREATE TABLE calendar (
 CREATE TABLE calendar_event (
     id           INTEGER PRIMARY KEY,
     calendar_id  INTEGER NOT NULL REFERENCES calendar(id),
-    date         TEXT NOT NULL,               -- month-end
-    kind         TEXT NOT NULL,               -- see ADR-003
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    description  TEXT
+    date         TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    scheduled_name TEXT,
+    account_1      TEXT,
+    account_2      TEXT,
+    series         TEXT,
+    amount         INTEGER,
+    param_date     TEXT,
+    tax_character  TEXT,
+    payload_json   TEXT,
+    description    TEXT
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
 
--- Auxiliary tables: versioned reference data
--- kind ∈ {federal_brackets, state_brackets, standard_deduction,
---         ss_taxation_thresholds, rmd_factors, inflation, rate,
---         filing_status, rmd_start_age, …}
--- series is a subkey: for 'inflation' it's the series name ('cpi'); for 'rate'
--- it's the account name; NULL when not applicable.
+CREATE TABLE scheduled_transaction (
+    id                      INTEGER PRIMARY KEY,
+    model_id                INTEGER NOT NULL REFERENCES account_model(id),
+    name                    TEXT NOT NULL,
+    from_account            INTEGER NOT NULL REFERENCES chain(id),
+    to_account              INTEGER NOT NULL REFERENCES chain(id),
+    cadence                 TEXT NOT NULL CHECK (cadence IN
+                                ('monthly','biweekly','quarterly','annual','one_off')),
+    month_of_year           INTEGER CHECK (month_of_year BETWEEN 1 AND 12),
+    amount_rule_kind        TEXT NOT NULL,
+    interest_account        TEXT,
+    person                  TEXT REFERENCES person(id),
+    -- `series` and `amount_cents` are interpreted per amount_rule_kind:
+    -- inflation/rate/COLA series, and base amount/PIA/threshold respectively.
+    series                  TEXT,
+    rate_micros             INTEGER,
+    claim_age               INTEGER,
+    amount_cents            INTEGER,
+    params_json             TEXT,
+    base_date               TEXT,
+    tax_character           TEXT NOT NULL CHECK (tax_character IN
+                                ('ordinary','ltcg','stcg','gains','deferred',
+                                 'ss_benefit','tax_free',
+                                 'tax_deferred_in','tax_deferred_out',
+                                 'return_of_capital','property_tax','none',
+                                 'excluded_gain')),
+    start                   TEXT NOT NULL,
+    "end"                   TEXT,
+    priority                INTEGER NOT NULL DEFAULT 500,
+    description             TEXT,
+    created_by_event_id     INTEGER REFERENCES calendar_event(id),
+    meta_json               TEXT NOT NULL DEFAULT '{}',
+    ytd_amount              INTEGER,
+    ytd_preroll             INTEGER NOT NULL DEFAULT 0,
+    inflation_cadence       TEXT CHECK (inflation_cadence IN ('monthly','annual')),
+    tax_year                INTEGER,
+    UNIQUE (model_id, name)
+);
+CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
+CREATE INDEX idx_sched_created_by ON scheduled_transaction(created_by_event_id);
+
 CREATE TABLE aux_table (
     id             INTEGER PRIMARY KEY,
     kind           TEXT NOT NULL,
@@ -290,7 +318,6 @@ CREATE TABLE aux_table (
 );
 CREATE INDEX idx_aux_lookup ON aux_table(kind, series, effective_date);
 
--- Scenario: exactly one row per intent file
 CREATE TABLE scenario (
     id                INTEGER PRIMARY KEY,
     name              TEXT NOT NULL UNIQUE,
@@ -299,11 +326,77 @@ CREATE TABLE scenario (
     calendar_id       INTEGER NOT NULL REFERENCES calendar(id),
     start             TEXT NOT NULL,
     "end"             TEXT NOT NULL,
-    seed              INTEGER,                -- reserved for ensembles; unused in v1
-    parent_id         INTEGER REFERENCES scenario(id),  -- provenance (cross-file by name in practice)
+    seed              INTEGER,
+    parent_id         INTEGER REFERENCES scenario(id),
     created_at        TEXT NOT NULL,
     created_by        TEXT NOT NULL,
     meta_json         TEXT NOT NULL DEFAULT '{}'
+);
+
+-- Optional per-scenario lifespan override (ADR-003 §4.9). When the
+-- simulated month exceeds final_month, every scheduled_transaction
+-- associated with this person (explicit `person` column, or owner of
+-- from_account/to_account) stops firing for the remainder of the run.
+CREATE TABLE person_lifespan (
+    scenario_id INTEGER NOT NULL REFERENCES scenario(id),
+    person      TEXT NOT NULL REFERENCES person(id),
+    final_month TEXT NOT NULL,
+    PRIMARY KEY (scenario_id, person)
+);
+
+-- Partial-first-year catch-up facts (ADR-003 §4.10) -- consolidates what used
+-- to be split across two mechanisms: a single row's own YTD amount (not tied
+-- to any one scheduled_transaction's own amount, e.g. investment growth,
+-- SS already received) and prior tax-year activity (superseded
+-- `prior_tax_activity`: wages/withholding YTD, loss carryforwards from a
+-- fully-prior tax year). Posted as balance-neutral transfer_event rows
+-- (reason_kind='ytd') so tax/reporting queries see them without double-
+-- counting against account_model_member.opening_balance. `year` defaults to
+-- scenario.start's year (dated the month before start); an explicit
+-- different year is dated that year's Dec 31.
+CREATE TABLE year_to_date (
+    id            INTEGER PRIMARY KEY,
+    scenario_id   INTEGER NOT NULL REFERENCES scenario(id),
+    name          TEXT NOT NULL,
+    from_account  INTEGER NOT NULL REFERENCES account(id),
+    to_account    INTEGER NOT NULL REFERENCES account(id),
+    from_lot_id   INTEGER NOT NULL REFERENCES account_model_member(id),
+    to_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
+    amount        INTEGER NOT NULL,
+    tax_character TEXT NOT NULL CHECK (tax_character IN
+                        ('ordinary','ltcg','stcg','gains','deferred',
+                         'ss_benefit','tax_free',
+                         'tax_deferred_in','tax_deferred_out',
+                         'return_of_capital','property_tax','none',
+                         'excluded_gain')),
+    year          INTEGER,
+    description   TEXT,
+    UNIQUE (scenario_id, name)
+);
+
+CREATE TABLE tag (
+    id    INTEGER PRIMARY KEY,
+    role  TEXT NOT NULL,
+    name  TEXT NOT NULL,
+    UNIQUE (role, name)
+);
+
+CREATE TABLE account_tag (
+    account_id INTEGER NOT NULL REFERENCES account(id),
+    tag_id     INTEGER NOT NULL REFERENCES tag(id),
+    PRIMARY KEY (account_id, tag_id)
+);
+
+CREATE TABLE scheduled_transaction_tag (
+    scheduled_transaction_id INTEGER NOT NULL REFERENCES scheduled_transaction(id),
+    tag_id                   INTEGER NOT NULL REFERENCES tag(id),
+    PRIMARY KEY (scheduled_transaction_id, tag_id)
+);
+
+CREATE TABLE calendar_event_tag (
+    calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
+    tag_id            INTEGER NOT NULL REFERENCES tag(id),
+    PRIMARY KEY (calendar_event_id, tag_id)
 );
 ```
 
@@ -315,15 +408,15 @@ Single-row table; the intent file's identity card.
 CREATE TABLE intent_manifest (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     scenario_name   TEXT NOT NULL,
-    schema_version  INTEGER NOT NULL,         -- simulator migration version
-    code_version    TEXT NOT NULL,            -- git SHA of code repo at load time
-    data_version    TEXT NOT NULL,            -- git SHA of data repo
-    data_dirty      INTEGER NOT NULL,         -- 0/1
-    scenario_tree_id TEXT NOT NULL,           -- git tree SHA covering the scenario folder + shared base subset; valid even when data_dirty=1
+    schema_version  INTEGER NOT NULL,
+    code_version    TEXT NOT NULL,
+    data_version    TEXT NOT NULL,
+    data_dirty      INTEGER NOT NULL,
+    scenario_tree_id TEXT NOT NULL,
     data_repo_path  TEXT NOT NULL,
     data_repo_name  TEXT NOT NULL,
     loaded_at       TEXT NOT NULL,
-    loaded_by       TEXT NOT NULL,            -- $ANALYSIS_USER
+    loaded_by       TEXT NOT NULL,
     host            TEXT NOT NULL
 );
 ```
@@ -338,7 +431,6 @@ This gives a single uniform identifier for "what intent did this run consume" �
 ### Ledger layer DDL (run files only)
 
 ```sql
--- The run's identity card; exactly one row.
 CREATE TABLE simulation_run (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     scenario_name   TEXT NOT NULL,
@@ -347,67 +439,78 @@ CREATE TABLE simulation_run (
                         ('running','succeeded','failed','halted')),
     started_at      TEXT NOT NULL,
     finished_at     TEXT,
-    failure_reason  TEXT,                     -- e.g. 'WaterfallExhausted: 2032-08 short $4,200 …'
-    -- reproducibility (see ADR-004)
+    failure_reason  TEXT,
     code_version    TEXT NOT NULL,
     code_dirty      INTEGER NOT NULL,
     code_repo_path  TEXT NOT NULL,
     data_version    TEXT NOT NULL,
     data_dirty      INTEGER NOT NULL,
-    scenario_tree_id TEXT NOT NULL,           -- copied from intent_manifest at run time
+    scenario_tree_id TEXT NOT NULL,
     data_repo_path  TEXT NOT NULL,
     data_repo_name  TEXT NOT NULL,
     allow_dirty_data INTEGER NOT NULL DEFAULT 0,
     allow_dirty_code INTEGER NOT NULL DEFAULT 0,
-    -- identity (audit only; excluded from determinism key)
     run_by          TEXT NOT NULL,
     host            TEXT NOT NULL,
     python_version  TEXT NOT NULL,
-    -- invocation (for replay)
-    run_args_json     TEXT NOT NULL DEFAULT '{}',
+    run_args_json   TEXT NOT NULL DEFAULT '{}',
     engine_options_json TEXT NOT NULL DEFAULT '{}',
-    -- forking (reserved, unused in v1)
-    parent_run_path TEXT,                     -- path to a previous run file
+    parent_run_path TEXT,
     fork_month      TEXT
 );
 
 CREATE TABLE simulation_step (
     id               INTEGER PRIMARY KEY,
-    step_index       INTEGER NOT NULL UNIQUE, -- 0 = initial state, 1 = first month, …
-    month            TEXT NOT NULL,           -- month-end date
-    previous_step_id INTEGER REFERENCES simulation_step(id)  -- NULL only when step_index=0
+    step_index       INTEGER NOT NULL UNIQUE,
+    month            TEXT NOT NULL,
+    previous_step_id INTEGER REFERENCES simulation_step(id)
 );
 CREATE INDEX idx_step_month ON simulation_step(month);
 
-CREATE TABLE account_state (
-    step_id     INTEGER NOT NULL REFERENCES simulation_step(id),
-    account_id  INTEGER NOT NULL REFERENCES account(id),
-    balance     INTEGER NOT NULL,             -- cents
-    cost_basis  INTEGER,                      -- cents; NULL when basis is not tracked
-    PRIMARY KEY (step_id, account_id)
+CREATE TABLE lot_state (
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    lot_id          INTEGER NOT NULL REFERENCES account_model_member(id),
+    balance         INTEGER NOT NULL,
+    cost_basis      INTEGER,
+    quantity_micros INTEGER,
+    PRIMARY KEY (step_id, lot_id)
 );
-CREATE INDEX idx_state_account ON account_state(account_id, step_id);
+CREATE INDEX idx_lot_state_lot ON lot_state(lot_id, step_id);
 
--- Atomic ledger entries; one row per dollar movement.
--- Per ADR-003 §2, every row traces to exactly one rule: reason_kind='rule' with
--- reason_id = scheduled_transaction.id. The 'initial' kind is reserved for the
--- synthetic per-account opening-balance rule materialized at run start.
+-- Account-level view of lot_state. Basis is NULL if any lot's basis is
+-- unknown, rather than under-reporting.
+CREATE VIEW account_state AS
+SELECT ls.step_id, m.account_id, SUM(ls.balance) AS balance,
+       CASE WHEN COUNT(ls.cost_basis) < COUNT(*) THEN NULL
+            ELSE SUM(ls.cost_basis) END AS cost_basis
+FROM lot_state ls
+JOIN account_model_member m ON m.id = ls.lot_id
+GROUP BY ls.step_id, m.account_id;
+
 CREATE TABLE transfer_event (
     id              INTEGER PRIMARY KEY,
     step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
-    date            TEXT NOT NULL,            -- month-end
+    date            TEXT NOT NULL,
     from_account    INTEGER NOT NULL REFERENCES account(id),
     to_account      INTEGER NOT NULL REFERENCES account(id),
-    amount          INTEGER NOT NULL,         -- cents, always non-negative
-    requested_cents INTEGER NOT NULL,         -- original triggering rule's ask; same on every leg of one draw
-    remainder_cents INTEGER NOT NULL,         -- requested_cents still outstanding after this leg (0 once satisfied)
+    amount          INTEGER NOT NULL,
+    -- Total amount asked for by the original triggering rule/event -- the
+    -- SAME value on every leg of one draw, not that leg's own recursively-
+    -- allocated slice, so a chain's legs can be summed/scanned to see how
+    -- one request broke down across accounts. `remainder` is how much of
+    -- that original request is still outstanding after this leg posted
+    -- (0 once fully satisfied); for a single-leg, non-chain transfer,
+    -- requested == amount and remainder == 0.
+    requested_cents INTEGER NOT NULL,
+    remainder_cents INTEGER NOT NULL,
+    tax_year        INTEGER,
     tax_character   TEXT NOT NULL,
-    reason_kind     TEXT NOT NULL CHECK (reason_kind IN ('rule','initial')),
-    reason_id       INTEGER,                  -- scheduled_transaction.id when 'rule';
-                                              -- opaque per-account id when 'initial'
-    parent_event_id INTEGER REFERENCES transfer_event(id),  -- groups multi-leg siblings from one rule firing
-    from_holding_id INTEGER REFERENCES holding(id),  -- reserved; NULL in v1
-    to_holding_id   INTEGER REFERENCES holding(id),  -- reserved; NULL in v1
+    reason_kind     TEXT NOT NULL CHECK (reason_kind IN
+                        ('rule','initial','ytd','ytd_rule','refill','overflow')),
+    reason_id       INTEGER,
+    parent_event_id INTEGER REFERENCES transfer_event(id),
+    from_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
+    to_lot_id       INTEGER NOT NULL REFERENCES account_model_member(id),
     meta_json       TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
@@ -423,43 +526,26 @@ CREATE TABLE applied_calendar_event (
     PRIMARY KEY (step_id, calendar_event_id)
 );
 
--- Cache + audit trail for the retrospective tax scan
 CREATE TABLE tax_year_summary (
     year          INTEGER NOT NULL,
-    bucket        TEXT NOT NULL,              -- ordinary, ltcg, ss_benefit_taxable,
-                                              -- standard_deduction, federal_tax, state_tax, …
+    bucket        TEXT NOT NULL,
     amount        INTEGER NOT NULL,
     computed_at   TEXT NOT NULL,
     PRIMARY KEY (year, bucket)
 );
+
+CREATE TABLE inflation_index_state (
+    step_id                  INTEGER NOT NULL REFERENCES simulation_step(id),
+    series                   TEXT NOT NULL,
+    cumulative_index_micros  INTEGER NOT NULL,
+    PRIMARY KEY (step_id, series)
+);
+CREATE INDEX idx_inflation_state_series ON inflation_index_state(series, step_id);
 ```
 
-### Reserved schema (present in both file kinds; v1 unused)
+### Holdings and lots
 
-```sql
--- Holdings + lots: enable rebalancing analysis later without migration.
--- Defined in both intent and run files so the snapshot stays consistent.
-CREATE TABLE holding (
-    id          INTEGER PRIMARY KEY,
-    account_id  INTEGER NOT NULL REFERENCES account(id),
-    symbol      TEXT NOT NULL,
-    name        TEXT,
-    asset_class TEXT,
-    meta_json   TEXT NOT NULL DEFAULT '{}',
-    UNIQUE (account_id, symbol)
-);
-
-CREATE TABLE lot (
-    id                INTEGER PRIMARY KEY,
-    holding_id        INTEGER NOT NULL REFERENCES holding(id),
-    acquired          TEXT NOT NULL,
-    quantity_micros   INTEGER NOT NULL,       -- shares × 1e6 (fractional shares)
-    cost_basis_total  INTEGER NOT NULL,       -- cents
-    source_note       TEXT
-);
-```
-
-The `from_holding_id` / `to_holding_id` columns on `transfer_event` are inlined into its `CREATE TABLE` above so v1 ships with no follow-up `ALTER TABLE`s.
+This ADR originally reserved `holding` and `lot` tables and `transfer_event.from_holding_id` / `to_holding_id`. They were never used and are gone. A lot is a row of `account_model_member` (above), the engine's state is `lot_state`, and `transfer_event` records the lots a transfer moves between; ADR-005 has the design.
 
 ### Schema priming (both file kinds)
 
@@ -479,23 +565,24 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `person` | Account owners; carries birthdate for RMD-age calculations and life-transition events. |
 | `account` | One row per real-world place money sits; `kind` is the bookkeeping root (asset/liability/income/expense), `subkind` carries tax/usage semantics. |
 | `account_model` | The account bundle this scenario uses (one row per intent/run file). |
-| `account_model_member` | Opening balance, opening cost basis, and prior-Dec-31 balance (for partial-first-year RMD) for each account in the model. |
+| `account_model_member` | One row per lot: symbol, acquired date, quantity, opening balance, opening cost basis, and prior-Dec-31 balance (for partial-first-year RMD) of each position in each account in the model. |
+| `security` | The name of each symbol lots hold (from `securities.csv`). |
 | `scheduled_transaction` | Recurring or one-off rule that emits transfer events on a cadence; `amount_rule_kind` selects the formula. |
-| `chain` | A place money can be drawn from or deposited into: either a leaf (one account) or a named, ordered, reusable liquidity chain. One namespace over both. |
+| `chain` | A place money can be drawn from or deposited into: either a leaf (one lot) or a named, ordered, reusable liquidity chain. One namespace over both. |
 | `chain_steps` | The ordered steps of an interior chain — which chain each step draws from, and the maximum/percent allocation limiting that step. |
 | `calendar` | The patch sequence this scenario applies to the running model (one row per intent/run file). |
-| `calendar_event` | One patch on one date; `kind` selects the semantics, `payload_json` carries the parameters. |
+| `calendar_event` | One patch on one date; `kind` selects the semantics; the common parameters are columns (`scheduled_name`, `account_1`, `account_2`, `series`, `amount`, `param_date`, `tax_character`) and `payload_json` carries the rest. |
 | `aux_table` | Versioned reference data: tax brackets, RMD divisors, inflation series, per-account rates, filing status. |
 | `scenario` | The scenario this file represents (one row). |
 | `person_lifespan` | Optional per-person final_month override for a scenario (ADR-003 §4.9). |
 | `year_to_date` | Partial-first-year catch-up facts (ADR-003 §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
 | `simulation_step` | One month inside the run; links to the previous step. |
-| `account_state` | Per-account balance and cost basis at the end of one step; long-narrow for pivoting. |
+| `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
-| `holding` | Per-account holdings (reserved; unused in v1). |
-| `lot` | Tax lots within a holding (reserved; unused in v1). |
+| `inflation_index_state` | Cumulative inflation index per series at the end of each step; the `inflation_index` and constant-dollar views read it. |
+| `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | Role/name labels and their junctions to accounts, rules and calendar events. |
 | `schema_overview` | This table; one short description per table, for human and LLM readers. |
 
 ### Views
@@ -503,8 +590,6 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 Defined in run files only. Intent files may define intent-only views in future; none in v1.
 
 ```sql
--- Net worth = sum of asset balances minus sum of liability balances.
--- Income/expense flows are excluded (they're flow accounts, not stock).
 CREATE VIEW net_worth AS
 SELECT s.month,
        SUM(CASE WHEN a.kind = 'asset'     THEN st.balance
@@ -515,7 +600,31 @@ JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
 GROUP BY s.month;
 
--- Per-account balance over time (asset and liability accounts).
+CREATE VIEW inflation_index AS
+SELECT s.month,
+       iis.series,
+       iis.cumulative_index_micros,
+       iis.cumulative_index_micros - 1000000 AS cumulative_inflation_micros
+FROM simulation_step s
+JOIN inflation_index_state iis ON iis.step_id = s.id;
+
+CREATE VIEW net_worth_constant_dollars AS
+SELECT nw.month,
+       ii.series AS inflation_series,
+       nw.net_worth AS nominal_cents,
+       ii.cumulative_index_micros,
+       (nw.net_worth * 1000000) / ii.cumulative_index_micros AS constant_cents
+FROM net_worth nw
+JOIN inflation_index ii ON ii.month = nw.month;
+
+CREATE VIEW net_worth_constant_cpi AS
+SELECT month,
+       nominal_cents,
+       cumulative_index_micros,
+       constant_cents
+FROM net_worth_constant_dollars
+WHERE inflation_series = 'cpi';
+
 CREATE VIEW balance_by_account AS
 SELECT s.month, a.id AS account_id, a.name, a.kind, a.subkind,
        st.balance, st.cost_basis
@@ -524,7 +633,16 @@ JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
 WHERE a.kind IN ('asset','liability');
 
--- Aggregated by subkind: "tax-deferred vs. taxable vs. Roth vs. cash vs. real estate".
+-- One row per lot per month: the holdings inside each account.
+CREATE VIEW balance_by_lot AS
+SELECT s.month, a.id AS account_id, a.name AS account, m.id AS lot_id, m.lot,
+       m.symbol, a.kind, a.subkind, ls.balance, ls.cost_basis, ls.quantity_micros
+FROM simulation_step s
+JOIN lot_state ls ON ls.step_id = s.id
+JOIN account_model_member m ON m.id = ls.lot_id
+JOIN account a ON a.id = m.account_id
+WHERE a.kind IN ('asset','liability');
+
 CREATE VIEW balance_by_subkind AS
 SELECT month, kind, subkind,
        SUM(CASE WHEN kind = 'asset' THEN balance
@@ -533,7 +651,6 @@ SELECT month, kind, subkind,
 FROM balance_by_account
 GROUP BY month, kind, subkind;
 
--- Aggregated by owner.
 CREATE VIEW balance_by_owner AS
 SELECT s.month, a.owner,
        SUM(CASE WHEN a.kind = 'asset' THEN st.balance
@@ -545,7 +662,6 @@ JOIN account a        ON a.id = st.account_id
 WHERE a.kind IN ('asset','liability')
 GROUP BY s.month, a.owner;
 
--- Annual cashflow per account: in, out, net. Useful for income/expense roots.
 CREATE VIEW flow_by_account AS
 SELECT CAST(substr(date, 1, 4) AS INTEGER) AS year,
        account_id, kind, subkind,
@@ -559,7 +675,6 @@ FROM (
     GROUP BY te.date, a.id
 );
 
--- Annual totals grouped by the rule or event that caused the transfer.
 CREATE VIEW flow_by_reason AS
 SELECT CAST(substr(date, 1, 4) AS INTEGER) AS year,
        reason_kind, reason_id,
@@ -588,6 +703,8 @@ Indexes are deliberately conservative — chosen for the queries the views gener
 
 ### Migrations
 
+*Status: not implemented.* Databases are recreated from the CSVs rather than migrated (the schema is applied whole by `apply_intent_schema` / `apply_run_schema`, and `SCHEMA_VERSION` in `schema.py` is bumped on each change); the migration files and `schema_overview` below are the original plan.
+
 v1 ships two SQL files in `src/analysis/sim/migrations/`:
 
 - `001_init_intent.sql` — schema for intent files.
@@ -615,9 +732,9 @@ Both seed their respective `schema_overview` rows. A `_schema_version` table tra
 - **Cross-file `ATTACH` schema skew.** Comparing runs from different schema versions can fail on views that reference dropped/renamed columns. Mitigation: lazy additive migration on open; comparisons across major schema versions are best-effort with a header warning, as already planned in Q12.
 - **JSON columns not strongly queryable.** SQLite's `json_extract` is available but ergonomically weak. The variable-shape pieces genuinely vary; `kind` columns let queries filter before extracting JSON.
 - **No row-level CHECK on `payload_json` shape matching `kind`.** Validation lives in `loaders.py` and `expansions.py`. If shape drift becomes a problem, JSON-Schema validation at load time is the response.
-- **`account_state` writes O(accounts × months) rows per run.** For ~40 accounts × 40 years × 12 months that's ~19k rows — trivially small.
+- **`lot_state` writes O(lots × months) rows per run.** For ~75 lots × 15 years × 12 months that's ~13k rows — trivially small.
 - **The `flow_by_account` view double-counts an account's own internal flows if `from_account = to_account`**, which the engine never emits. Documenting rather than guarding.
-- **Reserved columns are dead weight in v1.** `parent_run_path`, `fork_month`, `seed`, `holding`/`lot` tables, the `*_holding_id` columns on `transfer_event`. Worth it to avoid future migrations of the ledger tables, which dominate file size.
+- **Reserved columns are dead weight in v1.** `parent_run_path`, `fork_month`, `seed`. Worth it to avoid future migrations of the ledger tables, which dominate file size.
 
 ## Open questions deferred to later ADRs
 

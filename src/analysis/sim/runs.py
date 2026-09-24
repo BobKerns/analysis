@@ -46,7 +46,7 @@ def open_run_file(
 
     con.execute("ATTACH DATABASE ? AS intent", (str(intent_path),))
     try:
-        # account.refill_chain_id/overflow_chain_id and chain.account_id form a
+        # member.refill_chain_id/overflow_chain_id and chain.lot_id form a
         # cycle (ADR-003 §4.7); defer FK checks to the transaction commit so
         # SNAPSHOT_TABLES order doesn't have to satisfy both directions.
         con.execute("PRAGMA defer_foreign_keys = ON")

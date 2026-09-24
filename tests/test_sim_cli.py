@@ -341,6 +341,7 @@ def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> 
         [
             "sim", "transfer", "add",
             "2030-06-30", "Asset_Checking", "Asset_Brokerage_Joint", "1500.00",
+            "--to-lot", "default",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
             "--description", "Mid-year top-up",
@@ -373,6 +374,7 @@ def test_sim_add_scheduled_appends_row_with_defaults_and_check_passes(
         [
             "sim", "scheduled", "add",
             "2030-01-31", "Asset_Checking", "Asset_Brokerage_Joint", "250.00",
+            "--to-lot", "default",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
             "--description", "Recurring sweep",
@@ -382,7 +384,7 @@ def test_sim_add_scheduled_appends_row_with_defaults_and_check_passes(
 
     sched = (data / "scenarios" / "retire_alice" / "scheduled.csv").read_text()
     last = sched.strip().splitlines()[-1]
-    assert "xfer_asset_checking_to_asset_brokerage_joint_2030-01-31" in last
+    assert "xfer_asset_checking_to_asset_brokerage_joint_default_2030-01-31" in last
     assert ",monthly," in last
     assert ",fixed_amount," in last
     assert ",250.00," in last
@@ -402,6 +404,7 @@ def test_sim_add_fixed_rejects_unknown_account(tmp_path: Path) -> None:
         [
             "sim", "transfer", "add",
             "2030-06-30", "NopeAccount", "Asset_Brokerage_Joint", "100.00",
+            "--to-lot", "default",
             "--scenario", "retire_alice",
             "--data-dir", str(data),
         ],
@@ -417,7 +420,7 @@ def test_sim_add_fixed_prompts_when_args_missing(tmp_path: Path) -> None:
         main,
         ["sim", "transfer", "add", "--scenario", "retire_alice",
          "--data-dir", str(data)],
-        input="2030-06-30\nAsset_Checking\nAsset_Brokerage_Joint\n42.00\n",
+        input="2030-06-30\nAsset_Checking\nAsset_Brokerage_Joint\ndefault\n42.00\n",
     )
     assert result.exit_code == 0, result.output
     cal = (data / "scenarios" / "retire_alice" / "calendar.csv").read_text()
@@ -531,9 +534,10 @@ def test_sim_account_delete_lists_references_and_removes_them(tmp_path: Path) ->
 
     data = _copy_prototype(tmp_path)
     accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
-    accounts = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
-    accounts.loc[accounts["name"] == "Asset_Savings", "refill_chain"] = "Asset_Checking"
-    accounts.to_csv(accounts_path, index=False)
+    values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
+    values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+    values.loc[values["account_name"] == "Asset_Savings", "refill_chain"] = "Asset_Checking"
+    values.to_csv(values_path, index=False)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -545,7 +549,7 @@ def test_sim_account_delete_lists_references_and_removes_them(tmp_path: Path) ->
     )
     assert result.exit_code == 0, result.output
     assert "account 'Asset_Checking' is referenced by:" in result.output
-    assert "accounts.csv row 3: refill_chain" in result.output
+    assert "account_values.csv row 3: refill_chain" in result.output
     assert "account_values.csv row 2: account_name" in result.output
     assert "scheduled.csv row 2: to_account" in result.output
     assert "deleted account 'Asset_Checking'" in result.output
@@ -555,7 +559,9 @@ def test_sim_account_delete_lists_references_and_removes_them(tmp_path: Path) ->
     ) as fh:
         accounts = list(csv.DictReader(fh))
     assert "Asset_Checking" not in {row["name"] for row in accounts}
-    assert next(row for row in accounts if row["name"] == "Asset_Savings")["refill_chain"] == ""
+    with values_path.open(newline="", encoding="utf-8") as fh:
+        values = list(csv.DictReader(fh))
+    assert next(row for row in values if row["account_name"] == "Asset_Savings")["refill_chain"] == ""
 
     check = runner.invoke(
         main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
@@ -753,7 +759,7 @@ def test_sim_account_check_detects_missing_rows(tmp_path: Path) -> None:
     new_row = pd.DataFrame([{
         "name": "Asset_NewAccount",
         "kind": "asset",
-        "subkind": "checking",
+        "subkind": "cash",
         "owner": "joint",
         "tax_treatment": "taxable",
         "opened": "",
@@ -1001,3 +1007,52 @@ def test_sim_account_import_quicken_dry_run_does_not_write(tmp_path: Path) -> No
     assert result.exit_code == 0, result.output
     assert "dry run" in result.output
     assert values_path.read_text(encoding="utf-8") == before
+
+
+def test_sim_load_puts_state_beside_the_data_dir(tmp_path: Path, test_data_dir: Path) -> None:
+    result = CliRunner().invoke(
+        main, ["sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+               "--allow-dirty-data"],
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "state" / "intent" / "retire_alice.sqlite3").exists()
+    assert len(list((tmp_path / "state" / "runs").glob("*.sqlite3"))) == 1
+    assert not (tmp_path / "intent").exists()
+    assert not (tmp_path / "runs").exists()
+
+
+def test_sim_run_finds_state_through_the_activated_data_dir(
+    tmp_path: Path, test_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    loaded = runner.invoke(
+        main, ["sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+               "--allow-dirty-data", "--no-run"],
+    )
+    assert loaded.exit_code == 0, loaded.output
+    monkeypatch.setenv("ANALYSIS_DATA_DIR", str(test_data_dir))
+    result = runner.invoke(main, ["sim", "run", "retire_alice"])
+    assert result.exit_code == 0, result.output
+    assert len(list((tmp_path / "state" / "runs").glob("*.sqlite3"))) == 1
+    assert not (tmp_path / "runs").exists()
+
+
+def test_transfer_list_shows_calendar_and_scheduled_one_offs(test_data_dir: Path) -> None:
+    runner = CliRunner()
+    added = runner.invoke(main, [
+        "sim", "scheduled", "add", "2030-03-15", "Asset_Checking", "Asset_Savings", "75.00",
+        "--cadence", "one_off", "--description", "Moving money", "--scenario", "retire_alice",
+        "--data-dir", str(test_data_dir),
+    ])
+    assert added.exit_code == 0, added.output
+
+    result = runner.invoke(main, [
+        "sim", "transfer", "list", "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
+    ], env={"COLUMNS": "300"})
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if "│" in line]
+    inheritance = next(line for line in lines if "inheritance" in line)
+    moving = next(line for line in lines if "Moving money" in line)
+    assert "calendar" in inheritance and "Asset_Brokerage_Joint (default)" in inheritance
+    assert "scheduled" in moving and "Asset_Savings" in moving and "75.00" in moving
+    assert lines.index(inheritance) < lines.index(moving)  # dated 2029 before 2030

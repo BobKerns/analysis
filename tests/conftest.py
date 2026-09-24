@@ -59,15 +59,19 @@ from __future__ import annotations
 from collections.abc import Callable, Generator
 from pathlib import Path
 import shutil
+import sqlite3
 
+import pandas as pd
 import pytest
-from rich import scope
 
 from analysis.sim import scenario
 from analysis.sim.connection import RunConnection, ScenarioConnection, open_scenario, open_run
 from analysis.sim.engine import run_scenario
+from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
+from analysis.sim.provenance import CodeStamps
+from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER
 
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
@@ -79,6 +83,24 @@ _ANALYSIS_ENV_VARS = (
 def _no_ambient_analysis_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _ANALYSIS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+_STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_REPO")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _stable_code_stamps() -> Generator[None, None, None]:
+    """Stamp runs with a fixed code version instead of asking git.
+
+    ``provenance.code_stamps`` runs ``git status`` on this repo for every load
+    and run, so a test's result and its speed would depend on the state of the
+    working tree (a large uncommitted notebook made the suite ~10x slower).
+    Patched once per session, since nothing a test does can change the stub.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        for name in ("analysis.sim.runs.code_stamps", "analysis.sim.loader.code_stamps"):
+            patch.setattr(name, lambda: _STABLE_CODE_STAMPS)
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -348,6 +370,47 @@ def variant_a_scenario_create(data_dir: Path) -> Path:
     return scenario.create_scenario(data_dir, "variant_a", "retire_alice")
 
 @pytest.fixture(scope="function")
+def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunConnection, None, None]:
+    """Connection to the ``two_lot_run_file`` run."""
+    with open_scenario(test_data_dir, "retire_alice") as scenario_conn:
+        with open_run(two_lot_run_file, scenario_conn,
+                      scenarios_dir=test_data_dir / "scenarios") as run:
+            yield run
+
+
+@pytest.fixture(scope="function")
+def lot_variant_runs(
+    two_lot_run_file: Path, test_data_dir: Path, test_scenarios_dir: Path,
+    intent_dir: Path, runs_dir: Path,
+) -> Generator[tuple[RunConnection, dict[str, RunConnection]], None, None]:
+    """Runs of ``retire_alice`` (its brokerage split into lots a and b) and of a
+    derived ``variant`` that changes lot b's quantity, balance and basis, adds a
+    lot c, and changes one inherited year-to-date row."""
+    scenario.create_scenario(test_data_dir, "variant", "retire_alice")
+    header = ",".join(ACCOUNT_VALUES_CSV_HEADER)
+    variant_dir = test_scenarios_dir / "variant"
+    (variant_dir / "account_values.csv").write_text(
+        f"{header}\n"
+        "Asset_Brokerage_Joint,b,BBB,2026-01-15,1500,,150000.00,100000.00,\n"
+        "Asset_Brokerage_Joint,c,CCC,2027-06-30,,,25000.00,20000.00,\n"
+    )
+    (variant_dir / "year_to_date.csv").write_text(
+        "name,from_account,from_lot,to_account,to_lot,amount,tax_character,year,description\n"
+        "prior_ordinary_wages,Income_Salary_Alice,,Asset_Checking,,70000.00,ordinary,,\n"
+    )
+    loaded = load_scenario(test_data_dir, "variant", intent_dir=intent_dir,
+                           scenarios_dir=test_scenarios_dir, allow_dirty_data=True)
+    variant_run = run_scenario(loaded.intent_path, runs_dir / "variant.sqlite3", run_by="TEST",
+                               allow_dirty_data=True, allow_dirty_code=True)
+    scenarios_dir = test_data_dir / "scenarios"
+    with open_run(two_lot_run_file, "retire_alice", data_dir=test_data_dir,
+                  scenarios_dir=scenarios_dir) as base:
+        with open_run(variant_run, "variant", data_dir=test_data_dir,
+                      scenarios_dir=scenarios_dir) as variant:
+            yield base, {"variant": variant}
+
+
+@pytest.fixture(scope="function")
 def multi_connections(data_dir: Path,
                       retire_alice_run: RunConnection,
                       variant_a_run: RunConnection) -> MultiScenarioConnections:
@@ -368,3 +431,130 @@ def bad_subkind_data(test_data: Path) -> Path:
     """Fixture to provide the path to the bad_subkind data within the test data directory."""
     return test_data / "sim/bad_subkind"
 
+
+@pytest.fixture(scope="function")
+def ledger_con() -> Generator[sqlite3.Connection, None, None]:
+    """In-memory run-schema database for engine unit tests that call
+    ledger-posting helpers directly. Lot ids 1..99 exist, each belonging to the
+    account with the same id, so tests can use small ints as account/lot ids."""
+    con = sqlite3.connect(":memory:")
+    apply_run_schema(con)
+    con.executemany(
+        "INSERT INTO account_model_member(id, model_id, account_id, lot, opening_balance) "
+        "VALUES (?, 1, ?, 'default', 0)",
+        [(i, i) for i in range(1, 100)],
+    )
+    try:
+        yield con
+    finally:
+        con.close()
+
+
+@pytest.fixture(scope="function")
+def retire_alice_csv(test_scenarios_dir: Path) -> Callable[[str], Path]:
+    """Path of one of the private retire_alice copy's scenario files, for tests
+    that edit inputs before loading."""
+    return lambda name: test_scenarios_dir / "retire_alice" / name
+
+
+@pytest.fixture(scope="function")
+def load_test_copy(test_data_dir: Path, test_scenarios_dir: Path,
+                   intent_dir: Path) -> Callable[[], LoadResult]:
+    """Loader for the private retire_alice copy, after a test has edited it."""
+    def _load() -> LoadResult:
+        return load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                             scenarios_dir=test_scenarios_dir, allow_dirty_data=True)
+    return _load
+
+
+@pytest.fixture(scope="function")
+def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
+    """Write a file into the private data copy's ``aux/`` directory."""
+    def _write(filename: str, text: str) -> Path:
+        path = test_data_dir / "aux" / filename
+        path.write_text(text)
+        return path
+    return _write
+
+
+@pytest.fixture(scope="function")
+def add_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Append a row to the private copy's account_values.csv, by column name."""
+    def _add(account_name: str, **columns: str) -> None:
+        path = retire_alice_csv("account_values.csv")
+        values = pd.read_csv(path, dtype=str, keep_default_na=False)
+        values.loc[len(values)] = {**dict.fromkeys(values.columns, ""),
+                                   "account_name": account_name, **columns}
+        values.to_csv(path, index=False)
+    return _add
+
+
+@pytest.fixture(scope="function")
+def update_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Set columns on one existing (account, lot) row of the private copy's
+    account_values.csv."""
+    def _update(account_name: str, lot: str, **columns: str) -> None:
+        path = retire_alice_csv("account_values.csv")
+        values = pd.read_csv(path, dtype=str, keep_default_na=False)
+        row = (values["account_name"] == account_name) & (values["lot"] == lot)
+        assert row.any(), (account_name, lot)
+        for column, value in columns.items():
+            values.loc[row, column] = value
+        values.to_csv(path, index=False)
+    return _update
+
+
+@pytest.fixture(scope="function")
+def set_brokerage_lots(retire_alice_csv: Callable[[str], Path]) -> Callable[[list[dict[str, str]]], None]:
+    """Replace Asset_Brokerage_Joint's account_values row with the given lots
+    (dicts of account_values.csv columns; ``account_name`` is filled in)."""
+    def _set(lots: list[dict[str, str]]) -> None:
+        values = pd.read_csv(retire_alice_csv("account_values.csv"), dtype=str, keep_default_na=False)
+        values = values[values["account_name"] != "Asset_Brokerage_Joint"]
+        for column in ("symbol", "quantity"):
+            values[column] = ""
+        rows = pd.DataFrame([{"account_name": "Asset_Brokerage_Joint", **lot} for lot in lots])
+        pd.concat([values, rows], ignore_index=True).fillna("").to_csv(
+            retire_alice_csv("account_values.csv"), index=False)
+    return _set
+
+
+@pytest.fixture(scope="function")
+def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+                     set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+                     load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:
+    """Run of a retire_alice copy whose brokerage is split into lots ``a`` (symbol
+    AAA, 1000 shares, with its own growth series) and ``b`` (BBB, 2000.5 shares,
+    acquired 2026-01-15, so sales from it are short-term for a year),
+    with a monthly draw from lot b."""
+    set_brokerage_lots([
+        {"lot": "a", "symbol": "AAA", "quantity": "1000", "opening_balance": "100000.00",
+         "opening_cost_basis": "60000.00"},
+        {"lot": "b", "symbol": "BBB", "quantity": "2,000.5", "acquired": "2026-01-15",
+         "opening_balance": "200000.00", "opening_cost_basis": "140000.00"},
+    ])
+
+    (test_data_dir / "securities.csv").write_text(
+        "symbol,name\nAAA,Alpha Growth Fund\nBBB,Beta Income Fund\n")
+
+    calendar = retire_alice_csv("calendar.csv")
+    calendar.write_text(calendar.read_text().replace(
+        ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,a,"))
+    (test_data_dir / "aux" / "rate__AAA.csv").write_text(
+        "effective_date,annual_rate_micros\n2026-01-31,20000\n")
+    (retire_alice_csv("chains") / "asset__lotb.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Brokerage_Joint,b,,,,\n")
+
+    scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(scheduled.columns, ""),
+        "name": "lot_b_draw", "from_account": "lotb", "to_account": "Asset_Checking",
+        "cadence": "monthly", "amount_rule_kind": "fixed_amount", "amount": "1000.00",
+        "tax_character": "none", "start": "2026-05-31", "priority": "500",
+        "meta_json": "{}",
+    }
+    scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+
+    intent = load_test_copy().intent_path
+    return run_scenario(intent, runs_dir / "two_lot.sqlite3", run_by="TEST",
+                        allow_dirty_data=True, allow_dirty_code=True)
