@@ -168,6 +168,7 @@ _ITEM_SQL: dict[str, str] = {
         "GROUP BY s.id ORDER BY s.id"
     ),
     "person": "SELECT * FROM person ORDER BY id",
+    "security": "SELECT symbol, name FROM security ORDER BY symbol",
     "person_lifespan": "SELECT * FROM person_lifespan ORDER BY person",
     "chain": (
         "SELECT c.*, a.name AS account_name, a.kind AS account_kind "

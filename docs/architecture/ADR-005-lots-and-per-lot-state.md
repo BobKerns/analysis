@@ -99,6 +99,8 @@ The rule depends only on subkind, never on the current lot count, so adding a lo
 
 Prices live in `aux_table` (`kind='security_price'`, `series=<symbol>`, `payload_json={"price_micros": N}`, dated by `effective_date`). They are snapshotted from intent into run files like any aux data, so a run records the prices it used. A fetcher, if we add one, only writes aux rows at load time. Prices are used to derive opening balances (§4); they are not a monthly engine input.
 
+Symbols get names from `securities.csv` (`symbol,name`), at the top of the data repo beside `persons.csv` and inside the provenance scope. It is loaded into a `security` table (`symbol` primary key, `name`) that is snapshotted into run files; the file is optional and a symbol with no row is unnamed. Reports show the name where they show the symbol.
+
 ### 7. Sales and withdrawals
 
 A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, ADR-003 #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. `sell_asset` on an investment account names a lot and liquidates that lot. Liquidating an account is one `sell_asset` per lot.

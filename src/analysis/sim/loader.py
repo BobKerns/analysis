@@ -512,6 +512,8 @@ def load_scenario(
     issues: list[str] = []
 
     persons = _read_csv(data_dir / "persons.csv", issues)
+    securities = _read_csv(data_dir / "securities.csv", issues, optional=True)
+    _validate_securities(securities, issues)
     (
         scenario_row, accounts, model_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
@@ -571,6 +573,7 @@ def load_scenario(
         counts = _write_intent(
             con,
             persons=persons,
+            securities=securities,
             accounts=accounts,
             account_model_name="",  # obsolete
             account_model_rows=model_rows,
@@ -939,6 +942,20 @@ def _expand_account_growth(
                 "start": start,
                 "description": f"Growth on {leaf} ({series})",
             })
+
+
+def _validate_securities(rows: list[dict[str, str]], issues: list[str]) -> None:
+    seen: set[str] = set()
+    for i, row in enumerate(rows, start=2):
+        symbol, name = row.get("symbol", ""), row.get("name", "")
+        if not symbol:
+            issues.append(f"securities.csv row {i}: missing symbol")
+            continue
+        if symbol in seen:
+            issues.append(f"securities.csv row {i} ({symbol}): duplicate symbol")
+        seen.add(symbol)
+        if not name:
+            issues.append(f"securities.csv row {i} ({symbol}): missing name")
 
 
 def _validate_accounts(
@@ -1526,6 +1543,7 @@ def _write_intent(
     con: sqlite3.Connection,
     *,
     persons: list[dict[str, str]],
+    securities: list[dict[str, str]],
     accounts: list[dict[str, str]],
     account_model_name: str,
     account_model_rows: list[dict[str, str]],
@@ -1553,6 +1571,12 @@ def _write_intent(
             ),
         )
     counts["person"] = len(persons)
+
+    for sec in securities:
+        con.execute(
+            "INSERT INTO security(symbol, name) VALUES (?,?)", (sec["symbol"], sec["name"]),
+        )
+    counts["security"] = len(securities)
 
     account_ids: dict[str, int] = {}
     for a in accounts:

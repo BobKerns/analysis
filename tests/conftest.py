@@ -500,6 +500,9 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
          "opening_cost_basis": "140000.00"},
     ])
 
+    (test_data_dir / "securities.csv").write_text(
+        "symbol,name\nAAA,Alpha Growth Fund\nBBB,Beta Income Fund\n")
+
     calendar = retire_alice_csv("calendar.csv")
     calendar.write_text(calendar.read_text().replace(
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,a,"))

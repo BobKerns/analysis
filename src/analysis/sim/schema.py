@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -14,6 +14,13 @@ CREATE TABLE person (
     birthdate   TEXT NOT NULL,
     role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}'
+);
+
+-- Names for the symbols lots hold (data repo securities.csv); shared reference
+-- data like `person`. A symbol without a row is simply unnamed.
+CREATE TABLE security (
+    symbol  TEXT PRIMARY KEY,
+    name    TEXT NOT NULL
 );
 
 CREATE TABLE account (
@@ -525,6 +532,7 @@ def apply_run_schema(con: sqlite3.Connection) -> None:
 # Tables snapshotted from intent into run files. Order respects FK dependencies.
 SNAPSHOT_TABLES: tuple[str, ...] = (
     "person",
+    "security",
     "account",
     "chain",
     "chain_steps",

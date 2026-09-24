@@ -15,7 +15,7 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 __all__ = [
     "account_holdings", "holding_accounts", "holding_months", "holding_symbols",
     "holdings_totals", "lots_frame", "render_holders_table", "render_holdings_table",
-    "symbol_holders",
+    "security_names", "symbol_holders",
 ]
 
 _BALANCE_SHEET_KINDS = ("asset", "liability")
@@ -45,9 +45,10 @@ def _pick_month(months: list[str], month: str | None) -> str:
 def lots_frame(
     source: RunConnection | ScenarioConnection, month: str | None = None,
 ) -> pd.DataFrame:
-    """One row per balance-sheet lot: account, lot, symbol, acquired, kind,
-    subkind, tax_treatment, quantity (shares), price (implied by balance and
-    quantity), balance, cost_basis and unrealized_gain (dollars), and ``as_of``.
+    """One row per balance-sheet lot: account, lot, symbol, name (of the
+    security, if securities.csv lists it), acquired, kind, subkind, tax_treatment,
+    quantity (shares), price (implied by balance and quantity), balance,
+    cost_basis and unrealized_gain (dollars), and ``as_of``.
     """
     members = source.items("account_model_member")
     members = members[members["kind"].isin(_BALANCE_SHEET_KINDS)]
@@ -77,10 +78,17 @@ def lots_frame(
     frame["cost_basis"] = frame["cost_basis"] / 100
     frame["price"] = (frame["balance"] / frame["quantity"]).where(frame["quantity"] > 0)
     frame["unrealized_gain"] = frame["balance"] - frame["cost_basis"]
+    frame["name"] = frame["symbol"].map(security_names(source))
     return frame[[
-        "account", "lot", "symbol", "acquired", "kind", "subkind", "tax_treatment",
+        "account", "lot", "symbol", "name", "acquired", "kind", "subkind", "tax_treatment",
         "quantity", "price", "balance", "cost_basis", "unrealized_gain", "as_of",
     ]].reset_index(drop=True)
+
+
+def security_names(source: RunConnection | ScenarioConnection) -> dict[str, str]:
+    """Symbol to security name, from the data repo's securities.csv."""
+    securities = source.items("security")
+    return dict(zip(securities["symbol"], securities["name"]))
 
 
 def account_holdings(
@@ -151,19 +159,20 @@ def _table(title: str, columns: list[tuple[str, str]]):
 def render_holdings_table(frame: pd.DataFrame, title: str | None = None):
     """A ``rich`` table of one account's lots, with a totals row."""
     table = _table(title, [
-        ("Lot", "left"), ("Symbol", "left"), ("Acquired", "left"),
+        ("Lot", "left"), ("Symbol", "left"), ("Name", "left"), ("Acquired", "left"),
         ("Quantity", "right"), ("Price", "right"), ("Balance", "right"),
         ("Basis", "right"), ("Unrealized", "right"),
     ])
     for row in frame.itertuples():
         table.add_row(
-            row.lot, row.symbol or "", row.acquired or "", _shares(row.quantity),
+            row.lot, row.symbol or "", row.name if isinstance(row.name, str) else "",
+            row.acquired or "", _shares(row.quantity),
             _money(row.price, 4), _money(row.balance), _money(row.cost_basis),
             _money(row.unrealized_gain),
         )
     totals = holdings_totals(frame)
     table.add_row(
-        "Total", "", "", "", "", _money(totals["balance"]), _money(totals["cost_basis"]),
+        "Total", "", "", "", "", "", _money(totals["balance"]), _money(totals["cost_basis"]),
         _money(totals["unrealized_gain"]), style="bold",
     )
     return table

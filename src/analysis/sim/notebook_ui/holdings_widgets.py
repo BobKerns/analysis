@@ -17,6 +17,7 @@ from analysis.sim.holdings import (
     holding_symbols,
     holdings_totals,
     lots_frame,
+    security_names,
 )
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
@@ -88,7 +89,9 @@ def symbol_holders_view(
                "cost_basis", "unrealized_gain"]],
         "account", quantity=True,
     )
-    heading = f"**{symbol}** as of {everything['as_of'].iloc[0]} ({_label(source)})"
+    name = security_names(source).get(symbol)
+    described = f"**{symbol}** ({name})" if name else f"**{symbol}**"
+    heading = f"{described} as of {everything['as_of'].iloc[0]} ({_label(source)})"
     return heading, shown.set_index(["account", "lot"])
 
 
@@ -134,9 +137,12 @@ def symbol_holders_widget(
     symbols = holding_symbols(source)
     if not symbols:
         return _empty("no lot has a symbol")
+    names = security_names(source)
     symbol_picker = widgets.Dropdown(
-        options=symbols, value=symbol if symbol in symbols else symbols[0],
+        options=[(f"{s} - {names[s]}" if s in names else s, s) for s in symbols],
+        value=symbol if symbol in symbols else symbols[0],
         description="Symbol:",
+        layout=widgets.Layout(width="max-content"),
     )
     month_picker = _month_dropdown(source)
     out = widgets.Output()

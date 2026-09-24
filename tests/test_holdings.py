@@ -21,6 +21,7 @@ from analysis.sim.holdings import (
     holding_symbols,
     holdings_totals,
     lots_frame,
+    security_names,
     symbol_holders,
 )
 from analysis.sim.notebook_ui.holdings_widgets import (
@@ -122,6 +123,7 @@ def test_holdings_command_shows_lots_and_totals(two_lot_run_file: Path, test_dat
     assert result.exit_code == 0, result.output
     assert "holdings of Asset_Brokerage_Joint" in result.output
     assert "AAA" in result.output and "BBB" in result.output and "Total" in result.output
+    assert "Alpha Growth Fund" in result.output and "Beta Income Fund" in result.output
 
 
 def test_holdings_command_defaults_to_the_latest_run_and_can_show_opening_values(
@@ -162,7 +164,8 @@ def test_holders_command_lists_accounts_and_reports_none(
             "--runfile", str(two_lot_run_file)]
     found = runner.invoke(main, ["sim", "account", "holders", "AAA", *base], env={"COLUMNS": "200"})
     assert found.exit_code == 0, found.output
-    assert "accounts holding AAA" in found.output and BROKERAGE in found.output
+    assert "accounts holding AAA (Alpha Growth Fund)" in found.output
+    assert BROKERAGE in found.output
     none = runner.invoke(main, ["sim", "account", "holders", "ZZZ", *base])
     assert none.exit_code == 0 and "no lot holds 'ZZZ'" in none.output
 
@@ -177,7 +180,7 @@ def test_account_holdings_view_has_a_heading_and_a_total_row(two_lot_run: RunCon
 
 def test_symbol_holders_view_totals_quantity(two_lot_run: RunConnection) -> None:
     heading, table = symbol_holders_view(two_lot_run, "AAA")
-    assert heading.startswith("**AAA** as of ")
+    assert heading.startswith("**AAA** (Alpha Growth Fund) as of ")
     assert table.index[0] == (BROKERAGE, "a")
     assert table.index[-1][0] == "Total"
     assert table.iloc[-1]["quantity"] == 1000.0
@@ -201,10 +204,30 @@ def test_symbol_holders_widget_redraws_when_the_symbol_changes(two_lot_run: RunC
     widget = symbol_holders_widget(two_lot_run)
     selectors, _out = widget.children
     symbol_picker = selectors.children[0]
-    assert list(symbol_picker.options) == ["AAA", "BBB"]
+    assert list(symbol_picker.options) == [
+        ("AAA - Alpha Growth Fund", "AAA"), ("BBB - Beta Income Fund", "BBB"),
+    ]
     symbol_picker.value = "BBB"  # must not raise
     assert symbol_picker.value == "BBB"
 
 
 def test_widgets_say_so_when_there_is_nothing_to_show(retire_alice_run: RunConnection) -> None:
     assert len(symbol_holders_widget(retire_alice_run).children) == 1  # no lot has a symbol
+
+
+def test_holdings_carry_the_security_name_when_securities_csv_lists_it(
+    two_lot_run: RunConnection, test_data_dir: Path, update_account_value,
+) -> None:
+    frame = account_holdings(two_lot_run, BROKERAGE).set_index("lot")
+    assert frame.loc["a", "name"] == "Alpha Growth Fund"
+    assert frame.loc["b", "name"] == "Beta Income Fund"
+    assert security_names(two_lot_run) == {"AAA": "Alpha Growth Fund", "BBB": "Beta Income Fund"}
+
+    update_account_value("Asset_Roth_Alice", "default", symbol="ZZZ", quantity="1")  # not listed
+    with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
+        unnamed = symbol_holders(scenario, "ZZZ")
+        assert unnamed["name"].isna().all()
+        heading, _ = symbol_holders_view(scenario, "ZZZ")
+        assert heading.startswith("**ZZZ** as of opening")
+        picker = symbol_holders_widget(scenario).children[0].children[0]
+        assert ("ZZZ", "ZZZ") in picker.options

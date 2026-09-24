@@ -1896,7 +1896,9 @@ def account_holders_command(
     if frame.empty:
         click.echo(f"no lot holds {symbol!r} ({described})")
         return
-    title = f"accounts holding {symbol} ({described}; {frame['as_of'].iloc[0]})"
+    name = frame["name"].iloc[0]
+    named = f"{symbol} ({name})" if isinstance(name, str) else symbol
+    title = f"accounts holding {named} ({described}; {frame['as_of'].iloc[0]})"
     Console().print(render_holders_table(frame, title=title))
 
 

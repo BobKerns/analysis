@@ -72,6 +72,7 @@ type ItemType = Literal[
     "tax_year_summary",
     "year_to_date",
     "person",
+    "security",
     "person_lifespan",
     "chain",
     "chain_steps",
