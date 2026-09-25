@@ -1010,10 +1010,10 @@ def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None
                 f"{where}: unknown asset_class '{asset_class}'; "
                 f"allowed: {', '.join(registries.ASSET_CLASSES)}"
             )
-            continue
-        if (symbol, as_of, asset_class) in seen:
+        elif (symbol, as_of, asset_class) in seen:
             issues.append(f"{where}: duplicate {asset_class} for as_of '{as_of}'")
-        seen.add((symbol, as_of, asset_class))
+        else:
+            seen.add((symbol, as_of, asset_class))
         try:
             weight = _percent_to_micros(row.get("weight", ""))
         except ValueError as e:

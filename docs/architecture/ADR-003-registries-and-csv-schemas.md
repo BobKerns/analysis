@@ -335,7 +335,7 @@ What each symbol is made of, by asset class, for the portfolio overview (`sim al
 | --- | --- | --- | --- |
 | `symbol` | text | ✓ | matches a lot's `symbol` |
 | `as_of` | YYYY-MM-DD | | the date the weights describe; blank holds at every date. A fund's composition drifts (a target-date fund glides), so give several dated sets to follow it |
-| `asset_class` | enum | ✓ | `stock_us`, `stock_intl`, `bond`, `cash`, `real_estate`, `other` (`registries.ASSET_CLASSES`) |
+| `asset_class` | enum | ✓ | `stock_us`, `stock_intl`, `stock` (stock whose US/international split is unknown: a placeholder to refine, distinct from bonds), `bond`, `cash`, `real_estate`, `other` (`registries.ASSET_CLASSES`) |
 | `weight` | percent | ✓ | 0 to 100; the weights of one (`symbol`, `as_of`) set must add up to 100 |
 
 For a date the overview uses the symbol's latest set on or before it, else its earliest. A lot with no rows for its symbol is classed by its account subkind (`cash`, `real_estate`, `vehicle`/`other_asset` as `other`; a `CASH` symbol is cash), and otherwise shown as `unclassified`, so a gap is visible. The weights are static per date: the model does not rebalance or let allocations drift with relative price movements, only follow the dated sets you give it, so a lot's class mix at any date is its balance times that date's weights. The file may be omitted.

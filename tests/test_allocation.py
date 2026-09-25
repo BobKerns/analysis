@@ -82,6 +82,7 @@ def test_totals_and_percentages_add_up_and_can_be_split(
 @pytest.mark.parametrize(("rows", "message"), [
     ("AAA,,stock_us,60\nAAA,,bond,30\n", "add up to 90%, not 100%"),
     ("AAA,,gold,100\n", "unknown asset_class 'gold'"),
+    ("AAA,,gold,60\nAAA,,bond,40\n", "unknown asset_class 'gold'"),
     ("AAA,,bond,100\nAAA,,bond,0\n", "duplicate bond"),
     ("AAA,soon,bond,100\n", "as_of 'soon' is not an ISO date"),
     (",,bond,100\n", "missing symbol"),
@@ -126,3 +127,26 @@ def test_a_scenario_shows_opening_values_with_the_weights_at_its_start(
         assert list(b["asset_class"]) == ["stock_intl"]  # the set in force at the 2026-05-31 start
         assert portfolio_allocation(scenario).loc["stock_us", "balance"] == pytest.approx(70000.0)
         portfolio_allocation_widget(scenario)  # a scenario has no month picker
+
+
+def test_a_bad_class_still_counts_toward_the_weight_total(test_data_dir: Path, load_test_copy) -> None:
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nAAA,,gold,60\nAAA,,bond,40\n")
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert not any("add up to" in issue for issue in ei.value.issues)  # 60 + 40 is 100
+
+
+@pytest.fixture(scope="function")
+def unknown_split_csv(test_data_dir: Path) -> Path:
+    path = test_data_dir / "allocations.csv"
+    path.write_text("symbol,as_of,asset_class,weight\nAAA,,stock,70\nAAA,,bond,30\n")
+    return path
+
+
+def test_stock_of_unknown_split_is_its_own_class_between_stock_and_bond(
+    unknown_split_csv: Path, two_lot_run: RunConnection,
+) -> None:
+    table = portfolio_allocation(two_lot_run)
+    assert table.loc["stock", "balance"] > 0
+    assert list(table.index).index("stock") < list(table.index).index("bond")

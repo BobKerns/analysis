@@ -99,9 +99,10 @@ TAX_CHARACTERS: set[str] = {
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 
 # Asset classes of allocations.csv (ADR-003 §4.1b), in display order. Closed like the
-# other registries; a new class is a one-line addition.
+# other registries; a new class is a one-line addition. `stock` is stock whose split
+# between US and international is not known (a placeholder to refine, distinct from bonds).
 ASSET_CLASSES: tuple[str, ...] = (
-    "stock_us", "stock_intl", "bond", "cash", "real_estate", "other",
+    "stock_us", "stock_intl", "stock", "bond", "cash", "real_estate", "other",
 )
 ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "weight")
 CASH_SYMBOL = "CASH"
