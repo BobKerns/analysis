@@ -2384,7 +2384,7 @@ def prices_group_command() -> None:
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 @click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
-              help="Earliest date to fetch (default: the month before the earliest scenario start).")
+              help="Earliest date to fetch (default: the December before the earliest scenario start's year).")
 @click.option("--provider", "provider_name", default="yahoo", show_default=True,
               type=click.Choice(sorted(prices.PRICE_PROVIDERS)), help="Where prices come from.")
 @click.option("--refresh", is_flag=True,
@@ -2397,9 +2397,10 @@ def prices_fetch_command(
     """Fetch prices into aux/security_price__<SYMBOL>.csv.
 
     With no SYMBOLS, fetches every symbol on a lot that has a quantity in any
-    scenario (CASH is skipped). Stores each month's last close since the month before the earliest
-    scenario start, plus the latest close. Only the ticker symbols are sent to
-    the provider.
+    scenario (CASH is skipped). Stores each month's last close since the December
+    before the earliest scenario start's year (so a prior year-end balance can be
+    derived), plus the latest close. Only the ticker symbols are sent to the
+    provider.
     """
     data = _resolve_data_dir(data_dir)
     scenarios_dir = data / "scenarios"

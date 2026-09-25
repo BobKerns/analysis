@@ -121,7 +121,7 @@ def test_prices_in_use_lists_symbols_with_a_quantity_and_the_earliest_start(tmp_
     use = prices.prices_in_use(tmp_path)
     assert use.symbols == ["AAA", "CCC"]  # BBB has no quantity, CASH is skipped
     assert use.earliest_start == date(2026, 5, 31)
-    assert prices.default_since(use.earliest_start, date(2026, 9, 1)) == date(2026, 4, 1)
+    assert prices.default_since(use.earliest_start, date(2026, 9, 1)) == date(2025, 12, 1)
 
 
 def test_fetch_command_writes_the_aux_files_for_the_symbols_in_use(
@@ -135,7 +135,7 @@ def test_fetch_command_writes_the_aux_files_for_the_symbols_in_use(
     assert result.exit_code == 0, result.output
     assert "AAA: 3 added (latest 12.50 on 2026-06-02)" in result.output
     assert (test_data_dir / "aux" / "security_price__AAA.csv").exists()
-    assert provider.asked[0][1] == date(2026, 4, 1)  # the month before the 2026-05-31 start
+    assert provider.asked[0][1] == date(2025, 12, 1)  # the December before the 2026 start
     missing = runner.invoke(main, ["sim", "prices", "fetch", "ZZZ", "--data-dir", str(test_data_dir)])
     assert missing.exit_code != 0 and "ZZZ: not found" in missing.output
 

@@ -159,7 +159,7 @@ def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path |
     sort chronologically and can be filtered by scenario by name alone.
     """
     glob_pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
-    re_pattern = re.compile(f".*_{scenario}_[^_]*\.sqlite3") if scenario else re.compile(f".*")
+    re_pattern = re.compile(f".*_{scenario}_[^_]*[.]sqlite3") if scenario else re.compile(f".*")
     runs = (r for r in Path(runs_dir).glob(glob_pattern)
             if re_pattern.match(r.name))
     runs = sorted(runs)
@@ -1293,7 +1293,8 @@ def _derive_opening_balances(
 ) -> None:
     """Fill a lot's blank ``opening_balance`` from ``quantity`` x the latest
     ``security_price`` for its ``symbol`` on or before the scenario start
-    (ADR-005 §4). A given balance is left alone: it stays authoritative."""
+    (ADR-005 §4). A given balance is left alone: it stays authoritative. Likewise a
+    blank ``prior_year_end_balance`` in an account that uses it (see below)."""
     start = scenario_row.get("start", "")
     prices: dict[str, list[tuple[str, int]]] = {}
     for kind, series, payload, effective in aux_rows:
@@ -1320,9 +1321,33 @@ def _derive_opening_balances(
                 f"'{symbol}' on or before {start} (aux/security_price__{symbol}.csv)"
             )
             continue
-        price = max(known)[1]
-        cents = (quantity * price + 5_000_000_000) // 10_000_000_000
-        row["opening_balance"] = f"{cents // 100}.{cents % 100:02d}"
+        row["opening_balance"] = _price_value(quantity, max(known)[1])
+
+    # An account that uses prior_year_end_balance (it is set on some lot) needs it
+    # on every lot, so a blank one is derived the same way at the prior Dec 31, from
+    # today's share count (which ignores buys and reinvestment since; a stated value wins).
+    if not start:
+        return
+    prior_dec = f"{int(start[:4]) - 1}-12-31"
+    used = {r.get("account_name", "") for r in model_rows if r.get("prior_year_end_balance")}
+    for row in model_rows:
+        symbol = row.get("symbol", "")
+        if (row.get("prior_year_end_balance") or row.get("account_name", "") not in used
+                or not symbol or not row.get("quantity")):
+            continue
+        known = [p for p in prices.get(symbol.replace("_", " "), []) if p[0] <= prior_dec]
+        try:
+            quantity = _quantity_to_micros(row["quantity"])
+        except (ValueError, InvalidOperation):
+            continue
+        if known:
+            row["prior_year_end_balance"] = _price_value(quantity, max(known)[1])
+
+
+def _price_value(quantity_micros: int, price_micros: int) -> str:
+    """Dollars for a share count times a price, rounded half up to the cent."""
+    cents = (quantity_micros * price_micros + 5_000_000_000) // 10_000_000_000
+    return f"{cents // 100}.{cents % 100:02d}"
 
 
 def _quantity_to_micros(raw: str) -> int:

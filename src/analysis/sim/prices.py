@@ -2,7 +2,7 @@
 
 Prices are only used to derive a lot's opening balance (``quantity`` x the latest
 price on or before the scenario start), so what is stored is a sparse history:
-the last close of each month from the month before the earliest scenario start,
+the last close of each month from the December before the earliest scenario start's year,
 plus the most recent close. Files are merged, never rewritten: a date already in
 a file keeps its price unless ``refresh`` is set. Only ticker symbols leave the
 machine.
@@ -221,10 +221,11 @@ def fetch_prices(
 
 
 def default_since(earliest_start: date | None, today: date) -> date:
-    """From the month before the earliest scenario start, so the close on or
-    before that start is included."""
+    """From the December before the earliest scenario start's year, so the closes
+    on or before that start and before the prior year-end (which a lot's
+    ``prior_year_end_balance`` can be derived from) are included."""
     anchor = earliest_start or today
-    return (anchor.replace(day=1) - timedelta(days=1)).replace(day=1)
+    return date(anchor.year - 1, 12, 1)
 
 
 CHECK_COLUMNS = (
