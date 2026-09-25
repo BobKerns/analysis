@@ -2435,6 +2435,59 @@ def prices_fetch_command(
         raise click.ClickException(f"{failed} of {len(results)} symbol(s) failed")
 
 
+@prices_group_command.command("check")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+@click.option("--tolerance", type=float, default=1.0, show_default=True,
+              help="Percent difference between a stated balance and quantity x price that is flagged.")
+def prices_check_command(scenario: str | None, data_dir: Path | None, tolerance: float) -> None:
+    """Compare each lot's stated balance with quantity x price.
+
+    For lots with a symbol and a quantity, shows the balance in account_values.csv
+    against quantity times the price on or before the scenario start (they should
+    agree, so a difference points at stale or wrong data) and against the latest
+    price (how far the value has moved since). Exits nonzero if any lot is flagged.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    with open_scenario(data, ref.name, scenarios_dir=ref.scenarios_dir) as sc:
+        frame = prices.check_prices(sc, tolerance / 100)
+    if frame.empty:
+        click.echo(f"no lot with a symbol and a quantity in {ref.name}")
+        return
+
+    def money(v):
+        return "" if pd.isna(v) else f"${v:,.2f}"
+
+    def price(v, when):
+        return "" if pd.isna(v) else f"{v:,.4f} ({when})"
+
+    table = Table(title=f"stated balance vs quantity x price ({ref.name})", header_style="bold")
+    for name, justify in [("Account / lot", "left"), ("Symbol", "left"), ("Quantity", "right"),
+                          ("Balance", "right"), ("Start price", "right"), ("Value", "right"),
+                          ("Diff", "right"), ("Latest price", "right"), ("Latest value", "right"),
+                          ("", "left")]:
+        table.add_column(name, justify=justify, no_wrap=True)
+    for r in frame.itertuples():
+        diff = "" if pd.isna(r.difference) else f"{r.difference * 100:+.1f}%"
+        flag = r.flag if isinstance(r.flag, str) else ""
+        table.add_row(
+            f"{r.account} ({r.lot})", r.symbol, f"{r.quantity:,.3f}", money(r.balance),
+            price(r.price, r.price_date), money(r.value), diff,
+            price(r.latest_price, r.latest_date), money(r.latest_value), flag,
+            style="red" if flag else None,
+        )
+    Console().print(table)
+    flagged = int(frame["flag"].notna().sum())
+    if flagged:
+        raise click.ClickException(f"{flagged} lot(s) flagged")
+
+
 @sim_group_command.group(name="scenario")
 def scenario_group_command() -> None:
     """Create scenarios."""

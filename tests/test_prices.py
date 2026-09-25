@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from click.testing import CliRunner
 
@@ -155,3 +156,42 @@ def test_fetched_files_feed_the_opening_balance(
     finally:
         con.close()
     assert balance == 11500  # 10 shares at the 2026-05-29 close, the last on or before the start
+
+
+@pytest.fixture(scope="function")
+def priced_lots(add_account_value, write_aux, update_account_value):
+    """Roth_Alice gains three lots holding 10 shares of AAA: one whose balance matches
+    the price at the 2026-05-31 start ($11.50 on 05-29), one that is stale, one
+    whose symbol has no prices. A later price ($20) is in the file too."""
+    write_aux("security_price__AAA.csv",
+              "effective_date,price\n2026-05-29,11.50\n2026-09-24,20.00\n")
+    add_account_value("Asset_Roth_Alice", lot="ok", symbol="AAA", quantity="10", opening_balance="115.00")
+    add_account_value("Asset_Roth_Alice", lot="old", symbol="AAA", quantity="10", opening_balance="140.00")
+    add_account_value("Asset_Roth_Alice", lot="bare", symbol="ZZZ", quantity="10", opening_balance="50.00")
+
+
+def test_check_compares_balances_with_the_start_price_and_the_latest_price(
+    priced_lots: None, test_data_dir: Path, load_test_copy,
+) -> None:
+    from analysis.sim.connection import ScenarioConnection
+    load_test_copy()
+    with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
+        frame = prices.check_prices(scenario).set_index("lot")
+    assert frame.loc["ok", "value"] == pytest.approx(115.0) and pd.isna(frame.loc["ok", "flag"])
+    assert frame.loc["ok", "latest_value"] == pytest.approx(200.0)  # what it is worth now
+    assert frame.loc["old", "flag"] == "stale"
+    assert frame.loc["old", "difference"] == pytest.approx((115 - 140) / 140)
+    assert frame.loc["bare", "flag"] == "no price"
+    assert list(frame.index) == ["ok", "old", "bare"]  # lots without a quantity are left out
+
+
+def test_check_command_flags_stale_lots_and_exits_nonzero(
+    priced_lots: None, test_data_dir: Path,
+) -> None:
+    runner = CliRunner()
+    args = ["sim", "prices", "check", "--scenario", "retire_alice", "--data-dir", str(test_data_dir)]
+    result = runner.invoke(main, args, env={"COLUMNS": "220"})
+    assert result.exit_code != 0 and "2 lot(s) flagged" in result.output
+    assert "stale" in result.output and "no price" in result.output
+    loose = runner.invoke(main, [*args, "--tolerance", "50"], env={"COLUMNS": "220"})
+    assert "stale" not in loose.output  # 18% is inside a 50% tolerance

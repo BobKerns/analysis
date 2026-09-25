@@ -20,11 +20,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+import pandas as pd
+
+if TYPE_CHECKING:
+    from analysis.sim.connection import ScenarioConnection
 
 __all__ = [
     "FetchResult", "PRICE_PROVIDERS", "PriceProvider", "PriceUse", "YahooProvider",
-    "default_since", "fetch_prices", "format_price", "merge_price_rows", "month_end_closes", "prices_in_use",
+    "check_prices", "default_since", "fetch_prices", "format_price", "merge_price_rows", "month_end_closes", "prices_in_use",
 ]
 
 PRICE_COLUMNS = ("effective_date", "price")
@@ -212,3 +217,51 @@ def default_since(earliest_start: date | None, today: date) -> date:
     before that start is included."""
     anchor = earliest_start or today
     return (anchor.replace(day=1) - timedelta(days=1)).replace(day=1)
+
+
+CHECK_COLUMNS = (
+    "account", "lot", "symbol", "quantity", "balance", "price_date", "price",
+    "value", "difference", "latest_date", "latest_price", "latest_value", "flag",
+)
+
+
+def check_prices(source: ScenarioConnection, tolerance: float = 0.01) -> pd.DataFrame:
+    """Per lot with a quantity and a symbol: the stated ``opening_balance`` against
+    ``quantity`` x the price on or before the scenario start (``value``, ``difference``
+    as a fraction of the balance) and against the latest price (``latest_value``).
+    ``flag`` says why a lot needs a look: ``stale`` when the value at the start price
+    is off by more than ``tolerance``, ``no price`` when the symbol has no price file.
+    A lot whose balance was derived from a price agrees by construction."""
+    start = str(source.items("scenario")["start"].iloc[0])
+    aux = source.items("aux_table")
+    aux = aux[aux["kind"] == "security_price"]
+    history: dict[str, list[tuple[str, float]]] = {}
+    for row in aux.itertuples():
+        history.setdefault(row.series, []).append(
+            (row.effective_date, json.loads(row.payload_json)["price_micros"] / 1_000_000)
+        )
+    rows = []
+    for lot in source.items("account_model_member").itertuples():
+        if not (isinstance(lot.symbol, str) and lot.symbol and pd.notna(lot.quantity_micros)):
+            continue
+        quantity = lot.quantity_micros / 1_000_000
+        balance = lot.opening_balance / 100
+        prices = sorted(history.get(lot.symbol, []))
+        at_start = [p for p in prices if p[0] <= start]
+        row = dict.fromkeys(CHECK_COLUMNS)
+        row.update(account=lot.account, lot=lot.lot, symbol=lot.symbol,
+                   quantity=quantity, balance=balance)
+        if prices:
+            row.update(latest_date=prices[-1][0], latest_price=prices[-1][1],
+                       latest_value=quantity * prices[-1][1])
+        if at_start:
+            row.update(price_date=at_start[-1][0], price=at_start[-1][1],
+                       value=quantity * at_start[-1][1])
+            if balance:
+                row["difference"] = (row["value"] - balance) / balance
+                if abs(row["difference"]) > tolerance:
+                    row["flag"] = "stale"
+        else:
+            row["flag"] = "no price"
+        rows.append(row)
+    return pd.DataFrame(rows, columns=list(CHECK_COLUMNS))
