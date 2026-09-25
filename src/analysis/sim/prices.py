@@ -78,7 +78,15 @@ class YahooProvider:
         if chart.get("error"):
             raise PriceError(chart["error"].get("description") or "Yahoo reported an error")
         results = chart.get("result") or []
-        if not results or not results[0].get("timestamp"):
+        if not results:
+            raise PriceError("no prices returned")
+        if not results[0].get("timestamp"):
+            last = results[0].get("meta", {}).get("regularMarketTime")
+            if last:
+                when = datetime.fromtimestamp(last, UTC).date()
+                raise PriceError(
+                    f"no prices since {start} (last traded {when}; the fund may be closed or merged)"
+                )
             raise PriceError("no prices returned")
         result = results[0]
         offset = result.get("meta", {}).get("gmtoffset", 0)

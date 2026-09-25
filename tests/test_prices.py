@@ -195,3 +195,11 @@ def test_check_command_flags_stale_lots_and_exits_nonzero(
     assert "stale" in result.output and "no price" in result.output
     loose = runner.invoke(main, [*args, "--tolerance", "50"], env={"COLUMNS": "220"})
     assert "stale" not in loose.output  # 18% is inside a 50% tolerance
+
+
+def test_a_symbol_that_stopped_trading_says_when_it_last_did() -> None:
+    payload = json.dumps({"chart": {"result": [{
+        "meta": {"regularMarketTime": 1_733_533_245}, "indicators": {"quote": [{}]},
+    }], "error": None}}).encode()
+    with pytest.raises(PriceError, match=r"no prices since 2026-04-01 \(last traded 2024-12-07"):
+        YahooProvider(lambda url: payload).closes("OLD", date(2026, 4, 1), date(2026, 9, 24))
