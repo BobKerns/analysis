@@ -73,6 +73,7 @@ type ItemType = Literal[
     "year_to_date",
     "person",
     "security",
+    "security_allocation",
     "person_lifespan",
     "chain",
     "chain_steps",

@@ -93,7 +93,7 @@ state/
 
 | Table | Intent file | Run file |
 | --- | --- | --- |
-| `person`, `account`, `security` | ✓ | ✓ (snapshot) |
+| `person`, `account`, `security`, `security_allocation` | ✓ | ✓ (snapshot) |
 | `account_model`, `account_model_member` | ✓ | ✓ (snapshot) |
 | `scheduled_transaction` | ✓ | ✓ (snapshot) |
 | `chain`, `chain_steps` | ✓ | ✓ (snapshot) |
@@ -113,7 +113,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 23) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 24) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -129,6 +129,17 @@ CREATE TABLE person (
 CREATE TABLE security (
     symbol  TEXT PRIMARY KEY,
     name    TEXT NOT NULL
+);
+
+-- What a symbol is made of, by asset class (data repo allocations.csv). One set
+-- of weights per (symbol, as_of); as_of '' means it holds at every date. Weights
+-- of one set sum to 1000000 (100%).
+CREATE TABLE security_allocation (
+    symbol       TEXT NOT NULL,
+    as_of        TEXT NOT NULL DEFAULT '',
+    asset_class  TEXT NOT NULL,
+    weight_micros INTEGER NOT NULL,
+    PRIMARY KEY (symbol, as_of, asset_class)
 );
 
 CREATE TABLE account (
@@ -567,6 +578,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `account_model` | The account bundle this scenario uses (one row per intent/run file). |
 | `account_model_member` | One row per lot: symbol, acquired date, quantity, opening balance, opening cost basis, and prior-Dec-31 balance (for partial-first-year RMD) of each position in each account in the model. |
 | `security` | The name of each symbol lots hold (from `securities.csv`). |
+| `security_allocation` | What each symbol is made of by asset class, as dated weight sets (from `allocations.csv`, ADR-003 §4.1b). |
 | `scheduled_transaction` | Recurring or one-off rule that emits transfer events on a cadence; `amount_rule_kind` selects the formula. |
 | `chain` | A place money can be drawn from or deposited into: either a leaf (one lot) or a named, ordered, reusable liquidity chain. One namespace over both. |
 | `chain_steps` | The ordered steps of an interior chain — which chain each step draws from, and the maximum/percent allocation limiting that step. |

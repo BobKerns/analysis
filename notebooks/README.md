@@ -21,6 +21,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | --- | --- |
 | accounts and opening balances | `analysis sim account list` |
 | the lots in an account | `analysis sim account holdings <account>` |
+| the portfolio by asset class | `analysis sim allocation` |
 | the accounts holding a symbol | `analysis sim account holders <symbol>` |
 | scheduled transactions | `analysis sim scheduled list` |
 | one-time transfers | `analysis sim transfer list` |

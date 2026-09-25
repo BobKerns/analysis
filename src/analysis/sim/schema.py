@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -21,6 +21,17 @@ CREATE TABLE person (
 CREATE TABLE security (
     symbol  TEXT PRIMARY KEY,
     name    TEXT NOT NULL
+);
+
+-- What a symbol is made of, by asset class (data repo allocations.csv). One set
+-- of weights per (symbol, as_of); as_of '' means it holds at every date. Weights
+-- of one set sum to 1000000 (100%).
+CREATE TABLE security_allocation (
+    symbol       TEXT NOT NULL,
+    as_of        TEXT NOT NULL DEFAULT '',
+    asset_class  TEXT NOT NULL,
+    weight_micros INTEGER NOT NULL,
+    PRIMARY KEY (symbol, as_of, asset_class)
 );
 
 CREATE TABLE account (
@@ -535,6 +546,7 @@ def apply_run_schema(con: sqlite3.Connection) -> None:
 SNAPSHOT_TABLES: tuple[str, ...] = (
     "person",
     "security",
+    "security_allocation",
     "account",
     "chain",
     "chain_steps",

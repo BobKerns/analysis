@@ -24,7 +24,7 @@ from analysis.expenses.baseline import (
     load_expense_account_map,
     replace_generated_scheduled_rows,
 )
-from analysis.sim import prices, registries
+from analysis.sim import allocation, prices, registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import open_run, open_scenario
 from analysis.sim.holdings import (
@@ -1906,6 +1906,29 @@ def account_holders_command(
     named = f"{symbol} ({name})" if isinstance(name, str) else symbol
     title = f"accounts holding {named} ({described}; {frame['as_of'].iloc[0]})"
     Console().print(render_holders_table(frame, title=title))
+
+
+@sim_group_command.command("allocation")
+@click.option("--by", "by", type=click.Choice(allocation.GROUPINGS), default=None,
+              help="Split each asset class by account, owner, subkind or tax treatment.")
+@_holdings_options
+def allocation_command(
+    by: str | None, scenario: str | None, data_dir: Path | None, month: str | None,
+    opening: bool, runfile: Path | None,
+) -> None:
+    """Show the whole portfolio by asset class, from the lots and allocations.csv."""
+    from rich.console import Console
+
+    with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
+        try:
+            frame = allocation.lot_classes(source, month)
+            table = allocation.portfolio_allocation(source, month, by)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+    title = f"asset allocation ({described}; {frame['as_of'].iloc[0]})"
+    Console().print(allocation.render_allocation_table(table, title=title))
+    if allocation.UNCLASSIFIED in table.index:
+        click.echo("unclassified: lots whose symbol has no rows in allocations.csv", err=True)
 
 
 @account_group_command.group(name="tag")

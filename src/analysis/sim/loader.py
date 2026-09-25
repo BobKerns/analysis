@@ -515,6 +515,8 @@ def load_scenario(
     persons = _read_csv(data_dir / "persons.csv", issues)
     securities = _read_csv(data_dir / "securities.csv", issues, optional=True)
     _validate_securities(securities, issues)
+    allocations = _read_csv(data_dir / "allocations.csv", issues, optional=True)
+    _validate_allocations(allocations, issues)
     (
         scenario_row, accounts, model_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
@@ -576,6 +578,7 @@ def load_scenario(
             con,
             persons=persons,
             securities=securities,
+            allocations=allocations,
             accounts=accounts,
             account_model_name="",  # obsolete
             account_model_rows=model_rows,
@@ -983,6 +986,46 @@ def _validate_securities(rows: list[dict[str, str]], issues: list[str]) -> None:
         seen.add(symbol)
         if not name:
             issues.append(f"securities.csv row {i} ({symbol}): missing name")
+
+
+def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None:
+    """Each (symbol, as_of) is a set of asset-class weights that sums to 100%."""
+    sets: dict[tuple[str, str], int] = {}
+    seen: set[tuple[str, str, str]] = set()
+    for i, row in enumerate(rows, start=2):
+        symbol, as_of = row.get("symbol", ""), row.get("as_of", "")
+        asset_class = row.get("asset_class", "")
+        where = f"allocations.csv row {i} ({symbol or '?'})"
+        if not symbol:
+            issues.append(f"{where}: missing symbol")
+            continue
+        if as_of:
+            try:
+                date.fromisoformat(as_of)
+            except ValueError:
+                issues.append(f"{where}: as_of '{as_of}' is not an ISO date")
+                continue
+        if asset_class not in registries.ASSET_CLASSES:
+            issues.append(
+                f"{where}: unknown asset_class '{asset_class}'; "
+                f"allowed: {', '.join(registries.ASSET_CLASSES)}"
+            )
+            continue
+        if (symbol, as_of, asset_class) in seen:
+            issues.append(f"{where}: duplicate {asset_class} for as_of '{as_of}'")
+        seen.add((symbol, as_of, asset_class))
+        try:
+            weight = _percent_to_micros(row.get("weight", ""))
+        except ValueError as e:
+            issues.append(f"{where}: weight {e}")
+            continue
+        sets[(symbol, as_of)] = sets.get((symbol, as_of), 0) + weight
+    for (symbol, as_of), total in sets.items():
+        if total != 1_000_000:
+            when = f" as of {as_of}" if as_of else ""
+            issues.append(
+                f"allocations.csv ({symbol}{when}): weights add up to {total / 10_000:g}%, not 100%"
+            )
 
 
 def _validate_accounts(
@@ -1641,6 +1684,7 @@ def _write_intent(
     *,
     persons: list[dict[str, str]],
     securities: list[dict[str, str]],
+    allocations: list[dict[str, str]],
     accounts: list[dict[str, str]],
     account_model_name: str,
     account_model_rows: list[dict[str, str]],
@@ -1674,6 +1718,15 @@ def _write_intent(
             "INSERT INTO security(symbol, name) VALUES (?,?)", (sec["symbol"], sec["name"]),
         )
     counts["security"] = len(securities)
+
+    for row in allocations:
+        con.execute(
+            "INSERT INTO security_allocation(symbol, as_of, asset_class, weight_micros) "
+            "VALUES (?,?,?,?)",
+            (row["symbol"], row.get("as_of", ""), row["asset_class"],
+             _percent_to_micros(row["weight"])),
+        )
+    counts["security_allocation"] = len(allocations)
 
     account_ids: dict[str, int] = {}
     for a in accounts:
