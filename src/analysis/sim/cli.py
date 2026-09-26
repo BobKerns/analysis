@@ -1913,7 +1913,7 @@ def account_holders_command(
               type=click.Choice([*registries.ASSET_CLASSES, allocation.UNCLASSIFIED]),
               help="Leave an asset class out (repeatable), e.g. --exclude real_estate --exclude unclassified.")
 @click.option("--by", "by", type=click.Choice(allocation.GROUPINGS), default=None,
-              help="Split each asset class by account, owner, subkind or tax treatment.")
+              help="Split each asset class by account, owner, subkind, tax treatment or security (symbol).")
 @_holdings_options
 def allocation_command(
     excluded: tuple[str, ...], by: str | None, scenario: str | None, data_dir: Path | None, month: str | None,

@@ -24,7 +24,8 @@ __all__ = [
 ]
 
 UNCLASSIFIED = "unclassified"
-GROUPINGS = ("account", "owner", "subkind", "tax_treatment")
+GROUPINGS = ("account", "owner", "subkind", "tax_treatment", "security")
+_NO_SYMBOL = "(no symbol)"
 _JOINT = "joint"
 
 
@@ -52,13 +53,14 @@ def _weights_at(sets: list[tuple[str, dict[str, float]]], date: str) -> dict[str
 
 
 def _default_class(symbol: object, subkind: str) -> str:
-    if symbol == registries.CASH_SYMBOL:
-        return "cash"
+    if symbol in registries.SYMBOL_ASSET_CLASS:
+        return registries.SYMBOL_ASSET_CLASS[symbol]
     return registries.SUBKIND_ASSET_CLASS.get(subkind, UNCLASSIFIED)
 
 
 def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = None) -> pd.DataFrame:
-    """One row per asset lot and asset class: account, lot, symbol, owner, subkind,
+    """One row per asset lot and asset class: account, lot, symbol, security (the symbol,
+    or "(no symbol)"), owner, subkind,
     tax_treatment, asset_class, weight and balance (dollars, the lot's balance times
     the weight), and ``as_of``. Liabilities are left out."""
     lots = lots_frame(source, month)
@@ -76,12 +78,13 @@ def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = 
             weights = {_default_class(symbol, lot.subkind): 1.0}
         for asset_class, weight in weights.items():
             rows.append({
-                "account": lot.account, "lot": lot.lot, "symbol": symbol, "owner": lot.owner,
+                "account": lot.account, "lot": lot.lot, "symbol": symbol,
+                "security": symbol or _NO_SYMBOL, "owner": lot.owner,
                 "subkind": lot.subkind, "tax_treatment": lot.tax_treatment,
                 "asset_class": asset_class, "weight": weight, "balance": lot.balance * weight,
                 "as_of": lot.as_of,
             })
-    columns = ["account", "lot", "symbol", "owner", "subkind", "tax_treatment",
+    columns = ["account", "lot", "symbol", "security", "owner", "subkind", "tax_treatment",
                "asset_class", "weight", "balance", "as_of"]
     return pd.DataFrame(rows, columns=columns)
 
@@ -98,7 +101,7 @@ def portfolio_allocation(
 ) -> pd.DataFrame:
     """Balance per asset class (rows, in registry order, ``unclassified`` last, then a
     ``Total`` row). Without ``by`` the columns are ``balance`` and ``percent``; with it
-    (one of :data:`GROUPINGS`) there is a balance column per group plus ``Total``, and
+    (one of :data:`GROUPINGS`; ``security`` splits by symbol) there is a balance column per group plus ``Total``, and
     a ``percent`` column of the overall total. Classes in ``exclude`` are left out, and
     the total and percentages cover what remains (exclude ``real_estate`` and
     ``unclassified`` to see what has been classified among the liquid holdings)."""

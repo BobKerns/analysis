@@ -197,3 +197,24 @@ def test_allocation_command_can_exclude_classes(
     assert result.exit_code == 0, result.output
     assert "excluding real_estate, unclassified" in result.output
     assert "real_estate " not in result.output.split("excluding")[1]
+
+
+def test_cd_symbol_is_its_own_class_without_any_rows(
+    test_data_dir: Path, update_account_value, load_test_copy,
+) -> None:
+    update_account_value("Asset_Savings", "", symbol="CD")
+    with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
+        frame = lot_classes(scenario)
+        assert list(frame[frame["account"] == "Asset_Savings"]["asset_class"]) == ["cd"]
+        table = portfolio_allocation(scenario)
+        assert table.loc["cd", "balance"] == pytest.approx(20_000.0)
+        assert list(table.index).index("cd") < list(table.index).index("cash")
+
+
+def test_split_by_security_uses_the_symbol_or_a_placeholder(
+    allocations_csv: Path, two_lot_run: RunConnection,
+) -> None:
+    table = portfolio_allocation(two_lot_run, by="security")
+    assert {"AAA", "BBB", "(no symbol)"} <= set(table.columns)
+    assert table.loc["bond", "AAA"] > 0 and table.loc["stock_us", "BBB"] == 0
+    assert table.loc["Total", "Total"] == pytest.approx(portfolio_allocation(two_lot_run).loc["Total", "balance"])
