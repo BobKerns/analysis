@@ -139,3 +139,42 @@ def test_symbol_may_not_be_an_account_name(
     set_brokerage_lots([{**LOT, "symbol": "Asset_Checking", "opening_balance": "1.00"}])
     with pytest.raises(LoadError, match="symbol 'Asset_Checking' is also an account name"):
         load_test_copy()
+
+
+def test_a_blank_prior_year_end_balance_is_derived_when_a_sibling_states_one(
+    write_aux: Callable[[str, str], Path],
+    add_account_value: Callable[..., None],
+    update_account_value: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_aux("security_price__AAA.csv",
+              "effective_date,price\n2025-12-31,8.00\n2026-04-30,12.50\n")
+    update_account_value("Asset_Roth_Alice", "default", prior_year_end_balance="90000.00")
+    add_account_value("Asset_Roth_Alice", lot="b", symbol="AAA", quantity="100",
+                      opening_balance="1250.00")
+    con = sqlite3.connect(load_test_copy().intent_path)
+    try:
+        rows = dict(con.execute(
+            "SELECT m.lot, m.prior_year_end_balance FROM account_model_member m "
+            "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Roth_Alice'"
+        ).fetchall())
+    finally:
+        con.close()
+    assert rows == {"default": 9_000_000, "b": 80_000}  # lot b: 100 shares x the $8.00 close
+
+
+def test_no_derivation_when_no_lot_of_the_account_states_a_prior_year_end_balance(
+    write_aux: Callable[[str, str], Path],
+    add_account_value: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_aux("security_price__AAA.csv", "effective_date,price\n2025-12-31,8.00\n2026-04-30,12.50\n")
+    add_account_value("Asset_Roth_Alice", lot="b", symbol="AAA", quantity="100", opening_balance="1250.00")
+    con = sqlite3.connect(load_test_copy().intent_path)
+    try:
+        values = [r[0] for r in con.execute(
+            "SELECT m.prior_year_end_balance FROM account_model_member m "
+            "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Roth_Alice'")]
+    finally:
+        con.close()
+    assert values == [None, None]

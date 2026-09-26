@@ -9,7 +9,7 @@ from contextlib import contextmanager
 import os
 import sqlite3
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -24,7 +24,7 @@ from analysis.expenses.baseline import (
     load_expense_account_map,
     replace_generated_scheduled_rows,
 )
-from analysis.sim import registries
+from analysis.sim import allocation, prices, registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import open_run, open_scenario
 from analysis.sim.holdings import (
@@ -1908,6 +1908,34 @@ def account_holders_command(
     Console().print(render_holders_table(frame, title=title))
 
 
+@sim_group_command.command("allocation")
+@click.option("--exclude", "excluded", multiple=True,
+              type=click.Choice([*registries.ASSET_CLASSES, allocation.UNCLASSIFIED]),
+              help="Leave an asset class out (repeatable), e.g. --exclude real_estate --exclude unclassified.")
+@click.option("--by", "by", type=click.Choice(allocation.GROUPINGS), default=None,
+              help="Split each asset class by account, owner, subkind or tax treatment.")
+@_holdings_options
+def allocation_command(
+    excluded: tuple[str, ...], by: str | None, scenario: str | None, data_dir: Path | None, month: str | None,
+    opening: bool, runfile: Path | None,
+) -> None:
+    """Show the whole portfolio by asset class, from the lots and allocations.csv."""
+    from rich.console import Console
+
+    with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
+        try:
+            frame = allocation.lot_classes(source, month)
+            table = allocation.portfolio_allocation(source, month, by, excluded)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+    title = f"asset allocation ({described}; {frame['as_of'].iloc[0]})"
+    if excluded:
+        title += f", excluding {', '.join(excluded)}"
+    Console().print(allocation.render_allocation_table(table, title=title))
+    if allocation.UNCLASSIFIED in table.index:
+        click.echo("unclassified: lots whose symbol has no rows in allocations.csv", err=True)
+
+
 @account_group_command.group(name="tag")
 def account_tag_group() -> None:
     """Add or remove tags on an account."""
@@ -2349,6 +2377,121 @@ def _scenario_write(
 
 
 # ---------- scenario: create derived scenarios ----------
+
+
+@sim_group_command.group(name="prices")
+def prices_group_command() -> None:
+    """Security prices for the lots that have a quantity."""
+
+
+@prices_group_command.command("fetch")
+@click.argument("symbols", nargs=-1)
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+@click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
+              help="Earliest date to fetch (default: the December before the earliest scenario start's year).")
+@click.option("--provider", "provider_name", default="yahoo", show_default=True,
+              type=click.Choice(sorted(prices.PRICE_PROVIDERS)), help="Where prices come from.")
+@click.option("--refresh", is_flag=True,
+              help="Overwrite prices already in the files (default: only add new dates).")
+@click.option("--dry-run", is_flag=True, help="Show what would change without writing files.")
+def prices_fetch_command(
+    symbols: tuple[str, ...], data_dir: Path | None,
+    since_text: str | None, provider_name: str, refresh: bool, dry_run: bool,
+) -> None:
+    """Fetch prices into aux/security_price__<SYMBOL>.csv.
+
+    With no SYMBOLS, fetches every symbol on a lot that has a quantity in any
+    scenario (CASH is skipped). Stores each month's last close since the December
+    before the earliest scenario start's year (so a prior year-end balance can be
+    derived), plus the latest close. Only the ticker symbols are sent to the
+    provider.
+    """
+    data = _resolve_data_dir(data_dir)
+    scenarios_dir = data / "scenarios"
+    if not scenarios_dir.is_dir():
+        raise click.ClickException(f"no scenarios/ in {data}")
+    use = prices.prices_in_use(scenarios_dir)
+    chosen = list(symbols) or use.symbols
+    if not chosen:
+        click.echo("no symbol on a lot with a quantity; nothing to fetch")
+        return
+    today = datetime.now(UTC).date()
+    try:
+        since = (date.fromisoformat(since_text) if since_text
+                 else prices.default_since(use.earliest_start, today))
+    except ValueError:
+        raise click.ClickException(f"--since {since_text!r} is not a YYYY-MM-DD date") from None
+    provider = prices.PRICE_PROVIDERS[provider_name]()
+    results = prices.fetch_prices(
+        data / "aux", chosen, provider, since=since, today=today, refresh=refresh, dry_run=dry_run,
+    )
+    failed = 0
+    for r in results:
+        if r.error:
+            failed += 1
+            click.echo(f"{r.symbol}: {r.error}", err=True)
+            continue
+        day, price = r.latest
+        change = f"{r.added} added" + (f", {r.changed} changed" if r.changed else "")
+        click.echo(f"{r.symbol}: {change} (latest {prices.format_price(price)} on {day})")
+    if dry_run:
+        click.echo("dry run: no files written")
+    if failed:
+        raise click.ClickException(f"{failed} of {len(results)} symbol(s) failed")
+
+
+@prices_group_command.command("check")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+@click.option("--tolerance", type=float, default=1.0, show_default=True,
+              help="Percent difference between a stated balance and quantity x price that is flagged.")
+def prices_check_command(scenario: str | None, data_dir: Path | None, tolerance: float) -> None:
+    """Compare each lot's stated balance with quantity x price.
+
+    For lots with a symbol and a quantity, shows the balance in account_values.csv
+    against quantity times the price on or before the scenario start (they should
+    agree, so a difference points at stale or wrong data) and against the latest
+    price (how far the value has moved since). Exits nonzero if any lot is flagged.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    with open_scenario(data, ref.name, scenarios_dir=ref.scenarios_dir) as sc:
+        frame = prices.check_prices(sc, tolerance / 100)
+    if frame.empty:
+        click.echo(f"no lot with a symbol and a quantity in {ref.name}")
+        return
+
+    def money(v):
+        return "" if pd.isna(v) else f"${v:,.2f}"
+
+    def price(v, when):
+        return "" if pd.isna(v) else f"{v:,.4f} ({when})"
+
+    table = Table(title=f"stated balance vs quantity x price ({ref.name})", header_style="bold")
+    for name, justify in [("Account / lot", "left"), ("Symbol", "left"), ("Quantity", "right"),
+                          ("Balance", "right"), ("Start price", "right"), ("Value", "right"),
+                          ("Diff", "right"), ("Latest price", "right"), ("Latest value", "right"),
+                          ("", "left")]:
+        table.add_column(name, justify=justify, no_wrap=True)
+    for r in frame.itertuples():
+        diff = "" if pd.isna(r.difference) else f"{r.difference * 100:+.1f}%"
+        flag = r.flag if isinstance(r.flag, str) else ""
+        table.add_row(
+            f"{r.account} ({r.lot})", r.symbol, f"{r.quantity:,.3f}", money(r.balance),
+            price(r.price, r.price_date), money(r.value), diff,
+            price(r.latest_price, r.latest_date), money(r.latest_value), flag,
+            style="red" if flag else None,
+        )
+    Console().print(table)
+    flagged = int(frame["flag"].notna().sum())
+    if flagged:
+        raise click.ClickException(f"{flagged} lot(s) flagged")
 
 
 @sim_group_command.group(name="scenario")

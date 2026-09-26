@@ -159,7 +159,7 @@ def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path |
     sort chronologically and can be filtered by scenario by name alone.
     """
     glob_pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
-    re_pattern = re.compile(f".*_{scenario}_[^_]*\.sqlite3") if scenario else re.compile(f".*")
+    re_pattern = re.compile(f".*_{scenario}_[^_]*[.]sqlite3") if scenario else re.compile(f".*")
     runs = (r for r in Path(runs_dir).glob(glob_pattern)
             if re_pattern.match(r.name))
     runs = sorted(runs)
@@ -515,6 +515,8 @@ def load_scenario(
     persons = _read_csv(data_dir / "persons.csv", issues)
     securities = _read_csv(data_dir / "securities.csv", issues, optional=True)
     _validate_securities(securities, issues)
+    allocations = _read_csv(data_dir / "allocations.csv", issues, optional=True)
+    _validate_allocations(allocations, issues)
     (
         scenario_row, accounts, model_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
@@ -576,6 +578,7 @@ def load_scenario(
             con,
             persons=persons,
             securities=securities,
+            allocations=allocations,
             accounts=accounts,
             account_model_name="",  # obsolete
             account_model_rows=model_rows,
@@ -985,6 +988,46 @@ def _validate_securities(rows: list[dict[str, str]], issues: list[str]) -> None:
             issues.append(f"securities.csv row {i} ({symbol}): missing name")
 
 
+def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None:
+    """Each (symbol, as_of) is a set of asset-class weights that sums to 100%."""
+    sets: dict[tuple[str, str], int] = {}
+    seen: set[tuple[str, str, str]] = set()
+    for i, row in enumerate(rows, start=2):
+        symbol, as_of = row.get("symbol", ""), row.get("as_of", "")
+        asset_class = row.get("asset_class", "")
+        where = f"allocations.csv row {i} ({symbol or '?'})"
+        if not symbol:
+            issues.append(f"{where}: missing symbol")
+            continue
+        if as_of:
+            try:
+                date.fromisoformat(as_of)
+            except ValueError:
+                issues.append(f"{where}: as_of '{as_of}' is not an ISO date")
+                continue
+        if asset_class not in registries.ASSET_CLASSES:
+            issues.append(
+                f"{where}: unknown asset_class '{asset_class}'; "
+                f"allowed: {', '.join(registries.ASSET_CLASSES)}"
+            )
+        elif (symbol, as_of, asset_class) in seen:
+            issues.append(f"{where}: duplicate {asset_class} for as_of '{as_of}'")
+        else:
+            seen.add((symbol, as_of, asset_class))
+        try:
+            weight = _percent_to_micros(row.get("weight", ""))
+        except ValueError as e:
+            issues.append(f"{where}: weight {e}")
+            continue
+        sets[(symbol, as_of)] = sets.get((symbol, as_of), 0) + weight
+    for (symbol, as_of), total in sets.items():
+        if total != 1_000_000:
+            when = f" as of {as_of}" if as_of else ""
+            issues.append(
+                f"allocations.csv ({symbol}{when}): weights add up to {total / 10_000:g}%, not 100%"
+            )
+
+
 def _validate_accounts(
     rows: list[dict[str, str]], issues: list[str], *, money_resolver: _MoneyReferenceResolver,
 ) -> None:
@@ -1250,7 +1293,8 @@ def _derive_opening_balances(
 ) -> None:
     """Fill a lot's blank ``opening_balance`` from ``quantity`` x the latest
     ``security_price`` for its ``symbol`` on or before the scenario start
-    (ADR-005 §4). A given balance is left alone: it stays authoritative."""
+    (ADR-005 §4). A given balance is left alone: it stays authoritative. Likewise a
+    blank ``prior_year_end_balance`` in an account that uses it (see below)."""
     start = scenario_row.get("start", "")
     prices: dict[str, list[tuple[str, int]]] = {}
     for kind, series, payload, effective in aux_rows:
@@ -1277,9 +1321,33 @@ def _derive_opening_balances(
                 f"'{symbol}' on or before {start} (aux/security_price__{symbol}.csv)"
             )
             continue
-        price = max(known)[1]
-        cents = (quantity * price + 5_000_000_000) // 10_000_000_000
-        row["opening_balance"] = f"{cents // 100}.{cents % 100:02d}"
+        row["opening_balance"] = _price_value(quantity, max(known)[1])
+
+    # An account that uses prior_year_end_balance (it is set on some lot) needs it
+    # on every lot, so a blank one is derived the same way at the prior Dec 31, from
+    # today's share count (which ignores buys and reinvestment since; a stated value wins).
+    if not start:
+        return
+    prior_dec = f"{int(start[:4]) - 1}-12-31"
+    used = {r.get("account_name", "") for r in model_rows if r.get("prior_year_end_balance")}
+    for row in model_rows:
+        symbol = row.get("symbol", "")
+        if (row.get("prior_year_end_balance") or row.get("account_name", "") not in used
+                or not symbol or not row.get("quantity")):
+            continue
+        known = [p for p in prices.get(symbol.replace("_", " "), []) if p[0] <= prior_dec]
+        try:
+            quantity = _quantity_to_micros(row["quantity"])
+        except (ValueError, InvalidOperation):
+            continue
+        if known:
+            row["prior_year_end_balance"] = _price_value(quantity, max(known)[1])
+
+
+def _price_value(quantity_micros: int, price_micros: int) -> str:
+    """Dollars for a share count times a price, rounded half up to the cent."""
+    cents = (quantity_micros * price_micros + 5_000_000_000) // 10_000_000_000
+    return f"{cents // 100}.{cents % 100:02d}"
 
 
 def _quantity_to_micros(raw: str) -> int:
@@ -1641,6 +1709,7 @@ def _write_intent(
     *,
     persons: list[dict[str, str]],
     securities: list[dict[str, str]],
+    allocations: list[dict[str, str]],
     accounts: list[dict[str, str]],
     account_model_name: str,
     account_model_rows: list[dict[str, str]],
@@ -1674,6 +1743,15 @@ def _write_intent(
             "INSERT INTO security(symbol, name) VALUES (?,?)", (sec["symbol"], sec["name"]),
         )
     counts["security"] = len(securities)
+
+    for row in allocations:
+        con.execute(
+            "INSERT INTO security_allocation(symbol, as_of, asset_class, weight_micros) "
+            "VALUES (?,?,?,?)",
+            (row["symbol"], row.get("as_of", ""), row["asset_class"],
+             _percent_to_micros(row["weight"])),
+        )
+    counts["security_allocation"] = len(allocations)
 
     account_ids: dict[str, int] = {}
     for a in accounts:

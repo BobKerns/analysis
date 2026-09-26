@@ -98,6 +98,22 @@ TAX_CHARACTERS: set[str] = {
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 
+# Asset classes of allocations.csv (ADR-003 §4.1b), in display order. Closed like the
+# other registries; a new class is a one-line addition. `stock` is stock whose split
+# between US and international is not known (a placeholder to refine, distinct from bonds).
+ASSET_CLASSES: tuple[str, ...] = (
+    "stock_us", "stock_intl", "stock", "bond", "cash", "real_estate", "other",
+)
+ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "weight")
+CASH_SYMBOL = "CASH"
+
+# The class of a lot that no allocations.csv row describes, by account subkind
+# (a `CASH` symbol is cash whatever the account). Investment subkinds are absent:
+# what they hold has to be said, and an unclassified lot shows up as such.
+SUBKIND_ASSET_CLASS: dict[str, str] = {
+    "cash": "cash", "real_estate": "real_estate", "vehicle": "other", "other_asset": "other",
+}
+
 # Canonical accounts.csv column order (ADR-003 §4.2).
 ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
     "name", "kind", "subkind", "owner", "tax_treatment", "series",

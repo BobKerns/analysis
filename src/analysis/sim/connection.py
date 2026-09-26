@@ -169,6 +169,10 @@ _ITEM_SQL: dict[str, str] = {
     ),
     "person": "SELECT * FROM person ORDER BY id",
     "security": "SELECT symbol, name FROM security ORDER BY symbol",
+    "security_allocation": (
+        "SELECT symbol, as_of, asset_class, weight_micros FROM security_allocation "
+        "ORDER BY symbol, as_of, asset_class"
+    ),
     "person_lifespan": "SELECT * FROM person_lifespan ORDER BY person",
     "chain": (
         "SELECT c.*, a.name AS account_name, a.kind AS account_kind, m.lot AS lot "
