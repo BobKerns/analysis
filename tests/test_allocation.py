@@ -11,7 +11,9 @@ from click.testing import CliRunner
 matplotlib.use("Agg")
 
 from analysis.cli import main
-from analysis.sim.allocation import UNCLASSIFIED, lot_classes, portfolio_allocation
+from analysis.sim.allocation import (
+    UNCLASSIFIED, asset_classes_present, lot_classes, portfolio_allocation,
+)
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.loader import LoadError
 from analysis.sim.notebook_ui.allocation_widgets import allocation_view, portfolio_allocation_widget
@@ -113,7 +115,7 @@ def test_widget_view_and_widget(allocations_csv: Path, two_lot_run: RunConnectio
     assert heading.startswith("**Asset allocation** as of ")
     assert "Asset_Brokerage_Joint" in table.columns
     widget = portfolio_allocation_widget(two_lot_run)
-    selectors, _out = widget.children
+    selectors, _boxes, _out = widget.children
     selectors.children[0].value = "owner"  # must not raise
 
 
@@ -150,3 +152,48 @@ def test_stock_of_unknown_split_is_its_own_class_between_stock_and_bond(
     table = portfolio_allocation(two_lot_run)
     assert table.loc["stock", "balance"] > 0
     assert list(table.index).index("stock") < list(table.index).index("bond")
+
+
+def test_excluded_classes_leave_the_table_and_the_totals(
+    allocations_csv: Path, two_lot_run: RunConnection,
+) -> None:
+    everything = portfolio_allocation(two_lot_run)
+    liquid = portfolio_allocation(two_lot_run, exclude=["real_estate", UNCLASSIFIED])
+    assert "real_estate" not in liquid.index and UNCLASSIFIED not in liquid.index
+    assert liquid.loc["Total", "balance"] == pytest.approx(
+        everything.loc["Total", "balance"]
+        - everything.loc["real_estate", "balance"] - everything.loc[UNCLASSIFIED, "balance"])
+    assert liquid.loc["Total", "percent"] == pytest.approx(100.0)  # of what remains
+    split = portfolio_allocation(two_lot_run, by="owner", exclude=["real_estate"])
+    assert "real_estate" not in split.index
+    with pytest.raises(ValueError, match="unknown asset class 'gold'"):
+        portfolio_allocation(two_lot_run, exclude=["gold"])
+
+
+def test_excluding_everything_leaves_an_empty_total(two_lot_run: RunConnection) -> None:
+    table = portfolio_allocation(two_lot_run, exclude=[*asset_classes_present(two_lot_run)])
+    assert list(table.index) == ["Total"] and table.loc["Total", "balance"] == 0
+
+
+def test_widget_checkboxes_leave_classes_out(allocations_csv: Path, two_lot_run: RunConnection) -> None:
+    widget = portfolio_allocation_widget(two_lot_run, exclude=("real_estate",))
+    _selectors, boxes, _out = widget.children
+    checks = {box.description: box for box in boxes.children if hasattr(box, "description") and box.description}
+    assert checks["real_estate"].value is False and checks["cash"].value is True
+    assert UNCLASSIFIED in checks  # the IRAs and Roths have no symbol, so they are unclassified
+    heading, table = allocation_view(two_lot_run, exclude=("real_estate",))
+    assert "excluding real_estate" in heading and "real_estate" not in table.index
+    checks["cash"].value = False  # must not raise
+
+
+def test_allocation_command_can_exclude_classes(
+    allocations_csv: Path, two_lot_run_file: Path, test_data_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "allocation", "--exclude", "real_estate", "--exclude", "unclassified",
+        "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
+        "--runfile", str(two_lot_run_file),
+    ], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    assert "excluding real_estate, unclassified" in result.output
+    assert "real_estate " not in result.output.split("excluding")[1]

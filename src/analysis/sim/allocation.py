@@ -10,6 +10,8 @@ allocation is classed by its account subkind (cash, real estate, ...) or shown a
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import pandas as pd
 
 from analysis.sim import registries
@@ -17,7 +19,7 @@ from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.holdings import lots_frame
 
 __all__ = [
-    "GROUPINGS", "UNCLASSIFIED", "lot_classes", "portfolio_allocation",
+    "GROUPINGS", "UNCLASSIFIED", "asset_classes_present", "lot_classes", "portfolio_allocation",
     "render_allocation_table",
 ]
 
@@ -84,16 +86,30 @@ def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = 
     return pd.DataFrame(rows, columns=columns)
 
 
+def asset_classes_present(source: RunConnection | ScenarioConnection, month: str | None = None) -> list[str]:
+    """The asset classes some lot has a balance in, in display order (``unclassified`` last)."""
+    present = set(lot_classes(source, month)["asset_class"])
+    return [c for c in [*registries.ASSET_CLASSES, UNCLASSIFIED] if c in present]
+
+
 def portfolio_allocation(
     source: RunConnection | ScenarioConnection, month: str | None = None, by: str | None = None,
+    exclude: Iterable[str] = (),
 ) -> pd.DataFrame:
     """Balance per asset class (rows, in registry order, ``unclassified`` last, then a
     ``Total`` row). Without ``by`` the columns are ``balance`` and ``percent``; with it
     (one of :data:`GROUPINGS`) there is a balance column per group plus ``Total``, and
-    a ``percent`` column of the overall total."""
+    a ``percent`` column of the overall total. Classes in ``exclude`` are left out, and
+    the total and percentages cover what remains (exclude ``real_estate`` and
+    ``unclassified`` to see what has been classified among the liquid holdings)."""
     if by is not None and by not in GROUPINGS:
         raise ValueError(f"cannot group by {by!r}; choose from {', '.join(GROUPINGS)}")
+    known = [*registries.ASSET_CLASSES, UNCLASSIFIED]
+    unknown = sorted(set(exclude) - set(known))
+    if unknown:
+        raise ValueError(f"unknown asset class {unknown[0]!r}; choose from {', '.join(known)}")
     frame = lot_classes(source, month)
+    frame = frame[~frame["asset_class"].isin(set(exclude))]
     order = [*registries.ASSET_CLASSES, UNCLASSIFIED]
     if by is None:
         table = frame.groupby("asset_class")[["balance"]].sum()
