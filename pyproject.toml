@@ -12,7 +12,7 @@ dependencies = [
   "pandas>=3.0.6",
   "rich>=15.0.0",
   "ipykernel>=7.3.0",
-  "jupyterlab>=4.6.3",
+  "jupyterlab>=4.6.4",
 ]
 
 [project.scripts]
@@ -29,12 +29,12 @@ dev = [
   "nbstripout>=0.9.1",
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
-  "ruff>=0.16.8",
+  "ruff>=0.16.9",
   "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
-requires = ["hatchling>=1.32.3"]
+requires = ["hatchling>=1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
