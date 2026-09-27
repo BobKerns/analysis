@@ -1045,6 +1045,145 @@ def test_tax_accumulator_computes_federal_and_writes_summary(tmp_path: Path) -> 
         con.close()
 
 
+def _summary(con: sqlite3.Connection, year: int, bucket: str) -> int:
+    row = con.execute(
+        "SELECT amount FROM tax_year_summary WHERE year = ? AND bucket = ?", (year, bucket),
+    ).fetchone()
+    assert row is not None, bucket
+    return row[0]
+
+
+def _run_federal_tax_accumulator(tmp_path: Path, repo: Path) -> sqlite3.Connection:
+    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    _append_scheduled(
+        sched_csv,
+        name="tax_federal_prev_year",
+        from_account="Asset_Checking",
+        to_account="Expense_Taxes_Federal",
+        cadence="annual",
+        month_of_year="4",
+        amount_rule_kind="tax_accumulator",
+        tax_character="none",
+        start="2027-04-30",
+        priority="400",
+        meta_json="{}",
+        params_json='{"year":"previous","scope":"federal"}',
+    )
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+    con = sqlite3.connect(run_path)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def test_itemized_deduction_is_used_when_greater_than_standard(tmp_path: Path) -> None:
+    repo = _clone_prototype(tmp_path)
+    # 2026 MFJ standard deduction is $31,500 (prototype_data/aux/standard_deduction.csv).
+    (repo / "aux" / "federal_deductions.csv").write_text(
+        "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
+    )
+    con = _run_federal_tax_accumulator(tmp_path, repo)
+    try:
+        assert _summary(con, 2026, "federal_itemized_deduction") == 40_000_00
+        assert _summary(con, 2026, "federal_standard_deduction") == 31_500_00
+        assert _summary(con, 2026, "federal_deduction_used") == 40_000_00
+    finally:
+        con.close()
+
+
+def test_standard_deduction_is_used_when_greater_than_itemized(tmp_path: Path) -> None:
+    repo = _clone_prototype(tmp_path)
+    (repo / "aux" / "federal_deductions.csv").write_text(
+        "effective_date,amount\n2026-01-31,10000.00\n", encoding="utf-8",
+    )
+    con = _run_federal_tax_accumulator(tmp_path, repo)
+    try:
+        assert _summary(con, 2026, "federal_itemized_deduction") == 10_000_00
+        assert _summary(con, 2026, "federal_deduction_used") == 31_500_00
+    finally:
+        con.close()
+
+
+def test_no_itemized_deductions_file_behaves_as_before(tmp_path: Path) -> None:
+    repo = _clone_prototype(tmp_path)
+    con = _run_federal_tax_accumulator(tmp_path, repo)
+    try:
+        assert _summary(con, 2026, "federal_itemized_deduction") == 0
+        assert _summary(con, 2026, "federal_deduction_used") == 31_500_00
+    finally:
+        con.close()
+
+
+def test_itemized_deduction_amount_can_reference_an_itemization(tmp_path: Path) -> None:
+    repo = _clone_prototype(tmp_path)
+    (repo / "itemizations").mkdir(exist_ok=True)
+    (repo / "itemizations" / "medical_2026.csv").write_text(
+        "Item,Value\nsurgery,32000.00\nprescriptions,3000.00\n", encoding="utf-8",
+    )
+    (repo / "aux" / "federal_deductions.csv").write_text(
+        "effective_date,amount\n2026-01-31,@medical_2026\n", encoding="utf-8",
+    )
+    con = _run_federal_tax_accumulator(tmp_path, repo)
+    try:
+        assert _summary(con, 2026, "federal_itemized_deduction") == 35_000_00
+        assert _summary(con, 2026, "federal_deduction_used") == 35_000_00
+    finally:
+        con.close()
+
+
+def test_state_itemized_deduction_falls_back_to_federal_when_absent(tmp_path: Path) -> None:
+    """A scenario with no state_deductions rows at all uses federal_deductions'
+    figure for the state scope too, so a state-specific file isn't needed just
+    to reuse the same itemized total."""
+    import pandas as pd
+
+    repo = _clone_prototype(tmp_path)
+    (repo / "aux" / "federal_deductions.csv").write_text(
+        "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
+    )
+    accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    row = dict.fromkeys(df.columns, "")
+    row.update(name="Expense_Taxes_State", kind="expense", subkind="taxes_state",
+              owner="joint", tax_treatment="none", opened="2020-01-31", meta_json="{}")
+    df.loc[len(df)] = row
+    df.to_csv(accounts_path, index=False)
+
+    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    _append_scheduled(
+        sched_csv,
+        name="tax_state_prev_year",
+        from_account="Asset_Checking",
+        to_account="Expense_Taxes_State",
+        cadence="annual",
+        month_of_year="4",
+        amount_rule_kind="tax_accumulator",
+        tax_character="none",
+        start="2027-04-30",
+        priority="400",
+        meta_json="{}",
+        params_json='{"year":"previous","scope":"state"}',
+    )
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+    con = sqlite3.connect(run_path)
+    con.row_factory = sqlite3.Row
+    try:
+        assert _summary(con, 2026, "state_itemized_deduction") == 40_000_00
+    finally:
+        con.close()
+
+
 def test_person_lifespan_stops_associated_transfers(tmp_path: Path) -> None:
     """A person's final_month stops transfers tied to them (via explicit
     `person` column or account owner) but leaves joint-account transfers

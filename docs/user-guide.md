@@ -94,7 +94,7 @@ is pointed out.
 | **Traditional vs. Roth** | A Traditional account delays tax until you withdraw money (`tax_deferred_out`). A Roth account is already taxed, so withdrawals come out tax-free (`tax_free`). Set with `tax_treatment` in `accounts.csv`. |
 | **Filing status** | `MFJ` (married filing jointly), `Single`, or `MFS` (married filing separately). This tool does not model Head of Household. Filing status changes automatically after a spouse's death, based on `lifespan.csv`; see Part 4.7. |
 | **Standard deduction** | A flat amount the IRS lets you subtract from income before tax is calculated. This simulator always uses the standard deduction; it does not yet model choosing to itemize deductions instead. |
-| **Itemized deduction** | An IRS alternative to the standard deduction: instead of the flat amount, you add up specific expenses (mortgage interest, large medical bills, and so on) and use that total if it's bigger. **Not modeled yet.** This is a different idea from this tool's *itemization* files, above, which just add up a list of dollar amounts for any purpose — the similar name is confusing, but it predates this guide. |
+| **Itemized deduction** | An IRS alternative to the standard deduction: instead of the flat amount, you add up specific expenses (mortgage interest, large medical bills, and so on) and use that total if it's bigger. See Part 4.9 for how to add one for a given year. This is a different idea from this tool's *itemization* files, above, which just add up a list of dollar amounts for any purpose — the similar name is confusing, but it predates this guide. |
 | **Marginal tax bracket** | The tax rate on your *next* dollar of ordinary income. From `federal_brackets.csv` / `state_brackets__CA.csv`. |
 | **Provisional income** | The IRS's combined-income number that decides how much of your Social Security is taxable. From `ss_taxation_thresholds.csv`. |
 
@@ -115,10 +115,10 @@ tax year, by looking back over everything that happened that year (the
   year. One exception: MFJ or MFS automatically changes to Single, starting
   the year after a primary person's `final_month` in `lifespan.csv`. You do
   not need to add a matching row to `filing_status.csv` yourself; see Part 4.7.
-- **Deductions**: always the standard deduction, from
-  `standard_deduction.csv`. Itemizing is not modeled yet. (See the glossary
-  above — *itemization* and *itemized deduction* mean two different things in
-  this guide.)
+- **Deductions**: the standard deduction, from `standard_deduction.csv`,
+  unless you add itemized deductions for that year — see §4.9. The simulator
+  then uses whichever is greater. (See the glossary above — *itemization* and
+  *itemized deduction* mean two different things in this guide.)
 - **State tax** works the same way as federal tax, using
   `state_brackets__CA.csv` (or your own state's file, under `series/`).
 - **RMDs** are calculated from the account's lot balances on the previous
@@ -339,6 +339,49 @@ an error, but the simulator quietly does nothing with it when it runs. If you
 want a new rule to start on a future date — which is what `add_scheduled`
 sounds like it is for — just add the row directly to `scheduled.csv` with
 that future `start` date. You do not need a calendar event for this at all.
+
+### 4.9 Modeling itemized deductions (for example, a big medical year)
+
+By default, tax is calculated using the standard deduction — a flat amount
+that depends only on filing status (Part 3). If a year has enough deductible
+expenses (a large medical bill is the usual case), you can add a
+`federal_deductions.csv` file to `aux/`. It has one dated row per year:
+
+```csv
+# aux/federal_deductions.csv
+effective_date,amount
+2029-01-31,42000.00
+```
+
+For that tax year, the simulator uses whichever is greater: this amount, or
+the standard deduction. You do not need to compare them yourself. This file
+is shared by every scenario by default; add your own copy under a scenario's
+own `aux/` folder if only that scenario should have it (Part 2, `aux/`).
+
+Instead of a plain number, `amount` can be `@name`, pointing at an
+`itemizations/<name>.csv` file that lists the actual expenses and adds them
+up for you:
+
+```csv
+# itemizations/medical_2029.csv
+Item,Value
+surgery,32000.00
+prescriptions,3000.00
+```
+
+```csv
+# aux/federal_deductions.csv
+effective_date,amount
+2029-01-31,@medical_2029
+```
+
+State tax uses the same idea, in `state_deductions.csv`. If you don't add
+one, the state figure automatically uses whatever is in
+`federal_deductions.csv` — most states don't need their own file.
+
+This is a simple, whole-dollar comparison. It does not model anything more
+detailed, such as medical expenses only counting above a share of your
+income.
 
 ## See also
 

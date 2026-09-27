@@ -208,6 +208,14 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "ltcg_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
     "standard_deduction": ("effective_date", "filing_status", "amount"),
+    # Itemized deductions: a dated total, no filing_status split (unlike
+    # standard_deduction). Optional; when present, the tax_accumulator rule uses
+    # whichever is greater, itemized or standard. `amount` may be a literal
+    # figure or an itemizations/<name>.csv rollup (`@name`), same as any other
+    # aux money column. `state_deductions` defaults to `federal_deductions`'s
+    # value when no `state_deductions` rows exist at all.
+    "federal_deductions": ("effective_date", "amount"),
+    "state_deductions": ("effective_date", "amount"),
     "ss_taxation_thresholds":
         ("effective_date", "filing_status", "tier1_floor", "tier2_floor"),
     "rmd_factors": ("effective_date", "age", "factor_micros"),
@@ -242,6 +250,8 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "ltcg_brackets": frozenset({"floor"}),
     "state_brackets": frozenset({"floor"}),
     "standard_deduction": frozenset({"amount"}),
+    "federal_deductions": frozenset({"amount"}),
+    "state_deductions": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
     "energy_credits": frozenset({"cap"}),
 }

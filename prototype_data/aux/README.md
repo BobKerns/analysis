@@ -55,6 +55,7 @@ shared default ([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-sch
 | --- | --- |
 | `federal_brackets.csv` | US federal ordinary-income tax brackets. One row per (effective_date, filing_status, bracket_index). |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
+| `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, the `tax_accumulator` rule uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
 | `filing_status.csv` | The set of filing-status codes valid on each effective date (acts as an enum table). |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |
 | `inflation__cpi.csv` | Annual inflation rate (CPI = Consumer Price Index, the standard cost-of-living measure published by the US Bureau of Labor Statistics) used to grow non-indexed amounts, and by the CPI-constant-dollar views regardless of what any scenario's own CSVs reference. Kept here, rather than in `series/`, so that lookup always has a default. |

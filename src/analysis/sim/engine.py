@@ -1925,6 +1925,10 @@ def _apply_tax_accumulator(
     - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
     - bracket_series: optional, required when state_brackets has multiple series
     - standard_deduction_aux: defaults to "standard_deduction"
+    - itemized_deduction_aux: defaults to "federal_deductions" (federal) or
+      "state_deductions" (state); the greater of it and the standard deduction
+      is used. "state_deductions" falls back to "federal_deductions" when the
+      scenario has no "state_deductions" rows at all.
     - ss_threshold_aux: defaults to "ss_taxation_thresholds" (federal only)
 
     ``post_transfer=False`` (used for the trailing-year tax tail; see
@@ -2011,7 +2015,20 @@ def _apply_tax_accumulator(
         )
     standard_deduction = int(deduction_rows[0]["amount"])
 
-    taxable_income = max(0, ordinary_income + ltcg_income + taxable_ss - standard_deduction)
+    # Itemized deductions (optional): a dated total, no filing_status split.
+    # state_deductions falls back to federal_deductions when the scenario has
+    # no state_deductions rows at all -- most states don't need their own file.
+    itemized_deduction_aux = str(params.get(
+        "itemized_deduction_aux",
+        "federal_deductions" if scope == "federal" else "state_deductions",
+    ))
+    if scope == "state" and not aux.get((itemized_deduction_aux, None)):
+        itemized_deduction_aux = "federal_deductions"
+    itemized_rows = _active_aux_rows(aux, itemized_deduction_aux, None, as_of)
+    itemized_deduction = int(itemized_rows[0]["amount"]) if itemized_rows else 0
+    deduction = max(standard_deduction, itemized_deduction)
+
+    taxable_income = max(0, ordinary_income + ltcg_income + taxable_ss - deduction)
 
     bracket_rows = _active_aux_rows(aux, bracket_aux, bracket_series, as_of)
     bracket_rows = [r for r in bracket_rows if r.get("filing_status") == filing_status]
@@ -2077,6 +2094,8 @@ def _apply_tax_accumulator(
         f"{scope}_taxable_ss": taxable_ss,
         f"{scope}_adjusted_gross_income": ordinary_income + ltcg_income + taxable_ss,
         f"{scope}_standard_deduction": standard_deduction,
+        f"{scope}_itemized_deduction": itemized_deduction,
+        f"{scope}_deduction_used": deduction,
         f"{scope}_taxable_income": taxable_income,
         f"{scope}_tax_liability": tax_liability,
         f"{scope}_tax_paid": already_paid,

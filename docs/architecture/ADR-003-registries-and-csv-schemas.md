@@ -168,8 +168,8 @@ For a single gross benefit with multiple destinations, use one `ss_benefit` row 
 
 A placeholder rule that marks "compute taxes for the prior tax year" at a specific calendar point. Fires at year-end (December) for accrual and in April for reconciliation.
 
-- **Params:** `{ "year": "previous", "scope": "federal" | "state", "filing_status_aux": "filing_status", "bracket_aux": "federal_brackets" }`.
-- **Compute:** delegates to `tax.py`. Scans `transfer_event` rows for the relevant year by `tax_character` (`stcg` counts as ordinary income), applies brackets and deductions from aux tables, and computes net tax owed. **Filing status** is the `filing_status` aux table's row for the tax year, except that `MFJ`/`MFS` become `Single` from the year after a `role = 'primary'` person's `lifespan.csv` `final_month` (§4.9); the aux table needs no row for it. For `scope = federal`, if an `ltcg_brackets` aux table exists, the long-term gain is stacked on top of ordinary taxable income and taxed at that table's rates (§4.4); without it long-term gains are taxed as ordinary income, and `scope = state` always does.
+- **Params:** `{ "year": "previous", "scope": "federal" | "state", "filing_status_aux": "filing_status", "bracket_aux": "federal_brackets", "itemized_deduction_aux": "federal_deductions" | "state_deductions" }`.
+- **Compute:** delegates to `tax.py`. Scans `transfer_event` rows for the relevant year by `tax_character` (`stcg` counts as ordinary income), applies brackets and deductions from aux tables, and computes net tax owed. **Filing status** is the `filing_status` aux table's row for the tax year, except that `MFJ`/`MFS` become `Single` from the year after a `role = 'primary'` person's `lifespan.csv` `final_month` (§4.9); the aux table needs no row for it. For `scope = federal`, if an `ltcg_brackets` aux table exists, the long-term gain is stacked on top of ordinary taxable income and taxed at that table's rates (§4.4); without it long-term gains are taxed as ordinary income, and `scope = state` always does. **Deduction** is whichever is greater of the standard deduction and the itemized total from the `federal_deductions`/`state_deductions` aux table (§4.4) for that tax year; with no itemized rows for that date, the deduction is just the standard one, unchanged from before itemized deductions existed. `state_deductions` falls back to `federal_deductions`'s figure when the scenario has no `state_deductions` rows at all, so most states never need their own file.
 - **Emits:** one event in April: `from_account = Asset_Checking`, `to_account = Expense_Taxes_Federal` (or `_State`), amount = computed tax minus withholding already paid via `fixed_amount` rules through the year. The December firing typically emits zero (it only writes `tax_year_summary` rows for visibility) but may emit a true-up if estimated payments are part of the scenario.
 - **Use:** one per (year, scope) pair, authored as `cadence = annual`.
 
@@ -528,6 +528,7 @@ Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation
   `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate_micros`
 - **`standard_deduction.csv`**:
   `effective_date`, `filing_status`, `amount`
+- **`federal_deductions.csv`**, **`state_deductions.csv`** (both optional): `effective_date`, `amount` — a dated itemized-deduction total, no `filing_status` split. `amount` may be `@name` (§4.1c). The `tax_accumulator` rule (§2.6) uses whichever is greater of this and the standard deduction; `state_deductions` falls back to `federal_deductions` if the scenario has no `state_deductions` rows at all.
 - **`ss_taxation_thresholds.csv`**:
   `effective_date`, `filing_status`, `tier1_floor`, `tier2_floor`
 - **`rmd_factors.csv`**:
