@@ -17,6 +17,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Collection, Mapping
+import calendar
+import datetime
+from dateutil import relativedelta
 
 import ipywidgets as widgets
 import traitlets
@@ -29,9 +32,21 @@ from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.registries import AssetClass
-from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
+from analysis.sim.types import (
+    AccountKind, AccountKindAny, DollarMode, ValuePlotMode,
+    AccountName, ScenarioName,
+)
 
-from analysis.sim.types import AccountKind, AccountName, ScenarioName
+
+def to_month(year: int, month: int) -> datetime.date:
+    """Return a date representing the last day of the given month and year."""
+    last_day = calendar.monthrange(year, month)[1]
+    return datetime.date(year, month, last_day)
+
+def this_month() -> datetime.date:
+    """Return a date representing the last day of the current month."""
+    today = datetime.date.today()
+    return to_month(today.year, today.month)
 
 
 def warning_html(message: str) -> str:
@@ -600,3 +615,36 @@ class GroupingPicker(widgets.Dropdown):
             value=value or _NO_SPLIT,
             description="Split by:",
         )
+
+
+class DateRangeSlider(widgets.SelectionRangeSlider):
+    """Widget to pick a date range, with the end date defaulting to the last day of the month."""
+    start: datetime.date
+    end: datetime.date
+    months: int
+    def __init__(self,
+                 start: datetime.date | None = None,
+                 end: datetime.date | None = None,
+                 months: int = 12,
+                 layout: widgets.Layout | None = None,
+                 description: str = "Date range:",
+                 value: tuple[datetime.date, datetime.date] | None = None,
+                 index: tuple[int, int] | None = None,
+                 disabled: bool = False,
+                 ):
+        start = start or this_month()
+        end = end or this_month() + relativedelta.relativedelta(months=months)
+        self.start = start
+        self.end = end
+        months = (end.year - start.year) * 12 + (end.month - start.month)
+        self.months = months
+        dates = [m for m in (start + relativedelta.relativedelta(months=i) for i in range(months + 1))]
+        super().__init__(value=value or (start, end),
+                         index=index or (value and (dates.index(value[0]), dates.index(value[1])) or (0, months)),
+                         description=description,
+                         options=[(d.strftime("%Y-%m"), d) for d in dates],
+                         layout=layout or widgets.Layout(width="85%"),
+                         disabled=disabled,
+                         )
+
+    

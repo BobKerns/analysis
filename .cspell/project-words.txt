@@ -23,6 +23,7 @@ columnless
 configfile
 conftest
 counterclock
+dateutil
 delenv
 dflt
 executemany
@@ -45,7 +46,6 @@ linestyle
 lotb
 ltcg
 metas
-stcg
 mktree
 modelcontextprotocol
 msecs
@@ -71,6 +71,7 @@ recategorize
 recomputable
 reconstructable
 reentrancy
+relativedelta
 reprompts
 ripwire
 rollups
@@ -86,6 +87,7 @@ sidefx
 sourceable
 sqls
 startangle
+stcg
 stdlib
 subkey
 subkind
