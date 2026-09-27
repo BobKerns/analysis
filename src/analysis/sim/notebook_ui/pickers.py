@@ -25,7 +25,7 @@ import pandas as pd
 
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.notebook_ui.first_draw import deferring_first_draws, run_when_cell_is_done
+from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
@@ -84,16 +84,17 @@ class Connections(traitlets.HasTraits):
         
         """
         out = widgets.Output()
-        def _redraw(*_):
+        def _draw():
             with out:
                 clear_output(wait=True)
-                # Widgets built by fn hand their first draw to first_draw(); it runs after
-                # the cell that is executing finishes (at once for a picker-driven redraw).
-                with deferring_first_draws() as pending:
-                    result = self._invoke(fn, *args, **kwargs)
-                    if result is not None:
-                        display(result)
-            run_when_cell_is_done(pending)
+                result = self._invoke(fn, *args, **kwargs)
+                if result is not None:
+                    display(result)
+
+        def _redraw(*_):
+            # The first draw waits for the end of the cell that called show(), so it
+            # happens like any later redraw (see notebook_ui.first_draw).
+            when_cell_is_done(_draw)
         self.observe(_redraw, names="value")
         _redraw()
         return out

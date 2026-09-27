@@ -10,7 +10,6 @@ from collections.abc import Callable
 
 from IPython.display import Markdown, clear_output, display
 from ipywidgets import widgets
-from analysis.sim.notebook_ui.first_draw import first_draw
 from analysis.sim.notebook_ui.pickers import AccountKindPicker
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -109,8 +108,7 @@ def account_balance_history_widget(
         _redraw_caveat()
         _sync_accounts_options()
 
-    # Fill the picker before observing it, so setting its options does not draw; the
-    # first draw is handed to first_draw() (see notebook_ui.first_draw).
+    # Fill the picker before observing it, so setting its options does not draw.
     _sync_accounts_options()
     kind_picker.observe(_on_kind_change, names="value")
     picker.observe(_redraw, names="value")
@@ -118,8 +116,8 @@ def account_balance_history_widget(
     y_axis_mode.observe(_redraw, names="value")
     value_mode.observe(_redraw, names="value")
 
-    first_draw(_redraw_caveat)
-    first_draw(_redraw)
+    _redraw_caveat()
+    _redraw()
 
     box = widgets.VBox([
         *( [scenario_picker] if scenario_picker is not None else () ),

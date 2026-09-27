@@ -12,7 +12,6 @@ from analysis.sim.allocation import (
     GROUPINGS, UNCLASSIFIED, asset_classes_present, lot_classes, portfolio_allocation,
 )
 from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.notebook_ui.first_draw import first_draw
 from analysis.sim.notebook_ui.holdings_widgets import _label, _month_dropdown
 
 __all__ = ["allocation_view", "portfolio_allocation_widget"]
@@ -83,7 +82,7 @@ def portfolio_allocation_widget(
     for control in (split_picker, month_picker, *include.values()):
         if control is not None:
             control.observe(_redraw, names="value")
-    first_draw(_redraw)
+    _redraw()
     box = widgets.VBox([
         widgets.HBox([p for p in (split_picker, month_picker) if p is not None]),
         widgets.HBox([widgets.Label("Include:"), *include.values()],

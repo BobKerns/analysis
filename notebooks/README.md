@@ -43,3 +43,20 @@ check, so a notebook you just ran will show as
 "modified" even if nothing meaningful changed. Run `git diff` or `git add`
 to see the real (usually empty) diff. See
 [nbstripout](https://github.com/kynan/nbstripout) for details.
+
+## Writing a widget for a notebook
+
+Show a widget with `CONNECTIONS.show(fn, ...)` or `CONNECTIONS.show_scenario(fn, ...)`
+(`analysis.sim.notebook_ui.pickers`); they own the draw and redraw logic, so a widget
+function should not.
+
+- **Return the widget** (or return `None` if the function displays things itself). Do not
+  also `display()` the box you return: `show` displays the result, so doing both puts the
+  widget on the page twice.
+- **Don't worry about the first draw.** `show` runs the function after the cell that called
+  it has finished (IPython's `post_execute` hook), like any later redraw. Drawing while the
+  cell is still running, before the widget's view exists in the browser, could come out
+  clipped or blank under Jupyter. Nothing else needs to be deferred.
+- Plots go in an `Output` widget as before: `plt.show()`, or `display(fig)` followed by
+  `plt.close(fig)`. Redraws triggered by a control are drawn immediately.
+- Fill a picker's options before you observe it, so setting them does not trigger a draw.

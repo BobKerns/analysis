@@ -3,40 +3,19 @@
 A widget drawn while its cell is still executing is drawn before its view exists in
 the browser, and under Jupyter that first draw can come out clipped or missing; a
 redraw from a control change, which happens later, is fine. ``Connections.show``
-collects the first draws of the widgets its function builds and runs them once the
-cell is done (IPython's ``post_execute`` hook), or straight away when nothing is
-executing (a redraw triggered by a picker) or there is no kernel (tests, scripts).
-Widgets call :func:`first_draw` where they would otherwise draw at construction.
+therefore does its first draw with :func:`when_cell_is_done`: after the cell, via
+IPython's ``post_execute`` hook, so it behaves exactly like a redraw. When no cell is
+executing (a picker changed, so the kernel is handling a widget message) or there is
+no kernel (tests, scripts) the callback runs at once.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 
-__all__ = ["deferring_first_draws", "first_draw", "run_when_cell_is_done"]
+__all__ = ["when_cell_is_done"]
 
-_collecting: list[Callable[[], None]] | None = None
-
-
-def first_draw(draw: Callable[[], None]) -> None:
-    """Draw now, or later if a ``Connections.show`` is collecting first draws."""
-    if _collecting is None:
-        draw()
-    else:
-        _collecting.append(draw)
-
-
-@contextmanager
-def deferring_first_draws() -> Iterator[list[Callable[[], None]]]:
-    """Collect the :func:`first_draw` calls made inside the block instead of running them."""
-    global _collecting
-    outer, pending = _collecting, []
-    _collecting = pending
-    try:
-        yield pending
-    finally:
-        _collecting = outer
+_running_deferred = False
 
 
 def _shell_running_a_cell():
@@ -53,22 +32,22 @@ def _shell_running_a_cell():
         return None
 
 
-def run_when_cell_is_done(draws: list[Callable[[], None]]) -> None:
-    """Run ``draws`` after the executing cell finishes, or now if none is executing."""
-    if not draws:
-        return
-
-    def run() -> None:
-        for draw in draws:
-            draw()
-
-    shell = _shell_running_a_cell()
+def when_cell_is_done(callback: Callable[[], None]) -> None:
+    """Run ``callback`` after the executing cell finishes, or now if none is executing."""
+    shell = None if _running_deferred else _shell_running_a_cell()
     if shell is None:
-        run()
+        callback()
         return
 
     def once(*_args) -> None:
+        global _running_deferred
         shell.events.unregister("post_execute", once)
-        run()
+        # The hook runs while the cell is still the kernel's parent message, so anything
+        # it triggers must run now rather than queue another hook behind it.
+        _running_deferred = True
+        try:
+            callback()
+        finally:
+            _running_deferred = False
 
     shell.events.register("post_execute", once)
