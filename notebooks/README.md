@@ -59,4 +59,9 @@ function should not.
   clipped or blank under Jupyter. Nothing else needs to be deferred.
 - Plots go in an `Output` widget as before: `plt.show()`, or `display(fig)` followed by
   `plt.close(fig)`. Redraws triggered by a control are drawn immediately.
+- If a plot sits alongside other output in the same cell (a table above it, say), give it
+  its own `Output` widget rather than sharing one; under Jupyter a plot has needed both
+  `plt.show()` and `display(fig, clear=True)`, in that order, to draw reliably every time
+  (`portfolio_allocation_widget`'s pie is the example) — sharing the `Output` with other
+  content caused the two calls to reserve then misplace space.
 - Fill a picker's options before you observe it, so setting them does not trigger a draw.

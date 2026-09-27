@@ -117,7 +117,7 @@ def test_widget_view_and_widget(allocations_csv: Path, two_lot_run: RunConnectio
     assert heading.startswith("**Asset allocation** as of ")
     assert "Asset_Brokerage_Joint" in table.columns
     widget = portfolio_allocation_widget(two_lot_run)
-    selectors, _boxes, _out = widget.children
+    selectors, _boxes, _out, _pie = widget.children
     selectors.children[0].value = "owner"  # must not raise
 
 
@@ -179,7 +179,7 @@ def test_excluding_everything_leaves_an_empty_total(two_lot_run: RunConnection) 
 
 def test_widget_checkboxes_leave_classes_out(allocations_csv: Path, two_lot_run: RunConnection) -> None:
     widget = portfolio_allocation_widget(two_lot_run, exclude=("real_estate",))
-    _selectors, boxes, _out = widget.children
+    _selectors, boxes, _out, _pie = widget.children
     checks = {box.description: box for box in boxes.children if hasattr(box, "description") and box.description}
     assert checks["real_estate"].value is False and checks["cash"].value is True
     assert UNCLASSIFIED in checks  # the IRAs and Roths have no symbol, so they are unclassified
