@@ -352,3 +352,31 @@ def test_year_end_values_and_yearly_totals(retire_alice_run: RunConnection) -> N
     income_yearly = yearly_totals(rc.income_by_category())
     assert income_yearly.index.name == "year"
     assert set(income_yearly.index) == set(rc.income_by_category().index.year)
+
+
+def test_a_query_from_a_different_thread_falls_back_to_a_temporary_connection(
+    retire_alice_run,
+) -> None:
+    import threading
+    import warnings
+
+    results: list = []
+    errors: list = []
+
+    def query_from_another_thread() -> None:
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                frame = retire_alice_run.items("person")
+                results.append((frame, caught))
+        except Exception as exc:  # pragma: no cover - surfaced via errors below
+            errors.append(exc)
+
+    thread = threading.Thread(target=query_from_another_thread)
+    thread.start()
+    thread.join()
+
+    assert not errors, errors
+    (frame, caught), = results
+    assert not frame.empty
+    assert any("not the thread that opened" in str(w.message) for w in caught)

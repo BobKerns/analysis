@@ -16,6 +16,8 @@ from __future__ import annotations
 from abc import abstractmethod
 import sqlite3
 import tempfile
+import threading
+import warnings
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
@@ -266,7 +268,16 @@ _ITEM_SQL: dict[str, str] = {
 
 
 class _TagReader:
-    """Read API against ``self._con``. Per-item-type DataFrames are cached."""
+    """Read API against ``self._con``. Per-item-type DataFrames are cached.
+
+    ``self._con`` is opened on one thread (typically the notebook kernel's main
+    thread) and SQLite connections are bound to it. A notebook front end has, on
+    rare, unreproduced occasions, reached a widget's query from a different
+    thread; ``_read_sql`` notices sqlite3's thread-mismatch error and falls back
+    to a temporary read-only connection opened on the calling thread instead of
+    raising, since every query here is read-only. It warns when this happens, so
+    a recurrence leaves a trace to diagnose from.
+    """
 
     _con: sqlite3.Connection
     _item_cache: dict[str, pd.DataFrame]
@@ -277,6 +288,35 @@ class _TagReader:
     def label(self) -> str:
         """Return a human-readable label for the scenario connection."""
         ...
+
+    @property
+    @abstractmethod
+    def _db_path(self) -> Path:
+        """Path of the SQLite file ``self._con`` is open on."""
+        ...
+
+    def _read_sql(self, sql: str, params: tuple = ()) -> pd.DataFrame:
+        """``pd.read_sql_query`` against ``self._con``, falling back to a
+        temporary same-file connection if called from a different thread."""
+        try:
+            return pd.read_sql_query(sql, self._con, params=params)
+        except sqlite3.ProgrammingError as exc:
+            if "same thread" not in str(exc):
+                raise
+            # self.label is avoided here: on some subclasses it runs its own query
+            # (e.g. RunConnection reads its metadata for its finish date), which would
+            # hit this same cross-thread error and recurse back into this handler.
+            warnings.warn(
+                f"{type(self).__name__} {self._db_path}: query reached from thread "
+                f"{threading.current_thread().name!r}, not the thread that opened "
+                "the connection; using a temporary read-only connection",
+                RuntimeWarning, stacklevel=2,
+            )
+            temp = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+            try:
+                return pd.read_sql_query(sql, temp, params=params)
+            finally:
+                temp.close()
 
     def _ensure_fresh(self) -> None:
         """Hook for subclasses; default no-op (run files don't mutate)."""
@@ -298,7 +338,7 @@ class _TagReader:
             sql += " WHERE t.role = ?"
             params = (role,)
         sql += " ORDER BY t.role, t.name"
-        return pd.read_sql_query(sql, self._con, params=params)
+        return self._read_sql(sql, params)
 
     def items(
         self,
@@ -371,7 +411,7 @@ class _TagReader:
             f"JOIN {link[0]} x ON x.tag_id=t.id "
             f"WHERE x.{link[1]}=? ORDER BY t.role, t.name"
         )
-        return pd.read_sql_query(sql, self._con, params=(item_id,))
+        return self._read_sql(sql, (item_id,))
 
     # -- internal --
 
@@ -381,7 +421,7 @@ class _TagReader:
             cache = {}
             self._item_cache = cache
         if item_type not in cache:
-            df = pd.read_sql_query(_ITEM_SQL[item_type], self._con)
+            df = self._read_sql(_ITEM_SQL[item_type])
             if "tags" in df.columns:
                 df["_tag_set"] = df["tags"].apply(
                     lambda s: set(s.split()) if s else set()
@@ -475,6 +515,10 @@ class RunConnection(_TagReader):
         self.run_path = Path(run_path)
         self._con = sqlite3.connect(self.run_path)
         self._con.row_factory = sqlite3.Row
+
+    @property
+    def _db_path(self) -> Path:
+        return self.run_path
 
     def close(self) -> None:
         self._con.close()
@@ -944,6 +988,10 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
     def _ensure_fresh(self) -> None:
         if self._dirty:
             self._reload()
+
+    @property
+    def _db_path(self) -> Path:
+        return self._intent_dir / f"{self.scenario}.sqlite3"
 
     def close(self) -> None:
         if self._con is not None:
