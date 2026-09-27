@@ -1,8 +1,8 @@
 # User Guide: Building and Editing Scenarios
 
 This guide shows how to make common changes to a scenario, step by step, with
-real examples. It assumes you already have a data repo. If you don't, see
-`templates/README.md` first.
+real examples, and how to look at what a run produced. It assumes you already
+have a data repo. If you don't, see [templates/README.md](../templates/README.md) first.
 
 For the reasons behind these designs, see the documents in
 `docs/architecture/`. [ADR-003](architecture/ADR-003-registries-and-csv-schemas.md) lists every CSV column in detail. This guide
@@ -383,11 +383,106 @@ This is a simple, whole-dollar comparison. It does not model anything more
 detailed, such as medical expenses only counting above a share of your
 income.
 
+## 5. Looking at your results
+
+A **run** is what happens when the simulator plays a scenario forward, month
+by month, from its start date to its end date. The result is a single, dated
+file under `state/runs/`. It holds every account balance, every money
+movement, and every year's tax figures for the whole run. You can look at it
+in a notebook, from the command line, or by asking an AI to read it for you.
+Every notebook, and most commands (including the ones in the next table),
+default to a scenario's latest run, so you rarely need to name the file
+yourself. A few, like `sim explain` below, need the exact file — look in
+`state/runs/` for the newest one with that scenario's name in it.
+
+Run a scenario with:
+
+```sh
+sim run <scenario>
+```
+
+or run every scenario in the data repo at once with `sim all`. If you added
+the VS Code tasks (see below), you don't need to type either command: use the
+**Run All Scenarios** task.
+
+### A quick first look
+
+After a run, `sim explain <runfile>` prints a short summary: which scenario it
+is, whether it finished successfully, and the balance of every account and
+lot at the end of the run. This is the fastest way to check "did this do
+roughly what I expected" before opening a notebook.
+
+### The notebooks
+
+Each notebook opens with a scenario picker, then shows one topic at a time.
+None of them need you to write any code.
+
+| Notebook | What it shows |
+| --- | --- |
+| `scenario_overview.ipynb` | The scenario's setup, without needing a run: people, accounts, chains, scheduled rules, calendar events. Good for checking a scenario is set up the way you intended, before running it. |
+| `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, and the portfolio by asset class. |
+| `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, and after-tax income. |
+| `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, and where they cross over (break-even). |
+
+Open one with `analysis jupyter` (or the **Jupyter** VS Code task, below), or
+in VS Code directly if it runs well enough there for your machine
+([notebooks/README.md](../notebooks/README.md) has notes on this).
+
+### The same views from the terminal
+
+Several of the same views also work as a plain command, with no notebook or
+kernel needed. This is the better choice over SSH, in a script, or on a
+machine too small for a notebook comfortably.
+
+| To see | Run |
+| --- | --- |
+| accounts and their opening balances | `sim account list` |
+| the lots in one account | `sim account holdings <account>` |
+| the accounts holding a symbol | `sim account holders <symbol>` |
+| the portfolio by asset class | `sim allocation` |
+| scheduled transactions | `sim scheduled list` |
+| one-time transfers | `sim transfer list` |
+| a run's year-end net worth, and its lots | `sim explain <runfile>` |
+
+[notebooks/README.md](../notebooks/README.md) keeps the full, up-to-date list, including which
+notebook views don't have a terminal command yet.
+
+### VS Code tasks
+
+If your workspace has these set up (Command Palette → "Tasks: Run Task"),
+three common jobs are one click instead of a typed command:
+
+- **Jupyter** — opens JupyterLab (same as `analysis jupyter`).
+- **Fetch Prices** — runs `sim prices fetch` (Part 4.2).
+- **Run All Scenarios** — runs every scenario in the data repo (`sim all`).
+
+### Asking an AI about your results
+
+A run file is a real database (SQLite), and you can ask an AI assistant to
+read it for you in plain English — you do not need to know any SQL, or even
+that SQL is what's happening underneath. This works the same way as
+[docs/sqlite-guide.md](sqlite-guide.md) describes for the separate Amazon spending data.
+
+Questions that work well are specific, and name what you're asking about:
+
+- "In the `sell_stock` scenario's latest run, what was net worth at the end
+  of each year?"
+- "Show every lot in `Asset_Brokerage_Joint` and its balance at the end of
+  the run."
+- "Compare federal tax due for 2030 between the `base` and `current-cut`
+  scenarios."
+- "Why did `Asset_Checking` go negative in March 2031?"
+
+Naming the scenario (and the run file, if you have more than one run for it)
+helps the most. A vague question like "how's my retirement looking?" forces
+the AI to guess what you mean; a specific one gets a specific, checkable
+answer.
+
 ## See also
 
-- `templates/README.md` — full CSV column reference and conventions.
+- [templates/README.md](../templates/README.md) — full CSV column reference and conventions.
 - [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](architecture/ADR-003-registries-and-csv-schemas.md) — authoritative
   schema, including the aux/series/itemizations override mechanism (§4.1d)
   and the data-repo structure diagrams (§4.0).
 - [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](architecture/ADR-005-lots-and-per-lot-state.md) — lots in depth.
-- `notebooks/README.md` — the same information as interactive widgets.
+- [notebooks/README.md](../notebooks/README.md) — the same information as interactive widgets.
