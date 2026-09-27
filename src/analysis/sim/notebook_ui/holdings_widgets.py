@@ -128,7 +128,6 @@ def account_holdings_widget(
     box = widgets.VBox([
         widgets.HBox([p for p in (account_picker, month_picker) if p is not None]), out,
     ])
-    display(box, clear=True)
     return box
 
 
@@ -165,7 +164,6 @@ def symbol_holders_widget(
     box = widgets.VBox([
         widgets.HBox([p for p in (symbol_picker, month_picker) if p is not None]), out,
     ])
-    display(box, clear=True)
     return box
 
 

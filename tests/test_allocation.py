@@ -17,6 +17,7 @@ from analysis.sim.allocation import (
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.loader import LoadError
 from analysis.sim.notebook_ui.allocation_widgets import allocation_view, portfolio_allocation_widget
+from analysis.sim.notebook_ui.holdings_widgets import account_holdings_widget, symbol_holders_widget
 
 ALLOCATIONS = (
     "symbol,as_of,asset_class,weight\n"
@@ -218,3 +219,22 @@ def test_split_by_security_uses_the_symbol_or_a_placeholder(
     assert {"AAA", "BBB", "(no symbol)"} <= set(table.columns)
     assert table.loc["bond", "AAA"] > 0 and table.loc["stock_us", "BBB"] == 0
     assert table.loc["Total", "Total"] == pytest.approx(portfolio_allocation(two_lot_run).loc["Total", "balance"])
+
+
+@pytest.mark.parametrize("build", [
+    portfolio_allocation_widget, account_holdings_widget, symbol_holders_widget,
+])
+def test_widgets_return_their_box_without_displaying_it(
+    build, allocations_csv: Path, two_lot_run: RunConnection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``Connections.show`` displays what a widget function returns, so displaying it
+    as well puts the widget on the page twice."""
+    from ipywidgets import widgets
+    from analysis.sim.notebook_ui import allocation_widgets, holdings_widgets
+
+    shown: list[object] = []
+    for module in (allocation_widgets, holdings_widgets):
+        monkeypatch.setattr(module, "display", lambda *args, **kwargs: shown.extend(args))
+    box = build(two_lot_run)
+    assert isinstance(box, widgets.VBox)
+    assert not any(isinstance(item, widgets.Widget) for item in shown)

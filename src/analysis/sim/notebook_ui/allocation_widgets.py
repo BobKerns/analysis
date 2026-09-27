@@ -88,5 +88,4 @@ def portfolio_allocation_widget(
                      layout=widgets.Layout(flex_flow="row wrap")),
         out,
     ])
-    display(box, clear=True)
     return box
