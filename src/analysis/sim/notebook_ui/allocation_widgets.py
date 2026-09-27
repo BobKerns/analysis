@@ -46,9 +46,7 @@ def _pie(table: pd.DataFrame) -> None:
     fig, ax = plt.subplots(figsize=(4.5, 4.5))
     ax.pie(body["percent"], labels=body.index, autopct="%1.0f%%", startangle=90, counterclock=False)
     ax.axis("equal")
-    # Display the figure itself rather than plt.show(): the first draw runs while the
-    # cell executes, and pyplot's show hook did not put the figure in the Output then.
-    display(fig)
+    plt.show()  # display(fig) did not draw on the first pass under Jupyter; plt.show() does
     plt.close(fig)
 
 

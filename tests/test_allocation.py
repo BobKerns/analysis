@@ -242,16 +242,29 @@ def test_widgets_return_their_box_without_displaying_it(
     assert not any(isinstance(item, widgets.Widget) for item in shown)
 
 
-def test_the_pie_is_displayed_as_a_figure_and_not_left_open(
-    allocations_csv: Path, two_lot_run: RunConnection, monkeypatch: pytest.MonkeyPatch,
+def test_the_pie_figure_is_closed_after_it_is_drawn(
+    allocations_csv: Path, two_lot_run: RunConnection,
 ) -> None:
     import matplotlib.pyplot as plt
-    from matplotlib.figure import Figure
-    from analysis.sim.notebook_ui import allocation_widgets
 
-    shown: list[object] = []
-    monkeypatch.setattr(allocation_widgets, "display", lambda *args, **kwargs: shown.extend(args))
     plt.close("all")
     portfolio_allocation_widget(two_lot_run)
-    assert any(isinstance(item, Figure) for item in shown)
-    assert plt.get_fignums() == []  # closed, so the inline backend does not show it a second time
+    assert plt.get_fignums() == []  # closed, so the inline backend does not show it again
+
+
+def test_the_account_history_plot_is_an_image_in_the_widget_from_the_first_draw(
+    two_lot_run: RunConnection,
+) -> None:
+    import matplotlib.pyplot as plt
+    from ipywidgets import widgets
+
+    plt.close("all")
+    box = account_history_widget(two_lot_run, "asset", "Balances")
+    images = [child for holder in box.children if isinstance(holder, widgets.VBox)
+              for child in holder.children if isinstance(child, widgets.Image)]
+    assert len(images) == 1 and bytes(images[0].value)[:4] == b"\x89PNG"
+    assert plt.get_fignums() == []
+    picker = next(c for c in box.children if isinstance(c, widgets.SelectMultiple))
+    picker.value = ()  # nothing selected: a note replaces the picture
+    holder = next(c for c in box.children if isinstance(c, widgets.VBox))
+    assert [type(c) for c in holder.children] == [widgets.Label]

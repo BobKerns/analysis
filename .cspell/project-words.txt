@@ -5,6 +5,7 @@ aggfunc
 AMOLED
 autofetch
 autofmt
+autopct
 autouse
 axhline
 axvline
@@ -82,6 +83,7 @@ sharex
 sidefx
 sourceable
 sqls
+startangle
 stdlib
 subkey
 subkind
