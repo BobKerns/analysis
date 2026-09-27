@@ -45,6 +45,7 @@ linestyle
 lotb
 ltcg
 metas
+stcg
 mktree
 modelcontextprotocol
 msecs

@@ -1,36 +1,37 @@
 # User Guide: Building and Editing Scenarios
 
-This is a practical, task-based walkthrough for editing your data repo: adding
-accounts, changing numbers, modeling a sale, and reaching for the more powerful
-tools (chains, calendar events) only when you actually need them. It assumes
-you already have a data repo (see `templates/README.md` if you don't) and
-answers "how do I actually do X," gradually, with real examples.
+This guide shows how to make common changes to a scenario, step by step, with
+real examples. It assumes you already have a data repo. If you don't, see
+`templates/README.md` first.
 
-For *why* things are built this way, see the ADRs in `docs/architecture/`
-(especially ADR-003 for the exact CSV column reference). This guide won't
-repeat every column; it points at ADR-003 sections where you'll want the full
-detail.
+For the reasons behind these designs, see the documents in
+`docs/architecture/`. ADR-003 lists every CSV column in detail. This guide
+does not repeat all of that; it points to ADR-003 when you need the full list.
 
-## 1. Hierarchical scenarios
+## 1. Scenarios build on each other
 
-A **scenario** is one full household model: accounts, balances, income,
-expenses, and the rules that move money between them, from a start date to an
-end date. You don't build every what-if from scratch. Instead, one scenario —
-by convention named `base` — is your best-guess model of reality, and every
-other scenario **derives** from it (or from another derived scenario) by
-setting `parent_scenario` in its own `scenario.csv`.
+A **scenario** is one full model of your household finances. It has accounts,
+balances, income, expenses, and rules that move money between accounts. It
+runs from a start date to an end date.
 
-A derived scenario only needs to state what's *different*. Its
-`accounts.csv`/`account_values.csv`/`scheduled.csv`/`calendar.csv`/etc. rows
-are **overlaid onto its parent's by key** (matching on name, or account+lot):
-a row you add is added, a row with a key that already exists in the parent
-replaces it, and anything you don't mention is inherited unchanged. Update
-`base`, and every scenario that doesn't override the thing you changed picks
-up the update automatically the next time it loads.
+You do not build every what-if scenario from scratch. One scenario is your
+main model. By convention, it is named `base`. Every other scenario is
+**derived** from `base`, or from another derived scenario. A scenario says
+which one it derives from in its own `scenario.csv`, using the
+`parent_scenario` column.
+
+A derived scenario only needs to list what is different. Its CSV files
+(`accounts.csv`, `account_values.csv`, `scheduled.csv`, `calendar.csv`, and
+others) are combined with its parent's files. Each row has a key, such as a
+name, or an account plus a lot. If you add a row with a new key, it is added.
+If you add a row with a key that already exists in the parent, it replaces
+the parent's row. Anything you do not mention stays the same as the parent's.
+If you later change `base`, every scenario that does not override that part
+picks up the change automatically, the next time it loads.
 
 ```mermaid
 flowchart TB
-    base["base\n(your best-guess model)"]
+    base["base\n(your main model)"]
     cut["current-cut\noverrides: SS benefit cut in scheduled.csv"]
     hsa["hsa_2027\noverrides: one HSA account_values row"]
     sell["sell_stock\noverrides: a calendar.csv row"]
@@ -39,8 +40,9 @@ flowchart TB
     base --> sell
 ```
 
-Each box above only contains what it *changes*; everything else is `base`'s,
-read live, so a fix to `base` reaches every child the next time it loads.
+Each box above only shows what it changes. Everything else comes from `base`.
+A fix to `base` reaches every scenario below it, the next time that scenario
+loads.
 
 Create a derived scenario with:
 
@@ -48,87 +50,93 @@ Create a derived scenario with:
 sim scenario create <name> <parent>
 ```
 
-This scaffolds empty (header-only) `accounts.csv`, `account_values.csv`,
-`scheduled.csv` and `calendar.csv` for the new scenario, verifies it loads, and
-makes it your current scenario. You then edit only the rows that need to
-differ — the rest of this guide is about what to put in them.
+This creates the new scenario's folder, with empty CSV files ready for you to
+add rows to. It checks that the scenario loads, and makes it your current
+scenario. You then add only the rows that need to be different — the rest of
+this guide shows what to put in them.
 
-Everything below applies the same way whether you're editing `base` directly
-or a derived scenario's own overlay files.
+Everything below works the same way, whether you are editing `base` directly,
+or editing a derived scenario's own files.
 
 ## 2. Glossary
 
-Two lists: words this project uses in a specific, sometimes narrower sense,
-and general finance/tax words the project relies on but doesn't redefine.
-Where a project term could be confused with a general one, that's called out.
+Two lists follow: words this project uses in its own specific way, and
+general finance/tax words this project relies on but does not change the
+meaning of. Where a project word could be confused with a general word, that
+is pointed out.
 
-### Terms specific to this simulator
+### Words this simulator uses in its own way
 
-| Term | Meaning here |
+| Word | What it means here |
 | --- | --- |
-| **Scenario** | One full household model: a folder under `scenarios/<name>/`. |
-| **Derived scenario** | A scenario with `parent_scenario` set; inherits everything and overlays only what it changes (§1). |
-| **Lot** | A position inside one account — a brokerage account can hold several (different funds, different purchase dates). Every account has at least one lot, named `default` unless you split it. See ADR-005. |
-| **Chain** | A named, ordered list of places money comes from or goes to ("try this, then that"). Every account/lot has an automatic one-line **leaf chain**; you write a `chains/*.csv` file only for a real multi-step ordering. See §4.6. |
-| **Series** | A named projection a scenario references by name: a growth/interest rate (`rate__*`), a security price history (`security_price__*`), or a state's tax brackets (`state_brackets__*`). Lives in `series/`, distinct from *asset class* below. |
-| **`aux/`** | Shared tax-law facts (brackets, RMD tables, filing status) every scenario uses by default. |
-| **`series/`** | Shared growth-rate/price assumptions every scenario uses by default (see *series* above) — separate from `aux/` because these are projections you're more likely to want to change per scenario. |
-| **Itemization** | A CSV under `itemizations/<name>.csv` that sums a `Value` column into one dollar figure, referenced elsewhere as `@name` (e.g. `opening_cost_basis = @home_basis`). **Not the same as an *itemized deduction*** — see the general-terms table. |
-| **`tax_character`** | The tax treatment tag on a money movement: `ordinary`, `ltcg`, `stcg`, `tax_free`, `tax_deferred_out`, `return_of_capital`, `none`, and a few more. Determines which bucket the retrospective tax scan counts it in. |
-| **Asset class** | For the portfolio overview only (`sim allocation`): `stock_us`, `stock_intl`, `stock` (unknown split), `bond`, `cd`, `cash`, `real_estate`, `other`. Set per symbol in `allocations.csv`. Unrelated to `tax_character`. |
-| **Calendar event** | One dated patch in `calendar.csv`: change a rate, change an amount, retire a rule, or fire a one-time transfer. See §4.8. |
-| **Scheduled transaction / rule** | One row of `scheduled.csv`: a recurring (or one-off) rule that moves money on a cadence. |
-| **Refill / overflow** | A lot's own policy: draw from `refill_chain` before a debit would drop it below `minimum_balance`; sweep excess above `maximum_balance` into `overflow_chain` at month end. Per lot since ADR-005 phase 7. |
-| **RMD subject account** | The IRA/401(k) a Required Minimum Distribution is computed against; if it has several lots, `params_json` names it and `from_account` must be an explicit chain over just its lots. |
+| **Scenario** | One full model of your household finances. Stored as a folder under `scenarios/<name>/`. |
+| **Derived scenario** | A scenario that has `parent_scenario` set. It starts from its parent and only lists what is different. See Part 1. |
+| **Lot** | One holding inside an account. A brokerage account can have several lots: different funds, or shares bought on different dates. Every account has at least one lot. It is named `default` unless you split the account into more than one lot. |
+| **Chain** | A named, ordered list of places money can come from, or go to. Think: try this place first, then that place. Every account (and every lot) already has its own one-step chain, automatically. You only write a `chains/*.csv` file when you want more than one step. See Part 4.6. |
+| **Series** | A named set of numbers a scenario can refer to by name: a growth or interest rate (`rate__*`), a history of a security's price (`security_price__*`), or a state's tax brackets (`state_brackets__*`). These files live in the `series/` folder. This is a different idea from *asset class*, below. |
+| **`aux/`** | Shared tax-law facts every scenario uses unless it says otherwise: tax brackets, RMD tables, filing status. |
+| **`series/`** | Shared growth-rate and price assumptions every scenario uses unless it says otherwise. Kept apart from `aux/` because you are more likely to want to change these for one scenario. |
+| **Itemization** | A CSV file under `itemizations/<name>.csv`. It lists dollar amounts in a `Value` column, and the loader adds them up into one total. Other files can use that total by writing `@name` instead of a plain number (for example `opening_cost_basis = @home_basis`). **This is a different thing from an *itemized deduction*, a tax term — see the next table.** |
+| **`tax_character`** | A label on a money movement that says how it is taxed: `ordinary`, `ltcg`, `stcg`, `tax_free`, `tax_deferred_out`, `return_of_capital`, `none`, and a few others. This label decides which tax bucket the movement is counted in. |
+| **Asset class** | Used only for the portfolio overview (`sim allocation`): `stock_us`, `stock_intl`, `stock` (when the US/international split is not known), `bond`, `cd`, `cash`, `real_estate`, `other`. Set for each symbol in `allocations.csv`. Not related to `tax_character`. |
+| **Calendar event** | One dated change in `calendar.csv`. It can change a rate, change an amount, end a rule, or make a one-time transfer. See Part 4.8. |
+| **Scheduled transaction / rule** | One row in `scheduled.csv`. It is a rule that moves money, either on a regular schedule or just once. |
+| **Refill / overflow** | A lot's own rule for keeping its balance in a range. If a payment would drop it below `minimum_balance`, money is drawn from `refill_chain` first. If it goes above `maximum_balance`, the extra is swept into `overflow_chain` at the end of the month. Each lot can have its own setting. |
+| **RMD subject account** | The IRA or 401(k) account a Required Minimum Distribution is calculated from. If that account has more than one lot, you must name the account in `params_json`, and `from_account` must be a chain that lists only that account's lots. |
 
-### General finance/tax terms this tool uses
+### General finance/tax words this tool uses
 
-| Term | What it means, and how this tool applies it |
+| Word | What it means, and how this tool uses it |
 | --- | --- |
-| **Cost basis** | What you paid for an asset (plus improvements, for a home). The simulator tracks it per lot (`opening_cost_basis`) for taxable non-cash assets, and updates it as money moves in or out. |
-| **Capital gain/loss** | Sale proceeds minus cost basis. **Long-term** (`ltcg`, held over a year) usually gets preferential rates; **short-term** (`stcg`, held a year or less) is taxed as ordinary income. See §3. |
-| **RMD (Required Minimum Distribution)** | The IRS-mandated minimum withdrawal from a pre-tax retirement account each year past a certain age. A real tax concept; also a specific rule kind here (`rmd`). |
-| **Traditional vs. Roth** | Traditional accounts defer tax to withdrawal (`tax_deferred_out`); Roth accounts are already-taxed and withdraw tax-free (`tax_free`). Set via `tax_treatment` on `accounts.csv`. |
-| **Filing status** | `MFJ` (married filing jointly), `Single`, or `MFS` (married filing separately) — this project doesn't model Head of Household. Derived automatically from `lifespan.csv` after a primary person's death; see §4.7. |
-| **Standard deduction** | The flat deduction the IRS lets you subtract before computing tax. This simulator **always uses it** — it does not model choosing to itemize deductions instead. |
-| **Itemized deduction** | The IRS alternative to the standard deduction (mortgage interest, large medical expenses, etc.), chosen when it's bigger. **Not modeled**, and not the same thing as this tool's *itemization* files above, which are just a way to total up a dollar figure from several line items — the naming collision is unfortunate but predates this guide. |
-| **Marginal tax bracket** | The rate on your *next* dollar of ordinary income, from `federal_brackets.csv`/`state_brackets__CA.csv`. |
-| **Provisional income** | The IRS's combined-income measure that decides how much of Social Security is taxable (`ss_taxation_thresholds.csv`). |
+| **Cost basis** | What you originally paid for something (plus the cost of home improvements, for a house). The simulator tracks this per lot, in `opening_cost_basis`, for taxable assets other than cash. It updates this number as money moves in or out. |
+| **Capital gain/loss** | The sale price minus the cost basis. **Long-term** gains (`ltcg`, held more than a year) usually get a lower tax rate. **Short-term** gains (`stcg`, held a year or less) are taxed as ordinary income. See Part 3. |
+| **RMD (Required Minimum Distribution)** | The smallest amount the IRS requires you to withdraw each year from a pre-tax retirement account, once you reach a certain age. A real tax rule; also the name of a rule kind in this tool (`rmd`). |
+| **Traditional vs. Roth** | A Traditional account delays tax until you withdraw money (`tax_deferred_out`). A Roth account is already taxed, so withdrawals come out tax-free (`tax_free`). Set with `tax_treatment` in `accounts.csv`. |
+| **Filing status** | `MFJ` (married filing jointly), `Single`, or `MFS` (married filing separately). This tool does not model Head of Household. Filing status changes automatically after a spouse's death, based on `lifespan.csv`; see Part 4.7. |
+| **Standard deduction** | A flat amount the IRS lets you subtract from income before tax is calculated. This simulator always uses the standard deduction; it does not yet model choosing to itemize deductions instead. |
+| **Itemized deduction** | An IRS alternative to the standard deduction: instead of the flat amount, you add up specific expenses (mortgage interest, large medical bills, and so on) and use that total if it's bigger. **Not modeled yet.** This is a different idea from this tool's *itemization* files, above, which just add up a list of dollar amounts for any purpose — the similar name is confusing, but it predates this guide. |
+| **Marginal tax bracket** | The tax rate on your *next* dollar of ordinary income. From `federal_brackets.csv` / `state_brackets__CA.csv`. |
+| **Provisional income** | The IRS's combined-income number that decides how much of your Social Security is taxable. From `ss_taxation_thresholds.csv`. |
 
 ## 3. How tax is handled
 
-Tax is computed **retrospectively**, once per tax year, from the
-`transfer_event` ledger — not by the rules themselves as they fire.
+Tax is not calculated as each rule fires. Instead, it is calculated once per
+tax year, by looking back over everything that happened that year (the
+`transfer_event` ledger).
 
-- **Ordinary income** buckets: salary, pension, interest, the taxable portion
-  of Social Security, taxable Traditional-account withdrawals
+- **Ordinary income** includes: salary, pension, interest, the taxable part of
+  Social Security, taxable withdrawals from Traditional accounts
   (`tax_deferred_out`), and short-term gains (`stcg`).
-- **Long-term gains** (`ltcg`) are taxed at the rates in `aux/ltcg_brackets.csv`
-  if that file exists (stacked on top of ordinary taxable income); without it,
-  they're taxed as ordinary income too.
-- **Filing status** comes from the `filing_status` aux table for the tax year,
-  *except* that MFJ/MFS automatically becomes Single the year after a primary
-  person's `lifespan.csv` `final_month` — you don't add a matching
-  `filing_status.csv` row yourself; see §4.7.
-- **Deductions**: always the standard deduction (`standard_deduction.csv`);
-  itemizing isn't modeled (see the glossary above for why that word means two
-  different things here).
-- **State tax**: same shape as federal, from `state_brackets__CA.csv` (or your
-  state's equivalent under `series/`).
-- **RMDs**: computed from the subject account's lots' balances on the prior
-  Dec 31, divided by the IRS factor for that age (`rmd_factors.csv`,
-  `rmd_start_age.csv`).
+- **Long-term gains** (`ltcg`) use the rates in `aux/ltcg_brackets.csv`, if
+  that file exists. These rates apply on top of your ordinary taxable income.
+  If the file does not exist, long-term gains are taxed the same as ordinary
+  income.
+- **Filing status** comes from the `filing_status` aux table for that tax
+  year. One exception: MFJ or MFS automatically changes to Single, starting
+  the year after a primary person's `final_month` in `lifespan.csv`. You do
+  not need to add a matching row to `filing_status.csv` yourself; see Part 4.7.
+- **Deductions**: always the standard deduction, from
+  `standard_deduction.csv`. Itemizing is not modeled yet. (See the glossary
+  above — *itemization* and *itemized deduction* mean two different things in
+  this guide.)
+- **State tax** works the same way as federal tax, using
+  `state_brackets__CA.csv` (or your own state's file, under `series/`).
+- **RMDs** are calculated from the account's lot balances on the previous
+  December 31, divided by the IRS factor for that age. The factor comes from
+  `rmd_factors.csv` and `rmd_start_age.csv`.
 
-**The one gotcha worth knowing before you model a sale (§4.5):** the automatic
-cost-basis split (turning a withdrawal into `return_of_capital` +
-`ltcg`/`stcg` legs) only happens when the withdrawal is drawn **through a
-chain** — including a lot's own automatic one-line leaf chain used by a
-refill/overflow policy, or a named chain you wrote. A plain account-to-account
-transfer (a `scheduled.csv` row or a `one_off_transfer` calendar event naming
-the account directly, not a chain) uses whatever `tax_character` you write on
-that row, literally, with **no automatic split**. This only matters for
-taxable non-cash lots (brokerage-type accounts); cash, tax-deferred, and
-tax-free accounts already have a fixed, correct `tax_character` regardless.
+**One important thing to know before you model a sale (Part 4.5):** the
+simulator can automatically split a withdrawal into "return of capital" and
+"gain" (`ltcg` or `stcg`). But it only does this when the withdrawal is drawn
+**through a chain**. This includes a lot's own one-step chain, used by a
+refill or overflow rule, or a chain file you write yourself. A plain transfer
+straight from one account to another — a row in `scheduled.csv`, or a
+`one_off_transfer` calendar event that names the account directly, not a
+chain — uses whatever `tax_character` you write on that row, exactly as
+written. It does not calculate the split for you. This only matters for
+taxable, non-cash lots, such as a brokerage account. For cash accounts,
+tax-deferred accounts, and tax-free accounts, the correct `tax_character` is
+already fixed, so this does not matter.
 
 ## 4. Common tasks
 
@@ -138,18 +146,19 @@ tax-free accounts already have a fixed, correct `tax_character` regardless.
 sim account add "Asset_Savings_Emergency" asset cash --owner joint
 ```
 
-This appends a row to `accounts.csv` (and, with `--opening-balance`, a
-matching `account_values.csv` row). Run with no arguments and it prompts you
-through the valid `kind`/`subkind`/`owner` choices. Follow up with
-`sim account check` to catch anything referencing the new account that still
-needs attention, and `sim account sync` to scaffold any missing
-`account_values.csv` rows at a zero balance.
+This adds a row to `accounts.csv`. If you add `--opening-balance`, it also
+adds a matching row to `account_values.csv`. If you run the command with no
+arguments, it asks you questions and shows the valid choices for kind,
+subkind, and owner. Afterward, run `sim account check` — it tells you about
+anything that still needs your attention. Run `sim account sync` to add any
+missing `account_values.csv` rows, with a balance of zero, ready for you to
+fill in.
 
 ### 4.2 Add a new lot to a brokerage account
 
-There's no dedicated command for this; edit `account_values.csv` directly.
-Every account is a set of **lots** — positions that can differ in symbol,
-purchase date, and cost basis. An account you haven't split has one lot named
+There is no command for this yet; edit `account_values.csv` directly. Every
+account is really a set of **lots**. Lots can differ in symbol, purchase
+date, and cost basis. An account you have not split has one lot, named
 `default`.
 
 ```mermaid
@@ -167,59 +176,64 @@ account_name,lot,symbol,acquired,quantity,series,opening_balance,opening_cost_ba
 Asset_Brokerage_Joint,inherited_2029,AAA,2029-03-15,500,,,50000.00
 ```
 
-- **Investment accounts must always name their lot**, everywhere they're
-  referenced — `chains/*.csv`, `scheduled.csv`'s `from_lot`/`to_lot`,
-  `calendar.csv`'s `lot_1`/`lot_2`. A blank lot on one of these is a load
-  error listing the account's actual lots.
-- Leave `opening_balance` blank and give `symbol`+`quantity` to have it
-  derived from a price (`sim prices fetch` populates `series/security_price__<SYMBOL>.csv`);
-  `sim prices check` compares a stated balance against quantity × price.
-- `sim account holdings <account>` shows every lot's balance, basis and
-  unrealized gain, once you have a run.
+- For an **investment account**, you must always name the lot, everywhere
+  the account is used: in `chains/*.csv`, in `scheduled.csv`'s
+  `from_lot`/`to_lot` columns, and in `calendar.csv`'s `lot_1`/`lot_2`
+  columns. If you leave the lot blank, the scenario will fail to load, and
+  the error message will list the account's real lots.
+- You can leave `opening_balance` blank if you give `symbol` and `quantity`
+  instead. The balance is then calculated from a price. Run
+  `sim prices fetch` to get prices; it saves them to
+  `series/security_price__<SYMBOL>.csv`. Run `sim prices check` to compare a
+  balance you typed in against quantity times price.
+- Once you have a run, `sim account holdings <account>` shows every lot's
+  balance, cost basis, and unrealized gain.
 
 ### 4.3 Change an estimated expense for the whole simulation
 
-If you're editing `base` (or don't need the old value anywhere), just change
-the number on the existing `scheduled.csv` row — for instance its `amount`
-column. Every scenario that doesn't override that row picks up the change
-automatically.
+If you are editing `base`, or you do not need the old number anywhere else,
+just change the number in the existing `scheduled.csv` row — for example, its
+`amount` column. Every scenario that does not override that row picks up the
+change automatically.
 
-If you're in a derived scenario and want the change *only there*, add a row
-with the **same `name`** as the parent's; the overlay replaces the whole row
-(matched by `name`), so you can copy the parent's row and change just the
-`amount`.
+If you are in a derived scenario and want the change to apply only there, add
+a row with the **same `name`** as the parent's row. The new row replaces the
+whole parent row (rows are matched by `name`). The easiest way is to copy the
+parent's row and change just the amount.
 
 ### 4.4 Change an estimated expense starting at a later date
 
-Don't add a second `scheduled.csv` row for this — use a `calendar.csv`
-`set_amount` event instead, which changes the rule's amount from that date
-forward without touching history:
+Do not add a second row to `scheduled.csv` for this. Instead, add a
+`set_amount` event to `calendar.csv`. It changes the rule's amount from that
+date onward, without changing anything before that date:
 
 ```csv
 date,kind,scheduled_name,amount
 2032-01-31,set_amount,groceries_monthly,650.00
 ```
 
-This is exactly the case the calendar layer is for: dated, one-time patches to
-an otherwise-steady rule, so you don't have to reason about `start`/`end`
-dates on a second competing row.
+This is exactly what `calendar.csv` is for: a dated, one-time change to a
+rule that is otherwise steady. You do not need to work out start and end
+dates for a second, competing row.
 
 ### 4.5 Selling an asset
 
-Two real paths today, depending on what's being sold:
+There are two real ways to do this today, depending on what you are selling.
 
 **Selling a home** (or anything using the `home_sale` rule kind): add a
-one-off `scheduled.csv` row naming the account **directly**, not a chain. It
-applies the IRC §121 exclusion automatically (from `home_sale_exclusion.csv`
-or a `filing_status`-keyed cap you set in `params_json`) and splits the sale
-into `return_of_capital` + `excluded_gain` + `ltcg` for you. Its `tax_character`
-column must be `none` — the real split is computed by the rule, not read off
-the row.
+one-time row to `scheduled.csv`. Name the account directly; do not use a
+chain. This automatically applies the IRS home-sale tax exclusion (from
+`home_sale_exclusion.csv`, or a cap you set yourself in `params_json`, based
+on filing status). It splits the sale into three parts for you:
+`return_of_capital`, `excluded_gain`, and `ltcg`. Set the row's
+`tax_character` column to `none` — the rule calculates the real split itself;
+it does not read `tax_character` from the row.
 
-**Selling a brokerage lot** (or anything else non-cash and taxable): there's
-no dedicated "sell" rule yet. Model it as a one-off transfer out of that lot,
-**routed through a named chain that lists that lot**, even a one-line chain
-file, rather than naming the account directly:
+**Selling a brokerage lot** (or anything else that is taxable and not cash):
+there is no dedicated "sell" rule for this yet. Model it as a one-time
+transfer out of that lot. Route the transfer through a named chain that
+lists that lot — even a chain file with just one line — instead of naming
+the account directly:
 
 ```csv
 # chains/asset__sell_the_2029_lot.csv
@@ -228,97 +242,103 @@ Asset_Brokerage_Joint,inherited_2029
 ```
 
 ```csv
-# scheduled.csv — a one-off row, not a calendar.csv event (below)
+# scheduled.csv — a one-off row, not a calendar.csv event (see below)
 name,from_account,from_lot,to_account,to_lot,cadence,amount_rule_kind,amount,tax_character,start,end,priority
 sell_2029_lot,sell the 2029 lot,,Asset_Checking,,one_off,fixed_amount,75000.00,none,2030-06-30,2030-06-30,500
 ```
 
-This has to be a `scheduled.csv` row rather than a `calendar.csv`
-`one_off_transfer` event: today, only `scheduled.csv`'s `from_account`/
-`to_account` can name a chain — a calendar event's `account_1`/`account_2`
-must be a bare account. The chain's name (in `from_account`) is its filename's
-`<name>` part with underscores read as spaces — `asset__sell_the_2029_lot.csv`
-becomes `sell the 2029 lot` — the same rule `series`/`aux` filenames use
-(underscores stay filename-safe while the name itself can have spaces). Leave
-`from_lot` blank (naming a chain already says which lot) and set
-`tax_character='none'` — the value is ignored once the draw is routed through
-a chain, but the column is still required and checked against the registry,
-so it can't be blank. Routing through the
-chain, not the literal `tax_character`, is what makes the engine apply the
-automatic return-of-capital/gain split (§3); naming the lot directly on a
-plain transfer would instead use whatever `tax_character` you wrote, unsplit.
+This must be a row in `scheduled.csv`, not a `one_off_transfer` event in
+`calendar.csv`. Today, only `scheduled.csv`'s `from_account`/`to_account`
+columns can name a chain; a calendar event's `account_1`/`account_2` columns
+must name a plain account. The chain's name, used in `from_account`, comes
+from its filename: take the part after the double underscore, and change
+every underscore to a space. So `asset__sell_the_2029_lot.csv` becomes the
+name `sell the 2029 lot` — the same rule used for `series`/`aux` filenames
+(underscores are needed in the filename, but the name itself can have
+spaces). Leave `from_lot` blank — naming a chain already says which lot to
+use. Set `tax_character` to `none`: this value is ignored once the money is
+drawn through a chain, but the column must still have some value the loader
+recognizes; it cannot be left empty. What actually triggers the automatic
+return-of-capital/gain split (Part 3) is drawing the money through a chain,
+not the `tax_character` value you write. Naming the lot directly, on a plain
+transfer, would instead use whatever `tax_character` you wrote, with no
+automatic split.
 
-**Calendar's `sell_asset`/`buy_asset` event kinds are not implemented yet** —
-the CSV format accepts them, but the engine silently skips a calendar event of
-either kind. Don't use them; use the pattern above instead.
+**The `sell_asset` and `buy_asset` event kinds in `calendar.csv` are not built
+yet.** The file format will accept them, but the simulator quietly ignores a
+calendar event of either kind: no error, no effect. Do not use them; use the
+method above instead.
 
 ### 4.6 Chains as default policies
 
-A chain is a named, reusable answer to "where does the money for this come
-from" (or "where does excess money go"), so every rule that needs the same
-waterfall doesn't have to repeat it. There are two places you'll use one:
+A chain is a named, reusable answer to the question "where does this money
+come from" (or "where does extra money go"). This means a rule does not need
+to repeat the same list of accounts every time. There are two places you will
+use a chain:
 
-1. **As a rule's source or destination** — a `scheduled.csv` row's
-   `from_account`/`to_account` can name a chain instead of a bare account
-   (§4.5). A `calendar.csv` event's `account_1`/`account_2` cannot — those
-   must always be bare accounts.
-2. **As a lot's own refill/overflow policy** — set on the lot's
-   `account_values.csv` row, not authored as a separate rule:
+1. **As the source or destination of a rule.** In `scheduled.csv`,
+   `from_account`/`to_account` can name a chain instead of a plain account
+   (Part 4.5). In `calendar.csv`, `account_1`/`account_2` cannot — they must
+   always name a plain account.
+2. **As a lot's own rule for refilling or overflowing.** This is set
+   directly on the lot's row in `account_values.csv`, not as a separate rule:
 
 ```mermaid
 flowchart LR
     checking["Asset_Checking\nminimum_balance = $2,000"]
     reserve["Asset_Checking:reserve lot"]
     savings["Asset_Savings"]
-    checking -- "refill_chain (below minimum, before the debit posts)" --> reserve
+    checking -- "refill_chain (below minimum, before the payment)" --> reserve
     checking -- "overflow_chain (above maximum, month end)" --> savings
 ```
 
-A debit that would drop a lot below `minimum_balance` triggers a look-ahead
-draw on `refill_chain` *before* the debit posts; excess above `maximum_balance`
-sweeps into `overflow_chain` at month end. `refill_chain`/`overflow_chain` can
-each name either a chain, or an account directly — in which case
-`refill_lot`/`overflow_lot` says which of that account's lots, the same
-account+lot pairing used everywhere else. Every account/lot already has an implicit
-one-line "leaf chain" (itself), so you only need to write a
-`chains/<kind>__<name>.csv` file when the ordering is genuinely multi-step —
-"try savings first, then this brokerage lot, then that one" — with each step
-taking a `percent` or `maximum` before falling through to the next.
+If a payment would drop a lot below `minimum_balance`, the simulator draws
+money from `refill_chain` first, before the payment happens. If a lot goes
+above `maximum_balance`, the extra is swept into `overflow_chain` at the end
+of the month. `refill_chain`/`overflow_chain` can each name a chain, or name
+an account directly. If you name an account directly, use
+`refill_lot`/`overflow_lot` to say which of that account's lots to use — the
+same account-plus-lot pairing used everywhere else in this tool. Every
+account and lot already has its own automatic one-step chain, so you only
+need to write a `chains/<kind>__<name>.csv` file when you want more than one
+step — for example, "try savings first, then this brokerage lot, then that
+one" — with each step taking a `percent` or a `maximum` amount before
+whatever is left moves on to the next step.
 
 ### 4.7 Lifespan assumptions
 
-`lifespan.csv` has one optional row per person: `person`, `final_month`. Past
-that month, every `scheduled_transaction` tied to that person (its own
-`person` column, or as the owner of `from_account`/`to_account`) stops firing
-— salary, their share of expenses, and so on. Growth rules
-(`percent_of_balance`) are exempt: a balance keeps earning/appreciating after
-its owner's death.
+`lifespan.csv` has one optional row for each person: `person` and
+`final_month`. After that month, every scheduled rule tied to that person
+stops firing — this includes rules where the person is set directly, and
+rules for accounts that person owns (salary, their share of expenses, and so
+on). Growth rules (`percent_of_balance`) are an exception: a balance keeps
+earning interest, or growing in value, after its owner dies.
 
-Setting `final_month` is also **the only thing you need to do** to make
-filing status transition correctly after a spouse's death — MFJ/MFS becomes
-Single starting the following year automatically (§3). You don't need a
-matching `filing_status.csv` entry.
+Setting `final_month` is also all you need to do for filing status to change
+correctly after a spouse's death: MFJ or MFS automatically becomes Single,
+starting the following year (Part 3). You do not need to add a matching row
+to `filing_status.csv`.
 
 ### 4.8 Calendar for more complex changes
 
-`calendar.csv` is the escape hatch for anything that isn't a steady recurring
-rule: a dated, one-time patch. Four kinds are actually implemented today —
-use only these:
+`calendar.csv` is for anything that is not a steady, recurring rule: a
+dated, one-time change. Only four kinds are actually built today. Use only
+these:
 
 | Kind | Columns used | Use it for |
 | --- | --- | --- |
 | `set_rate` | `series`, `amount` (micros) | "checking starts earning 4% in 2027" |
-| `set_amount` | `scheduled_name`, `amount`, optional `param_date` | "spending drops to $4,500/mo on retirement" (§4.4) |
+| `set_amount` | `scheduled_name`, `amount`, optional `param_date` | "spending drops to $4,500/mo on retirement" (Part 4.4) |
 | `retire_scheduled` | `scheduled_name` | "salary stops on retirement" |
-| `one_off_transfer` | `account_1`/`lot_1`, `account_2`/`lot_2`, `amount`, `tax_character` | a windfall, a gift, a settlement between two bare accounts (not a chain — see §4.5) |
+| `one_off_transfer` | `account_1`/`lot_1`, `account_2`/`lot_2`, `amount`, `tax_character` | a windfall, a gift, a settlement between two plain accounts (not a chain — see Part 4.5) |
 
-**Not implemented yet, even though the CSV format accepts them** —
+**Not built yet, even though the file format accepts them:**
 `add_scheduled`, `swap_aux_table`, `sell_asset`, `buy_asset`,
-`life_transition`. A calendar row with one of these kinds loads without
-error, but the engine silently skips it at run time (no error, no effect).
-For what you'd reach for `add_scheduled` for — "this rule doesn't start until
-a later date" — just add the row directly to `scheduled.csv` with the future
-`start` date; no calendar event is needed for that at all.
+`life_transition`. A calendar row with one of these kinds will load without
+an error, but the simulator quietly does nothing with it when it runs. If you
+want a new rule to start on a future date — which is what `add_scheduled`
+sounds like it is for — just add the row directly to `scheduled.csv` with
+that future `start` date. You do not need a calendar event for this at all.
 
 ## See also
 
