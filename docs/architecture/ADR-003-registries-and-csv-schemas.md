@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** ADR-005 (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3).
+- **Amended by:** ADR-005 (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` split into `aux/` (shared tax-law facts) and `series/` (growth rates, security prices — per-scenario projections), both overridable per scenario, and `itemizations/` made overridable per scenario too (§4.1c); the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d.
 - **Related:** ADR-001 (overall architecture), ADR-002 (storage schema), ADR-004 (reproducibility).
 
 ## Context
@@ -304,6 +304,88 @@ All files: UTF-8, comma-delimited, one header row. Empty string means NULL. Bool
 
 JSON-typed columns hold a single JSON value as a string; the loader parses and revalidates against the rule/event kind. Multi-line JSON in CSV is supported via standard CSV quoting.
 
+#### 4.0 Map of the data repo
+
+High level: what's shared by every scenario by default, what belongs to one scenario, and
+where a scenario can override a shared file for itself and its descendants (§4.1d).
+
+```mermaid
+flowchart TB
+    subgraph shared["Shared base (data_repo/) — every scenario's default"]
+        persons["persons.csv"]
+        securities["securities.csv (opt)"]
+        allocations["allocations.csv (opt)"]
+        aux["aux/*.csv — tax-law facts"]
+        series["series/*.csv — growth rates, prices"]
+        itemizations["itemizations/*.csv — @name rollups"]
+    end
+    subgraph base["scenarios/base/ (root scenario)"]
+        base_files["accounts.csv, account_values.csv,
+scheduled.csv, calendar.csv, chains/*.csv, ..."]
+        base_override["aux/, series/, itemizations/
+(optional overrides)"]
+    end
+    subgraph child["scenarios/<derived>/ (parent_scenario = base)"]
+        child_files["only the rows that differ
+(merged by key onto base's, §4.5)"]
+        child_override["aux/, series/, itemizations/
+(optional overrides)"]
+    end
+    shared -.->|default| base_files
+    shared -.->|default, unless overridden| base_override
+    base_files -->|inherited, overlaid by key| child_files
+    base_override -->|inherited whole-file, unless overridden again| child_override
+    shared -.->|default, unless base or child overrides| child_override
+```
+
+Detailed: how one scenario's own files reference each other and the shared base, by their key
+columns. An arrow is "the column on the left names a row identified by the column at the
+arrowhead."
+
+```mermaid
+flowchart LR
+    accounts["accounts.csv
+(name, kind, subkind, series, tax_character)"]
+    values["account_values.csv
+(account_name, lot, symbol, series, ...)"]
+    chains["chains/*.csv
+(account_name, lot)"]
+    scheduled["scheduled.csv
+(from_account, to_account, series, person)"]
+    calendar["calendar.csv
+(account_1/2, lot_1/2, series)"]
+    ytd["year_to_date.csv
+(from_account, to_account)"]
+    persons["persons.csv (id)"]
+    aux_series["aux/, series/
+(kind__series.csv)"]
+    itemizations["itemizations/
+(@name.csv)"]
+
+    values -->|account_name| accounts
+    chains -->|account_name + lot| values
+    scheduled -->|from_account/to_account:
+account or chain name| accounts
+    scheduled -->|from_account/to_account| chains
+    scheduled -->|person| persons
+    calendar -->|account_1/2 + lot_1/2| values
+    calendar -->|account_1/2| chains
+    ytd -->|from_account/to_account| accounts
+    accounts -->|series| aux_series
+    values -->|series, or a rate series
+named for symbol| aux_series
+    values -->|symbol price, to derive
+a blank opening_balance| aux_series
+    values -->|opening_balance/opening_cost_basis/
+prior_year_end_balance = @name| itemizations
+    scheduled -->|amount = @name| itemizations
+```
+
+A chain's own file (`chains/<kind>__<name>.csv`) is itself a list of `account_name` (+ `lot`)
+rows, so it is both a target (from `scheduled.csv`/`calendar.csv`/`accounts.csv`
+`refill_chain`/`overflow_chain`) and a source of the same `account_name`/`lot` references shown
+above; it is folded into "chains/*.csv" here rather than drawn as its own layer.
+
 #### 4.1 Shared base: `data_repo/persons.csv`
 
 Single identity list for the household: account owners *and* operator identities (`$ANALYSIS_USER`) live in the same table. The two sets typically coincide; the `role` column distinguishes persons-who-can-act from persons-who-only-appear (e.g. deceased ancestors carried for basis, a `joint` household pseudo-row, future heirs).
@@ -339,6 +421,44 @@ What each symbol is made of, by asset class, for the portfolio overview (`sim al
 | `weight` | percent | ✓ | 0 to 100; the weights of one (`symbol`, `as_of`) set must add up to 100 |
 
 For a date the overview uses the symbol's latest set on or before it, else its earliest. A lot with no rows for its symbol is classed by its account subkind (`cash`, `real_estate`, `vehicle`/`other_asset` as `other`; a `CASH` symbol is cash and a `CD` symbol is `cd`), and otherwise shown as `unclassified`, so a gap is visible. The weights are static per date: the model does not rebalance or let allocations drift with relative price movements, only follow the dated sets you give it, so a lot's class mix at any date is its balance times that date's weights. The file may be omitted.
+
+#### 4.1c Shared base: `data_repo/itemizations/<name>.csv` (optional)
+
+A rollup of dollar amounts a scenario CSV can reference in place of a literal number, via
+`@<name>` (for example `opening_cost_basis` = `@home_basis`, ADR-005 §5). The file must have a
+`Value` column (decimal dollars); the loader sums it and uses the total. Any other columns
+(`Item`, `Note`, ...) are for the human reader and are ignored. Resolution is per-scenario, like
+`aux/`/`series/`; see §4.1d.
+
+| column | type | required | notes |
+| --- | --- | --- | --- |
+| `Value` | dollars | ✓ | summed across every row of the file |
+| (anything else) | text | | ignored by the loader; documentation for the human reader |
+
+#### 4.1d Per-scenario overrides for `aux/`, `series/` and `itemizations/`
+
+`aux/`, `series/` (§4.4) and `itemizations/` (§4.1c) at the data repo root are the shared
+defaults every scenario reads unless it says otherwise. A scenario may add its own
+`scenarios/<name>/aux/<file>.csv`, `scenarios/<name>/series/<file>.csv`, or
+`scenarios/<name>/itemizations/<file>.csv` — same filename as the shared one to replace it, or
+a new filename to add something the shared tier doesn't have (a rate series only that
+scenario's lots use).
+
+- **Resolution is whole-file, per filename, most specific first:** the scenario's own file,
+  else its parent's (following `parent_scenario` all the way up, §4.5), else the shared
+  file at the data repo root. A match replaces the entire file; there is no row-level merge
+  across tiers (unlike `accounts.csv`/`account_values.csv`/etc., which do merge by key, §4.5).
+- **A derived scenario without its own override inherits its parent's.** Overriding a
+  file only where it first needs to differ, and leaving every descendant to inherit that
+  override, is the intended shape.
+- **Motivating cases:** a different assumed future tax policy (an alternate `federal_brackets.csv`
+  or `state_brackets__CA.csv`), a different rate or security-price assumption (`rate__*.csv`,
+  `security_price__*.csv`), or a different cost-basis itemization for one scenario, without
+  touching any other scenario's inputs.
+- **Provenance:** each override lives inside `scenarios/<name>/`, already in the
+  `scenario_tree_id` scope for that scenario and its descendants (ADR-004 §1), so no separate
+  provenance handling is needed.
+- Loaded by `_merged_override_files`/`_find_override_file` in `loader.py`.
 
 #### 4.2 Per-scenario: `data_repo/scenarios/<name>/accounts.csv`
 
@@ -386,9 +506,20 @@ Opening state for the accounts declared in §4.2, **one row per lot** (ADR-005):
 | `overflow_chain` | text | | account or named `chains/*.csv` chain to sweep excess into |
 | `overflow_lot` | text | | the lot of `overflow_chain`, when it names an account |
 
-#### 4.4 Shared: `data_repo/aux/<kind>[__<series>].csv`
+#### 4.4 Shared: `data_repo/aux/<kind>[__<series>].csv` and `data_repo/series/<kind>__<series>.csv`
 
-One file per (kind) or (kind, series). Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is derived from the filename stem after `__`, with every `_` replaced by a space.** So `rate__Asset_Checking.csv` has series `Asset Checking`, and `rate_series` in `amount_rule_params_json` must use the space form. This lets account names contain spaces while filenames stay underscore-safe.
+One file per (kind) or (kind, series), split physically between two folders that the loader
+treats identically apart from where it looks (§4.1d): **`aux/`** holds the tax-law and
+demographic facts every scenario shares by default (`federal_brackets.csv`,
+`standard_deduction.csv`, `filing_status.csv`, `ss_taxation_thresholds.csv`, `rmd_factors.csv`,
+`rmd_start_age.csv`, `ltcg_brackets.csv`, plus `inflation__cpi.csv` as the one series-keyed
+exception, kept here so CPI-constant reporting always has a default); **`series/`** holds
+per-scenario projections a scenario names by `series`/`symbol` (`rate__*.csv`,
+`security_price__*.csv`, `state_brackets__*.csv`, any other `inflation__<series>.csv`). The
+split is a convention for humans and for what a scenario is most likely to want to override
+(§4.1d), not something the loader validates — a misplaced file still loads correctly by kind.
+
+Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is derived from the filename stem after `__`, with every `_` replaced by a space.** So `rate__Asset_Checking.csv` has series `Asset Checking`, and `rate_series` in `amount_rule_params_json` must use the space form. This lets account names contain spaces while filenames stay underscore-safe.
 
 - **`federal_brackets.csv`**, **`state_brackets__<state>.csv`**:
   `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate_micros`

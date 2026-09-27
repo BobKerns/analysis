@@ -14,14 +14,18 @@ SQL schema alongside the source CSV.
     accounts.csv                  # chart of accounts
     account_models/<name>.csv     # opening balances per model
     itemizations/<name>.csv       # optional money rollups referenced as @<name>
-    aux/<kind>[__<series>].csv    # aux tables; one per kind/series (ADR-003 §4.4)
+    aux/<kind>[__<series>].csv    # tax-law aux tables; one per kind (ADR-003 §4.4)
+    series/<kind>__<series>.csv   # growth rates, security prices; one per kind/series (ADR-003 §4.4)
     scenarios/<name>/
         scenario.csv              # one-row scenario header
+        accounts.csv              # chart of accounts for this scenario
+        account_values.csv        # opening balances, one row per lot (ADR-005)
         scheduled.csv             # ScheduledTransactions
-        waterfall_sources.csv     # ordered sources per waterfall_fill rule
         calendar.csv              # CalendarEvents
         lifespan.csv              # optional per-person final_month override (ADR-003 §4.9)
         year_to_date.csv          # optional partial-first-year catch-up facts (ADR-003 §4.10)
+        chains/<kind>__<name>.csv # optional named liquidity chains (ADR-003 §4.7)
+        aux/, series/, itemizations/  # optional per-scenario overrides (ADR-003 §4.1c)
 ```
 
 ## Conventions
@@ -34,7 +38,21 @@ SQL schema alongside the source CSV.
 - JSON columns hold a single JSON value as a string. Use CSV quoting for embedded commas/quotes.
 - Empty string means NULL.
 - Monetary fields may reference an itemization CSV using `@name` (for example, `@home_basis`).
-    The loader reads `itemizations/name.csv`, sums the `Value` column, and uses that total.
+    The loader reads `itemizations/name.csv`, sums the `Value` column, and uses that total, searching
+    a scenario's own `itemizations/` folder before the shared one at the data repo root (see below).
+
+## Per-scenario overrides for aux/, series/ and itemizations/
+
+`aux/`, `series/` and `itemizations/` at the data repo root are the shared defaults every
+scenario uses unless it says otherwise. A scenario can replace one file for itself (and
+anything derived from it) by adding a same-named file under its own folder:
+`scenarios/<name>/aux/<file>.csv`, `scenarios/<name>/series/<file>.csv`, or
+`scenarios/<name>/itemizations/<file>.csv`. The loader resolves each filename independently,
+most specific first — the scenario's own file, else its parent's (following `parent_scenario`
+all the way up), else the shared default — and a match replaces the whole file, not a
+row-by-row merge. This is how you model a different future tax policy, a different rate or
+security-price assumption, or a different cost-basis itemization on one scenario without
+touching any other. See ADR-003 §4.1c, `aux/README.md` and `series/README.md`.
 
 ## Budget planning
 
@@ -42,9 +60,9 @@ SQL schema alongside the source CSV.
 
 For annual items, set `month_of_year` (`1`-`12`) so payments land in the intended month. If you have two annual payments (for example, property tax in April and December), use two rows with the same category and different `month_of_year` values.
 
-## Aux table filename pattern
+## Aux/series table filename pattern
 
-`aux/<kind>__<series>.csv` for kinds that have multiple named series (`rate__Asset_Checking`, `state_brackets__CA`, `inflation__cpi`); `aux/<kind>.csv` for kinds that have only one (`federal_brackets`, `standard_deduction`, `rmd_factors`). The filename is parsed by the loader; see ADR-003 §4.4 for the column schema of each kind.
+`<kind>__<series>.csv` for kinds that have multiple named series (`rate__Asset_Checking`, `state_brackets__CA`); `<kind>.csv` for kinds that have only one (`federal_brackets`, `standard_deduction`, `rmd_factors`). The filename is parsed by the loader the same way in `aux/` and `series/`; see ADR-003 §4.4 for the column schema of each kind, and "Per-scenario overrides" above for how `aux/`/`series` split and how a scenario can replace one file.
 
 ## After editing
 

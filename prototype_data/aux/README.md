@@ -1,9 +1,13 @@
 # `aux/` — auxiliary lookup tables
 
-These CSVs hold the slowly-changing reference data the simulator looks up by date:
-tax brackets, standard deductions, inflation rates, RMD factors, account growth
-rates, and so on. They live outside any one scenario so multiple scenarios share
-the same tax law and economic assumptions.
+These CSVs hold the slowly-changing tax-law and demographic facts the simulator
+looks up by date: tax brackets, standard deductions, RMD factors and start age,
+Social Security thresholds, filing statuses, and the CPI inflation series. They
+live outside any one scenario so multiple scenarios share the same tax law by
+default (a scenario testing a different assumption can override one file — see
+"Per-scenario overrides" below).
+
+Growth-rate series live in `series/` next door instead; see `series/README.md`.
 
 ## How a row is used
 
@@ -18,40 +22,45 @@ values; future months pick up the new ones.
 
 ## Units (same as everywhere else in the data repo)
 
-- **Money** is integer **cents**: `$31,500.00` → `3150000`.
+- **Money** is decimal **dollars**: `$31,500.00` → `31500.00`.
 - **Rates** are integer **micros** (millionths): `10%` → `100000`,
   `9.3%` → `93000`, `3.0%` → `30000`.
 - **Dates** are `YYYY-MM-DD`, conventionally month-end (`2026-01-31`).
 
-The column-name suffix (`_cents`, `_micros`) tells you which.
+The column-name suffix (`_micros`) marks rate/factor columns; money columns are plain (decimal dollars).
 
 ## Filename pattern
 
 - `aux/<kind>.csv` — a kind that has exactly one table
   (`federal_brackets`, `standard_deduction`, `rmd_factors`, …).
-- `aux/<kind>__<series>.csv` — kinds that have several named series, separated
-  by a **double underscore**. Examples:
-  - `state_brackets__CA.csv` (California state brackets)
-  - `rate__Asset_Checking.csv` (growth/interest rate for checking accounts)
-  - `inflation__cpi.csv` (CPI series)
+- `aux/<kind>__<series>.csv` — a kind with several named tables. In this folder
+  that's only `inflation__cpi.csv`; every other series-keyed kind (`rate__*`,
+  `state_brackets__*`) lives in `series/` instead.
 
 The loader (`src/analysis/sim/loader.py`) parses the filename to figure out the
 kind and series; the required columns per kind are listed in
 `src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and ADR-003 §4.4.
+
+## Per-scenario overrides
+
+A scenario can replace one of these files for itself (and its descendants) by
+adding `scenarios/<name>/aux/<same filename>.csv` — the loader uses that file
+in place of this shared one, whole file, not merged row by row. A derived
+scenario without its own override inherits its parent's, all the way up to this
+shared default (ADR-003 §4.1c).
 
 ## The files in this folder
 
 | File | What it is |
 | --- | --- |
 | `federal_brackets.csv` | US federal ordinary-income tax brackets. One row per (effective_date, filing_status, bracket_index). |
-| `state_brackets__CA.csv` | California state ordinary-income brackets. Same columns as federal. |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
 | `filing_status.csv` | The set of filing-status codes valid on each effective date (acts as an enum table). |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |
-| `inflation__cpi.csv` | Annual inflation rate (CPI = Consumer Price Index, the standard cost-of-living measure published by the US Bureau of Labor Statistics) used to grow non-indexed amounts. |
-| `rate__example.csv` | Template for a per-account growth/interest-rate series. Copy and rename to e.g. `rate__Asset_Brokerage.csv`. |
+| `inflation__cpi.csv` | Annual inflation rate (CPI = Consumer Price Index, the standard cost-of-living measure published by the US Bureau of Labor Statistics) used to grow non-indexed amounts, and by the CPI-constant-dollar views regardless of what any scenario's own CSVs reference. Kept here, rather than in `series/`, so that lookup always has a default. |
 | `rmd_factors.csv` | IRS Uniform Lifetime Table divisors used to compute Required Minimum Distributions. One row per (effective_date, age). |
 | `rmd_start_age.csv` | First age at which an RMD is required (currently 73; rises to 75 in 2033 under SECURE 2.0). |
+| `ltcg_brackets.csv` | Federal long-term capital gain brackets — see "Long-term capital gain rates" below. |
 
 ### Filing status codes
 
@@ -126,7 +135,7 @@ Worked example, very rough, using the 2026-effective figures in
   `$96,950 + $31,500 - $20,000 = $108,450` from Traditional IRA to Roth fills
   the 10% and 12% brackets exactly, with federal tax of about $11,000 on the
   conversion. (California taxes the same dollars at its own rates; see
-  `state_brackets__CA.csv`.)
+  `series/state_brackets__CA.csv`.)
 - Once Social Security starts and RMDs begin at age 73, the same dollars
   withdrawn from the Traditional IRA would land in the 22% bracket or higher
   *and* would push more Social Security into the 85%-taxable tier
@@ -156,13 +165,14 @@ The cleanest way is to ask the AI assistant. A prompt that works:
 
 > Update `prototype_data/aux/federal_brackets.csv`,
 > `prototype_data/aux/standard_deduction.csv`,
-> `prototype_data/aux/state_brackets__CA.csv`, and
+> `prototype_data/series/state_brackets__CA.csv`, and
 > `prototype_data/aux/filing_status.csv` with the latest IRS and CA FTB
 > figures. Use the most recent IRS Revenue Procedure for federal and FTB's
 > annual indexing announcement (in "Tax News") for California. Filing statuses:
 > MFJ, Single, MFS. Exclude CA's Mental Health / Behavioral Health Services Tax
-> (the extra 1% over $1M). Then mirror the four files into `templates/aux/` and
-> run `uv run pytest`.
+> (the extra 1% over $1M). Then mirror the four files into `templates/`
+> (`templates/aux/` for the first three, `templates/series/` for the state
+> brackets) and run `uv run pytest`.
 
 Authoritative sources the AI should pull from:
 
@@ -191,9 +201,11 @@ Authoritative sources the AI should pull from:
 ## See also
 
 - `docs/architecture/ADR-003-registries-and-csv-schemas.md` — authoritative
-  column lists and the kind/series naming rules.
+  column lists and the kind/series naming rules, including the per-scenario
+  override mechanism (§4.1c).
 - `docs/architecture/ADR-002-storage-schema.md` — how aux rows land in SQLite.
 - `templates/README.md` — the data repo as a whole.
+- `series/README.md` — growth rates and security prices.
 
 ## Long-term capital gain rates
 

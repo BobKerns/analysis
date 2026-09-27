@@ -108,7 +108,7 @@ The data repo records the scenario the user is currently working on in a `.curre
 1. the explicitly supplied name (validated against `scenarios/`),
 2. the name recorded in `.current_scenario` (error if it names a missing scenario),
 3. the sole scenario folder, if there is exactly one,
-4. `current`.
+4. `base` (`loader.DEFAULT_SCENARIO_NAME`; the data repo's own root scenario is conventionally named this).
 
 `resolve_scenario_name` returns a `ScenarioRef` named tuple — `name`, `data_dir`, `path` (the scenario folder), `intent_path` (its `state/intent` DB), `runs_dir` / `run_path` (the scenario's latest run file, or `None`), and the data repo's `commit` / `branch` / `dirty` — so callers can report exactly which inputs they are working with. Both state dirs are overridable. `ScenarioRef.describe()` renders that as markdown, and `_repr_markdown_` makes a bare `display(ref)` in a notebook show the same summary.
 

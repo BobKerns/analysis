@@ -47,7 +47,7 @@ __all__ = [
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
-DEFAULT_SCENARIO_NAME = "current"
+DEFAULT_SCENARIO_NAME = "base"
 DEFAULT_STATE_DIR = Path("state")
 DEFAULT_INTENT_DIR = Path("intent")
 DEFAULT_RUNS_DIR = Path("runs")
@@ -72,14 +72,19 @@ class LoadError(ValueError):
 
 
 class _MoneyReferenceResolver:
-    """Resolve ``@name`` monetary references from ``itemizations/name.csv``.
+    """Resolve ``@name`` monetary references from an ``itemizations/name.csv``.
 
-    The referenced CSV must include a ``Value`` column containing decimal-dollar
-    amounts that are summed into integer cents.
+    Itemizations are scenario-scoped like ``aux/`` and ``series/`` (ADR-003
+    §4.1c): the file is looked for in the scenario's own ``itemizations/``
+    folder, then each ancestor's via ``parent_scenario``, then the data repo's
+    shared ``itemizations/`` as the fallback. The referenced CSV must include a
+    ``Value`` column containing decimal-dollar amounts that are summed into
+    integer cents.
     """
 
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(self, data_dir: Path, scenario_dirs: list[Path] = []) -> None:
         self.data_dir = data_dir
+        self.scenario_dirs = scenario_dirs
         self._cache: dict[str, int] = {}
         self._resolving: set[str] = set()
 
@@ -89,10 +94,11 @@ class _MoneyReferenceResolver:
         if token in self._resolving:
             raise ValueError(f"cyclic money reference '@{token}'")
 
-        path = self.data_dir / "itemizations" / f"{token}.csv"
-        if not path.exists():
+        path = _find_override_file(self.data_dir, self.scenario_dirs, "itemizations", f"{token}.csv")
+        if path is None:
+            searched = ", ".join(str(d / "itemizations") for d in (*self.scenario_dirs, self.data_dir))
             raise ValueError(
-                f"money reference '@{token}' not found; expected {path}"
+                f"money reference '@{token}' not found; looked in: {searched}"
             )
 
         self._resolving.add(token)
@@ -508,7 +514,9 @@ def load_scenario(
             if intent_path.parent != intent_dir:
                 raise LoadError([f"intent_path {intent_path} is not within intent_dir {intent_dir}"])
 
-    money_resolver = _MoneyReferenceResolver(data_dir)
+    lineage_names = _scenario_lineage_names(scenarios_dir, scenario_name)
+    scenario_dirs = [scenarios_dir / name for name in lineage_names]
+    money_resolver = _MoneyReferenceResolver(data_dir, scenario_dirs)
 
     issues: list[str] = []
 
@@ -527,7 +535,11 @@ def load_scenario(
     chains = _read_chain_files(data_dir, scenario_name, issues)
 
 
-    aux_rows = _read_aux_dir(data_dir / "aux", issues, money_resolver=money_resolver)
+    aux_files = [
+        *_merged_override_files(data_dir, scenario_dirs, "aux"),
+        *_merged_override_files(data_dir, scenario_dirs, "series"),
+    ]
+    aux_rows = _read_aux_files(aux_files, issues, money_resolver=money_resolver)
 
     _derive_opening_balances(model_rows, aux_rows, scenario_row, issues)
     _expand_account_growth(
@@ -645,16 +657,58 @@ def _read_csv(
         ]
 
 
-def _read_aux_dir(
-    aux_dir: Path,
+def _find_override_file(
+    data_dir: Path, scenario_dirs: list[Path], subfolder: str, filename: str,
+) -> Path | None:
+    """The most specific existing ``<dir>/<subfolder>/<filename>``: the scenario's
+    own folder, then each ancestor's (``scenario_dirs``, most specific first),
+    then the data repo's shared folder."""
+    for d in (*scenario_dirs, data_dir):
+        candidate = d / subfolder / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _merged_override_files(
+    data_dir: Path, scenario_dirs: list[Path], subfolder: str,
+) -> list[Path]:
+    """Every ``<subfolder>/*.csv`` across the shared data repo and the scenario's
+    lineage, one path per filename: a more specific tier's file (the scenario's
+    own, then its parent's, ...) replaces the shared one of the same name
+    wholesale, not merged row by row."""
+    merged: dict[str, Path] = {}
+    for d in (data_dir, *reversed(scenario_dirs)):  # least specific first, so later wins
+        folder = d / subfolder
+        if folder.is_dir():
+            for path in folder.glob("*.csv"):
+                merged[path.name] = path
+    return [merged[name] for name in sorted(merged)]
+
+
+def _scenario_lineage_names(scenarios_dir: Path, scenario_name: str) -> list[str]:
+    """``scenario_name`` followed by each ancestor via ``parent_scenario``, most
+    specific first. Tolerant of read problems -- the main scenario read reports
+    them properly; this is only used to seed override search paths."""
+    lineage: list[str] = []
+    seen: set[str] = set()
+    name = scenario_name
+    while name and name not in seen:
+        lineage.append(name)
+        seen.add(name)
+        rows = _read_csv(scenarios_dir / name / "scenario.csv", [], optional=True)
+        name = (rows[0].get("parent_scenario", "") if rows else "").strip()
+    return lineage
+
+
+def _read_aux_files(
+    csv_paths: list[Path],
     issues: list[str],
     *,
     money_resolver: _MoneyReferenceResolver,
 ) -> list[tuple[str, str | None, dict[str, Any], str]]:
     out: list[tuple[str, str | None, dict[str, Any], str]] = []
-    if not aux_dir.is_dir():
-        return out
-    for csv_path in sorted(aux_dir.glob("*.csv")):
+    for csv_path in csv_paths:
         stem = csv_path.stem
         if "__" in stem:
             kind, raw_series = stem.split("__", 1)

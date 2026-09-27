@@ -137,7 +137,7 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
 
 def test_current_scenario_file_drives_default_resolution(tmp_path: Path) -> None:
     repo = tmp_path / "data"
-    (repo / "scenarios" / "current").mkdir(parents=True)
+    (repo / "scenarios" / DEFAULT_SCENARIO_NAME).mkdir(parents=True)
     (repo / "scenarios" / "tight").mkdir()
 
     assert read_current_scenario(repo) is None
@@ -147,7 +147,7 @@ def test_current_scenario_file_drives_default_resolution(tmp_path: Path) -> None
     write_current_scenario(repo, "tight")
     assert read_current_scenario(repo) == "tight"
     assert resolve_scenario_name(repo, None).name == "tight"
-    assert resolve_scenario_name(repo, "current").name == "current"
+    assert resolve_scenario_name(repo, DEFAULT_SCENARIO_NAME).name == DEFAULT_SCENARIO_NAME
 
     write_current_scenario(repo, "gone")
     with pytest.raises(LoadError) as ei:
