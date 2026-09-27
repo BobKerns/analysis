@@ -48,7 +48,8 @@ def account_balance_history_widget(
     widget covers asset/liability/income/expense instead of one apiece
     (unlike kinds stay off the same axis this way). Income/expense get an
     automatic cumulative-totals note; other kinds don't need one.
-    Returns the combined ``ipywidgets.VBox`` ready to ``display()``.
+    Returns the combined ``ipywidgets.VBox``; it is not displayed here, because
+    ``Connections.show`` displays what a widget function returns.
     """
 
     kind_picker = AccountKindPicker(kind)
@@ -118,7 +119,6 @@ def account_balance_history_widget(
         widgets.HBox([value_mode, dollar_mode, y_axis_mode]),
         kind_picker, picker, out, caveat_out,
     ])
-    display(box, clear=True)
     return box
 
 

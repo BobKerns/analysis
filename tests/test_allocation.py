@@ -17,6 +17,7 @@ from analysis.sim.allocation import (
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.loader import LoadError
 from analysis.sim.notebook_ui.allocation_widgets import allocation_view, portfolio_allocation_widget
+from analysis.sim.notebook_ui.accounts_plots import account_history_widget
 from analysis.sim.notebook_ui.holdings_widgets import account_holdings_widget, symbol_holders_widget
 
 ALLOCATIONS = (
@@ -223,6 +224,7 @@ def test_split_by_security_uses_the_symbol_or_a_placeholder(
 
 @pytest.mark.parametrize("build", [
     portfolio_allocation_widget, account_holdings_widget, symbol_holders_widget,
+    lambda rc: account_history_widget(rc, "asset", "Balances"),
 ])
 def test_widgets_return_their_box_without_displaying_it(
     build, allocations_csv: Path, two_lot_run: RunConnection, monkeypatch: pytest.MonkeyPatch,
@@ -230,11 +232,26 @@ def test_widgets_return_their_box_without_displaying_it(
     """``Connections.show`` displays what a widget function returns, so displaying it
     as well puts the widget on the page twice."""
     from ipywidgets import widgets
-    from analysis.sim.notebook_ui import allocation_widgets, holdings_widgets
+    from analysis.sim.notebook_ui import accounts_plots, allocation_widgets, holdings_widgets
 
     shown: list[object] = []
-    for module in (allocation_widgets, holdings_widgets):
+    for module in (accounts_plots, allocation_widgets, holdings_widgets):
         monkeypatch.setattr(module, "display", lambda *args, **kwargs: shown.extend(args))
     box = build(two_lot_run)
     assert isinstance(box, widgets.VBox)
     assert not any(isinstance(item, widgets.Widget) for item in shown)
+
+
+def test_the_pie_is_displayed_as_a_figure_and_not_left_open(
+    allocations_csv: Path, two_lot_run: RunConnection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+    from analysis.sim.notebook_ui import allocation_widgets
+
+    shown: list[object] = []
+    monkeypatch.setattr(allocation_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    plt.close("all")
+    portfolio_allocation_widget(two_lot_run)
+    assert any(isinstance(item, Figure) for item in shown)
+    assert plt.get_fignums() == []  # closed, so the inline backend does not show it a second time
