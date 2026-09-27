@@ -3,12 +3,12 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** ADR-005 (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` split into `aux/` (shared tax-law facts) and `series/` (growth rates, security prices — per-scenario projections), both overridable per scenario, and `itemizations/` made overridable per scenario too (§4.1c); the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d.
-- **Related:** ADR-001 (overall architecture), ADR-002 (storage schema), ADR-004 (reproducibility).
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` split into `aux/` (shared tax-law facts) and `series/` (growth rates, security prices — per-scenario projections), both overridable per scenario, and `itemizations/` made overridable per scenario too (§4.1c); the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d.
+- **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility).
 
 ## Context
 
-ADR-002 left four pieces of vocabulary deliberately open: the list of `account.subkind` values, the set of `amount_rule_kind` values for `scheduled_transaction`, the set of `kind` values for `calendar_event`, and the CSV column schemas the loader expects under the per-scenario folder. This ADR closes them.
+[ADR-002](ADR-002-storage-schema.md) left four pieces of vocabulary deliberately open: the list of `account.subkind` values, the set of `amount_rule_kind` values for `scheduled_transaction`, the set of `kind` values for `calendar_event`, and the CSV column schemas the loader expects under the per-scenario folder. This ADR closes them.
 
 Each registry is **closed in v1**: the loader rejects unknown values. New kinds enter only through this ADR (or a successor). This keeps the simulator legible — a reader can enumerate every way a rule can compute an amount and every way a calendar can patch reality.
 
@@ -70,13 +70,13 @@ CHECK-constrained at load time (the loader validates; the DDL keeps `subkind` as
 
 The expense vocabulary intentionally mixes categories (`housing`) with mechanisms (`interest_expense`); a future ADR is expected to refactor `housing` into finer-grained subkinds without disturbing the others.
 
-The `_other` catch-alls are deliberate escape hatches; the `--check` mode (ADR-001 §CLI) flags any account using one so the author can decide whether to extend the vocabulary.
+The `_other` catch-alls are deliberate escape hatches; the `--check` mode ([ADR-001](ADR-001-overall-architecture.md) §CLI) flags any account using one so the author can decide whether to extend the vocabulary.
 
 ### 2. `amount_rule_kind` registry
 
 Seven rule kinds. (Nine were specified originally; `waterfall_fill` (§2.4) and `refill_transfer` (§2.8) were later removed in favour of liquidity chains — see §4.7. Their section numbers are retained rather than reused, so existing cross-references stay valid.) Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
 
-**Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. (ADR-002 follow-up: tighten `transfer_event.reason_kind` CHECK to `('rule','initial')` and add `scheduled_transaction.created_by_event_id INTEGER REFERENCES calendar_event(id)` so synthesized rules trace back to their authoring calendar event.)
+**Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. ([ADR-002](ADR-002-storage-schema.md) follow-up: tighten `transfer_event.reason_kind` CHECK to `('rule','initial')` and add `scheduled_transaction.created_by_event_id INTEGER REFERENCES calendar_event(id)` so synthesized rules trace back to their authoring calendar event.)
 
 **Multi-leg rules** (in v1: only `mortgage_payment`) emit more than one transfer event per fire; all legs share the same `(reason_kind, reason_id)` and are linked by `parent_event_id` for grouping. The `from_account`/`to_account` columns on the scheduled_transaction row are interpreted as the **primary leg** (cash → liability principal); the secondary leg (cash → interest expense) targets the account named by `interest_account`. This invariant — "each event traces to one rule, but a rule may emit multiple events per fire" — is the *direction* that matters: it makes audit, `explain`, and `compare` straightforward.
 
@@ -98,7 +98,7 @@ Accrue interest, dividends, appreciation against a source account's balance.
 - **Emits:** one event. Typical: `from_account = <income account>` (e.g. `interest_income`), `to_account = <balance-bearing account>` (interest credits to the asset). For depreciation, swap signs by routing through an expense account.
 - **Use:** money-market interest, bond coupon approximations, portfolio appreciation per asset, real-estate appreciation.
 
-**Authored on the account, not in `scheduled.csv`.** An asset account's growth is a property of the account, so it is declared by the `series` + `tax_character` columns on `accounts.csv` (§4.2) and the loader synthesizes one rule **per lot** (ADR-005 §5; a lot's own `series`, or a rate series named for its `symbol`, takes precedence over the account's): `cadence='monthly'`, priority 100, `start = scenario.start`, `to_account` = the account itself, and `name = growth_<abbreviated account name>` (each word trimmed to four letters, plus the lot for a non-default lot; see ADR-005 §5). Hand-writing an equivalent `percent_of_balance` row is still legal, but the loader rejects one whose name collides with a synthesized rule.
+**Authored on the account, not in `scheduled.csv`.** An asset account's growth is a property of the account, so it is declared by the `series` + `tax_character` columns on `accounts.csv` (§4.2) and the loader synthesizes one rule **per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md) §5; a lot's own `series`, or a rate series named for its `symbol`, takes precedence over the account's): `cadence='monthly'`, priority 100, `start = scenario.start`, `to_account` = the account itself, and `name = growth_<abbreviated account name>` (each word trimmed to four letters, plus the lot for a non-default lot; see [ADR-005](ADR-005-lots-and-per-lot-state.md) §5). Hand-writing an equivalent `percent_of_balance` row is still legal, but the loader rejects one whose name collides with a synthesized rule.
 
 The income side is **not** author-supplied. Each growth `tax_character` has one reserved counterparty account, created on first use so a scenario cannot mis-wire or omit it:
 
@@ -120,7 +120,7 @@ Depreciation is a book entry, not spending. Reporting that totals cash outflows 
 
 IRS Required Minimum Distribution.
 
-- **Params:** the row's `from_account` is the subject IRA/401k account (the one being drawn down) and `person` = person id. When the subject account has several lots (ADR-005), `from_account` is instead a chain listing the lots to draw from, in order, and `params_json` names the account the RMD is for: `{"subject_account": "<account>"}`; the chain may only draw from that account's lots. The amount is that account's total on the prior Dec 31 over the age factor. Aggregation across an owner's several IRAs is deliberately not modelled: a brokerage distributes per account, without regard to distributions taken elsewhere. Factor table is `rmd_factors`; start-age series is `rmd_start_age` (both fixed aux references).
+- **Params:** the row's `from_account` is the subject IRA/401k account (the one being drawn down) and `person` = person id. When the subject account has several lots ([ADR-005](ADR-005-lots-and-per-lot-state.md)), `from_account` is instead a chain listing the lots to draw from, in order, and `params_json` names the account the RMD is for: `{"subject_account": "<account>"}`; the chain may only draw from that account's lots. The amount is that account's total on the prior Dec 31 over the age factor. Aggregation across an owner's several IRAs is deliberately not modelled: a brokerage distributes per account, without regard to distributions taken elsewhere. Factor table is `rmd_factors`; start-age series is `rmd_start_age` (both fixed aux references).
 - **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state` (the subject account's lots added together); for the partial first year it comes from `account_model_member.prior_year_end_balance` (which the author must supply for any `traditional_ira` / `traditional_401k` account whose owner reaches RMD age during the scenario's first calendar year).
 - **Start semantics:** the row's `start` column is a lower bound on candidate fire dates. The actual first fire is `max(row.start, year-end of the year person reaches start_age)`. Authors typically set `start = scenario.start` and let the age gate dominate.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
@@ -271,7 +271,7 @@ Realize a sale. Each sub-step below is a separately synthesized `cadence='one_of
   5. **Asset zero-out** is the side-effect of step 1 (the basis transfer empties the asset) — no extra rule.
   6. If `associated_liability_account` is set: also emit an intent-mutating side-action equivalent to `retire_scheduled` against the mortgage_payment rule referencing it (recorded as a secondary `applied_calendar_event`).
 - **Use:** home sale; large brokerage liquidation.
-- **Lots (ADR-005):** for an account that has lots the payload names one (`asset_account` plus its lot), and the sale liquidates that lot; liquidating a whole account is one sale per lot. The engine does not implement `sell_asset` yet (it is skipped), so payload account references are not validated.
+- **Lots ([ADR-005](ADR-005-lots-and-per-lot-state.md)):** for an account that has lots the payload names one (`asset_account` plus its lot), and the sale liquidates that lot; liquidating a whole account is one sale per lot. The engine does not implement `sell_asset` yet (it is skipped), so payload account references are not validated.
 
 #### 3.8 `buy_asset` (rule-synthesizing)
 
@@ -281,7 +281,7 @@ Acquire an asset. As with §3.7, each money-moving sub-step is a synthesized `ca
 - **Expansion:**
   1. **Down-payment rule** — `fixed_amount`, `from_account → asset_account`, `amount = purchase_price - new_liability_principal`, `tax_character='none'`. Sets `asset_account.cost_basis = purchase_price + fees` as a state side-effect at firing time.
   2. **Fees rule** — `fixed_amount`, `from_account → Expense_Housing`, `amount = fees`.
-  3. **Loan-origination rule** (only if `new_liability_account`) — `fixed_amount`, `Income_LoanOrigination → new_liability_account`, `amount = new_liability_principal`, `tax_character='none'`. (`Income_LoanOrigination` is a synthetic income-class account in the standard chart; reserved name.) This preserves the bookkeeping zero-sum invariant from ADR-002 when a new liability appears mid-run.
+  3. **Loan-origination rule** (only if `new_liability_account`) — `fixed_amount`, `Income_LoanOrigination → new_liability_account`, `amount = new_liability_principal`, `tax_character='none'`. (`Income_LoanOrigination` is a synthetic income-class account in the standard chart; reserved name.) This preserves the bookkeeping zero-sum invariant from [ADR-002](ADR-002-storage-schema.md) when a new liability appears mid-run.
   4. **Activate scheduled rules** — for each name in `starts_scheduled`: an intent-mutating side-action equivalent to `add_scheduled` referencing a prototype row in `scheduled.csv` (prototype rows are flagged `start = NULL` so they don't fire on their own). Not money-moving in itself.
 - **Use:** downsize-to-condo scenario; investment property purchase.
 
@@ -296,7 +296,7 @@ Author-named bundle of changes that represent a real-world transition. The `kind
   - **`relocate`**: swap state-tax bracket aux to new state; update property-tax rates.
   - **`retire`**: retire salary rule for the subject person; start Medicare premium rules; flip discretionary-spending `set_amount`.
   - **`long_term_care`**: add a large `fixed_amount` expense rule with COLA series `cpi_medical`.
-- **Use:** the scenario-as-checklist payoff (ADR-001 principle 5). The `--check life-transitions` validator flags any expected transition missing from a scenario that runs past a person's life-expectancy threshold.
+- **Use:** the scenario-as-checklist payoff ([ADR-001](ADR-001-overall-architecture.md) principle 5). The `--check life-transitions` validator flags any expected transition missing from a scenario that runs past a person's life-expectancy threshold.
 
 ### 4. CSV file layouts
 
@@ -403,7 +403,7 @@ Single identity list for the household: account owners *and* operator identities
 
 #### 4.1a Shared base: `data_repo/securities.csv` (optional)
 
-Names for the symbols lots hold (ADR-005). Shared by every scenario, inside the provenance scope, and loaded into the `security` table.
+Names for the symbols lots hold ([ADR-005](ADR-005-lots-and-per-lot-state.md)). Shared by every scenario, inside the provenance scope, and loaded into the `security` table.
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
@@ -428,7 +428,7 @@ For a date the overview uses the symbol's latest set on or before it, else its e
 #### 4.1c Shared base: `data_repo/itemizations/<name>.csv` (optional)
 
 A rollup of dollar amounts a scenario CSV can reference in place of a literal number, via
-`@<name>` (for example `opening_cost_basis` = `@home_basis`, ADR-005 §5). The file must have a
+`@<name>` (for example `opening_cost_basis` = `@home_basis`, [ADR-005](ADR-005-lots-and-per-lot-state.md) §5). The file must have a
 `Value` column (decimal dollars); the loader sums it and uses the total. Any other columns
 (`Item`, `Note`, ...) are for the human reader and are ignored. Resolution is per-scenario, like
 `aux/`/`series/`; see §4.1d.
@@ -459,7 +459,7 @@ scenario's lots use).
   `security_price__*.csv`), or a different cost-basis itemization for one scenario, without
   touching any other scenario's inputs.
 - **Provenance:** each override lives inside `scenarios/<name>/`, already in the
-  `scenario_tree_id` scope for that scenario and its descendants (ADR-004 §1), so no separate
+  `scenario_tree_id` scope for that scenario and its descendants ([ADR-004](ADR-004-reproducibility-and-activation.md) §1), so no separate
   provenance handling is needed.
 - Loaded by `_merged_override_files`/`_find_override_file` in `loader.py`.
 
@@ -482,7 +482,7 @@ Required in a root scenario; optional in a derived one, where it overlays the pa
 
 #### 4.3 Per-scenario: `data_repo/scenarios/<name>/account_values.csv`
 
-Opening state for the accounts declared in §4.2, **one row per lot** (ADR-005): a position inside one account. An account that is not split has one lot named `default`, for which the `lot` column may be left blank. Required in a root scenario; optional in a derived one, where it overlays the parent's rows by (`account_name`, `lot`) (§4.5). `scenario.csv`'s `account_model` column names the resulting model.
+Opening state for the accounts declared in §4.2, **one row per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)): a position inside one account. An account that is not split has one lot named `default`, for which the `lot` column may be left blank. Required in a root scenario; optional in a derived one, where it overlays the parent's rows by (`account_name`, `lot`) (§4.5). `scenario.csv`'s `account_model` column names the resulting model.
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
@@ -577,7 +577,7 @@ A scenario naming a `parent_scenario` inherits the parent's rows and overlays it
 
 A child row with a new key is appended; one whose key matches the parent replaces that row **entirely**, so an override must repeat every column it wants to keep, not just the changed ones. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits.
 
-`analysis sim scenario create <name> <parent>` creates one: it writes `scenario.csv` with the parent link and header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, verifies the result loads, and records it as the current scenario (ADR-004 §4a).
+`analysis sim scenario create <name> <parent>` creates one: it writes `scenario.csv` with the parent link and header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a).
 
 #### 4.6 Per-scenario: `data_repo/scenarios/<name>/scheduled.csv`
 
@@ -599,7 +599,7 @@ A child row with a new key is appended; one whose key matches the parent replace
 | `amount` | dollars | | interpreted per `amount_rule_kind`: base amount for `fixed_amount`, monthly P&I for `mortgage_payment`, or PIA at FRA for `ss_benefit`; decimal string e.g. `1234.56`; loader converts to integer cents |
 | `base_date` | YYYY-MM | | required when `series` names an inflation series |
 | `inflation_cadence` | enum | | `monthly` (default) compounds every month; `annual` steps once per calendar year crossed (each January) instead of drifting smoothly — use for COLA-style adjustments (e.g. Social Security) that jump once a year rather than continuously; requires `series` to be set |
-| `tax_character` | enum | ✓ | per ADR-002 (`ordinary`, `ltcg`, `stcg`, `gains`, `deferred`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`, `excluded_gain`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field. |
+| `tax_character` | enum | ✓ | per [ADR-002](ADR-002-storage-schema.md) (`ordinary`, `ltcg`, `stcg`, `gains`, `deferred`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`, `excluded_gain`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field. |
 | `tax_year` | int | | optional designated tax year for the transfer; when present, tax aggregation uses this value instead of the transfer date's calendar year (for example, a 2026 IRA contribution made in early 2027) |
 | `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |
@@ -683,7 +683,7 @@ Two mechanisms cover this, both posting **balance-neutral** `transfer_event` row
 | `to_account` | text | ✓ | mirrors `one_off_transfer`'s `account_2` |
 | `to_lot` | text | | the lot of `to_account` |
 | `amount` | dollars | ✓ | decimal string; loader converts to integer cents. May be negative (e.g. a loss carryforward reducing that year's `ltcg` bucket) |
-| `tax_character` | enum | ✓ | per ADR-002 |
+| `tax_character` | enum | ✓ | per [ADR-002](ADR-002-storage-schema.md) |
 | `year` | int | | defaults to `scenario.start`'s year (dated the month before start, as above). An explicit different year is dated that year's Dec 31 — for facts belonging to a fully-prior tax year (not the scenario's own partial first year) |
 | `description` | text | | |
 
@@ -764,9 +764,9 @@ inherited along the parent chain.
 - `sell_asset` requires the author to supply `cost_basis_override` whenever `account_state.cost_basis` is NULL (basis was never tracked). The `--check basis` validator surfaces these cases before a run fails.
 - `priors.csv` is intentionally narrow (tax activity only). Account-level state facts that used to live in a union `prior_account_fact` table now live as columns on `account_model_member` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`). This keeps the "what's in the accounts at scenario start" story in one file (`account_values.csv`, §4.3) and lets `priors.csv` stay a thin tax-activity feed. (Superseded: `priors.csv`/`prior_tax_activity` were later folded into `year_to_date.csv` — see §4.10.)
 
-## Amendments applied to ADR-002 alongside this ADR
+## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 
-These amendments to ADR-002 fall out of the §2 invariant, §1 vocabulary, and the priors-vs-account-state split; all have been rolled into ADR-002:
+These amendments to [ADR-002](ADR-002-storage-schema.md) fall out of the §2 invariant, §1 vocabulary, and the priors-vs-account-state split; all have been rolled into [ADR-002](ADR-002-storage-schema.md):
 
 1. Tightened `transfer_event.reason_kind` CHECK from `('scheduled','calendar','expansion_child','initial')` to `('rule','initial')`.
 2. Updated `transfer_event.reason_id` comment: "scheduled_transaction.id when 'rule'; opaque per-account id when 'initial'."
@@ -798,7 +798,7 @@ and older notes stay valid.
    income/expense/one-off split and the `analysis sim check --priorities` band
    check were never implemented.
 5. **`CHAIN_KINDS` is `{asset, income}`** (§4.7), not `asset` alone.
-6. **Corresponding ADR-002 amendments:** `scheduled_transaction_source` and
+6. **Corresponding [ADR-002](ADR-002-storage-schema.md) amendments:** `scheduled_transaction_source` and
    `waterfall_sources.csv` dropped; `chain` / `chain_steps` added;
    `transfer_event.from_account`/`to_account` now reference `chain(id)`; the
    file-layout tree updated to the per-scenario shape above.
@@ -819,7 +819,7 @@ and older notes stay valid.
 8. **A chain draw/sweep leg from a `taxable` non-cash lot (e.g. in a
    `brokerage_taxable` account) splits into `return_of_capital` + gain legs**
    (`engine._post_withdrawal`), rather than raising. Basis is tracked **per
-   lot** (ADR-005; ADR-001's earlier account-level running basis is now the
+   lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md); [ADR-001](ADR-001-overall-architecture.md)'s earlier account-level running basis is now the
    sum over lots, the `account_state` view). The split is pro-rata to the
    fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount
    // balance`), mutates that lot's basis, and reduces its `quantity` when

@@ -3,8 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** ADR-005 (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed.
-- **Related:** ADR-001 (overall architecture), ADR-003 (rule and event-kind registries — referenced by `amount_rule_kind` and `calendar_event.kind` values used below), ADR-004 (reproducibility stamps on the run manifest).
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed.
+- **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-003](ADR-003-registries-and-csv-schemas.md) (rule and event-kind registries — referenced by `amount_rule_kind` and `calendar_event.kind` values used below), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility stamps on the run manifest).
 
 ## Context
 
@@ -15,7 +15,7 @@ The schema must:
 - Be queryable ad-hoc by both humans and LLMs (long-narrow tables, descriptive names, stable shape).
 - Support `GROUP BY`-driven reporting at any grain: account, subkind, owner, year, reason.
 - Make money operations exact (`INTEGER` cents, no floats).
-- Reserve affordances for features deferred to later phases (forking) without future migration. Holdings and lots were reserved here and are now built, differently: see ADR-005.
+- Reserve affordances for features deferred to later phases (forking) without future migration. Holdings and lots were reserved here and are now built, differently: see [ADR-005](ADR-005-lots-and-per-lot-state.md).
 - Carry enough provenance on every run file to regenerate any chart.
 - Support cross-run comparison via `ATTACH DATABASE` rather than by sharing a database.
 
@@ -36,14 +36,14 @@ data_repo/
     scenarios/
         retire_2030/
             scenario.csv    # one-row scenario header (incl. parent_scenario)
-            accounts.csv    # every Account this scenario models (ADR-003 §4.2)
-            account_values.csv # opening balances/bases, one row per lot (ADR-003 §4.3, ADR-005)
+            accounts.csv    # every Account this scenario models ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.2)
+            account_values.csv # opening balances/bases, one row per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3, [ADR-005](ADR-005-lots-and-per-lot-state.md))
             scheduled.csv   # this scenario's ScheduledTransactions
             calendar.csv    # CalendarEvents
             lifespan.csv    # per-person final month
-            year_to_date.csv # partial-first-year catch-up facts (ADR-003 §4.10)
+            year_to_date.csv # partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10)
             chains/
-                asset__Family_Cash.csv   # named liquidity chains (ADR-003 §4.7)
+                asset__Family_Cash.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
                 income__SS_Bob.csv
         retire_2032/
             ...             # a derived scenario names `parent_scenario` in
@@ -78,7 +78,7 @@ state/
 
 - **Money:** `INTEGER` cents. Negative values only for liability balances and explicitly-signed flows (none expected in v1).
 - **Liability balances:** store outstanding debt magnitude. Payments into a liability are capped at the current outstanding balance; a payment that would overpay posts only the amount needed to reach zero, and later payments into an already-zero liability are no-ops. Deliberate credit balances should be modeled as a separate asset, not as a negative liability.
-- **Dates:** `TEXT` in ISO 8601. Month-grain dates are always pinned to the last day of the month at load time (see ADR-001 cross-cutting principle 2).
+- **Dates:** `TEXT` in ISO 8601. Month-grain dates are always pinned to the last day of the month at load time (see [ADR-001](ADR-001-overall-architecture.md) cross-cutting principle 2).
 - **JSON:** `TEXT` columns named `*_json`, parsed by the application layer.
 - **Foreign keys:** declared with `REFERENCES … ON DELETE RESTRICT`. `PRAGMA foreign_keys = ON` set on every connection. No `ON DELETE CASCADE` is needed — deletion is per-file.
 - **Identifiers:** integer surrogate `id` primary keys for everything addressable. Authored names are unique-indexed (`account.name`) so CSVs can reference by name and the loader resolves to ids. Ids assigned in the intent file are preserved in the run file's snapshot, keeping ledger FKs valid.
@@ -87,7 +87,7 @@ state/
 - **No `run_id` in the ledger.** Each run file holds exactly one run, so a `run_id` column on every ledger table would be a constant. `simulation_run` is a single-row manifest; the file itself is the run identifier.
 - **One-row manifest tables** are not enforced by CHECK; convention only. The loader/engine write exactly one row.
 - **Reserved account names.** A small set of names is reserved for synthetic accounts the engine references by string:
-  - `Income_LoanOrigination` — the synthetic income-class account credited by `buy_asset` calendar-event expansions when a new liability appears mid-run (see ADR-003 §3.8). The author lists it once in `accounts.csv` with `kind='income'`, `subkind='other_income'` if any scenario uses `buy_asset` with `new_liability_account`. Additional reserved names may be added in later ADRs.
+  - `Income_LoanOrigination` — the synthetic income-class account credited by `buy_asset` calendar-event expansions when a new liability appears mid-run (see [ADR-003](ADR-003-registries-and-csv-schemas.md) §3.8). The author lists it once in `accounts.csv` with `kind='income'`, `subkind='other_income'` if any scenario uses `buy_asset` with `new_liability_account`. Additional reserved names may be added in later ADRs.
 
 ### Placement summary
 
@@ -169,7 +169,7 @@ CREATE TABLE account (
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
 CREATE INDEX idx_account_owner ON account(owner);
 
--- Liquidity chains (ADR-003 §4.7). A `chain` row is either a LEAF (account_id
+-- Liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7). A `chain` row is either a LEAF (account_id
 -- set: the chain IS that account) or an INTERIOR named chain (account_id NULL,
 -- with >=1 chain_steps rows, walked in step_order until a step's amount need
 -- is satisfied). Every real account gets an implicit leaf chain at load time
@@ -193,7 +193,7 @@ CREATE INDEX idx_chain_account ON chain(account_id);
 -- cap and are only meaningful when `maximum_cents` is set. There is
 -- deliberately no per-step reserve: a step is "exhausted" once its account
 -- (after any refill_chain draw) is at or below its own minimum_balance_cents
--- (ADR-003 §4.7), at which point the still-outstanding amount falls through
+-- ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7), at which point the still-outstanding amount falls through
 -- to the next step.
 CREATE TABLE chain_steps (
     id                 INTEGER PRIMARY KEY,
@@ -218,11 +218,11 @@ CREATE TABLE account_model (
     created_at  TEXT NOT NULL
 );
 
--- One row per lot (ADR-005): a lot is a position inside one account, and the
+-- One row per lot ([ADR-005](ADR-005-lots-and-per-lot-state.md)): a lot is a position inside one account, and the
 -- engine keys balances, basis and quantity on `id`. Accounts that are not split
 -- have a single lot labelled 'default'.
 --
--- Balance management is per lot (ADR-003 §4.3): a debit that would drop the
+-- Balance management is per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3): a debit that would drop the
 -- lot's balance below minimum_balance_cents triggers a look-ahead draw on
 -- refill_chain_id BEFORE the debit posts (not a month-end reconciliation);
 -- when it would exceed maximum_balance_cents (NULL = unbounded), the excess is
@@ -344,7 +344,7 @@ CREATE TABLE scenario (
     meta_json         TEXT NOT NULL DEFAULT '{}'
 );
 
--- Optional per-scenario lifespan override (ADR-003 §4.9). When the
+-- Optional per-scenario lifespan override ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). When the
 -- simulated month exceeds final_month, every scheduled_transaction
 -- associated with this person (explicit `person` column, or owner of
 -- from_account/to_account) stops firing for the remainder of the run.
@@ -355,7 +355,7 @@ CREATE TABLE person_lifespan (
     PRIMARY KEY (scenario_id, person)
 );
 
--- Partial-first-year catch-up facts (ADR-003 §4.10) -- consolidates what used
+-- Partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10) -- consolidates what used
 -- to be split across two mechanisms: a single row's own YTD amount (not tied
 -- to any one scheduled_transaction's own amount, e.g. investment growth,
 -- SS already received) and prior tax-year activity (superseded
@@ -556,7 +556,7 @@ CREATE INDEX idx_inflation_state_series ON inflation_index_state(series, step_id
 
 ### Holdings and lots
 
-This ADR originally reserved `holding` and `lot` tables and `transfer_event.from_holding_id` / `to_holding_id`. They were never used and are gone. A lot is a row of `account_model_member` (above), the engine's state is `lot_state`, and `transfer_event` records the lots a transfer moves between; ADR-005 has the design.
+This ADR originally reserved `holding` and `lot` tables and `transfer_event.from_holding_id` / `to_holding_id`. They were never used and are gone. A lot is a row of `account_model_member` (above), the engine's state is `lot_state`, and `transfer_event` records the lots a transfer moves between; [ADR-005](ADR-005-lots-and-per-lot-state.md) has the design.
 
 ### Schema priming (both file kinds)
 
@@ -578,7 +578,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `account_model` | The account bundle this scenario uses (one row per intent/run file). |
 | `account_model_member` | One row per lot: symbol, acquired date, quantity, opening balance, opening cost basis, and prior-Dec-31 balance (for partial-first-year RMD) of each position in each account in the model. |
 | `security` | The name of each symbol lots hold (from `securities.csv`). |
-| `security_allocation` | What each symbol is made of by asset class, as dated weight sets (from `allocations.csv`, ADR-003 §4.1b). |
+| `security_allocation` | What each symbol is made of by asset class, as dated weight sets (from `allocations.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.1b). |
 | `scheduled_transaction` | Recurring or one-off rule that emits transfer events on a cadence; `amount_rule_kind` selects the formula. |
 | `chain` | A place money can be drawn from or deposited into: either a leaf (one lot) or a named, ordered, reusable liquidity chain. One namespace over both. |
 | `chain_steps` | The ordered steps of an interior chain — which chain each step draws from, and the maximum/percent allocation limiting that step. |
@@ -586,8 +586,8 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `calendar_event` | One patch on one date; `kind` selects the semantics; the common parameters are columns (`scheduled_name`, `account_1`, `account_2`, `series`, `amount`, `param_date`, `tax_character`) and `payload_json` carries the rest. |
 | `aux_table` | Versioned reference data: tax brackets, RMD divisors, inflation series, per-account rates, filing status. |
 | `scenario` | The scenario this file represents (one row). |
-| `person_lifespan` | Optional per-person final_month override for a scenario (ADR-003 §4.9). |
-| `year_to_date` | Partial-first-year catch-up facts (ADR-003 §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
+| `person_lifespan` | Optional per-person final_month override for a scenario ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). |
+| `year_to_date` | Partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
@@ -750,7 +750,7 @@ Both seed their respective `schema_overview` rows. A `_schema_version` table tra
 
 ## Open questions deferred to later ADRs
 
-- Exact vocabulary of `account.subkind` values — drafted in code, will become a checked list in ADR-003.
+- Exact vocabulary of `account.subkind` values — drafted in code, will become a checked list in [ADR-003](ADR-003-registries-and-csv-schemas.md).
 - Exact vocabulary of `aux_table.kind` — same.
 - Whether `tax_year_summary` should also store the inputs used (bracket-table aux_table id, filing status). Likely yes; added when the tax scan is implemented.
-- ~~Exact CSV layout for the per-scenario folder~~ — **settled** in ADR-003 §4 (`scenario.csv`, `accounts.csv`, `account_values.csv`, `scheduled.csv`, `calendar.csv`, `lifespan.csv`, `year_to_date.csv`, `chains/<kind>__<name>.csv`).
+- ~~Exact CSV layout for the per-scenario folder~~ — **settled** in [ADR-003](ADR-003-registries-and-csv-schemas.md) §4 (`scenario.csv`, `accounts.csv`, `account_values.csv`, `scheduled.csv`, `calendar.csv`, `lifespan.csv`, `year_to_date.csv`, `chains/<kind>__<name>.csv`).

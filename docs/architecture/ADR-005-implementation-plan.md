@@ -1,4 +1,4 @@
-# ADR-005 implementation plan: lots and per-lot state
+# [ADR-005](ADR-005-lots-and-per-lot-state.md) implementation plan: lots and per-lot state
 
 Companion to [ADR-005](ADR-005-lots-and-per-lot-state.md). Phases are ordered so each ends with a green test suite and a shippable state. Phase 1 is a pure refactor and must not change any output.
 
@@ -16,9 +16,9 @@ Sizes of the files involved (lines): `engine.py` 2367, `loader.py` 1556, `connec
   - Duplicate `(account_name, lot)` rows are flagged at read time. The old duplicate-`account_name` check in `_validate_account_model_money` could never fire, because the overlay merge collapses same-key rows first.
 - **Phase 2: done.** Suite green; multi-lot behavior is covered by `tests/test_lots.py`. Differences from the text below:
   - The engine needed no per-rule changes: nodes are already lots, so multi-lot support is in the loader (`_LeafIndex`, `_ref_problem`, per-lot `_expand_account_growth`, the account_values validations) plus per-lot quantity, tracked in `_post_transfer` through `RefillContext.quantities`.
-  - `registries.leaf_chain_name(account, lot, subkind)` names the internal leaf chain (`account:lot` for investment accounts). No CSV uses that spelling: every account column has a lot column beside it (see ADR-005 §3), and the loader resolves the pair in `_resolve_ref`. The engine takes lot names for messages from the `chain` table.
+  - `registries.leaf_chain_name(account, lot, subkind)` names the internal leaf chain (`account:lot` for investment accounts). No CSV uses that spelling: every account column has a lot column beside it (see [ADR-005](ADR-005-lots-and-per-lot-state.md) §3), and the loader resolves the pair in `_resolve_ref`. The engine takes lot names for messages from the `chain` table.
   - Only `calendar.csv` `account_1`/`account_2` of `one_off_transfer` events are validated for lot-qualified names. `sell_asset`/`buy_asset` are not implemented in the engine (they are skipped), so their payload references are unchecked until they are.
-  - Deposits into a lot originally changed neither its cost basis nor its quantity. That is fixed (see ADR-005 §7): a purchase, inheritance or proceeds moved into a basis-tracked lot raises its basis and shares; growth does not. The pinned baseline changed for exactly that reason: `Asset_Brokerage_Joint`'s `cost_basis` is $50,000 higher from the 2029 inheritance on, and nothing else moved.
+  - Deposits into a lot originally changed neither its cost basis nor its quantity. That is fixed (see [ADR-005](ADR-005-lots-and-per-lot-state.md) §7): a purchase, inheritance or proceeds moved into a basis-tracked lot raises its basis and shares; growth does not. The pinned baseline changed for exactly that reason: `Asset_Brokerage_Joint`'s `cost_basis` is $50,000 higher from the 2029 inheritance on, and nothing else moved.
   - CLI tooling was adapted here rather than in Phase 4 because renames, deletes and completions would otherwise break: `--from-lot`/`--to-lot` options (prompted for investment accounts) on `transfer add`/`scheduled add`, a `--from-lot` on `import-baseline`, lot shown in `transfer list`, `account add`/`sync` write the lot column, `_append_csv_row` tolerates extra optional columns, `import-quicken` skips multi-lot accounts with a warning.
   - `prototype_data` and `templates` were migrated to the lot columns. Fixed on the way: `sim scheduled list` and `accounts.py` looked chains up by account id, which only worked while the two id sequences coincided.
 - **Phase 3: done.** `security_price` aux kind (CSV column `price` in decimal dollars, up to 6 places, stored as `price_micros`); `_derive_opening_balances` fills a blank `opening_balance` from `quantity` and the latest price on or before the scenario start (half-up to the cent), leaves a given balance alone, and reports a missing price, a missing symbol, or a symbol equal to an account name. Symbol-named `rate` series were already in Phase 2. The price fetcher (step 4) was not built.
@@ -45,8 +45,8 @@ Exit: Phase 0 baseline test passes with identical numbers; full suite green.
 
 ## Phase 2 — Multiple lots
 
-1. `loader.py`: read `lot`, `symbol`, `acquired`, `quantity`, `series`; several rows per account; overlay key `(account_name, lot)` (`loader.py:396`, which currently overlays on `("account_name",)`); validations from ADR-005 §3–§4 (explicit lot for investment subkinds with an actionable message, cash-management attributes only on single-lot accounts, `prior_year_end_balance` all-or-none per account, duplicate `(account, lot)`).
-2. `_expand_account_growth` (`loader.py:725`): one rule per lot, named by `growth_rule_name` (short, abbreviated words), series precedence per ADR-005 §5.
+1. `loader.py`: read `lot`, `symbol`, `acquired`, `quantity`, `series`; several rows per account; overlay key `(account_name, lot)` (`loader.py:396`, which currently overlays on `("account_name",)`); validations from [ADR-005](ADR-005-lots-and-per-lot-state.md) §3–§4 (explicit lot for investment subkinds with an actionable message, cash-management attributes only on single-lot accounts, `prior_year_end_balance` all-or-none per account, duplicate `(account, lot)`).
+2. `_expand_account_growth` (`loader.py:725`): one rule per lot, named by `growth_rule_name` (short, abbreviated words), series precedence per [ADR-005](ADR-005-lots-and-per-lot-state.md) §5.
 3. `engine.py`: `_post_withdrawal` uses the lot's balance and basis and reduces `quantity_micros` proportionally; `sell_asset` names a lot; add the loader guard rejecting `rmd` on multi-lot accounts; resolve the `on_death` and other audit findings (fail loudly at load if a rule kind cannot handle multi-lot accounts rather than guessing).
 4. Tests: a two-lot brokerage where a sale from one lot leaves the other untouched (balance, basis, quantity, and the account-level view all check out); zero-sum at lot and account level; NULL-basis propagation through the view; per-lot growth with different series; every load error above.
 5. Data: add the `lot` column to `prototype_data` `account_values.csv` and chain files, and the `from_lot`/`to_lot`/`lot_1`/`lot_2` columns to `scheduled.csv`, `year_to_date.csv` and `calendar.csv`, filled in for the four investment accounts (`Asset_Brokerage_Joint`, `Asset_TraditionalIRA_Alice`, `Asset_Roth_Alice`, `Asset_Roth_Bob`). Add a small multi-lot fixture scenario for the new tests rather than splitting `retire_alice`. Follow the fixture pattern in `tests/conftest.py`.
@@ -96,7 +96,7 @@ Implemented as designed: `subject_account` lives in `params_json` (where `factor
 
 ## Phase 6 — Documentation (done)
 
-Apply the ADR-005 "Amendments to apply" list to ADR-001, ADR-002, and ADR-003 (the DDL in ADR-002 must match `schema.py`); mark ADR-005 Accepted; update the `schema_overview` rows and `prototype_data` README text for the new columns.
+Apply the [ADR-005](ADR-005-lots-and-per-lot-state.md) "Amendments to apply" list to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage-schema.md), and [ADR-003](ADR-003-registries-and-csv-schemas.md) (the DDL in [ADR-002](ADR-002-storage-schema.md) must match `schema.py`); mark [ADR-005](ADR-005-lots-and-per-lot-state.md) Accepted; update the `schema_overview` rows and `prototype_data` README text for the new columns.
 
 ## Phase 7 — Per-lot cash management (done)
 

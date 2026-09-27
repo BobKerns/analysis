@@ -16,7 +16,7 @@ which stays in `aux/` so CPI-constant reporting always has a default; see
 series name (`rate__Asset_Brokerage.csv`, `security_price__VTI.csv`,
 `state_brackets__CA.csv`). The loader parses the filename the same way it does
 for `aux/`; the required columns per kind are in
-`src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and ADR-003 §4.4.
+`src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and [ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4.
 
 ## Per-scenario overrides
 
@@ -25,7 +25,7 @@ adding `scenarios/<name>/series/<same filename>.csv`, or add a file the shared
 folder doesn't have at all (a rate for a symbol only that scenario holds). The
 loader uses the most specific file that exists — the scenario's own, else its
 parent's, else this shared default — whole file, not merged row by row
-(ADR-003 §4.1c). This is the natural place to model a different assumed
+([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1c). This is the natural place to model a different assumed
 return, or a different future security price path, on a per-scenario basis.
 
 ## The files in this folder
@@ -47,7 +47,7 @@ fetch` can populate this file for you. To give a security its own growth rate, a
 
 ## See also
 
-- `docs/architecture/ADR-003-registries-and-csv-schemas.md` — authoritative column lists,
+- [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) — authoritative column lists,
   the kind/series naming rules, and the per-scenario override mechanism (§4.1c).
 - `aux/README.md` — the tax-law facts that stay shared by default.
 - `templates/README.md` — the data repo as a whole.

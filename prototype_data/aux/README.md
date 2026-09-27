@@ -39,7 +39,7 @@ The column-name suffix (`_micros`) marks rate/factor columns; money columns are 
 
 The loader (`src/analysis/sim/loader.py`) parses the filename to figure out the
 kind and series; the required columns per kind are listed in
-`src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and ADR-003 §4.4.
+`src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and [ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4.
 
 ## Per-scenario overrides
 
@@ -47,7 +47,7 @@ A scenario can replace one of these files for itself (and its descendants) by
 adding `scenarios/<name>/aux/<same filename>.csv` — the loader uses that file
 in place of this shared one, whole file, not merged row by row. A derived
 scenario without its own override inherits its parent's, all the way up to this
-shared default (ADR-003 §4.1c).
+shared default ([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1c).
 
 ## The files in this folder
 
@@ -200,10 +200,10 @@ Authoritative sources the AI should pull from:
 
 ## See also
 
-- `docs/architecture/ADR-003-registries-and-csv-schemas.md` — authoritative
+- [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) — authoritative
   column lists and the kind/series naming rules, including the per-scenario
   override mechanism (§4.1c).
-- `docs/architecture/ADR-002-storage-schema.md` — how aux rows land in SQLite.
+- [`docs/architecture/ADR-002-storage-schema.md`](../../docs/architecture/ADR-002-storage-schema.md) — how aux rows land in SQLite.
 - `templates/README.md` — the data repo as a whole.
 - `series/README.md` — growth rates and security prices.
 

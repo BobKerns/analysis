@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-17
-- **Amended by:** ADR-005 (lots and per-lot state): accounts are split into lots, and the engine's state is per lot.
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots and per-lot state): accounts are split into lots, and the engine's state is per lot.
 - **Scope:** New top-level subsystem `src/analysis/sim/`, sibling to the existing `amazon/` subsystem. Shares utility code (logging, sqlite helpers) but not data.
 
 ## Context
@@ -33,14 +33,14 @@ Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to
 | --- | --- | --- | --- |
 | `Person` | Intent | Shared | Owner identity (id, display, birthdate). Needed for RMD ages and life-transition events. |
 | `Account` | Intent | Shared | One real-world place where money sits. `kind` ∈ {asset, liability, income, expense}; `subkind` carries tax/usage semantics; optional `owner`. Holds one or more `Lot`s. |
-| `Lot` | Intent | Per-scenario | A position inside one account: symbol, acquired date, quantity, opening balance and cost basis (ADR-005). An account that is not split has one lot, `default`. Chains, rules and events refer to a lot as an account plus a lot column. |
+| `Lot` | Intent | Per-scenario | A position inside one account: symbol, acquired date, quantity, opening balance and cost basis ([ADR-005](ADR-005-lots-and-per-lot-state.md)). An account that is not split has one lot, `default`. Chains, rules and events refer to a lot as an account plus a lot column. |
 | `AccountModel` | Intent | Shared | A named set of `Account`s with, per lot, opening balance and opening cost basis. Typically shared across scenarios. |
 | `ScheduledTransaction` | Intent | Mostly shared | A *rule* that emits `TransferEvent`s on a cadence. Amount is computed by a typed `amount_rule` (fixed, percent-of-balance, RMD, SS benefit, …) so interest accrual, SS payments, withdrawals, and tax reconciliation all use the same machinery. |
 | `Calendar` | Intent | Per-scenario | An ordered list of `CalendarEvent`s. Represents the assumptions being compared. |
-| `CalendarEvent` | Intent | Per-scenario | A *patch* to the running scenario on a given date: change a rate, add/retire a scheduled transaction, swap an aux table, sell an asset, apply a life transition, etc. Bounded set of kinds; see ADR-003. |
+| `CalendarEvent` | Intent | Per-scenario | A *patch* to the running scenario on a given date: change a rate, add/retire a scheduled transaction, swap an aux table, sell an asset, apply a life transition, etc. Bounded set of kinds; see [ADR-003](ADR-003-registries-and-csv-schemas.md). |
 | `AuxiliaryTable` | Intent | Mostly shared | Versioned reference data: tax brackets, RMD divisors, SS taxation thresholds, inflation series, per-account return rates, filing status. Calendars can swap these by date. |
 | `Scenario` | Intent | Per-comparison | `(AccountModel, Calendar, AuxTables, YearToDate, start, end)`. Identified by name; runs are reproducible from it. |
-| `YearToDate` | Intent | Per-scenario | Partial-first-year catch-up facts (ADR-003 §4.10): YTD wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (e.g. loss carryforwards). Posted as balance-neutral `TransferEvent`s at run start. Account-level state facts (year-end balances for RMD, cost-basis estimates) live on `AccountModel` instead. |
+| `YearToDate` | Intent | Per-scenario | Partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10): YTD wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (e.g. loss carryforwards). Posted as balance-neutral `TransferEvent`s at run start. Account-level state facts (year-end balances for RMD, cost-basis estimates) live on `AccountModel` instead. |
 | `SimulationRun` | Ledger | — | One execution. Stamps code/data versions, acting user, host, status. |
 | `SimulationStep` | Ledger | — | One month. Links to previous step (nullable for initial state), to applied `CalendarEvent`s, and owns the `LotState` snapshot and `TransferEvent`s emitted in its window. |
 | `LotState` | Ledger | — | `(step_id, lot_id) → balance, cost_basis, quantity`. The engine's state. Long-and-narrow for pivoting. `AccountState`, `(step_id, account_id) → balance, cost_basis`, is a view that sums it. |
@@ -73,8 +73,8 @@ Within-month ordering is **strictly by rule priority**, never by date. Priority 
 
 Liquidity is *not* a priority band. Refilling a drawn-down account is a
 look-ahead check on each debit, and overflow is a month-end sweep, both driven
-by the lot's own `refill_chain`/`overflow_chain` (ADR-003 §4.3) rather than by a rule that
-has to be ordered last — see ADR-003 §4.7.
+by the lot's own `refill_chain`/`overflow_chain` ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3) rather than by a rule that
+has to be ordered last — see [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7.
 
 ### Cross-cutting principles
 
@@ -82,15 +82,15 @@ These are project-wide rules that all subsequent ADRs and code reference:
 
 1. **Deterministic engine.** Pure function of `(AccountModel, Calendar, AuxTables, YearToDate, start, end)`. No `datetime.now()` in engine paths, no RNG, no dict-iteration-order dependence, no floats for money. Money is `INTEGER` cents end-to-end.
 2. **Month-granularity authoring; month-end dates internally.** CSVs use `YYYY-MM`. Loader pins to last day of month. No within-month sequencing semantics.
-3. **Intent vs. ledger separation.** If a real-world decision has multiple legs and any leg depends on run-time state, it earns a `CalendarEvent` kind. Otherwise it's a primitive `one_off_transfer`. The set of kinds is bounded and reviewed (see ADR-003).
+3. **Intent vs. ledger separation.** If a real-world decision has multiple legs and any leg depends on run-time state, it earns a `CalendarEvent` kind. Otherwise it's a primitive `one_off_transfer`. The set of kinds is bounded and reviewed (see [ADR-003](ADR-003-registries-and-csv-schemas.md)).
 4. **Visible approximation beats invisible omission.** Zero-valued accounts for assets we choose not to model (ISOs, potential JPY inheritance); basis-with-sources lists for the home; `data/known_exclusions.md` for things deliberately out of scope.
 5. **The scenario is a checklist.** Every `ScheduledTransaction` should be referenceable by `life_transition` events; a `--check life_transitions` mode flags omissions without erroring.
-6. **Schema is documentation.** Long-narrow tables, descriptive names, a `schema_overview` row per table for LLM priming. See ADR-002.
+6. **Schema is documentation.** Long-narrow tables, descriptive names, a `schema_overview` row per table for LLM priming. See [ADR-002](ADR-002-storage-schema.md).
 7. **Hard errors on impossible states.** Unresolvable references, unknown user, dirty data without override → halt before the run starts, report enough context to fix the scenario. *Amended:* running an account negative is **not** in this category. The draft had insufficient funds halt the run; in practice that made a scenario un-runnable at the first shortfall, which is exactly when you most want to see the projection. A debit that a chain cannot cover posts anyway, drives the balance negative, raises a `RuntimeWarning` once per negative transition, and is recorded under `simulation_run.run_args_json.$.negative_balance_warnings` — visible and queryable, per principle 4, rather than fatal.
 
 ### Reproducibility and gating contract
 
-Detail in ADR-004; summary here:
+Detail in [ADR-004](ADR-004-reproducibility-and-activation.md); summary here:
 
 - Code and data live in separate git repos.
 - Every run file's `simulation_run` row stamps `code_version`, `code_dirty`, `data_version`, `data_dirty`, `scenario_tree_id`, `data_repo_path`, `data_repo_name`, `run_by`, `host`. The matching intent file's `intent_manifest` stamps the same data identifiers.
@@ -120,7 +120,7 @@ src/analysis/sim/
     model.py          # Person, Account, AccountModel, ScheduledTransaction dataclasses
     calendar.py       # Calendar, CalendarEvent
     aux.py            # tax brackets, RMD factors, SS thresholds, inflation series helpers
-    rules.py          # amount_rule registry; see ADR-003
+    rules.py          # amount_rule registry; see [ADR-003](ADR-003-registries-and-csv-schemas.md)
     expansions.py     # high-level CalendarEvent expanders (sell_asset, life_transition, …)
     state.py          # in-memory lot state; invariants
     engine.py         # run(scenario) -> SimulationRun
@@ -154,7 +154,7 @@ These mutating commands are convenience wrappers around the same CSV edits an AI
 
 - The transfer-event-per-dollar-move model makes "no income in retirement" structurally falsifiable: any income-account flow is visible in one query. This is the central audience-trust goal.
 - Determinism + dual-repo SHA stamping means any chart can be regenerated from its run row.
-- Bounded set of `CalendarEvent` kinds (see ADR-003) keeps the simulator legible. A reader can enumerate all the ways a scenario can patch reality.
+- Bounded set of `CalendarEvent` kinds (see [ADR-003](ADR-003-registries-and-csv-schemas.md)) keeps the simulator legible. A reader can enumerate all the ways a scenario can patch reality.
 - Schema designed for ad-hoc SQL: AI-assisted querying is the primary v1 "reporting" surface, with named views for the common cases.
 - Future ensemble layer is a pure scenario-generator over the same engine — no engine changes required.
 
@@ -163,11 +163,11 @@ These mutating commands are convenience wrappers around the same CSV edits an AI
 - Authoring overhead: every recurring item is a row in `scheduled.csv`, every assumption is data. Deliberate tradeoff — the visibility builds trust and doubles as a survivor checklist.
 - Single currency (USD cents) in v1. JPY inheritance is documented as unaddressed in `data/known_exclusions.md`; revisit if/when it materializes.
 - Forking is deferred. Scenarios are independent runs; conceptual forking lives in git. Schema affordance (`parent_run_id`, `fork_month`) is reserved.
-- Holdings and lots are built (ADR-005). Cost basis is tracked per lot, mutated by basis-tagged transfer events: a withdrawal splits its lot's basis pro-rata, and money moved into a basis-tracked lot (a purchase, an inheritance) adds to it. Growth is total return: dividends are not split out.
+- Holdings and lots are built ([ADR-005](ADR-005-lots-and-per-lot-state.md)). Cost basis is tracked per lot, mutated by basis-tagged transfer events: a withdrawal splits its lot's basis pro-rata, and money moved into a basis-tracked lot (a purchase, an inheritance) adds to it. Growth is total return: dividends are not split out.
 - Roth conversions, sub-monthly cadences, ISO valuation, and contribution-limit enforcement are explicitly out of scope for v1, with rationale captured in `data/known_exclusions.md`.
 
 ## Related ADRs
 
-- ADR-002: Storage schema (full DDL, views, indexes).
-- ADR-003: Amount-rule registry and Calendar-event-kind registry.
-- ADR-004: Reproducibility contract and dual-repo gating.
+- [ADR-002](ADR-002-storage-schema.md): Storage schema (full DDL, views, indexes).
+- [ADR-003](ADR-003-registries-and-csv-schemas.md): Amount-rule registry and Calendar-event-kind registry.
+- [ADR-004](ADR-004-reproducibility-and-activation.md): Reproducibility contract and dual-repo gating.

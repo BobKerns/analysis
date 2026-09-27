@@ -14,7 +14,7 @@ reporting always has a default.
 series name (`rate__Asset_Checking.csv`, `state_brackets__CA.csv`). The loader
 parses the filename the same way it does for `aux/`; the required columns per
 kind are in `src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and
-ADR-003 §4.4.
+[ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4.
 
 ## Per-scenario overrides
 
@@ -22,7 +22,7 @@ A scenario can replace one of these files for itself (and its descendants) by
 adding `scenarios/<name>/series/<same filename>.csv`, or add a file the shared
 folder doesn't have at all. The loader uses the most specific file that exists
 — the scenario's own, else its parent's, else this shared default — whole
-file, not merged row by row (ADR-003 §4.1c).
+file, not merged row by row ([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1c).
 
 ## The files in this folder
 
@@ -34,7 +34,7 @@ file, not merged row by row (ADR-003 §4.1c).
 
 ## See also
 
-- `docs/architecture/ADR-003-registries-and-csv-schemas.md` — authoritative column lists,
+- [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) — authoritative column lists,
   the kind/series naming rules, and the per-scenario override mechanism (§4.1c).
 - `aux/README.md` — the tax-law facts that stay shared by default.
 - `templates/README.md` — the data repo as a whole.

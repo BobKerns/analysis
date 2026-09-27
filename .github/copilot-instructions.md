@@ -21,10 +21,10 @@ they are kept in sync with the code.
 
 | Doc | Covers |
 | --- | --- |
-| `docs/architecture/ADR-001-overall-architecture.md` | Design principles, priority bands |
-| `docs/architecture/ADR-002-storage-schema.md` | Two-layer SQLite storage, DDL, glossary |
-| `docs/architecture/ADR-003-registries-and-csv-schemas.md` | Locked vocabularies, every CSV schema |
-| `docs/architecture/ADR-004-reproducibility-and-activation.md` | Provenance, determinism, activation |
+| [`docs/architecture/ADR-001-overall-architecture.md`](../docs/architecture/ADR-001-overall-architecture.md) | Design principles, priority bands |
+| [`docs/architecture/ADR-002-storage-schema.md`](../docs/architecture/ADR-002-storage-schema.md) | Two-layer SQLite storage, DDL, glossary |
+| [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](../docs/architecture/ADR-003-registries-and-csv-schemas.md) | Locked vocabularies, every CSV schema |
+| [`docs/architecture/ADR-004-reproducibility-and-activation.md`](../docs/architecture/ADR-004-reproducibility-and-activation.md) | Provenance, determinism, activation |
 
 An ADR is amended, not silently rewritten: superseded sections stay as
 tombstones with the rationale, and material corrections go under "Later
@@ -35,8 +35,8 @@ Key modules:
 
 - `src/analysis/sim/registries.py` — the locked vocabularies (account kinds and
   subkinds, the seven `AMOUNT_RULE_KINDS`, tax characters, `CHAIN_KINDS`,
-  `DEFAULT_PRIORITIES`, CSV headers). ADR-003 defines these; keep them paired.
-- `src/analysis/sim/schema.py` — all SQLite DDL, `SCHEMA_VERSION`. Mirrors ADR-002.
+  `DEFAULT_PRIORITIES`, CSV headers). [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) defines these; keep them paired.
+- `src/analysis/sim/schema.py` — all SQLite DDL, `SCHEMA_VERSION`. Mirrors [ADR-002](../docs/architecture/ADR-002-storage-schema.md).
 - `src/analysis/sim/loader.py` — data repo CSVs to `state/intent/<scenario>.sqlite3`.
   Validation belongs here: unresolvable references must fail loudly at load.
 - `src/analysis/sim/engine.py` — monthly stepping to a run file under `state/runs/`.

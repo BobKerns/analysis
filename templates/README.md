@@ -2,7 +2,7 @@
 
 See [docs/user-guide.md](../docs/user-guide.md) for a task-based walkthrough (adding accounts and lots, changing expenses, modeling a sale, chains, lifespans, calendar events). This file is the CSV column reference and conventions cheat sheet.
 
-Skeletons for every CSV the simulator's loader expects (per ADR-002 + ADR-003).
+Skeletons for every CSV the simulator's loader expects (per [ADR-002](../docs/architecture/ADR-002-storage-schema.md) + [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md)).
 Copy this folder to a new data repo and edit. **Every header row matches the
 corresponding DDL column name exactly** to minimize confusion when reading the
 SQL schema alongside the source CSV.
@@ -11,23 +11,23 @@ SQL schema alongside the source CSV.
 
 ```text
 <data_repo>/
-    activate-analysis             # sourced shell script (ADR-004 §4)
+    activate-analysis             # sourced shell script ([ADR-004](../docs/architecture/ADR-004-reproducibility-and-activation.md) §4)
     persons.csv                   # household owners + operator identities ($ANALYSIS_USER)
     accounts.csv                  # chart of accounts
     account_models/<name>.csv     # opening balances per model
     itemizations/<name>.csv       # optional money rollups referenced as @<name>
-    aux/<kind>[__<series>].csv    # tax-law aux tables; one per kind (ADR-003 §4.4)
-    series/<kind>__<series>.csv   # growth rates, security prices; one per kind/series (ADR-003 §4.4)
+    aux/<kind>[__<series>].csv    # tax-law aux tables; one per kind ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4)
+    series/<kind>__<series>.csv   # growth rates, security prices; one per kind/series ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4)
     scenarios/<name>/
         scenario.csv              # one-row scenario header
         accounts.csv              # chart of accounts for this scenario
-        account_values.csv        # opening balances, one row per lot (ADR-005)
+        account_values.csv        # opening balances, one row per lot ([ADR-005](../docs/architecture/ADR-005-lots-and-per-lot-state.md))
         scheduled.csv             # ScheduledTransactions
         calendar.csv              # CalendarEvents
-        lifespan.csv              # optional per-person final_month override (ADR-003 §4.9)
-        year_to_date.csv          # optional partial-first-year catch-up facts (ADR-003 §4.10)
-        chains/<kind>__<name>.csv # optional named liquidity chains (ADR-003 §4.7)
-        aux/, series/, itemizations/  # optional per-scenario overrides (ADR-003 §4.1c)
+        lifespan.csv              # optional per-person final_month override ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.9)
+        year_to_date.csv          # optional partial-first-year catch-up facts ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.10)
+        chains/<kind>__<name>.csv # optional named liquidity chains ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.7)
+        aux/, series/, itemizations/  # optional per-scenario overrides ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1c)
 ```
 
 ## Conventions
@@ -54,7 +54,7 @@ most specific first — the scenario's own file, else its parent's (following `p
 all the way up), else the shared default — and a match replaces the whole file, not a
 row-by-row merge. This is how you model a different future tax policy, a different rate or
 security-price assumption, or a different cost-basis itemization on one scenario without
-touching any other. See ADR-003 §4.1c, `aux/README.md` and `series/README.md`.
+touching any other. See [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1c, `aux/README.md` and `series/README.md`.
 
 ## Budget planning
 
@@ -64,7 +64,7 @@ For annual items, set `month_of_year` (`1`-`12`) so payments land in the intende
 
 ## Aux/series table filename pattern
 
-`<kind>__<series>.csv` for kinds that have multiple named series (`rate__Asset_Checking`, `state_brackets__CA`); `<kind>.csv` for kinds that have only one (`federal_brackets`, `standard_deduction`, `rmd_factors`). The filename is parsed by the loader the same way in `aux/` and `series/`; see ADR-003 §4.4 for the column schema of each kind, and "Per-scenario overrides" above for how `aux/`/`series` split and how a scenario can replace one file.
+`<kind>__<series>.csv` for kinds that have multiple named series (`rate__Asset_Checking`, `state_brackets__CA`); `<kind>.csv` for kinds that have only one (`federal_brackets`, `standard_deduction`, `rmd_factors`). The filename is parsed by the loader the same way in `aux/` and `series/`; see [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4 for the column schema of each kind, and "Per-scenario overrides" above for how `aux/`/`series` split and how a scenario can replace one file.
 
 ## After editing
 
@@ -85,7 +85,7 @@ When sourced, `activate-analysis` will:
 
 ## Editing rows
 
-CSVs are the source of truth and can be edited by hand, by an AI assistant given the schemas in ADR-003, or by the built-in CLI commands:
+CSVs are the source of truth and can be edited by hand, by an AI assistant given the schemas in [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md), or by the built-in CLI commands:
 
 ```sh
 sim account list                          # tabular view with balances and rates
@@ -98,7 +98,7 @@ sim scheduled list                        # recurring scheduled transfers
 sim scheduled add <start> <from> <to> <amount> [--cadence monthly]
 ```
 
-The CLI is interactive (tab completion on account names, prompts when arguments are omitted) and validates against the registries in ADR-003 before writing. Prefer it when you want precise control or want to script the same edit across scenarios; ask the assistant when the change is exploratory or spans many rows.
+The CLI is interactive (tab completion on account names, prompts when arguments are omitted) and validates against the registries in [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) before writing. Prefer it when you want precise control or want to script the same edit across scenarios; ask the assistant when the change is exploratory or spans many rows.
 
 ### account_values.csv data hygiene
 
@@ -172,7 +172,7 @@ Steps:
 
 Liability balances are stored as a non-negative debt magnitude (per the engine's sign
 convention), so the importer negates Quicken's signed liability values automatically.
-`prior_year_end_balance` is only meaningful for the RMD rule (ADR-003 §2.3), hence the
+`prior_year_end_balance` is only meaningful for the RMD rule ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §2.3), hence the
 investment-asset restriction.
 
 **Bookkeeping:** `sim account rename` and `sim account edit --new-name` already update

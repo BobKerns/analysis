@@ -5,8 +5,8 @@ real examples. It assumes you already have a data repo. If you don't, see
 `templates/README.md` first.
 
 For the reasons behind these designs, see the documents in
-`docs/architecture/`. ADR-003 lists every CSV column in detail. This guide
-does not repeat all of that; it points to ADR-003 when you need the full list.
+`docs/architecture/`. [ADR-003](architecture/ADR-003-registries-and-csv-schemas.md) lists every CSV column in detail. This guide
+does not repeat all of that; it points to [ADR-003](architecture/ADR-003-registries-and-csv-schemas.md) when you need the full list.
 
 ## 1. Scenarios build on each other
 
@@ -343,8 +343,8 @@ that future `start` date. You do not need a calendar event for this at all.
 ## See also
 
 - `templates/README.md` — full CSV column reference and conventions.
-- `docs/architecture/ADR-003-registries-and-csv-schemas.md` — authoritative
+- [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](architecture/ADR-003-registries-and-csv-schemas.md) — authoritative
   schema, including the aux/series/itemizations override mechanism (§4.1d)
   and the data-repo structure diagrams (§4.0).
-- `docs/architecture/ADR-005-lots-and-per-lot-state.md` — lots in depth.
+- [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](architecture/ADR-005-lots-and-per-lot-state.md) — lots in depth.
 - `notebooks/README.md` — the same information as interactive widgets.

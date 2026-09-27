@@ -3,11 +3,11 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Related:** ADR-001 (overall architecture — summarizes reproducibility & activation), ADR-002 (storage schema — `intent_manifest`, `simulation_run` stamps), ADR-003 (registries used by `--check`).
+- **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture — summarizes reproducibility & activation), [ADR-002](ADR-002-storage-schema.md) (storage schema — `intent_manifest`, `simulation_run` stamps), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries used by `--check`).
 
 ## Context
 
-ADR-001 establishes the rule: a run file must be reproducible from its stamps, and the only way to find or load a data repo is through environment variables set by a sourced `activate` script. This ADR fills in the mechanism — the exact stamp set, the dirty/clean gating logic, the override semantics, the activation contract on disk, and the failure modes the engine must produce.
+[ADR-001](ADR-001-overall-architecture.md) establishes the rule: a run file must be reproducible from its stamps, and the only way to find or load a data repo is through environment variables set by a sourced `activate` script. This ADR fills in the mechanism — the exact stamp set, the dirty/clean gating logic, the override semantics, the activation contract on disk, and the failure modes the engine must produce.
 
 Three goals constrain everything below:
 
@@ -19,7 +19,7 @@ Three goals constrain everything below:
 
 ### 1. Stamp set on every run
 
-The single-row `simulation_run` manifest (ADR-002 §Ledger DDL) carries the following columns. The single-row `intent_manifest` carries the data-side subset so an intent rebuild can be confirmed against an existing run.
+The single-row `simulation_run` manifest ([ADR-002](ADR-002-storage-schema.md) §Ledger DDL) carries the following columns. The single-row `intent_manifest` carries the data-side subset so an intent rebuild can be confirmed against an existing run.
 
 | column | type | source | notes |
 | --- | --- | --- | --- |
@@ -29,7 +29,7 @@ The single-row `simulation_run` manifest (ADR-002 §Ledger DDL) carries the foll
 | `code_repo_path` | text | absolute path | informational |
 | `data_version` | text | `git -C $ANALYSIS_DATA_DIR rev-parse HEAD` | full 40-char SHA |
 | `data_dirty` | int 0/1 | `git -C $ANALYSIS_DATA_DIR status --porcelain` non-empty | scoped per §3 |
-| `scenario_tree_id` | text | git tree SHA over scenario folder + referenced shared paths | per ADR-002 §scenario_tree_id |
+| `scenario_tree_id` | text | git tree SHA over scenario folder + referenced shared paths | per [ADR-002](ADR-002-storage-schema.md) §scenario_tree_id |
 | `data_repo_path` | text | `$ANALYSIS_DATA_DIR` (resolved) | absolute |
 | `data_repo_name` | text | `$ANALYSIS_DATA_REPO_NAME` | display label |
 | `run_by` | text | `$ANALYSIS_USER` | validated; see §4 |
@@ -37,8 +37,8 @@ The single-row `simulation_run` manifest (ADR-002 §Ledger DDL) carries the foll
 | `python_version` | text | `sys.version` short form | e.g. `3.14.0` |
 | `started_at` | text | ISO-8601 UTC `Z` | run wall-clock start |
 | `finished_at` | text | ISO-8601 UTC `Z` | NULL until terminal status |
-| `status` | text | `running` / `succeeded` / `failed` / `halted` | terminal once non-`running`; matches ADR-002 enum |
-| `failure_reason` | text | NULL on success; structured message on halt/fail | per ADR-001 principle 7 |
+| `status` | text | `running` / `succeeded` / `failed` / `halted` | terminal once non-`running`; matches [ADR-002](ADR-002-storage-schema.md) enum |
+| `failure_reason` | text | NULL on success; structured message on halt/fail | per [ADR-001](ADR-001-overall-architecture.md) principle 7 |
 | `allow_dirty_data` | int 0/1 | 1 only if `--allow-dirty-data` was passed | dual record alongside `data_dirty` |
 | `allow_dirty_code` | int 0/1 | 1 if dirty code was present and accepted | dirty code is allowed by default; the column records "we knew" |
 | `scenario_name` | text | argv | redundant with intent snapshot but stable for filtering |
@@ -53,7 +53,7 @@ The single-row `simulation_run` manifest (ADR-002 §Ledger DDL) carries the foll
 
 **Data version.** Always the HEAD SHA of the data repo at `$ANALYSIS_DATA_DIR`. If the data dir is not a git repo at all (rare; only legitimate inside the prototype tree before it's been initialized), `data_version` is set to the literal string `"unversioned"` and the run is treated as dirty for gating purposes (§3).
 
-**Scenario tree id.** Per ADR-002, this is a content-addressed git tree SHA covering exactly the files the scenario load actually read: `scenarios/<name>/`, the folder of every scenario reached through `parent_scenario`, `persons.csv`, `aux/`, and `itemizations/`. Clean repo → use `git ls-tree HEAD -- <paths>` and `git mktree` to assemble the synthetic tree object. Dirty repo → use a sidecar index (`GIT_INDEX_FILE=<tmp> git add -- <paths>; git write-tree`) and optionally pin it under `refs/analysis-dirty/<tree-id>` so the object stays reachable through GC.
+**Scenario tree id.** Per [ADR-002](ADR-002-storage-schema.md), this is a content-addressed git tree SHA covering exactly the files the scenario load actually read: `scenarios/<name>/`, the folder of every scenario reached through `parent_scenario`, `persons.csv`, `aux/`, and `itemizations/`. Clean repo → use `git ls-tree HEAD -- <paths>` and `git mktree` to assemble the synthetic tree object. Dirty repo → use a sidecar index (`GIT_INDEX_FILE=<tmp> git add -- <paths>; git write-tree`) and optionally pin it under `refs/analysis-dirty/<tree-id>` so the object stays reachable through GC.
 
 This means: edit one comment in an unrelated CSV, `scenario_tree_id` doesn't change. Edit a referenced file, it does. The key tracks what the scenario actually depends on, not the whole repo's state.
 
@@ -66,7 +66,7 @@ The engine performs these checks in order, before any simulation work:
 3. **Data repo discovery.** Compute `data_version`, `data_dirty` scoped to the **scenario's input paths only** (the same path set used for `scenario_tree_id`). Changes elsewhere in the data repo are not considered for gating. A single `git status --porcelain -- <paths>` over the scoped set is the test.
 4. **Dirty-data gate.** If `data_dirty = 1` and `--allow-dirty-data` was **not** passed: exit with `DataDirtyRefused: <list of dirty paths>`. No partial run is created. Suggested remediation message: "commit/stash the changes, or re-run with `--allow-dirty-data` to record an unreproducible run."
 5. **Dirty-data accepted path.** If `data_dirty = 1` and `--allow-dirty-data` *was* passed: compute `scenario_tree_id` via the sidecar-index mechanism, set `allow_dirty_data = 1`, print stderr banner `WARNING: data dirty; run is not reproducible from <data_version> alone`. The run proceeds.
-6. **User validation.** `$ANALYSIS_USER` is checked against the `id` column of `$ANALYSIS_DATA_DIR/persons.csv`. Unknown → exit `UnknownUser: <name>`. Persons and operator identities live in the same file (see ADR-003 §4.1); a row's `role` column is informational in v1 and is not gated on. Example rows:
+6. **User validation.** `$ANALYSIS_USER` is checked against the `id` column of `$ANALYSIS_DATA_DIR/persons.csv`. Unknown → exit `UnknownUser: <name>`. Persons and operator identities live in the same file (see [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.1); a row's `role` column is informational in v1 and is not gated on. Example rows:
 
    ```csv
    id,display,birthdate,role,meta_json
@@ -129,10 +129,10 @@ This is the operational definition of "reproducible from stamps."
 
 `analysis sim check <scenario>` runs the lints listed across ADRs without simulating:
 
-- ADR-001 principle 7: every reachable account is in the account model; every scheduled `from_account`/`to_account` resolves to an account or a chain; every chain step and every `refill_chain`/`overflow_chain` resolves.
-- ADR-003 §1: every account's `(kind, subkind)` is in the locked vocabulary. Catch-all subkinds (`other_*`) emit a non-fatal warning.
-- ADR-003 §2: every `amount_rule_kind` is registered; every required JSON param is present and typed; default priorities not crossed without explicit override (warn).
-- ADR-003 §3: every `calendar_event.kind` is registered; every payload validates; rule-synthesizing events reference accounts that exist.
+- [ADR-001](ADR-001-overall-architecture.md) principle 7: every reachable account is in the account model; every scheduled `from_account`/`to_account` resolves to an account or a chain; every chain step and every `refill_chain`/`overflow_chain` resolves.
+- [ADR-003](ADR-003-registries-and-csv-schemas.md) §1: every account's `(kind, subkind)` is in the locked vocabulary. Catch-all subkinds (`other_*`) emit a non-fatal warning.
+- [ADR-003](ADR-003-registries-and-csv-schemas.md) §2: every `amount_rule_kind` is registered; every required JSON param is present and typed; default priorities not crossed without explicit override (warn).
+- [ADR-003](ADR-003-registries-and-csv-schemas.md) §3: every `calendar_event.kind` is registered; every payload validates; rule-synthesizing events reference accounts that exist.
 - ADR-004 §1: a `--check stamps` mode dry-runs the stamp computation and reports what `scenario_tree_id` would be, so authors can confirm scope before committing.
 
 Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only warnings.
@@ -143,33 +143,33 @@ Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only wa
 
 - Reports the diff in `(code_version, scenario_tree_id, data_repo_name)` at the top so the human knows which axis varies.
 - If `data_repo_name` differs, refuse with `CrossRepoCompare: <a> vs <b>` unless `--allow-cross-repo` is passed. Comparing a household run against a prototype run is almost always a mistake.
-- Otherwise, ATTACH both files (per ADR-002) and run a fixed set of comparison queries: net worth trajectory, terminal balances by account, terminal tax-bucket totals.
+- Otherwise, ATTACH both files (per [ADR-002](ADR-002-storage-schema.md)) and run a fixed set of comparison queries: net worth trajectory, terminal balances by account, terminal tax-bucket totals.
 
 ### 8. Stamp-induced filename collisions
 
-Run filenames embed `<timestamp>_<scenario>_<shortTreeId>` (ADR-002 §File layout). If two runs collide on filename (sub-second invocations against an identical scenario), append `_<n>` starting at 2. The `simulation_run` row is the source of truth; the filename is for human convenience.
+Run filenames embed `<timestamp>_<scenario>_<shortTreeId>` ([ADR-002](ADR-002-storage-schema.md) §File layout). If two runs collide on filename (sub-second invocations against an identical scenario), append `_<n>` starting at 2. The `simulation_run` row is the source of truth; the filename is for human convenience.
 
 ### 9. Migration / install behavior
 
 - First-time install: `analysis sim load <scenario>` builds the intent file. If `state/` doesn't exist, it's created. If the data repo has no `persons.csv`, the engine refuses with a one-line how-to.
-- Code upgrade with breaking schema change: the intent file is silently rebuilt (it's a cache; ADR-002 makes this explicit). Run files are read-mostly with lazy additive migration on open; an ADR-bump that introduces a non-additive change requires a new run-file major version, which `verify` and `compare` refuse to cross. This is captured in `intent_manifest.schema_version` and `simulation_run.schema_version` (additive columns to add when the first such migration is needed).
+- Code upgrade with breaking schema change: the intent file is silently rebuilt (it's a cache; [ADR-002](ADR-002-storage-schema.md) makes this explicit). Run files are read-mostly with lazy additive migration on open; an ADR-bump that introduces a non-additive change requires a new run-file major version, which `verify` and `compare` refuse to cross. This is captured in `intent_manifest.schema_version` and `simulation_run.schema_version` (additive columns to add when the first such migration is needed).
 
-## Amendments applied to ADR-002 alongside this ADR
+## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 
-These amendments to `simulation_run` (ADR-002 §Ledger DDL) accommodate the §1 stamp set; all rolled into ADR-002:
+These amendments to `simulation_run` ([ADR-002](ADR-002-storage-schema.md) §Ledger DDL) accommodate the §1 stamp set; all rolled into [ADR-002](ADR-002-storage-schema.md):
 
 1. Added `code_repo_path TEXT NOT NULL`.
 2. Added `python_version TEXT NOT NULL`.
 3. Added `allow_dirty_data INTEGER NOT NULL DEFAULT 0` and `allow_dirty_code INTEGER NOT NULL DEFAULT 0`.
 4. Added `run_args_json TEXT NOT NULL DEFAULT '{}'` and `engine_options_json TEXT NOT NULL DEFAULT '{}'`.
-5. Extended the `status` CHECK enum from `('running','succeeded','failed')` to `('running','succeeded','failed','halted')` to match ADR-001 principle 7 (halt-and-persist).
+5. Extended the `status` CHECK enum from `('running','succeeded','failed')` to `('running','succeeded','failed','halted')` to match [ADR-001](ADR-001-overall-architecture.md) principle 7 (halt-and-persist).
 
 ## Consequences
 
 ### Positive
 
 - **Self-describing run files.** A `.sqlite3` carries every fact needed to identify, replay, or refuse to replay itself. No external metadata store, no companion files.
-- **Cross-repo mixing is structurally impossible.** Data dir comes only from a sourced script; user is validated against the data repo's own user list; banners show which repo is active; `compare` refuses cross-repo without override. The pre-commit hook in the code repo (ADR-001) closes the last gap.
+- **Cross-repo mixing is structurally impossible.** Data dir comes only from a sourced script; user is validated against the data repo's own user list; banners show which repo is active; `compare` refuses cross-repo without override. The pre-commit hook in the code repo ([ADR-001](ADR-001-overall-architecture.md)) closes the last gap.
 - **Dirty state is visible, not silent.** Banners on every run with dirty state; stamps record the override; `compare`/`verify` know about it. Authoring stays fluid, but unreproducible runs can't pose as reproducible ones.
 - **`scenario_tree_id` is scoped.** Changes elsewhere in the data repo don't invalidate unrelated scenarios. This matters in a multi-scenario household where one scenario is under active edit while another should remain reproducible.
 

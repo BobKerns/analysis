@@ -2,8 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09-23
-- **Supersedes:** the reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` (ADR-002 §Reserved schema); the "account-level running cost basis" limitation noted in ADR-003 §Later amendments #8.
-- **Related:** ADR-001 (domain objects, `AccountState`), ADR-002 (storage schema), ADR-003 (registries, CSV layouts, chains §4.7, `rmd` §2.3, `sell_asset` §3.7).
+- **Supersedes:** the reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` ([ADR-002](ADR-002-storage-schema.md) §Reserved schema); the "account-level running cost basis" limitation noted in [ADR-003](ADR-003-registries-and-csv-schemas.md) §Later amendments #8.
+- **Related:** [ADR-001](ADR-001-overall-architecture.md) (domain objects, `AccountState`), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries, CSV layouts, chains §4.7, `rmd` §2.3, `sell_asset` §3.7).
 
 ## Context
 
@@ -14,7 +14,7 @@ Every account is one balance with one running cost basis. A brokerage or IRA tha
 3. Derive opening balances from quantities and prices when we have them.
 4. Change as little of the engine, reporting, and notebook code as possible.
 
-ADR-002 reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` for this, but nothing reads or writes them. They are replaced here, because a separate holding table adds a second file to author and a second identity to keep in step, for no information a `GROUP BY account, symbol` over lots doesn't give.
+[ADR-002](ADR-002-storage-schema.md) reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` for this, but nothing reads or writes them. They are replaced here, because a separate holding table adds a second file to author and a second identity to keep in step, for no information a `GROUP BY account, symbol` over lots doesn't give.
 
 ## Decision
 
@@ -62,7 +62,7 @@ Quantity cannot be derived from balance once growth has occurred, so `lot_state`
 
 ### 3. References: a `lot` column beside every account column
 
-Leaf chains are per lot (ADR-003 §4.7 already gives every account a leaf chain in the one chain namespace), and `chain` gains `lot_id` (its `account_id` stays, derived). `ChainGraph.leaf_account` becomes `leaf_lot`. The leaf chain's name is internal: the bare account name for the default lot of a non-investment account, `account:lot` otherwise. **No CSV ever spells a lot that way.** Every place a CSV names an account has a `lot` column next to it:
+Leaf chains are per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7 already gives every account a leaf chain in the one chain namespace), and `chain` gains `lot_id` (its `account_id` stays, derived). `ChainGraph.leaf_account` becomes `leaf_lot`. The leaf chain's name is internal: the bare account name for the default lot of a non-investment account, `account:lot` otherwise. **No CSV ever spells a lot that way.** Every place a CSV names an account has a `lot` column next to it:
 
 | file | account column | lot column |
 | --- | --- | --- |
@@ -84,7 +84,7 @@ The rule depends only on subkind, never on the current lot count, so adding a lo
 
 ### 4. CSV layout
 
-`account_values.csv` (ADR-003 §4.3) gains optional columns `lot`, `symbol`, `acquired`, `quantity`, `series`, with several rows per account allowed. In a derived scenario, rows overlay the parent's by **(`account_name`, `lot`)**.
+`account_values.csv` ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3) gains optional columns `lot`, `symbol`, `acquired`, `quantity`, `series`, with several rows per account allowed. In a derived scenario, rows overlay the parent's by **(`account_name`, `lot`)**.
 
 - `opening_balance` may be blank if `quantity`, `symbol`, and a price (§6) are all present; it is then `quantity × price` at `scenario.start`, rounded to cents. If both balance and quantity are given, the balance is authoritative and no price is consulted.
 - `prior_year_end_balance` is summed across an account's lots for RMD. Either every lot of an account has it or none does.
@@ -103,7 +103,7 @@ Symbols get names from `securities.csv` (`symbol,name`), at the top of the data 
 
 ### 7. Sales and withdrawals
 
-A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, ADR-003 #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. `sell_asset` on an investment account names a lot and liquidates that lot. Liquidating an account is one `sell_asset` per lot.
+A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, [ADR-003](ADR-003-registries-and-csv-schemas.md) #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. `sell_asset` on an investment account names a lot and liquidates that lot. Liquidating an account is one `sell_asset` per lot.
 
 Money moved *into* a lot that tracks cost basis is a purchase: its basis rises by the amount and, if shares are tracked, they rise at the lot's implied price (balance ÷ quantity). This covers purchases from cash, inheritances, and proceeds moved from another taxable lot. Growth generated from `accounts.csv` series (from the built-in counterparty accounts) is appreciation and changes neither. A taxable asset lot with a zero opening balance and no stated basis starts at basis 0, so a lot can be declared up front for a purchase the scenario makes later (with its `acquired` date), and taxable growth is total return: reinvested dividends are not split out, so tax on distributions is deferred to the sale.
 
@@ -120,12 +120,12 @@ On an account with several lots a single-lot source is a load error, as is a cha
 
 ### Amendments applied on acceptance
 
-Applied to ADR-001, ADR-002 and ADR-003 (Phase 6).
+Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage-schema.md) and [ADR-003](ADR-003-registries-and-csv-schemas.md) (Phase 6).
 
-- ADR-002: replace the `holding`/`lot` reserved schema and `schema_overview` rows with the §1–§2 DDL; `account_model_member` and `transfer_event` changes; `account_state` view; `SCHEMA_VERSION` 17 → 18.
-- ADR-003: §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §Later amendments #8 revised.
-- ADR-001: `AccountState` row in the domain-object table becomes a view over per-lot state.
-- ADR-003: the `tax_character` registry gains `stcg`; §4.4 gains the `ltcg_brackets` aux kind; the `tax_accumulator` rule (§2.6) taxes long-term gains at those rates when present.
+- [ADR-002](ADR-002-storage-schema.md): replace the `holding`/`lot` reserved schema and `schema_overview` rows with the §1–§2 DDL; `account_model_member` and `transfer_event` changes; `account_state` view; `SCHEMA_VERSION` 17 → 18.
+- [ADR-003](ADR-003-registries-and-csv-schemas.md): §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §Later amendments #8 revised.
+- [ADR-001](ADR-001-overall-architecture.md): `AccountState` row in the domain-object table becomes a view over per-lot state.
+- [ADR-003](ADR-003-registries-and-csv-schemas.md): the `tax_character` registry gains `stcg`; §4.4 gains the `ltcg_brackets` aux kind; the `tax_accumulator` rule (§2.6) taxes long-term gains at those rates when present.
 
 ## Consequences
 
