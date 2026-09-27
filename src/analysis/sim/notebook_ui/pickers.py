@@ -21,13 +21,14 @@ from typing import Collection, Mapping
 import ipywidgets as widgets
 import traitlets
 from IPython.display import Markdown, clear_output, display
-import pandas as pd
 
 from analysis.sim.accounts import KIND_LABELS
+from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.accounts import plottable_accounts
+from analysis.sim.registries import AssetClass
 from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
 
 from analysis.sim.types import AccountKind, AccountName, ScenarioName
@@ -568,3 +569,34 @@ class AccountPicker(widgets.HBox):
     def _on_accounts_change(self, change):
         if self._max_accounts is not None and len(change["new"]) > self._max_accounts:
             self.account_picker.value = tuple(change["new"][:self._max_accounts])
+
+
+class AssetClassPicker(widgets.HBox):
+    """Widget to pick asset classes, with checkboxes for each class."""
+    value: dict[AssetClass, bool] = traitlets.Dict()
+    def __init__(self, asset_classes: list[AssetClass], exclude: tuple[AssetClass, ...] = ()):
+        include = {
+            name: widgets.Checkbox(value=name not in exclude, description=name, indent=False,
+                                   layout=widgets.Layout(width="max-content"))
+            for name in asset_classes
+        }
+        super().__init__([widgets.Label("Include:"), *include.values()],
+                         layout=widgets.Layout(flex_flow="row wrap"))
+
+        def _update_values(*_):
+            self.value = {name: box.value for name, box in include.items()}
+        for box in include.values():
+            box.observe(_update_values, names="value")
+        _update_values()
+
+
+class GroupingPicker(widgets.Dropdown):
+    """Dropdown to pick a grouping for portfolio allocation."""
+    value: Grouping | None = traitlets.Enum(values=GROUPINGS + (_NO_SPLIT,))
+
+    def __init__(self, value: Grouping | None = None):
+        super().__init__(
+            options=[_NO_SPLIT, *GROUPINGS],
+            value=value or _NO_SPLIT,
+            description="Split by:",
+        )

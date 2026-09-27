@@ -116,9 +116,8 @@ def account_holdings_widget(
     def _redraw(*_):
         month = month_picker.value if month_picker is not None else None
         heading, shown = account_holdings_view(source, account_picker.value, month)
-        out.clear_output(wait=True)
         with out:
-            display(Markdown(heading))
+            display(Markdown(heading), clear=True)
             display(_styled(shown))
 
     for picker in (account_picker, month_picker):
@@ -152,9 +151,8 @@ def symbol_holders_widget(
     def _redraw(*_):
         month = month_picker.value if month_picker is not None else None
         heading, shown = symbol_holders_view(source, symbol_picker.value, month)
-        out.clear_output(wait=True)
         with out:
-            display(Markdown(heading))
+            display(Markdown(heading), clear=True)
             display(_styled(shown))
 
     for picker in (symbol_picker, month_picker):

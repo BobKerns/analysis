@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
@@ -98,23 +98,36 @@ TAX_CHARACTERS: set[str] = {
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 
-# Asset classes of allocations.csv (ADR-003 §4.1b), in display order. Closed like the
-# other registries; a new class is a one-line addition. `stock` is stock whose split
-# between US and international is not known (a placeholder to refine, distinct from bonds).
-ASSET_CLASSES: tuple[str, ...] = (
-    "stock_us", "stock_intl", "stock", "bond", "cd", "cash", "real_estate", "other",
-)
+type AssetClass = Literal[
+    "stock_us",
+    "stock_intl",
+    "stock",
+    "bond",
+    "cd",
+    "cash",
+    "real_estate",
+    "other",
+]
+"""Asset classes of allocations.csv (ADR-003 §4.1b), in display order."""
+
+ASSET_CLASSES: tuple[AssetClass, ...] = AssetClass.__value__.__args__
+"""Asset classes of allocations.csv (ADR-003 §4.1b), in display order. Closed like the
+other registries; a new class is a one-line addition. `stock` is stock whose split``
+between US and international is not known (a placeholder to refine, but still distinct
+from bonds).
+"""
+
 ALLOCATIONS_CSV_HEADER: tuple[str, ...] = ("symbol", "as_of", "asset_class", "weight")
 CASH_SYMBOL = "CASH"
 # Symbols that mean an asset class without any allocations.csv row: `CASH` on cash lots,
 # `CD` on certificates of deposit (no ticker; a CD is reinvested at maturity, so it
 # stays in its lot and is only a classification here).
-SYMBOL_ASSET_CLASS: dict[str, str] = {"CASH": "cash", "CD": "cd"}
+SYMBOL_ASSET_CLASS: dict[str, AssetClass] = {"CASH": "cash", "CD": "cd"}
 
 # The class of a lot that no allocations.csv row describes, by account subkind
 # (a `CASH` or `CD` symbol is that class whatever the account). Investment subkinds are absent:
 # what they hold has to be said, and an unclassified lot shows up as such.
-SUBKIND_ASSET_CLASS: dict[str, str] = {
+SUBKIND_ASSET_CLASS: dict[str, AssetClass] = {
     "cash": "cash", "real_estate": "real_estate", "vehicle": "other", "other_asset": "other",
 }
 

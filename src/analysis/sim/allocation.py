@@ -11,6 +11,7 @@ allocation is classed by its account subkind (cash, real estate, ...) or shown a
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Literal
 
 import pandas as pd
 
@@ -24,9 +25,13 @@ __all__ = [
 ]
 
 UNCLASSIFIED = "unclassified"
-GROUPINGS = ("account", "owner", "subkind", "tax_treatment", "security")
+type Grouping = Literal["account", "owner", "subkind", "tax_treatment", "security"]
+GROUPINGS: tuple[Grouping, ...] = Grouping.__value__.__args__
 _NO_SYMBOL = "(no symbol)"
 _JOINT = "joint"
+
+_NO_SPLIT = "(none)"
+GroupingOrNone = Literal["account", "owner", "subkind", "tax_treatment", "security", "(none)"]
 
 
 def _weight_sets(source: RunConnection | ScenarioConnection) -> dict[str, list[tuple[str, dict[str, float]]]]:
@@ -89,15 +94,17 @@ def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = 
     return pd.DataFrame(rows, columns=columns)
 
 
-def asset_classes_present(source: RunConnection | ScenarioConnection, month: str | None = None) -> list[str]:
+def asset_classes_present(source: RunConnection | ScenarioConnection, month: str | None = None) -> list[registries.AssetClass]:
     """The asset classes some lot has a balance in, in display order (``unclassified`` last)."""
     present = set(lot_classes(source, month)["asset_class"])
     return [c for c in [*registries.ASSET_CLASSES, UNCLASSIFIED] if c in present]
 
 
 def portfolio_allocation(
-    source: RunConnection | ScenarioConnection, month: str | None = None, by: str | None = None,
-    exclude: Iterable[str] = (),
+    source: RunConnection | ScenarioConnection,
+    month: str | None = None,
+    by: str | None = None,
+    exclude: Iterable[registries.AssetClass] = (),
 ) -> pd.DataFrame:
     """Balance per asset class (rows, in registry order, ``unclassified`` last, then a
     ``Total`` row). Without ``by`` the columns are ``balance`` and ``percent``; with it
