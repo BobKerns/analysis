@@ -31,6 +31,8 @@ Three CLI entry points are installed:
 | `amazon` | `analysis amazon` | Amazon expense categoriser |
 | `sim` | `analysis sim` | Scenario simulator |
 
+Editing a scenario? See [docs/user-guide.md](./docs/user-guide.md) for a task-based walkthrough (adding accounts and lots, changing expenses, modeling a sale, chains, lifespans, calendar events).
+
 All examples below use the short scripts (`amazon ...`, `sim ...`). You can also use `analysis amazon ...` / `analysis sim ...`, or `uv run amazon ...` if the venv is not on your `PATH`.
 
 Notebook helper API (same logic as CLI):

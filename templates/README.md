@@ -1,5 +1,7 @@
 # Data repo templates
 
+See [docs/user-guide.md](../docs/user-guide.md) for a task-based walkthrough (adding accounts and lots, changing expenses, modeling a sale, chains, lifespans, calendar events). This file is the CSV column reference and conventions cheat sheet.
+
 Skeletons for every CSV the simulator's loader expects (per ADR-002 + ADR-003).
 Copy this folder to a new data repo and edit. **Every header row matches the
 corresponding DDL column name exactly** to minimize confusion when reading the

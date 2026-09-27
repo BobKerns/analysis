@@ -300,6 +300,9 @@ Author-named bundle of changes that represent a real-world transition. The `kind
 
 ### 4. CSV file layouts
 
+See `docs/user-guide.md` for a task-based walkthrough of common edits; this section is the exact column-by-column reference.
+
+
 All files: UTF-8, comma-delimited, one header row. Empty string means NULL. Boolean columns use `0`/`1`. Date columns use `YYYY-MM` (month-grain, pinned to month-end at load) or `YYYY-MM-DD` where specified. Money columns are decimal dollars (e.g. `1234.56`); the loader converts them to integer cents.
 
 JSON-typed columns hold a single JSON value as a string; the loader parses and revalidates against the rule/event kind. Multi-line JSON in CSV is supported via standard CSV quoting.
