@@ -46,7 +46,8 @@ def _pie(table: pd.DataFrame) -> None:
     fig, ax = plt.subplots(figsize=(4.5, 4.5))
     ax.pie(body["percent"], labels=body.index, autopct="%1.0f%%", startangle=90, counterclock=False)
     ax.axis("equal")
-    plt.show()  # display(fig) did not draw on the first pass under Jupyter; plt.show() does
+    plt.show()
+    display(fig, clear=True)
     plt.close(fig)
 
 
@@ -67,6 +68,7 @@ def portfolio_allocation_widget(
         for name in asset_classes_present(source)
     }
     out = widgets.Output()
+    pie = widgets.Output()
 
     def _redraw(*_):
         split = None if split_picker.value == _NO_SPLIT else split_picker.value
@@ -77,6 +79,7 @@ def portfolio_allocation_widget(
         with out:
             display(Markdown(heading))
             display(_styled(table))
+        with pie:
             _pie(table)
 
     for control in (split_picker, month_picker, *include.values()):
@@ -88,5 +91,6 @@ def portfolio_allocation_widget(
         widgets.HBox([widgets.Label("Include:"), *include.values()],
                      layout=widgets.Layout(flex_flow="row wrap")),
         out,
+        pie,
     ])
     return box
