@@ -1,0 +1,43 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Jupyter",
+            "type": "shell",
+            "command": "source data/shared/sim/activate-analysis &&./.venv/bin/python -m analysis jupyter",
+            "options": {
+                "cwd": "${workspaceFolder:analysis}",
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Fetch Prices",
+            "type": "shell",
+            "command": "source data/shared/sim/activate-analysis && ./.venv/bin/python -m analysis sim prices fetch || exit 0",
+            "options": {
+                "cwd": "${workspaceFolder:analysis}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run  All Scenarios",
+            "type": "shell",
+            "command": "source data/shared/sim/activate-analysis && ./.venv/bin/python -m analysis sim all --allow-dirty-data || exit 0",
+            "options": {
+                "cwd": "${workspaceFolder:analysis}"
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true,
+                "close": true
+            },
+            "problemMatcher": []
+        }
+    ],
+}
