@@ -6,7 +6,6 @@ instead of pre-built pandas structures.
 
 from __future__ import annotations
 
-import io
 from collections.abc import Callable
 
 from IPython.display import Markdown, clear_output, display
@@ -29,15 +28,6 @@ from analysis.sim.notebook_ui.pickers import (
 # point-in-time balances -- worth a standing note whenever one is selected.
 _CUMULATIVE_KINDS = CASHFLOW_KINDS
 _CUMULATIVE_CAVEAT = "_Note that expense and income flows are cumulative totals._  \n"
-
-
-def _figure_image(fig: plt.Figure) -> widgets.Image:
-    """The figure as a PNG in an Image widget; the figure is closed."""
-    buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", bbox_inches="tight")
-    plt.close(fig)
-    return widgets.Image(value=buffer.getvalue(), format="png",
-                         layout=widgets.Layout(max_width="100%", height="auto"))
 
 
 def account_balance_history_widget(
@@ -71,11 +61,7 @@ def account_balance_history_widget(
     dollar_mode = dollar_mode or DollarModePicker()
     y_axis_mode = y_axis_mode or YAxisPlotModePicker()
     caveat_out = widgets.Output()
-    # The plot is a picture in an Image widget, not pyplot output captured by an Output
-    # widget: setting `children` is plain widget state, so it draws on the first pass
-    # (which runs while the cell executes, inside Connections.show's own Output)
-    # as reliably as on a redraw, in Jupyter and VS Code alike.
-    out = widgets.VBox()
+    out = widgets.Output()
 
     def _sync_accounts_options(*_):
         plottable = plottable_accounts(
@@ -101,17 +87,22 @@ def account_balance_history_widget(
             if mode == DollarMode.CPI_CONSTANT and cpi_balance_pivot_by_kind is not None
             else balance_pivot_by_kind(kind_picker.value)
         )
-        mode_title = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-        values_title = "monthly change" if values == ValuePlotMode.MONTHLY else "total"
-        kind_title = KIND_LABELS[kind_picker.value]
-        fig = render_balance_history_figure(
-            pivot, selected, f"{title} ({kind_title}) [{mode_title}, {values_title}]",
-            zero_anchor=zero_anchor, value_mode=values,
-        )
-        if fig is None:
-            out.children = [widgets.Label("(pick one or more accounts)")]
-            return
-        out.children = [_figure_image(fig)]
+        with out:
+            clear_output(wait=True)
+            mode_title = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+            values_title = "monthly change" if values == ValuePlotMode.MONTHLY else "total"
+            kind_title = KIND_LABELS[kind_picker.value]
+            fig = render_balance_history_figure(
+                pivot, selected, f"{title} ({kind_title}) [{mode_title}, {values_title}]",
+                zero_anchor=zero_anchor, value_mode=values,
+            )
+            if fig is None:
+                print("(pick one or more accounts)")
+                return
+            # Show the figure itself: plt.show() did not draw it on the first pass
+            # under Jupyter. Closing it keeps the inline backend from showing it again.
+            display(fig)
+            plt.close(fig)
 
     def _on_kind_change(*_):
         _redraw_caveat()
