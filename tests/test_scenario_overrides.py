@@ -1,6 +1,7 @@
-"""Per-scenario overrides for aux/, series/ and itemizations/ (ADR-003 §4.1c):
-a scenario's own folder wins over its ancestors', which win over the shared
-data repo default, resolved whole-file and via parent_scenario lineage."""
+"""Per-scenario overrides for aux/, series/, prices/ and itemizations/
+(ADR-003 §4.1d): a scenario's own folder wins over its ancestors', resolved
+whole-file and via parent_scenario lineage. aux/, prices/ and itemizations/
+also have a shared data repo root default; series/ does not."""
 
 from __future__ import annotations
 
@@ -75,7 +76,7 @@ def test_a_scenario_can_add_a_series_file_the_shared_dir_does_not_have(
     repo: Path, tmp_path: Path,
 ) -> None:
     series_dir = repo / "scenarios" / "retire_alice" / "series"
-    series_dir.mkdir()
+    series_dir.mkdir(exist_ok=True)
     (series_dir / "rate__NEWFUND.csv").write_text(
         "effective_date,annual_rate_micros\n2026-01-31,50000\n", encoding="utf-8",
     )
@@ -89,6 +90,49 @@ def test_a_scenario_can_add_a_series_file_the_shared_dir_does_not_have(
     finally:
         con.close()
     assert rows == [("NEWFUND",)]
+
+
+def test_a_shared_series_dir_at_the_data_repo_root_is_not_read(
+    repo: Path, tmp_path: Path,
+) -> None:
+    """series/ has no shared root tier: growth-rate and inflation series are
+    per-scenario projections, not tax-law facts (unlike aux/), so a stray
+    top-level series/ file is simply never looked at."""
+    series_dir = repo / "series"
+    series_dir.mkdir(exist_ok=True)
+    (series_dir / "rate__STRAY.csv").write_text(
+        "effective_date,annual_rate_micros\n2026-01-31,50000\n", encoding="utf-8",
+    )
+    result = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "out",
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    try:
+        rows = con.execute(
+            "SELECT series FROM aux_table WHERE kind = 'rate' AND series = 'STRAY'"
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == []
+
+
+def test_prices_are_shared_at_the_data_repo_root(repo: Path, tmp_path: Path) -> None:
+    """Unlike series/, prices/ is a shared root tier: security prices are
+    global facts, not per-scenario projections."""
+    prices_dir = repo / "prices"
+    prices_dir.mkdir(exist_ok=True)
+    (prices_dir / "security_price__ZZZ.csv").write_text(
+        "effective_date,price\n2026-01-31,10.00\n", encoding="utf-8",
+    )
+    result = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "out",
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    try:
+        rows = con.execute(
+            "SELECT series FROM aux_table WHERE kind = 'security_price' AND series = 'ZZZ'"
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("ZZZ",)]
 
 
 def test_a_child_inherits_its_parents_aux_override_and_can_override_it_again(

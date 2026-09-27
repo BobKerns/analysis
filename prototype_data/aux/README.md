@@ -7,7 +7,10 @@ live outside any one scenario so multiple scenarios share the same tax law by
 default (a scenario testing a different assumption can override one file — see
 "Per-scenario overrides" below).
 
-Growth-rate series live in `series/` next door instead; see `series/README.md`.
+Security prices live in `prices/` next door instead (shared, like this folder);
+see `prices/README.md`. Growth-rate and inflation series are different: they are
+per-scenario projections, so each scenario has its own `series/` folder (no
+shared default here) — see "Per-scenario overrides" below.
 
 ## How a row is used
 
@@ -33,9 +36,10 @@ The column-name suffix (`_micros`) marks rate/factor columns; money columns are 
 
 - `aux/<kind>.csv` — a kind that has exactly one table
   (`federal_brackets`, `standard_deduction`, `rmd_factors`, …).
-- `aux/<kind>__<series>.csv` — a kind with several named tables. In this folder
-  that's only `inflation__cpi.csv`; every other series-keyed kind (`rate__*`,
-  `state_brackets__*`) lives in `series/` instead.
+- `aux/<kind>__<series>.csv` — a kind with several named tables. In this
+  folder: `inflation__cpi.csv` and `state_brackets__<state>.csv` (state tax
+  law is a shared fact, like the federal brackets beside it). `rate__*` is
+  per-scenario, under `series/`.
 
 The loader (`src/analysis/sim/loader.py`) parses the filename to figure out the
 kind and series; the required columns per kind are listed in
@@ -47,13 +51,14 @@ A scenario can replace one of these files for itself (and its descendants) by
 adding `scenarios/<name>/aux/<same filename>.csv` — the loader uses that file
 in place of this shared one, whole file, not merged row by row. A derived
 scenario without its own override inherits its parent's, all the way up to this
-shared default ([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1c).
+shared default ([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1d).
 
 ## The files in this folder
 
 | File | What it is |
 | --- | --- |
 | `federal_brackets.csv` | US federal ordinary-income tax brackets. One row per (effective_date, filing_status, bracket_index). |
+| `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
 | `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, the `tax_accumulator` rule uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
 | `filing_status.csv` | The set of filing-status codes valid on each effective date (acts as an enum table). |
@@ -136,7 +141,7 @@ Worked example, very rough, using the 2026-effective figures in
   `$96,950 + $31,500 - $20,000 = $108,450` from Traditional IRA to Roth fills
   the 10% and 12% brackets exactly, with federal tax of about $11,000 on the
   conversion. (California taxes the same dollars at its own rates; see
-  `series/state_brackets__CA.csv`.)
+  `state_brackets__CA.csv`, right here in `aux/`.)
 - Once Social Security starts and RMDs begin at age 73, the same dollars
   withdrawn from the Traditional IRA would land in the 22% bracket or higher
   *and* would push more Social Security into the 85%-taxable tier
@@ -166,14 +171,13 @@ The cleanest way is to ask the AI assistant. A prompt that works:
 
 > Update `prototype_data/aux/federal_brackets.csv`,
 > `prototype_data/aux/standard_deduction.csv`,
-> `prototype_data/series/state_brackets__CA.csv`, and
+> `prototype_data/aux/state_brackets__CA.csv`, and
 > `prototype_data/aux/filing_status.csv` with the latest IRS and CA FTB
 > figures. Use the most recent IRS Revenue Procedure for federal and FTB's
 > annual indexing announcement (in "Tax News") for California. Filing statuses:
 > MFJ, Single, MFS. Exclude CA's Mental Health / Behavioral Health Services Tax
-> (the extra 1% over $1M). Then mirror the four files into `templates/`
-> (`templates/aux/` for the first three, `templates/series/` for the state
-> brackets) and run `uv run pytest`.
+> (the extra 1% over $1M). Then mirror the four files into `templates/aux/`
+> and run `uv run pytest`.
 
 Authoritative sources the AI should pull from:
 
@@ -203,10 +207,10 @@ Authoritative sources the AI should pull from:
 
 - [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) — authoritative
   column lists and the kind/series naming rules, including the per-scenario
-  override mechanism (§4.1c).
+  override mechanism (§4.1d).
 - [`docs/architecture/ADR-002-storage-schema.md`](../../docs/architecture/ADR-002-storage-schema.md) — how aux rows land in SQLite.
 - `templates/README.md` — the data repo as a whole.
-- `series/README.md` — growth rates and security prices.
+- `prices/README.md` — security prices.
 
 ## Long-term capital gain rates
 

@@ -2424,7 +2424,7 @@ def prices_fetch_command(
         raise click.ClickException(f"--since {since_text!r} is not a YYYY-MM-DD date") from None
     provider = prices.PRICE_PROVIDERS[provider_name]()
     results = prices.fetch_prices(
-        data / "series", chosen, provider, since=since, today=today, refresh=refresh, dry_run=dry_run,
+        data / "prices", chosen, provider, since=since, today=today, refresh=refresh, dry_run=dry_run,
     )
     failed = 0
     for r in results:

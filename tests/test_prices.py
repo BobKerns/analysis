@@ -134,7 +134,7 @@ def test_fetch_command_writes_the_aux_files_for_the_symbols_in_use(
     result = runner.invoke(main, ["sim", "prices", "fetch", "--data-dir", str(test_data_dir)])
     assert result.exit_code == 0, result.output
     assert "AAA: 3 added (latest 12.50 on 2026-06-02)" in result.output
-    assert (test_data_dir / "series" / "security_price__AAA.csv").exists()
+    assert (test_data_dir / "prices" / "security_price__AAA.csv").exists()
     assert provider.asked[0][1] == date(2025, 12, 1)  # the December before the 2026 start
     missing = runner.invoke(main, ["sim", "prices", "fetch", "ZZZ", "--data-dir", str(test_data_dir)])
     assert missing.exit_code != 0 and "ZZZ: not found" in missing.output

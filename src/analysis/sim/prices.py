@@ -1,4 +1,4 @@
-"""Fetching security prices into ``series/security_price__<SYMBOL>.csv`` (ADR-005 §6).
+"""Fetching security prices into ``prices/security_price__<SYMBOL>.csv`` (ADR-005 §6).
 
 Prices are only used to derive a lot's opening balance (``quantity`` x the latest
 price on or before the scenario start), so what is stored is a sparse history:
@@ -194,7 +194,7 @@ def fetch_prices(
     aux_dir: Path, symbols: Iterable[str], provider: PriceProvider, *,
     since: date, today: date | None = None, refresh: bool = False, dry_run: bool = False,
 ) -> list[FetchResult]:
-    """Fetch month-end (and latest) closes for each symbol into its series file."""
+    """Fetch month-end (and latest) closes for each symbol into its prices file."""
     today = today or datetime.now(UTC).date()
     results = []
     for symbol in symbols:

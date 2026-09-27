@@ -17,7 +17,7 @@ SQL schema alongside the source CSV.
     account_models/<name>.csv     # opening balances per model
     itemizations/<name>.csv       # optional money rollups referenced as @<name>
     aux/<kind>[__<series>].csv    # tax-law aux tables; one per kind ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4)
-    series/<kind>__<series>.csv   # growth rates, security prices; one per kind/series ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4)
+    prices/security_price__<SYMBOL>.csv  # security price histories, shared ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4)
     scenarios/<name>/
         scenario.csv              # one-row scenario header
         accounts.csv              # chart of accounts for this scenario
@@ -27,7 +27,8 @@ SQL schema alongside the source CSV.
         lifespan.csv              # optional per-person final_month override ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.9)
         year_to_date.csv          # optional partial-first-year catch-up facts ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.10)
         chains/<kind>__<name>.csv # optional named liquidity chains ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.7)
-        aux/, series/, itemizations/  # optional per-scenario overrides ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1c)
+        series/<kind>__<series>.csv  # this scenario's growth-rate/inflation series (no shared default; §4.4)
+        aux/, prices/, itemizations/  # optional per-scenario overrides ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1d)
 ```
 
 ## Conventions
@@ -43,18 +44,27 @@ SQL schema alongside the source CSV.
     The loader reads `itemizations/name.csv`, sums the `Value` column, and uses that total, searching
     a scenario's own `itemizations/` folder before the shared one at the data repo root (see below).
 
-## Per-scenario overrides for aux/, series/ and itemizations/
+## Per-scenario overrides for aux/, prices/, series/ and itemizations/
 
-`aux/`, `series/` and `itemizations/` at the data repo root are the shared defaults every
-scenario uses unless it says otherwise. A scenario can replace one file for itself (and
-anything derived from it) by adding a same-named file under its own folder:
-`scenarios/<name>/aux/<file>.csv`, `scenarios/<name>/series/<file>.csv`, or
+`aux/`, `prices/` and `itemizations/` at the data repo root are the shared defaults every
+scenario uses unless it says otherwise: tax law, security prices, and cost-basis itemizations
+are the same regardless of which what-if you're running. `series/` is different: growth-rate
+and inflation assumptions are properly per-scenario projections, so `series/` has **no**
+shared root default — it only exists under `scenarios/<name>/series/`, and what's "shared" is
+just the ordinary inheritance from a scenario's ancestors (its parent's `series/`, its
+parent's parent's, ...).
+
+A scenario can replace one `aux/`/`prices/`/`itemizations/` file for itself (and anything
+derived from it) by adding a same-named file under its own folder:
+`scenarios/<name>/aux/<file>.csv`, `scenarios/<name>/prices/<file>.csv`, or
 `scenarios/<name>/itemizations/<file>.csv`. The loader resolves each filename independently,
 most specific first — the scenario's own file, else its parent's (following `parent_scenario`
 all the way up), else the shared default — and a match replaces the whole file, not a
-row-by-row merge. This is how you model a different future tax policy, a different rate or
-security-price assumption, or a different cost-basis itemization on one scenario without
-touching any other. See [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1c, `aux/README.md` and `series/README.md`.
+row-by-row merge. `series/<file>.csv` resolves the same way, just without that last, shared-root
+step. This is how you model a different future tax policy or cost-basis itemization on one
+scenario without touching any other, and how every scenario gets its own rate/inflation
+assumptions by default (inherited from its parent) while still being able to override them.
+See [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1d, `aux/README.md` and `prices/README.md`.
 
 ## Budget planning
 
@@ -62,9 +72,9 @@ touching any other. See [ADR-003](../docs/architecture/ADR-003-registries-and-cs
 
 For annual items, set `month_of_year` (`1`-`12`) so payments land in the intended month. If you have two annual payments (for example, property tax in April and December), use two rows with the same category and different `month_of_year` values.
 
-## Aux/series table filename pattern
+## Aux/series/prices table filename pattern
 
-`<kind>__<series>.csv` for kinds that have multiple named series (`rate__Asset_Checking`, `state_brackets__CA`); `<kind>.csv` for kinds that have only one (`federal_brackets`, `standard_deduction`, `rmd_factors`). The filename is parsed by the loader the same way in `aux/` and `series/`; see [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4 for the column schema of each kind, and "Per-scenario overrides" above for how `aux/`/`series` split and how a scenario can replace one file.
+`<kind>__<series>.csv` for kinds that have multiple named series (`rate__Asset_Checking`, `security_price__VTI`); `<kind>.csv` for kinds that have only one (`federal_brackets`, `standard_deduction`, `rmd_factors`). The filename is parsed by the loader the same way in `aux/`, `series/` and `prices/`; see [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4 for the column schema of each kind, and "Per-scenario overrides" above for how the three folders differ and how a scenario can replace one file.
 
 ## After editing
 
@@ -118,7 +128,7 @@ Each `account_values.csv` row is one **lot**: a position inside one account. An 
 
 To split an account, give it several rows with different `lot` values, each with its own `opening_balance` and `opening_cost_basis`. The columns are `account_name, lot, symbol, acquired, quantity, series, opening_balance, opening_cost_basis, prior_year_end_balance`, then the balance-management columns described below. `symbol`, `acquired` (ISO date), `quantity` (shares) and `series` (the lot's growth-rate series) are optional and may stay blank; they are in the file so you can see where that information goes. A lot grows at its `series`, else at a rate series named for its `symbol`, else at the account's `series`. A withdrawal drawn from one lot (through a chain that lists it) splits that lot's basis pro-rata and leaves the other lots alone.
 
-**Prices and derived balances.** Leave a lot's `opening_balance` blank and give its `symbol` and `quantity`, and the loader fills it in as `quantity × price`, using the latest price on or before the scenario start from `aux/security_price__<SYMBOL>.csv` (columns `effective_date,price`; price is decimal dollars, up to 6 places). If you fill in `opening_balance` yourself it is used as given and no price is needed. A symbol may not be the same as an account name. A lot's blank `prior_year_end_balance` is derived the same way, as its `quantity` times the price on or before the prior Dec 31, when another lot of the same account states one (an account must give it on every lot or none). It uses today's share count, so it ignores buys and reinvestment since; a value you enter wins. Prices are only used for these two values; after that a lot grows by its rate series, not by price.
+**Prices and derived balances.** Leave a lot's `opening_balance` blank and give its `symbol` and `quantity`, and the loader fills it in as `quantity × price`, using the latest price on or before the scenario start from `prices/security_price__<SYMBOL>.csv` (columns `effective_date,price`; price is decimal dollars, up to 6 places). If you fill in `opening_balance` yourself it is used as given and no price is needed. A symbol may not be the same as an account name. A lot's blank `prior_year_end_balance` is derived the same way, as its `quantity` times the price on or before the prior Dec 31, when another lot of the same account states one (an account must give it on every lot or none). It uses today's share count, so it ignores buys and reinvestment since; a value you enter wins. Prices are only used for these two values; after that a lot grows by its rate series, not by price.
 
 **Fetching prices.** `sim prices fetch [SYMBOL...]` writes those files for you. With no symbols it takes every symbol on a lot that has a `quantity` in any scenario (`CASH` is skipped; dollar-denominated lots need no price). For each it stores the last close of every month since the December before the earliest scenario start's year, plus the latest close, so a scenario starting on a month-end finds a price on or before it, and a prior year-end balance can be derived from the prior December's close. It only adds dates that are not already in a file, so hand-entered prices stay; `--refresh` overwrites existing dates, `--since YYYY-MM-DD` changes the start, and `--dry-run` shows what would change. Prices come from Yahoo Finance's public endpoint (`--provider yahoo`, no account or key), and only the ticker symbols are sent. Closes are the unadjusted price, which is what `quantity × price` needs. Re-run it whenever you want a scenario's opening balances to reflect current prices; a `security_price` you want for a specific date can be added to the file by hand.
 

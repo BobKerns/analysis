@@ -537,7 +537,8 @@ def load_scenario(
 
     aux_files = [
         *_merged_override_files(data_dir, scenario_dirs, "aux"),
-        *_merged_override_files(data_dir, scenario_dirs, "series"),
+        *_merged_override_files(data_dir, scenario_dirs, "series", include_shared=False),
+        *_merged_override_files(data_dir, scenario_dirs, "prices"),
     ]
     aux_rows = _read_aux_files(aux_files, issues, money_resolver=money_resolver)
 
@@ -671,14 +672,23 @@ def _find_override_file(
 
 
 def _merged_override_files(
-    data_dir: Path, scenario_dirs: list[Path], subfolder: str,
+    data_dir: Path, scenario_dirs: list[Path], subfolder: str, *, include_shared: bool = True,
 ) -> list[Path]:
-    """Every ``<subfolder>/*.csv`` across the shared data repo and the scenario's
-    lineage, one path per filename: a more specific tier's file (the scenario's
-    own, then its parent's, ...) replaces the shared one of the same name
-    wholesale, not merged row by row."""
+    """Every ``<subfolder>/*.csv`` across the scenario's lineage and, if
+    ``include_shared``, the shared data repo root, one path per filename: a
+    more specific tier's file (the scenario's own, then its parent's, ...)
+    replaces a less specific one of the same name wholesale, not merged row by
+    row.
+
+    ``series/`` is scenario-only (``include_shared=False``): growth rates and
+    inflation series are per-scenario projections, not tax-law facts, so there
+    is no shared ``series/`` at the data repo root -- what's "shared" is
+    whatever the root scenario's own ``series/`` provides, inherited like any
+    other per-scenario file (ADR-003 §4.1d).
+    """
     merged: dict[str, Path] = {}
-    for d in (data_dir, *reversed(scenario_dirs)):  # least specific first, so later wins
+    tiers = (*((data_dir,) if include_shared else ()), *reversed(scenario_dirs))
+    for d in tiers:
         folder = d / subfolder
         if folder.is_dir():
             for path in folder.glob("*.csv"):

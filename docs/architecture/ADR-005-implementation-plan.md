@@ -106,6 +106,22 @@ Lifts the Phase 2 restriction that `minimum_balance`, refill and overflow are on
 
 Checking and savings were distinguished nowhere in the engine (both take the no-tax withdrawal path, count as cash for yield and for the realized-gain reports), and with lots one account holds both, so the subkinds `checking` and `savings` merge into `cash` (schema 23; `LIQUID_SUBKINDS`, `TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX` and the yield/growth rate role follow). Data migration is a rename of the `subkind` column. The symbol views (`holding_symbols`, `symbol_holders_view`) now include cash lots as well as investment lots, so a `CASH` symbol convention gives one view of all cash.
 
+## Phase 9 — Correcting the aux/series/prices split (done)
+
+Phase 6's aux/series split (§4.1d, §4.4) put `security_price__*.csv` and `state_brackets__*.csv`
+in the same `series/` folder as `rate__*.csv`, and gave `series/` a shared root tier like `aux/`.
+Corrected: security prices are a shared fact regardless of scenario, not a per-scenario
+projection, so they get their own shared folder, `prices/` (Phase 3's `security_price` aux kind
+is unchanged; only the folder moved). State tax brackets are tax law, not a projection, so
+`state_brackets__*.csv` moved back to `aux/`, beside `federal_brackets.csv`. `series/` keeps
+only the genuinely per-scenario kinds (`rate__*`, non-CPI `inflation__*`) and loses its shared
+root tier entirely (`_merged_override_files(..., include_shared=False)`); what's "shared" for
+these is just the root scenario's own `series/`, inherited the same way as any other
+per-scenario file. `sim prices fetch`'s target directory moved from `aux/` (then briefly
+`series/`) to `prices/` to match. Data migration: move `state_brackets__*.csv` back to `aux/`;
+move `rate__*.csv`/non-CPI `inflation__*.csv` into the root scenario's own `series/`; move
+`security_price__*.csv` into a new top-level `prices/`.
+
 ## Risks
 
 - **Engine surface (highest).** `run_scenario` has cx 54 and much of it is keyed on account ids. Phase 0's audit sizes this; if it is larger than expected, split Phase 1 by first introducing a lot-id alias for account id (one lot per account, identical values) and converting sites one rule kind at a time.

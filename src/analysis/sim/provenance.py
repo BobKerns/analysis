@@ -5,9 +5,11 @@ Computes ``code_version``, ``data_version``, ``data_dirty``, and
 SHA, computed via a sidecar index (the user's index is never touched), over
 exactly the paths the loader read for a scenario: ``scenarios/<name>/`` plus the
 folder of every scenario it inherits from via ``parent_scenario``,
-``persons.csv``, ``aux/``, ``series/``, and ``itemizations/`` (each of the last
-three also resolved per scenario under ``scenarios/<name>/``, ADR-003 §4.1c;
-covered automatically since that whole folder is already in scope).
+``persons.csv``, ``aux/``, ``prices/``, and ``itemizations/`` (each also
+resolved per scenario under ``scenarios/<name>/``, ADR-003 §4.1d; covered
+automatically since that whole folder is already in scope). ``series/`` has no
+shared root tier at all -- only the per-scenario ``scenarios/<name>/series/``
+folders, already covered the same way.
 """
 
 from __future__ import annotations
@@ -93,7 +95,7 @@ def _scoped_paths(data_dir: Path, scenario_name: str) -> list[str]:
         "securities.csv",
         "allocations.csv",
         "aux",
-        "series",
+        "prices",
         "itemizations",
     ]
     return [p for p in candidates if (data_dir / p).exists()]

@@ -73,9 +73,10 @@ is pointed out.
 | **Derived scenario** | A scenario that has `parent_scenario` set. It starts from its parent and only lists what is different. See Part 1. |
 | **Lot** | One holding inside an account. A brokerage account can have several lots: different funds, or shares bought on different dates. Every account has at least one lot. It is named `default` unless you split the account into more than one lot. |
 | **Chain** | A named, ordered list of places money can come from, or go to. Think: try this place first, then that place. Every account (and every lot) already has its own one-step chain, automatically. You only write a `chains/*.csv` file when you want more than one step. See Part 4.6. |
-| **Series** | A named set of numbers a scenario can refer to by name: a growth or interest rate (`rate__*`), a history of a security's price (`security_price__*`), or a state's tax brackets (`state_brackets__*`). These files live in the `series/` folder. This is a different idea from *asset class*, below. |
+| **Series** | A named set of numbers a scenario can refer to by name: a growth or interest rate (`rate__*`), or an inflation projection (`inflation__*`). These files live in that scenario's own `series/` folder. This is a different idea from *asset class*, below. |
 | **`aux/`** | Shared tax-law facts every scenario uses unless it says otherwise: tax brackets, RMD tables, filing status. |
-| **`series/`** | Shared growth-rate and price assumptions every scenario uses unless it says otherwise. Kept apart from `aux/` because you are more likely to want to change these for one scenario. |
+| **`series/`** | A scenario's own growth-rate and inflation assumptions. Unlike `aux/`, there is no shared copy at the top of the data repo — each scenario has its own, inherited from its parent the same way `accounts.csv` is. |
+| **`prices/`** | Shared security price histories every scenario uses unless it says otherwise. |
 | **Itemization** | A CSV file under `itemizations/<name>.csv`. It lists dollar amounts in a `Value` column, and the loader adds them up into one total. Other files can use that total by writing `@name` instead of a plain number (for example `opening_cost_basis = @home_basis`). **This is a different thing from an *itemized deduction*, a tax term — see the next table.** |
 | **`tax_character`** | A label on a money movement that says how it is taxed: `ordinary`, `ltcg`, `stcg`, `tax_free`, `tax_deferred_out`, `return_of_capital`, `none`, and a few others. This label decides which tax bucket the movement is counted in. |
 | **Asset class** | Used only for the portfolio overview (`sim allocation`): `stock_us`, `stock_intl`, `stock` (when the US/international split is not known), `bond`, `cd`, `cash`, `real_estate`, `other`. Set for each symbol in `allocations.csv`. Not related to `tax_character`. |
@@ -120,7 +121,7 @@ tax year, by looking back over everything that happened that year (the
   then uses whichever is greater. (See the glossary above — *itemization* and
   *itemized deduction* mean two different things in this guide.)
 - **State tax** works the same way as federal tax, using
-  `state_brackets__CA.csv` (or your own state's file, under `series/`).
+  `state_brackets__CA.csv` (or your own state's file, in `aux/`).
 - **RMDs** are calculated from the account's lot balances on the previous
   December 31, divided by the IRS factor for that age. The factor comes from
   `rmd_factors.csv` and `rmd_start_age.csv`.
@@ -184,7 +185,7 @@ Asset_Brokerage_Joint,inherited_2029,AAA,2029-03-15,500,,,50000.00
 - You can leave `opening_balance` blank if you give `symbol` and `quantity`
   instead. The balance is then calculated from a price. Run
   `sim prices fetch` to get prices; it saves them to
-  `series/security_price__<SYMBOL>.csv`. Run `sim prices check` to compare a
+  `prices/security_price__<SYMBOL>.csv`. Run `sim prices check` to compare a
   balance you typed in against quantity times price.
 - Once you have a run, `sim account holdings <account>` shows every lot's
   balance, cost basis, and unrealized gain.
@@ -482,7 +483,7 @@ answer.
 
 - [templates/README.md](../templates/README.md) — full CSV column reference and conventions.
 - [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](architecture/ADR-003-registries-and-csv-schemas.md) — authoritative
-  schema, including the aux/series/itemizations override mechanism (§4.1d)
+  schema, including the aux/prices/series/itemizations override mechanism (§4.1d)
   and the data-repo structure diagrams (§4.0).
 - [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](architecture/ADR-005-lots-and-per-lot-state.md) — lots in depth.
 - [notebooks/README.md](../notebooks/README.md) — the same information as interactive widgets.
