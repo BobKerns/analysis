@@ -98,6 +98,11 @@ TAX_CHARACTERS: set[str] = {
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 
+# transfer_event.reason_kind (schema.py CHECK), in a sensible display order:
+# a rule firing, the run's opening balances, partial-first-year catch-up
+# facts, a refill draw, or a month-end overflow sweep.
+REASON_KINDS: tuple[str, ...] = ("rule", "initial", "ytd", "ytd_rule", "refill", "overflow")
+
 type AssetClass = Literal[
     "stock_us",
     "stock_intl",

@@ -26,6 +26,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | scheduled transactions | `analysis sim scheduled list` |
 | one-time transfers | `analysis sim transfer list` |
 | a run's year-end net worth, and lots | `analysis sim explain <runfile>` |
+| every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
 
 Views with no terminal equivalent yet are listed in [TODO.md](../TODO.md), which also asks for a periodic review of what is missing.
 

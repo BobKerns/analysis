@@ -424,6 +424,7 @@ None of them need you to write any code.
 | `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, and the portfolio by asset class. |
 | `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, and after-tax income. |
 | `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, and where they cross over (break-even). |
+| `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range — good for auditing "why did this happen." |
 
 Open one with `analysis jupyter` (or the **Jupyter** VS Code task, below), or
 in VS Code directly if it runs well enough there for your machine

@@ -74,6 +74,7 @@ reentrancy
 relativedelta
 reprompts
 ripwire
+rollup
 rollups
 rootdir
 roundtrips
@@ -99,6 +100,7 @@ topup
 traditionalira
 txns
 unobserve
+unreproduced
 unsets
 unspsc
 upserts

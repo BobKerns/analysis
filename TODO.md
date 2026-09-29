@@ -18,3 +18,6 @@ Known gaps (last reviewed 2026-09-24):
 - scenario comparison (account and lot definition differences, lot balance differences,
   net worth differences): no terminal equivalent
 - net worth by month: `sim explain` prints year-end values only
+- events (`notebooks/events.ipynb`): filtering the full `transfer_event` ledger by reason
+  kind/tax character/account/date range has no terminal equivalent; `sim transfer list`
+  only covers one-time transfers from the intent, not a run's actual ledger
