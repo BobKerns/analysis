@@ -90,7 +90,9 @@ class Connections(traitlets.HasTraits):
 
     def show(self, fn: callable, *args, **kwargs) -> widgets.Output:
         """
-        Return an output widget that displays the result of calling `fn` with the current run connection.
+        Return an output widget that displays the result of calling `fn`
+        with the current run connection.
+
         Parameters
         ----------
         fn : callable
@@ -117,7 +119,9 @@ class Connections(traitlets.HasTraits):
 
     def show_scenario(self, fn: callable, *args, **kwargs) -> widgets.Output:
         """
-        Return an output widget that displays the result of calling `fn` with the current scenario connection.
+        Return an output widget that displays the result of calling `fn`
+        with the current scenario connection.
+
         Parameters
         ----------
         fn : callable
@@ -184,13 +188,32 @@ _META_COLS = [
 
 
 def scenario_picker(
-    data_dir: Path | str | None = None, default: str | None = None, *,
+    data_dir: Path | str | None = None,
+    default: str | None = None, *,
     scenarios_dir: Path | None = None,
     runs_dir: Path | None = None,
     require_run: bool = True,
     show_metadata: bool = False,
 ) -> tuple[widgets.VBox, SingleScenarioConnections, widgets.Dropdown]:
     """A ``Scenario:`` dropdown that keeps a live connection pair in sync.
+
+    Parameters
+    ----------
+    data_dir : Path | str | None, optional
+        The base directory for the data repository. Defaults to the current
+        repo's data/shared/sim.
+    default : str | None, optional
+        The default scenario to select. If None, resolves using
+        $ANALYSIS_SCENARIO, .current_scenario, or "base".
+    scenarios_dir : Path | None, optional
+        The directory containing scenario definitions. Defaults to None.
+    runs_dir : Path | None, optional
+        The directory containing run files. Defaults to None.
+    require_run : bool, default True
+        Whether a run connection is required. If True and no run is found,
+        raises FileNotFoundError.
+    show_metadata : bool, default False
+        Whether to display run metadata below the scenario reference.
 
     Returns ``(widget, container)``; ``container`` is a
     :class:`SingleScenarioConnections`, refreshed in place (closing the
@@ -298,7 +321,10 @@ class MultiScenarioConnections(Connections):
 
 
 def _load_multi(
-    data_dir: Path, baseline: str, variants: list[str], max_variants: int,
+    data_dir: Path,
+    baseline: str,
+    variants: list[str],
+    max_variants: int,
 ) -> MultiScenarioConnections:
     if not variants:
         return MultiScenarioConnections(
@@ -355,6 +381,24 @@ def multi_scenario_picker(
 ):
     """Baseline dropdown + variant multi-select, backed by live run connections.
 
+    Parameters
+    ----------
+    data_dir : Path | str | None, optional
+        The base directory for the data repository. Defaults to the current
+        repo's data/shared/sim.
+    default_baseline : str | None, optional
+        The default baseline scenario to select. If None, resolves using
+        $ANALYSIS_SCENARIO, .current_scenario, or "current".
+    default_variants : list[str] | None, optional
+        The default variant scenarios to select. If None, selects the first
+        few available variants up to max_variants.
+    intent_dir : Path | str | None, optional
+        The directory containing scenario intents. Defaults to None.
+    runs_dir : Path | str | None, optional
+        The directory containing run files. Defaults to None.
+    max_variants : int, default 4
+        The maximum number of variants that can be selected.
+
     Returns ``(widget, container)``; ``container`` is a
     :class:`MultiScenarioConnections`, refreshed in place (closing dropped
     connections) whenever either picker changes.
@@ -380,7 +424,9 @@ def multi_scenario_picker(
     variant_picker = widgets.SelectMultiple(
         options=[name for name in available if name != default_baseline],
         value=tuple(default_variants
-                    or (*[name for name in available if name != default_baseline][:max_variants],)),
+                    or (*[name
+                          for name in available
+                          if name != default_baseline][:max_variants],)),
         description="Variants:",
         rows=min(len(available), 8),
     )
@@ -409,7 +455,10 @@ def multi_scenario_picker(
     def _on_change(*_) -> None:
         old_connections = dict(container.connections)
         new = _load_multi(
-            data_dir, baseline_picker.value, list(variant_picker.value), max_variants,
+            data_dir,
+            baseline_picker.value,
+            list(variant_picker.value),
+            max_variants,
         )
         container.connections = new.connections
         container.baseline = new.baseline
@@ -437,8 +486,17 @@ class DollarModePicker(widgets.ToggleButtons):
     value: DollarMode = traitlets.UseEnum(DollarMode)
     label: str = traitlets.Unicode("Nominal")
     def __init__(self, dollar_mode: DollarMode = DollarMode.NOMINAL):
+        """
+        Initialize the dollar mode picker.
+
+        Parameters
+        ----------
+        dollar_mode : DollarMode, default DollarMode.NOMINAL
+            The initial dollar mode. Can be either nominal or CPI-constant.
+        """
         super().__init__(
-            options=[("Nominal", DollarMode.NOMINAL), ("CPI-constant", DollarMode.CPI_CONSTANT)],
+            options=[("Nominal", DollarMode.NOMINAL),
+                     ("CPI-constant", DollarMode.CPI_CONSTANT)],
             description="Dollar basis:",
             layout=widgets.Layout(
                 border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
@@ -455,6 +513,14 @@ class ValuePlotModePicker(widgets.ToggleButtons):
     value: ValuePlotMode = traitlets.UseEnum(ValuePlotMode)
     label: str = traitlets.Unicode("Total")
     def __init__(self, value_mode: ValuePlotMode = ValuePlotMode.TOTAL):
+        """
+        Initialize the value plot mode picker.
+
+        Parameters
+        ----------
+        value_mode : ValuePlotMode, default ValuePlotMode.TOTAL
+            The initial value plot mode. Can be either total or monthly.
+        """
         super().__init__(
             options=[("Total", ValuePlotMode.TOTAL), ("Monthly", ValuePlotMode.MONTHLY)],
             description="Values:",
@@ -467,11 +533,20 @@ class ValuePlotModePicker(widgets.ToggleButtons):
     def _on_value_change(self, change):
         self.label = "Monthly" if self.value == ValuePlotMode.MONTHLY else "Total"
 
+
 class YAxisPlotModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting zero-anchored vs. auto-scaled Y-axis."""
     value: bool = traitlets.Bool(True)
     label: str = traitlets.Unicode("Zero-anchored")
     def __init__(self, y_axis_mode: bool = True):
+        """
+        Initialize the Y-axis plot mode picker.
+
+        Parameters
+        ----------
+        y_axis_mode : bool, default True
+            The initial Y-axis mode. True for zero-anchored, False for auto-scaled.
+        """
         super().__init__(
             options=[("Zero-anchored", True), ("Auto-scale", False)],
             description="Y-axis:",
@@ -543,6 +618,24 @@ class AccountPicker(widgets.HBox):
                  allow_any: bool = False,
                  accounts_by_kind: Mapping[AccountKind, Collection[AccountName]] | None = None,
                  max_accounts: int | None = None):
+        """
+        Parameters
+        ----------
+        rc : RunConnection
+            The run connection to fetch account data from.
+        accounts : list[AccountName] | None, optional
+            The initially selected accounts. If None, no accounts are selected initially.
+        kind : str, default "asset"
+            The initially selected account kind.
+        allow_kind : Collection[AccountKind] | None, optional
+            A collection of allowed account kinds. If None, all kinds are allowed.
+        allow_any : bool, default False
+            Whether to include an "Any" option in the kind picker.
+        accounts_by_kind : Mapping[AccountKind, Collection[AccountName]] | None, optional
+            Precomputed mapping of account kinds to account names. If None, accounts are fetched from the run connection.
+        max_accounts : int | None, optional
+            The maximum number of accounts that can be selected. If None, no limit is enforced.
+        """
         self.rc = rc
         self._accounts_by_kind = accounts_by_kind
         self._max_accounts = max_accounts
@@ -589,7 +682,17 @@ class AccountPicker(widgets.HBox):
 class AssetClassPicker(widgets.HBox):
     """Widget to pick asset classes, with checkboxes for each class."""
     value: dict[AssetClass, bool] = traitlets.Dict()
-    def __init__(self, asset_classes: list[AssetClass], exclude: tuple[AssetClass, ...] = ()):
+    def __init__(self,
+                 asset_classes: list[AssetClass],
+                 exclude: tuple[AssetClass, ...] = ()):
+        """
+        Parameters
+        ----------
+        asset_classes : list[AssetClass]
+            The list of all available asset classes.
+        exclude : tuple[AssetClass, ...], optional
+            Asset classes to exclude from the initial selection, by default ().
+        """
         include = {
             name: widgets.Checkbox(value=name not in exclude, description=name, indent=False,
                                    layout=widgets.Layout(width="max-content"))
@@ -610,6 +713,12 @@ class GroupingPicker(widgets.Dropdown):
     value: Grouping | None = traitlets.Enum(values=GROUPINGS + (_NO_SPLIT,))
 
     def __init__(self, value: Grouping | None = None):
+        """
+        Parameters
+        ----------
+        value : Grouping | None, optional
+            The initially selected grouping. If None, defaults to `_NO_SPLIT`.
+        """
         super().__init__(
             options=[_NO_SPLIT, *GROUPINGS],
             value=value or _NO_SPLIT,
@@ -632,6 +741,26 @@ class DateRangeSlider(widgets.SelectionRangeSlider):
                  index: tuple[int, int] | None = None,
                  disabled: bool = False,
                  ):
+        """
+        Parameters
+        ----------
+        start : datetime.date | None, optional
+            The start date of the range. Defaults to the current month if None.
+        end : datetime.date | None, optional
+            The end date of the range. Defaults to 12 months after the start if None.
+        months : int, default 12
+            The number of months to include in the range.
+        layout : widgets.Layout | None, optional
+            The layout for the widget. Defaults to None.
+        description : str, default "Date range:"
+            The description for the widget.
+        value : tuple[datetime.date, datetime.date] | None, optional
+            The initially selected date range. Defaults to (start, end) if None.
+        index : tuple[int, int] | None, optional
+            The initially selected index range. Defaults to (0, months) if None.
+        disabled : bool, default False
+            Whether the widget is disabled.
+        """
         start = start or this_month()
         end = end or this_month() + relativedelta.relativedelta(months=months)
         self.start = start
