@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -13,6 +14,7 @@ from analysis.sim.ensemble import (
     EnsembleError,
     latest_ensemble_batch,
     load_ensemble,
+    member_run_statuses,
     members_net_worth_by_month,
     resolve_member,
     summary,
@@ -143,6 +145,40 @@ def test_resolve_member_different_members_draw_differently(
     assert len(amounts) == 3
 
 
+def test_resolve_member_rejects_nonpositive_one_off_transfer_draw(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """Belt-and-suspenders backstop: even if an invalid range somehow reached
+    resolve_member (the loader should already have refused it at load time),
+    a nonpositive draw for a one_off_transfer must never reach the engine
+    silently -- it would reverse or omit the transfer."""
+    append_calendar_row(
+        date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
+        account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="100000", tax_character="none",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="1", vary_high="2",
+    )
+    recipe = load_test_copy().intent_path
+    # Simulate an invalid range slipping past load-time validation.
+    con = sqlite3.connect(recipe)
+    try:
+        con.execute(
+            "UPDATE calendar_event SET vary_low = '-50000', vary_high = '-40000' "
+            "WHERE name = 'transfer_vary'"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    with pytest.raises(EnsembleError, match="nonpositive one_off_transfer amount"):
+        resolve_member(
+            recipe, tmp_path / "member_0000.sqlite3",
+            seed=1, member_index=0, member_count=1, recipe_tree_id="deadbeef",
+        )
+
+
 def test_resolve_member_ramp_interpolates_and_lands_on_target(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,
@@ -182,6 +218,36 @@ def test_resolve_member_ramp_interpolates_and_lands_on_target(
         # monotonically increasing toward the target.
         amounts = [r[1] for r in rows]
         assert amounts == sorted(amounts)
+    finally:
+        con.close()
+
+
+def test_resolve_member_ramp_starts_from_an_earlier_literal_rate_change(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """prototype_data's retire_alice/calendar.csv already has a literal (not
+    varying) `set_rate` row for 'Asset Checking' at 2027-01-31 (45000).
+    A ramp starting later must treat that as the current rate, not fall back
+    to the load-time aux_table snapshot underneath it (30000) as though the
+    intervening change never happened."""
+    append_calendar_row(
+        date="2027-06-30", kind="set_rate", name="checking_rate_ramp",
+        series="Asset Checking", amount="99999",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="90000", vary_high="90000", vary_ramp_months="1",
+    )
+    recipe = load_test_copy().intent_path
+    member = resolve_member(
+        recipe, tmp_path / "member_0000.sqlite3",
+        seed=1, member_index=0, member_count=1, recipe_tree_id="deadbeef",
+    )
+    con = sqlite3.connect(member)
+    try:
+        baseline = con.execute(
+            "SELECT amount FROM calendar_event WHERE name = 'checking_rate_ramp'"
+        ).fetchone()[0]
+        assert baseline == 45_000  # the 2027-01-31 literal change, not the 30000 aux baseline
     finally:
         con.close()
 
@@ -239,6 +305,54 @@ def test_load_ensemble_and_summary_across_members(
         assert (table["mean"] <= table["max"] + tol).all()
         assert (table["min"] <= table["median"] + tol).all()
         assert (table["median"] <= table["max"] + tol).all()
+    finally:
+        for con in connections.values():
+            con.close()
+
+
+def test_load_ensemble_excludes_a_failed_member(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    """A member run file left behind with status='failed' (run_scenario
+    writes that, then re-raises, rather than deleting the file) must not be
+    summarized as though it were a succeeded member -- it would distort the
+    mean/range and overstate the member count."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="0", vary_high="1000000",
+    )
+    recipe = load_test_copy().intent_path
+    for i in range(2):
+        member_intent = resolve_member(
+            recipe, intent_dir / f"intent_member_{i}.sqlite3",
+            seed=1, member_index=i, member_count=2, recipe_tree_id="deadbeef",
+        )
+        run_scenario(
+            member_intent, runs_dir / f"member_{i:04d}.sqlite3",
+            run_by="test", allow_dirty_data=True,
+        )
+    # Stand in for a member whose run raised partway through: a real run
+    # file (so it's discoverable by the same glob), status flipped to what
+    # run_scenario itself would have left behind.
+    shutil.copyfile(runs_dir / "member_0000.sqlite3", runs_dir / "member_0002.sqlite3")
+    con = sqlite3.connect(runs_dir / "member_0002.sqlite3")
+    try:
+        con.execute("UPDATE simulation_run SET status = 'failed', failure_reason = 'boom'")
+        con.commit()
+    finally:
+        con.close()
+
+    statuses = member_run_statuses(runs_dir)
+    assert statuses == {
+        "member_0000": "succeeded", "member_0001": "succeeded", "member_0002": "failed",
+    }
+
+    connections = load_ensemble(runs_dir)
+    try:
+        assert set(connections) == {"member_0000", "member_0001"}
     finally:
         for con in connections.values():
             con.close()

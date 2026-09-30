@@ -29,8 +29,8 @@ from analysis.sim.distributions import TruncatedNormal, Uniform, member_rng
 from analysis.sim.types import DollarMode
 
 __all__ = [
-    "EnsembleError", "resolve_member", "load_ensemble", "latest_ensemble_batch",
-    "members_net_worth_by_month", "summary",
+    "EnsembleError", "resolve_member", "load_ensemble", "member_run_statuses",
+    "latest_ensemble_batch", "members_net_worth_by_month", "summary",
 ]
 
 
@@ -92,27 +92,50 @@ def _row_aux_kind(row: sqlite3.Row) -> str:
 
 
 def _current_rate_value(con: sqlite3.Connection, row: sqlite3.Row) -> int:
-    """The series' latest rate as of ``row``'s own date, read from the
-    (not-yet-run) intent's own `aux_table`.
+    """The series' latest *known* rate as of ``row``'s own date: the later of
+    the (not-yet-run) intent's own `aux_table` baseline and any literal
+    (already-resolved, non-varying) `set_rate` calendar_event for the same
+    series and aux_kind dated on or before this row's date.
 
-    This is the recipe's baseline only -- it does not account for any other
-    calendar_event that would change the same series earlier in a real run;
-    ADR-006 doesn't pre-simulate the calendar to resolve a ramp's start
-    value, only reads the snapshot as loaded.
+    A rate change the recipe itself already authors earlier in the calendar
+    is part of "the current rate", not just the load-time snapshot
+    underneath it -- otherwise a ramp starting after such a change would
+    reset to the pre-change value before ascending. This still doesn't
+    pre-simulate the calendar in general: an *unresolved* (still-varying)
+    earlier `set_rate` row is excluded, since its value isn't known yet
+    either (ADR-006's open question on cross-variation ordering beyond the
+    two-pass rule).
     """
     aux_kind = _row_aux_kind(row)
-    found = con.execute(
-        "SELECT payload_json FROM aux_table "
+    candidates: list[tuple[str, int]] = []
+
+    aux_found = con.execute(
+        "SELECT effective_date, payload_json FROM aux_table "
         "WHERE kind = ? AND series = ? AND effective_date <= ? "
         "ORDER BY effective_date DESC LIMIT 1",
         (aux_kind, row["series"], row["date"]),
     ).fetchone()
-    if found is None:
+    if aux_found is not None:
+        candidates.append((aux_found[0], json.loads(aux_found[1])["annual_rate_micros"]))
+
+    for ev_date, ev_amount, ev_payload in con.execute(
+        "SELECT date, amount, payload_json FROM calendar_event "
+        "WHERE kind = 'set_rate' AND series = ? AND date <= ? AND id != ? "
+        "AND vary_distribution IS NULL AND amount IS NOT NULL "
+        "ORDER BY date DESC",
+        (row["series"], row["date"], row["id"]),
+    ).fetchall():
+        if (json.loads(ev_payload or "{}").get("aux_kind", "rate")) == aux_kind:
+            candidates.append((ev_date, ev_amount))
+            break
+
+    if not candidates:
         raise EnsembleError(
             f"ramp on row {row['name']!r}: no existing {aux_kind!r} row for "
             f"series {row['series']!r} on or before {row['date']} to ramp from"
         )
-    return json.loads(found[0])["annual_rate_micros"]
+    candidates.sort(key=lambda c: c[0])
+    return candidates[-1][1]
 
 
 def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: int) -> None:
@@ -168,7 +191,15 @@ def resolve_member(
 
         for row in [r for r in rows if r["vary_target"] == "date"]:
             dist = _build_distribution(row, "date")
-            drawn = date.fromordinal(round(dist.draw(member_rng(seed, member_index, row["name"]))))
+            if not isinstance(dist, Uniform):
+                # The loader already rejects any other distribution with a
+                # date target (only a numeric spread ever needs one); this
+                # is unreachable for an intent that passed validation.
+                raise EnsembleError(
+                    f"row {row['name']!r}: {row['vary_distribution']!r} has no "
+                    "discrete date draw"
+                )
+            drawn = date.fromordinal(dist.draw_int(member_rng(seed, member_index, row["name"])))
             con.execute(
                 "UPDATE calendar_event SET date = ?, vary_distribution = NULL WHERE id = ?",
                 (drawn.isoformat(), row["id"]),
@@ -178,6 +209,18 @@ def resolve_member(
         for row in [r for r in rows if r["vary_target"] == "amount"]:
             dist = _build_distribution(row, "amount")
             target = round(dist.draw(member_rng(seed, member_index, row["name"])))
+            if row["kind"] == "one_off_transfer" and target <= 0:
+                # Belt-and-suspenders: the loader already requires a strictly
+                # positive uniform range / truncated_normal clip floor for a
+                # transfer amount, so this should be unreachable -- but a
+                # nonpositive draw reaching _post_transfer would reverse or
+                # silently omit the transfer, so it's worth failing loudly
+                # rather than trusting that invariant silently.
+                raise EnsembleError(
+                    f"row {row['name']!r}: drew a nonpositive one_off_transfer "
+                    f"amount ({target}); its distribution's bounds should have "
+                    "prevented this"
+                )
             if row["vary_ramp_months"]:
                 _apply_ramp(con, row, target, int(row["vary_ramp_months"]))
             else:
@@ -209,13 +252,45 @@ def resolve_member(
     return member_path
 
 
+def member_run_statuses(batch_dir: Path) -> dict[str, str]:
+    """``simulation_run.status`` of every ``member_*.sqlite3`` run file
+    directly under ``batch_dir``, keyed by filename stem.
+
+    A member whose run raised mid-simulation still has a run file --
+    ``run_scenario`` writes ``status='failed'`` before re-raising, rather
+    than deleting it, so its (partial, not reliably comparable) history
+    stays inspectable -- so status has to be checked explicitly rather than
+    assuming every file found is a succeeded member.
+    """
+    statuses: dict[str, str] = {}
+    for p in sorted(Path(batch_dir).glob("member_*.sqlite3")):
+        con = sqlite3.connect(p)
+        try:
+            row = con.execute("SELECT status FROM simulation_run").fetchone()
+        finally:
+            con.close()
+        statuses[p.stem] = row[0] if row else "unknown"
+    return statuses
+
+
 def load_ensemble(batch_dir: Path) -> dict[str, RunConnection]:
-    """Every ``member_*.sqlite3`` run file directly under ``batch_dir``, keyed
-    by filename stem. Caller owns closing each connection."""
-    paths = sorted(Path(batch_dir).glob("member_*.sqlite3"))
-    if not paths:
+    """Every succeeded ``member_*.sqlite3`` run file directly under
+    ``batch_dir``, keyed by filename stem. Caller owns closing each
+    connection. A failed member (see ``member_run_statuses``) is excluded --
+    it would otherwise distort the mean/range with a partial run -- so
+    reporting the failure count/detail alongside a summary means calling
+    ``member_run_statuses`` too.
+    """
+    statuses = member_run_statuses(batch_dir)
+    if not statuses:
         raise EnsembleError(f"no member run files found under {batch_dir}")
-    return {p.stem: RunConnection(p) for p in paths}
+    succeeded = [stem for stem, status in statuses.items() if status == "succeeded"]
+    if not succeeded:
+        raise EnsembleError(
+            f"no succeeded member run files found under {batch_dir} "
+            f"({len(statuses)} present, none succeeded: {statuses})"
+        )
+    return {stem: RunConnection(Path(batch_dir) / f"{stem}.sqlite3") for stem in succeeded}
 
 
 def latest_ensemble_batch(recipe_dir: Path) -> Path | None:

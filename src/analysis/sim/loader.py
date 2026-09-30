@@ -367,6 +367,51 @@ def _check_duplicate_calendar_names(rows: list[dict[str, str]], issues: list[str
             seen[name] = i
 
 
+def _merge_calendar_rows(
+    parent_rows: list[dict[str, str]],
+    child_rows: list[dict[str, str]],
+    key_columns: tuple[str, ...],
+    issues: list[str],
+) -> list[dict[str, str]]:
+    """Like ``_merge_scenario_rows`` (overlay by the table's natural key,
+    ``require_key=False``), except a child row landing on the same key as an
+    already-named row is only accepted as an override if it doesn't rename
+    that row out from under it.
+
+    ``name`` is deliberately *not* part of the key: a child repeating a
+    parent's unnamed row's other fields plus a new ``name`` (to start varying
+    it) must still replace that one row, not add a second, doubled event
+    (ADR-006) -- the same physical event, one-time-transfer amount included,
+    is not created twice just because it gained a name. But two rows that
+    both already have a name -- whether one from the parent and one freshly
+    authored in the child, or two authored together in the same file -- and
+    share every other key field are almost certainly two different events
+    that happen to collide on it (an authoring mistake, not an override), so
+    that combination is reported rather than silently collapsed one way.
+    """
+    merged: dict[tuple[str, ...], dict[str, str]] = {
+        tuple(row.get(c, "") for c in key_columns): dict(row) for row in parent_rows
+    }
+    order = list(merged)
+    for row in child_rows:
+        key = tuple(row.get(c, "") for c in key_columns)
+        if key in merged:
+            existing_name = (merged[key].get("name") or "").strip()
+            new_name = (row.get("name") or "").strip()
+            if existing_name and new_name and existing_name != new_name:
+                issues.append(
+                    f"calendar.csv: rows named '{existing_name}' and '{new_name}' "
+                    f"share the same {key_columns}; give them one name (an "
+                    "override) or change a field so they're recognized as "
+                    "distinct events"
+                )
+            merged[key].update(row)
+        else:
+            order.append(key)
+            merged[key] = dict(row)
+    return [merged[key] for key in order]
+
+
 def _merge_scenario_rows(
     parent_rows: list[dict[str, str]],
     child_rows: list[dict[str, str]],
@@ -458,11 +503,11 @@ def _read_scenario_inputs(
     )
     calendar_rows_raw = read_overlay("calendar.csv")
     _check_duplicate_calendar_names(calendar_rows_raw, issues)
-    calendar_rows = _merge_scenario_rows(
+    calendar_rows = _merge_calendar_rows(
         parent_calendar, calendar_rows_raw,
         ("date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
-         "series", "amount", "name"),
-        require_key=False,
+         "series", "amount"),
+        issues,
     )
     lifespan_rows = _merge_scenario_rows(
         parent_lifespan, read_overlay("lifespan.csv"), ("person",),
@@ -1693,6 +1738,23 @@ def _validate_calendar_vary(
         and parsed["vary_clip_low"] > parsed["vary_clip_high"]
     ):
         issues.append(f"{where}: vary_clip_low must be <= vary_clip_high")
+
+    if target == "amount" and kind == "one_off_transfer":
+        # A transfer amount is a real movement of money whose direction is
+        # fixed by account_1/account_2; a nonpositive draw would reverse or
+        # silently omit it, not just draw an unlikely value.
+        if distribution == "uniform" and "vary_low" in parsed and parsed["vary_low"] <= 0:
+            issues.append(
+                f"{where}: one_off_transfer requires vary_low > 0 "
+                "(a transfer amount must stay positive)"
+            )
+        if distribution == "truncated_normal" and (
+            "vary_clip_low" not in parsed or parsed["vary_clip_low"] <= 0
+        ):
+            issues.append(
+                f"{where}: one_off_transfer with truncated_normal requires "
+                "vary_clip_low > 0 (a transfer amount must stay positive)"
+            )
 
     if ramp_months:
         if not (target == "amount" and kind == "set_rate"):

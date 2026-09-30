@@ -38,6 +38,7 @@ from analysis.sim.engine import run_scenario
 from analysis.sim.ensemble import (
     latest_ensemble_batch,
     load_ensemble,
+    member_run_statuses,
     members_net_worth_by_month,
     resolve_member,
 )
@@ -359,27 +360,47 @@ def _run_ensemble(
         raise click.ClickException(
             f"{scenario_name}: ensemble recipe requires scenario.seed to be set"
         )
-    member_count = ensemble_size or json.loads(meta_json or "{}").get("ensemble_size")
-    if not member_count:
+    if ensemble_size is not None:
+        member_count = ensemble_size
+        source = "--ensemble-size"
+    else:
+        meta_size = json.loads(meta_json or "{}").get("ensemble_size")
+        if meta_size is None:
+            raise click.ClickException(
+                f"{scenario_name}: ensemble recipe requires --ensemble-size or "
+                "scenario.meta_json.ensemble_size"
+            )
+        member_count = int(meta_size)
+        source = "scenario.meta_json.ensemble_size"
+    if member_count <= 0:
         raise click.ClickException(
-            f"{scenario_name}: ensemble recipe requires --ensemble-size or "
-            "scenario.meta_json.ensemble_size"
+            f"{scenario_name}: {source} must be a positive integer (got {member_count})"
         )
-    member_count = int(member_count)
 
     # One timestamped batch subfolder per invocation -- like an ordinary run
     # file, a batch is never overwritten, so rerunning a recipe (more members,
     # a tweaked distribution, ...) keeps every previous batch's history. A
     # disambiguating suffix covers two runs within the same wall-clock second.
+    # Reserved by exclusive mkdir (no separate existence check first), so two
+    # concurrent `sim run` processes can never both win the same batch name
+    # and race on the same member files.
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-    batch, suffix = stamp, 1
-    while (intent_dir / scenario_name / batch).exists() or (runs_dir / scenario_name / batch).exists():
-        suffix += 1
-        batch = f"{stamp}-{suffix}"
-    member_intent_dir = intent_dir / scenario_name / batch
-    member_runs_dir = runs_dir / scenario_name / batch
-    member_intent_dir.mkdir(parents=True, exist_ok=True)
-    member_runs_dir.mkdir(parents=True, exist_ok=True)
+    suffix = 1
+    while True:
+        batch = stamp if suffix == 1 else f"{stamp}-{suffix}"
+        member_intent_dir = intent_dir / scenario_name / batch
+        member_runs_dir = runs_dir / scenario_name / batch
+        try:
+            member_intent_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            suffix += 1
+            continue
+        try:
+            member_runs_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            suffix += 1
+            continue
+        break
 
     failures: list[tuple[int, Path]] = []
     for i in range(member_count):
@@ -446,6 +467,8 @@ def ensemble_create(
     ``sim run NAME --ensemble-size N`` then generates and runs every member
     instead of a single run.
     """
+    if ensemble_size is not None and ensemble_size <= 0:
+        raise click.ClickException(f"--size must be a positive integer (got {ensemble_size})")
     data_dir_p = _resolve_data_dir(data_dir)
     seed = seed if seed is not None else secrets.randbelow(2**31)
     try:
@@ -520,15 +543,24 @@ def ensemble_summary(
     if batch_dir is None or not batch_dir.is_dir():
         raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
 
+    statuses = member_run_statuses(batch_dir)
+    failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
     connections = load_ensemble(batch_dir)
     try:
         table = year_end_values(ensemble_summary_frame(members_net_worth_by_month(connections)))
-        click.echo(f"ensemble {scenario_name} ({batch_dir.name}): {len(connections)} member(s)")
+        click.echo(
+            f"ensemble {scenario_name} ({batch_dir.name}): {len(connections)} succeeded "
+            f"member(s), {len(failed)} failed"
+        )
         for year, row in table.iterrows():
             click.echo(
                 f"  {year}  mean={row['mean']:>14,.0f}  median={row['median']:>14,.0f}  "
                 f"std={row['std']:>13,.0f}  min={row['min']:>14,.0f}  max={row['max']:>14,.0f}"
             )
+        if failed:
+            click.echo(f"  {len(failed)} failed member(s), excluded above:")
+            for stem in failed:
+                click.echo(f"    {stem}: {statuses[stem]}")
     finally:
         for con in connections.values():
             con.close()
@@ -956,8 +988,12 @@ def _parse_amount_cents(s: str) -> int:
 
 
 def _validate_iso_date(s: str) -> str:
+    # date.fromisoformat, not strptime: strptime accepts non-zero-padded
+    # values like '2029-1-1' that the loader's own date.fromisoformat (used
+    # to parse vary_low/vary_high at load time) rejects -- this must accept
+    # exactly what the loader will later accept, not a superset.
     try:
-        datetime.strptime(s, "%Y-%m-%d")
+        date.fromisoformat(s)
     except ValueError as e:
         raise click.ClickException(f"date must be YYYY-MM-DD: {s!r}") from e
     return s

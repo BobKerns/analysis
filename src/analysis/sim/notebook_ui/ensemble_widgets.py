@@ -13,7 +13,12 @@ import pandas as pd
 from IPython.display import Markdown, display
 
 from analysis.sim.connection import year_end_values
-from analysis.sim.ensemble import latest_ensemble_batch, load_ensemble, members_net_worth_by_month
+from analysis.sim.ensemble import (
+    latest_ensemble_batch,
+    load_ensemble,
+    member_run_statuses,
+    members_net_worth_by_month,
+)
 from analysis.sim.ensemble import summary as ensemble_summary
 from analysis.sim.plotting import FRAME_ALPHA
 
@@ -36,12 +41,18 @@ def list_ensemble_recipes(runs_dir: Path) -> list[str]:
     )
 
 
-def ensemble_summary_view(monthly_summary: pd.DataFrame, member_count: int) -> tuple[str, pd.DataFrame]:
+def ensemble_summary_view(
+    monthly_summary: pd.DataFrame, member_count: int, failed_count: int = 0,
+) -> tuple[str, pd.DataFrame]:
     """Heading and year-end mean/median/SD/range table from a month-indexed
-    ``summary()`` frame (mean/median/std/min/max columns)."""
+    ``summary()`` frame (mean/median/std/min/max columns). ``member_count``
+    is how many *succeeded* members the frame was built from; ``failed_count``
+    (excluded from it) is reported alongside, not silently dropped."""
     yearly = year_end_values(monthly_summary)
     yearly.index.name = "year"
     heading = f"**{member_count} member(s)**"
+    if failed_count:
+        heading += f" ({failed_count} failed, excluded)"
     return heading, yearly
 
 
@@ -58,7 +69,9 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
             linewidth=2, label="mean")
     ax.plot(monthly_summary.index, monthly_summary["median"], color="steelblue",
             linewidth=1, linestyle="--", label="median")
-    ax.set_ylim(bottom=0)
+    # No forced bottom=0: a shortfall scenario can carry a real negative net
+    # worth, and clipping it would hide the low end of the range (and
+    # potentially the mean/median themselves) rather than show it.
     ax.set_xlabel("month")
     ax.set_ylabel("USD")
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
@@ -80,10 +93,12 @@ def ensemble_widget(runs_dir: Path) -> widgets.VBox:
         if not dropdown.value:
             return
         batch_dir = latest_ensemble_batch(runs_dir / dropdown.value)
+        statuses = member_run_statuses(batch_dir)
+        failed_count = sum(1 for status in statuses.values() if status != "succeeded")
         connections = load_ensemble(batch_dir)
         try:
             monthly_summary = ensemble_summary(members_net_worth_by_month(connections))
-            heading, yearly = ensemble_summary_view(monthly_summary, len(connections))
+            heading, yearly = ensemble_summary_view(monthly_summary, len(connections), failed_count)
             with out:
                 display(Markdown(f"{heading} (batch {batch_dir.name})"))
                 _fig, ax = plt.subplots(figsize=(10, 5))

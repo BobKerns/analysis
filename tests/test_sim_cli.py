@@ -1137,6 +1137,96 @@ def test_sim_run_ensemble_requires_size(
     assert "ensemble recipe requires --ensemble-size" in result.output
 
 
+def test_sim_run_ensemble_rejects_zero_ensemble_size(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "0", "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--ensemble-size must be a positive integer" in result.output
+    assert not (runs_dir / "retire_alice").exists()
+
+
+def test_sim_run_ensemble_rejects_negative_metadata_size(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path], intent_dir: Path, runs_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    scenario_csv = retire_alice_csv("scenario.csv")
+    df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
+    df.loc[0, "meta_json"] = json.dumps({"ensemble_size": -3})
+    df.to_csv(scenario_csv, index=False)
+
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "scenario.meta_json.ensemble_size must be a positive integer" in result.output
+
+
+def test_sim_ensemble_create_rejects_zero_size(test_data_dir: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "ensemble", "create", "my_recipe", "retire_alice",
+            "--data-dir", str(test_data_dir), "--size", "0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--size must be a positive integer" in result.output
+    assert not (test_data_dir / "scenarios" / "my_recipe").exists()
+
+
+def test_sim_calendar_add_rejects_non_zero_padded_vary_date(
+    test_data_dir: Path,
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bob",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+            "--name", "retire_bob_vary", "--vary-target", "date",
+            "--vary-distribution", "uniform",
+            "--vary-low", "2029-1-1", "--vary-high", "2029-12-31",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "date must be YYYY-MM-DD" in result.output
+
+
 def test_sim_run_ensemble_reports_member_failures_without_stopping(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
     intent_dir: Path, runs_dir: Path, monkeypatch,
@@ -1212,7 +1302,8 @@ def test_sim_ensemble_summary_reports_mean_median_range(
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "ensemble retire_alice (" in result.output and "3 member(s)" in result.output
+    assert "ensemble retire_alice (" in result.output
+    assert "3 succeeded member(s), 0 failed" in result.output
     assert "mean=" in result.output and "median=" in result.output
     assert "min=" in result.output and "max=" in result.output
     assert "2026" in result.output and "2040" in result.output
@@ -1225,6 +1316,53 @@ def test_sim_ensemble_summary_errors_when_no_runs(runs_dir: Path) -> None:
         ["sim", "ensemble", "summary", "retire_alice", "--runs-dir", str(runs_dir)],
     )
     assert result.exit_code != 0
+
+
+def test_sim_run_ensemble_batch_reservation_is_exclusive(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-existing directory at the stamp the CLI would naturally pick
+    (standing in for a concurrent ``sim run`` that got there first, since
+    true concurrency isn't practical to force deterministically in a unit
+    test) must be skipped by advancing the suffix, exactly as if it had been
+    detected mid-race -- the retry loop is the same whether the collision is
+    pre-existing or won at the last instant by exclusive mkdir."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    import analysis.sim.cli as sim_cli
+    from datetime import UTC
+    from datetime import datetime as real_datetime
+
+    fixed_stamp = "2026-01-01T000000Z"
+
+    class _FixedDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2026, 1, 1, tzinfo=UTC)
+
+    monkeypatch.setattr(sim_cli, "datetime", _FixedDatetime)
+    (intent_dir / "retire_alice" / fixed_stamp).mkdir(parents=True)
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "1", "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    batches = sorted(p.name for p in (runs_dir / "retire_alice").iterdir())
+    assert batches == [f"{fixed_stamp}-2"]
 
 
 def test_sim_run_ensemble_rerun_does_not_collide_with_prior_batch(

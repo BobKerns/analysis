@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import git
+import pandas as pd
 import pytest
 
 from analysis.sim.loader import (
@@ -924,13 +925,16 @@ def test_vary_name_duplicate_rejected(
     assert any("duplicate name" in issue for issue in ei.value.issues)
 
 
-def test_vary_rows_sharing_every_field_but_name_both_survive(
+def test_vary_rows_sharing_every_merge_key_field_but_name_is_ambiguous(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
-    """Two rows identical in every column the scenario-inheritance merge key
-    used to check (date/kind/series/amount/...) but with distinct names must
-    both survive as distinct calendar_event rows, not silently collapse into
-    one (the merge key now includes ``name``)."""
+    """Two named rows identical in every scenario-inheritance merge-key
+    column (date/kind/series/amount/...) look like the same physical event
+    authored twice under different names -- not two distinct events -- so
+    this is reported as a conflict rather than silently collapsed one way or
+    the other (name is deliberately not part of the merge key; see
+    ``_merge_calendar_rows``, which exists specifically so a child can still
+    override an inherited *unnamed* row by repeating these same fields)."""
     for name in ("rate_vary_a", "rate_vary_b"):
         append_calendar_row(
             date="2027-02-28", kind="set_rate", name=name,
@@ -938,15 +942,45 @@ def test_vary_rows_sharing_every_field_but_name_both_survive(
             vary_target="amount", vary_distribution="uniform",
             vary_low="40000", vary_high="50000",
         )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "rate_vary_a" in issue and "rate_vary_b" in issue for issue in ei.value.issues
+    )
+
+
+def test_vary_row_overrides_inherited_unnamed_calendar_row(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A child re-declaring an inherited *unnamed* row's same key fields plus
+    a new name and vary_* columns must replace that one row, not add a
+    second, doubled event -- the regression a too-broad merge-key fix would
+    reintroduce for e.g. varying an inherited one_off_transfer."""
+    calendar_path = retire_alice_csv("calendar.csv")
+    df = pd.read_csv(calendar_path, dtype=str, keep_default_na=False)
+    inherited = df[df["kind"] == "one_off_transfer"].iloc[0]
+
+    child = pd.DataFrame([{
+        "date": inherited["date"], "kind": "one_off_transfer",
+        "account_1": inherited["account_1"], "lot_1": inherited["lot_1"],
+        "account_2": inherited["account_2"], "lot_2": inherited["lot_2"],
+        "series": inherited["series"], "amount": inherited["amount"],
+        "tax_character": inherited["tax_character"], "name": "inheritance_vary",
+        "vary_target": "amount", "vary_distribution": "uniform",
+        "vary_low": inherited["amount"], "vary_high": str(int(inherited["amount"]) * 2),
+    }])
+    pd.concat([df, child], ignore_index=True).fillna("").to_csv(calendar_path, index=False)
+
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     con = sqlite3.connect(result.intent_path)
     try:
-        names = {
-            r[0] for r in con.execute(
-                "SELECT name FROM calendar_event WHERE name IN ('rate_vary_a', 'rate_vary_b')"
-            )
-        }
-        assert names == {"rate_vary_a", "rate_vary_b"}
+        rows = con.execute(
+            "SELECT name, vary_distribution FROM calendar_event WHERE kind = 'one_off_transfer' "
+            "AND date = ?",
+            (inherited["date"],),
+        ).fetchall()
+        # replaced, not doubled: exactly one row for this event, now named/varying.
+        assert rows == [("inheritance_vary", "uniform")]
     finally:
         con.close()
 
@@ -1103,6 +1137,71 @@ def test_vary_truncated_normal_rejects_reversed_clip_bounds(
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any("vary_clip_low must be <= vary_clip_high" in issue for issue in ei.value.issues)
+
+
+def test_vary_one_off_transfer_uniform_requires_positive_low(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
+        account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="100000", tax_character="none",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="-50000", vary_high="50000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "one_off_transfer requires vary_low > 0" in issue for issue in ei.value.issues
+    )
+
+
+def test_vary_one_off_transfer_uniform_rejects_zero_low(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
+        account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="100000", tax_character="none",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="0", vary_high="50000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "one_off_transfer requires vary_low > 0" in issue for issue in ei.value.issues
+    )
+
+
+def test_vary_one_off_transfer_truncated_normal_requires_positive_clip_low(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
+        account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="100000", tax_character="none",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_mean="100000", vary_sd="20000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "one_off_transfer with truncated_normal requires vary_clip_low > 0" in issue
+        for issue in ei.value.issues
+    )
+
+
+def test_vary_one_off_transfer_truncated_normal_with_positive_clip_low_loads(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
+        account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="100000", tax_character="none",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_mean="100000", vary_sd="20000", vary_clip_low="1",
+    )
+    load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
 
 
 def test_vary_date_target_bounds_must_be_iso_dates(

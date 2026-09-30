@@ -64,7 +64,7 @@ export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
 printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
 	_analysis_fail "unable to write $_ANALYSIS_POINTER_FILE"
 
-for _analysis_ignored in .analysis .current_scenario; do
+for _analysis_ignored in .analysis .current_scenario .analysis_user; do
 	if [ ! -f "$ANALYSIS_DATA_DIR/.gitignore" ]; then
 		printf '%s\n' "$_analysis_ignored" > "$ANALYSIS_DATA_DIR/.gitignore" || \
 			_analysis_fail "unable to write $ANALYSIS_DATA_DIR/.gitignore"
@@ -87,7 +87,7 @@ fi
 # shellcheck disable=SC1090,SC1091
 . "$ANALYSIS_REPO_DIR/.venv/bin/activate" || _analysis_fail "failed to activate .venv"
 
-if [ -r "$ANALYSIS_DATA_DIR/.analysis_user" ]; then
+if [ -z "${ANALYSIS_USER-}" ] && [ -r "$ANALYSIS_DATA_DIR/.analysis_user" ]; then
 	IFS= read -r ANALYSIS_USER < "$ANALYSIS_DATA_DIR/.analysis_user"
 fi
 
@@ -122,6 +122,11 @@ analysis_prompt_info() {
 }
 
 if [ -n "${ZSH_VERSION-}" ]; then
+	if [[ -o prompt_subst ]]; then
+		_ANALYSIS_PROMPT_SUBST_WAS_SET=1
+	else
+		_ANALYSIS_PROMPT_SUBST_WAS_SET=0
+	fi
 	setopt prompt_subst
 fi
 # shellcheck disable=SC2016
@@ -136,9 +141,13 @@ deactivate-analysis() {
 	if typeset -f deactivate >/dev/null 2>&1; then
 		deactivate
 	fi
+	if [ -n "${ZSH_VERSION-}" ] && [ "${_ANALYSIS_PROMPT_SUBST_WAS_SET-0}" = "0" ]; then
+		unsetopt prompt_subst
+	fi
 	unset ANALYSIS_DATA_DIR ANALYSIS_USER ANALYSIS_DATA_REPO_NAME ANALYSIS_REPO_DIR
 	unset _ANALYSIS_SELF
 	unset _ANALYSIS_POINTER_FILE _ANALYSIS_REPO_CANDIDATE
+	unset _ANALYSIS_PROMPT_SUBST_WAS_SET
 	unset -f _analysis_fail _analysis_validate_repo_dir _analysis_enable_completion
 	unset -f analysis_prompt_info deactivate-analysis
 }

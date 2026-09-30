@@ -28,6 +28,16 @@ class Uniform:
     def draw(self, rng: random.Random) -> float:
         return rng.uniform(self.low, self.high)
 
+    def draw_int(self, rng: random.Random) -> int:
+        """Discrete uniform draw over the inclusive integer range
+        ``[round(low), round(high)]`` -- for a date target (ADR-006 SS3),
+        where ``low``/``high`` are day ordinals. Rounding a continuous
+        ``draw()`` to the nearest integer would not give each day equal
+        probability: the two endpoint days would only catch half the width
+        an interior day does.
+        """
+        return rng.randint(round(self.low), round(self.high))
+
 
 @dataclass(frozen=True)
 class TruncatedNormal:
