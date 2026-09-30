@@ -1056,3 +1056,209 @@ def test_transfer_list_shows_calendar_and_scheduled_one_offs(test_data_dir: Path
     assert "calendar" in inheritance and "Asset_Brokerage_Joint (default)" in inheritance
     assert "scheduled" in moving and "Asset_Savings" in moving and "75.00" in moving
     assert lines.index(inheritance) < lines.index(moving)  # dated 2029 before 2030
+
+
+def _append_calendar_vary_row(repo: Path, **fields: str) -> None:
+    """ADR-006: append one calendar.csv row, addressing columns by name."""
+    import pandas as pd
+
+    from analysis.sim.registries import CALENDAR_HEADER
+
+    cal = repo / "scenarios" / "retire_alice" / "calendar.csv"
+    df = pd.read_csv(cal, dtype=str, keep_default_na=False)
+    df = df.reindex(columns=CALENDAR_HEADER, fill_value="")
+    df.loc[len(df)] = [fields.get(column, "") for column in CALENDAR_HEADER]
+    df.to_csv(cal, index=False)
+
+
+def test_sim_run_generates_and_runs_ensemble_for_a_recipe(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    _append_calendar_vary_row(
+        data, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    intent_dir = tmp_path / "intent"
+    runs_dir = tmp_path / "runs"
+    runner = CliRunner()
+    load_result = runner.invoke(
+        main,
+        [
+            "sim", "load", "retire_alice",
+            "--data-dir", str(data), "--intent-dir", str(intent_dir),
+            "--allow-dirty-data", "--no-run",
+        ],
+    )
+    assert load_result.exit_code == 0, load_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--run-by", "tester", "--ensemble-size", "2", "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "ensemble retire_alice: 2/2 member(s) succeeded" in result.output
+
+    member_intents = sorted((intent_dir / "retire_alice").glob("member_*.sqlite3"))
+    member_runs = sorted((runs_dir / "retire_alice").glob("member_*.sqlite3"))
+    assert [p.name for p in member_intents] == ["member_0000.sqlite3", "member_0001.sqlite3"]
+    assert [p.name for p in member_runs] == ["member_0000.sqlite3", "member_0001.sqlite3"]
+
+    con = sqlite3.connect(member_runs[0])
+    try:
+        status = con.execute("SELECT status FROM simulation_run").fetchone()[0]
+        assert status == "succeeded"
+        amount = con.execute(
+            "SELECT amount FROM calendar_event WHERE name = 'checking_rate_vary'"
+        ).fetchone()[0]
+        assert 40_000 <= amount <= 50_000
+        manifest = con.execute(
+            "SELECT ensemble_name, member_index, member_count FROM ensemble_manifest"
+        ).fetchone()
+        assert manifest == ("retire_alice", 0, 2)
+    finally:
+        con.close()
+
+
+def test_sim_run_ensemble_requires_size(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    _append_calendar_vary_row(
+        data, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    intent_dir = tmp_path / "intent"
+    runner = CliRunner()
+    load_result = runner.invoke(
+        main,
+        [
+            "sim", "load", "retire_alice",
+            "--data-dir", str(data), "--intent-dir", str(intent_dir),
+            "--allow-dirty-data", "--no-run",
+        ],
+    )
+    assert load_result.exit_code == 0, load_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(tmp_path / "runs"),
+            "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "ensemble recipe requires --ensemble-size" in result.output
+
+
+def test_sim_run_ensemble_reports_member_failures_without_stopping(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    data = _copy_prototype(tmp_path)
+    _append_calendar_vary_row(
+        data, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    intent_dir = tmp_path / "intent"
+    runs_dir = tmp_path / "runs"
+    runner = CliRunner()
+    load_result = runner.invoke(
+        main,
+        [
+            "sim", "load", "retire_alice",
+            "--data-dir", str(data), "--intent-dir", str(intent_dir),
+            "--allow-dirty-data", "--no-run",
+        ],
+    )
+    assert load_result.exit_code == 0, load_result.output
+
+    import analysis.sim.cli as sim_cli
+
+    real_resolve_member = sim_cli.resolve_member
+
+    def _flaky_resolve_member(*args, member_index, **kwargs):
+        if member_index == 1:
+            raise RuntimeError("boom")
+        return real_resolve_member(*args, member_index=member_index, **kwargs)
+
+    monkeypatch.setattr(sim_cli, "resolve_member", _flaky_resolve_member)
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "2", "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "member 1: FAILED (boom)" in result.output
+    assert "ensemble retire_alice: 1/2 member(s) succeeded" in result.output
+    assert (intent_dir / "retire_alice" / "member_0000.sqlite3").exists()
+    assert (runs_dir / "retire_alice" / "member_0000.sqlite3").exists()
+    assert not (runs_dir / "retire_alice" / "member_0001.sqlite3").exists()
+
+
+def test_sim_ensemble_summary_reports_mean_median_range(tmp_path: Path) -> None:
+    data = _copy_prototype(tmp_path)
+    _append_calendar_vary_row(
+        data, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    intent_dir = tmp_path / "intent"
+    runs_dir = tmp_path / "runs"
+    runner = CliRunner()
+    load_result = runner.invoke(
+        main,
+        [
+            "sim", "load", "retire_alice",
+            "--data-dir", str(data), "--intent-dir", str(intent_dir),
+            "--allow-dirty-data", "--no-run",
+        ],
+    )
+    assert load_result.exit_code == 0, load_result.output
+
+    run_result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "3", "--allow-dirty-data",
+        ],
+    )
+    assert run_result.exit_code == 0, run_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "ensemble", "summary", "retire_alice",
+            "--runs-dir", str(runs_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "ensemble retire_alice: 3 member(s)" in result.output
+    assert "mean=" in result.output and "median=" in result.output
+    assert "min=" in result.output and "max=" in result.output
+    assert "2026" in result.output and "2040" in result.output
+
+
+def test_sim_ensemble_summary_errors_when_no_runs(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "ensemble", "summary", "retire_alice",
+            "--runs-dir", str(tmp_path / "runs"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "no ensemble runs found" in result.output

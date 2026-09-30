@@ -26,7 +26,7 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import allocation, prices, registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
-from analysis.sim.connection import open_run, open_scenario
+from analysis.sim.connection import open_run, open_scenario, year_end_values
 from analysis.sim.holdings import (
     account_holdings,
     render_holders_table,
@@ -34,6 +34,8 @@ from analysis.sim.holdings import (
     symbol_holders,
 )
 from analysis.sim.engine import run_scenario
+from analysis.sim.ensemble import load_ensemble, members_net_worth_by_month, resolve_member
+from analysis.sim.ensemble import summary as ensemble_summary_frame
 from analysis.sim.loader import (
     DEFAULT_INTENT_DIR,
     DEFAULT_RUNS_DIR,
@@ -236,6 +238,13 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 )
 @click.option("--allow-dirty-data", is_flag=True, default=False)
 @click.option("--allow-dirty-code", is_flag=True, default=False)
+@click.option(
+    "--ensemble-size",
+    type=int,
+    default=None,
+    help="Member count for an ensemble recipe, overriding scenario.meta_json.ensemble_size "
+         "(ADR-006). Ignored for an ordinary (non-recipe) scenario.",
+)
 def run(
     scenario_name: str | None,
     data_dir: Path | None,
@@ -244,6 +253,7 @@ def run(
     run_by: str | None,
     allow_dirty_data: bool,
     allow_dirty_code: bool,
+    ensemble_size: int | None,
 ) -> None:
     """Execute <scenario> against its intent file and write a new run file.
 
@@ -251,6 +261,9 @@ def run(
     same as ``sim load <scenario>``, but only when a data repo is resolvable
     (--data-dir or $ANALYSIS_DATA_DIR); this command otherwise only needs the
     already-built intent file, not the data repo.
+
+    If the loaded intent still has any unresolved ``vary_distribution`` row
+    (ADR-006), this generates and runs an ensemble instead of a single run.
     """
     explicit = scenario_name is not None
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
@@ -271,6 +284,15 @@ def run(
 
     resolved_by = run_by or os.environ.get("USER") or "unknown"
 
+    if _has_unresolved_vary(intent_path):
+        _run_ensemble(
+            scenario_name, intent_path,
+            resolved_intent_dir, resolved_runs_dir,
+            ensemble_size=ensemble_size, run_by=resolved_by,
+            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+        )
+        return
+
     data_version = _read_data_version(intent_path)
     short = data_version[:7] if data_version else "nodata"
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
@@ -287,6 +309,132 @@ def run(
         click.echo(str(exc), err=True)
         raise click.ClickException("data dirty; refusing to run") from None
     click.echo(f"run {out}")
+
+
+def _has_unresolved_vary(intent_path: Path) -> bool:
+    """ADR-006: whether ``intent_path`` still has any calendar_event row with
+    `vary_distribution` set, i.e. is a recipe that hasn't been resolved."""
+    con = sqlite3.connect(intent_path)
+    try:
+        row = con.execute(
+            "SELECT 1 FROM calendar_event WHERE vary_distribution IS NOT NULL LIMIT 1"
+        ).fetchone()
+    finally:
+        con.close()
+    return row is not None
+
+
+def _run_ensemble(
+    scenario_name: str,
+    recipe_intent_path: Path,
+    intent_dir: Path,
+    runs_dir: Path,
+    *,
+    ensemble_size: int | None,
+    run_by: str,
+    allow_dirty_data: bool,
+    allow_dirty_code: bool,
+) -> None:
+    """ADR-006 §7: generate and run every member of a recipe scenario.
+
+    A member that fails is reported, not retried -- its resolved intent file
+    (kept, not discarded) is the specific input that failed, one open-file
+    away.
+    """
+    con = sqlite3.connect(recipe_intent_path)
+    try:
+        seed, meta_json, recipe_tree_id = con.execute(
+            "SELECT scenario.seed, scenario.meta_json, intent_manifest.scenario_tree_id "
+            "FROM scenario, intent_manifest"
+        ).fetchone()
+    finally:
+        con.close()
+    if seed is None:
+        raise click.ClickException(
+            f"{scenario_name}: ensemble recipe requires scenario.seed to be set"
+        )
+    member_count = ensemble_size or json.loads(meta_json or "{}").get("ensemble_size")
+    if not member_count:
+        raise click.ClickException(
+            f"{scenario_name}: ensemble recipe requires --ensemble-size or "
+            "scenario.meta_json.ensemble_size"
+        )
+    member_count = int(member_count)
+
+    member_intent_dir = intent_dir / scenario_name
+    member_runs_dir = runs_dir / scenario_name
+    member_intent_dir.mkdir(parents=True, exist_ok=True)
+    member_runs_dir.mkdir(parents=True, exist_ok=True)
+
+    failures: list[tuple[int, Path]] = []
+    for i in range(member_count):
+        member_intent_path = member_intent_dir / f"member_{i:04d}.sqlite3"
+        member_run_path = member_runs_dir / f"member_{i:04d}.sqlite3"
+        try:
+            resolve_member(
+                recipe_intent_path, member_intent_path,
+                seed=seed, member_index=i, member_count=member_count,
+                recipe_tree_id=recipe_tree_id,
+            )
+            run_scenario(
+                member_intent_path, member_run_path,
+                run_by=run_by,
+                allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+            )
+        except Exception as exc:
+            failures.append((i, member_intent_path))
+            click.echo(f"  member {i}: FAILED ({exc}) -- intent: {member_intent_path}", err=True)
+        else:
+            click.echo(f"  member {i}: {member_run_path}")
+
+    succeeded = member_count - len(failures)
+    click.echo(f"ensemble {scenario_name}: {succeeded}/{member_count} member(s) succeeded")
+    if failures:
+        click.echo(f"  {len(failures)} failure(s):")
+        for i, path in failures:
+            click.echo(f"    member {i}: {path}")
+
+
+@sim_group_command.group(name="ensemble")
+def ensemble_group_command() -> None:
+    """Inspect an ensemble recipe's generated members (ADR-006)."""
+
+
+@ensemble_group_command.command("summary")
+@click.argument("scenario_name")
+@click.option(
+    "--runs-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Default: data-repo state/runs when activated, else state/runs.",
+)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Data repo (default: $ANALYSIS_DATA_DIR)",
+)
+def ensemble_summary(scenario_name: str, runs_dir: Path | None, data_dir: Path | None) -> None:
+    """Mean/median/SD/range of year-end net worth across SCENARIO_NAME's members."""
+    data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
+    resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
+    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
+    member_runs_dir = resolved_runs_dir / scenario_name
+    if not member_runs_dir.is_dir():
+        raise click.ClickException(f"no ensemble runs found under {member_runs_dir}")
+
+    connections = load_ensemble(member_runs_dir)
+    try:
+        table = year_end_values(ensemble_summary_frame(members_net_worth_by_month(connections)))
+        click.echo(f"ensemble {scenario_name}: {len(connections)} member(s)")
+        for year, row in table.iterrows():
+            click.echo(
+                f"  {year}  mean={row['mean']:>14,.0f}  median={row['median']:>14,.0f}  "
+                f"std={row['std']:>13,.0f}  min={row['min']:>14,.0f}  max={row['max']:>14,.0f}"
+            )
+    finally:
+        for con in connections.values():
+            con.close()
 
 
 @sim_group_command.command(name="all")
