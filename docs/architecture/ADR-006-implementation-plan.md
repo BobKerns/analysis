@@ -1,5 +1,7 @@
 # [ADR-006](ADR-006-ensemble-scenarios.md) implementation plan: ensemble scenarios
 
+**Status: implemented.** All five phases below have shipped: `calendar.csv` variation/validation (Phase 0, `src/analysis/sim/loader.py`, `src/analysis/sim/engine.py`), draws (Phase 1, `src/analysis/sim/distributions.py`), member resolution (Phase 2, `src/analysis/sim/ensemble.py`'s `resolve_member`), `sim run <recipe> --ensemble-size N`'s ensemble-generation path plus `sim ensemble create`/`sim calendar add` (Phase 3, `src/analysis/sim/cli.py`), and aggregation/reporting via `sim ensemble summary` and `notebooks/ensemble.ipynb` (Phase 4, `src/analysis/sim/ensemble.py`, `src/analysis/sim/notebook_ui/ensemble_widgets.py`). The phase breakdown below is kept as a record of the design sequencing, not a pending TODO list.
+
 Companion to [ADR-006](ADR-006-ensemble-scenarios.md). Phases are ordered so each ends with a green test suite and a shippable state. `run_scenario`/`open_run_file` are never modified by this plan — every phase after Phase 0 adds code *around* them, not inside them.
 
 ## Phase 0 — `calendar.csv` gains `name` and the `vary_*` columns
@@ -10,7 +12,7 @@ Companion to [ADR-006](ADR-006-ensemble-scenarios.md). Phases are ordered so eac
 4. `engine.py` (`_apply_calendar_event`): one defensive check — a row with `vary_distribution` still set raises `EngineError` naming the row, instead of firing its placeholder value. This is the only change inside the existing engine/run path in this whole plan.
 5. Tests: every malformed `vary_*` combination is a clear load error; an ordinary (non-varying) `calendar.csv` round-trips exactly as before; a recipe intent run directly (skipping "vary") raises the new `EngineError` instead of silently using a placeholder.
 
-Exit: suite green; no behavior change for any scenario without `vary_*` columns filled in.
+Done. Exit: suite green; no behavior change for any scenario without `vary_*` columns filled in.
 
 ## Phase 1 — Distributions and draws (pure functions, no I/O)
 
@@ -18,7 +20,7 @@ Exit: suite green; no behavior change for any scenario without `vary_*` columns 
 2. `member_rng(seed: int, member_index: int, row_name: str) -> random.Random`: seed derived via `hashlib.sha256(f"{seed}:{member_index}:{row_name}".encode())`, so draws are independent per (member, row) and reproducible.
 3. Tests: draws stay within `low`/`high` (uniform) and within clip bounds (truncated normal) over many samples; the same `(seed, member_index, name)` always reproduces the same draw; changing one row's name/params doesn't change another's draws.
 
-Exit: pure, fully unit-testable; nothing wired to a scenario yet.
+Done. Exit: pure, fully unit-testable; nothing wired to a scenario yet.
 
 ## Phase 2 — Resolving one member's intent
 
@@ -30,7 +32,7 @@ Exit: pure, fully unit-testable; nothing wired to a scenario yet.
    - Writes `ensemble_manifest` (one row) and `ensemble_draw` (one row per resolved row) into the copy.
 2. Tests: a `set_amount`/`one_off_transfer`/`set_rate` row of each `vary_target` resolves to the right column with a value in range; a ramp's generated rows are monotonic between the base value and the drawn target and land on it at the right month; `ensemble_manifest`/`ensemble_draw` are correct; pass ordering — an amount variation on the same row family as a date variation always sees the resolved date, never the placeholder.
 
-Exit: one member intent can be fully resolved from a recipe intent in Python; still no CLI surface, and `run_scenario` has not been touched or even imported.
+Done. Exit: one member intent can be fully resolved from a recipe intent in Python; still no CLI surface, and `run_scenario` has not been touched or even imported.
 
 ## Phase 3 — `sim run` generates the ensemble
 
@@ -41,7 +43,7 @@ Exit: one member intent can be fully resolved from a recipe intent in Python; st
    - Report a failed member (don't retry, matching `sim all`'s per-scenario tolerance) by index and its intent file path; keep going.
 2. Tests: a small in-repo fixture recipe (2–3 members, one `vary_target='date'` row and one `vary_target='amount'` row) produces distinct, correctly-varying member intents and runs; `--ensemble-size` overrides `meta_json`; a deliberately-failing member (e.g. a drawn date outside the scenario's own range) is reported with its intent path and doesn't stop the other members.
 
-Exit: `sim run <recipe>` is the whole user-facing entry point for generating and running an ensemble; nothing else new to invoke.
+Done. Exit: `sim run <recipe>` is the whole user-facing entry point for generating and running an ensemble; nothing else new to invoke.
 
 ## Phase 4 — Aggregation and reporting
 
@@ -50,7 +52,7 @@ Exit: `sim run <recipe>` is the whole user-facing entry point for generating and
 3. `notebooks/ensemble.ipynb`: a scenario picker scoped to ensemble recipes, a percentile-band ("fan") chart, and the same summary table. Follows `notebooks/README.md`'s widget conventions (return the box; let `Connections.show` own the first draw).
 4. Tests: `summary` on a small fixture ensemble matches a hand-computed mean/median/SD; the CLI command's output includes every expected column and the failure count; the notebook helpers (`*_view` functions) are unit-tested without a kernel, the same way `allocation_view`/`events_view` are.
 
-Exit: mean/median/SD/range are one command or one notebook cell away for any ensemble that's been run.
+Done. Exit: mean/median/SD/range are one command or one notebook cell away for any ensemble that's been run.
 
 ## Risks
 

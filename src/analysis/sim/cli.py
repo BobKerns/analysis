@@ -963,22 +963,39 @@ def _validate_iso_date(s: str) -> str:
     return s
 
 
+# calendar.csv columns a file may legitimately lack (ADR-006): optional,
+# nullable additions to an already-established header. Any other missing
+# column, in any CSV kind, is schema drift to report, not paper over --
+# an accounts.csv missing e.g. `kind` is a malformed file, not an old one.
+_BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
+    "name", "vary_target", "vary_distribution", "vary_low", "vary_high",
+    "vary_mean", "vary_sd", "vary_clip_low", "vary_clip_high", "vary_ramp_months",
+})
+
+
 def _append_csv_row(path: Path, header: tuple[str, ...],
                     row: dict[str, str]) -> None:
     """Append a row to a CSV, aligning columns by name via pandas.
 
-    If the file exists, any of ``header``'s columns missing from its own
-    header are backfilled blank on every existing row rather than treated as
-    an error -- a registry header only ever grows with new optional, nullable
-    columns (e.g. ADR-006's calendar.csv `vary_*` columns), so an older file
-    without them must still work. Columns the file already has beyond
-    ``header`` are kept as-is.
+    If the file exists, its header must contain every column of ``header``
+    except the backfillable ones (currently just calendar.csv's ADR-006
+    additions), which are added blank on every existing row instead; this
+    still catches real schema drift rather than silently writing misaligned
+    columns.
     """
     cols = list(header)
     if path.exists() and path.stat().st_size > 0:
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
         existing = list(df.columns)
         missing = [c for c in header if c not in existing]
+        not_backfillable = [c for c in missing if c not in _BACKFILLABLE_CALENDAR_COLUMNS]
+        if not_backfillable:
+            raise click.ClickException(
+                f"CSV header mismatch in {path}\n"
+                f"  expected: {list(header)}\n"
+                f"  found:    {list(existing)}\n"
+                f"  missing:  {not_backfillable}"
+            )
         if missing:
             df = df.reindex(columns=[*existing, *missing], fill_value="")
         cols = list(df.columns)
@@ -1230,12 +1247,13 @@ def _do_add_transfer(
         vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
     )
 
-    payload = {
-        "account_1": from_account,
-        "account_2": to_account,
-        "amount": cents,
-        "tax_character": tax_character,
-    }
+    # account_1/account_2/amount/tax_character are already carried by the
+    # row's own promoted columns below -- _build_cal_payload sets them from
+    # those columns, then overlays this JSON on top, so duplicating them here
+    # would silently shadow a resolved (ADR-006 vary_target='amount') amount
+    # with this row's stale placeholder. Only description has no promoted
+    # column of its own.
+    payload = {}
     if description:
         payload["description"] = description
     row = {

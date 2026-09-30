@@ -1442,3 +1442,51 @@ def test_sim_calendar_add_transfer_matches_sim_transfer_add(
     row = df.iloc[-1]
     assert row["kind"] == "one_off_transfer"
     assert row["amount"] == "150000"
+
+
+def test_sim_calendar_add_transfer_vary_amount_is_not_shadowed_by_params_json(
+    test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    """A varying one_off_transfer's resolved amount must actually reach the
+    posted transfer -- not get overwritten by a stale placeholder duplicated
+    into payload_json (_build_cal_payload overlays payload_json onto the
+    promoted `amount` column, so the two must never disagree)."""
+    runner = CliRunner()
+    add_result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "transfer",
+            "2030-06-30", "Asset_Checking", "Asset_Brokerage_Joint", "1.00",
+            "--to-lot", "default", "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+            "--name", "transfer_vary", "--vary-target", "amount",
+            "--vary-distribution", "uniform", "--vary-low", "1000.00", "--vary-high", "2000.00",
+        ],
+    )
+    assert add_result.exit_code == 0, add_result.output
+
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    run_result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "1", "--allow-dirty-data",
+        ],
+    )
+    assert run_result.exit_code == 0, run_result.output
+
+    member_run = next((runs_dir / "retire_alice").glob("*/member_0000.sqlite3"))
+    con = sqlite3.connect(member_run)
+    try:
+        amount = con.execute(
+            "SELECT te.amount FROM transfer_event te "
+            "JOIN account a1 ON a1.id = te.from_account "
+            "JOIN account a2 ON a2.id = te.to_account "
+            "WHERE te.date = '2030-06-30' "
+            "AND a1.name = 'Asset_Checking' AND a2.name = 'Asset_Brokerage_Joint'"
+        ).fetchone()[0]
+        assert 100_000 <= amount <= 200_000  # the drawn/resolved value, in cents
+    finally:
+        con.close()

@@ -924,6 +924,51 @@ def test_vary_name_duplicate_rejected(
     assert any("duplicate name" in issue for issue in ei.value.issues)
 
 
+def test_vary_rows_sharing_every_field_but_name_both_survive(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """Two rows identical in every column the scenario-inheritance merge key
+    used to check (date/kind/series/amount/...) but with distinct names must
+    both survive as distinct calendar_event rows, not silently collapse into
+    one (the merge key now includes ``name``)."""
+    for name in ("rate_vary_a", "rate_vary_b"):
+        append_calendar_row(
+            date="2027-02-28", kind="set_rate", name=name,
+            series="Asset Checking", amount="45000",
+            vary_target="amount", vary_distribution="uniform",
+            vary_low="40000", vary_high="50000",
+        )
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    try:
+        names = {
+            r[0] for r in con.execute(
+                "SELECT name FROM calendar_event WHERE name IN ('rate_vary_a', 'rate_vary_b')"
+            )
+        }
+        assert names == {"rate_vary_a", "rate_vary_b"}
+    finally:
+        con.close()
+
+
+def test_vary_rows_identical_including_name_rejected_as_duplicate(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """Two fully-identical rows (same name and every other field) would
+    otherwise merge into one before the merged-view duplicate-name check
+    ever runs; a dedicated per-file check must catch this case too."""
+    for _ in range(2):
+        append_calendar_row(
+            date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+            series="Asset Checking", amount="45000",
+            vary_target="amount", vary_distribution="uniform",
+            vary_low="40000", vary_high="50000",
+        )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("duplicate name" in issue for issue in ei.value.issues)
+
+
 def test_vary_ramp_months_requires_amount_target_on_set_rate(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
@@ -936,6 +981,128 @@ def test_vary_ramp_months_requires_amount_target_on_set_rate(
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any("vary_ramp_months is only valid" in issue for issue in ei.value.issues)
+
+
+def test_vary_amount_target_rejected_on_kind_without_amount_column(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="1", vary_high="2",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "vary_target='amount' is only valid on kind in" in issue for issue in ei.value.issues
+    )
+
+
+def test_vary_truncated_normal_rejected_with_date_target(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="truncated_normal",
+        vary_mean="2029-06-30", vary_sd="30",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "truncated_normal is not valid with vary_target='date'" in issue
+        for issue in ei.value.issues
+    )
+
+
+def test_vary_uniform_rejects_clip_columns_it_does_not_use(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000", vary_clip_low="0",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "vary_clip_low is not used by uniform" in issue for issue in ei.value.issues
+    )
+
+
+def test_vary_truncated_normal_rejects_low_high_columns_it_does_not_use(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_mean="45000", vary_sd="5000", vary_low="40000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "vary_low is not used by truncated_normal" in issue for issue in ei.value.issues
+    )
+
+
+def test_vary_uniform_rejects_high_below_low(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="50000", vary_high="40000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_low must be <= vary_high" in issue for issue in ei.value.issues)
+
+
+def test_vary_uniform_rejects_reversed_date_bounds(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="uniform",
+        vary_low="2029-12-31", vary_high="2029-01-01",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_low must be <= vary_high" in issue for issue in ei.value.issues)
+
+
+def test_vary_truncated_normal_rejects_nonpositive_sd(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_mean="45000", vary_sd="0",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_sd must be positive" in issue for issue in ei.value.issues)
+
+
+def test_vary_truncated_normal_rejects_reversed_clip_bounds(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_mean="45000", vary_sd="5000",
+        vary_clip_low="50000", vary_clip_high="40000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_clip_low must be <= vary_clip_high" in issue for issue in ei.value.issues)
 
 
 def test_vary_date_target_bounds_must_be_iso_dates(

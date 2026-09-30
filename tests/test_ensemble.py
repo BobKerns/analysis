@@ -149,8 +149,12 @@ def test_resolve_member_ramp_interpolates_and_lands_on_target(
 ) -> None:
     # retire_alice/series/rate__Asset_Checking.csv already gives "Asset
     # Checking" a baseline rate (3.0% APR as of 2026-01-31); ramp from it.
+    # (Deliberately a different date from prototype_data's own pre-existing
+    # "Asset Checking" set_rate row at 2027-01-31, which the calendar merge
+    # now correctly keeps distinct from this named row rather than colliding
+    # with it -- ADR-006's merge key includes `name`.)
     append_calendar_row(
-        date="2027-01-31", kind="set_rate", name="checking_rate_ramp",
+        date="2027-06-30", kind="set_rate", name="checking_rate_ramp",
         series="Asset Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="60000", vary_high="60000", vary_ramp_months="3",
@@ -164,7 +168,7 @@ def test_resolve_member_ramp_interpolates_and_lands_on_target(
     try:
         rows = con.execute(
             "SELECT date, amount, vary_distribution FROM calendar_event "
-            "WHERE series = 'Asset Checking' AND kind = 'set_rate' AND date >= '2027-01-31' "
+            "WHERE series = 'Asset Checking' AND kind = 'set_rate' AND date >= '2027-06-30' "
             "ORDER BY date"
         ).fetchall()
         # original row (baseline, unchanged value) + 3 ramp steps.
@@ -172,8 +176,8 @@ def test_resolve_member_ramp_interpolates_and_lands_on_target(
         assert all(vary_distribution is None for _, _, vary_distribution in rows)
         dates = [r[0] for r in rows]
         assert dates == sorted(dates)
-        assert rows[0][0] == "2027-01-31"
-        assert rows[-1][0] == "2027-04-30"
+        assert rows[0][0] == "2027-06-30"
+        assert rows[-1][0] == "2027-09-30"
         assert rows[-1][1] == 60_000
         # monotonically increasing toward the target.
         amounts = [r[1] for r in rows]

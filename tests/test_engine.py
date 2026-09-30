@@ -1630,3 +1630,49 @@ def test_running_unresolved_vary_row_raises(
     run_path = tmp_path / "r.sqlite3"
     with pytest.raises(EngineError, match="vary_distribution"):
         run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+
+
+def test_running_unresolved_vary_row_outside_scenario_range_still_raises(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """ADR-006: the guard must not depend on the row's own month ever being
+    simulated -- a row dated after the scenario ends is never visited by the
+    monthly loop, so it must be rejected before that loop starts."""
+    append_calendar_row(
+        date="2050-01-31", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    intent_path = load_scenario(
+        test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    with pytest.raises(EngineError, match="vary_distribution"):
+        run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+
+
+def test_running_unresolved_vary_row_of_unsupported_kind_still_raises(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """ADR-006: the guard must not depend on the row's kind being one the
+    engine actually applies -- an unsupported kind is skipped before ever
+    reaching ``_apply_calendar_event``, so it must be rejected up front.
+
+    ``vary_target='date'`` (not 'amount') because the loader restricts an
+    amount target to the kinds that have a real amount column to vary, which
+    excludes every kind the engine doesn't support in the first place.
+    """
+    append_calendar_row(
+        date="2027-02-28", kind="swap_aux_table", name="unsupported_kind_vary",
+        vary_target="date", vary_distribution="uniform",
+        vary_low="2027-01-01", vary_high="2027-12-31",
+    )
+    intent_path = load_scenario(
+        test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    with pytest.raises(EngineError, match="vary_distribution"):
+        run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)

@@ -287,6 +287,20 @@ VARY_TARGETS: set[str] = {"amount", "date"}
 # lognormal, ...) is a one-line addition when a concrete case needs one.
 ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal"}
 
+# ADR-006: calendar_event kinds whose `amount` column has a real meaning to
+# vary (a rate in `set_rate`, a new base amount in `set_amount`, a transfer
+# amount in `one_off_transfer`). `retire_scheduled` (and every kind outside
+# SUPPORTED_CALENDAR_KINDS) has no amount column a draw could affect.
+AMOUNT_VARYING_KINDS: set[str] = {"set_rate", "set_amount", "one_off_transfer"}
+
+# ADR-006: vary_low/vary_high/vary_mean/vary_sd/vary_clip_low/vary_clip_high
+# columns each distribution actually reads; any other bound column left
+# non-blank alongside it is a parameter the eventual draw silently ignores.
+DISTRIBUTION_PARAMS: dict[str, frozenset[str]] = {
+    "uniform": frozenset({"vary_low", "vary_high"}),
+    "truncated_normal": frozenset({"vary_mean", "vary_sd", "vary_clip_low", "vary_clip_high"}),
+}
+
 
 PERSONS_CSV_HEADER: tuple[str, ...] = (
     "account_name", "role", "tags", "meta_json"

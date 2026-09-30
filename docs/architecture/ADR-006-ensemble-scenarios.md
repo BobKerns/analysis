@@ -47,12 +47,14 @@ recipe scenario's CSVs  --sim load-->  recipe intent (calendar rows with unresol
 | `name` | for a row with `vary_distribution` set; optional otherwise | stable identifier, unique within the scenario |
 | `vary_target` | with `vary_distribution` | `amount` or `date` — which of *this row's own* columns is drawn instead of literal. Exactly one target per row — a `one_off_transfer` whose amount and date are both uncertain is two authoring passes (§5), not one row with two draws. |
 | `vary_distribution` | to mark this row as varying | `uniform` or `truncated_normal`; blank means an ordinary literal row, unaffected by any of this |
-| `vary_low`, `vary_high` | for `uniform` | bounds, in the target column's own unit (dollars for `amount`, an ISO date for `date`) |
-| `vary_mean`, `vary_sd` | for `truncated_normal` | (`amount`/rate only in practice) |
+| `vary_low`, `vary_high` | for `uniform` | bounds, in the target column's own *storage* unit: the row's own `amount` unit for `vary_target='amount'` (micros for `set_rate`, cents for `set_amount`/`one_off_transfer` — never decimal dollars, matching how that row's own `amount` cell is already written), an ISO date string for `vary_target='date'` |
+| `vary_mean`, `vary_sd` | for `truncated_normal` | same storage-unit rule as `vary_low`/`vary_high`; `vary_target='amount'` only — `truncated_normal` is rejected with `vary_target='date'` (`vary_sd` is a numeric spread, not a date span) |
 | `vary_clip_low`, `vary_clip_high` | optional, `truncated_normal` only | reject-and-redraw outside these bounds; omit either for one-sided or unbounded |
 | `vary_ramp_months` | optional, `vary_target=amount` on a `kind=set_rate` row only | see §4 |
 
-A row's own `date`/`amount` column still holds a placeholder when it's the vary target (schema requires a value; nothing reads it). `_apply_calendar_event` gains one defensive check: firing a row that still has `vary_distribution` set is always a mistake — a recipe run directly, or a resolution step skipped — so it raises rather than silently using the placeholder. This is the only engine change in this ADR.
+`vary_target='amount'` is only valid on a kind whose `amount` column means something to vary (`set_rate`, `set_amount`, `one_off_transfer`); `retire_scheduled` has no amount column, so only `vary_target='date'` is valid there. A distribution's own bound columns are the only ones it may set — `vary_clip_low` alongside `uniform`, or `vary_low` alongside `truncated_normal`, is rejected as a parameter the draw would silently ignore. Bounds must be orderable where that means something: `vary_low <= vary_high`, `vary_clip_low <= vary_clip_high`, `vary_sd > 0`.
+
+A row's own `date`/`amount` column still holds a placeholder when it's the vary target (schema requires a value; nothing reads it). `_apply_calendar_event` gains one defensive check: firing a row that still has `vary_distribution` set is always a mistake — a recipe run directly, or a resolution step skipped — so it raises rather than silently using the placeholder. This check also runs once, up front, over every `calendar_event` row before the monthly loop starts, so a row dated outside the scenario's range or of a kind the engine doesn't otherwise apply can't skip the check by never being visited. This is the only engine change in this ADR.
 
 ### 3. Distributions
 
