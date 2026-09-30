@@ -94,7 +94,9 @@ def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = 
     return pd.DataFrame(rows, columns=columns)
 
 
-def asset_classes_present(source: RunConnection | ScenarioConnection, month: str | None = None) -> list[registries.AssetClass]:
+def asset_classes_present(source: RunConnection | ScenarioConnection,
+                          month: str | None = None,
+                          ) -> list[registries.AssetClass]:
     """The asset classes some lot has a balance in, in display order (``unclassified`` last)."""
     present = set(lot_classes(source, month)["asset_class"])
     return [c for c in [*registries.ASSET_CLASSES, UNCLASSIFIED] if c in present]

@@ -5,7 +5,6 @@ data from its cached derived-data methods -- no notebook-local pandas code.
 """
 
 from __future__ import annotations
-from statistics import mode
 
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
@@ -221,9 +220,18 @@ def after_tax_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = N
         expenses_yearly_nominal = yearly_totals(rc.expenses_by_category())
 
         money_columns = [c for c in reconciliation_nominal.columns if c != "reconciliation_year"]
-        reconciliation = rc.to_cpi_constant_annual(reconciliation_nominal) if mode == DollarMode.CPI_CONSTANT else reconciliation_nominal
-        income_yearly = rc.to_cpi_constant_annual(income_yearly_nominal) if mode == DollarMode.CPI_CONSTANT else income_yearly_nominal
-        expenses_yearly = rc.to_cpi_constant_annual(expenses_yearly_nominal) if mode == DollarMode.CPI_CONSTANT else expenses_yearly_nominal
+        reconciliation = (rc.to_cpi_constant_annual(reconciliation_nominal)
+                          if mode == DollarMode.CPI_CONSTANT
+                          else reconciliation_nominal
+        )
+        income_yearly = (rc.to_cpi_constant_annual(income_yearly_nominal)
+                         if mode == DollarMode.CPI_CONSTANT
+                         else income_yearly_nominal
+        )
+        expenses_yearly = (rc.to_cpi_constant_annual(expenses_yearly_nominal)
+                           if mode == DollarMode.CPI_CONSTANT
+                           else expenses_yearly_nominal
+        )
 
         net = pd.DataFrame({
             "gross_income": income_yearly["total"],

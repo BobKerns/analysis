@@ -16,7 +16,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Collection, Mapping
+from collections.abc import Collection, Mapping
 import calendar
 import datetime
 from dateutil import relativedelta
@@ -632,7 +632,8 @@ class AccountPicker(widgets.HBox):
         allow_any : bool, default False
             Whether to include an "Any" option in the kind picker.
         accounts_by_kind : Mapping[AccountKind, Collection[AccountName]] | None, optional
-            Precomputed mapping of account kinds to account names. If None, accounts are fetched from the run connection.
+            Precomputed mapping of account kinds to account names.
+            If None, accounts are fetched from the run connection.
         max_accounts : int | None, optional
             The maximum number of accounts that can be selected. If None, no limit is enforced.
         """

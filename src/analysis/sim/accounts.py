@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Collection
+from typing import TYPE_CHECKING
+from collections.abc import Collection
 
 import pandas as pd
 from rich.console import Console

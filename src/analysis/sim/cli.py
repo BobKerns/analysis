@@ -842,8 +842,8 @@ def items(
     table.add_column("Remainder", justify="right")
     table.add_column("Tax")
     table.add_column("Origin")
-    for (date, from_name, from_subkind, from_lot, from_account_id, from_lot_id,
-         to_name, to_subkind, to_lot, to_account_id, to_lot_id,
+    for (date_, from_name, from_subkind, from_lot, from_account_id, from_lot_id,
+         to_name, to_subkind, to_lot, _to_account_id, _to_lot_id,
          amount, requested, remainder, tax_character,
          reason_kind, rule_name, rule_kind) in rows:
         own_is_from = (from_lot_id == lot_id) if lot_id is not None else (
@@ -861,7 +861,7 @@ def items(
             else reason_kind
         )
         table.add_row(
-            date, own, direction, _fmt_cents(amount).strip(),
+            date_, own, direction, _fmt_cents(amount).strip(),
             _fmt_cents(requested).strip(), _fmt_cents(remainder).strip(),
             tax_character, origin,
         )

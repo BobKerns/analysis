@@ -82,9 +82,9 @@ class _MoneyReferenceResolver:
     integer cents.
     """
 
-    def __init__(self, data_dir: Path, scenario_dirs: list[Path] = []) -> None:
+    def __init__(self, data_dir: Path, scenario_dirs: list[Path] | None = None) -> None:
         self.data_dir = data_dir
-        self.scenario_dirs = scenario_dirs
+        self.scenario_dirs = scenario_dirs or []
         self._cache: dict[str, int] = {}
         self._resolving: set[str] = set()
 
@@ -1028,7 +1028,6 @@ def _expand_account_growth(
                 )
                 continue
             rule_names.add(rule_name)
-            leaf = registries.leaf_chain_name(name, lot, row.get("subkind", ""))
             scheduled_rows.append({
                 "name": rule_name,
                 "from_account": counterparty.name,
@@ -1736,7 +1735,6 @@ def _validate_chains(
         issues.append(f"chains/*.csv: chain name '{name}' collides with an account name")
     for name in sorted(n for n in chains if ":" in n):
         issues.append(f"chains/*.csv: chain name '{name}' may not contain ':'")
-    resolvable = leaves.names | set(chains)
 
     edges: dict[str, set[str]] = {name: set() for name in chains}
     for name, (kind, rows) in chains.items():
