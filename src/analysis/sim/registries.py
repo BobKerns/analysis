@@ -271,10 +271,21 @@ SCENARIO_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 CALENDAR_HEADER: tuple[str, ...] = (
-    "date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
+    "date", "kind", "name", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
     "series", "amount", "param_date", "tax_character", "params_json", "description",
     "tags",
+    # Ensemble variation (ADR-006): a row with vary_distribution set has its own
+    # amount/date (per vary_target) drawn per member instead of used literally.
+    "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_mean",
+    "vary_sd", "vary_clip_low", "vary_clip_high", "vary_ramp_months",
 )
+
+# ADR-006: which of a varying calendar_event row's own columns is drawn.
+VARY_TARGETS: set[str] = {"amount", "date"}
+
+# ADR-006: closed like every other registry; a new family (triangular,
+# lognormal, ...) is a one-line addition when a concrete case needs one.
+ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal"}
 
 
 PERSONS_CSV_HEADER: tuple[str, ...] = (

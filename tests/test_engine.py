@@ -8,7 +8,9 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
-from analysis.sim.engine import run_scenario
+import pytest
+
+from analysis.sim.engine import EngineError, run_scenario
 from analysis.sim.loader import growth_rule_name, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1613,3 +1615,37 @@ def test_tax_tail_reconciles_final_year_without_extending_simulation_data(
         assert last_step_month == "2040-12-31"
     finally:
         con.close()
+
+
+def _append_calendar_vary_row(path: Path, **fields: str) -> None:
+    """ADR-006: append one calendar.csv row, addressing columns by name."""
+    import pandas as pd
+
+    from analysis.sim.registries import CALENDAR_HEADER
+
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df = df.reindex(columns=CALENDAR_HEADER, fill_value="")
+    unknown = set(fields) - set(CALENDAR_HEADER)
+    assert not unknown, f"unknown calendar.csv columns: {sorted(unknown)}"
+    df.loc[len(df)] = [fields.get(column, "") for column in CALENDAR_HEADER]
+    df.to_csv(path, index=False)
+
+
+def test_running_unresolved_vary_row_raises(tmp_path: Path) -> None:
+    """ADR-006: a recipe run directly (the 'vary' step skipped) must fail
+    loudly instead of firing the placeholder amount/date."""
+    repo = _clone_prototype(tmp_path)
+    _append_calendar_vary_row(
+        repo / "scenarios" / "retire_alice" / "calendar.csv",
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    intent_path = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test", allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    with pytest.raises(EngineError, match="vary_distribution"):
+        run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)

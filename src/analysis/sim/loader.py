@@ -13,7 +13,7 @@ import re
 import socket
 import sqlite3
 import tempfile
-from collections.abc import Collection, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -775,6 +775,15 @@ def _opt_int(raw: str | None) -> int | None:
         return None
     v = raw.strip()
     return int(v) if v != "" else None
+
+
+def _vary_bound_writer(vary_target: str | None) -> Callable[[str | None], str | None]:
+    """A `vary_low`/`vary_high`/etc. cell, stored in the target column's own
+    unit (ADR-006): the row's own `amount` int, as text, for `vary_target`
+    `'amount'`; the ISO date string as-is for `'date'`."""
+    if vary_target == "amount":
+        return lambda raw: None if _opt_int(raw) is None else str(_opt_int(raw))
+    return lambda raw: (raw or "").strip() or None
 
 
 def _coerce(s: str) -> Any:
@@ -1549,9 +1558,15 @@ def _validate_year_to_date(
                 issues.append(f"year_to_date.csv row {i} ({name}): amount {e}")
 
 
+_VARY_BOUND_COLUMNS = (
+    "vary_low", "vary_high", "vary_mean", "vary_sd", "vary_clip_low", "vary_clip_high",
+)
+
+
 def _validate_calendar(
     rows: list[dict[str, str]], leaves: _LeafIndex, issues: list[str],
 ) -> None:
+    seen_names: dict[str, int] = {}
     for i, row in enumerate(rows, start=2):
         kind = row.get("kind", "")
         if kind not in registries.CALENDAR_EVENT_KINDS:
@@ -1568,6 +1583,75 @@ def _validate_calendar(
             issues.append(f"calendar.csv row {i}: payload_json invalid: {e}")
         _validate_tags("calendar.csv", i, row.get("scheduled_name") or kind,
                        row.get("tags", ""), issues)
+        name = (row.get("name") or "").strip()
+        if name:
+            if name in seen_names:
+                issues.append(
+                    f"calendar.csv row {i}: duplicate name '{name}' "
+                    f"(first seen on row {seen_names[name]})"
+                )
+            else:
+                seen_names[name] = i
+        _validate_calendar_vary(row, i, kind, name, issues)
+
+
+def _validate_calendar_vary(
+    row: dict[str, str], i: int, kind: str, name: str, issues: list[str],
+) -> None:
+    """ADR-006: a row with `vary_distribution` set has a `vary_target` in
+    `VARY_TARGETS`, the columns its distribution needs, and (only for
+    `vary_target='amount'` on a `set_rate` row) an optional `vary_ramp_months`.
+    """
+    where = f"calendar.csv row {i} ({name or '?'})"
+    distribution = (row.get("vary_distribution") or "").strip()
+    target = (row.get("vary_target") or "").strip()
+    ramp_months = (row.get("vary_ramp_months") or "").strip()
+    if not distribution:
+        if target or ramp_months or any(row.get(c) for c in _VARY_BOUND_COLUMNS):
+            issues.append(f"{where}: vary_* columns set without vary_distribution")
+        return
+    if not name:
+        issues.append(f"{where}: name is required when vary_distribution is set")
+    if distribution not in registries.ENSEMBLE_DISTRIBUTIONS:
+        issues.append(f"{where}: unknown vary_distribution '{distribution}'")
+    if target not in registries.VARY_TARGETS:
+        issues.append(
+            f"{where}: vary_target must be one of {sorted(registries.VARY_TARGETS)} "
+            f"when vary_distribution is set (got '{target}')"
+        )
+    required_by_distribution = {
+        "uniform": ("vary_low", "vary_high"),
+        "truncated_normal": ("vary_mean", "vary_sd"),
+    }
+    for col in required_by_distribution.get(distribution, ()):
+        if not (row.get(col) or "").strip():
+            issues.append(f"{where}: {distribution} requires {col}")
+    for col in _VARY_BOUND_COLUMNS:
+        raw = (row.get(col) or "").strip()
+        if not raw:
+            continue
+        if target == "date":
+            try:
+                date.fromisoformat(raw)
+            except ValueError:
+                issues.append(f"{where}: {col} '{raw}' is not an ISO date")
+        elif target == "amount":
+            try:
+                int(raw)
+            except ValueError:
+                issues.append(f"{where}: {col} '{raw}' is not an integer")
+    if ramp_months:
+        if not (target == "amount" and kind == "set_rate"):
+            issues.append(
+                f"{where}: vary_ramp_months is only valid with vary_target='amount' "
+                "on a kind='set_rate' row"
+            )
+        else:
+            try:
+                if int(ramp_months) <= 0:
+                    raise ValueError
+            except ValueError:
+                issues.append(f"{where}: vary_ramp_months must be a positive integer")
 
 
 def _validate_tags(file: str, row_i: int, name: str, raw: str,
@@ -1951,14 +2035,18 @@ def _write_intent(
     )
     calendar_id = cur.lastrowid
     for ce in calendar_rows:
+        vary_target = ce.get("vary_target") or None
+        vary_bound = _vary_bound_writer(vary_target)
         cur = con.execute(
             "INSERT INTO calendar_event("
-            "calendar_id, date, kind, "
+            "calendar_id, date, kind, name, "
             "scheduled_name, account_1, account_2, series, amount, "
-            "param_date, tax_character, payload_json, description) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "param_date, tax_character, payload_json, description, "
+            "vary_target, vary_distribution, vary_low, vary_high, vary_mean, "
+            "vary_sd, vary_clip_low, vary_clip_high, vary_ramp_months) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                calendar_id, ce["date"], ce["kind"],
+                calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
                 ce.get("account_1") or None,
                 ce.get("account_2") or None,
@@ -1968,6 +2056,15 @@ def _write_intent(
                 ce.get("tax_character") or None,
                 ce.get("params_json") or None,
                 ce.get("description") or None,
+                vary_target,
+                ce.get("vary_distribution") or None,
+                vary_bound(ce.get("vary_low")),
+                vary_bound(ce.get("vary_high")),
+                vary_bound(ce.get("vary_mean")),
+                vary_bound(ce.get("vary_sd")),
+                vary_bound(ce.get("vary_clip_low")),
+                vary_bound(ce.get("vary_clip_high")),
+                _opt_int(ce.get("vary_ramp_months")),
             ),
         )
         _insert_tags(con, cur.lastrowid, ce.get("tags", ""),

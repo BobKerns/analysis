@@ -169,7 +169,7 @@ def run_scenario(
         calendar_events = con.execute(
             'SELECT id, calendar_id, date, kind, '
             '       scheduled_name, account_1, account_2, series, amount, '
-            '       param_date, tax_character, payload_json '
+            '       param_date, tax_character, payload_json, vary_distribution '
             'FROM calendar_event ORDER BY date, id'
         ).fetchall()
 
@@ -213,7 +213,7 @@ def run_scenario(
             for ev in calendar_events:
                 (ev_id, _cal_id, ev_date, ev_kind,
                  _p_sched_name, _p_acct1, _p_acct2, _p_series, _p_amount,
-                 _p_param_date, _p_tax_char, ev_payload_json) = ev
+                 _p_param_date, _p_tax_char, ev_payload_json, ev_vary_distribution) = ev
                 if ev_id in applied_event_ids:
                     continue
                 if not (month_start_s <= ev_date <= month_s):
@@ -230,6 +230,7 @@ def run_scenario(
                     ),
                     txns, txn_by_name, aux, account_id_by_name, account_kinds,
                     balances, step_id, month_s, model_id, refill_ctx=refill_ctx,
+                    vary_distribution=ev_vary_distribution,
                 )
                 con.execute(
                     "INSERT INTO applied_calendar_event(step_id, calendar_event_id) "
@@ -2432,9 +2433,14 @@ def _apply_calendar_event(
     account_kinds: dict[int, str],
     balances: dict[int, int],
     step_id: int, month_s: str, model_id: int,
-    *, refill_ctx: RefillContext | None = None,
+    *, refill_ctx: RefillContext | None = None, vary_distribution: str | None = None,
 ) -> None:
     """Expand one calendar_event per ADR-003 \u00a73."""
+    if vary_distribution is not None:
+        raise EngineError(
+            f"calendar_event id={ev_id} still has vary_distribution={vary_distribution!r} "
+            "set -- an ensemble recipe must be resolved (the 'vary' step) before it can be run"
+        )
     match ev_kind:
         case "set_rate":
             aux_kind = payload.get("aux_kind", "rate")

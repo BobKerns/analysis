@@ -852,3 +852,198 @@ def test_money_reference_rejects_itemization_missing_value_column(
             allow_dirty_data=True,
         )
     assert any("expected a 'Value' column" in issue for issue in ei.value.issues)
+
+
+def _append_calendar_vary_row(repo: Path, **fields: str) -> None:
+    """ADR-006: append one calendar.csv row, addressing columns by name."""
+    import pandas as pd
+
+    from analysis.sim.registries import CALENDAR_HEADER
+
+    cal = repo / "scenarios" / "retire_alice" / "calendar.csv"
+    df = pd.read_csv(cal, dtype=str, keep_default_na=False)
+    df = df.reindex(columns=CALENDAR_HEADER, fill_value="")
+    unknown = set(fields) - set(CALENDAR_HEADER)
+    assert not unknown, f"unknown calendar.csv columns: {sorted(unknown)}"
+    df.loc[len(df)] = [fields.get(column, "") for column in CALENDAR_HEADER]
+    df.to_csv(cal, index=False)
+
+
+def test_vary_target_required_with_distribution(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _append_calendar_vary_row(
+        repo, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_distribution="uniform", vary_low="40000", vary_high="50000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("vary_target" in issue for issue in ei.value.issues)
+
+
+def test_vary_distribution_unknown_rejected(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _append_calendar_vary_row(
+        repo, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="lognormal",
+        vary_low="40000", vary_high="50000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("unknown vary_distribution" in issue for issue in ei.value.issues)
+
+
+def test_vary_uniform_requires_bounds(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _append_calendar_vary_row(
+        repo, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform", vary_low="40000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("uniform requires vary_high" in issue for issue in ei.value.issues)
+
+
+def test_vary_name_required_with_distribution(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _append_calendar_vary_row(
+        repo, date="2027-02-28", kind="set_rate",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("name is required" in issue for issue in ei.value.issues)
+
+
+def test_vary_name_duplicate_rejected(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    for month_end in ("2027-02-28", "2027-03-31"):
+        _append_calendar_vary_row(
+            repo, date=month_end, kind="set_rate", name="checking_rate_vary",
+            series="Asset Checking", amount="45000",
+            vary_target="amount", vary_distribution="uniform",
+            vary_low="40000", vary_high="50000",
+        )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("duplicate name" in issue for issue in ei.value.issues)
+
+
+def test_vary_ramp_months_requires_amount_target_on_set_rate(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _append_calendar_vary_row(
+        repo, date="2027-02-28", kind="set_amount", name="healthcare_vary",
+        scheduled_name="healthcare", amount="120000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="100000", vary_high="140000", vary_ramp_months="12",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("vary_ramp_months is only valid" in issue for issue in ei.value.issues)
+
+
+def test_vary_date_target_bounds_must_be_iso_dates(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _append_calendar_vary_row(
+        repo, date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="uniform",
+        vary_low="2029-01-01", vary_high="not-a-date",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any("not an ISO date" in issue for issue in ei.value.issues)
+
+
+def test_vary_columns_present_without_distribution_rejected(tmp_path: Path) -> None:
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _append_calendar_vary_row(
+        repo, date="2027-02-28", kind="set_rate",
+        series="Asset Checking", amount="45000",
+        vary_target="amount",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(
+            repo, "retire_alice", intent_dir=tmp_path / "out",
+            allow_dirty_data=True,
+        )
+    assert any(
+        "vary_* columns set without vary_distribution" in issue for issue in ei.value.issues
+    )
+
+
+def test_ordinary_calendar_unaffected_by_vary_columns(tmp_path: Path) -> None:
+    """ADR-006 Phase 0 exit criterion: no behavior change for a scenario
+    without vary_* columns filled in."""
+    result = load_scenario(
+        PROTOTYPE, "retire_alice", intent_dir=tmp_path, loaded_by="test",
+        allow_dirty_data=True,
+    )
+    con = sqlite3.connect(result.intent_path)
+    try:
+        rows = con.execute(
+            "SELECT vary_target, vary_distribution FROM calendar_event"
+        ).fetchall()
+        assert rows
+        assert all(r == (None, None) for r in rows)
+    finally:
+        con.close()
+
+
+def test_valid_vary_row_loads_cleanly(tmp_path: Path) -> None:
+    """A well-formed vary_distribution row is accepted -- resolving it into a
+    concrete value is Phase 2's job, not the loader's."""
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    _append_calendar_vary_row(
+        repo, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out", loaded_by="test",
+        allow_dirty_data=True,
+    )
+    con = sqlite3.connect(result.intent_path)
+    try:
+        row = con.execute(
+            "SELECT vary_target, vary_distribution, vary_low, vary_high "
+            "FROM calendar_event WHERE name = 'checking_rate_vary'"
+        ).fetchone()
+        assert row == ("amount", "uniform", "40000", "50000")
+    finally:
+        con.close()

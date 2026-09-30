@@ -722,21 +722,21 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
                     row: dict[str, str]) -> None:
     """Append a row to a CSV, aligning columns by name via pandas.
 
-    If the file exists, its header must contain every column of ``header``
-    (extra optional columns are kept and left blank); this catches schema
-    drift instead of silently writing misaligned columns.
+    If the file exists, any of ``header``'s columns missing from its own
+    header are backfilled blank on every existing row rather than treated as
+    an error -- a registry header only ever grows with new optional, nullable
+    columns (e.g. ADR-006's calendar.csv `vary_*` columns), so an older file
+    without them must still work. Columns the file already has beyond
+    ``header`` are kept as-is.
     """
     cols = list(header)
     if path.exists() and path.stat().st_size > 0:
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
-        existing = tuple(df.columns)
-        if not set(header) <= set(existing):
-            raise click.ClickException(
-                f"CSV header mismatch in {path}\n"
-                f"  expected: {list(header)}\n"
-                f"  found:    {list(existing)}"
-            )
-        cols = list(existing)
+        existing = list(df.columns)
+        missing = [c for c in header if c not in existing]
+        if missing:
+            df = df.reindex(columns=[*existing, *missing], fill_value="")
+        cols = list(df.columns)
     else:
         df = pd.DataFrame(columns=cols)
     new_row = pd.DataFrame([{c: row.get(c, "") for c in cols}], columns=cols)
