@@ -10,7 +10,15 @@ import hashlib
 import random
 from dataclasses import dataclass
 
-__all__ = ["DistributionError", "Uniform", "TruncatedNormal", "member_rng"]
+__all__ = [
+    "DistributionError", "Uniform", "TruncatedNormal", "member_rng",
+    "DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD", "resolve_truncated_normal_bounds",
+]
+
+DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD = 3.0
+"""Standard deviations used to fill in a `truncated_normal` bound nobody
+specified (ADR-006) -- the classic three-sigma range, ~99.7% coverage on the
+unclipped side, so rejection sampling rarely has to retry."""
 
 
 class DistributionError(RuntimeError):
@@ -63,6 +71,60 @@ class TruncatedNormal:
             f"clip_low={self.clip_low}, clip_high={self.clip_high}): no draw "
             f"landed inside the clip bounds in {self.max_attempts} attempts"
         )
+
+
+def resolve_truncated_normal_bounds(
+    mean: float | None, sd: float | None, low: float | None, high: float | None,
+    *, cutoff: float = DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD,
+) -> tuple[float, float, float, float]:
+    """Fill in whichever of (mean, sd, low, high) an author left blank, so a
+    `truncated_normal` row is never actually unbounded on a side nobody
+    specified (ADR-006) -- unlike `uniform`, mean/sd alone already fully
+    describe a distribution, so any of the four may be inferred from the
+    others rather than required outright:
+
+    - ``mean`` missing: the midpoint of ``low`` and ``high`` (both required
+      in that case).
+    - ``sd`` missing: the distance from ``mean`` to whichever of
+      ``low``/``high`` is given, divided by ``cutoff`` (if both are given
+      with an explicit ``mean``, they must imply the same ``sd``).
+    - ``low``/``high`` still missing after the above: ``mean -/+ cutoff * sd``.
+
+    Raises ``DistributionError`` if that still isn't enough to resolve every
+    value, or if ``low``/``high`` disagree about the implied ``sd``.
+    """
+    if mean is None:
+        if low is None or high is None:
+            raise DistributionError(
+                "truncated_normal: vary_mean requires both vary_low and "
+                "vary_high when omitted"
+            )
+        mean = (low + high) / 2
+
+    if sd is None:
+        candidates = []
+        if low is not None:
+            candidates.append((mean - low) / cutoff)
+        if high is not None:
+            candidates.append((high - mean) / cutoff)
+        if not candidates:
+            raise DistributionError(
+                "truncated_normal: vary_sd requires vary_low or vary_high "
+                "when omitted"
+            )
+        if len(candidates) == 2 and abs(candidates[0] - candidates[1]) > 1e-9:
+            raise DistributionError(
+                "truncated_normal: vary_low and vary_high aren't symmetric "
+                "around vary_mean, so vary_sd can't be inferred from them -- "
+                "specify vary_sd explicitly"
+            )
+        sd = candidates[0]
+
+    if low is None:
+        low = mean - cutoff * sd
+    if high is None:
+        high = mean + cutoff * sd
+    return mean, sd, low, high
 
 
 def member_rng(seed: int, member_index: int, row_name: str) -> random.Random:

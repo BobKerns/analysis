@@ -2,6 +2,8 @@
 
 **Status: implemented.** All five phases below have shipped: `calendar.csv` variation/validation (Phase 0, `src/analysis/sim/loader.py`, `src/analysis/sim/engine.py`), draws (Phase 1, `src/analysis/sim/distributions.py`), member resolution (Phase 2, `src/analysis/sim/ensemble.py`'s `resolve_member`), `sim run <recipe> --ensemble-size N`'s ensemble-generation path plus `sim ensemble create`/`sim calendar add` (Phase 3, `src/analysis/sim/cli.py`), and aggregation/reporting via `sim ensemble summary` and `notebooks/ensemble.ipynb` (Phase 4, `src/analysis/sim/ensemble.py`, `src/analysis/sim/notebook_ui/ensemble_widgets.py`). The phase breakdown below is kept as a record of the design sequencing, not a pending TODO list.
 
+**Later refinement (post-ship):** Phase 0/1's separate `vary_clip_low`/`vary_clip_high` columns were merged into `vary_low`/`vary_high` (now shared with `uniform`), with any of `vary_mean`/`vary_sd`/`vary_low`/`vary_high` inferable from the other three (`distributions.resolve_truncated_normal_bounds`) -- `truncated_normal` is never actually unbounded. See [ADR-006](ADR-006-ensemble-scenarios.md) §2/§3 for the current column set; mentions of `vary_clip_low`/`vary_clip_high` below are historical.
+
 Companion to [ADR-006](ADR-006-ensemble-scenarios.md). Phases are ordered so each ends with a green test suite and a shippable state. `run_scenario`/`open_run_file` are never modified by this plan — every phase after Phase 0 adds code *around* them, not inside them.
 
 ## Phase 0 — `calendar.csv` gains `name` and the `vary_*` columns

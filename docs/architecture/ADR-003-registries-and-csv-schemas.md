@@ -684,9 +684,8 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `tags` | text | | see §6 |
 | `vary_target` | enum (`amount`, `date`) | with `vary_distribution` | which of *this row's own* columns is drawn instead of literal; exactly one target per row ([ADR-006](ADR-006-ensemble-scenarios.md) §2) |
 | `vary_distribution` | enum (`uniform`, `truncated_normal`) | to mark this row as varying | blank means an ordinary literal row, unaffected by any of the columns below |
-| `vary_low`, `vary_high` | text | for `uniform` | bounds, in the target column's own unit (an ISO date for `date`; the row's own `amount` unit above for `amount`) |
-| `vary_mean`, `vary_sd` | text | for `truncated_normal` | same unit rule as `vary_low`/`vary_high` (`amount`/rate only in practice) |
-| `vary_clip_low`, `vary_clip_high` | text | optional, `truncated_normal` only | reject-and-redraw outside these bounds; omit either for one-sided or unbounded |
+| `vary_low`, `vary_high` | text | see notes | `uniform`'s own bounds (required), in the target column's own unit (an ISO date for `date`; the row's own `amount` unit above for `amount`). Also `truncated_normal`'s own optional reject-and-redraw bounds (`amount`/rate only in practice) -- for that distribution either may be left blank and inferred (see `vary_mean`/`vary_sd`) |
+| `vary_mean`, `vary_sd` | text | for `truncated_normal` | same unit rule as `vary_low`/`vary_high`. Any one of `vary_mean`/`vary_sd`/`vary_low`/`vary_high` may be inferred from the other three when blank -- `vary_mean` defaults to the midpoint of `vary_low`/`vary_high`; `vary_sd` to the distance from `vary_mean` to whichever of `vary_low`/`vary_high` is given, divided by 3; a still-missing `vary_low`/`vary_high` to `vary_mean` ∓ 3×`vary_sd`. `truncated_normal` is therefore never actually unbounded (`resolve_truncated_normal_bounds`, ADR-006 §3) |
 | `vary_ramp_months` | int | optional, `vary_target='amount'` on a `kind='set_rate'` row only | see §3.1's ramp note |
 
 #### 4.9 Per-scenario: `data_repo/scenarios/<name>/lifespan.csv` (optional)

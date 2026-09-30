@@ -25,7 +25,13 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.sim.connection import RunConnection
-from analysis.sim.distributions import TruncatedNormal, Uniform, member_rng
+from analysis.sim.distributions import (
+    DistributionError,
+    TruncatedNormal,
+    Uniform,
+    member_rng,
+    resolve_truncated_normal_bounds,
+)
 from analysis.sim.types import DollarMode
 
 __all__ = [
@@ -78,11 +84,19 @@ def _build_distribution(row: sqlite3.Row, target: str) -> Uniform | TruncatedNor
     if kind == "uniform":
         return Uniform(low=_bound(row["vary_low"], target), high=_bound(row["vary_high"], target))
     if kind == "truncated_normal":
-        return TruncatedNormal(
-            mean=_bound(row["vary_mean"], target), sd=_bound(row["vary_sd"], target),
-            clip_low=_bound(row["vary_clip_low"], target),
-            clip_high=_bound(row["vary_clip_high"], target),
-        )
+        # vary_low/vary_high double as truncated_normal's own (optional)
+        # clip bounds; any of mean/sd/low/high left blank is inferred from
+        # the other three (ADR-006, distributions.resolve_truncated_normal_bounds)
+        # -- the loader already validated this resolves, so a failure here
+        # would mean an intent that skipped validation, not a normal case.
+        try:
+            mean, sd, low, high = resolve_truncated_normal_bounds(
+                _bound(row["vary_mean"], target), _bound(row["vary_sd"], target),
+                _bound(row["vary_low"], target), _bound(row["vary_high"], target),
+            )
+        except DistributionError as e:
+            raise EnsembleError(f"row {row['name']!r}: {e}") from e
+        return TruncatedNormal(mean=mean, sd=sd, clip_low=low, clip_high=high)
     raise EnsembleError(f"row {row['name']!r}: unknown vary_distribution {kind!r}")
 
 

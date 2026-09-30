@@ -9,6 +9,7 @@ from analysis.sim.distributions import (
     TruncatedNormal,
     Uniform,
     member_rng,
+    resolve_truncated_normal_bounds,
 )
 
 N = 2_000
@@ -58,6 +59,49 @@ def test_truncated_normal_exhausted_attempts_raises() -> None:
     rng = member_rng(seed=1, member_index=0, row_name="impossible")
     with pytest.raises(DistributionError, match="no draw landed inside"):
         dist.draw(rng)
+
+
+def test_resolve_truncated_normal_bounds_infers_missing_side_at_3sd() -> None:
+    mean, sd, low, high = resolve_truncated_normal_bounds(45_000, 5_000, None, None)
+    assert (mean, sd, low, high) == (45_000, 5_000, 30_000, 60_000)
+
+
+def test_resolve_truncated_normal_bounds_keeps_given_low_infers_high() -> None:
+    mean, sd, low, high = resolve_truncated_normal_bounds(45_000, 5_000, 40_000, None)
+    assert (mean, sd, low, high) == (45_000, 5_000, 40_000, 60_000)
+
+
+def test_resolve_truncated_normal_bounds_single_tailed_when_low_equals_mean() -> None:
+    """Setting vary_low to vary_mean 'uses up' the lower side at the peak;
+    the still-unspecified high side ramps out to +3sd, giving a one-sided
+    (single-tailed) distribution rather than a degenerate point."""
+    mean, sd, low, high = resolve_truncated_normal_bounds(45_000, 5_000, 45_000, None)
+    assert (mean, sd, low, high) == (45_000, 5_000, 45_000, 60_000)
+
+
+def test_resolve_truncated_normal_bounds_infers_mean_and_sd_from_low_and_high() -> None:
+    mean, sd, low, high = resolve_truncated_normal_bounds(None, None, 30_000, 60_000)
+    assert (mean, sd, low, high) == (45_000, 5_000, 30_000, 60_000)
+
+
+def test_resolve_truncated_normal_bounds_infers_sd_from_mean_and_one_bound() -> None:
+    mean, sd, low, high = resolve_truncated_normal_bounds(45_000, None, None, 60_000)
+    assert (mean, sd, low, high) == (45_000, 5_000, 30_000, 60_000)
+
+
+def test_resolve_truncated_normal_bounds_requires_both_low_and_high_for_mean() -> None:
+    with pytest.raises(DistributionError, match="vary_mean requires"):
+        resolve_truncated_normal_bounds(None, 5_000, 30_000, None)
+
+
+def test_resolve_truncated_normal_bounds_requires_a_bound_for_sd() -> None:
+    with pytest.raises(DistributionError, match="vary_sd requires"):
+        resolve_truncated_normal_bounds(45_000, None, None, None)
+
+
+def test_resolve_truncated_normal_bounds_rejects_asymmetric_low_high_without_sd() -> None:
+    with pytest.raises(DistributionError, match="aren't symmetric"):
+        resolve_truncated_normal_bounds(45_000, None, 40_000, 70_000)
 
 
 def test_member_rng_is_reproducible() -> None:

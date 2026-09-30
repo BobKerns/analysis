@@ -1050,35 +1050,19 @@ def test_vary_truncated_normal_rejected_with_date_target(
     )
 
 
-def test_vary_uniform_rejects_clip_columns_it_does_not_use(
+def test_vary_uniform_rejects_columns_it_does_not_use(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000", vary_clip_low="0",
+        vary_low="40000", vary_high="50000", vary_mean="45000",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any(
-        "vary_clip_low is not used by uniform" in issue for issue in ei.value.issues
-    )
-
-
-def test_vary_truncated_normal_rejects_low_high_columns_it_does_not_use(
-    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
-) -> None:
-    append_calendar_row(
-        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
-        vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_sd="5000", vary_low="40000",
-    )
-    with pytest.raises(LoadError) as ei:
-        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
-    assert any(
-        "vary_low is not used by truncated_normal" in issue for issue in ei.value.issues
+        "vary_mean is not used by uniform" in issue for issue in ei.value.issues
     )
 
 
@@ -1124,7 +1108,41 @@ def test_vary_truncated_normal_rejects_nonpositive_sd(
     assert any("vary_sd must be positive" in issue for issue in ei.value.issues)
 
 
-def test_vary_truncated_normal_rejects_reversed_clip_bounds(
+def test_vary_truncated_normal_low_equal_to_mean_without_sd_is_degenerate(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """Setting vary_low to vary_mean is how to get a single-tailed draw (the
+    still-blank vary_high ramps out to +3sd) -- but only when vary_sd is
+    given directly. Leaving vary_sd blank too has nothing left to infer a
+    nonzero spread from (vary_mean - vary_low = 0), so this must still be
+    rejected rather than silently drawing a single point."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_mean="45000", vary_low="45000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_sd must be positive" in issue for issue in ei.value.issues)
+
+
+def test_vary_truncated_normal_single_tailed_with_explicit_sd_loads(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """The working version of the case above: vary_sd given directly, so
+    vary_low=vary_mean is a real (zero-width-avoiding) one-sided bound and
+    vary_high infers to mean + 3*sd."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_mean="45000", vary_sd="5000", vary_low="45000",
+    )
+    load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+
+
+def test_vary_truncated_normal_rejects_reversed_low_high(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
@@ -1132,11 +1150,11 @@ def test_vary_truncated_normal_rejects_reversed_clip_bounds(
         series="Asset Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
         vary_mean="45000", vary_sd="5000",
-        vary_clip_low="50000", vary_clip_high="40000",
+        vary_low="50000", vary_high="40000",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
-    assert any("vary_clip_low must be <= vary_clip_high" in issue for issue in ei.value.issues)
+    assert any("vary_low must be <= vary_high" in issue for issue in ei.value.issues)
 
 
 def test_vary_one_off_transfer_uniform_requires_positive_low(
@@ -1173,25 +1191,27 @@ def test_vary_one_off_transfer_uniform_rejects_zero_low(
     )
 
 
-def test_vary_one_off_transfer_truncated_normal_requires_positive_clip_low(
+def test_vary_one_off_transfer_truncated_normal_requires_positive_effective_low(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
+    """mean=50000, sd=20000, no explicit low: the inferred low
+    (mean - 3*sd = -10000) is negative, so this must still be rejected even
+    though neither vary_low nor vary_clip_low was written directly."""
     append_calendar_row(
         date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
         amount="100000", tax_character="none",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="100000", vary_sd="20000",
+        vary_mean="50000", vary_sd="20000",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any(
-        "one_off_transfer with truncated_normal requires vary_clip_low > 0" in issue
-        for issue in ei.value.issues
+        "one_off_transfer requires vary_low > 0" in issue for issue in ei.value.issues
     )
 
 
-def test_vary_one_off_transfer_truncated_normal_with_positive_clip_low_loads(
+def test_vary_one_off_transfer_truncated_normal_with_positive_low_loads(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
@@ -1199,7 +1219,7 @@ def test_vary_one_off_transfer_truncated_normal_with_positive_clip_low_loads(
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
         amount="100000", tax_character="none",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="100000", vary_sd="20000", vary_clip_low="1",
+        vary_mean="100000", vary_sd="20000", vary_low="1",
     )
     load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
 
@@ -1215,7 +1235,7 @@ def test_vary_date_target_bounds_must_be_iso_dates(
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
-    assert any("not an ISO date" in issue for issue in ei.value.issues)
+    assert any("not a valid ISO date" in issue for issue in ei.value.issues)
 
 
 def test_vary_columns_present_without_distribution_rejected(

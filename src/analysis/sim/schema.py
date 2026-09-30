@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -170,9 +170,14 @@ CREATE TABLE calendar_event (
     -- Ensemble variation (ADR-006): a row with vary_distribution set has this
     -- row's own `amount` or `date` (per vary_target) drawn per member, instead
     -- of using the value above literally -- which is then just a placeholder.
-    -- vary_low/high/mean/sd/clip_low/clip_high are in the *target* column's own
-    -- unit: cents/micros for `amount` (whichever this row's own `amount` column
-    -- would already mean for its `kind`), an ISO date string for `date`.
+    -- vary_low/high/mean/sd are in the *target* column's own unit: cents/
+    -- micros for `amount` (whichever this row's own `amount` column would
+    -- already mean for its `kind`), an ISO date string for `date`.
+    -- vary_low/vary_high are `uniform`'s own bounds, and also double as
+    -- `truncated_normal`'s optional clip bounds; any one of vary_mean/
+    -- vary_sd/vary_low/vary_high may be inferred from the other three when
+    -- blank (distributions.resolve_truncated_normal_bounds), so
+    -- truncated_normal is never actually unbounded.
     -- vary_ramp_months is only meaningful for vary_target='amount' on a
     -- kind='set_rate' row: it expands into that many additional set_rate rows,
     -- ramping to the drawn target (ADR-006 §4) instead of jumping to it.
@@ -182,8 +187,6 @@ CREATE TABLE calendar_event (
     vary_high          TEXT,
     vary_mean          TEXT,
     vary_sd            TEXT,
-    vary_clip_low      TEXT,
-    vary_clip_high     TEXT,
     vary_ramp_months   INTEGER
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);

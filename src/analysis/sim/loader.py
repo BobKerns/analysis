@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from analysis.sim import registries
+from analysis.sim.distributions import DistributionError, resolve_truncated_normal_bounds
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -1627,9 +1628,7 @@ def _validate_year_to_date(
                 issues.append(f"year_to_date.csv row {i} ({name}): amount {e}")
 
 
-_VARY_BOUND_COLUMNS = (
-    "vary_low", "vary_high", "vary_mean", "vary_sd", "vary_clip_low", "vary_clip_high",
-)
+_VARY_BOUND_COLUMNS = ("vary_low", "vary_high", "vary_mean", "vary_sd")
 
 
 def _validate_calendar(
@@ -1668,10 +1667,10 @@ def _validate_calendar_vary(
     row: dict[str, str], i: int, kind: str, name: str, issues: list[str],
 ) -> None:
     """ADR-006: a row with `vary_distribution` set has a `vary_target` in
-    `VARY_TARGETS`, an amount target only on a kind with a real amount to vary,
-    only the columns its distribution actually reads, valid-ordered bounds,
-    and (only for `vary_target='amount'` on a `set_rate` row) an optional
-    `vary_ramp_months`.
+    `VARY_TARGETS`, an amount target only on a kind with a real amount to
+    vary, only the columns its distribution actually reads, a fully
+    resolvable and valid-ordered set of bounds, and (only for
+    `vary_target='amount'` on a `set_rate` row) an optional `vary_ramp_months`.
     """
     where = f"calendar.csv row {i} ({name or '?'})"
     distribution = (row.get("vary_distribution") or "").strip()
@@ -1685,11 +1684,13 @@ def _validate_calendar_vary(
         issues.append(f"{where}: name is required when vary_distribution is set")
     if distribution not in registries.ENSEMBLE_DISTRIBUTIONS:
         issues.append(f"{where}: unknown vary_distribution '{distribution}'")
+        return
     if target not in registries.VARY_TARGETS:
         issues.append(
             f"{where}: vary_target must be one of {sorted(registries.VARY_TARGETS)} "
             f"when vary_distribution is set (got '{target}')"
         )
+        return
     if target == "amount" and kind not in registries.AMOUNT_VARYING_KINDS:
         issues.append(
             f"{where}: vary_target='amount' is only valid on kind in "
@@ -1700,17 +1701,11 @@ def _validate_calendar_vary(
             f"{where}: truncated_normal is not valid with vary_target='date' -- "
             "its vary_sd is a numeric spread, not a date span"
         )
+        return
 
-    required_by_distribution = {
-        "uniform": ("vary_low", "vary_high"),
-        "truncated_normal": ("vary_mean", "vary_sd"),
-    }
-    for col in required_by_distribution.get(distribution, ()):
-        if not (row.get(col) or "").strip():
-            issues.append(f"{where}: {distribution} requires {col}")
-
-    allowed = registries.DISTRIBUTION_PARAMS.get(distribution, frozenset())
+    allowed = registries.DISTRIBUTION_PARAMS[distribution]
     parsed: dict[str, int] = {}
+    parse_ok = True
     for col in _VARY_BOUND_COLUMNS:
         raw = (row.get(col) or "").strip()
         if not raw:
@@ -1718,43 +1713,51 @@ def _validate_calendar_vary(
         if col not in allowed:
             issues.append(f"{where}: {col} is not used by {distribution} (ignored by the draw)")
             continue
-        if target == "date":
-            try:
-                parsed[col] = date.fromisoformat(raw).toordinal()
-            except ValueError:
-                issues.append(f"{where}: {col} '{raw}' is not an ISO date")
-        elif target == "amount":
-            try:
-                parsed[col] = int(raw)
-            except ValueError:
-                issues.append(f"{where}: {col} '{raw}' is not an integer")
+        try:
+            parsed[col] = date.fromisoformat(raw).toordinal() if target == "date" else int(raw)
+        except ValueError:
+            unit = "ISO date" if target == "date" else "integer"
+            issues.append(f"{where}: {col} '{raw}' is not a valid {unit}")
+            parse_ok = False
 
-    if "vary_low" in parsed and "vary_high" in parsed and parsed["vary_low"] > parsed["vary_high"]:
-        issues.append(f"{where}: vary_low must be <= vary_high")
-    if "vary_sd" in parsed and parsed["vary_sd"] <= 0:
-        issues.append(f"{where}: vary_sd must be positive")
+    effective_low: int | None = None
+    if distribution == "uniform":
+        for col in registries.DISTRIBUTION_REQUIRED_PARAMS[distribution]:
+            if not (row.get(col) or "").strip():
+                issues.append(f"{where}: {distribution} requires {col}")
+        if "vary_low" in parsed and "vary_high" in parsed and parsed["vary_low"] > parsed["vary_high"]:
+            issues.append(f"{where}: vary_low must be <= vary_high")
+        effective_low = parsed.get("vary_low")
+    elif parse_ok:
+        # truncated_normal: any of mean/sd/low/high may be inferred from the
+        # other three (ADR-006) -- resolve before checking ordering/sign.
+        try:
+            _mean, sd, low, high = resolve_truncated_normal_bounds(
+                parsed.get("vary_mean"), parsed.get("vary_sd"),
+                parsed.get("vary_low"), parsed.get("vary_high"),
+            )
+        except DistributionError as e:
+            issues.append(f"{where}: {e}")
+        else:
+            if sd <= 0:
+                issues.append(f"{where}: vary_sd must be positive")
+            if low > high:
+                issues.append(f"{where}: vary_low must be <= vary_high")
+            effective_low = low
+
     if (
-        "vary_clip_low" in parsed and "vary_clip_high" in parsed
-        and parsed["vary_clip_low"] > parsed["vary_clip_high"]
+        target == "amount" and kind == "one_off_transfer"
+        and effective_low is not None and effective_low <= 0
     ):
-        issues.append(f"{where}: vary_clip_low must be <= vary_clip_high")
-
-    if target == "amount" and kind == "one_off_transfer":
         # A transfer amount is a real movement of money whose direction is
         # fixed by account_1/account_2; a nonpositive draw would reverse or
-        # silently omit it, not just draw an unlikely value.
-        if distribution == "uniform" and "vary_low" in parsed and parsed["vary_low"] <= 0:
-            issues.append(
-                f"{where}: one_off_transfer requires vary_low > 0 "
-                "(a transfer amount must stay positive)"
-            )
-        if distribution == "truncated_normal" and (
-            "vary_clip_low" not in parsed or parsed["vary_clip_low"] <= 0
-        ):
-            issues.append(
-                f"{where}: one_off_transfer with truncated_normal requires "
-                "vary_clip_low > 0 (a transfer amount must stay positive)"
-            )
+        # silently omit it, not just draw an unlikely value. Checked on the
+        # *effective* low (given directly, or resolved from mean/sd) so this
+        # one rule covers both distributions.
+        issues.append(
+            f"{where}: one_off_transfer requires vary_low > 0 (given directly, or "
+            "implied by vary_mean/vary_sd) -- a transfer amount must stay positive"
+        )
 
     if ramp_months:
         if not (target == "amount" and kind == "set_rate"):
@@ -2158,8 +2161,8 @@ def _write_intent(
             "scheduled_name, account_1, account_2, series, amount, "
             "param_date, tax_character, payload_json, description, "
             "vary_target, vary_distribution, vary_low, vary_high, vary_mean, "
-            "vary_sd, vary_clip_low, vary_clip_high, vary_ramp_months) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_sd, vary_ramp_months) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -2177,8 +2180,6 @@ def _write_intent(
                 vary_bound(ce.get("vary_high")),
                 vary_bound(ce.get("vary_mean")),
                 vary_bound(ce.get("vary_sd")),
-                vary_bound(ce.get("vary_clip_low")),
-                vary_bound(ce.get("vary_clip_high")),
                 _opt_int(ce.get("vary_ramp_months")),
             ),
         )

@@ -1509,6 +1509,158 @@ def test_sim_calendar_add_set_rate_with_vary_options(
     assert row["vary_high"] == "50000"
 
 
+def test_sim_calendar_add_set_rate_defaults_to_rate_aux_kind(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """The default --aux-kind='rate' writes no params_json at all -- the
+    engine already defaults a set_rate event with none to 'rate' -- so an
+    ordinary (non-inflation) rate row's CSV shape is unaffected by this
+    option existing."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset Checking", "4.5",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df[df["series"] == "Asset Checking"].iloc[-1]
+    assert row["params_json"] == ""
+
+
+def test_sim_calendar_add_set_rate_can_target_an_inflation_series(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """A series like 'cpi' lives in the aux_table's 'inflation' kind, not the
+    default 'rate' kind that an asset's own growth series uses -- --aux-kind
+    is required to vary it at all (ADR-006 covers inflation/COLA per its own
+    original motivation, not just asset growth rates)."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "uniform", "--vary-low", "2.0", "--vary-high", "4.0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "aux_kind='inflation'" in result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df[df["name"] == "cpi_vary"].iloc[0]
+    assert row["kind"] == "set_rate"
+    assert row["series"] == "cpi"
+    assert json.loads(row["params_json"]) == {"aux_kind": "inflation"}
+    assert row["vary_low"] == "20000" and row["vary_high"] == "40000"
+
+
+def test_sim_run_ensemble_resolves_an_inflation_series_vary(
+    test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    """End to end: a varying cpi (inflation-kind) set_rate row must resolve
+    to a literal, in-range value and run successfully -- not silently land
+    in the wrong aux_table kind and have no effect."""
+    runner = CliRunner()
+    add_result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "uniform", "--vary-low", "2.0", "--vary-high", "4.0",
+        ],
+    )
+    assert add_result.exit_code == 0, add_result.output
+
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    run_result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "1", "--allow-dirty-data",
+        ],
+    )
+    assert run_result.exit_code == 0, run_result.output
+
+    member_intent = next((intent_dir / "retire_alice").glob("*/member_0000.sqlite3"))
+    con = sqlite3.connect(member_intent)
+    try:
+        kind, amount, vary_distribution = con.execute(
+            "SELECT kind, amount, vary_distribution FROM calendar_event WHERE name = 'cpi_vary'"
+        ).fetchone()
+        assert kind == "set_rate"
+        assert 20_000 <= amount <= 40_000
+        assert vary_distribution is None
+    finally:
+        con.close()
+
+
+def test_sim_calendar_add_truncated_normal_accepts_low_and_high_alone(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """vary_low/vary_high double as truncated_normal's own bounds (ADR-006):
+    giving just those two infers vary_mean as their midpoint and vary_sd as
+    the spread that puts them 3 SDs out."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "truncated_normal", "--vary-low", "2.0", "--vary-high", "4.0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df[df["name"] == "cpi_vary"].iloc[0]
+    assert row["vary_low"] == "20000" and row["vary_high"] == "40000"
+    assert row["vary_mean"] == "" and row["vary_sd"] == ""  # left for resolve_member to infer
+
+
+def test_sim_calendar_add_rejects_clip_low_option_that_no_longer_exists(
+    test_data_dir: Path,
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "truncated_normal", "--vary-mean", "3.0", "--vary-sd", "0.5",
+            "--vary-clip-low", "0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--vary-clip-low" in result.output  # click: no such option
+
+
+def test_sim_calendar_add_rejects_truncated_normal_with_insufficient_params(
+    test_data_dir: Path,
+) -> None:
+    """--vary-mean alone isn't enough to resolve a truncated_normal: sd needs
+    either its own value or one of vary_low/vary_high to infer it from."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "truncated_normal", "--vary-mean", "3.0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "vary_sd requires vary_low or vary_high" in result.output
+
+
 def test_sim_calendar_add_set_amount_rejects_unknown_scheduled_name(
     test_data_dir: Path,
 ) -> None:

@@ -34,6 +34,7 @@ from analysis.sim.holdings import (
     render_holdings_table,
     symbol_holders,
 )
+from analysis.sim.distributions import DistributionError, resolve_truncated_normal_bounds
 from analysis.sim.engine import run_scenario
 from analysis.sim.ensemble import (
     latest_ensemble_batch,
@@ -1005,7 +1006,7 @@ def _validate_iso_date(s: str) -> str:
 # an accounts.csv missing e.g. `kind` is a malformed file, not an old one.
 _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
     "name", "vary_target", "vary_distribution", "vary_low", "vary_high",
-    "vary_mean", "vary_sd", "vary_clip_low", "vary_clip_high", "vary_ramp_months",
+    "vary_mean", "vary_sd", "vary_ramp_months",
 })
 
 
@@ -1111,30 +1112,28 @@ def _vary_row_options(f):
              "(set-rate, --vary-target amount, only).",
     )(f)
     f = click.option(
-        "--vary-clip-high", default=None,
-        help="truncated_normal upper reject-and-redraw bound (same unit as the value above).",
-    )(f)
-    f = click.option(
-        "--vary-clip-low", default=None,
-        help="truncated_normal lower reject-and-redraw bound (same unit as the value above).",
-    )(f)
-    f = click.option(
         "--vary-sd", default=None,
-        help="truncated_normal standard deviation (same unit as the value above).",
+        help="truncated_normal standard deviation (same unit as the value above). "
+             "May be omitted if vary_mean plus vary_low or vary_high is given.",
     )(f)
     f = click.option(
         "--vary-mean", default=None,
-        help="truncated_normal mean (same unit as the value above).",
+        help="truncated_normal mean (same unit as the value above). "
+             "May be omitted if both vary_low and vary_high are given.",
     )(f)
     f = click.option(
         "--vary-high", default=None,
-        help="uniform upper bound (same unit as the value above, or YYYY-MM-DD "
-             "for --vary-target date).",
+        help="uniform's upper bound, or truncated_normal's upper reject-and-redraw "
+             "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
+             "date). For truncated_normal, omitting it ramps out to "
+             "vary_mean + 3*vary_sd instead of leaving that side unbounded.",
     )(f)
     f = click.option(
         "--vary-low", default=None,
-        help="uniform lower bound (same unit as the value above, or YYYY-MM-DD "
-             "for --vary-target date).",
+        help="uniform's lower bound, or truncated_normal's lower reject-and-redraw "
+             "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
+             "date). For truncated_normal, omitting it ramps out to "
+             "vary_mean - 3*vary_sd instead of leaving that side unbounded.",
     )(f)
     f = click.option(
         "--vary-distribution", type=click.Choice(sorted(registries.ENSEMBLE_DISTRIBUTIONS)),
@@ -1162,8 +1161,6 @@ def _vary_row_fields(
     vary_high: str | None,
     vary_mean: str | None,
     vary_sd: str | None,
-    vary_clip_low: str | None,
-    vary_clip_high: str | None,
     vary_ramp_months: int | None,
     amount_parser: Callable[[str], int] | None,
 ) -> dict[str, str]:
@@ -1179,7 +1176,7 @@ def _vary_row_fields(
     if not vary_distribution:
         if any([
             vary_target, vary_low, vary_high, vary_mean, vary_sd,
-            vary_clip_low, vary_clip_high, vary_ramp_months is not None,
+            vary_ramp_months is not None,
         ]):
             raise click.ClickException("--vary-* options require --vary-distribution")
         return {"name": row_name or ""}
@@ -1190,12 +1187,50 @@ def _vary_row_fields(
     if vary_target == "amount" and amount_parser is None:
         raise click.ClickException("this calendar kind has no amount column to vary")
 
+    # Catch a distribution/bound mismatch here too, not just at 'sim load' --
+    # writing the row anyway (to be rejected later) means a bad combination
+    # looks like it worked until the separate load step.
+    allowed = registries.DISTRIBUTION_PARAMS.get(vary_distribution, frozenset())
+    provided = {
+        "vary_low": vary_low, "vary_high": vary_high,
+        "vary_mean": vary_mean, "vary_sd": vary_sd,
+    }
+    for col, raw in provided.items():
+        if raw is not None and col not in allowed:
+            raise click.ClickException(
+                f"--{col.replace('_', '-')} is not used by {vary_distribution} "
+                f"(it uses: {', '.join(sorted(c.replace('vary_', '') for c in allowed))})"
+            )
+    missing = [
+        col for col in registries.DISTRIBUTION_REQUIRED_PARAMS.get(vary_distribution, ())
+        if provided[col] is None
+    ]
+    if missing:
+        flags = ", ".join(f"--{c.replace('_', '-')}" for c in missing)
+        raise click.ClickException(f"{vary_distribution} requires {flags}")
+
     def convert(raw: str | None) -> str:
         if raw is None:
             return ""
         if vary_target == "date":
             return _validate_iso_date(raw)
         return str(amount_parser(raw))
+
+    if vary_distribution == "truncated_normal" and vary_target == "amount":
+        # Not in DISTRIBUTION_REQUIRED_PARAMS: any of mean/sd/low/high may be
+        # inferred from the other three (ADR-006), so no fixed column list
+        # is "required" -- but *some* combination must be enough to resolve
+        # every one, which is worth catching now rather than only at the
+        # separate 'sim load' step.
+        try:
+            resolve_truncated_normal_bounds(
+                float(amount_parser(vary_mean)) if vary_mean is not None else None,
+                float(amount_parser(vary_sd)) if vary_sd is not None else None,
+                float(amount_parser(vary_low)) if vary_low is not None else None,
+                float(amount_parser(vary_high)) if vary_high is not None else None,
+            )
+        except DistributionError as e:
+            raise click.ClickException(str(e)) from None
 
     return {
         "name": row_name,
@@ -1205,8 +1240,6 @@ def _vary_row_fields(
         "vary_high": convert(vary_high),
         "vary_mean": convert(vary_mean),
         "vary_sd": convert(vary_sd),
-        "vary_clip_low": convert(vary_clip_low),
-        "vary_clip_high": convert(vary_clip_high),
         "vary_ramp_months": str(vary_ramp_months) if vary_ramp_months is not None else "",
     }
 
@@ -1236,8 +1269,6 @@ def _do_add_transfer(
     vary_high: str | None,
     vary_mean: str | None,
     vary_sd: str | None,
-    vary_clip_low: str | None,
-    vary_clip_high: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Shared body of ``sim transfer add`` / ``sim calendar add transfer``."""
@@ -1279,7 +1310,6 @@ def _do_add_transfer(
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
-        vary_clip_low=vary_clip_low, vary_clip_high=vary_clip_high,
         vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
     )
 
@@ -1351,8 +1381,6 @@ def transfer_add(
     vary_high: str | None,
     vary_mean: str | None,
     vary_sd: str | None,
-    vary_clip_low: str | None,
-    vary_clip_high: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a one-time transfer to <scenario>/calendar.csv."""
@@ -1362,7 +1390,6 @@ def transfer_add(
         tax_character=tax_character, description=description, series=series,
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
-        vary_clip_low=vary_clip_low, vary_clip_high=vary_clip_high,
         vary_ramp_months=vary_ramp_months,
     )
 
@@ -1390,6 +1417,12 @@ def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
 @click.argument("date")
 @click.argument("series")
 @click.argument("rate_percent")
+@click.option(
+    "--aux-kind", default="rate", show_default=True,
+    help="aux_table kind this rate belongs to. The default 'rate' is an asset's own "
+         "growth series (accounts.csv's own series column); use 'inflation' to vary an "
+         "inflation/COLA series such as cpi (scheduled.csv rows reference it by series name).",
+)
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -1400,11 +1433,11 @@ def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
 @_vary_row_options
 def calendar_add_set_rate(
-    date: str, series: str, rate_percent: str,
+    date: str, series: str, rate_percent: str, aux_kind: str,
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_mean: str | None, vary_sd: str | None,
-    vary_clip_low: str | None, vary_clip_high: str | None, vary_ramp_months: int | None,
+    vary_ramp_months: int | None,
 ) -> None:
     """Append a set_rate event: SERIES starts earning RATE_PERCENT (e.g. 4.5) from DATE.
 
@@ -1419,7 +1452,6 @@ def calendar_add_set_rate(
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
-        vary_clip_low=vary_clip_low, vary_clip_high=vary_clip_high,
         vary_ramp_months=vary_ramp_months, amount_parser=_percent_to_rate_micros,
     )
 
@@ -1427,11 +1459,18 @@ def calendar_add_set_rate(
     scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
     row = {
         "date": date, "kind": "set_rate", "series": series, "amount": str(micros),
+        # aux_kind has no promoted column of its own -- _build_cal_payload
+        # only ever learns it from params_json (defaulting to 'rate' when
+        # absent), so it's only written here when it differs from that.
+        "params_json": json.dumps({"aux_kind": aux_kind}) if aux_kind != "rate" else "",
         "description": description, "tags": tags, **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
     _append_csv_row(path, registries.CALENDAR_HEADER, row)
-    click.echo(f"appended set_rate {series!r} -> {rate_percent}% on {date} to {path}")
+    click.echo(
+        f"appended set_rate {series!r} -> {rate_percent}% on {date} "
+        f"(aux_kind={aux_kind!r}) to {path}"
+    )
 
 
 @calendar_add_group_command.command("set-amount")
@@ -1454,7 +1493,7 @@ def calendar_add_set_amount(
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_mean: str | None, vary_sd: str | None,
-    vary_clip_low: str | None, vary_clip_high: str | None, vary_ramp_months: int | None,
+    vary_ramp_months: int | None,
 ) -> None:
     """Append a set_amount event: SCHEDULED_NAME's amount changes to AMOUNT
     (dollars) from DATE.
@@ -1478,7 +1517,6 @@ def calendar_add_set_amount(
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
-        vary_clip_low=vary_clip_low, vary_clip_high=vary_clip_high,
         vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
     )
 
@@ -1512,7 +1550,7 @@ def calendar_add_retire_scheduled(
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_mean: str | None, vary_sd: str | None,
-    vary_clip_low: str | None, vary_clip_high: str | None, vary_ramp_months: int | None,
+    vary_ramp_months: int | None,
 ) -> None:
     """Append a retire_scheduled event: SCHEDULED_NAME stops firing from DATE.
 
@@ -1536,7 +1574,6 @@ def calendar_add_retire_scheduled(
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
-        vary_clip_low=vary_clip_low, vary_clip_high=vary_clip_high,
         vary_ramp_months=vary_ramp_months, amount_parser=None,
     )
 
@@ -1585,8 +1622,6 @@ def calendar_add_transfer(
     vary_high: str | None,
     vary_mean: str | None,
     vary_sd: str | None,
-    vary_clip_low: str | None,
-    vary_clip_high: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a one-time transfer (same as ``sim transfer add``)."""
@@ -1596,7 +1631,6 @@ def calendar_add_transfer(
         tax_character=tax_character, description=description, series=series,
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
-        vary_clip_low=vary_clip_low, vary_clip_high=vary_clip_high,
         vary_ramp_months=vary_ramp_months,
     )
 

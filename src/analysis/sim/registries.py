@@ -276,8 +276,13 @@ CALENDAR_HEADER: tuple[str, ...] = (
     "tags",
     # Ensemble variation (ADR-006): a row with vary_distribution set has its own
     # amount/date (per vary_target) drawn per member instead of used literally.
+    # vary_low/vary_high are `uniform`'s own bounds, and also double as
+    # `truncated_normal`'s optional clip bounds -- each of vary_mean/vary_sd/
+    # vary_low/vary_high may be inferred from the other three when omitted
+    # (see distributions.resolve_truncated_normal_bounds), so truncated_normal
+    # is never actually unbounded.
     "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_mean",
-    "vary_sd", "vary_clip_low", "vary_clip_high", "vary_ramp_months",
+    "vary_sd", "vary_ramp_months",
 )
 
 # ADR-006: which of a varying calendar_event row's own columns is drawn.
@@ -293,12 +298,24 @@ ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal"}
 # SUPPORTED_CALENDAR_KINDS) has no amount column a draw could affect.
 AMOUNT_VARYING_KINDS: set[str] = {"set_rate", "set_amount", "one_off_transfer"}
 
-# ADR-006: vary_low/vary_high/vary_mean/vary_sd/vary_clip_low/vary_clip_high
-# columns each distribution actually reads; any other bound column left
-# non-blank alongside it is a parameter the eventual draw silently ignores.
+# ADR-006: vary_low/vary_high/vary_mean/vary_sd columns each distribution
+# actually reads; any other bound column left non-blank alongside it is a
+# parameter the eventual draw silently ignores. `truncated_normal` reads all
+# four (any one may be inferred from the other three when blank, so none is
+# individually "required" here -- see DISTRIBUTION_REQUIRED_PARAMS and
+# distributions.resolve_truncated_normal_bounds).
 DISTRIBUTION_PARAMS: dict[str, frozenset[str]] = {
     "uniform": frozenset({"vary_low", "vary_high"}),
-    "truncated_normal": frozenset({"vary_mean", "vary_sd", "vary_clip_low", "vary_clip_high"}),
+    "truncated_normal": frozenset({"vary_mean", "vary_sd", "vary_low", "vary_high"}),
+}
+
+# ADR-006: the subset of DISTRIBUTION_PARAMS[dist] that must actually be
+# given a value, checked by a plain "is this column blank" scan.
+# `truncated_normal` isn't here: its four params can satisfy each other in
+# more than one combination (mean+sd; low+high; mean+one bound; ...), which
+# needs distributions.resolve_truncated_normal_bounds, not a fixed column list.
+DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
+    "uniform": ("vary_low", "vary_high"),
 }
 
 

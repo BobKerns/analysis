@@ -186,6 +186,12 @@ _META_COLS = [
     "run_by",
 ]
 
+def find_data_dir(data_dir: Path | str | None = None) -> Path:
+    REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+    if data_dir is None:
+        return Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data/shared/sim"))
+    return Path(data_dir)
+
 
 def scenario_picker(
     data_dir: Path | str | None = None,
@@ -220,11 +226,7 @@ def scenario_picker(
     previous connections) whenever the dropdown changes.
     """
 
-    REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
-    if data_dir is None:
-        data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data/shared/sim"))
-    else:
-        data_dir = Path(data_dir)
+    data_dir = find_data_dir(data_dir)
     if default is None:
     # Same resolution the CLI uses: $ANALYSIS_SCENARIO, else the data repo's
     # .current_scenario, else "current".
