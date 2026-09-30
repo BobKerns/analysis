@@ -48,7 +48,7 @@ def test_lots_are_spelled_out_where_an_account_has_several(
     )
     _, steps = _steps(test_data_dir)
     rows = steps.loc["roth first"]
-    assert list(zip(rows["draw_from"], rows["lot"])) == [
+    assert list(zip(rows["draw_from"], rows["lot"], strict=True)) == [
         ("Asset_Roth_Alice", "default"), ("Asset_Roth_Alice", "b"), ("Asset_Savings", "-"),
     ]
 

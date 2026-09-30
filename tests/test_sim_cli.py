@@ -12,10 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
-from analysis.sim.cli import DEFAULT_INTENT_DIR, DEFAULT_RUNS_DIR, _resolve_state_dir
-from analysis.sim.connection import ScenarioConnection
-from analysis.sim.loader import DEFAULT_STATE_DIR, load_scenario
-from tests.conftest import data_dir
+from analysis.sim.loader import load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"

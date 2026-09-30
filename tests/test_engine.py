@@ -489,7 +489,9 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character(l
     ]
 
 
-def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhausted(ledger_con: sqlite3.Connection) -> None:
+def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhausted(
+        ledger_con: sqlite3.Connection,
+    ) -> None:
     """Step 2 requests 1% of what's still outstanding, step 3 the default
     100% of whatever's left -- absent a shortfall this is a cascading
     near-even split, but step 2 (Hiromi Vanguard) is nearly empty here, so

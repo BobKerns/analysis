@@ -159,5 +159,6 @@ def test_subject_account_must_exist_and_match_a_single_source(
     with pytest.raises(LoadError, match="subject_account 'Nope' is not an account"):
         load_test_copy()
     set_rmd_source(IRA, "default", params={"subject_account": "Asset_Roth_Alice"})
-    with pytest.raises(LoadError, match="subject_account 'Asset_Roth_Alice' is not the account 'Asset_TraditionalIRA_Alice'"):
+    with pytest.raises(LoadError,
+                       match="subject_account 'Asset_Roth_Alice' is not the account 'Asset_TraditionalIRA_Alice'"):
         load_test_copy()

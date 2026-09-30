@@ -89,7 +89,7 @@ _STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _stable_code_stamps() -> Generator[None, None, None]:
+def _stable_code_stamps() -> Generator[None]:
     """Stamp runs with a fixed code version instead of asking git.
 
     ``provenance.code_stamps`` runs ``git status`` on this repo for every load
@@ -159,7 +159,7 @@ def test_scenarios_dir(test_data_dir: Path) -> Path:
     return scenarios_dir
 
 @pytest.fixture(scope="function")
-def state_dir(tmp_path: Path) -> Generator[Path, None, None]:
+def state_dir(tmp_path: Path) -> Generator[Path]:
     """Create a temporary state directory within the temporary data directory for tests."""
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -313,7 +313,7 @@ def variant_a_run_path(run_path: Callable[[str], Path]) -> Path:
 @pytest.fixture(scope="function")
 def retire_alice_run(scenarios_dir: Path,
                      retire_alice_scenario: ScenarioConnection,
-                     retire_alice_run_file: Path) -> Generator[RunConnection, None, None]:
+                     retire_alice_run_file: Path) -> Generator[RunConnection]:
     """Fixture to provide the RunConnection for the retire_alice scenario."""
     with open_run(retire_alice_run_file, retire_alice_scenario,
                   scenarios_dir=scenarios_dir) as r:
@@ -323,7 +323,7 @@ def retire_alice_run(scenarios_dir: Path,
 @pytest.fixture(scope="function")
 def variant_a_run(scenarios_dir: Path,
                   variant_a_scenario: ScenarioConnection,
-                  variant_a_run_file: Path) -> Generator[RunConnection, None, None]:
+                  variant_a_run_file: Path) -> Generator[RunConnection]:
     """Fixture to provide the RunConnection for the variant_a scenario."""
     with open_run(variant_a_run_file, variant_a_scenario,
                   scenarios_dir=scenarios_dir) as r:
@@ -331,14 +331,14 @@ def variant_a_run(scenarios_dir: Path,
 
 
 @pytest.fixture(scope="session")
-def retire_alice_scenario(data_dir: Path) -> Generator[ScenarioConnection, None, None]:
+def retire_alice_scenario(data_dir: Path) -> Generator[ScenarioConnection]:
     """Fixture to provide the ScenarioConnection for the retire_alice scenario."""
     with open_scenario(data_dir, "retire_alice") as conn:
         yield conn
 
 
 @pytest.fixture(scope="function")
-def test_retire_alice_scenario(test_data_dir: Path) -> Generator[ScenarioConnection, None, None]:
+def test_retire_alice_scenario(test_data_dir: Path) -> Generator[ScenarioConnection]:
     """Fixture to provide the ScenarioConnection for the retire_alice scenario."""
     with open_scenario(test_data_dir, "retire_alice") as conn:
         yield conn
@@ -347,7 +347,7 @@ def test_retire_alice_scenario(test_data_dir: Path) -> Generator[ScenarioConnect
 @pytest.fixture(scope="function")
 def variant_a_scenario(data_dir: Path,
                        variant_a_scenario_create: Path,
-                       ) -> Generator[ScenarioConnection, None, None]:
+                       ) -> Generator[ScenarioConnection]:
     """Fixture to provide the ScenarioConnection for the variant_a scenario."""
     with open_scenario(data_dir, "variant_a") as conn:
         yield conn
@@ -370,7 +370,7 @@ def variant_a_scenario_create(data_dir: Path) -> Path:
     return scenario.create_scenario(data_dir, "variant_a", "retire_alice")
 
 @pytest.fixture(scope="function")
-def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunConnection, None, None]:
+def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunConnection]:
     """Connection to the ``two_lot_run_file`` run."""
     with open_scenario(test_data_dir, "retire_alice") as scenario_conn:
         with open_run(two_lot_run_file, scenario_conn,
@@ -382,7 +382,7 @@ def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunCon
 def lot_variant_runs(
     two_lot_run_file: Path, test_data_dir: Path, test_scenarios_dir: Path,
     intent_dir: Path, runs_dir: Path,
-) -> Generator[tuple[RunConnection, dict[str, RunConnection]], None, None]:
+) -> Generator[tuple[RunConnection, dict[str, RunConnection]]]:
     """Runs of ``retire_alice`` (its brokerage split into lots a and b) and of a
     derived ``variant`` that changes lot b's quantity, balance and basis, adds a
     lot c, and changes one inherited year-to-date row."""
@@ -433,7 +433,7 @@ def bad_subkind_data(test_data: Path) -> Path:
 
 
 @pytest.fixture(scope="function")
-def ledger_con() -> Generator[sqlite3.Connection, None, None]:
+def ledger_con() -> Generator[sqlite3.Connection]:
     """In-memory run-schema database for engine unit tests that call
     ledger-posting helpers directly. Lot ids 1..99 exist, each belonging to the
     account with the same id, so tests can use small ints as account/lot ids."""

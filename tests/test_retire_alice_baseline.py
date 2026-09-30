@@ -62,7 +62,7 @@ def test_retire_alice_matches_baseline(name: str, retire_alice_run_file: Path) -
     if actual != expected:
         got, want = actual.splitlines(), expected.splitlines()
         first = next(
-            (i for i, (g, w) in enumerate(zip(got, want)) if g != w),
+            (i for i, (g, w) in enumerate(zip(got, want, strict=True)) if g != w),
             min(len(got), len(want)),
         )
         pytest.fail(
