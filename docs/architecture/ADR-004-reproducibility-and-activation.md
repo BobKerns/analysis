@@ -91,8 +91,7 @@ Required behavior:
 - Set `ANALYSIS_DATA_DIR` to that absolute path.
 - Set `ANALYSIS_DATA_REPO_NAME` to the basename, unless already set by the user.
 - Prompt for `ANALYSIS_USER` if unset: read one line from `/dev/tty`, validate against `persons.csv` (column 1), re-prompt on miss, abort on EOF.
-- Save the pre-activation values of `PS1` and the four env vars in `_ANALYSIS_OLD_*` shell variables.
-- Prefix `PS1` with `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER]`.
+- Define `analysis_prompt_info`, which prints `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER] `, and prefix `PS1` with a literal `$(analysis_prompt_info)` only if it is not already present (so re-sourcing is idempotent; zsh gets `setopt prompt_subst`). `deactivate-analysis` strips it again.
 - Define a `deactivate` function that restores all saved values and unsets itself.
 
 The script is shell-agnostic at the user-visible level (works in bash and zsh); fish gets a separate `activate.fish` if/when needed.
