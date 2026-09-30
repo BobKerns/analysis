@@ -87,6 +87,10 @@ fi
 # shellcheck disable=SC1090,SC1091
 . "$ANALYSIS_REPO_DIR/.venv/bin/activate" || _analysis_fail "failed to activate .venv"
 
+if [ -r "$ANALYSIS_DATA_DIR/.analysis_user" ]; then
+	IFS= read -r ANALYSIS_USER < "$ANALYSIS_DATA_DIR/.analysis_user"
+fi
+
 if [ -z "${ANALYSIS_USER-}" ]; then
 	printf "ANALYSIS_USER: " >&2
 	read -r ANALYSIS_USER
@@ -97,6 +101,11 @@ if ! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null;
 	_analysis_fail "ANALYSIS_USER not found in $ANALYSIS_DATA_DIR/persons.csv"
 fi
 export ANALYSIS_USER
+
+# Persist the ANALYSIS_USER for future sessions.
+printf '%s\n' "$ANALYSIS_USER" > "$ANALYSIS_DATA_DIR/.analysis_user" || \
+	_analysis_fail "unable to write $ANALYSIS_DATA_DIR/.analysis_user"
+
 
 if [ -n "${ZSH_VERSION-}" ]; then
 	_analysis_enable_completion "zsh_source"
