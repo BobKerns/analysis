@@ -397,7 +397,7 @@ def _run_ensemble(
 
 @sim_group_command.group(name="ensemble")
 def ensemble_group_command() -> None:
-    """Inspect an ensemble recipe's generated members (ADR-006)."""
+    """Inspect or manage an ensemble recipe's generated members (ADR-006)."""
 
 
 @ensemble_group_command.command("summary")
@@ -415,7 +415,11 @@ def ensemble_group_command() -> None:
     help="Data repo (default: $ANALYSIS_DATA_DIR)",
 )
 def ensemble_summary(scenario_name: str, runs_dir: Path | None, data_dir: Path | None) -> None:
-    """Mean/median/SD/range of year-end net worth across SCENARIO_NAME's members."""
+    """
+    Summarize an ensemble's net worth across its members.
+    
+    Mean/median/SD/range of year-end net worth across SCENARIO_NAME's members.
+    """
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
