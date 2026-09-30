@@ -71,7 +71,7 @@ from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
-from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER
+from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER, CALENDAR_HEADER
 
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
@@ -475,6 +475,21 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
         path.write_text(text)
         return path
     return _write
+
+
+@pytest.fixture(scope="function")
+def append_calendar_row(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Append a row to the private copy's calendar.csv, by column name
+    (ADR-006 ``vary_*``/``name`` columns included)."""
+    def _add(**fields: str) -> None:
+        path = retire_alice_csv("calendar.csv")
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        df = df.reindex(columns=CALENDAR_HEADER, fill_value="")
+        unknown = set(fields) - set(CALENDAR_HEADER)
+        assert not unknown, f"unknown calendar.csv columns: {sorted(unknown)}"
+        df.loc[len(df)] = [fields.get(column, "") for column in CALENDAR_HEADER]
+        df.to_csv(path, index=False)
+    return _add
 
 
 @pytest.fixture(scope="function")

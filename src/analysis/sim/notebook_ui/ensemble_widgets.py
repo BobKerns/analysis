@@ -13,7 +13,7 @@ import pandas as pd
 from IPython.display import Markdown, display
 
 from analysis.sim.connection import year_end_values
-from analysis.sim.ensemble import load_ensemble, members_net_worth_by_month
+from analysis.sim.ensemble import latest_ensemble_batch, load_ensemble, members_net_worth_by_month
 from analysis.sim.ensemble import summary as ensemble_summary
 from analysis.sim.plotting import FRAME_ALPHA
 
@@ -25,14 +25,14 @@ __all__ = [
 
 def list_ensemble_recipes(runs_dir: Path) -> list[str]:
     """Names of every subdirectory of ``runs_dir`` holding at least one
-    ``member_*.sqlite3`` run file -- the recipes ``sim run --ensemble-size``
-    has generated and run."""
+    generated batch (a ``<timestamp>/member_*.sqlite3`` run file) -- the
+    recipes ``sim run --ensemble-size`` has generated and run."""
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
         return []
     return sorted(
         p.name for p in runs_dir.iterdir()
-        if p.is_dir() and any(p.glob("member_*.sqlite3"))
+        if p.is_dir() and latest_ensemble_batch(p) is not None
     )
 
 
@@ -79,12 +79,13 @@ def ensemble_widget(runs_dir: Path) -> widgets.VBox:
         out.clear_output(wait=True)
         if not dropdown.value:
             return
-        connections = load_ensemble(runs_dir / dropdown.value)
+        batch_dir = latest_ensemble_batch(runs_dir / dropdown.value)
+        connections = load_ensemble(batch_dir)
         try:
             monthly_summary = ensemble_summary(members_net_worth_by_month(connections))
             heading, yearly = ensemble_summary_view(monthly_summary, len(connections))
             with out:
-                display(Markdown(heading))
+                display(Markdown(f"{heading} (batch {batch_dir.name})"))
                 _fig, ax = plt.subplots(figsize=(10, 5))
                 ensemble_fan_chart(monthly_summary, ax=ax)
                 ax.set_title(f"Net worth fan chart ({dropdown.value})")

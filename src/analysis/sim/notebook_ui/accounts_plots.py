@@ -18,7 +18,7 @@ from analysis.sim.accounts import CASHFLOW_KINDS, KIND_LABELS, account_summary_b
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.plotting import include_zero
-from analysis.sim.types import AccountKind, DollarMode, DollarMode, ValuePlotMode
+from analysis.sim.types import AccountKind, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.pickers import (
     DollarModePicker, ValuePlotModePicker, YAxisPlotModePicker,
 )

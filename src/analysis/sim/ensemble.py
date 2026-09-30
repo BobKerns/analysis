@@ -29,7 +29,7 @@ from analysis.sim.distributions import TruncatedNormal, Uniform, member_rng
 from analysis.sim.types import DollarMode
 
 __all__ = [
-    "EnsembleError", "resolve_member", "load_ensemble",
+    "EnsembleError", "resolve_member", "load_ensemble", "latest_ensemble_batch",
     "members_net_worth_by_month", "summary",
 ]
 
@@ -209,13 +209,32 @@ def resolve_member(
     return member_path
 
 
-def load_ensemble(runs_dir: Path) -> dict[str, RunConnection]:
-    """Every ``member_*.sqlite3`` run file directly under ``runs_dir``, keyed
+def load_ensemble(batch_dir: Path) -> dict[str, RunConnection]:
+    """Every ``member_*.sqlite3`` run file directly under ``batch_dir``, keyed
     by filename stem. Caller owns closing each connection."""
-    paths = sorted(Path(runs_dir).glob("member_*.sqlite3"))
+    paths = sorted(Path(batch_dir).glob("member_*.sqlite3"))
     if not paths:
-        raise EnsembleError(f"no member run files found under {runs_dir}")
+        raise EnsembleError(f"no member run files found under {batch_dir}")
     return {p.stem: RunConnection(p) for p in paths}
+
+
+def latest_ensemble_batch(recipe_dir: Path) -> Path | None:
+    """The most recently generated batch subfolder under ``recipe_dir`` that
+    holds at least one member run file, or ``None`` if there isn't one.
+
+    A recipe's members live under ``<recipe_dir>/<timestamp>/member_NNNN.sqlite3``
+    -- one subfolder per ``sim run`` invocation, timestamp-named so reruns
+    never collide and every batch's history is kept (matching how an
+    ordinary, non-ensemble run file is never overwritten either).
+    """
+    recipe_dir = Path(recipe_dir)
+    if not recipe_dir.is_dir():
+        return None
+    batches = sorted(
+        p for p in recipe_dir.iterdir()
+        if p.is_dir() and any(p.glob("member_*.sqlite3"))
+    )
+    return batches[-1] if batches else None
 
 
 def members_net_worth_by_month(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import matplotlib
@@ -12,19 +12,20 @@ import pytest
 matplotlib.use("Agg")
 
 from analysis.sim.engine import run_scenario
-from analysis.sim.ensemble import load_ensemble, members_net_worth_by_month, resolve_member
+from analysis.sim.ensemble import (
+    latest_ensemble_batch,
+    load_ensemble,
+    members_net_worth_by_month,
+    resolve_member,
+)
 from analysis.sim.ensemble import summary as ensemble_summary
-from analysis.sim.loader import load_scenario
+from analysis.sim.loader import LoadResult
 from analysis.sim.notebook_ui.ensemble_widgets import (
     ensemble_fan_chart,
     ensemble_summary_view,
     ensemble_widget,
     list_ensemble_recipes,
 )
-from analysis.sim.registries import CALENDAR_HEADER
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PROTOTYPE = REPO_ROOT / "prototype_data"
 
 
 def _monthly_summary() -> pd.DataFrame:
@@ -57,74 +58,63 @@ def test_list_ensemble_recipes_finds_only_directories_with_members(tmp_path: Pat
     assert list_ensemble_recipes(tmp_path / "nope") == []
 
     runs_dir = tmp_path / "runs"
-    (runs_dir / "recipe_a").mkdir(parents=True)
-    (runs_dir / "recipe_a" / "member_0000.sqlite3").touch()
-    (runs_dir / "recipe_b").mkdir(parents=True)  # no members yet
+    (runs_dir / "recipe_a" / "2026-01-01T000000Z").mkdir(parents=True)
+    (runs_dir / "recipe_a" / "2026-01-01T000000Z" / "member_0000.sqlite3").touch()
+    (runs_dir / "recipe_b" / "2026-01-01T000000Z").mkdir(parents=True)  # no members yet
     (runs_dir / "not_a_recipe.sqlite3").touch()  # a plain, non-ensemble run file
 
     assert list_ensemble_recipes(runs_dir) == ["recipe_a"]
 
 
-def _append_calendar_vary_row(repo: Path, **fields: str) -> None:
-    cal = repo / "scenarios" / "retire_alice" / "calendar.csv"
-    df = pd.read_csv(cal, dtype=str, keep_default_na=False)
-    df = df.reindex(columns=CALENDAR_HEADER, fill_value="")
-    df.loc[len(df)] = [fields.get(column, "") for column in CALENDAR_HEADER]
-    df.to_csv(cal, index=False)
-
-
-def _build_small_ensemble(tmp_path: Path) -> Path:
-    repo = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, repo)
-    _append_calendar_vary_row(
-        repo, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+@pytest.fixture
+def small_ensemble_runs_dir(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    intent_dir: Path, runs_dir: Path,
+) -> Path:
+    """Two already-resolved-and-run members of a tiny vary_distribution recipe."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )
-    recipe = load_scenario(
-        repo, "retire_alice", intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    runs_dir = tmp_path / "runs" / "retire_alice"
+    recipe = load_test_copy().intent_path
+    batch_dir = runs_dir / "retire_alice" / "2026-01-01T000000Z"
     for i in range(2):
         member_intent = resolve_member(
-            recipe, tmp_path / f"intent_member_{i}.sqlite3",
+            recipe, intent_dir / f"intent_member_{i}.sqlite3",
             seed=1, member_index=i, member_count=2, recipe_tree_id="deadbeef",
         )
         run_scenario(
-            member_intent, runs_dir / f"member_{i:04d}.sqlite3",
+            member_intent, batch_dir / f"member_{i:04d}.sqlite3",
             run_by="test", allow_dirty_data=True,
         )
-    return tmp_path / "runs"
+    return runs_dir
 
 
 def test_ensemble_widget_returns_a_box_without_displaying_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ipywidgets import widgets
 
     from analysis.sim.notebook_ui import ensemble_widgets
 
-    runs_dir = _build_small_ensemble(tmp_path)
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
-    box = ensemble_widget(runs_dir)
+    box = ensemble_widget(small_ensemble_runs_dir)
     assert isinstance(box, widgets.VBox)
     assert not any(isinstance(item, widgets.Widget) for item in shown)
 
 
-def test_ensemble_widget_dropdown_lists_the_recipe(tmp_path: Path) -> None:
-    runs_dir = _build_small_ensemble(tmp_path)
-    box = ensemble_widget(runs_dir)
+def test_ensemble_widget_dropdown_lists_the_recipe(small_ensemble_runs_dir: Path) -> None:
+    box = ensemble_widget(small_ensemble_runs_dir)
     dropdown, _out = box.children
     assert dropdown.options == ("retire_alice",)
     assert dropdown.value == "retire_alice"
 
 
-def test_ensemble_widget_matches_cli_summary_numbers(tmp_path: Path) -> None:
-    runs_dir = _build_small_ensemble(tmp_path)
-    connections = load_ensemble(runs_dir / "retire_alice")
+def test_ensemble_widget_matches_cli_summary_numbers(small_ensemble_runs_dir: Path) -> None:
+    connections = load_ensemble(latest_ensemble_batch(small_ensemble_runs_dir / "retire_alice"))
     try:
         monthly_summary = ensemble_summary(members_net_worth_by_month(connections))
         _heading, yearly = ensemble_summary_view(monthly_summary, len(connections))

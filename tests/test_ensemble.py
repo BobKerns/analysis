@@ -2,53 +2,35 @@
 
 from __future__ import annotations
 
-import shutil
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from analysis.sim.engine import run_scenario
 from analysis.sim.ensemble import (
     EnsembleError,
+    latest_ensemble_batch,
     load_ensemble,
     members_net_worth_by_month,
     resolve_member,
     summary,
 )
-from analysis.sim.loader import load_scenario
-from analysis.sim.registries import CALENDAR_HEADER
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PROTOTYPE = REPO_ROOT / "prototype_data"
+from analysis.sim.loader import LoadResult
 
 
-def _append_calendar_vary_row(repo: Path, **fields: str) -> None:
-    cal = repo / "scenarios" / "retire_alice" / "calendar.csv"
-    df = pd.read_csv(cal, dtype=str, keep_default_na=False)
-    df = df.reindex(columns=CALENDAR_HEADER, fill_value="")
-    df.loc[len(df)] = [fields.get(column, "") for column in CALENDAR_HEADER]
-    df.to_csv(cal, index=False)
-
-
-def _load_recipe(repo: Path, tmp_path: Path) -> Path:
-    return load_scenario(
-        repo, "retire_alice", intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-
-
-def test_resolve_member_amount_target_draws_within_bounds(tmp_path: Path) -> None:
-    repo = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, repo)
-    _append_calendar_vary_row(
-        repo, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+def test_resolve_member_amount_target_draws_within_bounds(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )
-    recipe = _load_recipe(repo, tmp_path)
+    recipe = load_test_copy().intent_path
     member = resolve_member(
         recipe, tmp_path / "member_0000.sqlite3",
         seed=1, member_index=0, member_count=3, recipe_tree_id="deadbeef",
@@ -77,16 +59,17 @@ def test_resolve_member_amount_target_draws_within_bounds(tmp_path: Path) -> Non
         con.close()
 
 
-def test_resolve_member_date_target_draws_within_bounds(tmp_path: Path) -> None:
-    repo = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, repo)
-    _append_calendar_vary_row(
-        repo, date="2027-06-30", kind="retire_scheduled", name="retire_bob_vary",
+def test_resolve_member_date_target_draws_within_bounds(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-06-30", kind="retire_scheduled", name="retire_bob_vary",
         scheduled_name="salary_bob",
         vary_target="date", vary_distribution="uniform",
         vary_low="2029-01-01", vary_high="2029-12-31",
     )
-    recipe = _load_recipe(repo, tmp_path)
+    recipe = load_test_copy().intent_path
     member = resolve_member(
         recipe, tmp_path / "member_0000.sqlite3",
         seed=1, member_index=0, member_count=3, recipe_tree_id="deadbeef",
@@ -104,16 +87,17 @@ def test_resolve_member_date_target_draws_within_bounds(tmp_path: Path) -> None:
         con.close()
 
 
-def test_resolve_member_is_reproducible_for_same_seed_and_index(tmp_path: Path) -> None:
-    repo = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, repo)
-    _append_calendar_vary_row(
-        repo, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+def test_resolve_member_is_reproducible_for_same_seed_and_index(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )
-    recipe = _load_recipe(repo, tmp_path)
+    recipe = load_test_copy().intent_path
 
     def _drawn_amount(member_path: Path) -> int:
         member = resolve_member(
@@ -131,16 +115,17 @@ def test_resolve_member_is_reproducible_for_same_seed_and_index(tmp_path: Path) 
     assert _drawn_amount(tmp_path / "a.sqlite3") == _drawn_amount(tmp_path / "b.sqlite3")
 
 
-def test_resolve_member_different_members_draw_differently(tmp_path: Path) -> None:
-    repo = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, repo)
-    _append_calendar_vary_row(
-        repo, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+def test_resolve_member_different_members_draw_differently(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="0", vary_high="1000000",
     )
-    recipe = _load_recipe(repo, tmp_path)
+    recipe = load_test_copy().intent_path
 
     amounts = set()
     for i in range(3):
@@ -158,18 +143,19 @@ def test_resolve_member_different_members_draw_differently(tmp_path: Path) -> No
     assert len(amounts) == 3
 
 
-def test_resolve_member_ramp_interpolates_and_lands_on_target(tmp_path: Path) -> None:
-    repo = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, repo)
+def test_resolve_member_ramp_interpolates_and_lands_on_target(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
     # retire_alice/series/rate__Asset_Checking.csv already gives "Asset
     # Checking" a baseline rate (3.0% APR as of 2026-01-31); ramp from it.
-    _append_calendar_vary_row(
-        repo, date="2027-01-31", kind="set_rate", name="checking_rate_ramp",
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="checking_rate_ramp",
         series="Asset Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="60000", vary_high="60000", vary_ramp_months="3",
     )
-    recipe = _load_recipe(repo, tmp_path)
+    recipe = load_test_copy().intent_path
     member = resolve_member(
         recipe, tmp_path / "member_0000.sqlite3",
         seed=1, member_index=0, member_count=1, recipe_tree_id="deadbeef",
@@ -196,16 +182,17 @@ def test_resolve_member_ramp_interpolates_and_lands_on_target(tmp_path: Path) ->
         con.close()
 
 
-def test_resolve_member_ramp_without_baseline_rate_raises(tmp_path: Path) -> None:
-    repo = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, repo)
-    _append_calendar_vary_row(
-        repo, date="2027-01-31", kind="set_rate", name="new_series_ramp",
+def test_resolve_member_ramp_without_baseline_rate_raises(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="new_series_ramp",
         series="Never Before Seen Series", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="60000", vary_high="60000", vary_ramp_months="3",
     )
-    recipe = _load_recipe(repo, tmp_path)
+    recipe = load_test_copy().intent_path
     with pytest.raises(EnsembleError, match="no existing"):
         resolve_member(
             recipe, tmp_path / "member_0000.sqlite3",
@@ -213,20 +200,20 @@ def test_resolve_member_ramp_without_baseline_rate_raises(tmp_path: Path) -> Non
         )
 
 
-def test_load_ensemble_and_summary_across_members(tmp_path: Path) -> None:
-    repo = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, repo)
-    _append_calendar_vary_row(
-        repo, date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+def test_load_ensemble_and_summary_across_members(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="0", vary_high="1000000",
     )
-    recipe = _load_recipe(repo, tmp_path)
-    runs_dir = tmp_path / "runs"
+    recipe = load_test_copy().intent_path
     for i in range(3):
         member_intent = resolve_member(
-            recipe, tmp_path / f"intent_member_{i}.sqlite3",
+            recipe, intent_dir / f"intent_member_{i}.sqlite3",
             seed=1, member_index=i, member_count=3, recipe_tree_id="deadbeef",
         )
         run_scenario(
@@ -256,3 +243,18 @@ def test_load_ensemble_and_summary_across_members(tmp_path: Path) -> None:
 def test_load_ensemble_raises_when_no_member_runs_found(tmp_path: Path) -> None:
     with pytest.raises(EnsembleError, match="no member run files"):
         load_ensemble(tmp_path / "empty")
+
+
+def test_latest_ensemble_batch_picks_the_most_recent_timestamp(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "runs" / "retire_alice"
+    assert latest_ensemble_batch(recipe_dir) is None  # doesn't exist yet
+
+    older = recipe_dir / "2026-01-01T000000Z"
+    newer = recipe_dir / "2026-06-01T000000Z"
+    empty = recipe_dir / "2026-12-01T000000Z"  # no member files -- not a real batch
+    for d in (older, newer, empty):
+        d.mkdir(parents=True)
+    (older / "member_0000.sqlite3").touch()
+    (newer / "member_0000.sqlite3").touch()
+
+    assert latest_ensemble_batch(recipe_dir) == newer
