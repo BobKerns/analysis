@@ -1,6 +1,6 @@
 # ADR-006: Ensemble scenarios — parameter variation and Monte Carlo runs
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-29
 - **Supersedes:** —
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-002](ADR-002-storage-schema.md) (storage schema, `scenario.seed` — "reserved for ensembles; unused in v1"), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries, CSV layouts, calendar events §3, scenario hierarchy §4.5), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility, provenance).
@@ -130,10 +130,10 @@ by_month = pd.concat(frames).groupby("month")["net_worth"].agg(["mean", "median"
 
 — the same shape of aggregation `scenario_compare.ipynb` already does across a handful of named variants, just over many random ones. A new `notebooks/ensemble.ipynb` plots the standard Monte Carlo fan (percentile bands over time); `sim ensemble summary <recipe>` is the terminal equivalent from day one, printing the same table plus the failure count from §7, so this doesn't join the CLI-gap backlog in `TODO.md`.
 
-## Amendments to apply on acceptance
+## Amendments applied alongside this ADR
 
 - [ADR-002](ADR-002-storage-schema.md): `calendar_event` gains `name` and the `vary_*` columns; new intent-layer tables `ensemble_manifest`, `ensemble_draw` (added to `SNAPSHOT_TABLES`); `SCHEMA_VERSION` bump; `schema_overview` rows.
-- [ADR-003](ADR-003-registries-and-csv-schemas.md): §4.8 `calendar.csv` gains `name` and the `vary_*` columns (§2); §3 notes that a row with `vary_distribution` set is resolved before it can fire, and documents the two-pass, ramp-as-expansion behavior (§4).
+- [ADR-003](ADR-003-registries-and-csv-schemas.md): §4.8 `calendar.csv` gains `name` and the `vary_*` columns (§2); §3 notes that a row with `vary_distribution` set is resolved before it can fire, and §3.1 documents the ramp-as-expansion behavior (§4).
 - [ADR-004](ADR-004-reproducibility-and-activation.md): a member's provenance is the recipe's `scenario_tree_id` (unchanged meaning, copied via the intent copy) plus `ensemble_manifest` for which member and what it drew — not a new parallel determinism mechanism.
 
 ## Consequences

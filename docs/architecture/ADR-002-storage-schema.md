@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed.
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed. [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar_event` gains `name` and the `vary_*` columns; new tables `ensemble_manifest`, `ensemble_draw`.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-003](ADR-003-registries-and-csv-schemas.md) (rule and event-kind registries — referenced by `amount_rule_kind` and `calendar_event.kind` values used below), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility stamps on the run manifest).
 
 ## Context
@@ -103,6 +103,7 @@ state/
 | `person_lifespan` | ✓ | ✓ (snapshot) |
 | `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | ✓ | ✓ (snapshot) |
 | `year_to_date` | ✓ | ✓ (snapshot) |
+| `ensemble_manifest`, `ensemble_draw` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
 | `simulation_step`, `lot_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state` | — | ✓ |
@@ -113,7 +114,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 24) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 25) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -265,6 +266,7 @@ CREATE TABLE calendar_event (
     calendar_id  INTEGER NOT NULL REFERENCES calendar(id),
     date         TEXT NOT NULL,
     kind         TEXT NOT NULL,
+    name           TEXT,
     scheduled_name TEXT,
     account_1      TEXT,
     account_2      TEXT,
@@ -273,7 +275,25 @@ CREATE TABLE calendar_event (
     param_date     TEXT,
     tax_character  TEXT,
     payload_json   TEXT,
-    description    TEXT
+    description    TEXT,
+    -- Ensemble variation (ADR-006): a row with vary_distribution set has this
+    -- row's own `amount` or `date` (per vary_target) drawn per member, instead
+    -- of using the value above literally -- which is then just a placeholder.
+    -- vary_low/high/mean/sd/clip_low/clip_high are in the *target* column's own
+    -- unit: cents/micros for `amount` (whichever this row's own `amount` column
+    -- would already mean for its `kind`), an ISO date string for `date`.
+    -- vary_ramp_months is only meaningful for vary_target='amount' on a
+    -- kind='set_rate' row: it expands into that many additional set_rate rows,
+    -- ramping to the drawn target (ADR-006 §4) instead of jumping to it.
+    vary_target        TEXT,
+    vary_distribution  TEXT,
+    vary_low           TEXT,
+    vary_high          TEXT,
+    vary_mean          TEXT,
+    vary_sd            TEXT,
+    vary_clip_low      TEXT,
+    vary_clip_high     TEXT,
+    vary_ramp_months   INTEGER
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
@@ -408,6 +428,29 @@ CREATE TABLE calendar_event_tag (
     calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
     tag_id            INTEGER NOT NULL REFERENCES tag(id),
     PRIMARY KEY (calendar_event_id, tag_id)
+);
+```
+
+### Ensemble provenance ([ADR-006](ADR-006-ensemble-scenarios.md))
+
+Present (with a real row / rows) only in a member's own intent and run files; absent (empty) in the recipe's own intent, and in every ordinary, non-ensemble scenario.
+
+```sql
+CREATE TABLE ensemble_manifest (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    ensemble_name   TEXT NOT NULL,      -- the recipe scenario's name
+    member_index    INTEGER NOT NULL,
+    member_count    INTEGER NOT NULL,
+    seed            INTEGER NOT NULL,   -- this member's derived seed
+    recipe_tree_id  TEXT NOT NULL,      -- the recipe's own scenario_tree_id at generation time
+    generated_at    TEXT NOT NULL
+);
+
+CREATE TABLE ensemble_draw (
+    calendar_event_name TEXT NOT NULL,
+    vary_target          TEXT NOT NULL,  -- 'amount' or 'date'
+    drawn_value           TEXT NOT NULL, -- in the target column's own unit
+    PRIMARY KEY (calendar_event_name)
 );
 ```
 
@@ -583,7 +626,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `chain` | A place money can be drawn from or deposited into: either a leaf (one lot) or a named, ordered, reusable liquidity chain. One namespace over both. |
 | `chain_steps` | The ordered steps of an interior chain — which chain each step draws from, and the maximum/percent allocation limiting that step. |
 | `calendar` | The patch sequence this scenario applies to the running model (one row per intent/run file). |
-| `calendar_event` | One patch on one date; `kind` selects the semantics; the common parameters are columns (`scheduled_name`, `account_1`, `account_2`, `series`, `amount`, `param_date`, `tax_character`) and `payload_json` carries the rest. |
+| `calendar_event` | One patch on one date; `kind` selects the semantics; the common parameters are columns (`scheduled_name`, `account_1`, `account_2`, `series`, `amount`, `param_date`, `tax_character`) and `payload_json` carries the rest. `name` is a stable identifier (required, unique, for a row varied under [ADR-006](ADR-006-ensemble-scenarios.md)); its `vary_*` columns mark the row's `amount` or `date` as drawn per ensemble member rather than literal. |
 | `aux_table` | Versioned reference data: tax brackets, RMD divisors, inflation series, per-account rates, filing status. |
 | `scenario` | The scenario this file represents (one row). |
 | `person_lifespan` | Optional per-person final_month override for a scenario ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). |
@@ -595,6 +638,8 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
 | `inflation_index_state` | Cumulative inflation index per series at the end of each step; the `inflation_index` and constant-dollar views read it. |
 | `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | Role/name labels and their junctions to accounts, rules and calendar events. |
+| `ensemble_manifest` | One row: which ensemble member this file is, its derived seed, member count, and the recipe's `scenario_tree_id` at generation time ([ADR-006](ADR-006-ensemble-scenarios.md)). Present only in a resolved member's intent/run files. |
+| `ensemble_draw` | One row per resolved `vary_distribution` row: which `calendar_event` (`name`), which target (`amount`/`date`), and the drawn value ([ADR-006](ADR-006-ensemble-scenarios.md)). Present only in a resolved member's intent/run files. |
 | `schema_overview` | This table; one short description per table, for human and LLM readers. |
 
 ### Views

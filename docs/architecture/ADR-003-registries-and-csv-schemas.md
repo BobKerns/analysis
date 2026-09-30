@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d.
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility).
 
 ## Context
@@ -210,12 +210,15 @@ Nine kinds in v1. Per the §2 invariant, calendar events never write to `transfe
 
 Where expansions produce multiple synthesized rules, each rule's first (and only) firing is one row in `transfer_event`; linkage across siblings is via the shared `created_by_event_id` on `scheduled_transaction` plus `applied_calendar_event`.
 
+**Ensemble variation ([ADR-006](ADR-006-ensemble-scenarios.md)):** a row may additionally carry `vary_distribution` (and the paired `vary_target`/`vary_low`/etc. columns, §4.8), marking its own `amount` or `date` as drawn per ensemble member rather than literal — the "vary" step resolves every such row (dates first, then amounts/rates) before handing the intent to the ordinary, unmodified run path. A row that still has `vary_distribution` set when it would fire is always a mistake (a recipe run directly, or a resolution step skipped), so the engine raises rather than using the placeholder value underneath it.
+
 #### 3.1 `set_rate` (primitive)
 
 Replace one rate aux-table entry effective from this date forward.
 
 - **Columns:** `series` = rate-series name, `amount` = new value in micros (e.g. `45000` = 4.5%).
 - **Expansion:** inserts a new `aux_table` row with `kind = 'rate'`, the given `series`, `effective_date = event.date`, and `payload_json = {"value_micros": amount}`. The original row is **not** deleted; aux lookups use the most-recent-by-`effective_date` row.
+- **Ramp ([ADR-006](ADR-006-ensemble-scenarios.md), ensemble-only):** a row with `vary_target='amount'` and `vary_ramp_months` set draws its target the same way any `amount` variation does, then the vary step expands it into that many additional ordinary `set_rate` rows, one per month, linearly interpolated from the series' current value up to the drawn target, landing on it at `date + vary_ramp_months` — an "expanding" shape like §3.9's `life_transition`, not a new way of reading `aux_table` (still latest-row-on-or-before-month, no interpolation logic added there). Modeling a sudden jump is rarely the realistic prediction, which is the whole reason the ramp exists — including for a lot's future price expectation, since the engine only ever consults `security_price` once to derive an opening balance ([ADR-005](ADR-005-lots-and-per-lot-state.md) §6), so varying it is really varying this rate assumption.
 - **Use:** "checking account starts earning 4% in 2027".
 
 #### 3.2 `set_amount` (primitive)
@@ -666,17 +669,25 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | --- | --- | --- | --- |
 | `date` | YYYY-MM | ✓ | month-end at load |
 | `kind` | enum | ✓ | one of §3 |
+| `name` | text | for a row with `vary_distribution` set; optional otherwise | stable identifier, unique within the scenario ([ADR-006](ADR-006-ensemble-scenarios.md); also what calendar-event tagging keys on) |
 | `scheduled_name` | text | | name of target scheduled transaction; required for `retire_scheduled`, `set_amount` |
 | `account_1` | text | | first event-specific account (e.g. `from_account` for `one_off_transfer`) |
 | `lot_1` | text | | the lot of `account_1`, as for `from_lot` in §4.6 |
 | `account_2` | text | | second event-specific account (e.g. `to_account` for `one_off_transfer`) |
 | `lot_2` | text | | the lot of `account_2` |
 | `series` | text | | rate series name; required for `set_rate` |
-| `amount` | int | | amount in appropriate units (micros for `set_rate`, cents for `one_off_transfer`, cents for `set_amount`) |
+| `amount` | int | | amount in appropriate units (micros for `set_rate`, cents for `one_off_transfer`, cents for `set_amount`); a placeholder, unused, when this row's own `vary_target='amount'` |
 | `param_date` | YYYY-MM | | effective date for `set_amount` new base |
 | `tax_character` | enum | | tax character for `one_off_transfer` |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
 | `description` | text | | shows up in `explain` output |
+| `tags` | text | | see §6 |
+| `vary_target` | enum (`amount`, `date`) | with `vary_distribution` | which of *this row's own* columns is drawn instead of literal; exactly one target per row ([ADR-006](ADR-006-ensemble-scenarios.md) §2) |
+| `vary_distribution` | enum (`uniform`, `truncated_normal`) | to mark this row as varying | blank means an ordinary literal row, unaffected by any of the columns below |
+| `vary_low`, `vary_high` | text | for `uniform` | bounds, in the target column's own unit (an ISO date for `date`; the row's own `amount` unit above for `amount`) |
+| `vary_mean`, `vary_sd` | text | for `truncated_normal` | same unit rule as `vary_low`/`vary_high` (`amount`/rate only in practice) |
+| `vary_clip_low`, `vary_clip_high` | text | optional, `truncated_normal` only | reject-and-redraw outside these bounds; omit either for one-sided or unbounded |
+| `vary_ramp_months` | int | optional, `vary_target='amount'` on a `kind='set_rate'` row only | see §3.1's ramp note |
 
 #### 4.9 Per-scenario: `data_repo/scenarios/<name>/lifespan.csv` (optional)
 
