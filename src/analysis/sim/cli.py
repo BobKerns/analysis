@@ -263,12 +263,14 @@ def run(
     allow_dirty_code: bool,
     ensemble_size: int | None,
 ) -> None:
-    """Execute <scenario> against its intent file and write a new run file.
+    """Load <scenario> fresh from the data repo, then run it and write a new run file.
 
     Naming a scenario also records it as the data repo's current scenario,
-    same as ``sim load <scenario>``, but only when a data repo is resolvable
-    (--data-dir or $ANALYSIS_DATA_DIR); this command otherwise only needs the
-    already-built intent file, not the data repo.
+    same as ``sim load <scenario>``. When a data repo is resolvable
+    (--data-dir or $ANALYSIS_DATA_DIR), this reloads the intent file first --
+    loading is cheap, and it means a CSV edit since the last explicit
+    ``sim load`` is never silently missed. Without a resolvable data repo,
+    this only needs the already-built intent file, unchanged.
 
     If the loaded intent still has any unresolved ``vary_distribution`` row
     (ADR-006), this generates and runs an ensemble instead of a single run.
@@ -282,7 +284,20 @@ def run(
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
-    if not intent_path.exists():
+    if resolved_data_dir is not None:
+        try:
+            load_scenario(
+                resolved_data_dir, scenario_name, intent_dir=resolved_intent_dir,
+                allow_dirty_data=allow_dirty_data,
+            )
+        except LoadError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+        except DataDirtyRefused as exc:
+            click.echo(str(exc), err=True)
+            raise click.ClickException("data dirty; refusing to load") from None
+    elif not intent_path.exists():
         raise click.ClickException(
             f"intent file not found: {intent_path}\n"
             f"  run: analysis sim load {scenario_name}"
@@ -1043,6 +1058,36 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
     df.to_csv(path, index=False)
 
 
+def _append_and_validate(
+    path: Path, header: tuple[str, ...], row: dict[str, str],
+    *, data_dir: Path, scenario_name: str,
+) -> None:
+    """``_append_csv_row``, then re-validate the whole scenario by loading it.
+
+    A CLI-authored row can be individually well-formed and still break the
+    scenario -- e.g. a series/aux_kind pair nothing reads (ADR-006). Revert
+    the write and raise rather than leaving a broken CSV behind for the next
+    ``sim load``/``sim run`` to discover it. Same temp-dir/no-stamps pattern
+    as ``sim check``, so this never touches the real intent file or trips
+    the git-dirty gate on the very row it just wrote.
+    """
+    original = path.read_text() if path.exists() else None
+    _append_csv_row(path, header, row)
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            load_scenario(data_dir, scenario_name, intent_dir=Path(td), compute_stamps=False)
+        except LoadError as exc:
+            if original is None:
+                path.unlink()
+            else:
+                path.write_text(original)
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(
+                f"{len(exc.issues)} issue(s); reverted {path}"
+            ) from None
+
+
 def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
     """``name``, plus ``(lot)`` where the lot is worth showing."""
     if not name:
@@ -1273,7 +1318,7 @@ def _do_add_transfer(
 ) -> None:
     """Shared body of ``sim transfer add`` / ``sim calendar add transfer``."""
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     with open_intent_db(data_dir_p, scenario) as (con, _name):
         accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
         lot_info = _lot_info(con)
@@ -1338,7 +1383,8 @@ def _do_add_transfer(
         **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
-    _append_csv_row(path, registries.CALENDAR_HEADER, row)
+    _append_and_validate(path, registries.CALENDAR_HEADER, row,
+                        data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
         f"appended one_off_transfer {from_account} -> {to_account} "
         f"{_fmt_cents(cents).strip()} on {date} to {path}"
@@ -1456,7 +1502,7 @@ def calendar_add_set_rate(
     )
 
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     row = {
         "date": date, "kind": "set_rate", "series": series, "amount": str(micros),
         # aux_kind has no promoted column of its own -- _build_cal_payload
@@ -1466,7 +1512,8 @@ def calendar_add_set_rate(
         "description": description, "tags": tags, **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
-    _append_csv_row(path, registries.CALENDAR_HEADER, row)
+    _append_and_validate(path, registries.CALENDAR_HEADER, row,
+                        data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
         f"appended set_rate {series!r} -> {rate_percent}% on {date} "
         f"(aux_kind={aux_kind!r}) to {path}"
@@ -1505,7 +1552,7 @@ def calendar_add_set_amount(
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     names = _scheduled_names(data_dir_p, scenario)
     if scheduled_name not in names:
         raise click.ClickException(f"unknown scheduled_name: {scheduled_name!r}")
@@ -1526,7 +1573,8 @@ def calendar_add_set_amount(
         "description": description, "tags": tags, **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
-    _append_csv_row(path, registries.CALENDAR_HEADER, row)
+    _append_and_validate(path, registries.CALENDAR_HEADER, row,
+                        data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
         f"appended set_amount {scheduled_name!r} -> {_fmt_cents(cents).strip()} "
         f"on {date} to {path}"
@@ -1565,7 +1613,7 @@ def calendar_add_retire_scheduled(
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     names = _scheduled_names(data_dir_p, scenario)
     if scheduled_name not in names:
         raise click.ClickException(f"unknown scheduled_name: {scheduled_name!r}")
@@ -1582,7 +1630,8 @@ def calendar_add_retire_scheduled(
         "description": description, "tags": tags, **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
-    _append_csv_row(path, registries.CALENDAR_HEADER, row)
+    _append_and_validate(path, registries.CALENDAR_HEADER, row,
+                        data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(f"appended retire_scheduled {scheduled_name!r} on {date} to {path}")
 
 

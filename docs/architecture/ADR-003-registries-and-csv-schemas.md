@@ -553,7 +553,7 @@ The folder a kind lives in is a convention for humans and for what's most likely
 per-scenario override, not something the loader validates by kind — a misplaced file still
 loads correctly (it just won't be found via the tier it "should" have used).
 
-Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is derived from the filename stem after `__`, with every `_` replaced by a space.** So `rate__Asset_Checking.csv` has series `Asset Checking`, and `rate_series` in `amount_rule_params_json` must use the space form. This lets account names contain spaces while filenames stay underscore-safe.
+Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_values.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it.
 
 - **`federal_brackets.csv`**, **`state_brackets__<state>.csv`**:
   `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate_micros`

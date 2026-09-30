@@ -29,7 +29,7 @@ def _steps(test_data_dir: Path):
 
 def test_lot_is_a_dash_when_the_account_has_a_single_lot(test_data_dir: Path) -> None:
     _, steps = _steps(test_data_dir)
-    rows = steps.loc["asset checking liquidity"]
+    rows = steps.loc["asset_checking_liquidity"]
     assert list(rows["draw_from"]) == ["Asset_Savings", "Asset_TraditionalIRA_Alice"]
     assert list(rows["lot"]) == ["-", "-"]      # 'default' is not shown when it is the only lot
     assert not any(":" in name for name in steps["draw_from"])
@@ -47,7 +47,7 @@ def test_lots_are_spelled_out_where_an_account_has_several(
         "Asset_Savings,,,,,\n"
     )
     _, steps = _steps(test_data_dir)
-    rows = steps.loc["roth first"]
+    rows = steps.loc["roth_first"]
     assert list(zip(rows["draw_from"], rows["lot"], strict=True)) == [
         ("Asset_Roth_Alice", "default"), ("Asset_Roth_Alice", "b"), ("Asset_Savings", "-"),
     ]
@@ -57,10 +57,10 @@ def test_a_step_that_draws_from_another_chain_has_no_lot(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
     (retire_alice_csv("chains") / "asset__outer.csv").write_text(
-        "account_name,lot,maximum,percent,series,cadence\nasset checking liquidity,,,,,\n"
+        "account_name,lot,maximum,percent,series,cadence\nasset_checking_liquidity,,,,,\n"
     )
     _, steps = _steps(test_data_dir)
-    assert steps.loc[("outer", 1), "draw_from"] == "asset checking liquidity"
+    assert steps.loc[("outer", 1), "draw_from"] == "asset_checking_liquidity"
     assert steps.loc[("outer", 1), "lot"] == "-"
 
 

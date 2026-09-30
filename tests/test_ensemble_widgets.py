@@ -74,7 +74,7 @@ def small_ensemble_runs_dir(
     """Two already-resolved-and-run members of a tiny vary_distribution recipe."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )

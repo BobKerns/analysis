@@ -174,7 +174,7 @@ def test_each_lot_grows_at_its_own_series(two_lot_run_file: Path) -> None:
             "SELECT name, series FROM scheduled_transaction WHERE name LIKE 'growth_%'"
         ).fetchall())
         assert rules[growth_rule_name(BROKERAGE, "a")] == "AAA"
-        assert rules[growth_rule_name(BROKERAGE, "b")] == "brokerage growth"
+        assert rules[growth_rule_name(BROKERAGE, "b")] == "brokerage_growth"
     finally:
         con.close()
 
@@ -274,7 +274,7 @@ def test_chain_file_lot_column_matches_account_lot_spelling(
         draws = [r[0] for r in con.execute(
             "SELECT c.name FROM chain_steps cs JOIN chain c ON c.id = cs.draw_from_chain_id "
             "JOIN chain owner ON owner.id = cs.chain_id "
-            "WHERE owner.name = 'asset checking liquidity' ORDER BY cs.step_order"
+            "WHERE owner.name = 'asset_checking_liquidity' ORDER BY cs.step_order"
         )]
         assert draws == ["Asset_Savings", "Asset_TraditionalIRA_Alice:default"]
     finally:

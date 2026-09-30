@@ -62,11 +62,11 @@ def test_load_retire_alice(tmp_path: Path) -> None:
             SELECT c.id, c.name, cs.draw_from_chain_id
             FROM chain c
             JOIN chain_steps cs ON cs.chain_id = c.id
-            WHERE c.name = 'asset checking liquidity'
+            WHERE c.name = 'asset_checking_liquidity'
             ORDER BY cs.step_order
         """).fetchall()
         assert len(chain_row) == 2
-        assert {r[1] for r in chain_row} == {"asset checking liquidity"}
+        assert {r[1] for r in chain_row} == {"asset_checking_liquidity"}
         assert chain_row[0][2] == con.execute("SELECT id FROM chain WHERE name = 'Asset_Savings'").fetchone()[0]
         assert chain_row[1][2] == (
             con.execute("SELECT id FROM chain WHERE name = 'Asset_TraditionalIRA_Alice:default'").fetchone()[0]
@@ -215,9 +215,15 @@ def test_account_series_synthesizes_growth_rule_and_income_account(
     accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
     df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
     ira = df["name"] == "Asset_TraditionalIRA_Alice"
-    df.loc[ira, "series"] = "Brokerage Growth"
+    df.loc[ira, "series"] = "IRA_Growth"
     df.loc[ira, "tax_character"] = "deferred"
     df.to_csv(accounts_path, index=False)
+    # Distinct from the existing brokerage_growth file -- macOS's default
+    # case-insensitive filesystem would otherwise collide with it on a name
+    # differing only in case.
+    (repo / "scenarios" / "retire_alice" / "series" / "rate__IRA_Growth.csv").write_text(
+        "effective_date,annual_rate_micros\n2026-01-31,60000\n"
+    )
 
     result = load_scenario(
         repo, "retire_alice", intent_dir=tmp_path / "out", allow_dirty_data=True,
@@ -235,7 +241,7 @@ def test_account_series_synthesizes_growth_rule_and_income_account(
             (growth_rule_name("Asset_TraditionalIRA_Alice", "default"),),
         ).fetchone()
         assert rule["amount_rule_kind"] == "percent_of_balance"
-        assert rule["series"] == "Brokerage Growth"
+        assert rule["series"] == "IRA_Growth"
         assert rule["tax_character"] == "deferred"
         assert rule["cadence"] == "monthly"
         assert rule["priority"] == 100
@@ -255,6 +261,55 @@ def test_account_series_synthesizes_growth_rule_and_income_account(
         assert opening == 0
     finally:
         con.close()
+
+
+def test_account_series_with_a_space_rejected(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A series name becomes a `rate__<name>.csv`-style filename segment
+    (ADR-003 §4.1) -- a space there needs shell quoting and reads awkwardly,
+    so it's forbidden outright rather than encoded/decoded around."""
+    accounts_path = retire_alice_csv("accounts.csv")
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    row = df["name"] == "Asset_TraditionalIRA_Alice"
+    df.loc[row, "series"] = "no such series"
+    df.loc[row, "tax_character"] = "deferred"
+    df.to_csv(accounts_path, index=False)
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "series 'no such series' may not contain a space" in issue
+        for issue in ei.value.issues
+    )
+
+
+def test_calendar_series_with_a_space_rejected(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="typo_series",
+        series="some new series", amount="45000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "series 'some new series' may not contain a space" in issue
+        for issue in ei.value.issues
+    )
+
+
+def test_chain_name_with_a_space_rejected(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    (retire_alice_csv("chains") / "asset__roth first.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Roth_Alice,,,,,\n"
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "chain name 'roth first' may not contain a space" in issue
+        for issue in ei.value.issues
+    )
 
 
 @pytest.mark.parametrize(
@@ -861,7 +916,7 @@ def test_vary_target_required_with_distribution(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_distribution="uniform", vary_low="40000", vary_high="50000",
     )
     with pytest.raises(LoadError) as ei:
@@ -874,7 +929,7 @@ def test_vary_distribution_unknown_rejected(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="lognormal",
         vary_low="40000", vary_high="50000",
     )
@@ -888,7 +943,7 @@ def test_vary_uniform_requires_bounds(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform", vary_low="40000",
     )
     with pytest.raises(LoadError) as ei:
@@ -901,7 +956,7 @@ def test_vary_name_required_with_distribution(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )
@@ -916,7 +971,7 @@ def test_vary_name_duplicate_rejected(
     for month_end in ("2027-02-28", "2027-03-31"):
         append_calendar_row(
             date=month_end, kind="set_rate", name="checking_rate_vary",
-            series="Asset Checking", amount="45000",
+            series="Asset_Checking", amount="45000",
             vary_target="amount", vary_distribution="uniform",
             vary_low="40000", vary_high="50000",
         )
@@ -938,7 +993,7 @@ def test_vary_rows_sharing_every_merge_key_field_but_name_is_ambiguous(
     for name in ("rate_vary_a", "rate_vary_b"):
         append_calendar_row(
             date="2027-02-28", kind="set_rate", name=name,
-            series="Asset Checking", amount="45000",
+            series="Asset_Checking", amount="45000",
             vary_target="amount", vary_distribution="uniform",
             vary_low="40000", vary_high="50000",
         )
@@ -994,7 +1049,7 @@ def test_vary_rows_identical_including_name_rejected_as_duplicate(
     for _ in range(2):
         append_calendar_row(
             date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-            series="Asset Checking", amount="45000",
+            series="Asset_Checking", amount="45000",
             vary_target="amount", vary_distribution="uniform",
             vary_low="40000", vary_high="50000",
         )
@@ -1055,7 +1110,7 @@ def test_vary_uniform_rejects_columns_it_does_not_use(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000", vary_mean="45000",
     )
@@ -1071,7 +1126,7 @@ def test_vary_uniform_rejects_high_below_low(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="50000", vary_high="40000",
     )
@@ -1099,7 +1154,7 @@ def test_vary_truncated_normal_rejects_nonpositive_sd(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
         vary_mean="45000", vary_sd="0",
     )
@@ -1118,7 +1173,7 @@ def test_vary_truncated_normal_low_equal_to_mean_without_sd_is_degenerate(
     rejected rather than silently drawing a single point."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
         vary_mean="45000", vary_low="45000",
     )
@@ -1135,7 +1190,7 @@ def test_vary_truncated_normal_single_tailed_with_explicit_sd_loads(
     vary_high infers to mean + 3*sd."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
         vary_mean="45000", vary_sd="5000", vary_low="45000",
     )
@@ -1147,7 +1202,7 @@ def test_vary_truncated_normal_rejects_reversed_low_high(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
         vary_mean="45000", vary_sd="5000",
         vary_low="50000", vary_high="40000",
@@ -1243,7 +1298,7 @@ def test_vary_columns_present_without_distribution_rejected(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount",
     )
     with pytest.raises(LoadError) as ei:
@@ -1279,7 +1334,7 @@ def test_valid_vary_row_loads_cleanly(
     concrete value is Phase 2's job, not the loader's."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )
@@ -1293,3 +1348,44 @@ def test_valid_vary_row_loads_cleanly(
         assert row == ("amount", "uniform", "40000", "50000")
     finally:
         con.close()
+
+
+def test_calendar_set_rate_series_nothing_reads_rejected(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """A set_rate row's (series, aux_kind) pair that no scheduled.csv rule
+    (or account growth series) ever reads is a silent no-op at run time --
+    its drawn/literal value lands in aux_table but nothing looks it up."""
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="typo_series",
+        series="mutual_fund", amount="30000",
+        params_json='{"aux_kind": "inflation"}',
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "set_rate series 'mutual_fund' under aux_kind 'inflation' is never read"
+        in issue
+        for issue in ei.value.issues
+    )
+
+
+def test_scheduled_percent_of_balance_series_with_no_supplier_rejected(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A percent_of_balance rule (including one synthesized from accounts.csv's
+    own `series` column) whose series nothing supplies would otherwise only
+    fail once run, with an opaque 'no aux row' EngineError."""
+    accounts_path = retire_alice_csv("accounts.csv")
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    row = df["name"] == "Asset_TraditionalIRA_Alice"
+    df.loc[row, "series"] = "no such series"
+    df.loc[row, "tax_character"] = "deferred"
+    df.to_csv(accounts_path, index=False)
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "references series 'no such series' under aux_kind 'rate', but "
+        "nothing supplies it" in issue
+        for issue in ei.value.issues
+    )

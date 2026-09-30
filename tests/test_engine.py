@@ -1250,7 +1250,7 @@ def test_person_lifespan_does_not_stop_solely_owned_asset_growth(test_data_dir: 
     accounts_csv = repo / "scenarios" / "retire_alice" / "accounts.csv"
     df = pd.read_csv(accounts_csv, dtype=str, keep_default_na=False)
     mask = df["name"] == "Asset_TraditionalIRA_Alice"
-    df.loc[mask, "series"] = "brokerage growth"
+    df.loc[mask, "series"] = "brokerage_growth"
     df.loc[mask, "tax_character"] = "deferred"
     df.to_csv(accounts_csv, index=False)
 
@@ -1620,7 +1620,7 @@ def test_running_unresolved_vary_row_raises(
     loudly instead of firing the placeholder amount/date."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )
@@ -1641,7 +1641,7 @@ def test_running_unresolved_vary_row_outside_scenario_range_still_raises(
     monthly loop, so it must be rejected before that loop starts."""
     append_calendar_row(
         date="2050-01-31", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )

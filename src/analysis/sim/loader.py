@@ -629,6 +629,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_calendar(calendar_rows, leaves, issues)
+    _validate_series_references(scheduled_rows, calendar_rows, aux_rows, issues)
     _validate_chains(chains, model_rows, leaves, issues, money_resolver=money_resolver)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
     _validate_lifespan(lifespan_rows, persons, issues)
@@ -792,8 +793,7 @@ def _read_aux_files(
     for csv_path in csv_paths:
         stem = csv_path.stem
         if "__" in stem:
-            kind, raw_series = stem.split("__", 1)
-            series = raw_series.replace("_", " ")
+            kind, series = stem.split("__", 1)
         else:
             kind, series = stem, None
         if kind not in registries.AUX_KIND_COLUMNS:
@@ -1047,7 +1047,7 @@ def _expand_account_growth(
         character = row.get("tax_character", "")
         lot_series: list[tuple[str, str]] = []
         for m in lots_by_account.get(name) or [{}]:
-            symbol = (m.get("symbol") or "").replace("_", " ")
+            symbol = m.get("symbol") or ""
             lot_series.append((
                 m.get("lot") or registries.DEFAULT_LOT,
                 m.get("series") or (symbol if symbol in rate_series else "")
@@ -1203,6 +1203,9 @@ def _validate_accounts(
                 f"accounts.csv row {i} ({name}): {', '.join(moved)} moved to "
                 "account_values.csv, where each lot has its own"
             )
+        series = row.get("series", "")
+        if series:
+            _validate_no_spaces("accounts.csv", i, name, "series", series, issues)
         _validate_tags("accounts.csv", i, name, row.get("tags", ""), issues)
 
 
@@ -1255,12 +1258,15 @@ def _validate_scheduled(
                     f"scheduled.csv row {i} ({name}): '{retired}' was merged into "
                     f"'{merged}' (schema v12); move the value and drop the column"
                 )
-        if row.get("series", "") != "" and kind not in registries.SERIES_RULE_KINDS:
+        series = row.get("series", "")
+        if series != "" and kind not in registries.SERIES_RULE_KINDS:
             issues.append(
                 f"scheduled.csv row {i} ({name}): amount_rule_kind '{kind}' does not "
                 f"use 'series'; it is only read by "
                 f"{', '.join(sorted(registries.SERIES_RULE_KINDS))}"
             )
+        if series:
+            _validate_no_spaces("scheduled.csv", i, name, "series", series, issues)
         for col, lot_col in (("from_account", "from_lot"), ("to_account", "to_lot")):
             problem = _resolve_ref(row, col, lot_col, leaves, chain_names)
             if problem:
@@ -1361,6 +1367,12 @@ def _validate_account_model_money(
                 f"account_values.csv row {i} ({name}): symbol '{row['symbol']}' is also "
                 "an account name, so its rate series would be ambiguous"
             )
+        symbol = row.get("symbol", "")
+        if symbol:
+            _validate_no_spaces("account_values.csv", i, name, "symbol", symbol, issues)
+        lot_series = row.get("series", "")
+        if lot_series:
+            _validate_no_spaces("account_values.csv", i, name, "series", lot_series, issues)
         acquired = row.get("acquired", "")
         if acquired:
             try:
@@ -1457,7 +1469,7 @@ def _derive_opening_balances(
                 "opening_balance needs a symbol"
             )
             continue
-        known = [p for p in prices.get(symbol.replace("_", " "), []) if p[0] <= start]
+        known = [p for p in prices.get(symbol, []) if p[0] <= start]
         if not known:
             issues.append(
                 f"account_values.csv row {i} ({name}): no security_price for "
@@ -1478,7 +1490,7 @@ def _derive_opening_balances(
         if (row.get("prior_year_end_balance") or row.get("account_name", "") not in used
                 or not symbol or not row.get("quantity")):
             continue
-        known = [p for p in prices.get(symbol.replace("_", " "), []) if p[0] <= prior_dec]
+        known = [p for p in prices.get(symbol, []) if p[0] <= prior_dec]
         try:
             quantity = _quantity_to_micros(row["quantity"])
         except (ValueError, InvalidOperation):
@@ -1644,11 +1656,15 @@ def _validate_calendar(
                 problem = _resolve_ref(row, col, lot_col, leaves, frozenset())
                 if problem:
                     issues.append(f"calendar.csv row {i}: {col} {problem}")
-        payload_json = row.get("payload_json") or "{}"
+        params_json = row.get("params_json") or "{}"
         try:
-            json.loads(payload_json)
+            json.loads(params_json)
         except json.JSONDecodeError as e:
-            issues.append(f"calendar.csv row {i}: payload_json invalid: {e}")
+            issues.append(f"calendar.csv row {i}: params_json invalid: {e}")
+        series = row.get("series", "")
+        if series:
+            _validate_no_spaces("calendar.csv", i, row.get("scheduled_name") or kind,
+                                "series", series, issues)
         _validate_tags("calendar.csv", i, row.get("scheduled_name") or kind,
                        row.get("tags", ""), issues)
         name = (row.get("name") or "").strip()
@@ -1773,6 +1789,108 @@ def _validate_calendar_vary(
                 issues.append(f"{where}: vary_ramp_months must be a positive integer")
 
 
+def _safe_json(raw: str | None) -> dict[str, Any] | None:
+    """``json.loads(raw or "{}")``, or ``None`` on invalid JSON -- callers
+    skip rather than re-report, since the owning row's own validator already
+    flags malformed JSON in its column.
+    """
+    try:
+        return json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return None
+
+
+def _validate_series_references(
+    scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """Cross-check every `(aux_kind, series)` pair a scheduled.csv rule reads
+    against every pair something actually supplies, in both directions.
+
+    A `percent_of_balance`/`fixed_amount`/`ss_benefit` row (including the
+    ones `_expand_account_growth` synthesizes from accounts.csv's own
+    `series` column) whose `(aux_kind, series)` nothing supplies would only
+    fail once run, with `EngineError: no aux row for kind=... series=...`
+    (`engine._amount_percent_of_balance`/`_apply_ss_benefit`/
+    `_cumulative_inflation_factor`) -- worth catching at load time instead.
+    Conversely, a calendar.csv `set_rate` row whose `(aux_kind, series)` no
+    scheduled row reads is a silent no-op: its drawn or literal value lands
+    in `aux_table` but nothing ever looks it up, so it never affects a run
+    (this is what varying the wrong `series`/`aux_kind` pair under ADR-006
+    looks like -- every member ends up bit-identical).
+    """
+    supplied: set[tuple[str, str]] = {
+        (kind, series) for kind, series, *_ in aux_rows if series is not None
+    }
+    for row in calendar_rows:
+        if row.get("kind") != "set_rate":
+            continue
+        series = row.get("series", "")
+        if not series:
+            continue
+        params = _safe_json(row.get("params_json"))
+        if params is None:
+            continue  # malformed JSON already reported by _validate_calendar
+        supplied.add((params.get("aux_kind", "rate"), series))
+
+    demanded: set[tuple[str, str]] = set()
+    for i, row in enumerate(scheduled_rows, start=2):
+        kind = row.get("amount_rule_kind", "")
+        series = row.get("series", "")
+        if not series or kind not in registries.SERIES_RULE_KINDS:
+            continue
+        if kind == "fixed_amount" and series == "fixed":
+            continue  # the CLI's default sentinel for "no inflation"
+        if kind == "percent_of_balance":
+            params = _safe_json(row.get("amount_rule_params_json"))
+            if params is None:
+                continue  # already reported by _validate_scheduled
+            aux_kind = params.get("rate_kind", "rate")
+        else:
+            aux_kind = "inflation"
+        demanded.add((aux_kind, series))
+        if (aux_kind, series) not in supplied:
+            name = row.get("name", "")
+            issues.append(
+                f"scheduled.csv row {i} ({name}): references series "
+                f"'{series}' under aux_kind '{aux_kind}', but nothing "
+                "supplies it -- no series/aux/prices file and no "
+                "calendar.csv set_rate row for that (aux_kind, series) pair; "
+                "this would fail at run time with 'no aux row' once reached"
+            )
+
+    for i, row in enumerate(calendar_rows, start=2):
+        if row.get("kind") != "set_rate":
+            continue
+        series = row.get("series", "")
+        if not series:
+            continue
+        params = _safe_json(row.get("params_json"))
+        if params is None:
+            continue
+        aux_kind = params.get("aux_kind", "rate")
+        if (aux_kind, series) not in demanded:
+            issues.append(
+                f"calendar.csv row {i}: set_rate series '{series}' under "
+                f"aux_kind '{aux_kind}' is never read by any scheduled.csv "
+                "row (percent_of_balance/fixed_amount/ss_benefit) or "
+                "account growth series -- this value would have no effect"
+            )
+
+
+def _validate_no_spaces(file: str, row_i: int, owner: str, field: str, value: str,
+                        issues: list[str]) -> None:
+    """A series/symbol/chain name becomes a `<kind>__<name>.csv`-style
+    filename segment (ADR-003 §4.1); a literal space there is legal on most
+    filesystems but needs shell quoting and reads awkwardly, so it's
+    forbidden outright rather than silently decoded/encoded.
+    """
+    if " " in value:
+        issues.append(f"{file} row {row_i} ({owner}): {field} '{value}' may not contain a space")
+
+
 def _validate_tags(file: str, row_i: int, name: str, raw: str,
                    issues: list[str]) -> None:
     try:
@@ -1782,12 +1900,14 @@ def _validate_tags(file: str, row_i: int, name: str, raw: str,
 
 
 def _chain_name_from_filename(path: Path) -> tuple[str, str] | None:
-    """Parse a chain filename, decoding underscores in its name like aux files."""
+    """Parse a chain filename: ``<kind>__<name>.csv``, name literal (no
+    space decoding -- ADR-003 §4.1 names that become filenames use their
+    filename form everywhere, spaces forbidden)."""
     stem = path.stem
     if "__" not in stem:
         return None
     kind, name = stem.split("__", 1)
-    return kind, name.replace("_", " ")
+    return kind, name
 
 
 def _read_chain_files(
@@ -1855,6 +1975,8 @@ def _validate_chains(
         issues.append(f"chains/*.csv: chain name '{name}' collides with an account name")
     for name in sorted(n for n in chains if ":" in n):
         issues.append(f"chains/*.csv: chain name '{name}' may not contain ':'")
+    for name in sorted(n for n in chains if " " in n):
+        issues.append(f"chains/*.csv: chain name '{name}' may not contain a space")
 
     edges: dict[str, set[str]] = {name: set() for name in chains}
     for name, (kind, rows) in chains.items():
@@ -1901,6 +2023,9 @@ def _validate_chains(
                 issues.append(
                     f"chains/{kind}__{name}.csv row {i}: series requires maximum"
                 )
+            if series:
+                _validate_no_spaces(f"chains/{kind}__{name}.csv", i, member,
+                                    "series", series, issues)
 
     for i, row in enumerate(model_rows, start=2):
         holder = leaves.leaf_of.get(

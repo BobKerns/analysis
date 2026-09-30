@@ -28,7 +28,7 @@ def test_resolve_member_amount_target_draws_within_bounds(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )
@@ -95,7 +95,7 @@ def test_resolve_member_is_reproducible_for_same_seed_and_index(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="40000", vary_high="50000",
     )
@@ -123,7 +123,7 @@ def test_resolve_member_different_members_draw_differently(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="0", vary_high="1000000",
     )
@@ -186,12 +186,12 @@ def test_resolve_member_ramp_interpolates_and_lands_on_target(
     # retire_alice/series/rate__Asset_Checking.csv already gives "Asset
     # Checking" a baseline rate (3.0% APR as of 2026-01-31); ramp from it.
     # (Deliberately a different date from prototype_data's own pre-existing
-    # "Asset Checking" set_rate row at 2027-01-31, which the calendar merge
+    # "Asset_Checking" set_rate row at 2027-01-31, which the calendar merge
     # now correctly keeps distinct from this named row rather than colliding
     # with it -- ADR-006's merge key includes `name`.)
     append_calendar_row(
         date="2027-06-30", kind="set_rate", name="checking_rate_ramp",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="60000", vary_high="60000", vary_ramp_months="3",
     )
@@ -204,7 +204,7 @@ def test_resolve_member_ramp_interpolates_and_lands_on_target(
     try:
         rows = con.execute(
             "SELECT date, amount, vary_distribution FROM calendar_event "
-            "WHERE series = 'Asset Checking' AND kind = 'set_rate' AND date >= '2027-06-30' "
+            "WHERE series = 'Asset_Checking' AND kind = 'set_rate' AND date >= '2027-06-30' "
             "ORDER BY date"
         ).fetchall()
         # original row (baseline, unchanged value) + 3 ramp steps.
@@ -227,13 +227,13 @@ def test_resolve_member_ramp_starts_from_an_earlier_literal_rate_change(
     tmp_path: Path,
 ) -> None:
     """prototype_data's retire_alice/calendar.csv already has a literal (not
-    varying) `set_rate` row for 'Asset Checking' at 2027-01-31 (45000).
+    varying) `set_rate` row for 'Asset_Checking' at 2027-01-31 (45000).
     A ramp starting later must treat that as the current rate, not fall back
     to the load-time aux_table snapshot underneath it (30000) as though the
     intervening change never happened."""
     append_calendar_row(
         date="2027-06-30", kind="set_rate", name="checking_rate_ramp",
-        series="Asset Checking", amount="99999",
+        series="Asset_Checking", amount="99999",
         vary_target="amount", vary_distribution="uniform",
         vary_low="90000", vary_high="90000", vary_ramp_months="1",
     )
@@ -253,12 +253,20 @@ def test_resolve_member_ramp_starts_from_an_earlier_literal_rate_change(
 
 
 def test_resolve_member_ramp_without_baseline_rate_raises(
-    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    append_calendar_row: Callable[..., None],
+    update_account_value: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,
 ) -> None:
+    # A series with no consumer would fail the loader's own "nothing reads
+    # this" check before ramping is even reached, so give it one: retarget
+    # Asset_Brokerage_Joint's growth at this new series instead.
+    update_account_value(
+        "Asset_Brokerage_Joint", "default", series="never_before_seen_series",
+    )
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="new_series_ramp",
-        series="Never Before Seen Series", amount="45000",
+        series="never_before_seen_series", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="60000", vary_high="60000", vary_ramp_months="3",
     )
@@ -276,7 +284,7 @@ def test_load_ensemble_and_summary_across_members(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="0", vary_high="1000000",
     )
@@ -320,7 +328,7 @@ def test_load_ensemble_excludes_a_failed_member(
     mean/range and overstate the member count."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset Checking", amount="45000",
+        series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
         vary_low="0", vary_high="1000000",
     )
