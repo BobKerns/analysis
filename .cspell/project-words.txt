@@ -45,6 +45,7 @@ liab
 linestyle
 lotb
 ltcg
+lognormal
 metas
 mktree
 modelcontextprotocol
