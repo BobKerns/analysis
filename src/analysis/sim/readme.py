@@ -83,6 +83,51 @@ def relevel_heading(text: str, level: int) -> str:
     return "\n".join(lines)
 
 
+_MORE_LINK_RE = re.compile(
+    r"^_See (?:`(scenarios/[^`]+/README\.md)`|\[(scenarios/[^\]]+/README\.md)\]\([^)]+\)) for more\._$"
+)
+
+
+def _more_link(scenario_name: str, data_dir: Path) -> str:
+    """The "see more" trailer line for a README with more than one
+    paragraph: a markdown link to the full README.md when it's found under
+    ``data_dir``, else a plain backtick reference. Always keyed off the
+    same canonical relative path (``scenarios/<name>/README.md``), which is
+    also what ``_MORE_LINK_RE`` matches back out of a stored description.
+    """
+    rel = f"scenarios/{scenario_name}/README.md"
+    readme = Path(data_dir) / rel
+    if readme.exists():
+        return f"_See [{rel}]({readme}) for more._"
+    return f"_See `{rel}` for more._"
+
+
+def _regenerate_more_link(description: str, data_dir: Path) -> str:
+    """If ``description``'s last line is a previously-generated "see more"
+    link, rebuild it against ``data_dir``.
+
+    The absolute path such a link points at is only ever correct for the
+    environment it was generated in (ADR-003 §4.1e: the description is
+    baked into the intent/run file once, at load time, so it travels to
+    wherever that file is later opened) -- regenerating it against the
+    *current* ``data_dir`` is what makes the link work again there, instead
+    of carrying a stale, possibly non-existent path from wherever it was
+    first built. A description whose last line doesn't match (hand-written
+    in scenario.csv, or a README with only one paragraph) is returned
+    unchanged.
+    """
+    lines = description.splitlines()
+    if not lines:
+        return description
+    m = _MORE_LINK_RE.match(lines[-1])
+    if not m:
+        return description
+    rel = m.group(1) or m.group(2)
+    scenario_name = rel.split("/")[1]
+    lines[-1] = _more_link(scenario_name, data_dir)
+    return "\n".join(lines)
+
+
 def readme_description(scenario_dir: Path, data_dir: Path) -> str | None:
     """``scenario_dir/README.md``'s title + first paragraph, formatted for
     ``scenario.description`` -- ``None`` if there's no README.md (or it has
@@ -101,12 +146,7 @@ def readme_description(scenario_dir: Path, data_dir: Path) -> str | None:
     if summary.paragraph:
         parts.append(summary.paragraph)
     if summary.has_more:
-        readme = data_dir / scenario_dir / "README.md"
-        if not readme.exists():
-            parts.append(f"_See `scenarios/{Path(scenario_dir).name}/README.md` for more._")
-        else:
-            rel_readme = readme.relative_to(data_dir)
-            parts.append(f"_See [{rel_readme}]({readme}) for more._")
+        parts.append(_more_link(Path(scenario_dir).name, data_dir))
     return "\n\n".join(parts)
 
 
@@ -118,7 +158,12 @@ def description_view(sc: Connection, *,
     no README.md (ADR-003 §4.1e) -- rendered as markdown, with any leading
     heading re-levelled to ``heading_level`` so it fits inside a notebook
     section rather than carrying whatever level happened to be first in the
-    source README.
+    source README. When ``data_dir`` is given, a generated "see more" link
+    (``_MORE_LINK_RE``) is regenerated against it first, so a description
+    baked in under one data_dir still links correctly when later viewed
+    against another.
     """
     description = sc.items("scenario").iloc[0].get("description") or ""
+    if data_dir is not None:
+        description = _regenerate_more_link(description, Path(data_dir))
     return Markdown(relevel_heading(description, heading_level))

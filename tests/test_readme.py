@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from analysis.sim.readme import parse_readme_summary, readme_description, relevel_heading
+from analysis.sim.readme import (
+    _regenerate_more_link,
+    parse_readme_summary,
+    readme_description,
+    relevel_heading,
+)
 
 
 def test_parse_readme_summary_title_and_one_paragraph() -> None:
@@ -96,3 +101,44 @@ def test_readme_description_none_for_an_empty_readme(tmp_path: Path) -> None:
     scenario_dir.mkdir(parents=True)
     (scenario_dir / "README.md").write_text("\n")
     assert readme_description(scenario_dir, data_dir=tmp_path) is None
+
+
+def test_regenerate_more_link_repoints_a_markdown_link_at_a_new_data_dir(
+    tmp_path: Path,
+) -> None:
+    old_data_dir = tmp_path / "old"
+    new_data_dir = tmp_path / "new"
+    (new_data_dir / "scenarios" / "inflation_1").mkdir(parents=True)
+    (new_data_dir / "scenarios" / "inflation_1" / "README.md").write_text("# x\n\ny\n\nz\n")
+    description = (
+        "# Inflation sensitivity\n\n"
+        "This recipe varies CPI to see how sensitive the plan is.\n\n"
+        f"_See [scenarios/inflation_1/README.md]({old_data_dir / 'scenarios/inflation_1/README.md'}) for more._"
+    )
+    regenerated = _regenerate_more_link(description, new_data_dir)
+    assert regenerated == (
+        "# Inflation sensitivity\n\n"
+        "This recipe varies CPI to see how sensitive the plan is.\n\n"
+        f"_See [scenarios/inflation_1/README.md]({new_data_dir / 'scenarios/inflation_1/README.md'}) for more._"
+    )
+
+
+def test_regenerate_more_link_falls_back_to_plain_text_when_not_found_there(
+    tmp_path: Path,
+) -> None:
+    description = (
+        "# Title\n\nParagraph.\n\n"
+        f"_See [scenarios/base/README.md]({tmp_path / 'elsewhere/README.md'}) for more._"
+    )
+    regenerated = _regenerate_more_link(description, tmp_path / "nowhere")
+    assert regenerated == "# Title\n\nParagraph.\n\n_See `scenarios/base/README.md` for more._"
+
+
+def test_regenerate_more_link_leaves_a_description_without_one_alone(tmp_path: Path) -> None:
+    description = "# Title\n\nJust one paragraph, no trailer."
+    assert _regenerate_more_link(description, tmp_path) == description
+
+
+def test_regenerate_more_link_leaves_hand_written_text_alone(tmp_path: Path) -> None:
+    description = "A description someone typed into scenario.csv by hand."
+    assert _regenerate_more_link(description, tmp_path) == description
