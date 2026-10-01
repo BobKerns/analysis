@@ -88,7 +88,7 @@ def lots_frame(
 def security_names(source: RunConnection | ScenarioConnection) -> dict[str, str]:
     """Symbol to security name, from the data repo's securities.csv."""
     securities = source.items("security")
-    return dict(zip(securities["symbol"], securities["name"]))
+    return dict(zip(securities["symbol"], securities["name"], strict=True))
 
 
 def account_holdings(

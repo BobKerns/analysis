@@ -51,3 +51,11 @@ Thumbs.db
 .scratch_*
 
 test-output.*
+
+# Environment variables
+.env
+.env.*
+!.env.default
+
+.analysis
+.analysis_user

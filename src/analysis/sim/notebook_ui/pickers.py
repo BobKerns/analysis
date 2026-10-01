@@ -16,7 +16,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Collection, Mapping
+from collections.abc import Collection, Mapping
 import calendar
 import datetime
 from dateutil import relativedelta
@@ -28,12 +28,14 @@ from IPython.display import Markdown, clear_output, display
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
 from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.ensemble import latest_ensemble_batch, member_run_statuses
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.accounts import plottable_accounts
+from analysis.sim.readme import description_view
 from analysis.sim.registries import AssetClass
 from analysis.sim.types import (
-    AccountKind, AccountKindAny, DollarMode, ValuePlotMode,
+    AccountKind, AccountKindAny, DollarMode, LogLinearMode, ValuePlotMode,
     AccountName, ScenarioName,
 )
 
@@ -73,6 +75,7 @@ def display_warning(message: str) -> None:
     from IPython.display import HTML, display
 
     display(HTML(warning_html(message)))
+
 
 class Connections(traitlets.HasTraits):
     """
@@ -187,6 +190,91 @@ _META_COLS = [
 ]
 
 
+def find_data_dir(data_dir: Path | str | None = None) -> Path:
+    """
+    Find the data directory for the analysis repository. Works from notebook files
+    and scripts within the repository.
+
+    Parameters
+    ----------
+    data_dir : Path | str | None, optional
+        The base directory for the data repository. If None, defaults to
+        the current repo's data/shared/sim or the value of the
+        $ANALYSIS_DATA_DIR environment variable.
+
+    Returns
+    -------
+    Path
+        The resolved data directory.
+    """
+    REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+    if data_dir is None:
+        return Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data/shared/sim"))
+    return Path(data_dir)
+
+
+def find_state_dir(*,
+                   data_dir: Path | str | None = None,
+                   state_dir: Path | None = None,
+                   default_state_dir: Path | None = None) -> Path:
+    """
+    Find the state directory for the analysis repository. Works from notebook files
+    and scripts within the repository.
+
+    Parameters
+    ----------
+    state_dir : Path | None, optional
+        The state directory to use. If None, defaults to the value of the
+        $ANALYSIS_STATE_DIR environment variable or the repo's data/state directory.
+    data_dir : Path | str | None, optional
+        The base directory for the data repository. If None, defaults to
+        the current repo's data/shared/sim or the value of the
+        $ANALYSIS_DATA_DIR environment variable.
+    default_state_dir : Path | None, optional
+        The default state directory to use if the environment variable is not set.
+
+    Returns
+    -------
+    Path
+        The resolved state directory.
+    """
+    data_dir = find_data_dir(data_dir)
+    if state_dir is not None:
+        return data_dir / state_dir
+    if default_state_dir is None:
+        default_state_dir = data_dir.parent / "state"
+    return Path(os.environ.get("ANALYSIS_STATE_DIR", default_state_dir))
+
+
+def find_runs_dir(data_dir: Path | str | None = None,
+                  state_dir: Path | None = None,
+                  runs_dir: Path | None = None) -> Path:
+    """
+    Find the runs directory for the analysis repository. Works from notebook files
+    and scripts within the repository.
+
+    Parameters
+    ----------
+    data_dir : Path | str | None, optional
+        The base directory for the data repository. If None, defaults to
+        the current repo's data/shared/sim or the value of the
+        $ANALYSIS_DATA_DIR environment variable.
+    state_dir : Path | None, optional
+    runs_dir : Path | None, optional
+        The default runs directory to use if the environment variable is not set.
+
+    Returns
+    -------
+    Path
+        The resolved runs directory.
+    """
+    state_dir = find_state_dir(data_dir=data_dir,
+                               state_dir=state_dir)
+    if runs_dir is None:
+        runs_dir = state_dir / "runs"
+    return Path(os.environ.get("ANALYSIS_RUNS_DIR", runs_dir))
+
+
 def scenario_picker(
     data_dir: Path | str | None = None,
     default: str | None = None, *,
@@ -194,6 +282,7 @@ def scenario_picker(
     runs_dir: Path | None = None,
     require_run: bool = True,
     show_metadata: bool = False,
+    show_description: bool = False,
 ) -> tuple[widgets.VBox, SingleScenarioConnections, widgets.Dropdown]:
     """A ``Scenario:`` dropdown that keeps a live connection pair in sync.
 
@@ -214,17 +303,24 @@ def scenario_picker(
         raises FileNotFoundError.
     show_metadata : bool, default False
         Whether to display run metadata below the scenario reference.
+    show_description : bool, default False
+        Whether to display the scenario description below the scenario reference.
+
+    When the selected scenario is an ensemble recipe with generated members
+    and ``require_run`` is true, a second ``Member:`` dropdown appears,
+    defaulting to member 0 (the recipe's deterministic member -- ADR-006
+    §9) and listing every other generated member, labeled with its status
+    when it didn't succeed. Picking one points ``container.run`` at that
+    member's own run file. Hidden for an ordinary scenario, and never shown
+    at all when ``require_run=False``, since that only ever looks at the
+    recipe's own (unresolved, member-independent) intent.
 
     Returns ``(widget, container)``; ``container`` is a
     :class:`SingleScenarioConnections`, refreshed in place (closing the
     previous connections) whenever the dropdown changes.
     """
 
-    REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
-    if data_dir is None:
-        data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data/shared/sim"))
-    else:
-        data_dir = Path(data_dir)
+    data_dir = find_data_dir(data_dir)
     if default is None:
     # Same resolution the CLI uses: $ANALYSIS_SCENARIO, else the data repo's
     # .current_scenario, else "current".
@@ -235,13 +331,14 @@ def scenario_picker(
         ).name
     options = list_scenario_names(data_dir, scenarios_dir=scenarios_dir)
     dropdown = widgets.Dropdown(options=options, value=default, description="Scenario:")
+    member_dropdown = widgets.Dropdown(description="Member:", layout=widgets.Layout(display="none"))
     ref_out = widgets.Output()
 
     container = _open_single(data_dir, default,
                              runs_dir=runs_dir,
                              require_run=require_run,
                              scenarios_dir=scenarios_dir)
-    vbox = widgets.VBox([dropdown, ref_out])
+    vbox = widgets.VBox([dropdown, member_dropdown, ref_out])
 
     def _redraw() -> None:
         with ref_out:
@@ -254,6 +351,55 @@ def scenario_picker(
                     run_meta["code_version"] = run_meta["code_version"].str[:12]
                     run_meta["data_version"] = run_meta["data_version"].str[:12]
                     display(run_meta.T)
+            if show_description:
+                display(description_view(container.scenario))
+
+    def _on_member_change(change) -> None:
+        # A notebook comparing scenarios (multi_scenario_picker) has no
+        # equivalent of this -- comparing one member against another is
+        # meaningless, every member already differs only by its draws.
+        if change["new"] is None:
+            # _sync_member_dropdown clearing member_dropdown.options (no
+            # longer an ensemble, or no members at all) propagates to
+            # .value here too -- nothing to switch to.
+            return
+        ref = container.scenario_ref
+        batch = latest_ensemble_batch(ref.runs_dir / ref.name)
+        old_run = container.run
+        container.run = RunConnection(batch / f"{change['new']}.sqlite3", container.scenario)
+        if old_run is not None:
+            old_run.close()
+        _redraw()
+
+    def _sync_member_dropdown() -> None:
+        """Show a member picker when the current scenario is an ensemble
+        recipe with generated members -- require_run=False never reaches
+        this (it only ever looks at the recipe's own intent, identical
+        regardless of member, since member resolution happens in each
+        member's own *run*, not in the shared scenario-level intent)."""
+        ref = container.scenario_ref
+        batch = latest_ensemble_batch(ref.runs_dir / ref.name) if require_run else None
+        if batch is None:
+            member_dropdown.layout.display = "none"
+            member_dropdown.options = ()
+            return
+        statuses = member_run_statuses(batch)
+        member_options = [
+            (stem if status == "succeeded" else f"{stem} ({status})", stem)
+            for stem, status in sorted(statuses.items())
+        ]
+        current = container.run.run_path.stem if container.run is not None else None
+        member_dropdown.options = member_options
+        # Already loaded (_open_single/resolve_scenario_name already default
+        # to member 0): setting the same value is a no-op in traitlets, so
+        # this only ever triggers _on_member_change's rebuild when it's an
+        # actual change -- switching scenarios to a *different* ensemble
+        # recipe whose current member isn't 0, or one with no member 0 at
+        # all.
+        member_dropdown.value = current if current in statuses else (
+            member_options[0][1] if member_options else None
+        )
+        member_dropdown.layout.display = None
 
     def _on_change(change) -> None:
         old_scenario, old_run = container.scenario, container.run
@@ -267,10 +413,13 @@ def scenario_picker(
         old_scenario.close()
         if old_run is not None:
             old_run.close()
+        _sync_member_dropdown()
         _redraw()
 
     dropdown.observe(_on_change, names="value")
+    member_dropdown.observe(_on_member_change, names="value")
     traitlets.link((dropdown, "value"), (container, "value"))
+    _sync_member_dropdown()
     _redraw()
 
     return vbox, container, dropdown
@@ -558,6 +707,33 @@ class YAxisPlotModePicker(widgets.ToggleButtons):
         self.label = "Zero-anchored" if self.value else "Auto-scale"
 
 
+class LogLinearModePicker(widgets.ToggleButtons):
+    """A toggle button widget for selecting log vs. linear scale."""
+    value: LogLinearMode = traitlets.UseEnum(LogLinearMode)
+    label: str = traitlets.Unicode("Linear")
+    def __init__(self, log_linear_mode: LogLinearMode = LogLinearMode.LINEAR):
+        """
+        Initialize the log-linear mode picker.
+
+        Parameters
+        ----------
+        log_linear_mode : LogLinearMode, default LogLinearMode.LINEAR
+            The initial log-linear mode. Can be either log or linear.
+        """
+        super().__init__(
+            options=[("Log", LogLinearMode.LOG),
+                     ("Linear", LogLinearMode.LINEAR)],
+            description="Scale:",
+            layout=widgets.Layout(
+                border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+            ),
+        )
+        self.value = log_linear_mode
+
+    def _on_value_change(self, change):
+        self.label = "Log" if self.value == LogLinearMode.LOG else "Linear"
+
+
 class AccountKindPicker(widgets.Dropdown):
     """A dropdown widget for selecting account kind."""
     value: AccountKindAny = traitlets.Unicode("asset")
@@ -632,7 +808,8 @@ class AccountPicker(widgets.HBox):
         allow_any : bool, default False
             Whether to include an "Any" option in the kind picker.
         accounts_by_kind : Mapping[AccountKind, Collection[AccountName]] | None, optional
-            Precomputed mapping of account kinds to account names. If None, accounts are fetched from the run connection.
+            Precomputed mapping of account kinds to account names.
+            If None, accounts are fetched from the run connection.
         max_accounts : int | None, optional
             The maximum number of accounts that can be selected. If None, no limit is enforced.
         """

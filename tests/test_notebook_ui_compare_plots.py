@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import matplotlib
 import pandas as pd
-
-from tests.conftest import multi_connections
 
 matplotlib.use("Agg")
 
@@ -19,7 +16,6 @@ from analysis.sim.notebook_ui import compare_plots as cp
 from analysis.sim.notebook_ui.pickers import (
     DollarModePicker,
     MultiScenarioConnections,
-    multi_scenario_picker,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -29,7 +29,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "FetchResult", "PRICE_PROVIDERS", "PriceProvider", "PriceUse", "YahooProvider",
-    "check_prices", "default_since", "fetch_prices", "format_price", "merge_price_rows", "month_end_closes", "prices_in_use",
+    "check_prices", "default_since", "fetch_prices", "format_price", "merge_price_rows",
+    "month_end_closes", "prices_in_use",
 ]
 
 PRICE_COLUMNS = ("effective_date", "price")

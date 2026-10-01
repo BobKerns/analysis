@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import csv as _csv
 import json
-from collections.abc import Iterator
+import secrets
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import os
 import sqlite3
@@ -26,14 +27,24 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import allocation, prices, registries
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
-from analysis.sim.connection import open_run, open_scenario
+from analysis.sim.connection import open_run, open_scenario, year_end_values
 from analysis.sim.holdings import (
     account_holdings,
     render_holders_table,
     render_holdings_table,
     symbol_holders,
 )
+from analysis.sim.distributions import DistributionError, resolve_truncated_normal_bounds
 from analysis.sim.engine import run_scenario
+from analysis.sim.ensemble import (
+    latest_ensemble_batch,
+    load_ensemble,
+    member_run_statuses,
+    members_net_worth_by_month,
+    resolve_member,
+    write_batch_manifest,
+)
+from analysis.sim.ensemble import summary as ensemble_summary_frame
 from analysis.sim.loader import (
     DEFAULT_INTENT_DIR,
     DEFAULT_RUNS_DIR,
@@ -236,6 +247,13 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 )
 @click.option("--allow-dirty-data", is_flag=True, default=False)
 @click.option("--allow-dirty-code", is_flag=True, default=False)
+@click.option(
+    "--ensemble-size",
+    type=int,
+    default=None,
+    help="Member count for an ensemble recipe, overriding scenario.meta_json.ensemble_size "
+         "(ADR-006). Ignored for an ordinary (non-recipe) scenario.",
+)
 def run(
     scenario_name: str | None,
     data_dir: Path | None,
@@ -244,13 +262,19 @@ def run(
     run_by: str | None,
     allow_dirty_data: bool,
     allow_dirty_code: bool,
+    ensemble_size: int | None,
 ) -> None:
-    """Execute <scenario> against its intent file and write a new run file.
+    """Load <scenario> fresh from the data repo, then run it and write a new run file.
 
     Naming a scenario also records it as the data repo's current scenario,
-    same as ``sim load <scenario>``, but only when a data repo is resolvable
-    (--data-dir or $ANALYSIS_DATA_DIR); this command otherwise only needs the
-    already-built intent file, not the data repo.
+    same as ``sim load <scenario>``. When a data repo is resolvable
+    (--data-dir or $ANALYSIS_DATA_DIR), this reloads the intent file first --
+    loading is cheap, and it means a CSV edit since the last explicit
+    ``sim load`` is never silently missed. Without a resolvable data repo,
+    this only needs the already-built intent file, unchanged.
+
+    If the loaded intent still has any unresolved ``vary_distribution`` row
+    (ADR-006), this generates and runs an ensemble instead of a single run.
     """
     explicit = scenario_name is not None
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
@@ -261,7 +285,20 @@ def run(
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
-    if not intent_path.exists():
+    if resolved_data_dir is not None:
+        try:
+            load_scenario(
+                resolved_data_dir, scenario_name, intent_dir=resolved_intent_dir,
+                allow_dirty_data=allow_dirty_data,
+            )
+        except LoadError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+        except DataDirtyRefused as exc:
+            click.echo(str(exc), err=True)
+            raise click.ClickException("data dirty; refusing to load") from None
+    elif not intent_path.exists():
         raise click.ClickException(
             f"intent file not found: {intent_path}\n"
             f"  run: analysis sim load {scenario_name}"
@@ -270,6 +307,15 @@ def run(
         write_current_scenario(resolved_data_dir, scenario_name)
 
     resolved_by = run_by or os.environ.get("USER") or "unknown"
+
+    if _has_unresolved_vary(intent_path):
+        _run_ensemble(
+            scenario_name, intent_path,
+            resolved_intent_dir, resolved_runs_dir,
+            ensemble_size=ensemble_size, run_by=resolved_by,
+            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+        )
+        return
 
     data_version = _read_data_version(intent_path)
     short = data_version[:7] if data_version else "nodata"
@@ -287,6 +333,264 @@ def run(
         click.echo(str(exc), err=True)
         raise click.ClickException("data dirty; refusing to run") from None
     click.echo(f"run {out}")
+
+
+def _has_unresolved_vary(intent_path: Path) -> bool:
+    """ADR-006: whether ``intent_path`` still has any calendar_event row with
+    `vary_distribution` set, i.e. is a recipe that hasn't been resolved."""
+    con = sqlite3.connect(intent_path)
+    try:
+        row = con.execute(
+            "SELECT 1 FROM calendar_event WHERE vary_distribution IS NOT NULL LIMIT 1"
+        ).fetchone()
+    finally:
+        con.close()
+    return row is not None
+
+
+def _run_ensemble(
+    scenario_name: str,
+    recipe_intent_path: Path,
+    intent_dir: Path,
+    runs_dir: Path,
+    *,
+    ensemble_size: int | None,
+    run_by: str,
+    allow_dirty_data: bool,
+    allow_dirty_code: bool,
+) -> None:
+    """ADR-006 §7: generate and run every member of a recipe scenario.
+
+    A member that fails is reported, not retried -- its resolved intent file
+    (kept, not discarded) is the specific input that failed, one open-file
+    away.
+    """
+    con = sqlite3.connect(recipe_intent_path)
+    try:
+        seed, meta_json, recipe_tree_id = con.execute(
+            "SELECT scenario.seed, scenario.meta_json, intent_manifest.scenario_tree_id "
+            "FROM scenario, intent_manifest"
+        ).fetchone()
+    finally:
+        con.close()
+    if seed is None:
+        raise click.ClickException(
+            f"{scenario_name}: ensemble recipe requires scenario.seed to be set"
+        )
+    if ensemble_size is not None:
+        member_count = ensemble_size
+        source = "--ensemble-size"
+    else:
+        meta_size = json.loads(meta_json or "{}").get("ensemble_size")
+        if meta_size is None:
+            raise click.ClickException(
+                f"{scenario_name}: ensemble recipe requires --ensemble-size or "
+                "scenario.meta_json.ensemble_size"
+            )
+        member_count = int(meta_size)
+        source = "scenario.meta_json.ensemble_size"
+    if member_count <= 0:
+        raise click.ClickException(
+            f"{scenario_name}: {source} must be a positive integer (got {member_count})"
+        )
+
+    # One timestamped batch subfolder per invocation -- like an ordinary run
+    # file, a batch is never overwritten, so rerunning a recipe (more members,
+    # a tweaked distribution, ...) keeps every previous batch's history. A
+    # disambiguating suffix covers two runs within the same wall-clock second.
+    # Reserved by exclusive mkdir (no separate existence check first), so two
+    # concurrent `sim run` processes can never both win the same batch name
+    # and race on the same member files.
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
+    suffix = 1
+    while True:
+        batch = stamp if suffix == 1 else f"{stamp}-{suffix}"
+        member_intent_dir = intent_dir / scenario_name / batch
+        member_runs_dir = runs_dir / scenario_name / batch
+        try:
+            member_intent_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            suffix += 1
+            continue
+        try:
+            member_runs_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            suffix += 1
+            continue
+        break
+
+    failures: list[tuple[int, Path, str]] = []
+    for i in range(member_count):
+        member_intent_path = member_intent_dir / f"member_{i:04d}.sqlite3"
+        member_run_path = member_runs_dir / f"member_{i:04d}.sqlite3"
+        try:
+            resolve_member(
+                recipe_intent_path, member_intent_path,
+                seed=seed, member_index=i, member_count=member_count,
+                recipe_tree_id=recipe_tree_id,
+            )
+            run_scenario(
+                member_intent_path, member_run_path,
+                run_by=run_by,
+                allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+            )
+        except Exception as exc:
+            failures.append((i, member_intent_path, str(exc)))
+            click.echo(f"  member {i}: FAILED ({exc}) -- intent: {member_intent_path}", err=True)
+        else:
+            click.echo(f"  member {i}: {member_run_path}")
+
+    # A member whose resolve_member call itself raised never got a run file
+    # at all -- member_run_statuses can only see files that exist, so this
+    # batch-level record is the only place a failure like that (or every
+    # member failing, leaving no member_*.sqlite3 at all) is still visible
+    # to a later `sim ensemble summary`/notebook widget.
+    write_batch_manifest(member_runs_dir, member_count=member_count, failures=failures)
+
+    succeeded = member_count - len(failures)
+    click.echo(f"ensemble {scenario_name} ({batch}): {succeeded}/{member_count} member(s) succeeded")
+    if failures:
+        click.echo(f"  {len(failures)} failure(s):")
+        for i, path, _error in failures:
+            click.echo(f"    member {i}: {path}")
+
+
+@sim_group_command.group(name="ensemble")
+def ensemble_group_command() -> None:
+    """Inspect or manage an ensemble recipe's generated members (ADR-006)."""
+
+
+@ensemble_group_command.command("create")
+@click.argument("name")
+@click.argument("parent")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--description", default=None, help="Default: 'Derived from <parent>'.")
+@click.option(
+    "--seed", type=int, default=None,
+    help="Ensemble master seed (default: a random 31-bit int, printed on creation).",
+)
+@click.option(
+    "--size", "ensemble_size", type=int, default=registries.DEFAULT_ENSEMBLE_SIZE,
+    show_default=True,
+    help="Default member count (scenario.meta_json.ensemble_size), so "
+         "'sim run'/'sim all' can generate and run this recipe without "
+         "--ensemble-size on every invocation; 'sim run --ensemble-size' "
+         "can still override it per invocation. See docs/guides/ensembles.md "
+         "for what size is actually appropriate for this recipe.",
+)
+def ensemble_create(
+    name: str,
+    parent: str,
+    data_dir: Path | None,
+    description: str | None,
+    seed: int | None,
+    ensemble_size: int,
+) -> None:
+    """Create ensemble recipe NAME deriving from PARENT scenario (ADR-006).
+
+    A recipe is an ordinary scenario until a calendar.csv row is marked
+    varying (``sim calendar add <kind> ... --vary-distribution ...``);
+    ``sim run NAME`` then generates and runs every member instead of a
+    single run, using --size's recorded member count unless overridden by
+    ``sim run NAME --ensemble-size N``.
+    """
+    if ensemble_size <= 0:
+        raise click.ClickException(f"--size must be a positive integer (got {ensemble_size})")
+    data_dir_p = _resolve_data_dir(data_dir)
+    seed = seed if seed is not None else secrets.randbelow(2**31)
+    try:
+        target = sc.create_scenario(data_dir_p, name, parent, description=description)
+    except Exception as exc:
+        raise click.ClickException(f"failed to create scenario {name}: {exc}") from None
+
+    scenario_csv = target / "scenario.csv"
+    df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
+    meta = json.loads(df.loc[0, "meta_json"] or "{}")
+    meta["ensemble_size"] = ensemble_size
+    df.loc[0, "seed"] = str(seed)
+    df.loc[0, "meta_json"] = json.dumps(meta, separators=(",", ":"))
+    df.to_csv(scenario_csv, index=False)
+
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            load_scenario(
+                data_dir_p, name, intent_dir=Path(td), compute_stamps=False,
+                allow_dirty_data=True,
+            )
+        except LoadError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(
+                f"created {target}, but it does not load; leaving it in place "
+                "for inspection"
+            ) from None
+
+    parent_ref = _resolve_scenario(data_dir_p, parent)
+    write_current_scenario(data_dir_p, name)
+    click.echo(f"created ensemble recipe {target}")
+    click.echo(f"  inherits: {parent_ref.name}")
+    click.echo(f"  seed: {seed}")
+    click.echo(f"  ensemble_size: {ensemble_size}")
+    click.echo(f"  current scenario: {name}")
+    click.echo(
+        "  next: sim calendar add <kind> ... --vary-distribution ... to mark rows as "
+        f"varying, then sim run {name} --ensemble-size N"
+    )
+
+
+@ensemble_group_command.command("summary")
+@click.argument("scenario_name")
+@click.option(
+    "--runs-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Default: data-repo state/runs when activated, else state/runs.",
+)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Data repo (default: $ANALYSIS_DATA_DIR)",
+)
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp) to summarize; default: the latest.",
+)
+def ensemble_summary(
+    scenario_name: str, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+) -> None:
+    """Mean/median/SD/range of year-end net worth across SCENARIO_NAME's members."""
+    data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
+    resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
+    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
+    recipe_runs_dir = resolved_runs_dir / scenario_name
+    batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir)
+    if batch_dir is None or not batch_dir.is_dir():
+        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+
+    statuses = member_run_statuses(batch_dir)
+    failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
+    connections = load_ensemble(batch_dir)
+    try:
+        table = year_end_values(ensemble_summary_frame(members_net_worth_by_month(connections)))
+        click.echo(
+            f"ensemble {scenario_name} ({batch_dir.name}): {len(connections)} succeeded "
+            f"member(s), {len(failed)} failed"
+        )
+        for year, row in table.iterrows():
+            click.echo(
+                f"  {year}  mean={row['mean']:>14,.0f}  median={row['median']:>14,.0f}  "
+                f"std={row['std']:>13,.0f}  min={row['min']:>14,.0f}  max={row['max']:>14,.0f}"
+            )
+        if failed:
+            click.echo(f"  {len(failed)} failed member(s), excluded above:")
+            for stem in failed:
+                click.echo(f"    {stem}: {statuses[stem]}")
+    finally:
+        for con in connections.values():
+            con.close()
 
 
 @sim_group_command.command(name="all")
@@ -597,8 +901,8 @@ def items(
     table.add_column("Remainder", justify="right")
     table.add_column("Tax")
     table.add_column("Origin")
-    for (date, from_name, from_subkind, from_lot, from_account_id, from_lot_id,
-         to_name, to_subkind, to_lot, to_account_id, to_lot_id,
+    for (date_, from_name, from_subkind, from_lot, from_account_id, from_lot_id,
+         to_name, to_subkind, to_lot, _to_account_id, _to_lot_id,
          amount, requested, remainder, tax_character,
          reason_kind, rule_name, rule_kind) in rows:
         own_is_from = (from_lot_id == lot_id) if lot_id is not None else (
@@ -616,7 +920,7 @@ def items(
             else reason_kind
         )
         table.add_row(
-            date, own, direction, _fmt_cents(amount).strip(),
+            date_, own, direction, _fmt_cents(amount).strip(),
             _fmt_cents(requested).strip(), _fmt_cents(remainder).strip(),
             tax_character, origin,
         )
@@ -711,11 +1015,25 @@ def _parse_amount_cents(s: str) -> int:
 
 
 def _validate_iso_date(s: str) -> str:
+    # date.fromisoformat, not strptime: strptime accepts non-zero-padded
+    # values like '2029-1-1' that the loader's own date.fromisoformat (used
+    # to parse vary_low/vary_high at load time) rejects -- this must accept
+    # exactly what the loader will later accept, not a superset.
     try:
-        datetime.strptime(s, "%Y-%m-%d")
+        date.fromisoformat(s)
     except ValueError as e:
         raise click.ClickException(f"date must be YYYY-MM-DD: {s!r}") from e
     return s
+
+
+# calendar.csv columns a file may legitimately lack (ADR-006): optional,
+# nullable additions to an already-established header. Any other missing
+# column, in any CSV kind, is schema drift to report, not paper over --
+# an accounts.csv missing e.g. `kind` is a malformed file, not an old one.
+_BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
+    "name", "vary_target", "vary_distribution", "vary_low", "vary_high",
+    "vary_mean", "vary_sd", "vary_ramp_months",
+})
 
 
 def _append_csv_row(path: Path, header: tuple[str, ...],
@@ -723,25 +1041,62 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
     """Append a row to a CSV, aligning columns by name via pandas.
 
     If the file exists, its header must contain every column of ``header``
-    (extra optional columns are kept and left blank); this catches schema
-    drift instead of silently writing misaligned columns.
+    except the backfillable ones (currently just calendar.csv's ADR-006
+    additions), which are added blank on every existing row instead; this
+    still catches real schema drift rather than silently writing misaligned
+    columns.
     """
     cols = list(header)
     if path.exists() and path.stat().st_size > 0:
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
-        existing = tuple(df.columns)
-        if not set(header) <= set(existing):
+        existing = list(df.columns)
+        missing = [c for c in header if c not in existing]
+        not_backfillable = [c for c in missing if c not in _BACKFILLABLE_CALENDAR_COLUMNS]
+        if not_backfillable:
             raise click.ClickException(
                 f"CSV header mismatch in {path}\n"
                 f"  expected: {list(header)}\n"
-                f"  found:    {list(existing)}"
+                f"  found:    {list(existing)}\n"
+                f"  missing:  {not_backfillable}"
             )
-        cols = list(existing)
+        if missing:
+            df = df.reindex(columns=[*existing, *missing], fill_value="")
+        cols = list(df.columns)
     else:
         df = pd.DataFrame(columns=cols)
     new_row = pd.DataFrame([{c: row.get(c, "") for c in cols}], columns=cols)
     df = pd.concat([df, new_row], ignore_index=True)
     df.to_csv(path, index=False)
+
+
+def _append_and_validate(
+    path: Path, header: tuple[str, ...], row: dict[str, str],
+    *, data_dir: Path, scenario_name: str,
+) -> None:
+    """``_append_csv_row``, then re-validate the whole scenario by loading it.
+
+    A CLI-authored row can be individually well-formed and still break the
+    scenario -- e.g. a series/aux_kind pair nothing reads (ADR-006). Revert
+    the write and raise rather than leaving a broken CSV behind for the next
+    ``sim load``/``sim run`` to discover it. Same temp-dir/no-stamps pattern
+    as ``sim check``, so this never touches the real intent file or trips
+    the git-dirty gate on the very row it just wrote.
+    """
+    original = path.read_text() if path.exists() else None
+    _append_csv_row(path, header, row)
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            load_scenario(data_dir, scenario_name, intent_dir=Path(td), compute_stamps=False)
+        except LoadError as exc:
+            if original is None:
+                path.unlink()
+            else:
+                path.write_text(original)
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(
+                f"{len(exc.issues)} issue(s); reverted {path}"
+            ) from None
 
 
 def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
@@ -785,28 +1140,173 @@ def _prompt_account(label: str, accounts: list[str]) -> str:
     return _prompt_with_completion(f"{label} account", choices=accounts)
 
 
+def _percent_to_rate_micros(s: str) -> int:
+    """Parse a human-facing rate percentage (e.g. ``4.5``) into millionths.
+
+    Unlike an allocation weight, a rate may be negative (depreciation) or
+    exceed 100%, so this doesn't reuse the loader's range-limited helper.
+    """
+    try:
+        value = Decimal(s.strip()) * 10_000
+    except InvalidOperation as e:
+        raise click.ClickException(f"invalid percent value: {s!r}") from e
+    if value != value.to_integral_value():
+        raise click.ClickException(f"percent value {s!r} has excessive precision")
+    return int(value)
+
+
+def _vary_row_options(f):
+    """Shared ``--vary-*`` options for a calendar.csv ``add`` command (ADR-006).
+
+    Applied to every kind's subcommand uniformly; a kind with no meaningful
+    amount to vary (e.g. ``retire_scheduled``) rejects ``--vary-target
+    amount`` itself rather than omitting the options.
+    """
+    f = click.option(
+        "--vary-ramp-months", type=int, default=None,
+        help="Ramp to the drawn target over this many months "
+             "(set-rate, --vary-target amount, only).",
+    )(f)
+    f = click.option(
+        "--vary-sd", default=None,
+        help="truncated_normal standard deviation (same unit as the value above). "
+             "May be omitted if vary_mean plus vary_low or vary_high is given.",
+    )(f)
+    f = click.option(
+        "--vary-mean", default=None,
+        help="truncated_normal mean (same unit as the value above). "
+             "May be omitted if both vary_low and vary_high are given.",
+    )(f)
+    f = click.option(
+        "--vary-high", default=None,
+        help="uniform's upper bound, or truncated_normal's upper reject-and-redraw "
+             "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
+             "date). For truncated_normal, omitting it ramps out to "
+             "vary_mean + 3*vary_sd instead of leaving that side unbounded.",
+    )(f)
+    f = click.option(
+        "--vary-low", default=None,
+        help="uniform's lower bound, or truncated_normal's lower reject-and-redraw "
+             "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
+             "date). For truncated_normal, omitting it ramps out to "
+             "vary_mean - 3*vary_sd instead of leaving that side unbounded.",
+    )(f)
+    f = click.option(
+        "--vary-distribution", type=click.Choice(sorted(registries.ENSEMBLE_DISTRIBUTIONS)),
+        default=None,
+        help="Mark this row as varying per ensemble member; omit for an ordinary literal row.",
+    )(f)
+    f = click.option(
+        "--vary-target", type=click.Choice(sorted(registries.VARY_TARGETS)),
+        default=None, help="Which of this row's own columns is drawn; required with "
+                           "--vary-distribution.",
+    )(f)
+    f = click.option(
+        "--name", "row_name", default=None,
+        help="calendar.csv name -- required and unique when varying, optional otherwise.",
+    )(f)
+    return f
+
+
+def _vary_row_fields(
+    *,
+    row_name: str | None,
+    vary_target: str | None,
+    vary_distribution: str | None,
+    vary_low: str | None,
+    vary_high: str | None,
+    vary_mean: str | None,
+    vary_sd: str | None,
+    vary_ramp_months: int | None,
+    amount_parser: Callable[[str], int] | None,
+) -> dict[str, str]:
+    """ADR-006: the ``vary_*`` CSV cells for one calendar.csv row, from CLI options.
+
+    A bound value (``--vary-low`` etc.) is given in the same human unit as the
+    row's own literal value (percent for set-rate, dollars for set-amount/
+    transfer) for an ``amount`` target, or ``YYYY-MM-DD`` for a ``date``
+    target; ``amount_parser`` converts the former to the row's own raw
+    storage unit (micros/cents), matching how the row's own literal value is
+    converted.
+    """
+    if not vary_distribution:
+        if any([
+            vary_target, vary_low, vary_high, vary_mean, vary_sd,
+            vary_ramp_months is not None,
+        ]):
+            raise click.ClickException("--vary-* options require --vary-distribution")
+        return {"name": row_name or ""}
+    if not vary_target:
+        raise click.ClickException("--vary-distribution requires --vary-target")
+    if not row_name:
+        raise click.ClickException("--vary-distribution requires --name")
+    if vary_target == "amount" and amount_parser is None:
+        raise click.ClickException("this calendar kind has no amount column to vary")
+
+    # Catch a distribution/bound mismatch here too, not just at 'sim load' --
+    # writing the row anyway (to be rejected later) means a bad combination
+    # looks like it worked until the separate load step.
+    allowed = registries.DISTRIBUTION_PARAMS.get(vary_distribution, frozenset())
+    provided = {
+        "vary_low": vary_low, "vary_high": vary_high,
+        "vary_mean": vary_mean, "vary_sd": vary_sd,
+    }
+    for col, raw in provided.items():
+        if raw is not None and col not in allowed:
+            raise click.ClickException(
+                f"--{col.replace('_', '-')} is not used by {vary_distribution} "
+                f"(it uses: {', '.join(sorted(c.replace('vary_', '') for c in allowed))})"
+            )
+    missing = [
+        col for col in registries.DISTRIBUTION_REQUIRED_PARAMS.get(vary_distribution, ())
+        if provided[col] is None
+    ]
+    if missing:
+        flags = ", ".join(f"--{c.replace('_', '-')}" for c in missing)
+        raise click.ClickException(f"{vary_distribution} requires {flags}")
+
+    def convert(raw: str | None) -> str:
+        if raw is None:
+            return ""
+        if vary_target == "date":
+            return _validate_iso_date(raw)
+        return str(amount_parser(raw))
+
+    if vary_distribution == "truncated_normal" and vary_target == "amount":
+        # Not in DISTRIBUTION_REQUIRED_PARAMS: any of mean/sd/low/high may be
+        # inferred from the other three (ADR-006), so no fixed column list
+        # is "required" -- but *some* combination must be enough to resolve
+        # every one, which is worth catching now rather than only at the
+        # separate 'sim load' step.
+        try:
+            resolve_truncated_normal_bounds(
+                float(amount_parser(vary_mean)) if vary_mean is not None else None,
+                float(amount_parser(vary_sd)) if vary_sd is not None else None,
+                float(amount_parser(vary_low)) if vary_low is not None else None,
+                float(amount_parser(vary_high)) if vary_high is not None else None,
+            )
+        except DistributionError as e:
+            raise click.ClickException(str(e)) from None
+
+    return {
+        "name": row_name,
+        "vary_target": vary_target,
+        "vary_distribution": vary_distribution,
+        "vary_low": convert(vary_low),
+        "vary_high": convert(vary_high),
+        "vary_mean": convert(vary_mean),
+        "vary_sd": convert(vary_sd),
+        "vary_ramp_months": str(vary_ramp_months) if vary_ramp_months is not None else "",
+    }
+
+
 @sim_group_command.group(name="transfer")
 def transfer_group_command() -> None:
     """Inspect or modify one-time calendar transfers in a scenario."""
 
 
-@transfer_group_command.command("add")
-@click.argument("date", required=False)
-@click.argument("from_account", required=False, shell_complete=_complete_account)
-@click.argument("to_account", required=False, shell_complete=_complete_account)
-@click.argument("amount", required=False)
-@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
-@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
-@click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
-@click.option("--data-dir",
-              type=click.Path(exists=True, file_okay=False, path_type=Path),
-              default=None)
-@click.option("--tax-character", default="none", show_default=True,
-              help="ADR-003 tax_character (e.g. ordinary, ltcg, none).")
-@click.option("--description", default="", help="Free-text description.")
-@click.option("--series", default="", help="Optional series tag.")
-def transfer_add(
+def _do_add_transfer(
+    *,
     date: str | None,
     from_account: str | None,
     to_account: str | None,
@@ -818,10 +1318,18 @@ def transfer_add(
     tax_character: str,
     description: str,
     series: str,
+    row_name: str | None,
+    vary_target: str | None,
+    vary_distribution: str | None,
+    vary_low: str | None,
+    vary_high: str | None,
+    vary_mean: str | None,
+    vary_sd: str | None,
+    vary_ramp_months: int | None,
 ) -> None:
-    """Append a one-time transfer to <scenario>/calendar.csv."""
+    """Shared body of ``sim transfer add`` / ``sim calendar add transfer``."""
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     with open_intent_db(data_dir_p, scenario) as (con, _name):
         accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
         lot_info = _lot_info(con)
@@ -855,12 +1363,19 @@ def transfer_add(
             f"allowed: {sorted(registries.TAX_CHARACTERS)}"
         )
 
-    payload = {
-        "account_1": from_account,
-        "account_2": to_account,
-        "amount": cents,
-        "tax_character": tax_character,
-    }
+    vary_fields = _vary_row_fields(
+        row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
+        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
+    )
+
+    # account_1/account_2/amount/tax_character are already carried by the
+    # row's own promoted columns below -- _build_cal_payload sets them from
+    # those columns, then overlays this JSON on top, so duplicating them here
+    # would silently shadow a resolved (ADR-006 vary_target='amount') amount
+    # with this row's stale placeholder. Only description has no promoted
+    # column of its own.
+    payload = {}
     if description:
         payload["description"] = description
     row = {
@@ -876,12 +1391,307 @@ def transfer_add(
         "params_json": json.dumps(payload, separators=(",", ":")),
         "description": description,
         "tags": "",
+        **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
-    _append_csv_row(path, registries.CALENDAR_HEADER, row)
+    _append_and_validate(path, registries.CALENDAR_HEADER, row,
+                        data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
         f"appended one_off_transfer {from_account} -> {to_account} "
         f"{_fmt_cents(cents).strip()} on {date} to {path}"
+    )
+
+
+@transfer_group_command.command("add")
+@click.argument("date", required=False)
+@click.argument("from_account", required=False, shell_complete=_complete_account)
+@click.argument("to_account", required=False, shell_complete=_complete_account)
+@click.argument("amount", required=False)
+@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
+@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--tax-character", default="none", show_default=True,
+              help="ADR-003 tax_character (e.g. ordinary, ltcg, none).")
+@click.option("--description", default="", help="Free-text description.")
+@click.option("--series", default="", help="Optional series tag.")
+@_vary_row_options
+def transfer_add(
+    date: str | None,
+    from_account: str | None,
+    to_account: str | None,
+    amount: str | None,
+    from_lot: str | None,
+    to_lot: str | None,
+    scenario: str | None,
+    data_dir: Path | None,
+    tax_character: str,
+    description: str,
+    series: str,
+    row_name: str | None,
+    vary_target: str | None,
+    vary_distribution: str | None,
+    vary_low: str | None,
+    vary_high: str | None,
+    vary_mean: str | None,
+    vary_sd: str | None,
+    vary_ramp_months: int | None,
+) -> None:
+    """Append a one-time transfer to <scenario>/calendar.csv."""
+    _do_add_transfer(
+        date=date, from_account=from_account, to_account=to_account, amount=amount,
+        from_lot=from_lot, to_lot=to_lot, scenario=scenario, data_dir=data_dir,
+        tax_character=tax_character, description=description, series=series,
+        row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
+        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_ramp_months=vary_ramp_months,
+    )
+
+
+# ---------- calendar (every kind, ADR-003 §3) ----------
+
+
+@sim_group_command.group(name="calendar")
+def calendar_group_command() -> None:
+    """Append calendar.csv rows of any kind, including ensemble variation (ADR-006)."""
+
+
+@calendar_group_command.group(name="add")
+def calendar_add_group_command() -> None:
+    """Append one calendar.csv row. Each kind has its own subcommand -- the
+    row shape differs by kind (ADR-003 §4.8)."""
+
+
+def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
+    with open_intent_db(data_dir, scenario) as (con, _name):
+        return {r[0] for r in con.execute("SELECT name FROM scheduled_transaction")}
+
+
+@calendar_add_group_command.command("set-rate")
+@click.argument("date")
+@click.argument("series")
+@click.argument("rate_percent")
+@click.option(
+    "--aux-kind", default="rate", show_default=True,
+    help="aux_table kind this rate belongs to. The default 'rate' is an asset's own "
+         "growth series (accounts.csv's own series column); use 'inflation' to vary an "
+         "inflation/COLA series such as cpi (scheduled.csv rows reference it by series name).",
+)
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--description", default="", help="Free-text description.")
+@click.option("--tags", default="",
+              help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
+@_vary_row_options
+def calendar_add_set_rate(
+    date: str, series: str, rate_percent: str, aux_kind: str,
+    scenario: str | None, data_dir: Path | None, description: str, tags: str,
+    row_name: str | None, vary_target: str | None, vary_distribution: str | None,
+    vary_low: str | None, vary_high: str | None, vary_mean: str | None, vary_sd: str | None,
+    vary_ramp_months: int | None,
+) -> None:
+    """Append a set_rate event: SERIES starts earning RATE_PERCENT (e.g. 4.5) from DATE.
+
+    RATE_PERCENT is a schema placeholder, ignored, when --vary-target=amount.
+    """
+    try:
+        registries.parse_tags(tags)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    date = _validate_iso_date(date)
+    micros = _percent_to_rate_micros(rate_percent)
+    vary_fields = _vary_row_fields(
+        row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
+        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_ramp_months=vary_ramp_months, amount_parser=_percent_to_rate_micros,
+    )
+
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    row = {
+        "date": date, "kind": "set_rate", "series": series, "amount": str(micros),
+        # aux_kind has no promoted column of its own -- _build_cal_payload
+        # only ever learns it from params_json (defaulting to 'rate' when
+        # absent), so it's only written here when it differs from that.
+        "params_json": json.dumps({"aux_kind": aux_kind}) if aux_kind != "rate" else "",
+        "description": description, "tags": tags, **vary_fields,
+    }
+    path = scenario_dir / "calendar.csv"
+    _append_and_validate(path, registries.CALENDAR_HEADER, row,
+                        data_dir=data_dir_p, scenario_name=scenario_name)
+    click.echo(
+        f"appended set_rate {series!r} -> {rate_percent}% on {date} "
+        f"(aux_kind={aux_kind!r}) to {path}"
+    )
+
+
+@calendar_add_group_command.command("set-amount")
+@click.argument("date")
+@click.argument("scheduled_name")
+@click.argument("amount")
+@click.option("--param-date", default="",
+              help="New base date for the rule (YYYY-MM-DD), optional.")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--description", default="", help="Free-text description.")
+@click.option("--tags", default="",
+              help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
+@_vary_row_options
+def calendar_add_set_amount(
+    date: str, scheduled_name: str, amount: str, param_date: str,
+    scenario: str | None, data_dir: Path | None, description: str, tags: str,
+    row_name: str | None, vary_target: str | None, vary_distribution: str | None,
+    vary_low: str | None, vary_high: str | None, vary_mean: str | None, vary_sd: str | None,
+    vary_ramp_months: int | None,
+) -> None:
+    """Append a set_amount event: SCHEDULED_NAME's amount changes to AMOUNT
+    (dollars) from DATE.
+
+    AMOUNT is a schema placeholder, ignored, when --vary-target=amount.
+    """
+    try:
+        registries.parse_tags(tags)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    names = _scheduled_names(data_dir_p, scenario)
+    if scheduled_name not in names:
+        raise click.ClickException(f"unknown scheduled_name: {scheduled_name!r}")
+
+    date = _validate_iso_date(date)
+    if param_date:
+        param_date = _validate_iso_date(param_date)
+    cents = _parse_amount_cents(amount)
+    vary_fields = _vary_row_fields(
+        row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
+        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
+    )
+
+    row = {
+        "date": date, "kind": "set_amount", "scheduled_name": scheduled_name,
+        "amount": str(cents), "param_date": param_date,
+        "description": description, "tags": tags, **vary_fields,
+    }
+    path = scenario_dir / "calendar.csv"
+    _append_and_validate(path, registries.CALENDAR_HEADER, row,
+                        data_dir=data_dir_p, scenario_name=scenario_name)
+    click.echo(
+        f"appended set_amount {scheduled_name!r} -> {_fmt_cents(cents).strip()} "
+        f"on {date} to {path}"
+    )
+
+
+@calendar_add_group_command.command("retire-scheduled")
+@click.argument("date")
+@click.argument("scheduled_name")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--description", default="", help="Free-text description.")
+@click.option("--tags", default="",
+              help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
+@_vary_row_options
+def calendar_add_retire_scheduled(
+    date: str, scheduled_name: str,
+    scenario: str | None, data_dir: Path | None, description: str, tags: str,
+    row_name: str | None, vary_target: str | None, vary_distribution: str | None,
+    vary_low: str | None, vary_high: str | None, vary_mean: str | None, vary_sd: str | None,
+    vary_ramp_months: int | None,
+) -> None:
+    """Append a retire_scheduled event: SCHEDULED_NAME stops firing from DATE.
+
+    Only --vary-target=date is meaningful here (no amount column to vary).
+    """
+    if vary_target == "amount":
+        raise click.ClickException(
+            "retire_scheduled has no amount column to vary; use --vary-target date"
+        )
+    try:
+        registries.parse_tags(tags)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    names = _scheduled_names(data_dir_p, scenario)
+    if scheduled_name not in names:
+        raise click.ClickException(f"unknown scheduled_name: {scheduled_name!r}")
+
+    date = _validate_iso_date(date)
+    vary_fields = _vary_row_fields(
+        row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
+        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_ramp_months=vary_ramp_months, amount_parser=None,
+    )
+
+    row = {
+        "date": date, "kind": "retire_scheduled", "scheduled_name": scheduled_name,
+        "description": description, "tags": tags, **vary_fields,
+    }
+    path = scenario_dir / "calendar.csv"
+    _append_and_validate(path, registries.CALENDAR_HEADER, row,
+                        data_dir=data_dir_p, scenario_name=scenario_name)
+    click.echo(f"appended retire_scheduled {scheduled_name!r} on {date} to {path}")
+
+
+@calendar_add_group_command.command("transfer")
+@click.argument("date", required=False)
+@click.argument("from_account", required=False, shell_complete=_complete_account)
+@click.argument("to_account", required=False, shell_complete=_complete_account)
+@click.argument("amount", required=False)
+@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
+@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--tax-character", default="none", show_default=True,
+              help="ADR-003 tax_character (e.g. ordinary, ltcg, none).")
+@click.option("--description", default="", help="Free-text description.")
+@click.option("--series", default="", help="Optional series tag.")
+@_vary_row_options
+def calendar_add_transfer(
+    date: str | None,
+    from_account: str | None,
+    to_account: str | None,
+    amount: str | None,
+    from_lot: str | None,
+    to_lot: str | None,
+    scenario: str | None,
+    data_dir: Path | None,
+    tax_character: str,
+    description: str,
+    series: str,
+    row_name: str | None,
+    vary_target: str | None,
+    vary_distribution: str | None,
+    vary_low: str | None,
+    vary_high: str | None,
+    vary_mean: str | None,
+    vary_sd: str | None,
+    vary_ramp_months: int | None,
+) -> None:
+    """Append a one-time transfer (same as ``sim transfer add``)."""
+    _do_add_transfer(
+        date=date, from_account=from_account, to_account=to_account, amount=amount,
+        from_lot=from_lot, to_lot=to_lot, scenario=scenario, data_dir=data_dir,
+        tax_character=tax_character, description=description, series=series,
+        row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
+        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_ramp_months=vary_ramp_months,
     )
 
 

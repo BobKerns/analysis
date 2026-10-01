@@ -83,7 +83,7 @@ def _excluded_accounts(connections: Mapping[str, RunConnection]) -> set[str]:
     excluded: set[str] = set()
     for connection in connections.values():
         accounts = connection.items("account")
-        for name, meta in zip(accounts["name"], accounts["meta_json"]):
+        for name, meta in zip(accounts["name"], accounts["meta_json"], strict=True):
             info = json.loads(meta or "{}")
             if info.get("builtin") or info.get("diff") == "transient":
                 excluded.add(name)
@@ -224,7 +224,7 @@ def _lots_by_account(connection: RunConnection) -> dict[str, set[str]]:
     members = connection.items("account_model_member")
     members = members[members["kind"] == "asset"]
     grouped: dict[str, set[str]] = {}
-    for account, lot in zip(members["account"], members["lot"]):
+    for account, lot in zip(members["account"], members["lot"], strict=True):
         grouped.setdefault(account, set()).add(f"{account}/{lot}")
     return grouped
 

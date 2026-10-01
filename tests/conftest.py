@@ -60,6 +60,7 @@ from collections.abc import Callable, Generator
 from pathlib import Path
 import shutil
 import sqlite3
+import warnings
 
 import pandas as pd
 import pytest
@@ -71,7 +72,7 @@ from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
-from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER
+from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER, CALENDAR_HEADER
 
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
@@ -89,7 +90,7 @@ _STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _stable_code_stamps() -> Generator[None, None, None]:
+def _stable_code_stamps() -> Generator[None]:
     """Stamp runs with a fixed code version instead of asking git.
 
     ``provenance.code_stamps`` runs ``git status`` on this repo for every load
@@ -118,6 +119,31 @@ def _no_current_scenario_writes(
     if request.node.get_closest_marker("uses_current_scenario_write"):
         return
     monkeypatch.setattr("analysis.sim.cli.write_current_scenario", lambda *args, **kwargs: None)
+
+
+@pytest.fixture(autouse=True)
+def _negative_balance_is_an_error(request: pytest.FixtureRequest) -> Generator[None]:
+    """Promote engine.py's "account went negative" RuntimeWarning to a hard
+    error for every test.
+
+    An account going negative after exhausting its refill chain almost
+    always means a test's fixture data is under-funded for whatever it's
+    exercising, not a deliberate outcome -- better to fail loudly at the
+    test that caused it than let it slip into the warnings summary at the
+    end of the run, one of a pile easy to stop reading closely. A test that
+    genuinely wants the old warn-and-continue behavior (verifying the
+    warning itself, or deliberately modeling a shortfall) opts back in with
+    ``@pytest.mark.allow_negative_balance``. This is a test-suite-only
+    policy -- ``engine.py`` itself is untouched, so a real ``sim run``
+    still only warns.
+    """
+    if request.node.get_closest_marker("allow_negative_balance"):
+        yield
+        return
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", category=RuntimeWarning, message=".*went negative.*")
+        yield
+
 
 @pytest.fixture(scope="session")
 def data_dir(tmp_path_factory: pytest.TempPathFactory, prototype_data: Path) -> Path:
@@ -159,7 +185,7 @@ def test_scenarios_dir(test_data_dir: Path) -> Path:
     return scenarios_dir
 
 @pytest.fixture(scope="function")
-def state_dir(tmp_path: Path) -> Generator[Path, None, None]:
+def state_dir(tmp_path: Path) -> Generator[Path]:
     """Create a temporary state directory within the temporary data directory for tests."""
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -313,7 +339,7 @@ def variant_a_run_path(run_path: Callable[[str], Path]) -> Path:
 @pytest.fixture(scope="function")
 def retire_alice_run(scenarios_dir: Path,
                      retire_alice_scenario: ScenarioConnection,
-                     retire_alice_run_file: Path) -> Generator[RunConnection, None, None]:
+                     retire_alice_run_file: Path) -> Generator[RunConnection]:
     """Fixture to provide the RunConnection for the retire_alice scenario."""
     with open_run(retire_alice_run_file, retire_alice_scenario,
                   scenarios_dir=scenarios_dir) as r:
@@ -323,7 +349,7 @@ def retire_alice_run(scenarios_dir: Path,
 @pytest.fixture(scope="function")
 def variant_a_run(scenarios_dir: Path,
                   variant_a_scenario: ScenarioConnection,
-                  variant_a_run_file: Path) -> Generator[RunConnection, None, None]:
+                  variant_a_run_file: Path) -> Generator[RunConnection]:
     """Fixture to provide the RunConnection for the variant_a scenario."""
     with open_run(variant_a_run_file, variant_a_scenario,
                   scenarios_dir=scenarios_dir) as r:
@@ -331,14 +357,14 @@ def variant_a_run(scenarios_dir: Path,
 
 
 @pytest.fixture(scope="session")
-def retire_alice_scenario(data_dir: Path) -> Generator[ScenarioConnection, None, None]:
+def retire_alice_scenario(data_dir: Path) -> Generator[ScenarioConnection]:
     """Fixture to provide the ScenarioConnection for the retire_alice scenario."""
     with open_scenario(data_dir, "retire_alice") as conn:
         yield conn
 
 
 @pytest.fixture(scope="function")
-def test_retire_alice_scenario(test_data_dir: Path) -> Generator[ScenarioConnection, None, None]:
+def test_retire_alice_scenario(test_data_dir: Path) -> Generator[ScenarioConnection]:
     """Fixture to provide the ScenarioConnection for the retire_alice scenario."""
     with open_scenario(test_data_dir, "retire_alice") as conn:
         yield conn
@@ -347,7 +373,7 @@ def test_retire_alice_scenario(test_data_dir: Path) -> Generator[ScenarioConnect
 @pytest.fixture(scope="function")
 def variant_a_scenario(data_dir: Path,
                        variant_a_scenario_create: Path,
-                       ) -> Generator[ScenarioConnection, None, None]:
+                       ) -> Generator[ScenarioConnection]:
     """Fixture to provide the ScenarioConnection for the variant_a scenario."""
     with open_scenario(data_dir, "variant_a") as conn:
         yield conn
@@ -370,7 +396,7 @@ def variant_a_scenario_create(data_dir: Path) -> Path:
     return scenario.create_scenario(data_dir, "variant_a", "retire_alice")
 
 @pytest.fixture(scope="function")
-def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunConnection, None, None]:
+def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunConnection]:
     """Connection to the ``two_lot_run_file`` run."""
     with open_scenario(test_data_dir, "retire_alice") as scenario_conn:
         with open_run(two_lot_run_file, scenario_conn,
@@ -382,7 +408,7 @@ def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunCon
 def lot_variant_runs(
     two_lot_run_file: Path, test_data_dir: Path, test_scenarios_dir: Path,
     intent_dir: Path, runs_dir: Path,
-) -> Generator[tuple[RunConnection, dict[str, RunConnection]], None, None]:
+) -> Generator[tuple[RunConnection, dict[str, RunConnection]]]:
     """Runs of ``retire_alice`` (its brokerage split into lots a and b) and of a
     derived ``variant`` that changes lot b's quantity, balance and basis, adds a
     lot c, and changes one inherited year-to-date row."""
@@ -433,7 +459,7 @@ def bad_subkind_data(test_data: Path) -> Path:
 
 
 @pytest.fixture(scope="function")
-def ledger_con() -> Generator[sqlite3.Connection, None, None]:
+def ledger_con() -> Generator[sqlite3.Connection]:
     """In-memory run-schema database for engine unit tests that call
     ledger-posting helpers directly. Lot ids 1..99 exist, each belonging to the
     account with the same id, so tests can use small ints as account/lot ids."""
@@ -458,6 +484,32 @@ def retire_alice_csv(test_scenarios_dir: Path) -> Callable[[str], Path]:
 
 
 @pytest.fixture(scope="function")
+def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
+    """Add headroom to the private retire_alice copy's Asset_Savings opening
+    balance.
+
+    retire_alice is funded to run its own base scenario through 2040
+    without Asset_Checking going negative, but several tests add an extra
+    expense it wasn't sized for (a federal tax payment via tax_accumulator,
+    an early death that cuts household income in half while shared
+    expenses continue) -- this keeps Asset_Checking's refill chain from
+    running dry before it reaches the (amply funded) IRA behind it, rather
+    than each such test having to size its own top-up.
+    """
+    import pandas as pd
+
+    def _fund(extra: str = "100000.00") -> None:
+        values_path = test_scenarios_dir / "retire_alice" / "account_values.csv"
+        df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+        mask = df["account_name"] == "Asset_Savings"
+        current = float(df.loc[mask, "opening_balance"].iloc[0])
+        df.loc[mask, "opening_balance"] = f"{current + float(extra):.2f}"
+        df.to_csv(values_path, index=False)
+
+    return _fund
+
+
+@pytest.fixture(scope="function")
 def load_test_copy(test_data_dir: Path, test_scenarios_dir: Path,
                    intent_dir: Path) -> Callable[[], LoadResult]:
     """Loader for the private retire_alice copy, after a test has edited it."""
@@ -475,6 +527,21 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
         path.write_text(text)
         return path
     return _write
+
+
+@pytest.fixture(scope="function")
+def append_calendar_row(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Append a row to the private copy's calendar.csv, by column name
+    (ADR-006 ``vary_*``/``name`` columns included)."""
+    def _add(**fields: str) -> None:
+        path = retire_alice_csv("calendar.csv")
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        df = df.reindex(columns=CALENDAR_HEADER, fill_value="")
+        unknown = set(fields) - set(CALENDAR_HEADER)
+        assert not unknown, f"unknown calendar.csv columns: {sorted(unknown)}"
+        df.loc[len(df)] = [fields.get(column, "") for column in CALENDAR_HEADER]
+        df.to_csv(path, index=False)
+    return _add
 
 
 @pytest.fixture(scope="function")
@@ -558,3 +625,20 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
     intent = load_test_copy().intent_path
     return run_scenario(intent, runs_dir / "two_lot.sqlite3", run_by="TEST",
                         allow_dirty_data=True, allow_dirty_code=True)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def close_plots():
+    import matplotlib.pyplot as plt
+    yield
+    plt.close("all")
+
+
+@pytest.fixture(scope="function", autouse=True)
+def no_FigureCanvasAgg_warning():
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore",
+                                category=UserWarning,
+                                message=".*FigureCanvasAgg.*"
+                                )
+        yield

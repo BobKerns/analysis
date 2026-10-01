@@ -271,10 +271,59 @@ SCENARIO_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 CALENDAR_HEADER: tuple[str, ...] = (
-    "date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
+    "date", "kind", "name", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
     "series", "amount", "param_date", "tax_character", "params_json", "description",
     "tags",
+    # Ensemble variation (ADR-006): a row with vary_distribution set has its own
+    # amount/date (per vary_target) drawn per member instead of used literally.
+    # vary_low/vary_high are `uniform`'s own bounds, and also double as
+    # `truncated_normal`'s optional clip bounds -- each of vary_mean/vary_sd/
+    # vary_low/vary_high may be inferred from the other three when omitted
+    # (see distributions.resolve_truncated_normal_bounds), so truncated_normal
+    # is never actually unbounded.
+    "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_mean",
+    "vary_sd", "vary_ramp_months",
 )
+
+# ADR-006: which of a varying calendar_event row's own columns is drawn.
+VARY_TARGETS: set[str] = {"amount", "date"}
+
+# ADR-006: closed like every other registry; a new family (triangular,
+# lognormal, ...) is a one-line addition when a concrete case needs one.
+ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal"}
+
+# ADR-006 §9: `sim ensemble create`'s default scenario.meta_json.ensemble_size
+# when --size is omitted, so a recipe always has a member count `sim run`/
+# `sim all` can use without requiring --ensemble-size on every invocation.
+# See docs/guides/ensembles.md for what a good size actually depends on
+# (mainly how many dimensions -- varying rows -- the recipe has).
+DEFAULT_ENSEMBLE_SIZE = 30
+
+# ADR-006: calendar_event kinds whose `amount` column has a real meaning to
+# vary (a rate in `set_rate`, a new base amount in `set_amount`, a transfer
+# amount in `one_off_transfer`). `retire_scheduled` (and every kind outside
+# SUPPORTED_CALENDAR_KINDS) has no amount column a draw could affect.
+AMOUNT_VARYING_KINDS: set[str] = {"set_rate", "set_amount", "one_off_transfer"}
+
+# ADR-006: vary_low/vary_high/vary_mean/vary_sd columns each distribution
+# actually reads; any other bound column left non-blank alongside it is a
+# parameter the eventual draw silently ignores. `truncated_normal` reads all
+# four (any one may be inferred from the other three when blank, so none is
+# individually "required" here -- see DISTRIBUTION_REQUIRED_PARAMS and
+# distributions.resolve_truncated_normal_bounds).
+DISTRIBUTION_PARAMS: dict[str, frozenset[str]] = {
+    "uniform": frozenset({"vary_low", "vary_high"}),
+    "truncated_normal": frozenset({"vary_mean", "vary_sd", "vary_low", "vary_high"}),
+}
+
+# ADR-006: the subset of DISTRIBUTION_PARAMS[dist] that must actually be
+# given a value, checked by a plain "is this column blank" scan.
+# `truncated_normal` isn't here: its four params can satisfy each other in
+# more than one combination (mean+sd; low+high; mean+one bound; ...), which
+# needs distributions.resolve_truncated_normal_bounds, not a fixed column list.
+DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
+    "uniform": ("vary_low", "vary_high"),
+}
 
 
 PERSONS_CSV_HEADER: tuple[str, ...] = (
