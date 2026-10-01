@@ -101,6 +101,35 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         con.close()
 
 
+def test_readme_overrides_scenario_csv_description(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    (retire_alice_csv("README.md")).write_text(
+        "# Retirement baseline\n\nAlice and Bob's main plan.\n"
+    )
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    try:
+        description = con.execute("SELECT description FROM scenario").fetchone()[0]
+        assert description == "# Retirement baseline\n\nAlice and Bob's main plan."
+    finally:
+        con.close()
+
+
+def test_no_readme_keeps_scenario_csv_description(
+    test_data_dir: Path, intent_dir: Path,
+) -> None:
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    try:
+        description = con.execute("SELECT description FROM scenario").fetchone()[0]
+    finally:
+        con.close()
+    df = pd.read_csv(test_data_dir / "scenarios" / "retire_alice" / "scenario.csv",
+                     dtype=str, keep_default_na=False)
+    assert description == (df.loc[0, "description"] or None)
+
+
 def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)

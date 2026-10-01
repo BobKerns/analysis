@@ -148,13 +148,13 @@ def test_ensemble_widget_returns_a_box_without_displaying_it(
 
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
-    box = ensemble_widget(small_ensemble_runs_dir)
+    box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
     assert isinstance(box, widgets.VBox)
     assert not any(isinstance(item, widgets.Widget) for item in shown)
 
 
 def test_ensemble_widget_dropdown_lists_the_recipe(small_ensemble_runs_dir: Path) -> None:
-    box = ensemble_widget(small_ensemble_runs_dir)
+    box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
     dropdown, _pickers, _out = box.children
     assert dropdown.options == ("retire_alice",)
     assert dropdown.value == "retire_alice"
@@ -188,7 +188,7 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
 
     monkeypatch.setattr(ensemble_widgets, "members_net_worth_by_month", _spy)
     dollar_mode = DollarModePicker()
-    box = ensemble_widget(small_ensemble_runs_dir, dollar_mode=dollar_mode)
+    box = ensemble_widget(runs_dir=small_ensemble_runs_dir, dollar_mode=dollar_mode)
     _dropdown, pickers, _out = box.children
     assert dollar_mode in pickers.children
     assert modes_seen[-1] == DollarMode.NOMINAL
@@ -214,7 +214,7 @@ def test_ensemble_widget_log_linear_mode_sets_the_yscale(
 
     monkeypatch.setattr(ensemble_widgets.plt, "subplots", _spy_subplots)
     log_linear_mode = LogLinearModePicker()
-    ensemble_widget(small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
+    ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
     assert axes[-1].get_yscale() == "linear"
 
     log_linear_mode.value = LogLinearMode.LOG

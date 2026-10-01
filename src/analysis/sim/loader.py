@@ -33,6 +33,7 @@ from analysis.sim.provenance import (
     data_stamps,
     repo_head,
 )
+from analysis.sim.readme import readme_description
 from analysis.sim.runs import insert_run_metadata
 from analysis.sim.schema import  SCHEMA_VERSION, apply_run_schema
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
@@ -637,6 +638,15 @@ def load_scenario(
                               scenario_name,
                               issues,
                               scenarios_dir=scenarios_dir)
+    # A scenario folder's own README.md, if there is one, is the scenario's
+    # real description -- scenario.csv's own description column is only the
+    # fallback for a scenario that doesn't have one (ADR-003 §4.1e). Baked
+    # in now rather than read live at display time: a run file is read long
+    # after the data repo it came from may have moved, changed, or gone, so
+    # anything a reader needs has to travel inside the intent/run file itself.
+    description = readme_description(scenario_dir)
+    if description is not None:
+        scenario_row["description"] = description
     chains = _read_chain_files(data_dir, scenario_name, issues)
 
 

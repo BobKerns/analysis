@@ -20,7 +20,7 @@ from analysis.sim.ensemble import (
     members_net_worth_by_month,
 )
 from analysis.sim.ensemble import summary as ensemble_summary
-from analysis.sim.notebook_ui.pickers import DollarModePicker, LogLinearModePicker
+from analysis.sim.notebook_ui.pickers import DollarModePicker, LogLinearModePicker, find_data_dir, find_runs_dir
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.types import DollarMode, LogLinearMode
 
@@ -99,13 +99,16 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
     return ax
 
 
-def ensemble_widget(runs_dir: Path,
+def ensemble_widget(*,
+                    data_dir: Path | str | None = None,
+                    state_dir: Path | None = None,
+                    runs_dir: Path | str | None = None,
                     log_linear_mode: LogLinearModePicker | None = None,
                     dollar_mode: DollarModePicker | None = None,
                     ) -> widgets.VBox:
     """Recipe dropdown + fan chart + year-end summary table for an ensemble
     already generated and run via ``sim run <recipe> --ensemble-size N``."""
-    runs_dir = Path(runs_dir)
+    runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
     recipes = list_ensemble_recipes(runs_dir)
     dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
     log_linear_picker = log_linear_mode or LogLinearModePicker()

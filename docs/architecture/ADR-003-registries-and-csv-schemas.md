@@ -484,6 +484,18 @@ lots use).
   or `state_brackets__CA.csv`, both in `aux/`), a different rate assumption (`rate__*.csv`,
   in `series/`), or a different cost-basis itemization for one scenario, without touching any
   other scenario's inputs.
+
+#### 4.1e Per-scenario `README.md` (optional)
+
+A scenario folder may hold a plain `scenarios/<name>/README.md` — its title (the first `#`
+heading) and first paragraph become `scenario.description` at load time, replacing whatever
+`scenario.csv`'s own `description` column holds; `scenario.csv`'s `description` is only the
+fallback for a scenario with no `README.md` at all. This is read and baked in once, at load
+time (`readme_description`, `analysis.sim.readme`) — never read live off disk afterward,
+since a run file is read long after the data repo it came from may have moved, changed, or
+gone, and everything a reader needs has to travel inside the intent/run file itself. Not
+inherited: a derived scenario with no `README.md` of its own falls straight through to its
+own `scenario.csv` description, not its parent's `README.md`.
 - **Provenance:** each override lives inside `scenarios/<name>/`, already in the
   `scenario_tree_id` scope for that scenario and its descendants ([ADR-004](ADR-004-reproducibility-and-activation.md) §1), so no separate
   provenance handling is needed.

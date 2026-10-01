@@ -55,6 +55,13 @@ add rows to. It checks that the scenario loads, and makes it your current
 scenario. You then add only the rows that need to be different — the rest of
 this guide shows what to put in them.
 
+Add a `README.md` in the scenario's own folder to describe what it's for —
+its title and first paragraph show up wherever a scenario's description
+does (the scenario picker, `scenario_overview.ipynb`), and travel with every
+run file, so "what was this scenario for again" is answered without going
+back to the data repo. Without a `README.md`, `scenario.csv`'s own
+`description` column is used instead.
+
 Everything below works the same way, whether you are editing `base` directly,
 or editing a derived scenario's own files.
 

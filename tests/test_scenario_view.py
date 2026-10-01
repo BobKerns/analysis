@@ -18,13 +18,27 @@ from analysis.sim.notebook_ui.scenario_plots import (
     show_chains,
     show_scheduled_view,
 )
-from analysis.sim.notebook_ui.scenario_view import calendar_view, chains_view, scheduled_view
+from analysis.sim.readme import description_view
+from analysis.sim.notebook_ui.scenario_view import (
+    calendar_view,
+    chains_view,
+    scheduled_view,
+)
 
 
 def _steps(test_data_dir: Path):
     with open_scenario(test_data_dir, "retire_alice") as scenario:
         view = chains_view(scenario)
         return view, view[view["step"].notna()].set_index(["chain", "step"])
+
+
+def test_description_view_relevels_the_readme_heading(test_data_dir: Path) -> None:
+    (test_data_dir / "scenarios" / "retire_alice" / "README.md").write_text(
+        "# Retirement baseline\n\nAlice and Bob's main plan.\n"
+    )
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        md = description_view(scenario)
+    assert md.data == "### Retirement baseline\n\nAlice and Bob's main plan."
 
 
 def test_lot_is_a_dash_when_the_account_has_a_single_lot(test_data_dir: Path) -> None:

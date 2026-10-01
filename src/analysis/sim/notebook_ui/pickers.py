@@ -31,6 +31,7 @@ from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.accounts import plottable_accounts
+from analysis.sim.readme import description_view
 from analysis.sim.registries import AssetClass
 from analysis.sim.types import (
     AccountKind, AccountKindAny, DollarMode, LogLinearMode, ValuePlotMode,
@@ -73,6 +74,7 @@ def display_warning(message: str) -> None:
     from IPython.display import HTML, display
 
     display(HTML(warning_html(message)))
+
 
 class Connections(traitlets.HasTraits):
     """
@@ -186,11 +188,90 @@ _META_COLS = [
     "run_by",
 ]
 
+
 def find_data_dir(data_dir: Path | str | None = None) -> Path:
+    """
+    Find the data directory for the analysis repository. Works from notebook files
+    and scripts within the repository.
+
+    Parameters
+    ----------
+    data_dir : Path | str | None, optional
+        The base directory for the data repository. If None, defaults to
+        the current repo's data/shared/sim or the value of the
+        $ANALYSIS_DATA_DIR environment variable.
+
+    Returns
+    -------
+    Path
+        The resolved data directory.
+    """
     REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
     if data_dir is None:
         return Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data/shared/sim"))
     return Path(data_dir)
+
+
+def find_state_dir(*,
+                   data_dir: Path | str | None = None,
+                   state_dir: Path | None = None,
+                   default_state_dir: Path | None = None) -> Path:
+    """
+    Find the state directory for the analysis repository. Works from notebook files
+    and scripts within the repository.
+
+    Parameters
+    ----------
+    state_dir : Path | None, optional
+        The state directory to use. If None, defaults to the value of the
+        $ANALYSIS_STATE_DIR environment variable or the repo's data/state directory.
+    data_dir : Path | str | None, optional
+        The base directory for the data repository. If None, defaults to
+        the current repo's data/shared/sim or the value of the
+        $ANALYSIS_DATA_DIR environment variable.
+    default_state_dir : Path | None, optional
+        The default state directory to use if the environment variable is not set.
+
+    Returns
+    -------
+    Path
+        The resolved state directory.
+    """
+    data_dir = find_data_dir(data_dir)
+    if state_dir is not None:
+        return data_dir / state_dir
+    if default_state_dir is None:
+        default_state_dir = data_dir.parent / "state"
+    return Path(os.environ.get("ANALYSIS_STATE_DIR", default_state_dir))
+
+
+def find_runs_dir(data_dir: Path | str | None = None,
+                  state_dir: Path | None = None,
+                  runs_dir: Path | None = None) -> Path:
+    """
+    Find the runs directory for the analysis repository. Works from notebook files
+    and scripts within the repository.
+
+    Parameters
+    ----------
+    data_dir : Path | str | None, optional
+        The base directory for the data repository. If None, defaults to
+        the current repo's data/shared/sim or the value of the
+        $ANALYSIS_DATA_DIR environment variable.
+    state_dir : Path | None, optional
+    runs_dir : Path | None, optional
+        The default runs directory to use if the environment variable is not set.
+
+    Returns
+    -------
+    Path
+        The resolved runs directory.
+    """
+    state_dir = find_state_dir(data_dir=data_dir,
+                               state_dir=state_dir)
+    if runs_dir is None:
+        runs_dir = state_dir / "runs"
+    return Path(os.environ.get("ANALYSIS_RUNS_DIR", runs_dir))
 
 
 def scenario_picker(
@@ -200,6 +281,7 @@ def scenario_picker(
     runs_dir: Path | None = None,
     require_run: bool = True,
     show_metadata: bool = False,
+    show_description: bool = False,
 ) -> tuple[widgets.VBox, SingleScenarioConnections, widgets.Dropdown]:
     """A ``Scenario:`` dropdown that keeps a live connection pair in sync.
 
@@ -220,6 +302,8 @@ def scenario_picker(
         raises FileNotFoundError.
     show_metadata : bool, default False
         Whether to display run metadata below the scenario reference.
+    show_description : bool, default False
+        Whether to display the scenario description below the scenario reference.
 
     Returns ``(widget, container)``; ``container`` is a
     :class:`SingleScenarioConnections`, refreshed in place (closing the
@@ -256,6 +340,8 @@ def scenario_picker(
                     run_meta["code_version"] = run_meta["code_version"].str[:12]
                     run_meta["data_version"] = run_meta["data_version"].str[:12]
                     display(run_meta.T)
+            if show_description:
+                display(description_view(container.scenario))
 
     def _on_change(change) -> None:
         old_scenario, old_run = container.scenario, container.run
