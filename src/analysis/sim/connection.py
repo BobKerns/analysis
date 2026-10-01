@@ -464,6 +464,18 @@ class _TagReader:
 
 
 class Connection(_TagReader):
+    """
+    Abstract base class for a connection to a scenario or run.
+
+    Subclasses must implement the abstract properties and methods to provide
+    access to the underlying data and metadata.
+    """
+
+    @property
+    def name(self) -> str:
+        """The name of the connection."""
+        pass
+
     @property
     @abstractmethod
     def label(self) -> str:
@@ -964,13 +976,6 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
     """
 
     @property
-    def name(self) -> str:
-        """
-        Return the name of the scenario.
-        """
-        return self.ref.name
-
-    @property
     def label(self) -> str:
         """
         Return a human-readable label for the scenario connection.
@@ -994,6 +999,14 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
     @property
     def data_dir(self) -> Path:
         return self._data_dir
+
+    @property
+    def scenario(self) -> ScenarioConnection:
+        """A ScenarioConnection already is one -- returns itself, so
+        polymorphic code written against `Connection` (``conn.scenario...``)
+        works the same whether `conn` started as a RunConnection or a
+        ScenarioConnection."""
+        return self
 
     scenarios_dir: Path
 

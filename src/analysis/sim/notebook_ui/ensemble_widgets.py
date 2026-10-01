@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import Markdown, display
 
-from analysis.sim.connection import open_run, year_end_values
+from analysis.sim.connection import year_end_values
 from analysis.sim.ensemble import (
     latest_ensemble_batch,
     load_ensemble,
