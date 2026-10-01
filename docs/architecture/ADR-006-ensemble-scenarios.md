@@ -116,7 +116,7 @@ Present (with a real row / rows) only in a member's own intent and run files; ab
 
 ### 7. `sim run` generates the ensemble when a recipe has one
 
-`sim run <recipe>` loads the scenario as usual. If the loaded intent has any unresolved `vary_distribution` row, it does not produce a single run — it determines `member_count` from `--ensemble-size N` if given, else `scenario.meta_json.ensemble_size` (an error if neither is set), and the ensemble's own seed from `scenario.seed` (reserved for exactly this since ADR-002 v1; an error if unset). It creates `state/intent/<recipe>/` and `state/runs/<recipe>/`, generates and runs each member (§5), and reports progress. **A member that fails is reported, not retried** — the summary names the failure count and each failed member's intent file path, so the specific input that failed is one open-file away.
+`sim run <recipe>` loads the scenario as usual. If the loaded intent has any unresolved `vary_distribution` row, it does not produce a single run — it determines `member_count` from `--ensemble-size N` if given, else `scenario.meta_json.ensemble_size` (an error if neither is set — unreachable for a recipe `sim ensemble create` made, since it always writes a default there; see `registries.DEFAULT_ENSEMBLE_SIZE`), and the ensemble's own seed from `scenario.seed` (reserved for exactly this since ADR-002 v1; an error if unset). `sim all` runs every scenario in the data repo the same way `sim load --run` does, so a recipe with a recorded `ensemble_size` runs there too, with no separate ensemble-aware code path. It creates `state/intent/<recipe>/` and `state/runs/<recipe>/`, generates and runs each member (§5), and reports progress. **A member that fails is reported, not retried** — the summary names the failure count and each failed member's intent file path, so the specific input that failed is one open-file away.
 
 If a scenario has no unresolved rows, `sim run` behaves exactly as it does today; no existing scenario's behavior changes.
 
@@ -131,6 +131,12 @@ by_month = pd.concat(frames).groupby("month")["net_worth"].agg(["mean", "median"
 
 — the same shape of aggregation `scenario_compare.ipynb` already does across a handful of named variants, just over many random ones. A new `notebooks/ensemble.ipynb` plots the standard Monte Carlo fan (percentile bands over time); `sim ensemble summary <recipe>` is the terminal equivalent from day one, printing the same table plus the failure count from §7, so this doesn't join the CLI-gap backlog in `TODO.md`.
 
+### 9. Member 0: a deterministic base case
+
+Every ensemble's member 0 resolves each `vary_distribution` row to its distribution's **central value** (`uniform`'s midpoint; `truncated_normal`'s `mean`, clamped into `[clip_low, clip_high]`) instead of drawing from its RNG stream — members 1 through `member_count - 1` draw exactly as before, unaffected. This gives every ensemble one deterministic, always-in-bounds "base case" member, and lets anything that only knows how to open one run file per scenario (a notebook's scenario picker, any other single-scenario tool) treat an ensemble recipe's member 0 as that scenario's run the same way it would any ordinary scenario's — `resolve_scenario_name` falls back to member 0 of the latest batch when there's no flat run file to find.
+
+This is a deliberate, small distortion of the sampled distribution: member 0 isn't actually drawn from it, so a statistic computed across *all* `member_count` members (mean, SD, a fan chart's percentile bands) is very slightly biased toward the center relative to `member_count` genuinely independent draws — most noticeable at a small `member_count`, negligible at the sizes this ADR expects (tens of members; see `docs/guides/ensembles.md` for sizing guidance). The alternative considered was keeping member 0 out of the statistics (effectively `member_count + 1` members: one deterministic, `member_count` random) or dropping the guaranteed base case entirely (every member drawn, as originally designed). Both were rejected: a single always-present, always-inspectable member is worth more than the statistical purity of excluding it, and "member 0 is special, full stop" is a simpler invariant to hold onto than a count that means something different depending on whether you're drawing a member or aggregating across them.
+
 ## Amendments applied alongside this ADR
 
 - [ADR-002](ADR-002-storage-schema.md): `calendar_event` gains `name` and the `vary_*` columns; new intent-layer tables `ensemble_manifest`, `ensemble_draw` (added to `SNAPSHOT_TABLES`); `SCHEMA_VERSION` bump; `schema_overview` rows.
@@ -140,7 +146,7 @@ by_month = pd.concat(frames).groupby("month")["net_worth"].agg(["mean", "median"
 ## Consequences
 
 - Positive: `run_scenario`/`open_run_file` need no ensemble-awareness at all; a member is an ordinary intent-then-run pair readable by every existing tool; variation authoring reuses calendar reporting instead of inventing a parallel, invisible mechanism; a failed member's exact input is a file on disk, not something to reconstruct.
-- Negative: `calendar.csv` needs the schema addition before any of this works; an ensemble's disk footprint is `member_count` full intent files *and* `member_count` full run files (neither a diff); wall-clock time for `sim run` on a recipe scales linearly with `member_count`.
+- Negative: `calendar.csv` needs the schema addition before any of this works; an ensemble's disk footprint is `member_count` full intent files *and* `member_count` full run files (neither a diff); wall-clock time for `sim run` on a recipe scales linearly with `member_count`; member 0 being deterministic rather than drawn (§9) is a small, deliberate bias in any statistic computed across every member.
 - Not attempted: nested ensembles (a recipe whose parent is itself a recipe); varying a target that isn't expressible via `set_rate`/`set_amount`/`one_off_transfer` (an opening balance, say) — add a case when a real need appears, per this project's own registries-grow-one-line-at-a-time convention.
 
 ## Open questions deferred

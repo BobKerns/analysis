@@ -464,9 +464,13 @@ def ensemble_group_command() -> None:
     help="Ensemble master seed (default: a random 31-bit int, printed on creation).",
 )
 @click.option(
-    "--size", "ensemble_size", type=int, default=None,
-    help="Default member count (scenario.meta_json.ensemble_size); "
-         "'sim run --ensemble-size' can override it later.",
+    "--size", "ensemble_size", type=int, default=registries.DEFAULT_ENSEMBLE_SIZE,
+    show_default=True,
+    help="Default member count (scenario.meta_json.ensemble_size), so "
+         "'sim run'/'sim all' can generate and run this recipe without "
+         "--ensemble-size on every invocation; 'sim run --ensemble-size' "
+         "can still override it per invocation. See docs/guides/ensembles.md "
+         "for what size is actually appropriate for this recipe.",
 )
 def ensemble_create(
     name: str,
@@ -474,16 +478,17 @@ def ensemble_create(
     data_dir: Path | None,
     description: str | None,
     seed: int | None,
-    ensemble_size: int | None,
+    ensemble_size: int,
 ) -> None:
     """Create ensemble recipe NAME deriving from PARENT scenario (ADR-006).
 
     A recipe is an ordinary scenario until a calendar.csv row is marked
     varying (``sim calendar add <kind> ... --vary-distribution ...``);
-    ``sim run NAME --ensemble-size N`` then generates and runs every member
-    instead of a single run.
+    ``sim run NAME`` then generates and runs every member instead of a
+    single run, using --size's recorded member count unless overridden by
+    ``sim run NAME --ensemble-size N``.
     """
-    if ensemble_size is not None and ensemble_size <= 0:
+    if ensemble_size <= 0:
         raise click.ClickException(f"--size must be a positive integer (got {ensemble_size})")
     data_dir_p = _resolve_data_dir(data_dir)
     seed = seed if seed is not None else secrets.randbelow(2**31)
@@ -495,8 +500,7 @@ def ensemble_create(
     scenario_csv = target / "scenario.csv"
     df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
     meta = json.loads(df.loc[0, "meta_json"] or "{}")
-    if ensemble_size is not None:
-        meta["ensemble_size"] = ensemble_size
+    meta["ensemble_size"] = ensemble_size
     df.loc[0, "seed"] = str(seed)
     df.loc[0, "meta_json"] = json.dumps(meta, separators=(",", ":"))
     df.to_csv(scenario_csv, index=False)
@@ -520,8 +524,7 @@ def ensemble_create(
     click.echo(f"created ensemble recipe {target}")
     click.echo(f"  inherits: {parent_ref.name}")
     click.echo(f"  seed: {seed}")
-    if ensemble_size is not None:
-        click.echo(f"  ensemble_size: {ensemble_size}")
+    click.echo(f"  ensemble_size: {ensemble_size}")
     click.echo(f"  current scenario: {name}")
     click.echo(
         "  next: sim calendar add <kind> ... --vary-distribution ... to mark rows as "

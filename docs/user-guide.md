@@ -384,6 +384,26 @@ This is a simple, whole-dollar comparison. It does not model anything more
 detailed, such as medical expenses only counting above a share of your
 income.
 
+### 4.10 Running an ensemble (a range of outcomes, not one number)
+
+Every scenario so far gives you one prediction. If you're not sure about a
+rate, a date, or a one-off amount, an **ensemble** generates many variants
+of a scenario — each with that value redrawn from a range you choose — and
+shows you the *spread* of outcomes instead of a single number:
+
+```sh
+sim ensemble create inflation_1 base
+sim calendar add set-rate 2027-01-31 mutual_fund_retirement 4.0 \
+  --scenario inflation_1 --name fund_vary \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-low 2.5 --vary-high 5.5
+sim run inflation_1
+```
+
+See [docs/guides/ensembles.md](guides/ensembles.md) for the full
+how-to, including how many members is reasonable for your case (it depends
+mainly on how many things you're varying at once).
+
 ## 5. Looking at your results
 
 A **run** is what happens when the simulator plays a scenario forward, month
@@ -425,6 +445,7 @@ None of them need you to write any code.
 | `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, and after-tax income. |
 | `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, and where they cross over (break-even). |
 | `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range — good for auditing "why did this happen." |
+| `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median with the min–max range shaded behind it, plus a year-end mean/median/SD/range table. |
 
 Open one with `analysis jupyter` (or the **Jupyter** VS Code task, below), or
 in VS Code directly if it runs well enough there for your machine
@@ -488,3 +509,4 @@ answer.
   and the data-repo structure diagrams (§4.0).
 - [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](architecture/ADR-005-lots-and-per-lot-state.md) — lots in depth.
 - [notebooks/README.md](../notebooks/README.md) — the same information as interactive widgets.
+- [`docs/guides/ensembles.md`](guides/ensembles.md) — ranges of outcomes instead of one number (Part 4.10); [ADR-006](architecture/ADR-006-ensemble-scenarios.md) has the full design.

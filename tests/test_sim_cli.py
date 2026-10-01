@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.sim import registries
 from analysis.sim.loader import load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1482,11 +1483,15 @@ def test_sim_ensemble_create_defaults_seed_when_omitted(test_data_dir: Path) -> 
     )
     assert result.exit_code == 0, result.output
     assert "seed:" in result.output
-    assert "ensemble_size" not in result.output
+    # --size omitted still records registries.DEFAULT_ENSEMBLE_SIZE, so
+    # sim run/sim all never need --ensemble-size just to do *something*.
+    assert f"ensemble_size: {registries.DEFAULT_ENSEMBLE_SIZE}" in result.output
 
     scenario_csv = test_data_dir / "scenarios" / "my_recipe" / "scenario.csv"
     df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
     assert df.loc[0, "seed"]  # some seed was picked
+    meta = json.loads(df.loc[0, "meta_json"])
+    assert meta["ensemble_size"] == registries.DEFAULT_ENSEMBLE_SIZE
 
 
 def test_sim_ensemble_create_honors_explicit_seed(test_data_dir: Path) -> None:

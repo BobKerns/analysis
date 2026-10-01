@@ -292,6 +292,13 @@ VARY_TARGETS: set[str] = {"amount", "date"}
 # lognormal, ...) is a one-line addition when a concrete case needs one.
 ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal"}
 
+# ADR-006 §9: `sim ensemble create`'s default scenario.meta_json.ensemble_size
+# when --size is omitted, so a recipe always has a member count `sim run`/
+# `sim all` can use without requiring --ensemble-size on every invocation.
+# See docs/guides/ensembles.md for what a good size actually depends on
+# (mainly how many dimensions -- varying rows -- the recipe has).
+DEFAULT_ENSEMBLE_SIZE = 30
+
 # ADR-006: calendar_event kinds whose `amount` column has a real meaning to
 # vary (a rate in `set_rate`, a new base amount in `set_amount`, a transfer
 # amount in `one_off_transfer`). `retire_scheduled` (and every kind outside
