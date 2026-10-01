@@ -11,6 +11,8 @@ import pytest
 
 matplotlib.use("Agg")
 
+import matplotlib.pyplot as plt
+
 from analysis.sim.engine import run_scenario
 from analysis.sim.ensemble import (
     latest_ensemble_batch,
@@ -50,8 +52,53 @@ def test_ensemble_summary_view_returns_year_end_rows_and_member_count() -> None:
 
 def test_ensemble_fan_chart_builds_without_error() -> None:
     ax = ensemble_fan_chart(_monthly_summary())
-    assert len(ax.lines) == 2  # mean, median
+    assert len(ax.lines) == 3  # mean, median, zero rule
     assert len(ax.collections) == 1  # fill_between range band
+
+
+def test_ensemble_fan_chart_zero_rule_does_not_distort_a_far_off_range() -> None:
+    """The zero rule is drawn with axhline, which (left alone) would feed
+    into autoscale and pull the whole chart down to include 0 even when the
+    data never gets near it -- the exact distortion a fan chart is trying to
+    avoid. The axis limits must come out identical to a chart with no rule
+    at all when 0 is nowhere close."""
+    far_from_zero = pd.DataFrame({
+        "mean": [950_000.0, 1_020_000], "median": [945_000.0, 1_015_000],
+        "std": [5_000.0, 5_000], "min": [900_000.0, 950_000], "max": [1_000_000.0, 1_100_000],
+    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
+
+    fig1, ax1 = plt.subplots()
+    ax1.fill_between(far_from_zero.index, far_from_zero["min"], far_from_zero["max"])
+    ax1.plot(far_from_zero.index, far_from_zero["mean"])
+    ax1.plot(far_from_zero.index, far_from_zero["median"])
+    expected_ylim = ax1.get_ylim()
+
+    ax2 = ensemble_fan_chart(far_from_zero)
+    assert ax2.get_ylim() == expected_ylim
+    assert expected_ylim[0] > 0  # 0 genuinely isn't in (or near) this range
+
+
+def test_ensemble_fan_chart_zero_rule_shows_when_range_crosses_zero() -> None:
+    crosses_zero = pd.DataFrame({
+        "mean": [50.0, -10], "median": [45.0, -15],
+        "std": [5.0, 5], "min": [10.0, -80], "max": [100.0, 50],
+    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
+    ax = ensemble_fan_chart(crosses_zero)
+    ylim = ax.get_ylim()
+    assert ylim[0] < 0 < ylim[1]
+    zero_rules = [line for line in ax.lines if list(line.get_ydata()) == [0, 0]]
+    assert len(zero_rules) == 1
+
+
+def test_ensemble_fan_chart_zero_rule_skipped_on_log_scale() -> None:
+    far_from_zero = pd.DataFrame({
+        "mean": [950_000.0, 1_020_000], "median": [945_000.0, 1_015_000],
+        "std": [5_000.0, 5_000], "min": [900_000.0, 950_000], "max": [1_000_000.0, 1_100_000],
+    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
+    fig, ax = plt.subplots()
+    ax.set_yscale("log")
+    ensemble_fan_chart(far_from_zero, ax=ax)
+    assert len(ax.lines) == 2  # mean, median -- no zero rule added at all
 
 
 def test_list_ensemble_recipes_finds_only_directories_with_members(tmp_path: Path) -> None:

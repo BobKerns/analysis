@@ -78,7 +78,19 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
             linewidth=1, linestyle="--", label="median")
     # No forced bottom=0: a shortfall scenario can carry a real negative net
     # worth, and clipping it would hide the low end of the range (and
-    # potentially the mean/median themselves) rather than show it.
+    # potentially the mean/median themselves) rather than show it. A thin
+    # zero rule instead -- but axhline, left to itself, feeds into autoscale
+    # like any other artist and would drag the axis down to include 0 even
+    # when the data is nowhere near it (the exact distortion this chart is
+    # trying to avoid), so the autoscaled limits are captured first and
+    # restored after: the rule only ends up visible when 0 already falls
+    # within the range the data itself earned. Meaningless on a log axis
+    # (zero has no position there), so skipped entirely rather than drawn
+    # and silently invisible.
+    if ax.get_yscale() != "log":
+        ylim = ax.get_ylim()
+        ax.axhline(0, color="red", linewidth=0.8, zorder=2.5)
+        ax.set_ylim(ylim)
     ax.set_xlabel("month")
     ax.set_ylabel("USD")
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
