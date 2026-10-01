@@ -28,6 +28,7 @@ from IPython.display import Markdown, clear_output, display
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
 from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.ensemble import latest_ensemble_batch, member_run_statuses
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.accounts import plottable_accounts
@@ -305,6 +306,15 @@ def scenario_picker(
     show_description : bool, default False
         Whether to display the scenario description below the scenario reference.
 
+    When the selected scenario is an ensemble recipe with generated members
+    and ``require_run`` is true, a second ``Member:`` dropdown appears,
+    defaulting to member 0 (the recipe's deterministic member -- ADR-006
+    §9) and listing every other generated member, labeled with its status
+    when it didn't succeed. Picking one points ``container.run`` at that
+    member's own run file. Hidden for an ordinary scenario, and never shown
+    at all when ``require_run=False``, since that only ever looks at the
+    recipe's own (unresolved, member-independent) intent.
+
     Returns ``(widget, container)``; ``container`` is a
     :class:`SingleScenarioConnections`, refreshed in place (closing the
     previous connections) whenever the dropdown changes.
@@ -321,13 +331,14 @@ def scenario_picker(
         ).name
     options = list_scenario_names(data_dir, scenarios_dir=scenarios_dir)
     dropdown = widgets.Dropdown(options=options, value=default, description="Scenario:")
+    member_dropdown = widgets.Dropdown(description="Member:", layout=widgets.Layout(display="none"))
     ref_out = widgets.Output()
 
     container = _open_single(data_dir, default,
                              runs_dir=runs_dir,
                              require_run=require_run,
                              scenarios_dir=scenarios_dir)
-    vbox = widgets.VBox([dropdown, ref_out])
+    vbox = widgets.VBox([dropdown, member_dropdown, ref_out])
 
     def _redraw() -> None:
         with ref_out:
@@ -343,6 +354,53 @@ def scenario_picker(
             if show_description:
                 display(description_view(container.scenario))
 
+    def _on_member_change(change) -> None:
+        # A notebook comparing scenarios (multi_scenario_picker) has no
+        # equivalent of this -- comparing one member against another is
+        # meaningless, every member already differs only by its draws.
+        if change["new"] is None:
+            # _sync_member_dropdown clearing member_dropdown.options (no
+            # longer an ensemble, or no members at all) propagates to
+            # .value here too -- nothing to switch to.
+            return
+        ref = container.scenario_ref
+        batch = latest_ensemble_batch(ref.runs_dir / ref.name)
+        old_run = container.run
+        container.run = RunConnection(batch / f"{change['new']}.sqlite3", container.scenario)
+        if old_run is not None:
+            old_run.close()
+        _redraw()
+
+    def _sync_member_dropdown() -> None:
+        """Show a member picker when the current scenario is an ensemble
+        recipe with generated members -- require_run=False never reaches
+        this (it only ever looks at the recipe's own intent, identical
+        regardless of member, since member resolution happens in each
+        member's own *run*, not in the shared scenario-level intent)."""
+        ref = container.scenario_ref
+        batch = latest_ensemble_batch(ref.runs_dir / ref.name) if require_run else None
+        if batch is None:
+            member_dropdown.layout.display = "none"
+            member_dropdown.options = ()
+            return
+        statuses = member_run_statuses(batch)
+        member_options = [
+            (stem if status == "succeeded" else f"{stem} ({status})", stem)
+            for stem, status in sorted(statuses.items())
+        ]
+        current = container.run.run_path.stem if container.run is not None else None
+        member_dropdown.options = member_options
+        # Already loaded (_open_single/resolve_scenario_name already default
+        # to member 0): setting the same value is a no-op in traitlets, so
+        # this only ever triggers _on_member_change's rebuild when it's an
+        # actual change -- switching scenarios to a *different* ensemble
+        # recipe whose current member isn't 0, or one with no member 0 at
+        # all.
+        member_dropdown.value = current if current in statuses else (
+            member_options[0][1] if member_options else None
+        )
+        member_dropdown.layout.display = None
+
     def _on_change(change) -> None:
         old_scenario, old_run = container.scenario, container.run
         new = _open_single(data_dir, change["new"],
@@ -355,10 +413,13 @@ def scenario_picker(
         old_scenario.close()
         if old_run is not None:
             old_run.close()
+        _sync_member_dropdown()
         _redraw()
 
     dropdown.observe(_on_change, names="value")
+    member_dropdown.observe(_on_member_change, names="value")
     traitlets.link((dropdown, "value"), (container, "value"))
+    _sync_member_dropdown()
     _redraw()
 
     return vbox, container, dropdown
