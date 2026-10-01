@@ -10,6 +10,7 @@ autouse
 axhline
 axvline
 birthdates
+blockifying
 blockquotes
 cachedir
 calevt
@@ -26,6 +27,7 @@ counterclock
 dateutil
 delenv
 dflt
+edgecolor
 executemany
 executescript
 execv
@@ -43,6 +45,7 @@ kernelspec
 lastrowid
 liab
 linestyle
+lognormal
 lotb
 ltcg
 metas
@@ -72,6 +75,7 @@ recomputable
 reconstructable
 reentrancy
 relativedelta
+relevel
 reprompts
 ripwire
 rollup
@@ -90,6 +94,7 @@ sqls
 startangle
 stcg
 stdlib
+steelblue
 subkey
 subkind
 subkinds
@@ -116,4 +121,5 @@ xytext
 ydata
 ylabel
 ylim
+yscale
 zpln

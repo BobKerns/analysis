@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import matplotlib
-import pandas as pd
 import pytest
 
 matplotlib.use("Agg")

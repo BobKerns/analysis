@@ -37,7 +37,6 @@ _analysis_enable_completion() {
 	unset _analysis_shell_mode
 }
 
-_ANALYSIS_OLD_PS1="${PS1-}"
 export ANALYSIS_DATA_DIR
 ANALYSIS_DATA_DIR="$(cd "$(dirname "$_ANALYSIS_SELF")" && pwd)"
 export ANALYSIS_DATA_REPO_NAME="${ANALYSIS_DATA_REPO_NAME:-$(basename "$ANALYSIS_DATA_DIR")}"
@@ -65,7 +64,7 @@ export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
 printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
 	_analysis_fail "unable to write $_ANALYSIS_POINTER_FILE"
 
-for _analysis_ignored in .analysis .current_scenario; do
+for _analysis_ignored in .analysis .current_scenario .analysis_user; do
 	if [ ! -f "$ANALYSIS_DATA_DIR/.gitignore" ]; then
 		printf '%s\n' "$_analysis_ignored" > "$ANALYSIS_DATA_DIR/.gitignore" || \
 			_analysis_fail "unable to write $ANALYSIS_DATA_DIR/.gitignore"
@@ -85,8 +84,12 @@ if [ ! -f "$ANALYSIS_REPO_DIR/.venv/bin/activate" ]; then
 fi
 
 # Activate the project virtual environment.
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC1091
 . "$ANALYSIS_REPO_DIR/.venv/bin/activate" || _analysis_fail "failed to activate .venv"
+
+if [ -z "${ANALYSIS_USER-}" ] && [ -r "$ANALYSIS_DATA_DIR/.analysis_user" ]; then
+	IFS= read -r ANALYSIS_USER < "$ANALYSIS_DATA_DIR/.analysis_user"
+fi
 
 if [ -z "${ANALYSIS_USER-}" ]; then
 	printf "ANALYSIS_USER: " >&2
@@ -99,22 +102,58 @@ if ! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null;
 fi
 export ANALYSIS_USER
 
+# Persist the ANALYSIS_USER for future sessions.
+printf '%s\n' "$ANALYSIS_USER" > "$ANALYSIS_DATA_DIR/.analysis_user" || \
+	_analysis_fail "unable to write $ANALYSIS_DATA_DIR/.analysis_user"
+
+
 if [ -n "${ZSH_VERSION-}" ]; then
 	_analysis_enable_completion "zsh_source"
 elif [ -n "${BASH_VERSION-}" ]; then
 	_analysis_enable_completion "bash_source"
 fi
 
-export PS1="[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER] ${_ANALYSIS_OLD_PS1}"
+# Prompt segment, in the style of oh-my-zsh's git_prompt_info: PS1 holds a
+# literal $(analysis_prompt_info) that is expanded at each prompt, so it is
+# added only once no matter how many times this script is sourced.
+analysis_prompt_info() {
+	[ -n "${ANALYSIS_DATA_REPO_NAME-}" ] && [ -n "${ANALYSIS_USER-}" ] || return 0
+	printf '[analysis:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER"
+}
+
+if [ -n "${ZSH_VERSION-}" ]; then
+	# Only the first sourcing (before any matching deactivate-analysis)
+	# records the pre-activation state; re-sourcing while already active
+	# must not overwrite it with "already set" from our own setopt below,
+	# or deactivation would leak prompt_subst into the user's shell.
+	if [ -z "${_ANALYSIS_PROMPT_SUBST_WAS_SET+x}" ]; then
+		if [[ -o prompt_subst ]]; then
+			_ANALYSIS_PROMPT_SUBST_WAS_SET=1
+		else
+			_ANALYSIS_PROMPT_SUBST_WAS_SET=0
+		fi
+	fi
+	setopt prompt_subst
+fi
+# shellcheck disable=SC2016
+case "${PS1-}" in
+	*'$(analysis_prompt_info)'*) ;;
+	*) PS1='$(analysis_prompt_info)'"${PS1-}" ;;
+esac
 
 deactivate-analysis() {
-	export PS1="$_ANALYSIS_OLD_PS1"
-	if [ "$(type -t deactivate 2>/dev/null)" = "function" ]; then
+	# shellcheck disable=SC2016
+	PS1="${PS1//'$(analysis_prompt_info)'/}"
+	if typeset -f deactivate >/dev/null 2>&1; then
 		deactivate
 	fi
+	if [ -n "${ZSH_VERSION-}" ] && [ "${_ANALYSIS_PROMPT_SUBST_WAS_SET-0}" = "0" ]; then
+		unsetopt prompt_subst
+	fi
 	unset ANALYSIS_DATA_DIR ANALYSIS_USER ANALYSIS_DATA_REPO_NAME ANALYSIS_REPO_DIR
-	unset _ANALYSIS_OLD_PS1 _ANALYSIS_SELF
+	unset _ANALYSIS_SELF
 	unset _ANALYSIS_POINTER_FILE _ANALYSIS_REPO_CANDIDATE
+	unset _ANALYSIS_PROMPT_SUBST_WAS_SET
 	unset -f _analysis_fail _analysis_validate_repo_dir _analysis_enable_completion
-	unset -f deactivate-analysis
+	unset -f analysis_prompt_info deactivate-analysis
 }

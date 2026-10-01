@@ -13,7 +13,7 @@ import pandas as pd
 
 from analysis.sim.loader import LoadError
 from analysis.sim import registries
-from analysis.sim.loader import ScenarioRef, ScenarioRef, resolve_scenario_name
+from analysis.sim.loader import ScenarioRef, resolve_scenario_name
 from analysis.sim import cli
 
 

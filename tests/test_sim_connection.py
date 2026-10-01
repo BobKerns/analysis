@@ -99,6 +99,16 @@ def test_scenario_connection_unknown_item_raises(tmp_path: Path) -> None:
             sc.add_tags("account", "no_such_account", "a:b")
 
 
+def test_scenario_connection_scenario_property_returns_self(tmp_path: Path) -> None:
+    """``Connection.scenario`` lets polymorphic code written against the
+    shared base (``conn.scenario.whatever``) work the same whether `conn`
+    started as a RunConnection (which builds/caches one) or a
+    ScenarioConnection (which already is one)."""
+    data = _copy_data(tmp_path)
+    with open_scenario(data, "retire_alice") as sc:
+        assert sc.scenario is sc
+
+
 def test_run_connection_reads_tags_from_snapshot(test_retire_alice_scenario: ScenarioConnection,
                                                  test_retire_alice_scenario_ref: ScenarioRef,
                                                  retire_alice_run_path: Path,

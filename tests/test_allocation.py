@@ -42,7 +42,8 @@ def test_lots_are_split_by_their_symbols_weights(
     frame = lot_classes(two_lot_run)
     a = frame[(frame["lot"] == "a")].set_index("asset_class")
     assert set(a.index) == {"stock_us", "bond"}
-    assert a.loc["stock_us", "balance"] == pytest.approx(0.7 * (a.loc["stock_us", "balance"] + a.loc["bond", "balance"]))
+    assert a.loc["stock_us", "balance"] == pytest.approx(0.7 * (a.loc["stock_us", "balance"]
+                                                                + a.loc["bond", "balance"]))
     assert frame["balance"].sum() == pytest.approx(
         lot_total(two_lot_run))  # nothing is lost or invented by the split
 

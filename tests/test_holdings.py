@@ -83,7 +83,7 @@ def test_holders_span_accounts(two_lot_run: RunConnection, test_data_dir: Path,
     update_account_value("Asset_Roth_Alice", "default", symbol="BBB", quantity="10")
     with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
         holders = symbol_holders(scenario, "BBB")
-    assert sorted(zip(holders["account"], holders["lot"])) == [
+    assert sorted(zip(holders["account"], holders["lot"], strict=True)) == [
         (BROKERAGE, "b"), ("Asset_Roth_Alice", "default"),
     ]
     assert set(holders["as_of"]) == {"opening"}

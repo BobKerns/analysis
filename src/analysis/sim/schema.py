@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 26
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -157,6 +157,7 @@ CREATE TABLE calendar_event (
     calendar_id  INTEGER NOT NULL REFERENCES calendar(id),
     date         TEXT NOT NULL,
     kind         TEXT NOT NULL,
+    name           TEXT,
     scheduled_name TEXT,
     account_1      TEXT,
     account_2      TEXT,
@@ -165,7 +166,28 @@ CREATE TABLE calendar_event (
     param_date     TEXT,
     tax_character  TEXT,
     payload_json   TEXT,
-    description    TEXT
+    description    TEXT,
+    -- Ensemble variation (ADR-006): a row with vary_distribution set has this
+    -- row's own `amount` or `date` (per vary_target) drawn per member, instead
+    -- of using the value above literally -- which is then just a placeholder.
+    -- vary_low/high/mean/sd are in the *target* column's own unit: cents/
+    -- micros for `amount` (whichever this row's own `amount` column would
+    -- already mean for its `kind`), an ISO date string for `date`.
+    -- vary_low/vary_high are `uniform`'s own bounds, and also double as
+    -- `truncated_normal`'s optional clip bounds; any one of vary_mean/
+    -- vary_sd/vary_low/vary_high may be inferred from the other three when
+    -- blank (distributions.resolve_truncated_normal_bounds), so
+    -- truncated_normal is never actually unbounded.
+    -- vary_ramp_months is only meaningful for vary_target='amount' on a
+    -- kind='set_rate' row: it expands into that many additional set_rate rows,
+    -- ramping to the drawn target (ADR-006 §4) instead of jumping to it.
+    vary_target        TEXT,
+    vary_distribution  TEXT,
+    vary_low           TEXT,
+    vary_high          TEXT,
+    vary_mean          TEXT,
+    vary_sd            TEXT,
+    vary_ramp_months   INTEGER
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
@@ -300,6 +322,28 @@ CREATE TABLE calendar_event_tag (
     calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
     tag_id            INTEGER NOT NULL REFERENCES tag(id),
     PRIMARY KEY (calendar_event_id, tag_id)
+);
+
+-- Ensemble variation (ADR-006). Present (with real rows) only in a member
+-- intent resolved from an ensemble recipe by `ensemble.resolve_member`;
+-- absent (no rows) in the recipe's own intent and in every ordinary,
+-- non-ensemble scenario. Intent-layer so a run file gets them via the
+-- ordinary SNAPSHOT_TABLES copy, with no special-casing in open_run_file.
+CREATE TABLE ensemble_manifest (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    ensemble_name   TEXT NOT NULL,
+    member_index    INTEGER NOT NULL,
+    member_count    INTEGER NOT NULL,
+    seed            INTEGER NOT NULL,
+    recipe_tree_id  TEXT NOT NULL,
+    generated_at    TEXT NOT NULL
+);
+
+CREATE TABLE ensemble_draw (
+    calendar_event_name TEXT NOT NULL,
+    vary_target         TEXT NOT NULL,
+    drawn_value         TEXT NOT NULL,
+    PRIMARY KEY (calendar_event_name)
 );
 """
 
@@ -563,4 +607,6 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "account_tag",
     "scheduled_transaction_tag",
     "calendar_event_tag",
+    "ensemble_manifest",
+    "ensemble_draw",
 )

@@ -13,7 +13,7 @@ import re
 import socket
 import sqlite3
 import tempfile
-from collections.abc import Collection, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from analysis.sim import registries
+from analysis.sim.distributions import DistributionError, resolve_truncated_normal_bounds
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -32,15 +33,17 @@ from analysis.sim.provenance import (
     data_stamps,
     repo_head,
 )
+from analysis.sim.readme import readme_description
 from analysis.sim.runs import insert_run_metadata
 from analysis.sim.schema import  SCHEMA_VERSION, apply_run_schema
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
+    "BATCH_MANIFEST_FILENAME",
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
-    "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
+    "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "resolve_scenario_name", "find_state_dir",
     "growth_rule_name",
     "write_current_scenario",
@@ -82,9 +85,9 @@ class _MoneyReferenceResolver:
     integer cents.
     """
 
-    def __init__(self, data_dir: Path, scenario_dirs: list[Path] = []) -> None:
+    def __init__(self, data_dir: Path, scenario_dirs: list[Path] | None = None) -> None:
         self.data_dir = data_dir
-        self.scenario_dirs = scenario_dirs
+        self.scenario_dirs = scenario_dirs or []
         self._cache: dict[str, int] = {}
         self._resolving: set[str] = set()
 
@@ -170,6 +173,53 @@ def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path |
             if re_pattern.match(r.name))
     runs = sorted(runs)
     return runs[-1] if runs else None
+
+
+BATCH_MANIFEST_FILENAME = "batch_manifest.json"
+"""``ensemble.write_batch_manifest``'s filename -- named here, not in
+``ensemble.py``, so ``latest_ensemble_batch`` can recognize a batch by it
+without ``loader.py`` importing from ``ensemble.py`` (which itself imports
+from here)."""
+
+
+def latest_ensemble_batch(recipe_dir: Path) -> Path | None:
+    """The most recently generated batch subfolder under ``recipe_dir`` that
+    holds at least one member run file or a batch manifest, or ``None`` if
+    there isn't one.
+
+    A recipe's members live under ``<recipe_dir>/<timestamp>/member_NNNN.sqlite3``
+    -- one subfolder per ``sim run`` invocation, timestamp-named so reruns
+    never collide and every batch's history is kept (matching how an
+    ordinary, non-ensemble run file is never overwritten either). The
+    manifest check covers the batch where every member failed to resolve:
+    no member file was ever created for any of them, but the batch itself
+    (and its recorded failures) still needs to be discoverable, not silently
+    invisible.
+    """
+    recipe_dir = Path(recipe_dir)
+    if not recipe_dir.is_dir():
+        return None
+    batches = sorted(
+        p for p in recipe_dir.iterdir()
+        if p.is_dir() and (
+            any(p.glob("member_*.sqlite3")) or (p / BATCH_MANIFEST_FILENAME).is_file()
+        )
+    )
+    return batches[-1] if batches else None
+
+
+def _latest_ensemble_member_zero(runs_dir: Path, name: str) -> Path | None:
+    """``member_0000.sqlite3`` of ``name``'s most recent ensemble batch, for
+    a caller that only knows how to open one run file per scenario (ADR-006
+    §8): member 0 is always the recipe's deterministic (non-drawn) member,
+    so it stands in for "the" run the same way any other scenario's one run
+    file would.
+    """
+    batch = latest_ensemble_batch(Path(runs_dir) / name)
+    if batch is None:
+        return None
+    member = batch / "member_0000.sqlite3"
+    return member if member.exists() else None
 
 
 @dataclass(frozen=True)
@@ -277,6 +327,7 @@ def resolve_scenario_name(
     )
     run_path = (Path(run_path).resolve() if run_path is not None
                 else latest_run_path(resolved_runs_dir, name)
+                     or _latest_ensemble_member_zero(resolved_runs_dir, name)
     )
     return ScenarioRef(
         name=name,
@@ -342,6 +393,74 @@ def _default_lots(
             )
         seen.add(key)
     return rows
+
+
+def _check_duplicate_calendar_names(rows: list[dict[str, str]], issues: list[str]) -> None:
+    """A duplicate ``name`` within one scenario's own (pre-merge) calendar.csv
+    rows -- e.g. two rows differing only in a field outside the parent/child
+    merge key -- would otherwise collapse into one row before the final,
+    merged-view duplicate check in ``_validate_calendar`` ever sees them
+    (ADR-006). Checked per file, not across parent/child: a child row that
+    intentionally repeats a parent's own name (plus the rest of the merge
+    key) is a sanctioned override, not a duplicate.
+    """
+    seen: dict[str, int] = {}
+    for i, row in enumerate(rows, start=2):
+        name = (row.get("name") or "").strip()
+        if not name:
+            continue
+        if name in seen:
+            issues.append(
+                f"calendar.csv row {i}: duplicate name '{name}' "
+                f"(first seen on row {seen[name]})"
+            )
+        else:
+            seen[name] = i
+
+
+def _merge_calendar_rows(
+    parent_rows: list[dict[str, str]],
+    child_rows: list[dict[str, str]],
+    key_columns: tuple[str, ...],
+    issues: list[str],
+) -> list[dict[str, str]]:
+    """Like ``_merge_scenario_rows`` (overlay by the table's natural key,
+    ``require_key=False``), except a child row landing on the same key as an
+    already-named row is only accepted as an override if it doesn't rename
+    that row out from under it.
+
+    ``name`` is deliberately *not* part of the key: a child repeating a
+    parent's unnamed row's other fields plus a new ``name`` (to start varying
+    it) must still replace that one row, not add a second, doubled event
+    (ADR-006) -- the same physical event, one-time-transfer amount included,
+    is not created twice just because it gained a name. But two rows that
+    both already have a name -- whether one from the parent and one freshly
+    authored in the child, or two authored together in the same file -- and
+    share every other key field are almost certainly two different events
+    that happen to collide on it (an authoring mistake, not an override), so
+    that combination is reported rather than silently collapsed one way.
+    """
+    merged: dict[tuple[str, ...], dict[str, str]] = {
+        tuple(row.get(c, "") for c in key_columns): dict(row) for row in parent_rows
+    }
+    order = list(merged)
+    for row in child_rows:
+        key = tuple(row.get(c, "") for c in key_columns)
+        if key in merged:
+            existing_name = (merged[key].get("name") or "").strip()
+            new_name = (row.get("name") or "").strip()
+            if existing_name and new_name and existing_name != new_name:
+                issues.append(
+                    f"calendar.csv: rows named '{existing_name}' and '{new_name}' "
+                    f"share the same {key_columns}; give them one name (an "
+                    "override) or change a field so they're recognized as "
+                    "distinct events"
+                )
+            merged[key].update(row)
+        else:
+            order.append(key)
+            merged[key] = dict(row)
+    return [merged[key] for key in order]
 
 
 def _merge_scenario_rows(
@@ -433,11 +552,13 @@ def _read_scenario_inputs(
     scheduled_rows = _merge_scenario_rows(
         parent_scheduled, read_overlay("scheduled.csv", required=True), ("name",)
     )
-    calendar_rows = _merge_scenario_rows(
-        parent_calendar, read_overlay("calendar.csv"),
+    calendar_rows_raw = read_overlay("calendar.csv")
+    _check_duplicate_calendar_names(calendar_rows_raw, issues)
+    calendar_rows = _merge_calendar_rows(
+        parent_calendar, calendar_rows_raw,
         ("date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
          "series", "amount"),
-        require_key=False,
+        issues,
     )
     lifespan_rows = _merge_scenario_rows(
         parent_lifespan, read_overlay("lifespan.csv"), ("person",),
@@ -532,6 +653,15 @@ def load_scenario(
                               scenario_name,
                               issues,
                               scenarios_dir=scenarios_dir)
+    # A scenario folder's own README.md, if there is one, is the scenario's
+    # real description -- scenario.csv's own description column is only the
+    # fallback for a scenario that doesn't have one (ADR-003 §4.1e). Baked
+    # in now rather than read live at display time: a run file is read long
+    # after the data repo it came from may have moved, changed, or gone, so
+    # anything a reader needs has to travel inside the intent/run file itself.
+    description = readme_description(scenario_dir, data_dir=data_dir)
+    if description is not None:
+        scenario_row["description"] = description
     chains = _read_chain_files(data_dir, scenario_name, issues)
 
 
@@ -558,6 +688,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_calendar(calendar_rows, leaves, issues)
+    _validate_series_references(scheduled_rows, calendar_rows, aux_rows, chains, issues)
     _validate_chains(chains, model_rows, leaves, issues, money_resolver=money_resolver)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
     _validate_lifespan(lifespan_rows, persons, issues)
@@ -721,8 +852,7 @@ def _read_aux_files(
     for csv_path in csv_paths:
         stem = csv_path.stem
         if "__" in stem:
-            kind, raw_series = stem.split("__", 1)
-            series = raw_series.replace("_", " ")
+            kind, series = stem.split("__", 1)
         else:
             kind, series = stem, None
         if kind not in registries.AUX_KIND_COLUMNS:
@@ -775,6 +905,15 @@ def _opt_int(raw: str | None) -> int | None:
         return None
     v = raw.strip()
     return int(v) if v != "" else None
+
+
+def _vary_bound_writer(vary_target: str | None) -> Callable[[str | None], str | None]:
+    """A `vary_low`/`vary_high`/etc. cell, stored in the target column's own
+    unit (ADR-006): the row's own `amount` int, as text, for `vary_target`
+    `'amount'`; the ISO date string as-is for `'date'`."""
+    if vary_target == "amount":
+        return lambda raw: None if _opt_int(raw) is None else str(_opt_int(raw))
+    return lambda raw: (raw or "").strip() or None
 
 
 def _coerce(s: str) -> Any:
@@ -967,7 +1106,7 @@ def _expand_account_growth(
         character = row.get("tax_character", "")
         lot_series: list[tuple[str, str]] = []
         for m in lots_by_account.get(name) or [{}]:
-            symbol = (m.get("symbol") or "").replace("_", " ")
+            symbol = m.get("symbol") or ""
             lot_series.append((
                 m.get("lot") or registries.DEFAULT_LOT,
                 m.get("series") or (symbol if symbol in rate_series else "")
@@ -1019,7 +1158,6 @@ def _expand_account_growth(
                 )
                 continue
             rule_names.add(rule_name)
-            leaf = registries.leaf_chain_name(name, lot, row.get("subkind", ""))
             scheduled_rows.append({
                 "name": rule_name,
                 "from_account": counterparty.name,
@@ -1124,6 +1262,9 @@ def _validate_accounts(
                 f"accounts.csv row {i} ({name}): {', '.join(moved)} moved to "
                 "account_values.csv, where each lot has its own"
             )
+        series = row.get("series", "")
+        if series:
+            _validate_no_spaces("accounts.csv", i, name, "series", series, issues)
         _validate_tags("accounts.csv", i, name, row.get("tags", ""), issues)
 
 
@@ -1176,12 +1317,15 @@ def _validate_scheduled(
                     f"scheduled.csv row {i} ({name}): '{retired}' was merged into "
                     f"'{merged}' (schema v12); move the value and drop the column"
                 )
-        if row.get("series", "") != "" and kind not in registries.SERIES_RULE_KINDS:
+        series = row.get("series", "")
+        if series != "" and kind not in registries.SERIES_RULE_KINDS:
             issues.append(
                 f"scheduled.csv row {i} ({name}): amount_rule_kind '{kind}' does not "
                 f"use 'series'; it is only read by "
                 f"{', '.join(sorted(registries.SERIES_RULE_KINDS))}"
             )
+        if series:
+            _validate_no_spaces("scheduled.csv", i, name, "series", series, issues)
         for col, lot_col in (("from_account", "from_lot"), ("to_account", "to_lot")):
             problem = _resolve_ref(row, col, lot_col, leaves, chain_names)
             if problem:
@@ -1282,6 +1426,12 @@ def _validate_account_model_money(
                 f"account_values.csv row {i} ({name}): symbol '{row['symbol']}' is also "
                 "an account name, so its rate series would be ambiguous"
             )
+        symbol = row.get("symbol", "")
+        if symbol:
+            _validate_no_spaces("account_values.csv", i, name, "symbol", symbol, issues)
+        lot_series = row.get("series", "")
+        if lot_series:
+            _validate_no_spaces("account_values.csv", i, name, "series", lot_series, issues)
         acquired = row.get("acquired", "")
         if acquired:
             try:
@@ -1378,7 +1528,7 @@ def _derive_opening_balances(
                 "opening_balance needs a symbol"
             )
             continue
-        known = [p for p in prices.get(symbol.replace("_", " "), []) if p[0] <= start]
+        known = [p for p in prices.get(symbol, []) if p[0] <= start]
         if not known:
             issues.append(
                 f"account_values.csv row {i} ({name}): no security_price for "
@@ -1399,7 +1549,7 @@ def _derive_opening_balances(
         if (row.get("prior_year_end_balance") or row.get("account_name", "") not in used
                 or not symbol or not row.get("quantity")):
             continue
-        known = [p for p in prices.get(symbol.replace("_", " "), []) if p[0] <= prior_dec]
+        known = [p for p in prices.get(symbol, []) if p[0] <= prior_dec]
         try:
             quantity = _quantity_to_micros(row["quantity"])
         except (ValueError, InvalidOperation):
@@ -1549,9 +1699,13 @@ def _validate_year_to_date(
                 issues.append(f"year_to_date.csv row {i} ({name}): amount {e}")
 
 
+_VARY_BOUND_COLUMNS = ("vary_low", "vary_high", "vary_mean", "vary_sd")
+
+
 def _validate_calendar(
     rows: list[dict[str, str]], leaves: _LeafIndex, issues: list[str],
 ) -> None:
+    seen_names: dict[str, int] = {}
     for i, row in enumerate(rows, start=2):
         kind = row.get("kind", "")
         if kind not in registries.CALENDAR_EVENT_KINDS:
@@ -1561,13 +1715,260 @@ def _validate_calendar(
                 problem = _resolve_ref(row, col, lot_col, leaves, frozenset())
                 if problem:
                     issues.append(f"calendar.csv row {i}: {col} {problem}")
-        payload_json = row.get("payload_json") or "{}"
+        params_json = row.get("params_json") or "{}"
         try:
-            json.loads(payload_json)
+            json.loads(params_json)
         except json.JSONDecodeError as e:
-            issues.append(f"calendar.csv row {i}: payload_json invalid: {e}")
+            issues.append(f"calendar.csv row {i}: params_json invalid: {e}")
+        series = row.get("series", "")
+        if series:
+            _validate_no_spaces("calendar.csv", i, row.get("scheduled_name") or kind,
+                                "series", series, issues)
         _validate_tags("calendar.csv", i, row.get("scheduled_name") or kind,
                        row.get("tags", ""), issues)
+        name = (row.get("name") or "").strip()
+        if name:
+            if name in seen_names:
+                issues.append(
+                    f"calendar.csv row {i}: duplicate name '{name}' "
+                    f"(first seen on row {seen_names[name]})"
+                )
+            else:
+                seen_names[name] = i
+        _validate_calendar_vary(row, i, kind, name, issues)
+
+
+def _validate_calendar_vary(
+    row: dict[str, str], i: int, kind: str, name: str, issues: list[str],
+) -> None:
+    """ADR-006: a row with `vary_distribution` set has a `vary_target` in
+    `VARY_TARGETS`, an amount target only on a kind with a real amount to
+    vary, only the columns its distribution actually reads, a fully
+    resolvable and valid-ordered set of bounds, and (only for
+    `vary_target='amount'` on a `set_rate` row) an optional `vary_ramp_months`.
+    """
+    where = f"calendar.csv row {i} ({name or '?'})"
+    distribution = (row.get("vary_distribution") or "").strip()
+    target = (row.get("vary_target") or "").strip()
+    ramp_months = (row.get("vary_ramp_months") or "").strip()
+    if not distribution:
+        if target or ramp_months or any(row.get(c) for c in _VARY_BOUND_COLUMNS):
+            issues.append(f"{where}: vary_* columns set without vary_distribution")
+        return
+    if not name:
+        issues.append(f"{where}: name is required when vary_distribution is set")
+    if distribution not in registries.ENSEMBLE_DISTRIBUTIONS:
+        issues.append(f"{where}: unknown vary_distribution '{distribution}'")
+        return
+    if target not in registries.VARY_TARGETS:
+        issues.append(
+            f"{where}: vary_target must be one of {sorted(registries.VARY_TARGETS)} "
+            f"when vary_distribution is set (got '{target}')"
+        )
+        return
+    if target == "amount" and kind not in registries.AMOUNT_VARYING_KINDS:
+        issues.append(
+            f"{where}: vary_target='amount' is only valid on kind in "
+            f"{sorted(registries.AMOUNT_VARYING_KINDS)} (got kind='{kind}')"
+        )
+    if target == "date" and distribution == "truncated_normal":
+        issues.append(
+            f"{where}: truncated_normal is not valid with vary_target='date' -- "
+            "its vary_sd is a numeric spread, not a date span"
+        )
+        return
+
+    allowed = registries.DISTRIBUTION_PARAMS[distribution]
+    parsed: dict[str, int] = {}
+    parse_ok = True
+    for col in _VARY_BOUND_COLUMNS:
+        raw = (row.get(col) or "").strip()
+        if not raw:
+            continue
+        if col not in allowed:
+            issues.append(f"{where}: {col} is not used by {distribution} (ignored by the draw)")
+            continue
+        try:
+            parsed[col] = date.fromisoformat(raw).toordinal() if target == "date" else int(raw)
+        except ValueError:
+            unit = "ISO date" if target == "date" else "integer"
+            issues.append(f"{where}: {col} '{raw}' is not a valid {unit}")
+            parse_ok = False
+
+    effective_low: int | None = None
+    if distribution == "uniform":
+        for col in registries.DISTRIBUTION_REQUIRED_PARAMS[distribution]:
+            if not (row.get(col) or "").strip():
+                issues.append(f"{where}: {distribution} requires {col}")
+        if "vary_low" in parsed and "vary_high" in parsed and parsed["vary_low"] > parsed["vary_high"]:
+            issues.append(f"{where}: vary_low must be <= vary_high")
+        effective_low = parsed.get("vary_low")
+    elif parse_ok:
+        # truncated_normal: any of mean/sd/low/high may be inferred from the
+        # other three (ADR-006) -- resolve before checking ordering/sign.
+        try:
+            _mean, sd, low, high = resolve_truncated_normal_bounds(
+                parsed.get("vary_mean"), parsed.get("vary_sd"),
+                parsed.get("vary_low"), parsed.get("vary_high"),
+            )
+        except DistributionError as e:
+            issues.append(f"{where}: {e}")
+        else:
+            if sd <= 0:
+                issues.append(f"{where}: vary_sd must be positive")
+            if low > high:
+                issues.append(f"{where}: vary_low must be <= vary_high")
+            effective_low = low
+
+    if (
+        target == "amount" and kind == "one_off_transfer"
+        and effective_low is not None and effective_low <= 0
+    ):
+        # A transfer amount is a real movement of money whose direction is
+        # fixed by account_1/account_2; a nonpositive draw would reverse or
+        # silently omit it, not just draw an unlikely value. Checked on the
+        # *effective* low (given directly, or resolved from mean/sd) so this
+        # one rule covers both distributions.
+        issues.append(
+            f"{where}: one_off_transfer requires vary_low > 0 (given directly, or "
+            "implied by vary_mean/vary_sd) -- a transfer amount must stay positive"
+        )
+
+    if ramp_months:
+        if not (target == "amount" and kind == "set_rate"):
+            issues.append(
+                f"{where}: vary_ramp_months is only valid with vary_target='amount' "
+                "on a kind='set_rate' row"
+            )
+        else:
+            try:
+                if int(ramp_months) <= 0:
+                    raise ValueError
+            except ValueError:
+                issues.append(f"{where}: vary_ramp_months must be a positive integer")
+
+
+def _safe_json(raw: str | None) -> dict[str, Any] | None:
+    """``json.loads(raw or "{}")``, or ``None`` on invalid JSON -- callers
+    skip rather than re-report, since the owning row's own validator already
+    flags malformed JSON in its column.
+    """
+    try:
+        return json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return None
+
+
+def _validate_series_references(
+    scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
+    issues: list[str],
+) -> None:
+    """Cross-check every `(aux_kind, series)` pair a scheduled.csv rule or a
+    chains/*.csv step reads against every pair something actually supplies,
+    in both directions.
+
+    A `percent_of_balance`/`fixed_amount`/`ss_benefit` row (including the
+    ones `_expand_account_growth` synthesizes from accounts.csv's own
+    `series` column) whose `(aux_kind, series)` nothing supplies would only
+    fail once run, with `EngineError: no aux row for kind=... series=...`
+    (`engine._amount_percent_of_balance`/`_apply_ss_benefit`/
+    `_cumulative_inflation_factor`) -- worth catching at load time instead.
+    Conversely, a calendar.csv `set_rate` row whose `(aux_kind, series)` no
+    scheduled row or chain step reads is a silent no-op: its drawn or
+    literal value lands in `aux_table` but nothing ever looks it up, so it
+    never affects a run (this is what varying the wrong `series`/`aux_kind`
+    pair under ADR-006 looks like -- every member ends up bit-identical). A
+    chain step's own `series` (inflating its `maximum` cap over time --
+    `engine._chain_step_allocation`) always reads `aux_kind='inflation'`,
+    same as `fixed_amount`/`ss_benefit`, and only actually gets read when
+    `maximum` is also set (`_validate_chains` separately flags `series`
+    without `maximum`).
+    """
+    supplied: set[tuple[str, str]] = {
+        (kind, series) for kind, series, *_ in aux_rows if series is not None
+    }
+    for row in calendar_rows:
+        if row.get("kind") != "set_rate":
+            continue
+        series = row.get("series", "")
+        if not series:
+            continue
+        params = _safe_json(row.get("params_json"))
+        if params is None:
+            continue  # malformed JSON already reported by _validate_calendar
+        supplied.add((params.get("aux_kind", "rate"), series))
+
+    demanded: set[tuple[str, str]] = set()
+    for name, (kind, rows) in chains.items():
+        for i, row in enumerate(rows, start=2):
+            series = row.get("series", "")
+            if not series or not row.get("maximum"):
+                continue  # _chain_step_allocation only reads series when maximum is also set
+            demanded.add(("inflation", series))
+            if ("inflation", series) not in supplied:
+                issues.append(
+                    f"chains/{kind}__{name}.csv row {i}: references series "
+                    f"'{series}' under aux_kind 'inflation', but nothing "
+                    "supplies it -- this would fail at run time with 'no "
+                    "aux row' once reached"
+                )
+
+    for i, row in enumerate(scheduled_rows, start=2):
+        kind = row.get("amount_rule_kind", "")
+        series = row.get("series", "")
+        if not series or kind not in registries.SERIES_RULE_KINDS:
+            continue
+        if kind == "fixed_amount" and series == "fixed":
+            continue  # the CLI's default sentinel for "no inflation"
+        if kind == "percent_of_balance":
+            params = _safe_json(row.get("amount_rule_params_json"))
+            if params is None:
+                continue  # already reported by _validate_scheduled
+            aux_kind = params.get("rate_kind", "rate")
+        else:
+            aux_kind = "inflation"
+        demanded.add((aux_kind, series))
+        if (aux_kind, series) not in supplied:
+            name = row.get("name", "")
+            issues.append(
+                f"scheduled.csv row {i} ({name}): references series "
+                f"'{series}' under aux_kind '{aux_kind}', but nothing "
+                "supplies it -- no series/aux/prices file and no "
+                "calendar.csv set_rate row for that (aux_kind, series) pair; "
+                "this would fail at run time with 'no aux row' once reached"
+            )
+
+    for i, row in enumerate(calendar_rows, start=2):
+        if row.get("kind") != "set_rate":
+            continue
+        series = row.get("series", "")
+        if not series:
+            continue
+        params = _safe_json(row.get("params_json"))
+        if params is None:
+            continue
+        aux_kind = params.get("aux_kind", "rate")
+        if (aux_kind, series) not in demanded:
+            issues.append(
+                f"calendar.csv row {i}: set_rate series '{series}' under "
+                f"aux_kind '{aux_kind}' is never read by any scheduled.csv "
+                "row (percent_of_balance/fixed_amount/ss_benefit) or "
+                "account growth series -- this value would have no effect"
+            )
+
+
+def _validate_no_spaces(file: str, row_i: int, owner: str, field: str, value: str,
+                        issues: list[str]) -> None:
+    """A series/symbol/chain name becomes a `<kind>__<name>.csv`-style
+    filename segment (ADR-003 §4.1); a literal space there is legal on most
+    filesystems but needs shell quoting and reads awkwardly, so it's
+    forbidden outright rather than silently decoded/encoded.
+    """
+    if " " in value:
+        issues.append(f"{file} row {row_i} ({owner}): {field} '{value}' may not contain a space")
 
 
 def _validate_tags(file: str, row_i: int, name: str, raw: str,
@@ -1579,12 +1980,14 @@ def _validate_tags(file: str, row_i: int, name: str, raw: str,
 
 
 def _chain_name_from_filename(path: Path) -> tuple[str, str] | None:
-    """Parse a chain filename, decoding underscores in its name like aux files."""
+    """Parse a chain filename: ``<kind>__<name>.csv``, name literal (no
+    space decoding -- ADR-003 §4.1 names that become filenames use their
+    filename form everywhere, spaces forbidden)."""
     stem = path.stem
     if "__" not in stem:
         return None
     kind, name = stem.split("__", 1)
-    return kind, name.replace("_", " ")
+    return kind, name
 
 
 def _read_chain_files(
@@ -1652,7 +2055,8 @@ def _validate_chains(
         issues.append(f"chains/*.csv: chain name '{name}' collides with an account name")
     for name in sorted(n for n in chains if ":" in n):
         issues.append(f"chains/*.csv: chain name '{name}' may not contain ':'")
-    resolvable = leaves.names | set(chains)
+    for name in sorted(n for n in chains if " " in n):
+        issues.append(f"chains/*.csv: chain name '{name}' may not contain a space")
 
     edges: dict[str, set[str]] = {name: set() for name in chains}
     for name, (kind, rows) in chains.items():
@@ -1699,6 +2103,9 @@ def _validate_chains(
                 issues.append(
                     f"chains/{kind}__{name}.csv row {i}: series requires maximum"
                 )
+            if series:
+                _validate_no_spaces(f"chains/{kind}__{name}.csv", i, member,
+                                    "series", series, issues)
 
     for i, row in enumerate(model_rows, start=2):
         holder = leaves.leaf_of.get(
@@ -1951,14 +2358,18 @@ def _write_intent(
     )
     calendar_id = cur.lastrowid
     for ce in calendar_rows:
+        vary_target = ce.get("vary_target") or None
+        vary_bound = _vary_bound_writer(vary_target)
         cur = con.execute(
             "INSERT INTO calendar_event("
-            "calendar_id, date, kind, "
+            "calendar_id, date, kind, name, "
             "scheduled_name, account_1, account_2, series, amount, "
-            "param_date, tax_character, payload_json, description) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "param_date, tax_character, payload_json, description, "
+            "vary_target, vary_distribution, vary_low, vary_high, vary_mean, "
+            "vary_sd, vary_ramp_months) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                calendar_id, ce["date"], ce["kind"],
+                calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
                 ce.get("account_1") or None,
                 ce.get("account_2") or None,
@@ -1968,6 +2379,13 @@ def _write_intent(
                 ce.get("tax_character") or None,
                 ce.get("params_json") or None,
                 ce.get("description") or None,
+                vary_target,
+                ce.get("vary_distribution") or None,
+                vary_bound(ce.get("vary_low")),
+                vary_bound(ce.get("vary_high")),
+                vary_bound(ce.get("vary_mean")),
+                vary_bound(ce.get("vary_sd")),
+                _opt_int(ce.get("vary_ramp_months")),
             ),
         )
         _insert_tags(con, cur.lastrowid, ce.get("tags", ""),

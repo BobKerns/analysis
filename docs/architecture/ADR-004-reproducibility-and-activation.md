@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
+- **Amended by:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture — summarizes reproducibility & activation), [ADR-002](ADR-002-storage-schema.md) (storage schema — `intent_manifest`, `simulation_run` stamps), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries used by `--check`).
 
 ## Context
@@ -46,6 +47,8 @@ The single-row `simulation_run` manifest ([ADR-002](ADR-002-storage-schema.md) �
 | `engine_options_json` | text | non-default engine flags, sorted | excludes argv ordering noise |
 
 **Determinism key** is `(code_version, scenario_tree_id)`. Two runs with the same key and the same `engine_options_json` must produce byte-identical ledger rows modulo non-deterministic stamps (`started_at`, `finished_at`, `host`, `run_by`). The `verify` command implements this comparison as a logical diff.
+
+**Ensemble members ([ADR-006](ADR-006-ensemble-scenarios.md)).** A member's `scenario_name`/`code_version`/`data_version`/`scenario_tree_id` describe the *recipe* scenario it was resolved from (copied through the intent-file copy, untouched) — a member is not a scenario in its own right for reproducibility purposes. What makes a member reproducible is the ensemble's own master `seed` plus its `member_index`, from which every row's draw is deterministically re-derivable; `ensemble_manifest`/`ensemble_draw` record that separately, alongside the recipe's stamps, rather than inventing a second determinism key.
 
 ### 2. What "version" means for code and data
 
@@ -91,8 +94,7 @@ Required behavior:
 - Set `ANALYSIS_DATA_DIR` to that absolute path.
 - Set `ANALYSIS_DATA_REPO_NAME` to the basename, unless already set by the user.
 - Prompt for `ANALYSIS_USER` if unset: read one line from `/dev/tty`, validate against `persons.csv` (column 1), re-prompt on miss, abort on EOF.
-- Save the pre-activation values of `PS1` and the four env vars in `_ANALYSIS_OLD_*` shell variables.
-- Prefix `PS1` with `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER]`.
+- Define `analysis_prompt_info`, which prints `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER] `, and prefix `PS1` with a literal `$(analysis_prompt_info)` only if it is not already present (so re-sourcing is idempotent; zsh gets `setopt prompt_subst`). `deactivate-analysis` strips it again.
 - Define a `deactivate` function that restores all saved values and unsets itself.
 
 The script is shell-agnostic at the user-visible level (works in bash and zsh); fish gets a separate `activate.fish` if/when needed.

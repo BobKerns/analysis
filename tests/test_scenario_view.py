@@ -18,7 +18,12 @@ from analysis.sim.notebook_ui.scenario_plots import (
     show_chains,
     show_scheduled_view,
 )
-from analysis.sim.notebook_ui.scenario_view import calendar_view, chains_view, scheduled_view
+from analysis.sim.readme import description_view
+from analysis.sim.notebook_ui.scenario_view import (
+    calendar_view,
+    chains_view,
+    scheduled_view,
+)
 
 
 def _steps(test_data_dir: Path):
@@ -27,9 +32,36 @@ def _steps(test_data_dir: Path):
         return view, view[view["step"].notna()].set_index(["chain", "step"])
 
 
+def test_description_view_relevels_the_readme_heading(test_data_dir: Path) -> None:
+    (test_data_dir / "scenarios" / "retire_alice" / "README.md").write_text(
+        "# Retirement baseline\n\nAlice and Bob's main plan.\n"
+    )
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        md = description_view(scenario)
+    assert md.data == "### Retirement baseline\n\nAlice and Bob's main plan."
+
+
+def test_description_view_regenerates_the_more_link_against_data_dir(
+    test_data_dir: Path,
+) -> None:
+    """A description's "see more" link is only ever correct for the data_dir
+    it was generated under (ADR-003 §4.1e); passing the connection's own
+    data_dir back in repoints it rather than leaving it stale."""
+    (test_data_dir / "scenarios" / "retire_alice" / "README.md").write_text(
+        "# Retirement baseline\n\nAlice and Bob's main plan.\n\nMore detail here.\n"
+    )
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        md = description_view(scenario, data_dir=test_data_dir)
+    expected_readme = test_data_dir / "scenarios" / "retire_alice" / "README.md"
+    assert md.data == (
+        "### Retirement baseline\n\nAlice and Bob's main plan.\n\n"
+        f"_See [scenarios/retire_alice/README.md]({expected_readme}) for more._"
+    )
+
+
 def test_lot_is_a_dash_when_the_account_has_a_single_lot(test_data_dir: Path) -> None:
     _, steps = _steps(test_data_dir)
-    rows = steps.loc["asset checking liquidity"]
+    rows = steps.loc["asset_checking_liquidity"]
     assert list(rows["draw_from"]) == ["Asset_Savings", "Asset_TraditionalIRA_Alice"]
     assert list(rows["lot"]) == ["-", "-"]      # 'default' is not shown when it is the only lot
     assert not any(":" in name for name in steps["draw_from"])
@@ -47,8 +79,8 @@ def test_lots_are_spelled_out_where_an_account_has_several(
         "Asset_Savings,,,,,\n"
     )
     _, steps = _steps(test_data_dir)
-    rows = steps.loc["roth first"]
-    assert list(zip(rows["draw_from"], rows["lot"])) == [
+    rows = steps.loc["roth_first"]
+    assert list(zip(rows["draw_from"], rows["lot"], strict=True)) == [
         ("Asset_Roth_Alice", "default"), ("Asset_Roth_Alice", "b"), ("Asset_Savings", "-"),
     ]
 
@@ -57,10 +89,10 @@ def test_a_step_that_draws_from_another_chain_has_no_lot(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
     (retire_alice_csv("chains") / "asset__outer.csv").write_text(
-        "account_name,lot,maximum,percent,series,cadence\nasset checking liquidity,,,,,\n"
+        "account_name,lot,maximum,percent,series,cadence\nasset_checking_liquidity,,,,,\n"
     )
     _, steps = _steps(test_data_dir)
-    assert steps.loc[("outer", 1), "draw_from"] == "asset checking liquidity"
+    assert steps.loc[("outer", 1), "draw_from"] == "asset_checking_liquidity"
     assert steps.loc[("outer", 1), "lot"] == "-"
 
 

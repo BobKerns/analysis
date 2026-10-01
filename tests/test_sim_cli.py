@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
-from analysis.sim.cli import DEFAULT_INTENT_DIR, DEFAULT_RUNS_DIR, _resolve_state_dir
-from analysis.sim.connection import ScenarioConnection
-from analysis.sim.loader import DEFAULT_STATE_DIR, load_scenario
-from tests.conftest import data_dir
+from analysis.sim import registries
+from analysis.sim.loader import load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -86,6 +87,28 @@ def test_sim_run_errors_when_intent_missing(tmp_path: Path) -> None:
     assert "intent file not found" in result.output
 
 
+def test_sim_run_loads_first_when_no_prior_load(
+    test_data_dir: Path, tmp_path: Path,
+) -> None:
+    """With a resolvable data repo, `run` builds the intent itself -- no
+    separate `sim load` required, and no stale intent left over from one."""
+    (tmp_path / "intent").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--data-dir", str(test_data_dir),
+            "--intent-dir", str(tmp_path / "intent"),
+            "--runs-dir", str(tmp_path / "runs"),
+            "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "intent" / "retire_alice.sqlite3").exists()
+    assert len(list((tmp_path / "runs").glob("*.sqlite3"))) == 1
+
+
 def _seed_one_run(tmp_path: Path) -> tuple[Path, Path]:
     intent_dir = _load(tmp_path)
     runs_dir = tmp_path / "runs"
@@ -148,18 +171,11 @@ def test_sim_items_shows_account_events_and_originating_rule(tmp_path: Path) -> 
     assert "living (fixed_amount)" in result.output
 
 
-def _copy_prototype(tmp_path: Path) -> Path:
-    import shutil
-    dest = tmp_path / "data"
-    shutil.copytree(PROTOTYPE, dest)
-    return dest
-
-
 @pytest.mark.uses_current_scenario_write
 def test_sim_load_records_current_scenario_and_defaults_to_it(
-    tmp_path: Path, monkeypatch
+    test_data_dir: Path, tmp_path: Path, monkeypatch,
 ) -> None:
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     monkeypatch.setenv("ANALYSIS_DATA_DIR", str(data))
     intent_dir = tmp_path / "intent"
     runner = CliRunner()
@@ -243,8 +259,8 @@ def test_sim_all_loads_and_runs_every_scenario(tmp_path: Path) -> None:
     assert len(list(runs_dir.glob("*.sqlite3"))) == 1
 
 
-def test_sim_all_reports_failures_without_stopping(tmp_path: Path, monkeypatch) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_all_reports_failures_without_stopping(test_data_dir: Path, tmp_path: Path, monkeypatch) -> None:
+    data = test_data_dir
     (data / "scenarios" / "broken").mkdir()  # empty scenario dir: fails to load
     runner = CliRunner()
     result = runner.invoke(
@@ -266,8 +282,8 @@ def test_sim_all_reports_failures_without_stopping(tmp_path: Path, monkeypatch) 
 
 
 @pytest.mark.uses_current_scenario_write
-def test_sim_scenario_create_derives_and_activates(tmp_path: Path, monkeypatch) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_scenario_create_derives_and_activates(test_data_dir: Path, tmp_path: Path, monkeypatch) -> None:
+    data = test_data_dir
     monkeypatch.setenv("ANALYSIS_DATA_DIR", str(data))
     runner = CliRunner()
     result = runner.invoke(main, ["sim", "scenario", "create", "late", "retire_alice"])
@@ -333,8 +349,8 @@ def test_sim_scenario_create_rejects_bad_input(test_data_dir: Path, monkeypatch)
     assert not (test_data_dir / "scenarios" / "Has Spaces").exists()
 
 
-def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_add_fixed_appends_calendar_row_and_check_passes(test_data_dir: Path) -> None:
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -365,9 +381,9 @@ def test_sim_add_fixed_appends_calendar_row_and_check_passes(tmp_path: Path) -> 
 
 
 def test_sim_add_scheduled_appends_row_with_defaults_and_check_passes(
-    tmp_path: Path,
+    test_data_dir: Path,
 ) -> None:
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -396,8 +412,8 @@ def test_sim_add_scheduled_appends_row_with_defaults_and_check_passes(
     assert check.exit_code == 0, check.output
 
 
-def test_sim_add_fixed_rejects_unknown_account(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_add_fixed_rejects_unknown_account(test_data_dir: Path) -> None:
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -413,8 +429,8 @@ def test_sim_add_fixed_rejects_unknown_account(tmp_path: Path) -> None:
     assert "unknown from account" in result.output
 
 
-def test_sim_add_fixed_prompts_when_args_missing(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_add_fixed_prompts_when_args_missing(test_data_dir: Path) -> None:
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -428,8 +444,8 @@ def test_sim_add_fixed_prompts_when_args_missing(tmp_path: Path) -> None:
     assert "4200" in cal  # 42.00 in cents
 
 
-def test_sim_add_account_appends_accounts_and_model(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_add_account_appends_accounts_and_model(test_data_dir: Path) -> None:
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -454,8 +470,8 @@ def test_sim_add_account_appends_accounts_and_model(tmp_path: Path) -> None:
     assert check.exit_code == 0, check.output
 
 
-def test_sim_add_account_rejects_duplicate(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_add_account_rejects_duplicate(test_data_dir: Path) -> None:
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -468,10 +484,10 @@ def test_sim_add_account_rejects_duplicate(tmp_path: Path) -> None:
     assert "already exists" in result.output
 
 
-def test_sim_account_edit_updates_owner_with_prompt_defaults(tmp_path: Path) -> None:
+def test_sim_account_edit_updates_owner_with_prompt_defaults(test_data_dir: Path) -> None:
     import csv
 
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -492,10 +508,10 @@ def test_sim_account_edit_updates_owner_with_prompt_defaults(tmp_path: Path) -> 
     assert rows["Asset_Checking"]["owner"] == "alice"
 
 
-def test_sim_account_rename_updates_references(tmp_path: Path) -> None:
+def test_sim_account_rename_updates_references(test_data_dir: Path) -> None:
     import csv
 
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -527,12 +543,12 @@ def test_sim_account_rename_updates_references(tmp_path: Path) -> None:
     assert "Asset_Checking" not in names
 
 
-def test_sim_account_delete_lists_references_and_removes_them(tmp_path: Path) -> None:
+def test_sim_account_delete_lists_references_and_removes_them(test_data_dir: Path) -> None:
     import csv
 
     import pandas as pd
 
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
     values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
     values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
@@ -563,16 +579,25 @@ def test_sim_account_delete_lists_references_and_removes_them(tmp_path: Path) ->
         values = list(csv.DictReader(fh))
     assert next(row for row in values if row["account_name"] == "Asset_Savings")["refill_chain"] == ""
 
+    # account delete doesn't know calendar.csv's series column named this
+    # account's own growth rate -- with the account gone, that row is now
+    # unread by anything, so drop it too (the series/reference validator
+    # would otherwise correctly flag it as dead).
+    calendar_path = data / "scenarios" / "retire_alice" / "calendar.csv"
+    calendar = pd.read_csv(calendar_path, dtype=str, keep_default_na=False)
+    calendar = calendar[calendar["series"] != "Asset_Checking"]
+    calendar.to_csv(calendar_path, index=False)
+
     check = runner.invoke(
         main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
     )
     assert check.exit_code == 0, check.output
 
 
-def test_sim_account_rename_updates_quicken_map(tmp_path: Path) -> None:
+def test_sim_account_rename_updates_quicken_map(test_data_dir: Path) -> None:
     import csv
 
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     map_path = data / "scenarios" / "retire_alice" / "quicken_account_map.csv"
     map_path.write_text(
         "quicken_name,account_name,action,note\n"
@@ -612,8 +637,8 @@ def test_sim_account_rename_updates_quicken_map(tmp_path: Path) -> None:
     assert check.exit_code == 0, check.output
 
 
-def test_sim_accounts_lists_with_balance_and_rate(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_accounts_lists_with_balance_and_rate(test_data_dir: Path) -> None:
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -629,10 +654,10 @@ def test_sim_accounts_lists_with_balance_and_rate(tmp_path: Path) -> None:
     assert "5,000.00" in out
 
 
-def test_sim_account_list_sorts_and_filters(tmp_path: Path) -> None:
+def test_sim_account_list_sorts_and_filters(test_data_dir: Path) -> None:
     import re
 
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -655,8 +680,8 @@ def test_sim_account_list_sorts_and_filters(tmp_path: Path) -> None:
     assert "Income_Salary_Alice" not in out
 
 
-def test_sim_transfer_list_shows_one_off(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_transfer_list_shows_one_off(test_data_dir: Path) -> None:
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -672,8 +697,8 @@ def test_sim_transfer_list_shows_one_off(tmp_path: Path) -> None:
     assert "salary_alice" not in out
 
 
-def test_sim_scheduled_list_shows_recurring(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_scheduled_list_shows_recurring(test_data_dir: Path) -> None:
+    data = test_data_dir
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -688,11 +713,11 @@ def test_sim_scheduled_list_shows_recurring(tmp_path: Path) -> None:
 
 
 
-def test_sim_tag_add_rm_round_trip(tmp_path: Path) -> None:
+def test_sim_tag_add_rm_round_trip(test_data_dir: Path) -> None:
     """tag add/rm mutates the CSV and load+tag list reflects it."""
     import pandas as pd
 
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     runner = CliRunner()
 
     # Pick a known scheduled name from the prototype.
@@ -735,8 +760,8 @@ def test_sim_tag_add_rm_round_trip(tmp_path: Path) -> None:
     assert "owner:alice" in final_tags
 
 
-def test_sim_tag_add_rejects_bad_token(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_tag_add_rejects_bad_token(test_data_dir: Path) -> None:
+    data = test_data_dir
     runner = CliRunner()
     r = runner.invoke(
         main,
@@ -747,10 +772,10 @@ def test_sim_tag_add_rejects_bad_token(tmp_path: Path) -> None:
     assert "invalid tag" in r.output
 
 
-def test_sim_account_check_detects_missing_rows(tmp_path: Path) -> None:
+def test_sim_account_check_detects_missing_rows(test_data_dir: Path) -> None:
     """account check reports accounts missing from account_values.csv."""
 
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
 
     # Add a new account to accounts.csv using pandas to avoid line-ending issues
@@ -783,11 +808,11 @@ def test_sim_account_check_detects_missing_rows(tmp_path: Path) -> None:
     assert "Asset_NewAccount" in result.output
 
 
-def test_sim_account_sync_creates_missing_rows(tmp_path: Path) -> None:
+def test_sim_account_sync_creates_missing_rows(test_data_dir: Path) -> None:
     """account sync creates account_values rows for accounts missing them."""
     import pandas as pd
 
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
     values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
 
@@ -827,9 +852,9 @@ def test_sim_account_sync_creates_missing_rows(tmp_path: Path) -> None:
     assert rows["Asset_NewAccount"]["opening_balance"] == "0.00"
 
 
-def test_sim_account_sync_is_idempotent(tmp_path: Path) -> None:
+def test_sim_account_sync_is_idempotent(test_data_dir: Path) -> None:
     """account sync can be run multiple times safely."""
-    data = _copy_prototype(tmp_path)
+    data = test_data_dir
     runner = CliRunner()
 
     # First sync
@@ -878,8 +903,8 @@ def _write_quicken_map(path: Path) -> None:
     )
 
 
-def test_sim_account_import_quicken_updates_balances(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_account_import_quicken_updates_balances(test_data_dir: Path, tmp_path: Path) -> None:
+    data = test_data_dir
     export = tmp_path / "export.csv"
     _write_quicken_export(export)
     map_file = tmp_path / "map.csv"
@@ -921,8 +946,8 @@ def test_sim_account_import_quicken_updates_balances(tmp_path: Path) -> None:
     assert check.exit_code == 0, check.output
 
 
-def test_sim_account_import_quicken_year_end_sets_prior_year_only(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_account_import_quicken_year_end_sets_prior_year_only(test_data_dir: Path, tmp_path: Path) -> None:
+    data = test_data_dir
     export = tmp_path / "year_end.csv"
     _write_quicken_export(export)
     map_file = tmp_path / "map.csv"
@@ -957,8 +982,8 @@ def test_sim_account_import_quicken_year_end_sets_prior_year_only(tmp_path: Path
     assert rows["Liability_Mortgage"]["prior_year_end_balance"] == ""
 
 
-def test_sim_account_import_quicken_rejects_unmapped_account(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_account_import_quicken_rejects_unmapped_account(test_data_dir: Path, tmp_path: Path) -> None:
+    data = test_data_dir
     export = tmp_path / "export.csv"
     _write_quicken_export(export)
     map_file = tmp_path / "map.csv"
@@ -983,8 +1008,8 @@ def test_sim_account_import_quicken_rejects_unmapped_account(tmp_path: Path) -> 
     assert "Liability_Mortgage" in result.output
 
 
-def test_sim_account_import_quicken_dry_run_does_not_write(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
+def test_sim_account_import_quicken_dry_run_does_not_write(test_data_dir: Path, tmp_path: Path) -> None:
+    data = test_data_dir
     export = tmp_path / "export.csv"
     _write_quicken_export(export)
     map_file = tmp_path / "map.csv"
@@ -1031,7 +1056,9 @@ def test_sim_run_finds_state_through_the_activated_data_dir(
     )
     assert loaded.exit_code == 0, loaded.output
     monkeypatch.setenv("ANALYSIS_DATA_DIR", str(test_data_dir))
-    result = runner.invoke(main, ["sim", "run", "retire_alice"])
+    # run now reloads from the data repo first (fast, and never misses a
+    # CSV edit since the last explicit load), so it needs the same flag.
+    result = runner.invoke(main, ["sim", "run", "retire_alice", "--allow-dirty-data"])
     assert result.exit_code == 0, result.output
     assert len(list((tmp_path / "state" / "runs").glob("*.sqlite3"))) == 1
     assert not (tmp_path / "runs").exists()
@@ -1056,3 +1083,774 @@ def test_transfer_list_shows_calendar_and_scheduled_one_offs(test_data_dir: Path
     assert "calendar" in inheritance and "Asset_Brokerage_Joint (default)" in inheritance
     assert "scheduled" in moving and "Asset_Savings" in moving and "75.00" in moving
     assert lines.index(inheritance) < lines.index(moving)  # dated 2029 before 2030
+
+
+def _sim_load(
+    test_data_dir: Path, intent_dir: Path, runner: CliRunner, *, scenario: str = "retire_alice",
+):
+    return runner.invoke(
+        main,
+        [
+            "sim", "load", scenario,
+            "--data-dir", str(test_data_dir), "--intent-dir", str(intent_dir),
+            "--allow-dirty-data", "--no-run",
+        ],
+    )
+
+
+def test_sim_run_generates_and_runs_ensemble_for_a_recipe(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--run-by", "tester", "--ensemble-size", "2", "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "2/2 member(s) succeeded" in result.output
+
+    member_intents = sorted((intent_dir / "retire_alice").glob("*/member_*.sqlite3"))
+    member_runs = sorted((runs_dir / "retire_alice").glob("*/member_*.sqlite3"))
+    assert [p.name for p in member_intents] == ["member_0000.sqlite3", "member_0001.sqlite3"]
+    assert [p.name for p in member_runs] == ["member_0000.sqlite3", "member_0001.sqlite3"]
+    assert member_intents[0].parent == member_intents[1].parent  # same batch
+
+    con = sqlite3.connect(member_runs[0])
+    try:
+        status = con.execute("SELECT status FROM simulation_run").fetchone()[0]
+        assert status == "succeeded"
+        amount = con.execute(
+            "SELECT amount FROM calendar_event WHERE name = 'checking_rate_vary'"
+        ).fetchone()[0]
+        assert 40_000 <= amount <= 50_000
+        manifest = con.execute(
+            "SELECT ensemble_name, member_index, member_count FROM ensemble_manifest"
+        ).fetchone()
+        assert manifest == ("retire_alice", 0, 2)
+    finally:
+        con.close()
+
+
+def test_sim_run_ensemble_requires_size(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "ensemble recipe requires --ensemble-size" in result.output
+
+
+def test_sim_run_ensemble_rejects_zero_ensemble_size(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "0", "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--ensemble-size must be a positive integer" in result.output
+    assert not (runs_dir / "retire_alice").exists()
+
+
+def test_sim_run_ensemble_rejects_negative_metadata_size(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path], intent_dir: Path, runs_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    scenario_csv = retire_alice_csv("scenario.csv")
+    df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
+    df.loc[0, "meta_json"] = json.dumps({"ensemble_size": -3})
+    df.to_csv(scenario_csv, index=False)
+
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "scenario.meta_json.ensemble_size must be a positive integer" in result.output
+
+
+def test_sim_ensemble_create_rejects_zero_size(test_data_dir: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "ensemble", "create", "my_recipe", "retire_alice",
+            "--data-dir", str(test_data_dir), "--size", "0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--size must be a positive integer" in result.output
+    assert not (test_data_dir / "scenarios" / "my_recipe").exists()
+
+
+def test_sim_calendar_add_rejects_non_zero_padded_vary_date(
+    test_data_dir: Path,
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bob",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+            "--name", "retire_bob_vary", "--vary-target", "date",
+            "--vary-distribution", "uniform",
+            "--vary-low", "2029-1-1", "--vary-high", "2029-12-31",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "date must be YYYY-MM-DD" in result.output
+
+
+def test_sim_run_ensemble_reports_member_failures_without_stopping(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path, monkeypatch,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    import analysis.sim.cli as sim_cli
+
+    real_resolve_member = sim_cli.resolve_member
+
+    def _flaky_resolve_member(*args, member_index, **kwargs):
+        if member_index == 1:
+            raise RuntimeError("boom")
+        return real_resolve_member(*args, member_index=member_index, **kwargs)
+
+    monkeypatch.setattr(sim_cli, "resolve_member", _flaky_resolve_member)
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "2", "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "member 1: FAILED (boom)" in result.output
+    assert "1/2 member(s) succeeded" in result.output
+    intent_batch = next((intent_dir / "retire_alice").glob("*/member_0000.sqlite3")).parent
+    runs_batch = next((runs_dir / "retire_alice").glob("*/member_0000.sqlite3")).parent
+    assert (intent_batch / "member_0000.sqlite3").exists()
+    assert (runs_batch / "member_0000.sqlite3").exists()
+    assert not (runs_batch / "member_0001.sqlite3").exists()
+
+    # member 1 never got a run file at all -- only the batch manifest
+    # records that it was expected and why it failed.
+    from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
+    manifest = read_batch_manifest(runs_batch)
+    assert manifest["member_count"] == 2
+    assert manifest["failures"] == [
+        {"index": 1, "intent_path": str(intent_batch / "member_0001.sqlite3"), "error": "boom"},
+    ]
+    assert member_run_statuses(runs_batch) == {
+        "member_0000": "succeeded", "member_0001": "failed_to_resolve",
+    }
+
+
+def test_sim_ensemble_summary_reports_mean_median_range(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    run_result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "3", "--allow-dirty-data",
+        ],
+    )
+    assert run_result.exit_code == 0, run_result.output
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "ensemble", "summary", "retire_alice",
+            "--runs-dir", str(runs_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "ensemble retire_alice (" in result.output
+    assert "3 succeeded member(s), 0 failed" in result.output
+    assert "mean=" in result.output and "median=" in result.output
+    assert "min=" in result.output and "max=" in result.output
+    assert "2026" in result.output and "2040" in result.output
+
+
+def test_sim_ensemble_summary_errors_when_no_runs(runs_dir: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["sim", "ensemble", "summary", "retire_alice", "--runs-dir", str(runs_dir)],
+    )
+    assert result.exit_code != 0
+
+
+def test_sim_run_ensemble_batch_reservation_is_exclusive(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-existing directory at the stamp the CLI would naturally pick
+    (standing in for a concurrent ``sim run`` that got there first, since
+    true concurrency isn't practical to force deterministically in a unit
+    test) must be skipped by advancing the suffix, exactly as if it had been
+    detected mid-race -- the retry loop is the same whether the collision is
+    pre-existing or won at the last instant by exclusive mkdir."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    import analysis.sim.cli as sim_cli
+    from datetime import UTC
+    from datetime import datetime as real_datetime
+
+    fixed_stamp = "2026-01-01T000000Z"
+
+    class _FixedDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2026, 1, 1, tzinfo=UTC)
+
+    monkeypatch.setattr(sim_cli, "datetime", _FixedDatetime)
+    (intent_dir / "retire_alice" / fixed_stamp).mkdir(parents=True)
+
+    result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "1", "--allow-dirty-data",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    batches = sorted(p.name for p in (runs_dir / "retire_alice").iterdir())
+    assert batches == [f"{fixed_stamp}-2"]
+
+
+def test_sim_run_ensemble_rerun_does_not_collide_with_prior_batch(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    """A recipe rerun (e.g. after tweaking a distribution) must not fail by
+    colliding with the previous batch's member files."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    runner = CliRunner()
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    run_args = [
+        "sim", "run", "retire_alice",
+        "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+        "--ensemble-size", "2", "--allow-dirty-data",
+    ]
+    first = runner.invoke(main, run_args)
+    assert first.exit_code == 0, first.output
+    second = runner.invoke(main, run_args)
+    assert second.exit_code == 0, second.output
+    assert "2/2 member(s) succeeded" in second.output
+
+    batches = sorted((runs_dir / "retire_alice").iterdir())
+    assert len(batches) == 2
+    for batch in batches:
+        assert sorted(p.name for p in batch.glob("member_*.sqlite3")) == [
+            "member_0000.sqlite3", "member_0001.sqlite3",
+        ]
+
+    summary_result = runner.invoke(
+        main,
+        ["sim", "ensemble", "summary", "retire_alice", "--runs-dir", str(runs_dir)],
+    )
+    assert summary_result.exit_code == 0, summary_result.output
+    assert batches[-1].name in summary_result.output  # defaults to the latest batch
+
+    explicit = runner.invoke(
+        main,
+        [
+            "sim", "ensemble", "summary", "retire_alice", "--runs-dir", str(runs_dir),
+            "--batch", batches[0].name,
+        ],
+    )
+    assert explicit.exit_code == 0, explicit.output
+    assert batches[0].name in explicit.output
+
+
+def test_sim_ensemble_create_sets_seed_and_size_and_loads_cleanly(test_data_dir: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "ensemble", "create", "my_recipe", "retire_alice",
+            "--data-dir", str(test_data_dir), "--size", "5",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "inherits: retire_alice" in result.output
+    assert "ensemble_size: 5" in result.output
+    seed_line = next(line for line in result.output.splitlines() if "seed:" in line)
+    seed = int(seed_line.split(":")[1].strip())
+
+    scenario_csv = test_data_dir / "scenarios" / "my_recipe" / "scenario.csv"
+    df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
+    assert int(df.loc[0, "seed"]) == seed
+    assert json.loads(df.loc[0, "meta_json"])["ensemble_size"] == 5
+
+
+def test_sim_ensemble_create_defaults_seed_when_omitted(test_data_dir: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "ensemble", "create", "my_recipe", "retire_alice",
+            "--data-dir", str(test_data_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "seed:" in result.output
+    # --size omitted still records registries.DEFAULT_ENSEMBLE_SIZE, so
+    # sim run/sim all never need --ensemble-size just to do *something*.
+    assert f"ensemble_size: {registries.DEFAULT_ENSEMBLE_SIZE}" in result.output
+
+    scenario_csv = test_data_dir / "scenarios" / "my_recipe" / "scenario.csv"
+    df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
+    assert df.loc[0, "seed"]  # some seed was picked
+    meta = json.loads(df.loc[0, "meta_json"])
+    assert meta["ensemble_size"] == registries.DEFAULT_ENSEMBLE_SIZE
+
+
+def test_sim_ensemble_create_honors_explicit_seed(test_data_dir: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "ensemble", "create", "my_recipe", "retire_alice",
+            "--data-dir", str(test_data_dir), "--seed", "12345",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "seed: 12345" in result.output
+
+
+def test_sim_calendar_add_set_rate_converts_percent_to_micros(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df[df["series"] == "Asset_Checking"].iloc[-1]
+    assert row["kind"] == "set_rate"
+    assert row["amount"] == "45000"
+
+
+def test_sim_calendar_add_set_rate_with_vary_options(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+            "--name", "checking_rate_vary", "--vary-target", "amount",
+            "--vary-distribution", "uniform", "--vary-low", "4.0", "--vary-high", "5.0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df[df["name"] == "checking_rate_vary"].iloc[0]
+    assert row["vary_target"] == "amount"
+    assert row["vary_distribution"] == "uniform"
+    assert row["vary_low"] == "40000"
+    assert row["vary_high"] == "50000"
+
+
+def test_sim_calendar_add_set_rate_defaults_to_rate_aux_kind(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """The default --aux-kind='rate' writes no params_json at all -- the
+    engine already defaults a set_rate event with none to 'rate' -- so an
+    ordinary (non-inflation) rate row's CSV shape is unaffected by this
+    option existing."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df[df["series"] == "Asset_Checking"].iloc[-1]
+    assert row["params_json"] == ""
+
+
+def test_sim_calendar_add_set_rate_can_target_an_inflation_series(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """A series like 'cpi' lives in the aux_table's 'inflation' kind, not the
+    default 'rate' kind that an asset's own growth series uses -- --aux-kind
+    is required to vary it at all (ADR-006 covers inflation/COLA per its own
+    original motivation, not just asset growth rates)."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "uniform", "--vary-low", "2.0", "--vary-high", "4.0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "aux_kind='inflation'" in result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df[df["name"] == "cpi_vary"].iloc[0]
+    assert row["kind"] == "set_rate"
+    assert row["series"] == "cpi"
+    assert json.loads(row["params_json"]) == {"aux_kind": "inflation"}
+    assert row["vary_low"] == "20000" and row["vary_high"] == "40000"
+
+
+def test_sim_calendar_add_set_rate_rejects_series_nothing_reads(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """A row that's individually well-formed can still break the scenario --
+    nothing reads (inflation, 'no_such_series') -- and the loader is the only
+    place that knows that, so `calendar add` re-validates by loading and
+    reverts the CSV write rather than leaving a dead row behind."""
+    path = retire_alice_csv("calendar.csv")
+    before = path.read_text()
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "no_such_series", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "is never read" in result.output
+    assert "reverted" in result.output
+    assert path.read_text() == before
+
+
+def test_sim_run_ensemble_resolves_an_inflation_series_vary(
+    test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    """End to end: a varying cpi (inflation-kind) set_rate row must resolve
+    to a literal, in-range value and run successfully -- not silently land
+    in the wrong aux_table kind and have no effect."""
+    runner = CliRunner()
+    add_result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "uniform", "--vary-low", "2.0", "--vary-high", "4.0",
+        ],
+    )
+    assert add_result.exit_code == 0, add_result.output
+
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    run_result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "1", "--allow-dirty-data",
+        ],
+    )
+    assert run_result.exit_code == 0, run_result.output
+
+    member_intent = next((intent_dir / "retire_alice").glob("*/member_0000.sqlite3"))
+    con = sqlite3.connect(member_intent)
+    try:
+        kind, amount, vary_distribution = con.execute(
+            "SELECT kind, amount, vary_distribution FROM calendar_event WHERE name = 'cpi_vary'"
+        ).fetchone()
+        assert kind == "set_rate"
+        assert 20_000 <= amount <= 40_000
+        assert vary_distribution is None
+    finally:
+        con.close()
+
+
+def test_sim_calendar_add_truncated_normal_accepts_low_and_high_alone(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """vary_low/vary_high double as truncated_normal's own bounds (ADR-006):
+    giving just those two infers vary_mean as their midpoint and vary_sd as
+    the spread that puts them 3 SDs out."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "truncated_normal", "--vary-low", "2.0", "--vary-high", "4.0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df[df["name"] == "cpi_vary"].iloc[0]
+    assert row["vary_low"] == "20000" and row["vary_high"] == "40000"
+    assert row["vary_mean"] == "" and row["vary_sd"] == ""  # left for resolve_member to infer
+
+
+def test_sim_calendar_add_rejects_clip_low_option_that_no_longer_exists(
+    test_data_dir: Path,
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "truncated_normal", "--vary-mean", "3.0", "--vary-sd", "0.5",
+            "--vary-clip-low", "0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--vary-clip-low" in result.output  # click: no such option
+
+
+def test_sim_calendar_add_rejects_truncated_normal_with_insufficient_params(
+    test_data_dir: Path,
+) -> None:
+    """--vary-mean alone isn't enough to resolve a truncated_normal: sd needs
+    either its own value or one of vary_low/vary_high to infer it from."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
+            "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+            "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
+            "--vary-distribution", "truncated_normal", "--vary-mean", "3.0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "vary_sd requires vary_low or vary_high" in result.output
+
+
+def test_sim_calendar_add_set_amount_rejects_unknown_scheduled_name(
+    test_data_dir: Path,
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-amount", "2028-01-31", "nonexistent_rule", "100.00",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "unknown scheduled_name" in result.output
+
+
+def test_sim_calendar_add_retire_scheduled_rejects_amount_vary_target(
+    test_data_dir: Path,
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bob",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+            "--name", "bad", "--vary-target", "amount", "--vary-distribution", "uniform",
+            "--vary-low", "1", "--vary-high", "2",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "no amount column to vary" in result.output
+
+
+def test_sim_calendar_add_retire_scheduled_with_date_vary(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bob",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+            "--name", "retire_bob_vary", "--vary-target", "date",
+            "--vary-distribution", "uniform",
+            "--vary-low", "2029-01-01", "--vary-high", "2029-12-31",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df[df["name"] == "retire_bob_vary"].iloc[0]
+    assert row["kind"] == "retire_scheduled"
+    assert row["vary_target"] == "date"
+    assert row["vary_low"] == "2029-01-01"
+
+
+def test_sim_calendar_add_transfer_matches_sim_transfer_add(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "transfer",
+            "2030-06-30", "Asset_Checking", "Asset_Brokerage_Joint", "1500.00",
+            "--to-lot", "default", "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    row = df.iloc[-1]
+    assert row["kind"] == "one_off_transfer"
+    assert row["amount"] == "150000"
+
+
+def test_sim_calendar_add_transfer_vary_amount_is_not_shadowed_by_params_json(
+    test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    """A varying one_off_transfer's resolved amount must actually reach the
+    posted transfer -- not get overwritten by a stale placeholder duplicated
+    into payload_json (_build_cal_payload overlays payload_json onto the
+    promoted `amount` column, so the two must never disagree)."""
+    runner = CliRunner()
+    add_result = runner.invoke(
+        main,
+        [
+            "sim", "calendar", "add", "transfer",
+            "2030-06-30", "Asset_Checking", "Asset_Brokerage_Joint", "1.00",
+            "--to-lot", "default", "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+            "--name", "transfer_vary", "--vary-target", "amount",
+            "--vary-distribution", "uniform", "--vary-low", "1000.00", "--vary-high", "2000.00",
+        ],
+    )
+    assert add_result.exit_code == 0, add_result.output
+
+    load_result = _sim_load(test_data_dir, intent_dir, runner)
+    assert load_result.exit_code == 0, load_result.output
+
+    run_result = runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--ensemble-size", "1", "--allow-dirty-data",
+        ],
+    )
+    assert run_result.exit_code == 0, run_result.output
+
+    member_run = next((runs_dir / "retire_alice").glob("*/member_0000.sqlite3"))
+    con = sqlite3.connect(member_run)
+    try:
+        amount = con.execute(
+            "SELECT te.amount FROM transfer_event te "
+            "JOIN account a1 ON a1.id = te.from_account "
+            "JOIN account a2 ON a2.id = te.to_account "
+            "WHERE te.date = '2030-06-30' "
+            "AND a1.name = 'Asset_Checking' AND a2.name = 'Asset_Brokerage_Joint'"
+        ).fetchone()[0]
+        assert 100_000 <= amount <= 200_000  # the drawn/resolved value, in cents
+    finally:
+        con.close()

@@ -1,21 +1,16 @@
 """Tests for analysis.sim.notebook_ui.networth_plots and .accounts_plots."""
 
 from __future__ import annotations
-from analysis.sim.types import DollarMode
 
-import shutil
 from pathlib import Path
 
 import matplotlib
 
-from tests.conftest import retire_alice_run_file
-
 matplotlib.use("Agg")
 
+from analysis.sim.types import DollarMode
 from analysis.sim.notebook_ui.accounts_plots import render_balance_history_figure
 from analysis.sim.connection import RunConnection, open_run
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import load_scenario
 from analysis.sim.notebook_ui.accounts_plots import account_history_widget
 from analysis.sim.notebook_ui.pickers import AccountPicker
 from analysis.sim.notebook_ui.networth_plots import (

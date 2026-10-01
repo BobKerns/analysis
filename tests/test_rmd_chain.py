@@ -59,7 +59,7 @@ def test_a_single_lot_ira_through_a_chain_gives_the_same_rmds(
     set_rmd_source: Callable[..., None], load_test_copy: Callable[[], LoadResult], runs_dir: Path,
 ) -> None:
     direct = _rmd_legs(_run(load_test_copy, runs_dir, "direct.sqlite3"))
-    set_rmd_source("ira rmd", params={"subject_account": IRA}, chain=("ira_rmd", [(IRA, "default")]))
+    set_rmd_source("ira_rmd", params={"subject_account": IRA}, chain=("ira_rmd", [(IRA, "default")]))
     chained = _rmd_legs(_run(load_test_copy, runs_dir, "chained.sqlite3"))
     assert [amount for _d, _l, amount, _c in direct] == [681_542, 558_190, 454_889]
     assert chained == direct
@@ -73,7 +73,7 @@ def _two_lot_ira_run(
     # A small lot b listed first in the chain, so the RMD exhausts it and falls through.
     update_account_value(IRA, "default", opening_balance="500000.00", prior_year_end_balance="480000.00")
     add_account_value(IRA, lot="b", opening_balance="2000.00", prior_year_end_balance="1900.00")
-    set_rmd_source("ira rmd", params={"subject_account": IRA},
+    set_rmd_source("ira_rmd", params={"subject_account": IRA},
                    chain=("ira_rmd", [(IRA, "b"), (IRA, "default")]))
     return _run(load_test_copy, runs_dir, "two_lot.sqlite3")
 
@@ -118,7 +118,7 @@ def test_the_chains_order_decides_which_lot_pays(
 ) -> None:
     update_account_value(IRA, "default", opening_balance="500000.00", prior_year_end_balance="480000.00")
     add_account_value(IRA, lot="b", opening_balance="2000.00", prior_year_end_balance="1900.00")
-    set_rmd_source("ira rmd", params={"subject_account": IRA},
+    set_rmd_source("ira_rmd", params={"subject_account": IRA},
                    chain=("ira_rmd", [(IRA, "default"), (IRA, "b")]))
     legs = _rmd_legs(_run(load_test_copy, runs_dir, "reversed.sqlite3"))
     assert {lot for _d, lot, _a, _c in legs} == {"default"}  # the big lot covers it; b is never touched
@@ -127,15 +127,15 @@ def test_the_chains_order_decides_which_lot_pays(
 def test_a_chain_rmd_needs_a_subject_account(
     set_rmd_source: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    set_rmd_source("ira rmd", chain=("ira_rmd", [(IRA, "default")]))
-    with pytest.raises(LoadError, match=r"rmd_alice\): an rmd drawing from chain 'ira rmd' needs params_json"):
+    set_rmd_source("ira_rmd", chain=("ira_rmd", [(IRA, "default")]))
+    with pytest.raises(LoadError, match=r"rmd_alice\): an rmd drawing from chain 'ira_rmd' needs params_json"):
         load_test_copy()
 
 
 def test_the_chain_may_only_draw_from_the_subject_accounts_lots(
     set_rmd_source: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    set_rmd_source("ira rmd", params={"subject_account": IRA},
+    set_rmd_source("ira_rmd", params={"subject_account": IRA},
                    chain=("ira_rmd", [(IRA, "default"), ("Asset_Roth_Alice", "default")]))
     with pytest.raises(LoadError, match="draws from Asset_Roth_Alice:default, which are not lots of the subject"):
         load_test_copy()
@@ -159,5 +159,6 @@ def test_subject_account_must_exist_and_match_a_single_source(
     with pytest.raises(LoadError, match="subject_account 'Nope' is not an account"):
         load_test_copy()
     set_rmd_source(IRA, "default", params={"subject_account": "Asset_Roth_Alice"})
-    with pytest.raises(LoadError, match="subject_account 'Asset_Roth_Alice' is not the account 'Asset_TraditionalIRA_Alice'"):
+    with pytest.raises(LoadError,
+                       match="subject_account 'Asset_Roth_Alice' is not the account 'Asset_TraditionalIRA_Alice'"):
         load_test_copy()

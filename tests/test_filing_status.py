@@ -57,9 +57,18 @@ def test_the_standard_deduction_switches_after_the_year_of_death(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
     runs_dir: Path,
 ) -> None:
+    import pandas as pd
+
+    # Only 2027-2030 are asserted on; retire_alice's household budget isn't
+    # sized to survive losing a person's income for the scenario's full
+    # declared range (2026-2040) on top of a new annual tax payment.
+    scenario_csv = retire_alice_csv("scenario.csv")
+    scenario_df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
+    scenario_df.loc[0, "end"] = "2031-12-31"
+    scenario_df.to_csv(scenario_csv, index=False)
+
     retire_alice_csv("lifespan.csv").write_text("person,final_month\nalice,2028-06-01\n")
     scheduled = retire_alice_csv("scheduled.csv")
-    import pandas as pd
 
     df = pd.read_csv(scheduled, dtype=str, keep_default_na=False)
     df.loc[len(df)] = {

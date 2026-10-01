@@ -41,6 +41,20 @@
 		"search.exclude": {
 			"**/.venv": true,
 			"**/*_cache": true
-		}
+		},
+		"python.terminal.useEnvFile": true,
+		"python.envFile": "${workspaceFolder}/.env.default",
+		"terminal.integrated.env.linux": {
+			"PYTHON_THREAD_INHERIT_CONTEXT": "1",
+			"PYTHON_CONTEXT_AWARE_WARNINGS": "1"
+		},
+		"terminal.integrated.env.osx": {
+			"PYTHON_THREAD_INHERIT_CONTEXT": "1",
+			"PYTHON_CONTEXT_AWARE_WARNINGS": "1"
+		},
+		"terminal.integrated.env.windows": {
+			"PYTHON_THREAD_INHERIT_CONTEXT": "1",
+			"PYTHON_CONTEXT_AWARE_WARNINGS": "1"
+		},
 	}
 }
