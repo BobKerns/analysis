@@ -644,7 +644,7 @@ def load_scenario(
     # in now rather than read live at display time: a run file is read long
     # after the data repo it came from may have moved, changed, or gone, so
     # anything a reader needs has to travel inside the intent/run file itself.
-    description = readme_description(scenario_dir)
+    description = readme_description(scenario_dir, data_dir=data_dir)
     if description is not None:
         scenario_row["description"] = description
     chains = _read_chain_files(data_dir, scenario_name, issues)

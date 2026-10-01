@@ -463,9 +463,40 @@ class _TagReader:
             return f'<{clsname} ({ex})>'
 
 
+class Connection(_TagReader):
+    @property
+    @abstractmethod
+    def label(self) -> str:
+        """A human-readable label for this connection."""
+        pass
+
+    @property
+    @abstractmethod
+    def data_dir(self) -> Path:
+        """The data directory associated with this connection."""
+        pass
+
+    @property
+    @abstractmethod
+    def scenario(self) -> ScenarioConnection:
+        """The scenario connection associated with this connection."""
+        pass
+
+    @property
+    @abstractmethod
+    def scenario_name(self) -> str:
+        """The name of the scenario associated with this connection."""
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close the connection and release any associated resources."""
+        pass
+
+
 # ---------- run (read-only) ----------
 
-class RunConnection(_TagReader):
+class RunConnection(Connection):
     """Read-only access to a finalized run snapshot DB.
 
     Calling :meth:`close` (or using the context manager) frees the SQLite
@@ -919,7 +950,7 @@ _TAG_CSV_KEY: dict[ItemType, tuple[str, str]] = {
 }
 
 
-class ScenarioConnection(_TagReader, traitlets.HasTraits):
+class ScenarioConnection(Connection, traitlets.HasTraits):
     """Read+write access to a scenario.
 
     Reads run against a freshly built intent DB; writes go to the CSV source
@@ -946,6 +977,24 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
         """
         return f"{self.name}"
 
+    _scenario_name: str
+
+    @property
+    def scenario_name(self) -> str:
+        """
+        Return the name of the scenario associated with this connection.
+        """
+        return self._scenario_name
+
+    @property
+    def name(self) -> str:
+        return self._scenario_name
+
+    _data_dir: Path
+    @property
+    def data_dir(self) -> Path:
+        return self._data_dir
+
     scenarios_dir: Path
 
     def __init__(self, data_dir: Path | str,
@@ -955,7 +1004,7 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
                  state_dir: Path | str | None = None,
                  runs_dir: Path | str | None = None,
                  run_path: Path | str | None = None) -> None:
-        self.data_dir = Path(data_dir).resolve()
+        self._data_dir = Path(data_dir).resolve()
         scenarios_dir = scenarios_dir or (self.data_dir / "scenarios")  # type: ignore[assignment]
         self.scenarios_dir = Path(scenarios_dir).resolve()
         self.ref = resolve_scenario_name(self.data_dir, scenario,
@@ -964,7 +1013,7 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
                                          state_dir=state_dir,
                                          runs_dir=runs_dir,
                                          run_path=run_path)
-        self.scenario = self.ref.name
+        self._scenario_name = self.ref.name
         self._tmp = tempfile.TemporaryDirectory()
         if intent_dir is None:
             intent_dir = Path(self._tmp.name)
@@ -979,12 +1028,12 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
         if self._con is not None:
             self._con.close()
         load_scenario(
-            self.data_dir, self.scenario,
+            self.data_dir, self._scenario_name,
             intent_dir=self._intent_dir,
             scenarios_dir=self.scenarios_dir,
             compute_stamps=False, allow_dirty_data=True,
         )
-        con = sqlite3.connect(self._intent_dir / f"{self.scenario}.sqlite3")
+        con = sqlite3.connect(self._intent_dir / f"{self._scenario_name}.sqlite3")
         con.row_factory = sqlite3.Row
         self._con = con
         self._invalidate_items_cache()
@@ -996,7 +1045,7 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
 
     @property
     def _db_path(self) -> Path:
-        return self._intent_dir / f"{self.scenario}.sqlite3"
+        return self._intent_dir / f"{self._scenario_name}.sqlite3"
 
     def close(self) -> None:
         if self._con is not None:
@@ -1019,7 +1068,7 @@ class ScenarioConnection(_TagReader, traitlets.HasTraits):
                 "(no natural unique key in calendar.csv)"
             )
         rel, key = _TAG_CSV_KEY[item_type]
-        return self.data_dir / rel.format(scenario=self.scenario), key
+        return self.data_dir / rel.format(scenario=self._scenario_name), key
 
     def _mutate_tags(
         self,

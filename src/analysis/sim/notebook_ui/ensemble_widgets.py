@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import Markdown, display
 
-from analysis.sim.connection import year_end_values
+from analysis.sim.connection import open_run, year_end_values
 from analysis.sim.ensemble import (
     latest_ensemble_batch,
     load_ensemble,
@@ -20,8 +20,9 @@ from analysis.sim.ensemble import (
     members_net_worth_by_month,
 )
 from analysis.sim.ensemble import summary as ensemble_summary
-from analysis.sim.notebook_ui.pickers import DollarModePicker, LogLinearModePicker, find_data_dir, find_runs_dir
+from analysis.sim.notebook_ui.pickers import DollarModePicker, LogLinearModePicker, find_runs_dir
 from analysis.sim.plotting import FRAME_ALPHA
+from analysis.sim.readme import description_view
 from analysis.sim.types import DollarMode, LogLinearMode
 
 __all__ = [
@@ -105,6 +106,7 @@ def ensemble_widget(*,
                     runs_dir: Path | str | None = None,
                     log_linear_mode: LogLinearModePicker | None = None,
                     dollar_mode: DollarModePicker | None = None,
+                    show_description: bool = False,
                     ) -> widgets.VBox:
     """Recipe dropdown + fan chart + year-end summary table for an ensemble
     already generated and run via ``sim run <recipe> --ensemble-size N``."""
@@ -136,6 +138,9 @@ def ensemble_widget(*,
             heading, yearly = ensemble_summary_view(monthly_summary, len(connections), failed_count)
             with out:
                 display(Markdown(f"{heading} (batch {batch_dir.name})"))
+                if show_description:
+                    sc = next(iter(connections.values()))
+                    display(description_view(sc))
                 _fig, ax = plt.subplots(figsize=(10, 5))
                 # Scale before drawing: matplotlib's set_yscale resets the
                 # major formatter to its own log-scale default, which would

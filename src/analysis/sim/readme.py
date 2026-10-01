@@ -12,8 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+
 if TYPE_CHECKING:
-    from analysis.sim.connection import ScenarioConnection
+    from analysis.sim.connection import Connection
 
 from IPython.display import Markdown
 
@@ -82,7 +83,7 @@ def relevel_heading(text: str, level: int) -> str:
     return "\n".join(lines)
 
 
-def readme_description(scenario_dir: Path) -> str | None:
+def readme_description(scenario_dir: Path, data_dir: Path) -> str | None:
     """``scenario_dir/README.md``'s title + first paragraph, formatted for
     ``scenario.description`` -- ``None`` if there's no README.md (or it has
     nothing to extract), so the caller keeps ``scenario.csv``'s own
@@ -100,11 +101,18 @@ def readme_description(scenario_dir: Path) -> str | None:
     if summary.paragraph:
         parts.append(summary.paragraph)
     if summary.has_more:
-        parts.append(f"_See `scenarios/{Path(scenario_dir).name}/README.md` for more._")
+        readme = data_dir / scenario_dir / "README.md"
+        if not readme.exists():
+            parts.append(f"_See `scenarios/{Path(scenario_dir).name}/README.md` for more._")
+        else:
+            rel_readme = readme.relative_to(data_dir)
+            parts.append(f"_See [{rel_readme}]({readme}) for more._")
     return "\n\n".join(parts)
 
 
-def description_view(sc: ScenarioConnection, *, heading_level: int = 3) -> Markdown:
+def description_view(sc: Connection, *,
+                     heading_level: int = 3,
+                     data_dir: Path | str | None = None) -> Markdown:
     """The scenario's description -- a README.md's title + first paragraph,
     baked in at load time, or scenario.csv's own description when there's
     no README.md (ADR-003 §4.1e) -- rendered as markdown, with any leading

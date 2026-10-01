@@ -63,34 +63,36 @@ def test_relevel_heading_handles_a_bare_hash_with_no_title_text() -> None:
 
 
 def test_readme_description_none_when_no_file(tmp_path: Path) -> None:
-    assert readme_description(tmp_path) is None
+    assert readme_description(tmp_path, data_dir=tmp_path) is None
 
 
 def test_readme_description_combines_title_paragraph_and_pointer(tmp_path: Path) -> None:
-    scenario_dir = tmp_path / "inflation_1"
-    scenario_dir.mkdir()
+    scenario_dir = tmp_path / "scenarios/inflation_1"
+    scenario_dir.mkdir(parents=True)
+    data_dir = tmp_path
     (scenario_dir / "README.md").write_text(
         "# Inflation sensitivity\n\n"
         "This recipe varies CPI to see how sensitive the plan is.\n\n"
         "## Why\n\nBecause hyperinflation can't really be projected.\n"
     )
-    description = readme_description(scenario_dir)
-    assert description == (
+    description = readme_description(scenario_dir, data_dir=data_dir)
+    expected = (
         "# Inflation sensitivity\n\n"
         "This recipe varies CPI to see how sensitive the plan is.\n\n"
-        "_See `scenarios/inflation_1/README.md` for more._"
+        f"_See [scenarios/inflation_1/README.md]({scenario_dir / 'README.md'}) for more._"
     )
+    assert description == expected
 
 
 def test_readme_description_no_pointer_when_its_the_whole_document(tmp_path: Path) -> None:
-    scenario_dir = tmp_path / "base"
-    scenario_dir.mkdir()
+    scenario_dir = tmp_path / "scenarios/base"
+    scenario_dir.mkdir(parents=True)
     (scenario_dir / "README.md").write_text("# Base\n\nThe primary plan.\n")
-    assert readme_description(scenario_dir) == "# Base\n\nThe primary plan."
+    assert readme_description(scenario_dir, data_dir=tmp_path) == "# Base\n\nThe primary plan."
 
 
 def test_readme_description_none_for_an_empty_readme(tmp_path: Path) -> None:
-    scenario_dir = tmp_path / "empty"
-    scenario_dir.mkdir()
+    scenario_dir = tmp_path / "scenarios/empty"
+    scenario_dir.mkdir(parents=True)
     (scenario_dir / "README.md").write_text("\n")
-    assert readme_description(scenario_dir) is None
+    assert readme_description(scenario_dir, data_dir=tmp_path) is None
