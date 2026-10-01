@@ -1435,3 +1435,41 @@ def test_scheduled_percent_of_balance_series_with_no_supplier_rejected(
         "nothing supplies it" in issue
         for issue in ei.value.issues
     )
+
+
+def test_chain_step_series_with_no_supplier_rejected(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A chain step's series inflates its maximum cap over time
+    (engine._chain_step_allocation) -- always aux_kind='inflation', and
+    only actually read when maximum is also set. Nothing supplying it would
+    otherwise only fail once run, with an opaque 'no aux row' EngineError."""
+    chain_path = retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv"
+    df = pd.read_csv(chain_path, dtype=str, keep_default_na=False)
+    df.loc[0, "maximum"] = "1000.00"
+    df.loc[0, "series"] = "no_such_inflation_series"
+    df.to_csv(chain_path, index=False)
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "references series 'no_such_inflation_series' under aux_kind "
+        "'inflation', but nothing supplies it" in issue
+        for issue in ei.value.issues
+    )
+
+
+def test_chain_step_series_with_a_calendar_supplier_loads_cleanly(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    chain_path = retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv"
+    df = pd.read_csv(chain_path, dtype=str, keep_default_na=False)
+    df.loc[0, "maximum"] = "1000.00"
+    df.loc[0, "series"] = "cpi"
+    df.to_csv(chain_path, index=False)
+    append_calendar_row(
+        date="2026-01-31", kind="set_rate", name="cpi_for_chain",
+        series="cpi", amount="30000", params_json='{"aux_kind": "inflation"}',
+    )
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert result.intent_path.exists()

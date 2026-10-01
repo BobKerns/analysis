@@ -1303,6 +1303,18 @@ def test_sim_run_ensemble_reports_member_failures_without_stopping(
     assert (runs_batch / "member_0000.sqlite3").exists()
     assert not (runs_batch / "member_0001.sqlite3").exists()
 
+    # member 1 never got a run file at all -- only the batch manifest
+    # records that it was expected and why it failed.
+    from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
+    manifest = read_batch_manifest(runs_batch)
+    assert manifest["member_count"] == 2
+    assert manifest["failures"] == [
+        {"index": 1, "intent_path": str(intent_batch / "member_0001.sqlite3"), "error": "boom"},
+    ]
+    assert member_run_statuses(runs_batch) == {
+        "member_0000": "succeeded", "member_0001": "failed_to_resolve",
+    }
+
 
 def test_sim_ensemble_summary_reports_mean_median_range(
     test_data_dir: Path, append_calendar_row: Callable[..., None],

@@ -18,6 +18,16 @@ def test_parse_readme_summary_title_and_one_paragraph() -> None:
     )
     assert summary.title == "Inflation sensitivity"
     assert summary.paragraph == "This recipe varies CPI to see how sensitive the plan is."
+
+
+def test_parse_readme_summary_no_blank_line_after_heading() -> None:
+    """Markdown doesn't require a blank line after an ATX heading -- the
+    title line must still be split off, not joined with the paragraph that
+    immediately follows it into one "title" with no paragraph at all."""
+    summary = parse_readme_summary("# Title\nFirst paragraph.\n")
+    assert summary.title == "Title"
+    assert summary.paragraph == "First paragraph."
+    assert summary.has_more is False
     assert summary.has_more is False
 
 

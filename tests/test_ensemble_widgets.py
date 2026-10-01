@@ -219,3 +219,33 @@ def test_ensemble_widget_log_linear_mode_sets_the_yscale(
 
     log_linear_mode.value = LogLinearMode.LOG
     assert axes[-1].get_yscale() == "log"
+
+
+def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_worth(
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Log scale can't represent zero or negative net worth -- silently
+    switching to linear there would clip exactly the insolvency tail a fan
+    chart exists to show, so LOG mode must fall back, not just render oddly."""
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.pickers import LogLinearModePicker
+    from analysis.sim.types import LogLinearMode
+
+    axes: list = []
+    real_subplots = ensemble_widgets.plt.subplots
+
+    def _spy_subplots(*args, **kwargs):
+        fig, ax = real_subplots(*args, **kwargs)
+        axes.append(ax)
+        return fig, ax
+
+    monkeypatch.setattr(ensemble_widgets.plt, "subplots", _spy_subplots)
+    negative_summary = pd.DataFrame({
+        "mean": [100.0, -10.0], "median": [95.0, -15.0],
+        "std": [5.0, 5.0], "min": [50.0, -80.0], "max": [150.0, 50.0],
+    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
+    monkeypatch.setattr(ensemble_widgets, "ensemble_summary", lambda *a, **k: negative_summary)
+
+    log_linear_mode = LogLinearModePicker(log_linear_mode=LogLinearMode.LOG)
+    ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
+    assert axes[-1].get_yscale() == "linear"

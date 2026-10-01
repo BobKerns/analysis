@@ -16,8 +16,10 @@ from analysis.sim.ensemble import (
     load_ensemble,
     member_run_statuses,
     members_net_worth_by_month,
+    read_batch_manifest,
     resolve_member,
     summary,
+    write_batch_manifest,
 )
 from analysis.sim.loader import LoadResult
 
@@ -469,3 +471,52 @@ def test_latest_ensemble_batch_picks_the_most_recent_timestamp(tmp_path: Path) -
     (newer / "member_0000.sqlite3").touch()
 
     assert latest_ensemble_batch(recipe_dir) == newer
+
+
+def test_latest_ensemble_batch_recognizes_a_manifest_only_batch(tmp_path: Path) -> None:
+    """A batch where every member failed to resolve has no member_*.sqlite3
+    files at all -- the manifest alone must still make it discoverable."""
+    recipe_dir = tmp_path / "runs" / "retire_alice"
+    batch = recipe_dir / "2026-06-01T000000Z"
+    batch.mkdir(parents=True)
+    write_batch_manifest(batch, member_count=3, failures=[
+        (0, tmp_path / "member_0000.sqlite3", "boom"),
+        (1, tmp_path / "member_0001.sqlite3", "boom"),
+        (2, tmp_path / "member_0002.sqlite3", "boom"),
+    ])
+    assert latest_ensemble_batch(recipe_dir) == batch
+
+
+def test_member_run_statuses_includes_resolution_failures_from_the_manifest(
+    tmp_path: Path,
+) -> None:
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "member_0000.sqlite3").touch()  # a real run file, no manifest entry
+    con = sqlite3.connect(batch / "member_0000.sqlite3")
+    con.execute("CREATE TABLE simulation_run(status TEXT)")
+    con.execute("INSERT INTO simulation_run VALUES ('succeeded')")
+    con.commit()
+    con.close()
+
+    write_batch_manifest(batch, member_count=2, failures=[
+        (1, tmp_path / "intent" / "member_0001.sqlite3", "resolve_member blew up"),
+    ])
+
+    statuses = member_run_statuses(batch)
+    assert statuses == {"member_0000": "succeeded", "member_0001": "failed_to_resolve"}
+
+
+def test_read_batch_manifest_round_trips(tmp_path: Path) -> None:
+    write_batch_manifest(tmp_path, member_count=5, failures=[
+        (2, tmp_path / "member_0002.sqlite3", "went negative"),
+    ])
+    manifest = read_batch_manifest(tmp_path)
+    assert manifest["member_count"] == 5
+    assert manifest["failures"] == [
+        {"index": 2, "intent_path": str(tmp_path / "member_0002.sqlite3"), "error": "went negative"},
+    ]
+
+
+def test_read_batch_manifest_none_when_absent(tmp_path: Path) -> None:
+    assert read_batch_manifest(tmp_path) is None

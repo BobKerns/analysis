@@ -21,6 +21,7 @@ import sqlite3
 from calendar import monthrange
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -32,12 +33,13 @@ from analysis.sim.distributions import (
     member_rng,
     resolve_truncated_normal_bounds,
 )
-from analysis.sim.loader import latest_ensemble_batch
+from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
 from analysis.sim.types import DollarMode
 
 __all__ = [
     "EnsembleError", "resolve_member", "load_ensemble", "member_run_statuses",
     "latest_ensemble_batch", "members_net_worth_by_month", "summary",
+    "write_batch_manifest", "read_batch_manifest",
 ]
 
 
@@ -281,9 +283,44 @@ def resolve_member(
     return member_path
 
 
+def write_batch_manifest(
+    batch_dir: Path, *, member_count: int,
+    failures: list[tuple[int, Path, str]],
+) -> None:
+    """Persist what ``_run_ensemble`` knows that a run file alone can't show:
+    how many members were expected, and which ones failed before
+    ``resolve_member``/``run_scenario`` ever produced a run file for them to
+    record their own ``status='failed'`` in. Without this, a batch where
+    every member's resolution fails has no ``member_*.sqlite3`` files at
+    all and is invisible to every other function in this module.
+    """
+    path = Path(batch_dir) / BATCH_MANIFEST_FILENAME
+    path.write_text(json.dumps({
+        "member_count": member_count,
+        "failures": [
+            {"index": i, "intent_path": str(intent_path), "error": error}
+            for i, intent_path, error in failures
+        ],
+    }, indent=2))
+
+
+def read_batch_manifest(batch_dir: Path) -> dict[str, Any] | None:
+    """``write_batch_manifest``'s record for this batch, or ``None`` for a
+    batch generated before it existed (or synthesized directly by a test,
+    bypassing ``_run_ensemble``)."""
+    path = Path(batch_dir) / BATCH_MANIFEST_FILENAME
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text())
+
+
 def member_run_statuses(batch_dir: Path) -> dict[str, str]:
     """``simulation_run.status`` of every ``member_*.sqlite3`` run file
-    directly under ``batch_dir``, keyed by filename stem.
+    directly under ``batch_dir``, keyed by filename stem, merged with
+    ``batch_manifest.json``'s record of any member that failed before a run
+    file could even be created (``resolve_member`` itself raising) --
+    reported as ``"failed_to_resolve"``, so it isn't silently absent from a
+    count that's supposed to total ``member_count``.
 
     A member whose run raised mid-simulation still has a run file --
     ``run_scenario`` writes ``status='failed'`` before re-raising, rather
@@ -299,6 +336,11 @@ def member_run_statuses(batch_dir: Path) -> dict[str, str]:
         finally:
             con.close()
         statuses[p.stem] = row[0] if row else "unknown"
+    manifest = read_batch_manifest(batch_dir)
+    if manifest:
+        for failure in manifest.get("failures", []):
+            stem = f"member_{failure['index']:04d}"
+            statuses.setdefault(stem, "failed_to_resolve")
     return statuses
 
 

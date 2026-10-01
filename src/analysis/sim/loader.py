@@ -39,6 +39,7 @@ from analysis.sim.schema import  SCHEMA_VERSION, apply_run_schema
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
+    "BATCH_MANIFEST_FILENAME",
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
@@ -174,21 +175,35 @@ def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path |
     return runs[-1] if runs else None
 
 
+BATCH_MANIFEST_FILENAME = "batch_manifest.json"
+"""``ensemble.write_batch_manifest``'s filename -- named here, not in
+``ensemble.py``, so ``latest_ensemble_batch`` can recognize a batch by it
+without ``loader.py`` importing from ``ensemble.py`` (which itself imports
+from here)."""
+
+
 def latest_ensemble_batch(recipe_dir: Path) -> Path | None:
     """The most recently generated batch subfolder under ``recipe_dir`` that
-    holds at least one member run file, or ``None`` if there isn't one.
+    holds at least one member run file or a batch manifest, or ``None`` if
+    there isn't one.
 
     A recipe's members live under ``<recipe_dir>/<timestamp>/member_NNNN.sqlite3``
     -- one subfolder per ``sim run`` invocation, timestamp-named so reruns
     never collide and every batch's history is kept (matching how an
-    ordinary, non-ensemble run file is never overwritten either).
+    ordinary, non-ensemble run file is never overwritten either). The
+    manifest check covers the batch where every member failed to resolve:
+    no member file was ever created for any of them, but the batch itself
+    (and its recorded failures) still needs to be discoverable, not silently
+    invisible.
     """
     recipe_dir = Path(recipe_dir)
     if not recipe_dir.is_dir():
         return None
     batches = sorted(
         p for p in recipe_dir.iterdir()
-        if p.is_dir() and any(p.glob("member_*.sqlite3"))
+        if p.is_dir() and (
+            any(p.glob("member_*.sqlite3")) or (p / BATCH_MANIFEST_FILENAME).is_file()
+        )
     )
     return batches[-1] if batches else None
 
@@ -673,7 +688,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_calendar(calendar_rows, leaves, issues)
-    _validate_series_references(scheduled_rows, calendar_rows, aux_rows, issues)
+    _validate_series_references(scheduled_rows, calendar_rows, aux_rows, chains, issues)
     _validate_chains(chains, model_rows, leaves, issues, money_resolver=money_resolver)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
     _validate_lifespan(lifespan_rows, persons, issues)
@@ -1848,10 +1863,12 @@ def _validate_series_references(
     scheduled_rows: list[dict[str, str]],
     calendar_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
     issues: list[str],
 ) -> None:
-    """Cross-check every `(aux_kind, series)` pair a scheduled.csv rule reads
-    against every pair something actually supplies, in both directions.
+    """Cross-check every `(aux_kind, series)` pair a scheduled.csv rule or a
+    chains/*.csv step reads against every pair something actually supplies,
+    in both directions.
 
     A `percent_of_balance`/`fixed_amount`/`ss_benefit` row (including the
     ones `_expand_account_growth` synthesizes from accounts.csv's own
@@ -1860,10 +1877,15 @@ def _validate_series_references(
     (`engine._amount_percent_of_balance`/`_apply_ss_benefit`/
     `_cumulative_inflation_factor`) -- worth catching at load time instead.
     Conversely, a calendar.csv `set_rate` row whose `(aux_kind, series)` no
-    scheduled row reads is a silent no-op: its drawn or literal value lands
-    in `aux_table` but nothing ever looks it up, so it never affects a run
-    (this is what varying the wrong `series`/`aux_kind` pair under ADR-006
-    looks like -- every member ends up bit-identical).
+    scheduled row or chain step reads is a silent no-op: its drawn or
+    literal value lands in `aux_table` but nothing ever looks it up, so it
+    never affects a run (this is what varying the wrong `series`/`aux_kind`
+    pair under ADR-006 looks like -- every member ends up bit-identical). A
+    chain step's own `series` (inflating its `maximum` cap over time --
+    `engine._chain_step_allocation`) always reads `aux_kind='inflation'`,
+    same as `fixed_amount`/`ss_benefit`, and only actually gets read when
+    `maximum` is also set (`_validate_chains` separately flags `series`
+    without `maximum`).
     """
     supplied: set[tuple[str, str]] = {
         (kind, series) for kind, series, *_ in aux_rows if series is not None
@@ -1880,6 +1902,20 @@ def _validate_series_references(
         supplied.add((params.get("aux_kind", "rate"), series))
 
     demanded: set[tuple[str, str]] = set()
+    for name, (kind, rows) in chains.items():
+        for i, row in enumerate(rows, start=2):
+            series = row.get("series", "")
+            if not series or not row.get("maximum"):
+                continue  # _chain_step_allocation only reads series when maximum is also set
+            demanded.add(("inflation", series))
+            if ("inflation", series) not in supplied:
+                issues.append(
+                    f"chains/{kind}__{name}.csv row {i}: references series "
+                    f"'{series}' under aux_kind 'inflation', but nothing "
+                    "supplies it -- this would fail at run time with 'no "
+                    "aux row' once reached"
+                )
+
     for i, row in enumerate(scheduled_rows, start=2):
         kind = row.get("amount_rule_kind", "")
         series = row.get("series", "")

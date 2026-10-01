@@ -42,6 +42,7 @@ from analysis.sim.ensemble import (
     member_run_statuses,
     members_net_worth_by_month,
     resolve_member,
+    write_batch_manifest,
 )
 from analysis.sim.ensemble import summary as ensemble_summary_frame
 from analysis.sim.loader import (
@@ -418,7 +419,7 @@ def _run_ensemble(
             continue
         break
 
-    failures: list[tuple[int, Path]] = []
+    failures: list[tuple[int, Path, str]] = []
     for i in range(member_count):
         member_intent_path = member_intent_dir / f"member_{i:04d}.sqlite3"
         member_run_path = member_runs_dir / f"member_{i:04d}.sqlite3"
@@ -434,16 +435,23 @@ def _run_ensemble(
                 allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
             )
         except Exception as exc:
-            failures.append((i, member_intent_path))
+            failures.append((i, member_intent_path, str(exc)))
             click.echo(f"  member {i}: FAILED ({exc}) -- intent: {member_intent_path}", err=True)
         else:
             click.echo(f"  member {i}: {member_run_path}")
+
+    # A member whose resolve_member call itself raised never got a run file
+    # at all -- member_run_statuses can only see files that exist, so this
+    # batch-level record is the only place a failure like that (or every
+    # member failing, leaving no member_*.sqlite3 at all) is still visible
+    # to a later `sim ensemble summary`/notebook widget.
+    write_batch_manifest(member_runs_dir, member_count=member_count, failures=failures)
 
     succeeded = member_count - len(failures)
     click.echo(f"ensemble {scenario_name} ({batch}): {succeeded}/{member_count} member(s) succeeded")
     if failures:
         click.echo(f"  {len(failures)} failure(s):")
-        for i, path in failures:
+        for i, path, _error in failures:
             click.echo(f"    member {i}: {path}")
 
 

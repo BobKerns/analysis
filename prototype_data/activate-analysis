@@ -122,10 +122,16 @@ analysis_prompt_info() {
 }
 
 if [ -n "${ZSH_VERSION-}" ]; then
-	if [[ -o prompt_subst ]]; then
-		_ANALYSIS_PROMPT_SUBST_WAS_SET=1
-	else
-		_ANALYSIS_PROMPT_SUBST_WAS_SET=0
+	# Only the first sourcing (before any matching deactivate-analysis)
+	# records the pre-activation state; re-sourcing while already active
+	# must not overwrite it with "already set" from our own setopt below,
+	# or deactivation would leak prompt_subst into the user's shell.
+	if [ -z "${_ANALYSIS_PROMPT_SUBST_WAS_SET+x}" ]; then
+		if [[ -o prompt_subst ]]; then
+			_ANALYSIS_PROMPT_SUBST_WAS_SET=1
+		else
+			_ANALYSIS_PROMPT_SUBST_WAS_SET=0
+		fi
 	fi
 	setopt prompt_subst
 fi

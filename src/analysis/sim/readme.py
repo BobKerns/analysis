@@ -49,19 +49,24 @@ def parse_readme_summary(text: str) -> ReadmeSummary:
     """The title (first ATX heading, if any), the first paragraph after it,
     and whether anything follows that paragraph.
 
-    Deliberately simple: a block is whatever blank lines separate, with no
-    attempt to distinguish a sub-heading or a list from an ordinary
-    paragraph -- good enough for "is there more than this one paragraph,"
-    which is all a summary needs to know.
+    The title line is pulled off before blockifying the rest, not treated
+    as the first block: an ATX heading is a single line by definition, and
+    markdown doesn't require a blank line after one, so `# Title` directly
+    followed by `First paragraph.` on the very next line must not get
+    joined into one block (reading the whole thing as a title with no
+    paragraph at all). The remaining body is otherwise deliberately simple:
+    a block is whatever blank lines separate, with no attempt to
+    distinguish a sub-heading or a list from an ordinary paragraph -- good
+    enough for "is there more than this one paragraph," which is all a
+    summary needs to know.
     """
-    blocks = _blocks(text)
-    if not blocks:
-        return ReadmeSummary("", "", False)
+    lines = text.splitlines()
     title = ""
-    rest = blocks
-    if blocks[0].lstrip().startswith("#"):
-        title = blocks[0].lstrip("#").strip()
-        rest = blocks[1:]
+    body = text
+    if lines and lines[0].lstrip().startswith("#"):
+        title = lines[0].lstrip("#").strip()
+        body = "\n".join(lines[1:])
+    rest = _blocks(body)
     if not rest:
         return ReadmeSummary(title, "", False)
     return ReadmeSummary(title, rest[0], len(rest) > 1)
@@ -150,7 +155,7 @@ def readme_description(scenario_dir: Path, data_dir: Path) -> str | None:
     return "\n\n".join(parts)
 
 
-def description_view(sc: Connection, *,
+def description_view(conn: Connection, *,
                      heading_level: int = 3,
                      data_dir: Path | str | None = None) -> Markdown:
     """The scenario's description -- a README.md's title + first paragraph,
@@ -163,7 +168,7 @@ def description_view(sc: Connection, *,
     baked in under one data_dir still links correctly when later viewed
     against another.
     """
-    description = sc.items("scenario").iloc[0].get("description") or ""
+    description = conn.items("scenario").iloc[0].get("description") or ""
     if data_dir is not None:
         description = _regenerate_more_link(description, Path(data_dir))
     return Markdown(relevel_heading(description, heading_level))

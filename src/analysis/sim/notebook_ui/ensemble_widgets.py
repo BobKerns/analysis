@@ -20,7 +20,12 @@ from analysis.sim.ensemble import (
     members_net_worth_by_month,
 )
 from analysis.sim.ensemble import summary as ensemble_summary
-from analysis.sim.notebook_ui.pickers import DollarModePicker, LogLinearModePicker, find_runs_dir
+from analysis.sim.notebook_ui.pickers import (
+    DollarModePicker,
+    LogLinearModePicker,
+    find_data_dir,
+    find_runs_dir,
+)
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.readme import description_view
 from analysis.sim.types import DollarMode, LogLinearMode
@@ -110,6 +115,7 @@ def ensemble_widget(*,
                     ) -> widgets.VBox:
     """Recipe dropdown + fan chart + year-end summary table for an ensemble
     already generated and run via ``sim run <recipe> --ensemble-size N``."""
+    resolved_data_dir = find_data_dir(data_dir)
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
     recipes = list_ensemble_recipes(runs_dir)
     dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
@@ -139,13 +145,24 @@ def ensemble_widget(*,
             with out:
                 display(Markdown(f"{heading} (batch {batch_dir.name})"))
                 if show_description:
-                    sc = next(iter(connections.values()))
-                    display(description_view(sc))
+                    conn = next(iter(connections.values()))
+                    display(description_view(conn, data_dir=resolved_data_dir))
                 _fig, ax = plt.subplots(figsize=(10, 5))
                 # Scale before drawing: matplotlib's set_yscale resets the
                 # major formatter to its own log-scale default, which would
                 # otherwise clobber ensemble_fan_chart's dollar formatting.
-                if log_linear_picker.value == LogLinearMode.LOG:
+                wants_log = log_linear_picker.value == LogLinearMode.LOG
+                if wants_log and (monthly_summary["min"] <= 0).any():
+                    # Log scale can't represent zero or negative net worth --
+                    # silently switching to linear would clip exactly the
+                    # insolvency tail this chart exists to show, rather than
+                    # just rendering it oddly.
+                    display(Markdown(
+                        "_Log scale can't show net worth that reaches zero "
+                        "or below; showing linear instead._"
+                    ))
+                    wants_log = False
+                if wants_log:
                     ax.set_yscale("log")
                 ensemble_fan_chart(monthly_summary, ax=ax)
                 ax.set_title(f"Net worth fan chart ({mode_label}) ({dropdown.value})")
