@@ -56,3 +56,6 @@ test-output.*
 .env
 .env.*
 !.env.default
+
+.analysis
+.analysis_user
