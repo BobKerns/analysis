@@ -33,7 +33,7 @@ from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenar
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.registries import AssetClass
 from analysis.sim.types import (
-    AccountKind, AccountKindAny, DollarMode, ValuePlotMode,
+    AccountKind, AccountKindAny, DollarMode, LogLinearMode, ValuePlotMode,
     AccountName, ScenarioName,
 )
 
@@ -558,6 +558,33 @@ class YAxisPlotModePicker(widgets.ToggleButtons):
 
     def _on_value_change(self, change):
         self.label = "Zero-anchored" if self.value else "Auto-scale"
+
+
+class LogLinearModePicker(widgets.ToggleButtons):
+    """A toggle button widget for selecting log vs. linear scale."""
+    value: LogLinearMode = traitlets.UseEnum(LogLinearMode)
+    label: str = traitlets.Unicode("Linear")
+    def __init__(self, log_linear_mode: LogLinearMode = LogLinearMode.LINEAR):
+        """
+        Initialize the log-linear mode picker.
+
+        Parameters
+        ----------
+        log_linear_mode : LogLinearMode, default LogLinearMode.LINEAR
+            The initial log-linear mode. Can be either log or linear.
+        """
+        super().__init__(
+            options=[("Log", LogLinearMode.LOG),
+                     ("Linear", LogLinearMode.LINEAR)],
+            description="Scale:",
+            layout=widgets.Layout(
+                border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+            ),
+        )
+        self.value = log_linear_mode
+
+    def _on_value_change(self, change):
+        self.label = "Log" if self.value == LogLinearMode.LOG else "Linear"
 
 
 class AccountKindPicker(widgets.Dropdown):

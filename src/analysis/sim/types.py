@@ -34,6 +34,10 @@ class YAxisPlotMode(StrEnum):
     ZERO_ANCHORED = "zero_anchored"
     AUTO_SCALE = "auto_scale"
 
+class LogLinearMode(StrEnum):
+    """Log-linear mode type."""
+    LOG = "log"
+    LINEAR = "linear"
 
 class InvestmentAssetSubkind(StrEnum):
     """

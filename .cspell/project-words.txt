@@ -26,6 +26,7 @@ counterclock
 dateutil
 delenv
 dflt
+edgecolor
 executemany
 executescript
 execv
@@ -43,9 +44,9 @@ kernelspec
 lastrowid
 liab
 linestyle
+lognormal
 lotb
 ltcg
-lognormal
 metas
 mktree
 modelcontextprotocol
@@ -91,6 +92,7 @@ sqls
 startangle
 stcg
 stdlib
+steelblue
 subkey
 subkind
 subkinds
@@ -117,4 +119,5 @@ xytext
 ydata
 ylabel
 ylim
+yscale
 zpln

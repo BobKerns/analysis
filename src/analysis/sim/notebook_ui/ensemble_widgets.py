@@ -20,7 +20,9 @@ from analysis.sim.ensemble import (
     members_net_worth_by_month,
 )
 from analysis.sim.ensemble import summary as ensemble_summary
+from analysis.sim.notebook_ui.pickers import DollarModePicker, LogLinearModePicker
 from analysis.sim.plotting import FRAME_ALPHA
+from analysis.sim.types import DollarMode, LogLinearMode
 
 __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
@@ -61,9 +63,14 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
     month -- the same three columns ``sim ensemble summary`` prints."""
     if ax is None:
         _fig, ax = plt.subplots(figsize=(10, 5))
+    # alpha=0.2 steelblue over white is ~(227,239,245) -- visible in Jupyter's
+    # rendering path but apparently not past whatever VS Code's inline PNG
+    # renderer does to it; a stronger fill plus a drawn edge doesn't depend
+    # on the two matching exactly.
     ax.fill_between(
         monthly_summary.index, monthly_summary["min"], monthly_summary["max"],
-        color="steelblue", alpha=0.2, label="range",
+        color="steelblue", alpha=0.5, edgecolor="steelblue", linewidth=0.5,
+        label="range",
     )
     ax.plot(monthly_summary.index, monthly_summary["mean"], color="steelblue",
             linewidth=2, label="mean")
@@ -80,12 +87,17 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
     return ax
 
 
-def ensemble_widget(runs_dir: Path) -> widgets.VBox:
+def ensemble_widget(runs_dir: Path,
+                    log_linear_mode: LogLinearModePicker | None = None,
+                    dollar_mode: DollarModePicker | None = None,
+                    ) -> widgets.VBox:
     """Recipe dropdown + fan chart + year-end summary table for an ensemble
     already generated and run via ``sim run <recipe> --ensemble-size N``."""
     runs_dir = Path(runs_dir)
     recipes = list_ensemble_recipes(runs_dir)
     dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
+    log_linear_picker = log_linear_mode or LogLinearModePicker()
+    dollar_picker = dollar_mode or DollarModePicker()
     out = widgets.Output()
 
     def _redraw(*_: object) -> None:
@@ -97,13 +109,26 @@ def ensemble_widget(runs_dir: Path) -> widgets.VBox:
         failed_count = sum(1 for status in statuses.values() if status != "succeeded")
         connections = load_ensemble(batch_dir)
         try:
-            monthly_summary = ensemble_summary(members_net_worth_by_month(connections))
+            mode = dollar_picker.value
+            mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+            # Each member's own net worth is converted before aggregating, not
+            # the aggregate after the fact: a member's CPI-constant series
+            # reflects its own inflation path, which can differ member to
+            # member when the varying row is itself inflation/CPI-linked.
+            monthly_summary = ensemble_summary(
+                members_net_worth_by_month(connections, mode=mode)
+            )
             heading, yearly = ensemble_summary_view(monthly_summary, len(connections), failed_count)
             with out:
                 display(Markdown(f"{heading} (batch {batch_dir.name})"))
                 _fig, ax = plt.subplots(figsize=(10, 5))
+                # Scale before drawing: matplotlib's set_yscale resets the
+                # major formatter to its own log-scale default, which would
+                # otherwise clobber ensemble_fan_chart's dollar formatting.
+                if log_linear_picker.value == LogLinearMode.LOG:
+                    ax.set_yscale("log")
                 ensemble_fan_chart(monthly_summary, ax=ax)
-                ax.set_title(f"Net worth fan chart ({dropdown.value})")
+                ax.set_title(f"Net worth fan chart ({mode_label}) ({dropdown.value})")
                 plt.xticks(rotation=90)
                 plt.show()
                 display(yearly.style.format({c: "${:,.0f}" for c in yearly.columns}))
@@ -112,5 +137,8 @@ def ensemble_widget(runs_dir: Path) -> widgets.VBox:
                 con.close()
 
     dropdown.observe(_redraw, names="value")
+    log_linear_picker.observe(_redraw, names="value")
+    dollar_picker.observe(_redraw, names="value")
     _redraw()
-    return widgets.VBox([dropdown, out])
+    pickers = widgets.HBox([log_linear_picker, dollar_picker]) 
+    return widgets.VBox([dropdown, pickers, out])

@@ -108,7 +108,7 @@ def test_ensemble_widget_returns_a_box_without_displaying_it(
 
 def test_ensemble_widget_dropdown_lists_the_recipe(small_ensemble_runs_dir: Path) -> None:
     box = ensemble_widget(small_ensemble_runs_dir)
-    dropdown, _out = box.children
+    dropdown, _pickers, _out = box.children
     assert dropdown.options == ("retire_alice",)
     assert dropdown.value == "retire_alice"
 
@@ -123,3 +123,52 @@ def test_ensemble_widget_matches_cli_summary_numbers(small_ensemble_runs_dir: Pa
     finally:
         for con in connections.values():
             con.close()
+
+
+def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.pickers import DollarModePicker
+    from analysis.sim.types import DollarMode
+
+    modes_seen: list[DollarMode] = []
+    real = ensemble_widgets.members_net_worth_by_month
+
+    def _spy(connections, mode=DollarMode.NOMINAL):
+        modes_seen.append(mode)
+        return real(connections, mode=mode)
+
+    monkeypatch.setattr(ensemble_widgets, "members_net_worth_by_month", _spy)
+    dollar_mode = DollarModePicker()
+    box = ensemble_widget(small_ensemble_runs_dir, dollar_mode=dollar_mode)
+    _dropdown, pickers, _out = box.children
+    assert dollar_mode in pickers.children
+    assert modes_seen[-1] == DollarMode.NOMINAL
+
+    dollar_mode.value = DollarMode.CPI_CONSTANT
+    assert modes_seen[-1] == DollarMode.CPI_CONSTANT
+
+
+def test_ensemble_widget_log_linear_mode_sets_the_yscale(
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.pickers import LogLinearModePicker
+    from analysis.sim.types import LogLinearMode
+
+    axes: list = []
+    real_subplots = ensemble_widgets.plt.subplots
+
+    def _spy_subplots(*args, **kwargs):
+        fig, ax = real_subplots(*args, **kwargs)
+        axes.append(ax)
+        return fig, ax
+
+    monkeypatch.setattr(ensemble_widgets.plt, "subplots", _spy_subplots)
+    log_linear_mode = LogLinearModePicker()
+    ensemble_widget(small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
+    assert axes[-1].get_yscale() == "linear"
+
+    log_linear_mode.value = LogLinearMode.LOG
+    assert axes[-1].get_yscale() == "log"
