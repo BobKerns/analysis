@@ -60,6 +60,7 @@ from collections.abc import Callable, Generator
 from pathlib import Path
 import shutil
 import sqlite3
+import warnings
 
 import pandas as pd
 import pytest
@@ -573,3 +574,20 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
     intent = load_test_copy().intent_path
     return run_scenario(intent, runs_dir / "two_lot.sqlite3", run_by="TEST",
                         allow_dirty_data=True, allow_dirty_code=True)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def close_plots():
+    import matplotlib.pyplot as plt
+    yield
+    plt.close("all")
+
+
+@pytest.fixture(scope="function", autouse=True)
+def no_FigureCanvasAgg_warning():
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore",
+                                category=UserWarning,
+                                message=".*FigureCanvasAgg.*"
+                                )
+        yield
