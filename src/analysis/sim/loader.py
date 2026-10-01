@@ -41,7 +41,7 @@ __all__ = [
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
-    "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
+    "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "resolve_scenario_name", "find_state_dir",
     "growth_rule_name",
     "write_current_scenario",
@@ -173,6 +173,39 @@ def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path |
     return runs[-1] if runs else None
 
 
+def latest_ensemble_batch(recipe_dir: Path) -> Path | None:
+    """The most recently generated batch subfolder under ``recipe_dir`` that
+    holds at least one member run file, or ``None`` if there isn't one.
+
+    A recipe's members live under ``<recipe_dir>/<timestamp>/member_NNNN.sqlite3``
+    -- one subfolder per ``sim run`` invocation, timestamp-named so reruns
+    never collide and every batch's history is kept (matching how an
+    ordinary, non-ensemble run file is never overwritten either).
+    """
+    recipe_dir = Path(recipe_dir)
+    if not recipe_dir.is_dir():
+        return None
+    batches = sorted(
+        p for p in recipe_dir.iterdir()
+        if p.is_dir() and any(p.glob("member_*.sqlite3"))
+    )
+    return batches[-1] if batches else None
+
+
+def _latest_ensemble_member_zero(runs_dir: Path, name: str) -> Path | None:
+    """``member_0000.sqlite3`` of ``name``'s most recent ensemble batch, for
+    a caller that only knows how to open one run file per scenario (ADR-006
+    §8): member 0 is always the recipe's deterministic (non-drawn) member,
+    so it stands in for "the" run the same way any other scenario's one run
+    file would.
+    """
+    batch = latest_ensemble_batch(Path(runs_dir) / name)
+    if batch is None:
+        return None
+    member = batch / "member_0000.sqlite3"
+    return member if member.exists() else None
+
+
 @dataclass(frozen=True)
 class ScenarioRef:
     """A resolved scenario: what it is called, where it lives, what state it is in."""
@@ -278,6 +311,7 @@ def resolve_scenario_name(
     )
     run_path = (Path(run_path).resolve() if run_path is not None
                 else latest_run_path(resolved_runs_dir, name)
+                     or _latest_ensemble_member_zero(resolved_runs_dir, name)
     )
     return ScenarioRef(
         name=name,

@@ -46,6 +46,14 @@ class Uniform:
         """
         return rng.randint(round(self.low), round(self.high))
 
+    def central(self) -> float:
+        """Midpoint of ``[low, high]`` -- always in range by construction
+        (ADR-006 §8: the recipe's deterministic member 0)."""
+        return (self.low + self.high) / 2
+
+    def central_int(self) -> int:
+        return round(self.central())
+
 
 @dataclass(frozen=True)
 class TruncatedNormal:
@@ -71,6 +79,20 @@ class TruncatedNormal:
             f"clip_low={self.clip_low}, clip_high={self.clip_high}): no draw "
             f"landed inside the clip bounds in {self.max_attempts} attempts"
         )
+
+    def central(self) -> float:
+        """``mean``, clamped into ``[clip_low, clip_high]`` (ADR-006 §8: the
+        recipe's deterministic member 0). The clamp guards the one case
+        where this could land outside the bounds: ``resolve_truncated_normal_bounds``
+        only checks mean/low/high for mutual consistency when inferring one
+        from the others, not when an author gives all three explicitly.
+        """
+        value = self.mean
+        if self.clip_low is not None:
+            value = max(value, self.clip_low)
+        if self.clip_high is not None:
+            value = min(value, self.clip_high)
+        return value
 
 
 def resolve_truncated_normal_bounds(

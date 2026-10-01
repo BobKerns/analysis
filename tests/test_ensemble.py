@@ -89,6 +89,88 @@ def test_resolve_member_date_target_draws_within_bounds(
         con.close()
 
 
+def test_resolve_member_zero_uses_the_uniform_midpoint_not_a_draw(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """ADR-006 §8: member 0 is always deterministic -- a plausible, in-bounds
+    "base case" -- so widening the range doesn't change its resolved value,
+    only the spread of members 1+."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    recipe = load_test_copy().intent_path
+    member = resolve_member(
+        recipe, tmp_path / "member_0000.sqlite3",
+        seed=1, member_index=0, member_count=3, recipe_tree_id="deadbeef",
+    )
+    con = sqlite3.connect(member)
+    try:
+        amount = con.execute(
+            "SELECT amount FROM calendar_event WHERE name = 'checking_rate_vary'"
+        ).fetchone()[0]
+        assert amount == 45_000
+    finally:
+        con.close()
+
+
+def test_resolve_member_zero_uses_the_truncated_normal_mean(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_mean="45000", vary_sd="2000", vary_low="40000", vary_high="50000",
+    )
+    recipe = load_test_copy().intent_path
+    member = resolve_member(
+        recipe, tmp_path / "member_0000.sqlite3",
+        seed=1, member_index=0, member_count=3, recipe_tree_id="deadbeef",
+    )
+    con = sqlite3.connect(member)
+    try:
+        amount = con.execute(
+            "SELECT amount FROM calendar_event WHERE name = 'checking_rate_vary'"
+        ).fetchone()[0]
+        assert amount == 45_000
+    finally:
+        con.close()
+
+
+def test_resolve_member_zero_date_target_uses_the_midpoint(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    from datetime import date as _date
+    append_calendar_row(
+        date="2027-06-30", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="uniform",
+        vary_low="2029-01-01", vary_high="2029-12-31",
+    )
+    recipe = load_test_copy().intent_path
+    member = resolve_member(
+        recipe, tmp_path / "member_0000.sqlite3",
+        seed=1, member_index=0, member_count=3, recipe_tree_id="deadbeef",
+    )
+    expected = _date.fromordinal(round(
+        (_date(2029, 1, 1).toordinal() + _date(2029, 12, 31).toordinal()) / 2
+    )).isoformat()
+    con = sqlite3.connect(member)
+    try:
+        drawn_date = con.execute(
+            "SELECT date FROM calendar_event WHERE name = 'retire_bob_vary'"
+        ).fetchone()[0]
+        assert drawn_date == expected
+    finally:
+        con.close()
+
+
 def test_resolve_member_is_reproducible_for_same_seed_and_index(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,
@@ -102,9 +184,12 @@ def test_resolve_member_is_reproducible_for_same_seed_and_index(
     recipe = load_test_copy().intent_path
 
     def _drawn_amount(member_path: Path) -> int:
+        # member_index=1, not 0: member 0 is always the deterministic
+        # central value (ADR-006 §8), which would make this trivially
+        # "reproducible" without exercising member_rng at all.
         member = resolve_member(
             recipe, member_path,
-            seed=7, member_index=0, member_count=1, recipe_tree_id="deadbeef",
+            seed=7, member_index=1, member_count=2, recipe_tree_id="deadbeef",
         )
         con = sqlite3.connect(member)
         try:

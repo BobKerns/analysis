@@ -32,6 +32,7 @@ from analysis.sim.distributions import (
     member_rng,
     resolve_truncated_normal_bounds,
 )
+from analysis.sim.loader import latest_ensemble_batch
 from analysis.sim.types import DollarMode
 
 __all__ = [
@@ -190,7 +191,14 @@ def resolve_member(
 ) -> Path:
     """Copy ``recipe_intent_path`` to ``member_path`` and resolve every
     `vary_distribution` row into a literal value: every `vary_target='date'`
-    row first, then every `vary_target='amount'` row (ADR-006 SS3, SS5)."""
+    row first, then every `vary_target='amount'` row (ADR-006 SS3, SS5).
+
+    Member 0 is always deterministic -- each row's distribution central
+    value rather than a draw -- so every ensemble has one member that's a
+    plausible, in-bounds "base case" instead of just a bag of random draws,
+    and anything that only knows how to open a single run file can treat an
+    ensemble recipe's member 0 as that scenario's one run (ADR-006 §8).
+    """
     member_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(recipe_intent_path, member_path)
 
@@ -213,7 +221,11 @@ def resolve_member(
                     f"row {row['name']!r}: {row['vary_distribution']!r} has no "
                     "discrete date draw"
                 )
-            drawn = date.fromordinal(dist.draw_int(member_rng(seed, member_index, row["name"])))
+            drawn_ordinal = (
+                dist.central_int() if member_index == 0
+                else dist.draw_int(member_rng(seed, member_index, row["name"]))
+            )
+            drawn = date.fromordinal(drawn_ordinal)
             con.execute(
                 "UPDATE calendar_event SET date = ?, vary_distribution = NULL WHERE id = ?",
                 (drawn.isoformat(), row["id"]),
@@ -222,7 +234,10 @@ def resolve_member(
 
         for row in [r for r in rows if r["vary_target"] == "amount"]:
             dist = _build_distribution(row, "amount")
-            target = round(dist.draw(member_rng(seed, member_index, row["name"])))
+            target = round(
+                dist.central() if member_index == 0
+                else dist.draw(member_rng(seed, member_index, row["name"]))
+            )
             if row["kind"] == "one_off_transfer" and target <= 0:
                 # Belt-and-suspenders: the loader already requires a strictly
                 # positive uniform range / truncated_normal clip floor for a
@@ -305,25 +320,6 @@ def load_ensemble(batch_dir: Path) -> dict[str, RunConnection]:
             f"({len(statuses)} present, none succeeded: {statuses})"
         )
     return {stem: RunConnection(Path(batch_dir) / f"{stem}.sqlite3") for stem in succeeded}
-
-
-def latest_ensemble_batch(recipe_dir: Path) -> Path | None:
-    """The most recently generated batch subfolder under ``recipe_dir`` that
-    holds at least one member run file, or ``None`` if there isn't one.
-
-    A recipe's members live under ``<recipe_dir>/<timestamp>/member_NNNN.sqlite3``
-    -- one subfolder per ``sim run`` invocation, timestamp-named so reruns
-    never collide and every batch's history is kept (matching how an
-    ordinary, non-ensemble run file is never overwritten either).
-    """
-    recipe_dir = Path(recipe_dir)
-    if not recipe_dir.is_dir():
-        return None
-    batches = sorted(
-        p for p in recipe_dir.iterdir()
-        if p.is_dir() and any(p.glob("member_*.sqlite3"))
-    )
-    return batches[-1] if batches else None
 
 
 def members_net_worth_by_month(

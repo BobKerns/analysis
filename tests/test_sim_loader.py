@@ -192,6 +192,23 @@ def test_scenario_ref_locates_paths_and_git_head(tmp_path: Path) -> None:
     assert reloaded.run_path.name == "2026-01-01T000000Z_retire_alice_abc1234.sqlite3"
 
 
+def test_scenario_ref_falls_back_to_ensemble_member_zero(tmp_path: Path) -> None:
+    """ADR-006 §8: a caller that only knows how to open one run file per
+    scenario (everything resolve_scenario_name serves) still gets a run for
+    an ensemble recipe -- its deterministic member 0 -- when there's no flat
+    run file to find."""
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+    ref = resolve_scenario_name(repo, "retire_alice")
+    batch_dir = ref.runs_dir / "retire_alice" / "2026-01-01T000000Z"
+    batch_dir.mkdir(parents=True)
+    (batch_dir / "member_0000.sqlite3").touch()
+    (batch_dir / "member_0001.sqlite3").touch()
+
+    reloaded = resolve_scenario_name(repo, "retire_alice")
+    assert reloaded.run_path == batch_dir / "member_0000.sqlite3"
+
+
 def test_scenario_ref_intent_dir_override(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
