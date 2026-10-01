@@ -120,6 +120,31 @@ def _no_current_scenario_writes(
         return
     monkeypatch.setattr("analysis.sim.cli.write_current_scenario", lambda *args, **kwargs: None)
 
+
+@pytest.fixture(autouse=True)
+def _negative_balance_is_an_error(request: pytest.FixtureRequest) -> Generator[None]:
+    """Promote engine.py's "account went negative" RuntimeWarning to a hard
+    error for every test.
+
+    An account going negative after exhausting its refill chain almost
+    always means a test's fixture data is under-funded for whatever it's
+    exercising, not a deliberate outcome -- better to fail loudly at the
+    test that caused it than let it slip into the warnings summary at the
+    end of the run, one of a pile easy to stop reading closely. A test that
+    genuinely wants the old warn-and-continue behavior (verifying the
+    warning itself, or deliberately modeling a shortfall) opts back in with
+    ``@pytest.mark.allow_negative_balance``. This is a test-suite-only
+    policy -- ``engine.py`` itself is untouched, so a real ``sim run``
+    still only warns.
+    """
+    if request.node.get_closest_marker("allow_negative_balance"):
+        yield
+        return
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", category=RuntimeWarning, message=".*went negative.*")
+        yield
+
+
 @pytest.fixture(scope="session")
 def data_dir(tmp_path_factory: pytest.TempPathFactory, prototype_data: Path) -> Path:
     """
@@ -456,6 +481,32 @@ def retire_alice_csv(test_scenarios_dir: Path) -> Callable[[str], Path]:
     """Path of one of the private retire_alice copy's scenario files, for tests
     that edit inputs before loading."""
     return lambda name: test_scenarios_dir / "retire_alice" / name
+
+
+@pytest.fixture(scope="function")
+def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
+    """Add headroom to the private retire_alice copy's Asset_Savings opening
+    balance.
+
+    retire_alice is funded to run its own base scenario through 2040
+    without Asset_Checking going negative, but several tests add an extra
+    expense it wasn't sized for (a federal tax payment via tax_accumulator,
+    an early death that cuts household income in half while shared
+    expenses continue) -- this keeps Asset_Checking's refill chain from
+    running dry before it reaches the (amply funded) IRA behind it, rather
+    than each such test having to size its own top-up.
+    """
+    import pandas as pd
+
+    def _fund(extra: str = "100000.00") -> None:
+        values_path = test_scenarios_dir / "retire_alice" / "account_values.csv"
+        df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+        mask = df["account_name"] == "Asset_Savings"
+        current = float(df.loc[mask, "opening_balance"].iloc[0])
+        df.loc[mask, "opening_balance"] = f"{current + float(extra):.2f}"
+        df.to_csv(values_path, index=False)
+
+    return _fund
 
 
 @pytest.fixture(scope="function")

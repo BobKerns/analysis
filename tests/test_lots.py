@@ -602,9 +602,11 @@ def _bracket_rows(path: Path, status: str) -> list[tuple[int, int]]:
 def test_long_term_gains_are_taxed_at_the_preferential_rates(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    fund_asset_savings: Callable[..., None],
 ) -> None:
     from analysis.sim.engine import run_scenario
 
+    fund_asset_savings()
     _append_scheduled_row(
         retire_alice_csv("scheduled.csv"), name="tax_federal_prev_year",
         from_account="Asset_Checking", to_account="Expense_Taxes_Federal",

@@ -41,6 +41,8 @@
 		"search.exclude": {
 			"**/.venv": true,
 			"**/*_cache": true
-		}
+		},
+		"python.terminal.useEnvFile": true,
+		"python.envFile": "${workspaceFolder}/.env.default"
 	}
 }

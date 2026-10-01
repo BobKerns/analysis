@@ -45,6 +45,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "uses_current_scenario_write: exempt from the no-op write_current_scenario fixture (see tests/conftest.py)",
+    "allow_negative_balance: exempt from the negative-balance-is-an-error fixture (see tests/conftest.py)",
 ]
 
 [tool.ruff]

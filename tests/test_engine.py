@@ -384,6 +384,20 @@ def _append_scheduled(path: Path, **fields: str) -> None:
     df.to_csv(path, index=False)
 
 
+def _shorten_scenario_end(repo: Path, end: str) -> None:
+    """Pull scenario.csv's own end date in -- a test that only asserts on
+    events shortly after a lifespan.csv change doesn't need the scenario
+    simulated through its full declared range, and retire_alice's household
+    budget isn't sized to survive losing a person's income for a decade-plus
+    (unlike the unmodified scenario, which balances fine on its own)."""
+    import pandas as pd
+
+    path = repo / "scenarios" / "retire_alice" / "scenario.csv"
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df.loc[0, "end"] = end
+    df.to_csv(path, index=False)
+
+
 def test_post_transfer_caps_payment_to_liability_balance(ledger_con: sqlite3.Connection) -> None:
     from analysis.sim.engine import _post_transfer
 
@@ -967,12 +981,15 @@ def test_negative_rate_depreciates_asset_into_expense(test_data_dir: Path, tmp_p
         con.close()
 
 
-def test_tax_accumulator_computes_federal_and_writes_summary(test_data_dir: Path, tmp_path: Path) -> None:
+def test_tax_accumulator_computes_federal_and_writes_summary(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
     """tax_accumulator computes prior-year federal tax and writes summary rows.
 
     It emits a payment transfer only when computed due is positive.
     """
     repo = test_data_dir
+    fund_asset_savings()
     sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
     _append_scheduled(
         sched_csv,
@@ -1050,7 +1067,10 @@ def _summary(con: sqlite3.Connection, year: int, bucket: str) -> int:
     return row[0]
 
 
-def _run_federal_tax_accumulator(tmp_path: Path, repo: Path) -> sqlite3.Connection:
+def _run_federal_tax_accumulator(
+    tmp_path: Path, repo: Path, fund_asset_savings: Callable[..., None],
+) -> sqlite3.Connection:
+    fund_asset_savings()
     sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
     _append_scheduled(
         sched_csv,
@@ -1078,13 +1098,15 @@ def _run_federal_tax_accumulator(tmp_path: Path, repo: Path) -> sqlite3.Connecti
     return con
 
 
-def test_itemized_deduction_is_used_when_greater_than_standard(test_data_dir: Path, tmp_path: Path) -> None:
+def test_itemized_deduction_is_used_when_greater_than_standard(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
     repo = test_data_dir
     # 2026 MFJ standard deduction is $31,500 (prototype_data/aux/standard_deduction.csv).
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
     )
-    con = _run_federal_tax_accumulator(tmp_path, repo)
+    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 40_000_00
         assert _summary(con, 2026, "federal_standard_deduction") == 31_500_00
@@ -1093,12 +1115,14 @@ def test_itemized_deduction_is_used_when_greater_than_standard(test_data_dir: Pa
         con.close()
 
 
-def test_standard_deduction_is_used_when_greater_than_itemized(test_data_dir: Path, tmp_path: Path) -> None:
+def test_standard_deduction_is_used_when_greater_than_itemized(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
     repo = test_data_dir
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,10000.00\n", encoding="utf-8",
     )
-    con = _run_federal_tax_accumulator(tmp_path, repo)
+    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 10_000_00
         assert _summary(con, 2026, "federal_deduction_used") == 31_500_00
@@ -1106,9 +1130,11 @@ def test_standard_deduction_is_used_when_greater_than_itemized(test_data_dir: Pa
         con.close()
 
 
-def test_no_itemized_deductions_file_behaves_as_before(test_data_dir: Path, tmp_path: Path) -> None:
+def test_no_itemized_deductions_file_behaves_as_before(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
     repo = test_data_dir
-    con = _run_federal_tax_accumulator(tmp_path, repo)
+    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 0
         assert _summary(con, 2026, "federal_deduction_used") == 31_500_00
@@ -1116,7 +1142,9 @@ def test_no_itemized_deductions_file_behaves_as_before(test_data_dir: Path, tmp_
         con.close()
 
 
-def test_itemized_deduction_amount_can_reference_an_itemization(test_data_dir: Path, tmp_path: Path) -> None:
+def test_itemized_deduction_amount_can_reference_an_itemization(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
     repo = test_data_dir
     (repo / "itemizations").mkdir(exist_ok=True)
     (repo / "itemizations" / "medical_2026.csv").write_text(
@@ -1125,7 +1153,7 @@ def test_itemized_deduction_amount_can_reference_an_itemization(test_data_dir: P
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,@medical_2026\n", encoding="utf-8",
     )
-    con = _run_federal_tax_accumulator(tmp_path, repo)
+    con = _run_federal_tax_accumulator(tmp_path, repo, fund_asset_savings)
     try:
         assert _summary(con, 2026, "federal_itemized_deduction") == 35_000_00
         assert _summary(con, 2026, "federal_deduction_used") == 35_000_00
@@ -1181,11 +1209,14 @@ def test_state_itemized_deduction_falls_back_to_federal_when_absent(test_data_di
         con.close()
 
 
-def test_person_lifespan_stops_associated_transfers(test_data_dir: Path, tmp_path: Path) -> None:
+def test_person_lifespan_stops_associated_transfers(
+    test_data_dir: Path, tmp_path: Path,
+) -> None:
     """A person's final_month stops transfers tied to them (via explicit
     `person` column or account owner) but leaves joint-account transfers
     running for the survivor (ADR-003 §4.10)."""
     repo = test_data_dir
+    _shorten_scenario_end(repo, "2028-12-31")  # only 2026-2027 events are asserted on
     lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
     lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
 
@@ -1238,7 +1269,9 @@ def test_person_lifespan_stops_associated_transfers(test_data_dir: Path, tmp_pat
         con.close()
 
 
-def test_person_lifespan_does_not_stop_solely_owned_asset_growth(test_data_dir: Path, tmp_path: Path) -> None:
+def test_person_lifespan_does_not_stop_solely_owned_asset_growth(
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
+) -> None:
     """percent_of_balance is always asset growth (ADR-003 \u00a72.2: "an asset
     account's growth is a property of the account"), not a personal service
     tied to the living owner -- a solely-owned IRA/checking balance keeps
@@ -1247,6 +1280,7 @@ def test_person_lifespan_does_not_stop_solely_owned_asset_growth(test_data_dir: 
     import pandas as pd
 
     repo = test_data_dir
+    fund_asset_savings()
     accounts_csv = repo / "scenarios" / "retire_alice" / "accounts.csv"
     df = pd.read_csv(accounts_csv, dtype=str, keep_default_na=False)
     mask = df["name"] == "Asset_TraditionalIRA_Alice"
@@ -1283,11 +1317,14 @@ def test_person_lifespan_does_not_stop_solely_owned_asset_growth(test_data_dir: 
         con.close()
 
 
-def test_on_death_sweeps_full_balance_once(test_data_dir: Path, tmp_path: Path) -> None:
+def test_on_death_sweeps_full_balance_once(
+    test_data_dir: Path, tmp_path: Path,
+) -> None:
     """on_death (no ADR section number yet) fires exactly once, the month
     after the named person's lifespan.csv final_month, sweeping 100% of
     from_account into to_account -- e.g. liquidating a solely-owned asset."""
     repo = test_data_dir
+    _shorten_scenario_end(repo, "2028-12-31")  # only 2027-02 events are asserted on
     lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
     lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
 
@@ -1552,13 +1589,14 @@ def test_year_to_date_csv_posts_balance_neutral_catchup(test_data_dir: Path, tmp
 
 
 def test_tax_tail_reconciles_final_year_without_extending_simulation_data(
-    test_data_dir: Path, tmp_path: Path,
+    test_data_dir: Path, tmp_path: Path, fund_asset_savings: Callable[..., None],
 ) -> None:
     """The scenario's declared final year (2040) gets a real tax_year_summary
     reconciliation (which normally fires the following April, past the
     scenario's end), but no simulation_step/account_state/transfer_event rows
     are written past scenario.end -- the tail is invisible to simulation data."""
     repo = test_data_dir
+    fund_asset_savings()
     sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
     _append_scheduled(
         sched_csv,
