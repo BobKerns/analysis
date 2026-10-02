@@ -115,6 +115,11 @@ own "Consequences" section). Time one ordinary run of the parent scenario
 run` itself) and multiply by the member count you're considering to gauge
 what an ensemble run will cost.
 
+`--jobs N` runs members in parallel (`--jobs 0` uses one per CPU). The
+members are independent, so the results are identical to a sequential
+run; only the order of the progress lines changes. Divide the estimate
+above by roughly the number of cores you give it.
+
 **A quick way to tell if you need more:** run the ensemble, look at
 `notebooks/ensemble.ipynb`'s fan chart, then rerun it with a bigger
 `--ensemble-size`. If the bands move noticeably, the first count wasn't
@@ -124,3 +129,85 @@ where you mainly want "is this even in the right ballpark," the default of
 30 is usually enough; save a bigger, slower run for when you're ready to
 report a specific number (a percentile, a probability of running out of
 money by some date) rather than just eyeballing a chart.
+
+## Which varying rows matter, and when? (sensitivity)
+
+Before you run a big Monte Carlo, it's worth asking which of your
+uncertain inputs actually move the outcome. A one-at-a-time sensitivity
+run answers that cheaply, using the same recipe and the same varying rows
+([ADR-007](../architecture/ADR-007-sensitivity-analysis.md)):
+
+```sh
+sim run inflation_1 --sensitivity
+sim ensemble sensitivity inflation_1
+```
+
+`--sensitivity` runs one base member (every varying row at its central
+value, the same as an ensemble's member 0) plus one member per row per
+quantile. Each row is moved to the 10th and 90th percentile of its own
+distribution by default. That's `1 + 2 × rows` runs, and no randomness.
+Moving every row by an *equally plausible* amount, rather than a fixed
+±10% or ±6 months, is what makes the rows' effects comparable.
+
+The report shows, for a few years across the horizon (`--years` to pick
+your own):
+
+- each row's change in net worth at its low and high quantile, its
+  **swing** (high minus low) and its **share** of the total swing;
+- a **rank-by-year** grid, because importance changes over time. A
+  retirement date matters from that date on; a growth rate compounds, so it
+  matters little early and a lot late; a fund's return stops mattering when
+  the fund runs out;
+- **pin candidates**: rows whose share stays under 5% (`--negligible`) in
+  every year. They're candidates to turn back into ordinary literal rows
+  before your Monte Carlo run.
+
+Useful options:
+
+- `--relative` reports changes as a percentage of the base. `--dollars
+  nominal` switches from today's (CPI-constant) dollars.
+- `--measure min_net_worth` looks at the lowest net worth up to each year
+  ("how close do I get to running out") instead of net worth at year-end.
+- `--attribute NAME` breaks one row's effect down exactly: by income/expense
+  category (the default, e.g. salary vs. taxes vs. growth), by individual
+  income/expense account (`--by flow_account`), or by where the money ends up
+  (`--by holding_account`, which shows a fund running dry sooner).
+- `--quantiles 0.1,0.25,0.4,0.6,0.75,0.9` gives a response curve instead of
+  two points, for spotting a threshold *inside* a range (a date crossing a
+  tax year, an amount that exhausts an account). Use it with `--only NAME`
+  on the rows that look interesting; it costs 6 runs per row instead of 2.
+  The report flags `asymmetric` (low and high effects very different) and,
+  with a ladder, `bend` (a sharp change of slope between steps).
+
+One-at-a-time can't see two rows that only matter *together*. The Monte
+Carlo report below can, partly.
+
+## Which varying rows can I drop? (Monte Carlo correlation)
+
+`sim ensemble sensitivity` on a Monte Carlo batch (`--mode monte_carlo`,
+or `--batch` naming one) reports, per year and per varying row, the rank
+correlation between the row's draws and net worth, with a 95% confidence
+interval, plus each row's regression weight and the year's **R²**:
+
+- R² near 1 means the rows' individual effects explain the outcome, and the
+  ranking can be trusted. Below 0.7, interactions or thresholds matter, and
+  per-row numbers understate them. Look at those rows one at a time with a
+  quantile ladder.
+- A row is marked **pin candidate** only when even the *top* of its
+  confidence interval is negligible in every year. A row that's small but
+  too noisy to be sure about is **inconclusive**, not negligible.
+
+**This needs many more members than a fan chart.** The interval is wide
+at small member counts, so a 30-member ensemble can't call anything
+negligible:
+
+| Members | Smallest share you can call negligible |
+| --- | --- |
+| 30 | none in practice |
+| 100 | about 5% (the default threshold) |
+| 200 | about 2% |
+| 400 | about 1% |
+
+So for pruning, plan on about 100 members, and 200 or more with five or
+more varying rows, where each row's share is naturally smaller. The report
+warns when the batch is too small for the threshold you asked for.

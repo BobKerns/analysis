@@ -1,6 +1,21 @@
 # [ADR-007](ADR-007-sensitivity-analysis.md) implementation plan: sensitivity analysis
 
-**Status: not started.**
+**Status: implemented.** All eight phases have shipped:
+- quantiles and the schema (Phase 0, `distributions.py`, `schema.py`);
+- OAT member resolution (Phase 1, `ensemble.py`'s `resolve_member(overrides=...)` and `oat_plan`);
+- `sim run --sensitivity` (Phase 2);
+- the OAT report (Phase 3) and attribution (Phase 4), in `sensitivity.py` and `sim ensemble sensitivity`;
+- the Monte Carlo correlation report (Phase 5);
+- `notebooks/sensitivity.ipynb` (Phase 6, `notebook_ui/sensitivity_widgets.py` and five new pickers);
+- `--jobs` (Phase 7).
+
+The phase breakdown below is kept as a record of the design sequencing.
+
+**Differences from the plan, found while implementing:**
+- `min_net_worth` is a `--measure` choice, not an extra column in the same table.
+- CPI-constant attribution needs an `opening_balances` row when the perturbed row is the inflation rate (ADR-007 §6.1).
+- The rank-by-year grid leaves a row unranked in a year where it has no effect, rather than tying it for first.
+- The double-entry identity was checked on the prototype before relying on it: it holds to the cent, growth included, with nothing unattributed.
 
 Companion to [ADR-007](ADR-007-sensitivity-analysis.md). Phases are ordered so each ends with a green test suite and a shippable state. As in [ADR-006's plan](ADR-006-implementation-plan.md), `run_scenario`/`open_run_file` are never modified. Every phase adds code *around* them.
 

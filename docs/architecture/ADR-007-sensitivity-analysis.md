@@ -1,6 +1,6 @@
 # ADR-007: Sensitivity analysis — which uncertain parameters actually matter, and when
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-01
 - **Supersedes:** —
 - **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios — `vary_*` columns, `resolve_member`, `ensemble_manifest`/`ensemble_draw`, member 0), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility, provenance).
@@ -89,7 +89,7 @@ The base case stays `central()`, not `quantile(0.5)`. For a symmetric distributi
 
 **Reporting dates.** Every result is computed at a grid of **annual** reporting dates: the last simulated month of each calendar year in the scenario's range, plus the scenario's final month if it isn't a December. Monthly reporting would be possible but adds noise and volume without changing the picture at planning horizons. Year-end aligns with tax-year effects. The grid is fixed rather than configurable for now; a finer grid is an additive change if a real need appears.
 
-**Measure.** Net worth at each reporting date. The table also shows `min_net_worth` to date: the lowest net worth from the start through that year, which captures "how close do I get to running out" and is a common short-term question. Both come from `net_worth_frame()`, and the registry is closed and grows one line at a time, like ADR-006's distributions.
+**Measure.** Net worth at each reporting date (`--measure net_worth`, the default), or `min_net_worth` to date (`--measure min_net_worth`): the lowest net worth from the start through that year, which captures "how close do I get to running out" and is a common short-term question. Both come from `net_worth_frame()`, and the registry is closed and grows one line at a time, like ADR-006's distributions.
 
 **Units.** These are two independent choices that compose, matching the existing `DollarModePicker` rather than duplicating it:
 
@@ -139,7 +139,7 @@ Opening balances are set directly in lot state rather than posted as transfers (
 | `flow_account` | individual income/expense accounts | the same, one level finer: which salary, which growth counterparty |
 | `holding_account` | asset/liability balance Δ by account | where the money ends up, or which fund is drained sooner. This is where a fund-exhaustion transition is visible directly |
 
-For the two flow axes, an `unattributed` remainder (Δ net worth minus the sum of the rows) is computed and shown whenever it's non-zero. By the identity it should always be zero, so a non-zero value is a ledger bug worth knowing about, not a modeling result. **CPI-constant attribution stays exact:** each member's cumulative flows at Y are deflated by *that member's own* CPI at Y, the same deflator its net worth uses. The rows therefore still sum to the CPI-constant Δ, including when the inflation rate is the perturbed row.
+For the two flow axes, an `unattributed` remainder (Δ net worth minus the sum of the rows) is computed and shown whenever it's non-zero. By the identity it should always be zero, so a non-zero value is a ledger bug worth knowing about, not a modeling result. **CPI-constant attribution stays exact:** each member's cumulative flows at Y are deflated by *that member's own* CPI at Y, the same deflator its net worth uses. When the inflation rate is the perturbed row, the base and the member deflate the *same* opening balance by different CPI paths. That difference gets its own `opening_balances` row ("what higher inflation did to the purchasing power of what you started with"), so the rows still sum to the CPI-constant Δ. In nominal dollars, and for any other row, it's zero and omitted. A cent or two of residue from the stored CPI-constant rounding is treated as zero (`UNATTRIBUTED_TOLERANCE`).
 
 The CLI shows attribution for one row at a time (`--attribute NAME [--by category|flow_account|holding_account]`), because a full table for every row is too much for a terminal. The notebook (§9) is the main interface for it.
 
