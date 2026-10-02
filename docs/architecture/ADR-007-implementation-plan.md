@@ -16,6 +16,15 @@ The phase breakdown below is kept as a record of the design sequencing.
 - CPI-constant attribution needs an `opening_balances` row when the perturbed row is the inflation rate (ADR-007 §6.1).
 - The rank-by-year grid leaves a row unranked in a year where it has no effect, rather than tying it for first.
 - Review on PR #23: rows rank and share by `impact` (which includes the base) rather than `|swing|`, so a non-monotonic row can't read as negligible; Monte Carlo pin candidates also require R² ≥ 0.7; sensitivity members record a NULL seed; numpy is a declared dependency.
+- Review on PR #25:
+  - a provisional batch manifest, plus a member-manifest fallback in `batch_mode`;
+  - at least two quantiles;
+  - `incomplete`/`undefined` rows are blank, never zero, and are left unplotted;
+  - attribution honors "% of base";
+  - `ytd_rule` is excluded from flows;
+  - `--negligible` must be in (0, 1);
+  - rows with no estimable correlation are `inconclusive`;
+  - `ParameterPicker` selects its first parameter rather than leaving its views blank.
 - The double-entry identity was checked on the prototype before relying on it: it holds to the cent, growth included, with nothing unattributed.
 
 Companion to [ADR-007](ADR-007-sensitivity-analysis.md). Phases are ordered so each ends with a green test suite and a shippable state. As in [ADR-006's plan](ADR-006-implementation-plan.md), `run_scenario`/`open_run_file` are never modified. Every phase adds code *around* them.

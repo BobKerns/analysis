@@ -189,10 +189,15 @@ def tornado_view(table: pd.DataFrame, scale: DeltaScale, ax: Any = None) -> Any:
         _fig, ax = plt.subplots(figsize=(10, 0.55 * len(table) + 1.2))
     y = np.arange(len(table))[::-1]
     height = 0.36
-    ax.barh(y + height / 2, table[low_col].fillna(0), height=height, color=LOW_ARM,
-            edgecolor="white", linewidth=1, label=f"q={low_col[6:]} (low)")
-    ax.barh(y - height / 2, table[high_col].fillna(0), height=height, color=HIGH_ARM,
-            edgecolor="white", linewidth=1, label=f"q={high_col[6:]} (high)")
+    # An undefined delta (relative, base near zero) or a missing one (failed
+    # member) is left out, not drawn as a zero-length bar claiming no effect.
+    for column, offset, color, label in (
+        (low_col, height / 2, LOW_ARM, f"q={low_col[6:]} (low)"),
+        (high_col, -height / 2, HIGH_ARM, f"q={high_col[6:]} (high)"),
+    ):
+        known = table[column].notna().to_numpy()
+        ax.barh(y[known] + offset, table[column].to_numpy(dtype=float)[known], height=height,
+                color=color, edgecolor="white", linewidth=1, label=label)
     ax.axvline(0, color=MUTED, linewidth=0.8)
     ax.set_yticks(y, table.index)
     _format_value_axis(ax.xaxis, scale)
@@ -234,10 +239,19 @@ def _fold_keys(tables: dict[float, pd.DataFrame]) -> list[str]:
     return keys
 
 
-def attribution_view(tables: dict[float, pd.DataFrame], year: int, ax: Any = None) -> tuple[Any, pd.DataFrame]:
+def attribution_view(
+    tables: dict[float, pd.DataFrame], year: int, ax: Any = None, *,
+    scale: DeltaScale = DeltaScale.ABSOLUTE, base: float | None = None,
+) -> tuple[Any, pd.DataFrame]:
     """One stacked bar per quantile: the delta at ``year`` decomposed into
     ``sensitivity.attribution``'s keys (gains up, losses down), with the
-    total marked. Returns the axes and the plotted numbers as a table."""
+    total marked. Returns the axes and the plotted numbers as a table.
+
+    With ``scale=RELATIVE``, every part is divided by ``|base|`` -- the base
+    member's net worth that year, in the same dollars -- so the bars sum to
+    the same "% of base" the other charts show. A base within
+    ``sensitivity.RELATIVE_NEAR_ZERO_DOLLARS`` of zero has no meaningful
+    percentage and raises ``EnsembleError``."""
     keys = _fold_keys(tables)
     shown, folded = keys[:_MAX_KEYS], keys[_MAX_KEYS:]
     rows = {}
@@ -249,6 +263,12 @@ def attribution_view(tables: dict[float, pd.DataFrame], year: int, ax: Any = Non
         values[sensitivity.TOTAL] = float(table.loc[year, sensitivity.TOTAL])
         rows[f"q={q:g}"] = values
     numbers = pd.DataFrame(rows)
+    if scale == DeltaScale.RELATIVE:
+        if base is None or abs(base) < sensitivity.RELATIVE_NEAR_ZERO_DOLLARS:
+            raise EnsembleError(
+                f"net worth in {year} is too close to zero for % of base; switch to $ delta"
+            )
+        numbers = numbers / abs(base)
     if ax is None:
         _fig, ax = plt.subplots(figsize=(10, 4.5))
     parts = [k for k in numbers.index if k != sensitivity.TOTAL]
@@ -256,10 +276,11 @@ def attribution_view(tables: dict[float, pd.DataFrame], year: int, ax: Any = Non
     colors["other"] = CATEGORICAL[-1]
     colors[sensitivity.UNATTRIBUTED] = CRITICAL
     x = np.arange(len(numbers.columns))
+    visible = 0.5 / abs(base) if scale == DeltaScale.RELATIVE else 0.5  # half a dollar
     up, down = np.zeros(len(x)), np.zeros(len(x))
     for key in parts:
         values = numbers.loc[key].to_numpy()
-        if not np.any(np.abs(values) >= 0.5):
+        if not np.any(np.abs(values) >= visible):
             continue
         bottom = np.where(values >= 0, up, down)
         ax.bar(x, values, bottom=bottom, width=0.55, color=colors[key],
@@ -271,7 +292,7 @@ def attribution_view(tables: dict[float, pd.DataFrame], year: int, ax: Any = Non
                label="total")
     ax.axhline(0, color=MUTED, linewidth=0.8)
     ax.set_xticks(x, numbers.columns)
-    _format_value_axis(ax.yaxis, DeltaScale.ABSOLUTE)
+    _format_value_axis(ax.yaxis, scale)
     _recessive(ax)
     ax.legend(framealpha=FRAME_ALPHA, bbox_to_anchor=(1.01, 1), loc="upper left")
     return ax, numbers
@@ -290,11 +311,12 @@ def response_curve_view(deltas: pd.DataFrame, row: str, year: int, scale: DeltaS
     ]).sort_values("quantile")
     if ax is None:
         _fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(curve["quantile"], curve[column].fillna(0), color=HIGH_ARM, linewidth=2)
+    # NaN breaks the line rather than pretending an undefined point is zero.
+    ax.plot(curve["quantile"], curve[column], color=HIGH_ARM, linewidth=2)
     ax.scatter(points["quantile"], points[column], s=50, color=HIGH_ARM, zorder=3,
                edgecolor="white", linewidth=1.5)
     ax.scatter([0.5], [0.0], s=60, color="white", edgecolor=INK, zorder=3, label="base")
-    for _, p in points.iterrows():
+    for _, p in points.dropna(subset=[column]).iterrows():
         ax.annotate(p["value"], (p["quantile"], p[column]), textcoords="offset points",
                     xytext=(0, 8), ha="center", fontsize=8, color=MUTED)
     ax.axhline(0, color=MUTED, linewidth=0.8)
@@ -431,11 +453,19 @@ def sensitivity_widget(*,
                 batch.value, parameter_picker.value, by=attribution_picker.value.value,
                 dollars=dollar_picker.value,
             )
-            _ax, numbers = attribution_view(tables, year_picker.value)
+            deltas = _deltas()
+            base = deltas.loc[(deltas["row"] == parameter_picker.value)
+                              & (deltas["year"] == year_picker.value)
+                              & (deltas["measure"] == "net_worth"), "base"]
+            _ax, numbers = attribution_view(
+                tables, year_picker.value, scale=scale_picker.value,
+                base=float(base.iloc[0]) if len(base) else None,
+            )
             plt.title(f"{parameter_picker.value} in {year_picker.value}: where the change "
                       "comes from", loc="left")
             plt.show()
-            display(numbers.style.format(_signed_dollars))
+            relative = scale_picker.value == DeltaScale.RELATIVE
+            display(numbers.style.format("{:+.2%}" if relative else _signed_dollars))
         _show(outs["attribution"], draw)
 
     def _draw_curve(*_: object) -> None:
@@ -491,7 +521,7 @@ def sensitivity_widget(*,
         _section("Can per-parameter numbers be trusted?", [], outs["r2"]),
         _section("Which rows could be pinned?", [year_picker], outs["rho"]),
     ]
-    state: dict[str, Any] = {"mode": None, "ladder": False}
+    state: dict[str, Any] = {"mode": None, "ladder": False, "loading": False}
 
     def _draw_all(*_: object) -> None:
         if state["mode"] == "sensitivity":
@@ -513,14 +543,23 @@ def sensitivity_widget(*,
                 manifest = read_batch_manifest(batch.value) or {}
                 state["ladder"] = len(manifest.get("quantiles", [])) >= 4
                 years = sorted(int(y) for y in deltas["year"].unique())
-                with parameter_picker.hold_trait_notifications():
+                # Repopulating the pickers fires their observers; the single
+                # _draw_all below is the redraw, so suppress theirs meanwhile.
+                state["loading"] = True
+                try:
                     parameter_picker.set_parameters(parameter_labels(deltas))
-                year_picker.set_years(years)
+                    year_picker.set_years(years)
+                finally:
+                    state["loading"] = False
                 body.children = [box for name, (_draw, box) in oat_sections.items()
                                  if name != "curve" or state["ladder"]]
             else:
                 table = _correlation()
-                year_picker.set_years(sorted(int(y) for y in table["year"].unique()))
+                state["loading"] = True
+                try:
+                    year_picker.set_years(sorted(int(y) for y in table["year"].unique()))
+                finally:
+                    state["loading"] = False
                 body.children = mc_sections
         except EnsembleError as exc:
             message = widgets.Output()
@@ -540,6 +579,8 @@ def sensitivity_widget(*,
         _draw_all()
 
     def _on_year(*_: object) -> None:
+        if state["loading"]:
+            return
         if state["mode"] == "sensitivity":
             _draw_tornado()
             _draw_attribution()
@@ -549,6 +590,8 @@ def sensitivity_widget(*,
             _draw_correlation()
 
     def _on_parameter(*_: object) -> None:
+        if state["loading"]:
+            return
         if state["mode"] == "sensitivity":
             _draw_time()
             _draw_attribution()

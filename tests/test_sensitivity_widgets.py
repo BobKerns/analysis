@@ -35,6 +35,13 @@ def test_toggle_pickers_offer_their_enums() -> None:
     assert AttributionPicker(AttributionAxis.HOLDING_ACCOUNT).value == AttributionAxis.HOLDING_ACCOUNT
 
 
+def test_parameter_picker_selects_first_when_nothing_to_keep() -> None:
+    picker = ParameterPicker()
+    assert picker.value is None
+    picker.set_parameters({"gift": "amount", "retire": "date"})
+    assert picker.value == "gift"
+
+
 def test_parameter_picker_labels_and_keeps_selection() -> None:
     picker = ParameterPicker({"gift": "amount, $12,000 to $28,000", "retire": "date, a to b"})
     assert picker.options[0] == ("gift — amount, $12,000 to $28,000", "gift")
@@ -217,3 +224,37 @@ def test_list_batches_labels_mode(oat_batch: Path, runs_dir: Path) -> None:
     batches = sw.list_batches(runs_dir / "retire_alice")
     assert batches == [(f"{oat_batch.name} (one-at-a-time, 5 members)", oat_batch)]
     assert sw.list_sensitivity_recipes(runs_dir) == ["retire_alice"]
+
+
+# --- PR #25 review fixes ---------------------------------------------------------
+
+
+def test_tornado_leaves_undefined_deltas_unplotted() -> None:
+    frame = _deltas()
+    frame.loc[(frame["row"] == "b") & (frame["quantile"] == 0.9), "relative"] = float("nan")
+    table = sensitivity.oat_table(frame, 2031, relative=True)
+    ax = sw.tornado_view(table, DeltaScale.RELATIVE)
+    assert len(ax.patches) == 3  # b's high-quantile bar is omitted, not drawn as zero
+    plt.close("all")
+
+
+def test_attribution_view_relative_divides_by_base() -> None:
+    tables = {0.1: _attribution_table(1), 0.9: _attribution_table(-1)}
+    _ax, numbers = sw.attribution_view(tables, 2031, scale=DeltaScale.RELATIVE, base=-1_000_000)
+    assert numbers.loc[sensitivity.TOTAL, "q=0.1"] == pytest.approx(-230 / 1_000_000)
+    with pytest.raises(sw.EnsembleError, match="too close to zero"):
+        sw.attribution_view(tables, 2031, scale=DeltaScale.RELATIVE, base=500)
+    plt.close("all")
+
+
+def test_sensitivity_widget_attribution_follows_delta_scale(
+    oat_batch: Path, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shown = _quiet(monkeypatch)
+    box = sw.sensitivity_widget(runs_dir=runs_dir)
+    _dollar_picker, scale_picker = box.children[1].children
+    shown.clear()
+    scale_picker.value = DeltaScale.RELATIVE
+    styled = [s for s in shown if hasattr(s, "data") and "q=0.1" in getattr(s, "data", pd.DataFrame()).columns]
+    assert styled, "attribution table redrawn"
+    assert styled[-1].data.abs().max().max() < 1  # fractions of base, not dollars

@@ -191,29 +191,42 @@ def oat_table(
 
     Importance is ``impact``, not ``|swing|``: a non-monotonic row whose low
     and high quantiles both move the outcome the same way has a swing near
-    zero but a large impact, and must not read as negligible."""
+    zero but a large impact, and must not read as negligible.
+
+    A row that can't be measured gets NaN ``swing``/``impact``/``share``
+    rather than a number that would read as "no effect", and so can never
+    be a pin candidate: ``incomplete`` when a member for one of the batch's
+    quantiles failed (the survivor would otherwise stand in for both ends),
+    ``undefined`` when a relative delta is blank because the base is near
+    zero."""
     column = "relative" if relative else "delta"
     flat = _FLAT_DOLLARS / 1e5 if relative else _FLAT_DOLLARS
     at = deltas[(deltas["year"] == year) & (deltas["measure"] == measure)]
     if at.empty:
         raise EnsembleError(f"no deltas for year {year} ({measure})")
+    expected = set(deltas["quantile"].unique())
     rows = []
     for name, group in at.groupby("row", sort=False):
         group = group.sort_values("quantile")
-        points = pd.Series(group[column].fillna(0.0).to_numpy(), index=group["quantile"].to_numpy())
+        points = pd.Series(group[column].to_numpy(dtype=float), index=group["quantile"].to_numpy())
         record: dict[str, object] = {"row": name, "target": group["target"].iloc[0]}
         for q, value in zip(group["quantile"], group["value"], strict=True):
             record[f"value@{q:g}"] = value
         for q, d in zip(group["quantile"], group[column], strict=True):
             record[f"delta@{q:g}"] = d
-        record["swing"] = points.iloc[-1] - points.iloc[0]
-        record["impact"] = max(0.0, points.max()) - min(0.0, points.min())
-        record["flags"] = ",".join(_flags(points, flat))
+        if set(points.index) != expected:
+            record.update(swing=np.nan, impact=np.nan, flags="incomplete")
+        elif points.isna().any():
+            record.update(swing=np.nan, impact=np.nan, flags="undefined")
+        else:
+            record["swing"] = points.iloc[-1] - points.iloc[0]
+            record["impact"] = max(0.0, points.max()) - min(0.0, points.min())
+            record["flags"] = ",".join(_flags(points, flat))
         rows.append(record)
     table = pd.DataFrame(rows).set_index("row")
-    total = table["impact"].sum()
-    table["share"] = table["impact"] / total if total else 0.0
-    order = table["impact"].sort_values(ascending=False).index
+    total = table["impact"].sum()  # NaN-skipping
+    table["share"] = table["impact"] / total if total else table["impact"] * 0.0
+    order = table["impact"].sort_values(ascending=False, na_position="last").index
     tail = ("swing", "impact", "share", "flags")
     columns = [c for c in table.columns if c not in tail]
     return table.loc[order, [*columns, *tail]]
@@ -309,8 +322,9 @@ def _cumulative_flows(rc: RunConnection, by: str) -> pd.DataFrame:
     """Year-indexed cumulative net-worth contribution (dollars) of each
     income/expense account (``flow_account``) or subkind (``category``):
     every transfer out of one adds to net worth, every transfer into one
-    subtracts. ``ytd`` events record pre-simulation history without moving
-    balances, so they're excluded."""
+    subtracts. ``ytd`` and ``ytd_rule`` events record pre-simulation history
+    without moving balances (``engine._post_ytd_transfer``), so they're
+    excluded."""
     key = "name" if by == "flow_account" else "subkind"
     con = sqlite3.connect(rc.run_path)
     try:
@@ -319,13 +333,13 @@ def _cumulative_flows(rc: RunConnection, by: str) -> pd.DataFrame:
             SELECT CAST(substr(te.date, 1, 4) AS INTEGER) AS year, fa.{key} AS key,
                    SUM(te.amount) AS amount
             FROM transfer_event te JOIN account fa ON fa.id = te.from_account
-            WHERE te.reason_kind != 'ytd' AND fa.kind IN ('income', 'expense')
+            WHERE te.reason_kind NOT IN ('ytd', 'ytd_rule') AND fa.kind IN ('income', 'expense')
             GROUP BY year, key
             UNION ALL
             SELECT CAST(substr(te.date, 1, 4) AS INTEGER) AS year, ta.{key} AS key,
                    -SUM(te.amount) AS amount
             FROM transfer_event te JOIN account ta ON ta.id = te.to_account
-            WHERE te.reason_kind != 'ytd' AND ta.kind IN ('income', 'expense')
+            WHERE te.reason_kind NOT IN ('ytd', 'ytd_rule') AND ta.kind IN ('income', 'expense')
             GROUP BY year, key
             """,
             con,
@@ -542,10 +556,18 @@ def classify(table: pd.DataFrame, negligible: float = DEFAULT_NEGLIGIBLE) -> pd.
       x1 * x2) each row's rho is near zero although together they decide
       the outcome, so a small rho is no evidence of irrelevance there;
     - ``keep``: otherwise.
+
+    Every row in ``table`` gets a status; one with no estimable correlation
+    in any year is ``inconclusive``.
     """
-    informative = table.dropna(subset=["rho"])
     result = {}
-    for row, group in informative.groupby("row", sort=False):
+    for row, group in table.groupby("row", sort=False):
+        group = group.dropna(subset=["rho"])
+        if group.empty:
+            # No year gave an estimable correlation (too few members, or a
+            # draw that never varies): nothing says it's negligible.
+            result[row] = "inconclusive"
+            continue
         upper = np.maximum(group["rho_low"] ** 2, group["rho_high"] ** 2)
         # An interval straddling zero has rho^2 upper bound at its wider end.
         trusted = group["r2"] >= R2_TRUST

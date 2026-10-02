@@ -140,15 +140,16 @@ def _check_quantile(q: float) -> None:
 
 
 def parse_quantiles(text: str) -> tuple[float, ...]:
-    """Parse ``--quantiles`` (ADR-007 §3): comma-separated values in
-    ``[0, 1]``, strictly increasing, excluding ``0.5`` -- the base member
-    already covers the center."""
+    """Parse ``--quantiles`` (ADR-007 §3): at least two comma-separated
+    values in ``[0, 1]``, strictly increasing, excluding ``0.5`` -- the base
+    member already covers the center. One quantile alone gives no low/high
+    pair to compare."""
     try:
         values = tuple(float(part) for part in text.split(","))
     except ValueError as exc:
         raise DistributionError(f"quantiles: not a comma-separated list of numbers: {text!r}") from exc
-    if not values:
-        raise DistributionError("quantiles: at least one value is required")
+    if len(values) < 2:
+        raise DistributionError(f"quantiles: at least two values are required (got {text!r})")
     for q in values:
         _check_quantile(q)
         if q == 0.5:

@@ -76,7 +76,7 @@ No RNG is consulted anywhere in an OAT batch, so it's fully deterministic. `scen
 - **`Uniform`:** `low + q × (high − low)`. For a date target there's a matching `quantile_int` that rounds to a day ordinal, like `central_int`.
 - **`TruncatedNormal`:** the quantile of the *truncated* distribution: `inv_cdf(Φ(a) + q × (Φ(b) − Φ(a)))`, where `a`, `b` are the clip bounds and `Φ` is the untruncated CDF. The perturbation therefore always stays in bounds and respects one-sided truncation.
 
-The default is `--quantiles 0.1,0.9`, which is "plausibly low / plausibly high" rather than the extremes. `0,1` gives the full authored range, but `truncated_normal`'s clip bounds default to ±3σ and are rarely representative. Values must be in `[0, 1]`, strictly increasing, and not `0.5`, since the base already covers the center.
+The default is `--quantiles 0.1,0.9`, which is "plausibly low / plausibly high" rather than the extremes. `0,1` gives the full authored range, but `truncated_normal`'s clip bounds default to ±3σ and are rarely representative. There must be at least two values, in `[0, 1]`, strictly increasing, and not `0.5`, since the base already covers the center.
 
 **Transitions.** Two signals in the report flag that a row's range contains a kink:
 
@@ -106,7 +106,7 @@ The CLI default is CPI-constant dollars. Across a 20-year horizon a nominal swin
 
 `ensemble_manifest` gains `mode TEXT NOT NULL DEFAULT 'monte_carlo'` (`'monte_carlo'` or `'sensitivity'`). `ensemble_draw` gains `quantile REAL`, which is NULL for a random draw, the override quantile for an OAT-perturbed row, and NULL for a row resolved to `central()`. `ensemble_manifest.seed` becomes nullable: NULL for a sensitivity member, which draws nothing, rather than a made-up seed that would suggest it was drawn. A sensitivity member is self-documenting in the same way an ADR-006 member is.
 
-`batch_manifest.json` gains `mode`, plus `quantiles` and `rows` for a sensitivity batch. Both kinds of batch live side by side under `state/runs/<recipe>/<timestamp>/`. `latest_ensemble_batch` gains an optional `mode` filter. `sim ensemble summary` and the fan chart use `mode='monte_carlo'`, because a fan chart over an OAT batch is meaningless. `sim ensemble sensitivity` takes the latest batch of either mode unless `--batch`/`--mode` says otherwise.
+`batch_manifest.json` gains `mode`, plus `quantiles` and `rows` for a sensitivity batch. It's written provisionally as soon as the batch directory is reserved, and rewritten with the failures at the end, so an interrupted batch still reads as the right mode. `batch_mode` also falls back to the members' own `ensemble_manifest.mode` when there's no batch manifest. Both kinds of batch live side by side under `state/runs/<recipe>/<timestamp>/`. `latest_ensemble_batch` gains an optional `mode` filter. `sim ensemble summary` and the fan chart use `mode='monte_carlo'`, because a fan chart over an OAT batch is meaningless. `sim ensemble sensitivity` takes the latest batch of either mode unless `--batch`/`--mode` says otherwise.
 
 ### 6. Reports
 
@@ -122,7 +122,7 @@ One table per reporting year, one row per varying row, sorted by `impact` descen
 | `swing` | Δ at the highest quantile − Δ at the lowest. Signed, for direction only |
 | `impact` | max(0, every Δ) − min(0, every Δ): the spread of the row's outcomes *including the base*. This is the importance measure |
 | `share` | impact / Σ impacts, at that year |
-| `flags` | `asymmetric`, and `bend` (with a ladder of ≥ 4 quantiles) when the response changes slope sharply between rungs (§3) |
+| `flags` | `asymmetric`, and `bend` (with a ladder of ≥ 4 quantiles) when the response changes slope sharply between rungs (§3). `incomplete` when a member for one of the batch's quantiles failed, and `undefined` when a relative Δ is blank because the base is near zero: such a row's swing, impact and share are blank, never zero, so it can't be read as negligible or become a pin candidate |
 
 Importance is `impact`, not `|swing|`. A row whose low and high quantiles both move the outcome the same way (+$100k at p10 and +$100k at p90, say: a non-monotonic response with the base at a trough) has a swing of zero, but it plainly matters. Ranking, share and pin candidates by swing would rank it last and could drop it. Including the base's zero in the spread also means a one-sided row is measured from where it actually starts.
 
@@ -134,7 +134,7 @@ By default the CLI prints a few years: the first full year, every fifth year, an
 Δ net worth(Y) = Σ over income/expense accounts c of [cumulative net flow_c(Y) in perturbed − in base]
 ```
 
-Opening balances are set directly in lot state rather than posted as transfers (ADR-005 §6). They're identical between the two members, so they cancel. `reason_kind='ytd'` events record pre-simulation history without moving balances, so they're excluded from the sums. The report breaks `Δ@q` down along one of three axes:
+Opening balances are set directly in lot state rather than posted as transfers (ADR-005 §6). They're identical between the two members, so they cancel. `reason_kind='ytd'` and `'ytd_rule'` events record pre-simulation history without moving balances, so they're excluded from the sums. The report breaks `Δ@q` down along one of three axes:
 
 | axis | rows | answers |
 | --- | --- | --- |
@@ -150,7 +150,7 @@ The CLI shows attribution for one row at a time (`--attribute NAME [--by categor
 
 For each varying row and each reporting year, the report gives the Spearman rank correlation `ρ` between the row's `ensemble_draw.drawn_value` and net worth across succeeded members. Member 0 is excluded because it isn't a draw (ADR-006 §9). It uses Spearman rather than Pearson because outcomes are often monotonic but not linear in a parameter. The implementation is pandas `rank().corr()`, so no new dependency.
 
-**Each ρ carries a 95% confidence interval** (Fisher z-transform, using the Spearman variance correction `1.06 / (n − 3)`). The interval is what makes this usable for pruning: a row is reported as a **pin candidate only when the upper bound of its `ρ²` interval is below the threshold** (`--negligible`, default 5%) at *every* reporting year, **and that year's R² meets the trust threshold (§6.2 below)**. "Small but too noisy to tell" is reported as *inconclusive*, never as negligible, and so is "small, but R² is too low to trust a marginal correlation". A row must be negligible at every year, not just at the terminal year, because a parameter that only matters in the short term still matters.
+**Each ρ carries a 95% confidence interval** (Fisher z-transform, using the Spearman variance correction `1.06 / (n − 3)`). The interval is what makes this usable for pruning: a row is reported as a **pin candidate only when the upper bound of its `ρ²` interval is below the threshold** (`--negligible`, default 5%) at *every* reporting year, **and that year's R² meets the trust threshold (§6.2 below)**. "Small but too noisy to tell" is reported as *inconclusive*, never as negligible, and so is "small, but R² is too low to trust a marginal correlation". So is a row with no estimable correlation in any year (too few members, or a draw that never varies): every row gets a status. `--negligible` must be strictly between 0 and 1. A row must be negligible at every year, not just at the terminal year, because a parameter that only matters in the short term still matters.
 
 This is what sets the member count. The CI's half-width on ρ near zero is roughly `1.96 × √(1.06 / (n − 3))`:
 
@@ -212,7 +212,7 @@ Widgets (`notebook_ui/sensitivity_widgets.py`):
 3. **Δ over time for one parameter:** `ParameterPicker` + units pickers. One line per quantile (Δ against reporting year), with a zero line. A fund-exhaustion plateau, a retirement-date step, or a compounding growth-rate curve each read directly off this chart.
 4. **Response curve** (only for a ladder batch): `ParameterPicker` + `ReportYearPicker`, plotting Δ against quantile. This is where a transition inside a range is visible as a step.
 
-5. **Attribution** (§6.1): `ParameterPicker` + `ReportYearPicker` + units pickers + **`AttributionPicker`** (new, `ToggleButtons`: category / flow account / holding account). A stacked bar per quantile shows `Δ@q` decomposed into its rows, with the total marked, plus `unattributed` in a warning color if it's ever non-zero. Placed directly under widget 3, so "this parameter starts mattering in 2034" is followed immediately by "because that's when the brokerage account runs dry."
+5. **Attribution** (§6.1): `ParameterPicker` + `ReportYearPicker` + units pickers + **`AttributionPicker`** (new, `ToggleButtons`: category / flow account / holding account). A stacked bar per quantile shows `Δ@q` decomposed into its rows, with the total marked, plus `unattributed` in a warning color if it's ever non-zero. Placed directly under widget 3, so "this parameter starts mattering in 2034" is followed immediately by "because that's when the brokerage account runs dry." With "% of base" selected, every part is divided by the base's net worth that year, so the bars match the other charts' units.
 
 For a `monte_carlo` batch the same notebook shows the ρ-by-year grid with CI whiskers and pin-candidate / inconclusive markers, using the same `ReportYearPicker`. Above it is an **R²-by-year** strip, so the trust level of each year's column can be read at a glance.
 

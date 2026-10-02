@@ -3,6 +3,7 @@ the report CLI."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -387,3 +388,79 @@ def test_cli_attribute_rejects_monte_carlo_batch(mc_batch: Path, runs_dir: Path)
     ])
     assert result.exit_code != 0
     assert "needs a sensitivity batch" in result.output
+
+
+# --- PR #25 review fixes ---------------------------------------------------------
+
+
+def test_incomplete_row_is_never_measured_as_zero() -> None:
+    """A row whose p90 member failed must not reuse p10 for both ends."""
+    frame = _deltas({
+        "whole": {0.1: -10_000, 0.9: 10_000},
+        "missing_high": {0.1: -1_000},
+    })
+    table = sensitivity.oat_table(frame, 2030)
+    assert table.loc["missing_high", "flags"] == "incomplete"
+    assert pd.isna(table.loc["missing_high", "impact"])
+    assert pd.isna(table.loc["missing_high", "share"])
+    assert list(table.index) == ["whole", "missing_high"]  # unmeasurable rows last
+    assert table.loc["whole", "share"] == 1.0
+    assert "missing_high" not in sensitivity.pin_candidates(frame, 0.05)
+
+
+def test_undefined_relative_delta_is_not_zero() -> None:
+    frame = _deltas({"r": {0.1: -10_000, 0.9: 10_000}})
+    frame.loc[frame["quantile"] == 0.9, "relative"] = float("nan")  # base near zero
+    table = sensitivity.oat_table(frame, 2030, relative=True)
+    assert table.loc["r", "flags"] == "undefined"
+    assert pd.isna(table.loc["r", "impact"])
+
+
+def test_classify_reports_unestimable_rows_as_inconclusive() -> None:
+    draws, outcomes = _synthetic(3, lambda x1, x2: 3 * x1)  # too few members for rho
+    table = sensitivity.correlation_table(draws, outcomes)
+    assert table["rho"].isna().all()
+    assert sensitivity.classify(table, 0.05).to_dict() == {
+        "x1": "inconclusive", "x2": "inconclusive",
+    }
+
+
+def test_cumulative_flows_exclude_both_ytd_kinds(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], object],
+    tmp_path: Path,
+) -> None:
+    """ytd and ytd_rule catch-ups are balance-neutral (engine._post_ytd_transfer):
+    counting them would put pre-simulation history into attribution."""
+    import sqlite3
+
+    from analysis.sim.connection import RunConnection
+    from analysis.sim.engine import run_scenario
+
+    scheduled = retire_alice_csv("scheduled.csv")
+    df = pd.read_csv(scheduled, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "salary_alice", "ytd_preroll"] = "1"
+    df.to_csv(scheduled, index=False)
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(load_test_copy().intent_path, run_path, run_by="test", allow_dirty_data=True)
+
+    con = sqlite3.connect(run_path)
+    try:
+        assert con.execute(
+            "SELECT COUNT(*) FROM transfer_event WHERE reason_kind = 'ytd_rule'"
+        ).fetchone()[0] > 0
+        # Simulated salary in the first year: income-account outflows only,
+        # catch-ups excluded.
+        first_year, simulated = con.execute(
+            "SELECT CAST(substr(te.date, 1, 4) AS INTEGER) AS y, SUM(te.amount) "
+            "FROM transfer_event te JOIN account a ON a.id = te.from_account "
+            "WHERE a.subkind = 'salary' AND te.reason_kind NOT IN ('ytd', 'ytd_rule') "
+            "GROUP BY y ORDER BY y LIMIT 1"
+        ).fetchone()
+    finally:
+        con.close()
+    rc = RunConnection(run_path)
+    try:
+        flows = sensitivity._cumulative_flows(rc, "category")
+        assert flows.loc[first_year, "salary"] == pytest.approx(simulated / 100)
+    finally:
+        rc.close()

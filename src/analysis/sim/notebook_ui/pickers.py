@@ -754,7 +754,9 @@ class DeltaScalePicker(widgets.ToggleButtons):
 
 class HeatmapValuePicker(widgets.ToggleButtons):
     """Sensitivity heatmap cells: each row's share of the year's total
-    swing, or its signed swing (ADR-007 §9)."""
+    impact (the importance measure, which counts the base, so a row moving
+    the outcome the same way at both ends still registers), or its signed
+    swing, for direction (ADR-007 §6.1, §9)."""
     value: HeatmapValue = traitlets.UseEnum(HeatmapValue)
 
     def __init__(self, heatmap_value: HeatmapValue = HeatmapValue.SHARE):
@@ -793,12 +795,16 @@ class ParameterPicker(widgets.Dropdown):
         self.set_parameters(parameters or {})
 
     def set_parameters(self, parameters: dict[str, str]) -> None:
-        """Replace the options, keeping the selection when it's still offered."""
+        """Replace the options, keeping the selection when it's still offered
+        and otherwise selecting the first -- never leaving the views that
+        depend on it blank."""
         previous = self.value
         self.options = [(f"{name} — {label}" if label else name, name)
                         for name, label in parameters.items()]
         if previous in parameters:
             self.value = previous
+        elif parameters:
+            self.value = next(iter(parameters))
 
 
 class ReportYearPicker(widgets.SelectionSlider):

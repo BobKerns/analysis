@@ -197,7 +197,7 @@ def test_parse_quantiles_accepts_increasing_list() -> None:
     assert parse_quantiles("0, 0.25,0.75,1") == (0.0, 0.25, 0.75, 1.0)
 
 
-@pytest.mark.parametrize("text", ["", "0.9,0.1", "0.1,0.1", "0.1,0.5,0.9", "1.2", "a,b"])
+@pytest.mark.parametrize("text", ["", "0.1", "0.9,0.1", "0.1,0.1", "0.1,0.5,0.9", "1.2", "a,b"])
 def test_parse_quantiles_rejects_malformed(text: str) -> None:
     with pytest.raises(DistributionError):
         parse_quantiles(text)

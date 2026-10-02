@@ -2106,3 +2106,45 @@ def test_sim_run_rejects_negative_jobs(intent_dir: Path, runs_dir: Path) -> None
     ])
     assert result.exit_code != 0
     assert "--jobs" in result.output
+
+
+def test_sensitivity_manifest_is_written_before_members_run(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path, monkeypatch,
+) -> None:
+    """An interrupted OAT batch must still read as a sensitivity batch (PR #25
+    review): the manifest exists before any member runs."""
+    from analysis.sim.loader import batch_mode
+
+    _append_two_varying_rows(append_calendar_row)
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+    import analysis.sim.cli as sim_cli
+
+    seen: list[str] = []
+    real = sim_cli._run_one_member
+
+    def _spy(recipe, member_intent_path, member_run_path, *args, **kwargs):
+        seen.append(batch_mode(member_run_path.parent))
+        return real(recipe, member_intent_path, member_run_path, *args, **kwargs)
+
+    monkeypatch.setattr(sim_cli, "_run_one_member", _spy)
+    assert _sim_run_sensitivity(intent_dir, runs_dir, runner).exit_code == 0
+    assert seen and set(seen) == {"sensitivity"}
+
+
+def test_batch_mode_falls_back_to_member_manifests(oat_batch: Path) -> None:
+    from analysis.sim.loader import batch_mode
+
+    (oat_batch / "batch_manifest.json").unlink()
+    assert batch_mode(oat_batch) == "sensitivity"
+
+
+@pytest.mark.parametrize("value", ["0", "1", "-0.1", "1.5"])
+def test_ensemble_sensitivity_rejects_bad_negligible(runs_dir: Path, value: str) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "sensitivity", "retire_alice", "--runs-dir", str(runs_dir),
+        "--negligible", value,
+    ])
+    assert result.exit_code == 2
+    assert "--negligible" in result.output

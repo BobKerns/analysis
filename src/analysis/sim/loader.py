@@ -183,13 +183,25 @@ from here)."""
 
 
 def batch_mode(batch_dir: Path) -> str:
-    """A batch's ADR-007 §5 mode from its ``batch_manifest.json``:
-    ``"monte_carlo"`` when absent (every batch written before ADR-007, or
-    one synthesized directly by a test, is a Monte Carlo batch)."""
+    """A batch's ADR-007 §5 mode: from its ``batch_manifest.json``, else from
+    any member run file's own ``ensemble_manifest.mode`` (a batch whose run
+    was interrupted before the manifest was written), else ``"monte_carlo"``
+    (every batch written before ADR-007, or one synthesized by a test)."""
     path = Path(batch_dir) / BATCH_MANIFEST_FILENAME
-    if not path.is_file():
-        return "monte_carlo"
-    return json.loads(path.read_text()).get("mode", "monte_carlo")
+    if path.is_file():
+        return json.loads(path.read_text()).get("mode", "monte_carlo")
+    for member in sorted(Path(batch_dir).glob("member_*.sqlite3")):
+        try:
+            con = sqlite3.connect(f"file:{member}?mode=ro", uri=True)
+            try:
+                row = con.execute("SELECT mode FROM ensemble_manifest").fetchone()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            continue  # empty, partial, or pre-ADR-007: try the next member
+        if row is not None:
+            return row[0]
+    return "monte_carlo"
 
 
 def latest_ensemble_batch(recipe_dir: Path, mode: str | None = None) -> Path | None:

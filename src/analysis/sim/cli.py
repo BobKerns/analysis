@@ -463,6 +463,9 @@ def _run_ensemble(
         )
 
     batch, member_intent_dir, member_runs_dir = _reserve_batch(scenario_name, intent_dir, runs_dir)
+    # Provisional, so an interrupted batch is still recognizable; rewritten
+    # with the real failures below.
+    write_batch_manifest(member_runs_dir, member_count=member_count, failures=[])
     failures = _run_members(
         recipe_intent_path, member_intent_dir, member_runs_dir,
         [(i, None) for i in range(member_count)],
@@ -504,6 +507,12 @@ def _run_sensitivity(
     perturbed = sorted({name for overrides in plan for name in overrides})
 
     batch, member_intent_dir, member_runs_dir = _reserve_batch(scenario_name, intent_dir, runs_dir)
+    # Provisional (ADR-007 §5): if this run is interrupted, the partial batch
+    # must still read as a sensitivity batch, never as Monte Carlo draws.
+    write_batch_manifest(
+        member_runs_dir, member_count=len(plan), failures=[],
+        mode="sensitivity", quantiles=quantiles, rows=perturbed,
+    )
     failures = _run_members(
         recipe_intent_path, member_intent_dir, member_runs_dir,
         list(enumerate(plan)),
@@ -846,7 +855,8 @@ def ensemble_summary(
     help="Reporting years to print; default: first full year, every fifth year, final year.",
 )
 @click.option(
-    "--negligible", type=float, default=sensitivity.DEFAULT_NEGLIGIBLE, show_default=True,
+    "--negligible", type=click.FloatRange(0, 1, min_open=True, max_open=True),
+    default=sensitivity.DEFAULT_NEGLIGIBLE, show_default=True,
     help="Share below which a row is a pin candidate (in every year).",
 )
 @click.option(
