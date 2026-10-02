@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +32,7 @@ __all__ = [
     "DEFAULT_NEGLIGIBLE", "oat_members", "member_measures", "oat_deltas", "oat_table",
     "rank_by_year", "pin_candidates", "default_report_years", "months_per_year",
     "display_value", "ATTRIBUTION_AXES", "OPENING_BALANCES", "UNATTRIBUTED", "TOTAL",
-    "attribution", "oat_attribution", "base_net_worth", "R2_TRUST", "draws_frame", "outcomes_frame",
+    "attribution", "oat_attribution", "base_net_worth", "parameters", "R2_TRUST", "draws_frame", "outcomes_frame",
     "rho_interval", "required_members", "correlation_table", "classify", "mc_correlation",
 ]
 
@@ -620,3 +621,101 @@ def mc_correlation(
         for rc in connections.values():
             rc.close()
     return correlation_table(draws, outcomes)
+
+
+# --- the varying rows themselves ----------------------------------------------
+
+
+def _display_number(kind: str, target: str, value: float) -> str:
+    """A number in a target column's own unit, for display: a day ordinal as
+    a date, a ``set_rate`` amount (micros) as a percent, cents as dollars."""
+    if target == "date":
+        return date.fromordinal(round(value)).isoformat()
+    return display_value(kind, target, str(round(value)))
+
+
+def _spread(kind: str, target: str, sd: float) -> str:
+    """A standard deviation in display units (a duration has no date form)."""
+    if kind == "set_rate":
+        return f"{sd / 10_000:.2f}%"
+    return f"${sd / 100:,.0f}"
+
+
+def _affects(row: sqlite3.Row) -> str:
+    """What a varying calendar row acts on, in the author's own names."""
+    if row["kind"] == "one_off_transfer":
+        return f"{row['account_1']} → {row['account_2']}"
+    return row["series"] or row["scheduled_name"] or ""
+
+
+def parameters(batch_dir: Path) -> pd.DataFrame:
+    """The batch's varying rows (ADR-007 §9), one per row: what each acts on
+    (``kind``, ``affects``), which column varies (``target``), its
+    ``distribution``, ``range`` and ``center`` (the base / member-0 value),
+    a ``truncated_normal``'s ``spread`` (mean ± sd), ``ramp_months`` and the
+    author's ``description``. A sensitivity batch adds the resolved value at
+    each perturbed quantile (``value@q``); a Monte Carlo batch adds the range
+    actually ``drawn`` across its members.
+
+    Read from the batch's own member files, so it describes what was run --
+    not the recipe as it stands now. A batch written before schema 28
+    doesn't record the distribution; it shows as blank."""
+    from analysis.sim.ensemble import build_distribution
+    from analysis.sim.loader import batch_mode
+
+    connections = load_ensemble(batch_dir)
+    try:
+        con = sqlite3.connect(next(iter(connections.values())).run_path)
+        con.row_factory = sqlite3.Row
+        try:
+            has_distribution = any(
+                col[1] == "distribution" for col in con.execute("PRAGMA table_info(ensemble_draw)")
+            )
+            rows = con.execute(
+                "SELECT d.calendar_event_name AS name, d.vary_target AS target, "
+                f"{'d.distribution' if has_distribution else 'NULL'} AS distribution, c.* "
+                "FROM ensemble_draw d JOIN calendar_event c ON c.name = d.calendar_event_name "
+                "ORDER BY name"
+            ).fetchall()
+        finally:
+            con.close()
+        records = []
+        for row in rows:
+            kind, target = row["kind"], row["target"]
+            record: dict[str, object] = {
+                "name": row["name"], "kind": kind, "affects": _affects(row), "target": target,
+                "distribution": row["distribution"] or "", "range": "", "center": "",
+                "spread": "", "ramp_months": row["vary_ramp_months"] or "",
+                "description": row["description"] or "",
+            }
+            if row["distribution"]:
+                dist = build_distribution({**dict(row), "vary_distribution": row["distribution"]},
+                                          target)
+                low, high = (dist.low, dist.high) if row["distribution"] == "uniform" else (
+                    dist.clip_low, dist.clip_high)
+                record["range"] = (f"{_display_number(kind, target, low)} to "
+                                   f"{_display_number(kind, target, high)}")
+                record["center"] = _display_number(kind, target, dist.central())
+                if row["distribution"] == "truncated_normal":
+                    record["spread"] = (f"{_display_number(kind, target, dist.mean)} ± "
+                                        f"{_spread(kind, target, dist.sd)}")
+            records.append(record)
+        table = pd.DataFrame(records).set_index("name") if records else pd.DataFrame()
+        if table.empty:
+            return table
+        if batch_mode(batch_dir) == "sensitivity":
+            for m in oat_members(connections):
+                if m.row is not None and m.row in table.index:
+                    table.loc[m.row, f"value@{m.quantile:g}"] = m.value
+        else:
+            draws = draws_frame(connections)
+            for name in table.index.intersection(draws.columns):
+                kind, target = table.loc[name, "kind"], table.loc[name, "target"]
+                low, high = draws[name].min(), draws[name].max()
+                table.loc[name, "drawn"] = (f"{_display_number(kind, target, low)} to "
+                                            f"{_display_number(kind, target, high)} "
+                                            f"({draws[name].count()} draws)")
+        return table.fillna("")
+    finally:
+        for rc in connections.values():
+            rc.close()

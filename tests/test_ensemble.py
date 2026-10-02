@@ -572,6 +572,14 @@ def test_resolve_member_override_lands_on_quantile_others_central(
     )
     _, draws, mode = _calendar_and_draws(member)
     assert mode == "sensitivity"
+    con = sqlite3.connect(member)
+    try:
+        distributions = con.execute(
+            "SELECT DISTINCT distribution FROM ensemble_draw"
+        ).fetchall()
+    finally:
+        con.close()
+    assert distributions == [("uniform",)]  # recorded, since resolving clears it
     retire_mid = date.fromordinal(round(
         (date(2029, 1, 1).toordinal() + date(2029, 12, 31).toordinal()) / 2
     )).isoformat()
