@@ -271,3 +271,7 @@ def test_swing_heatmap_survives_all_undefined_values() -> None:
 def test_parameters_note_mentions_mode_specific_columns() -> None:
     assert "value@q" in sw.parameters_note("sensitivity")
     assert "drawn" in sw.parameters_note("monte_carlo")
+    # "Hold the others at their center" describes only one-at-a-time members
+    # (PR #26 review): Monte Carlo members draw every row.
+    assert "except one" in sw.parameters_note("sensitivity")
+    assert "except one" not in sw.parameters_note("monte_carlo")

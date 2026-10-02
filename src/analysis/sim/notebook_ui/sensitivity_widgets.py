@@ -375,12 +375,19 @@ def parameters_note(mode: str | None) -> str:
     note = (
         "Each row is a `calendar.csv` row with `vary_*` columns set: **affects** is what it "
         "acts on, **target** whether its date or amount varies, and **range**/**center** "
-        "come from its distribution. The center is the base case every other row holds to."
+        "come from its distribution. The center is the deterministic base case: member 0 "
+        "resolves every row to it."
     )
     if mode == "sensitivity":
-        return note + " The **value@q** columns are what each one-at-a-time member moved it to."
+        return note + (
+            " Each other one-at-a-time member holds every row at its center except one, "
+            "which it moves to the **value@q** shown."
+        )
     if mode == "monte_carlo":
-        return note + " **drawn** is the range the members actually sampled."
+        return note + (
+            " Every other member draws every row at random; **drawn** is the range they "
+            "actually sampled."
+        )
     return note
 
 
