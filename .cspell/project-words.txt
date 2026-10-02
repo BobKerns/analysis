@@ -41,6 +41,7 @@ hexsha
 htmlcov
 huggingface
 IRMAA
+jupyterhub
 kernelspec
 lastrowid
 liab
