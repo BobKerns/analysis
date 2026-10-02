@@ -114,7 +114,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 27) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 28) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -456,6 +456,7 @@ CREATE TABLE ensemble_draw (
     vary_target          TEXT NOT NULL,  -- 'amount' or 'date'
     drawn_value           TEXT NOT NULL, -- in the target column's own unit
     quantile             REAL,           -- ADR-007 §5: OAT override quantile; NULL for a draw or central value
+    distribution         TEXT,           -- ADR-007 §5: the row's vary_distribution, which resolving clears
     PRIMARY KEY (calendar_event_name)
 );
 ```

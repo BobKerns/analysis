@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 from calendar import monthrange
 from datetime import UTC, date, datetime
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,7 @@ from analysis.sim.types import DollarMode
 __all__ = [
     "EnsembleError", "resolve_member", "load_ensemble", "member_run_statuses",
     "latest_ensemble_batch", "members_net_worth_by_month", "summary",
-    "write_batch_manifest", "read_batch_manifest", "oat_plan",
+    "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
 ]
 
 
@@ -83,7 +84,9 @@ def _bound(raw: str | None, target: str) -> float | None:
     return float(raw)
 
 
-def _build_distribution(row: sqlite3.Row, target: str) -> Uniform | TruncatedNormal:
+def build_distribution(row: Mapping[str, Any], target: str) -> Uniform | TruncatedNormal:
+    """The distribution a varying row's ``vary_*`` columns describe, in the
+    target column's own unit (a day ordinal for a date target)."""
     kind = row["vary_distribution"]
     if kind == "uniform":
         return Uniform(low=_bound(row["vary_low"], target), high=_bound(row["vary_high"], target))
@@ -258,10 +261,10 @@ def resolve_member(
                     f"overrides name no unresolved vary_* row: {sorted(unknown)}"
                 )
 
-        draws: list[tuple[str, str, str, float | None]] = []
+        draws: list[tuple[str, str, str, float | None, str]] = []
 
         for row in [r for r in rows if r["vary_target"] == "date"]:
-            dist = _build_distribution(row, "date")
+            dist = build_distribution(row, "date")
             if not isinstance(dist, Uniform):
                 # The loader already rejects any other distribution with a
                 # date target (only a numeric spread ever needs one); this
@@ -278,10 +281,10 @@ def resolve_member(
                 "UPDATE calendar_event SET date = ?, vary_distribution = NULL WHERE id = ?",
                 (drawn.isoformat(), row["id"]),
             )
-            draws.append((row["name"], "date", drawn.isoformat(), quantile))
+            draws.append((row["name"], "date", drawn.isoformat(), quantile, row["vary_distribution"]))
 
         for row in [r for r in rows if r["vary_target"] == "amount"]:
-            dist = _build_distribution(row, "amount")
+            dist = build_distribution(row, "amount")
             value, quantile = _resolve_value(
                 row, dist, as_int=False, overrides=overrides, seed=seed, member_index=member_index,
             )
@@ -306,7 +309,7 @@ def resolve_member(
                     "WHERE id = ?",
                     (target, row["id"]),
                 )
-            draws.append((row["name"], "amount", str(target), quantile))
+            draws.append((row["name"], "amount", str(target), quantile, row["vary_distribution"]))
 
         ensemble_name = con.execute("SELECT name FROM scenario").fetchone()[0]
         con.execute(
@@ -321,7 +324,7 @@ def resolve_member(
         )
         con.executemany(
             "INSERT INTO ensemble_draw(calendar_event_name, vary_target, drawn_value, "
-            "quantile) VALUES (?, ?, ?, ?)",
+            "quantile, distribution) VALUES (?, ?, ?, ?, ?)",
             draws,
         )
         con.commit()

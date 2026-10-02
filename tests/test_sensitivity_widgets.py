@@ -188,13 +188,14 @@ def test_sensitivity_widget_oat_batch(oat_batch: Path, runs_dir: Path,
     assert recipe.value == "retire_alice"
     assert batch.value == oat_batch
     # No response curve for a two-quantile batch.
-    assert _titles(_body(box)) == ["<h4>Overview</h4>", "<h4>At one year</h4>",
-                                   "<h4>Over time</h4>", "<h4>Why</h4>"]
+    assert _titles(_body(box)) == ["<h4>Parameters</h4>", "<h4>Overview</h4>",
+                                   "<h4>At one year</h4>", "<h4>Over time</h4>", "<h4>Why</h4>"]
+    assert any(isinstance(item, pd.DataFrame) and "distribution" in item.columns for item in shown)
     # Every picker change redraws without error.
     dollar_picker, scale_picker = box.children[1].children
     dollar_picker.value = DollarMode.NOMINAL
     scale_picker.value = DeltaScale.RELATIVE
-    why = _body(box).children[3]
+    why = _body(box).children[4]
     parameter_picker, year_picker, attribution_picker = why.children[1].children
     parameter_picker.value = "gift"
     year_picker.value = 2030
@@ -215,8 +216,9 @@ def test_sensitivity_widget_monte_carlo_batch(mc_batch: Path, runs_dir: Path,
     box = sw.sensitivity_widget(runs_dir=runs_dir)
     _recipe, batch = box.children[0].children
     assert "Monte Carlo" in batch.label
-    assert len(_body(box).children) == 2
-    year_picker = _body(box).children[1].children[1].children[0]
+    assert _titles(_body(box))[0] == "<h4>Parameters</h4>"
+    assert len(_body(box).children) == 3
+    year_picker = _body(box).children[2].children[1].children[0]
     year_picker.value = year_picker.options[0]
 
 
@@ -264,3 +266,8 @@ def test_swing_heatmap_survives_all_undefined_values() -> None:
     grid = pd.DataFrame({2030: [float("nan")], 2031: [float("nan")]}, index=["r"])
     sw.heatmap_view(grid, HeatmapValue.SWING, DeltaScale.RELATIVE)
     plt.close("all")
+
+
+def test_parameters_note_mentions_mode_specific_columns() -> None:
+    assert "value@q" in sw.parameters_note("sensitivity")
+    assert "drawn" in sw.parameters_note("monte_carlo")

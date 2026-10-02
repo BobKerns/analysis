@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -352,6 +352,9 @@ CREATE TABLE ensemble_draw (
     -- ADR-007 §5: the OAT override quantile this row was resolved at; NULL
     -- for a random draw or a row resolved to its central value.
     quantile            REAL,
+    -- The row's vary_distribution, which resolving clears from calendar_event
+    -- (ADR-007 §5); NULL in files written before schema 28.
+    distribution        TEXT,
     PRIMARY KEY (calendar_event_name)
 );
 """

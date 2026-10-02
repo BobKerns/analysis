@@ -41,7 +41,7 @@ from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.types import DeltaScale, DollarMode, HeatmapValue
 
 __all__ = [
-    "list_sensitivity_recipes", "list_batches", "parameter_labels",
+    "list_sensitivity_recipes", "list_batches", "parameter_labels", "parameters_note",
     "heatmap_view", "tornado_view", "delta_over_time_view", "attribution_view",
     "response_curve_view", "correlation_view", "r2_view", "sensitivity_widget",
 ]
@@ -370,6 +370,20 @@ def r2_view(table: pd.DataFrame, ax: Any = None) -> Any:
     return ax
 
 
+def parameters_note(mode: str | None) -> str:
+    """The explanation shown above a batch's parameters table."""
+    note = (
+        "Each row is a `calendar.csv` row with `vary_*` columns set: **affects** is what it "
+        "acts on, **target** whether its date or amount varies, and **range**/**center** "
+        "come from its distribution. The center is the base case every other row holds to."
+    )
+    if mode == "sensitivity":
+        return note + " The **value@q** columns are what each one-at-a-time member moved it to."
+    if mode == "monte_carlo":
+        return note + " **drawn** is the range the members actually sampled."
+    return note
+
+
 def _section(title: str, controls: list[widgets.Widget], out: widgets.Output) -> widgets.VBox:
     return widgets.VBox([widgets.HTML(f"<h4>{title}</h4>"), widgets.HBox(controls), out])
 
@@ -412,7 +426,7 @@ def sensitivity_widget(*,
         return cache[key]
 
     outs = {name: widgets.Output() for name in
-            ("heatmap", "tornado", "time", "attribution", "curve", "r2", "rho")}
+            ("parameters", "heatmap", "tornado", "time", "attribution", "curve", "r2", "rho")}
 
     def _draw_heatmap(*_: object) -> None:
         def draw() -> None:
@@ -520,6 +534,18 @@ def sensitivity_widget(*,
         "curve": (_draw_curve, _section(
             "Across the range", [parameter_picker, year_picker], outs["curve"])),
     }
+    parameters_section = _section("Parameters", [], outs["parameters"])
+
+    def _draw_parameters() -> None:
+        def draw() -> None:
+            table = sensitivity.parameters(batch.value)
+            if table.empty:
+                display(Markdown("_This batch has no varying rows._"))
+                return
+            display(Markdown(parameters_note(state["mode"])))
+            display(table)
+        _show(outs["parameters"], draw)
+
     mc_sections = [
         _section("Can per-parameter numbers be trusted?", [], outs["r2"]),
         _section("Which rows could be pinned?", [year_picker], outs["rho"]),
@@ -554,8 +580,10 @@ def sensitivity_widget(*,
                     year_picker.set_years(years)
                 finally:
                     state["loading"] = False
-                body.children = [box for name, (_draw, box) in oat_sections.items()
-                                 if name != "curve" or state["ladder"]]
+                body.children = [parameters_section] + [
+                    box for name, (_draw, box) in oat_sections.items()
+                    if name != "curve" or state["ladder"]
+                ]
             else:
                 table = _correlation()
                 state["loading"] = True
@@ -563,7 +591,7 @@ def sensitivity_widget(*,
                     year_picker.set_years(sorted(int(y) for y in table["year"].unique()))
                 finally:
                     state["loading"] = False
-                body.children = mc_sections
+                body.children = [parameters_section, *mc_sections]
         except EnsembleError as exc:
             message = widgets.Output()
             with message:
@@ -571,6 +599,7 @@ def sensitivity_widget(*,
             body.children = [message]
             state["mode"] = None
             return
+        _draw_parameters()  # depends only on the batch, not on units or pickers
         _draw_all()
 
     def _on_recipe(*_: object) -> None:

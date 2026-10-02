@@ -516,3 +516,47 @@ def test_cli_attribute_relative_and_measure(oat_batch: Path, runs_dir: Path) -> 
     ])
     assert rejected.exit_code == 2
     assert "min_net_worth" in rejected.output
+
+
+# --- the parameters table --------------------------------------------------------
+
+
+def test_parameters_describes_an_oat_batch(oat_batch: Path) -> None:
+    table = sensitivity.parameters(oat_batch)
+    assert list(table.index) == ["gift", "retire_bob_vary"]
+    gift = table.loc["gift"]
+    assert gift["kind"] == "one_off_transfer"
+    assert gift["affects"].startswith("Income_Inheritance → Asset_Brokerage_Joint")
+    assert gift["distribution"] == "uniform"
+    assert gift["range"] == "$10,000 to $30,000"
+    assert gift["center"] == "$20,000"
+    assert (gift["value@0.1"], gift["value@0.9"]) == ("$12,000", "$28,000")
+    retire = table.loc["retire_bob_vary"]
+    assert (retire["target"], retire["affects"]) == ("date", "salary_bob")
+    assert retire["range"] == "2030-06-30 to 2031-06-30"
+
+
+def test_parameters_formats_a_rate_range_as_percent(inflation_batch: Path) -> None:
+    row = sensitivity.parameters(inflation_batch).loc["cpi_vary"]
+    assert row["distribution"] == "uniform"
+    assert row["range"] == "1.50% to 3.50%"
+
+
+def test_parameters_describes_a_monte_carlo_batch(mc_batch: Path) -> None:
+    table = sensitivity.parameters(mc_batch)
+    assert "drawn" in table.columns
+    assert table.loc["gift", "drawn"].endswith("(7 draws)")
+    assert not any(c.startswith("value@") for c in table.columns)
+
+
+def test_parameters_tolerates_batches_before_schema_28(oat_batch: Path) -> None:
+    import sqlite3
+
+    for member in oat_batch.glob("member_*.sqlite3"):
+        con = sqlite3.connect(member)
+        con.execute("ALTER TABLE ensemble_draw DROP COLUMN distribution")
+        con.commit()
+        con.close()
+    table = sensitivity.parameters(oat_batch)
+    assert (table["distribution"] == "").all() and (table["range"] == "").all()
+    assert table.loc["gift", "value@0.1"] == "$12,000"
