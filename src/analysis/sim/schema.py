@@ -334,7 +334,9 @@ CREATE TABLE ensemble_manifest (
     ensemble_name   TEXT NOT NULL,
     member_index    INTEGER NOT NULL,
     member_count    INTEGER NOT NULL,
-    seed            INTEGER NOT NULL,
+    -- NULL for a sensitivity member (ADR-007 §5): an OAT batch draws
+    -- nothing, so there is no seed to record.
+    seed            INTEGER,
     recipe_tree_id  TEXT NOT NULL,
     generated_at    TEXT NOT NULL,
     -- ADR-007 §5: a random Monte Carlo member, or a deterministic OAT

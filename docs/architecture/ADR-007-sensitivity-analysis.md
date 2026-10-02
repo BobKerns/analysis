@@ -65,7 +65,7 @@ An OAT batch for rows `r1 … rk` and quantiles `q1 … qm` is:
 | … | … |
 | last `m` members | `rk` at `q1` … `qm`, everything else central |
 
-No RNG is consulted anywhere in an OAT batch, so it's fully deterministic. `scenario.seed` isn't required, though it's harmless if set. Members are still ordinary intent files run by the unmodified `run_scenario`, and the same failure reporting as ADR-006 §7 applies: reported, not retried, with the intent file kept.
+No RNG is consulted anywhere in an OAT batch, so it's fully deterministic. `scenario.seed` isn't required, is ignored if set, and isn't recorded: a sensitivity member's `ensemble_manifest.seed` is NULL (§5). Members are still ordinary intent files run by the unmodified `run_scenario`, and the same failure reporting as ADR-006 §7 applies: reported, not retried, with the intent file kept.
 
 `--only NAME[,NAME...]` restricts the sweep to a subset of rows; the rest stay central.
 
@@ -104,7 +104,7 @@ The CLI default is CPI-constant dollars. Across a 20-year horizon a nominal swin
 
 ### 5. Provenance: `ensemble_manifest.mode`
 
-`ensemble_manifest` gains `mode TEXT NOT NULL DEFAULT 'monte_carlo'` (`'monte_carlo'` or `'sensitivity'`). `ensemble_draw` gains `quantile REAL`, which is NULL for a random draw, the override quantile for an OAT-perturbed row, and NULL for a row resolved to `central()`. A sensitivity member is self-documenting in the same way an ADR-006 member is.
+`ensemble_manifest` gains `mode TEXT NOT NULL DEFAULT 'monte_carlo'` (`'monte_carlo'` or `'sensitivity'`). `ensemble_draw` gains `quantile REAL`, which is NULL for a random draw, the override quantile for an OAT-perturbed row, and NULL for a row resolved to `central()`. `ensemble_manifest.seed` becomes nullable: NULL for a sensitivity member, which draws nothing, rather than a made-up seed that would suggest it was drawn. A sensitivity member is self-documenting in the same way an ADR-006 member is.
 
 `batch_manifest.json` gains `mode`, plus `quantiles` and `rows` for a sensitivity batch. Both kinds of batch live side by side under `state/runs/<recipe>/<timestamp>/`. `latest_ensemble_batch` gains an optional `mode` filter. `sim ensemble summary` and the fan chart use `mode='monte_carlo'`, because a fan chart over an OAT batch is meaningless. `sim ensemble sensitivity` takes the latest batch of either mode unless `--batch`/`--mode` says otherwise.
 
@@ -112,16 +112,19 @@ The CLI default is CPI-constant dollars. Across a 20-year horizon a nominal swin
 
 #### 6.1 OAT
 
-One table per reporting year, one row per varying row, sorted by `|swing|` descending:
+One table per reporting year, one row per varying row, sorted by `impact` descending:
 
 | column | meaning |
 | --- | --- |
 | `name`, `target` | the row, and whether its `date` or `amount` was moved |
 | `value@q` for each quantile | the resolved values, in display units (dates, dollars, percent), not storage units |
 | `Δ@q` for each quantile | metric(row at q) − metric(base), signed |
-| `swing` | Δ at the highest quantile − Δ at the lowest, the tornado bar length |
-| `share` | absolute swing / Σ absolute swings, at that year |
+| `swing` | Δ at the highest quantile − Δ at the lowest. Signed, for direction only |
+| `impact` | max(0, every Δ) − min(0, every Δ): the spread of the row's outcomes *including the base*. This is the importance measure |
+| `share` | impact / Σ impacts, at that year |
 | `flags` | `asymmetric`, and `bend` (with a ladder of ≥ 4 quantiles) when the response changes slope sharply between rungs (§3) |
+
+Importance is `impact`, not `|swing|`. A row whose low and high quantiles both move the outcome the same way (+$100k at p10 and +$100k at p90, say: a non-monotonic response with the base at a trough) has a swing of zero, but it plainly matters. Ranking, share and pin candidates by swing would rank it last and could drop it. Including the base's zero in the spread also means a one-sided row is measured from where it actually starts.
 
 By default the CLI prints a few years: the first full year, every fifth year, and the final year (`--years 2030,2040,…` overrides this). It also prints one compact **rank-by-year** grid with rows as parameters, columns as reporting years, and cells as rank (or share). A parameter whose rank climbs or falls sharply across the horizon is the time-dependence this ADR exists to surface.
 
@@ -147,7 +150,7 @@ The CLI shows attribution for one row at a time (`--attribute NAME [--by categor
 
 For each varying row and each reporting year, the report gives the Spearman rank correlation `ρ` between the row's `ensemble_draw.drawn_value` and net worth across succeeded members. Member 0 is excluded because it isn't a draw (ADR-006 §9). It uses Spearman rather than Pearson because outcomes are often monotonic but not linear in a parameter. The implementation is pandas `rank().corr()`, so no new dependency.
 
-**Each ρ carries a 95% confidence interval** (Fisher z-transform, using the Spearman variance correction `1.06 / (n − 3)`). The interval is what makes this usable for pruning: a row is reported as a **pin candidate only when the upper bound of its `ρ²` interval is below the threshold** (`--negligible`, default 5%) at *every* reporting year. "Small but too noisy to tell" is reported as *inconclusive*, never as negligible. A row must be negligible at every year, not just at the terminal year, because a parameter that only matters in the short term still matters.
+**Each ρ carries a 95% confidence interval** (Fisher z-transform, using the Spearman variance correction `1.06 / (n − 3)`). The interval is what makes this usable for pruning: a row is reported as a **pin candidate only when the upper bound of its `ρ²` interval is below the threshold** (`--negligible`, default 5%) at *every* reporting year, **and that year's R² meets the trust threshold (§6.2 below)**. "Small but too noisy to tell" is reported as *inconclusive*, never as negligible, and so is "small, but R² is too low to trust a marginal correlation". A row must be negligible at every year, not just at the terminal year, because a parameter that only matters in the short term still matters.
 
 This is what sets the member count. The CI's half-width on ρ near zero is roughly `1.96 × √(1.06 / (n − 3))`:
 
@@ -160,16 +163,16 @@ This is what sets the member count. The CI's half-width on ρ near zero is rough
 
 A fan-chart-sized batch (30–100) is too small to prune with any confidence. **Pruning needs ~100 members at the 5% threshold, and 200+ for finer distinctions or for `k ≥ 5`**, where each parameter's share is naturally smaller. The report states the member count and warns when it's too small for the requested threshold. `docs/guides/ensembles.md` gains a paragraph saying so when this ships, so the guide's existing fan-chart sizing table isn't mistaken for correlation sizing.
 
-**Standardized rank-regression coefficients (SRRC) and R².** Alongside each per-row ρ, the report fits one multiple regression per reporting year: rank-transformed, standardized net worth regressed on all rows' rank-transformed, standardized draws (`numpy.linalg.lstsq`, so no new dependency). The two outputs serve different purposes:
+**Standardized rank-regression coefficients (SRRC) and R².** Alongside each per-row ρ, the report fits one multiple regression per reporting year: rank-transformed, standardized net worth regressed on all rows' rank-transformed, standardized draws (`numpy.linalg.lstsq`; numpy is now declared as a direct dependency rather than relied on through pandas). The two outputs serve different purposes:
 
 - **SRRCᵢ** is each parameter's weight on the outcome, holding the others fixed. Because the draws are independent by construction (ADR-006 §3), SRRCᵢ ≈ ρᵢ and SRRCᵢ² approximates parameter i's share of the outcome variance.
 - **R²** is the single most useful number in this report: *how much of the outcome's variation is explained by monotonic, additive parameter effects at all.*
   - **R² ≥ 0.7:** the per-row rankings and pin candidates can be trusted.
-  - **R² below that:** a substantial part of the outcome comes from interactions or transitions that no per-parameter number captures. The report says so, and suggests the OAT ladder (§3) or Morris (deferred).
+  - **R² below that:** a substantial part of the outcome comes from interactions or transitions that no per-parameter number captures. The report says so, and suggests the OAT ladder (§3) or Morris (deferred). **No row can be a pin candidate in such a year.** With a pure interaction (outcome = x₁·x₂), each row's marginal ρ is near zero even though together they decide the outcome, so a small ρ is no evidence that a row doesn't matter.
 
   R² is per year, so it can be high in the long run and low around a transition year, or the reverse.
 
-Pin-candidate status (above) uses ρ's confidence interval, not SRRC's. With independent draws they agree to within sampling noise, and ρ's interval is the simpler, better-understood one.
+Pin-candidate status (above) uses ρ's confidence interval, not SRRC's, gated on R². With independent draws they agree to within sampling noise, and ρ's interval is the simpler, better-understood one.
 
 ### 7. CLI
 
@@ -205,7 +208,7 @@ This is a separate notebook from `ensemble.ipynb`. It reuses existing pickers, a
 Widgets (`notebook_ui/sensitivity_widgets.py`):
 
 1. **Overview heatmap** (the notebook's first view): parameters × reporting years, with rows sorted by peak share. A `HeatmapValuePicker` (new, `ToggleButtons`) chooses between share, which shows who dominates when, and signed swing, which uses a diverging scale centered on zero and responds to the units pickers. One glance shows which parameter matters when; the widgets below drill into one parameter or one year.
-2. **Tornado at a year:** `ReportYearPicker` + units pickers. Bars are `Δ@q_lo`/`Δ@q_hi` per parameter, sorted by swing at the selected year. Dragging the slider shows the ranking reshuffle over time.
+2. **Tornado at a year:** `ReportYearPicker` + units pickers. Bars are `Δ@q_lo`/`Δ@q_hi` per parameter, sorted by impact at the selected year. Dragging the slider shows the ranking reshuffle over time.
 3. **Δ over time for one parameter:** `ParameterPicker` + units pickers. One line per quantile (Δ against reporting year), with a zero line. A fund-exhaustion plateau, a retirement-date step, or a compounding growth-rate curve each read directly off this chart.
 4. **Response curve** (only for a ladder batch): `ParameterPicker` + `ReportYearPicker`, plotting Δ against quantile. This is where a transition inside a range is visible as a step.
 

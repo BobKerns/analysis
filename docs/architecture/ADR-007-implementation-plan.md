@@ -15,6 +15,7 @@ The phase breakdown below is kept as a record of the design sequencing.
 - `min_net_worth` is a `--measure` choice, not an extra column in the same table.
 - CPI-constant attribution needs an `opening_balances` row when the perturbed row is the inflation rate (ADR-007 §6.1).
 - The rank-by-year grid leaves a row unranked in a year where it has no effect, rather than tying it for first.
+- Review on PR #23: rows rank and share by `impact` (which includes the base) rather than `|swing|`, so a non-monotonic row can't read as negligible; Monte Carlo pin candidates also require R² ≥ 0.7; sensitivity members record a NULL seed; numpy is a declared dependency.
 - The double-entry identity was checked on the prototype before relying on it: it holds to the cent, growth included, with nothing unattributed.
 
 Companion to [ADR-007](ADR-007-sensitivity-analysis.md). Phases are ordered so each ends with a green test suite and a shippable state. As in [ADR-006's plan](ADR-006-implementation-plan.md), `run_scenario`/`open_run_file` are never modified. Every phase adds code *around* them.
@@ -87,7 +88,7 @@ Exit: an OAT batch's member intents can be generated in Python, but there's no C
    - `--sensitivity` with `--ensemble-size` → an OAT batch's size is fixed;
    - `--only`/`--quantiles` without `--sensitivity`.
 
-   A sensitivity batch doesn't require `scenario.seed`.
+   A sensitivity batch doesn't require `scenario.seed`, and records `ensemble_manifest.seed` as NULL (the column becomes nullable).
 3. `sim ensemble summary` and `ensemble_widgets` call `latest_ensemble_batch(..., mode="monte_carlo")`, so a fan chart is never drawn over an OAT batch. When `--batch` explicitly names a sensitivity batch, it fails with a message pointing at `sim ensemble sensitivity`.
 4. Tests (`tests/test_sim_cli.py`):
    - A recipe with two varying rows and default quantiles produces 5 members with the right manifests.
@@ -104,7 +105,7 @@ Exit: `sim run <recipe> --sensitivity` produces a complete OAT batch.
    - `reporting_months(frame) -> list[month]`: the last simulated month of each calendar year, plus the final month if it isn't a December (ADR-007 §4).
    - `oat_deltas(batch_dir, dollars, relative) -> DataFrame`: long form with columns (row, quantile, year, value, delta, base). Relative Δ is NaN where the base is within $1,000 of zero. Computed per member with that member's own deflator, using `net_worth_frame()`'s `nominal`/`cpi_constant` columns.
    - `min_net_worth` to date, as a second measure column.
-   - `oat_table(deltas, year)`: per row, `value@q`, `Δ@q`, `swing`, `share`, `flags`, sorted by absolute swing.
+   - `oat_table(deltas, year)`: per row, `value@q`, `Δ@q`, `swing` (signed, for direction), `impact` (max(0, Δs) − min(0, Δs), including the base), `share` (of impact), `flags`, sorted by impact.
    - `rank_by_year(deltas)`: the parameter × year rank (or share) grid.
    - Flags:
      - `asymmetric`: the ratio of the absolute outer Δs is outside [0.5, 2]. This is a module constant, adjustable once there are real results.
@@ -155,7 +156,7 @@ Exit: "why" is one flag away for any parameter in an OAT batch.
      - a Fisher-z 95% CI using the variance `1.06 / (n − 3)`;
      - SRRC from `numpy.linalg.lstsq` on standardized ranks;
      - per year, R².
-   - Classification per row: `pin_candidate` if the upper bound of ρ² is below `negligible` in every year; `inconclusive` if ρ² is below `negligible` in every year but the CI is too wide; otherwise `keep`.
+   - Classification per row: `pin_candidate` if the upper bound of ρ² is below `negligible` *and* R² ≥ 0.7 in every year; `inconclusive` if ρ² is below `negligible` in every year but the CI is too wide or R² too low; otherwise `keep`.
    - `required_members(negligible) -> int`: inverts the CI half-width formula, for the "too few members" warning.
 2. `cli.py`: the Monte Carlo branch of `sim ensemble sensitivity` prints, per printed year:
    - ρ with its CI, SRRC, and R²;
@@ -165,7 +166,7 @@ Exit: "why" is one flag away for any parameter in an OAT batch.
 4. Tests (synthetic frames, no simulation needed):
    - Outcome = 3·x₁ + 0·x₂ + noise at n = 400: x₂ is a `pin_candidate`, x₁ is `keep`, R² > 0.9.
    - The same at n = 30: x₂ is `inconclusive`.
-   - A pure interaction outcome (x₁·x₂, both centered) gives a low R².
+   - A pure interaction outcome (x₁·x₂, both centered) gives a low R², and both rows are `inconclusive`, never `pin_candidate`.
    - `required_members(0.05)` is ≈ 100.
    - On one real small batch, member 0 is excluded.
 

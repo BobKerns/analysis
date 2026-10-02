@@ -444,7 +444,7 @@ CREATE TABLE ensemble_manifest (
     ensemble_name   TEXT NOT NULL,      -- the recipe scenario's name
     member_index    INTEGER NOT NULL,
     member_count    INTEGER NOT NULL,
-    seed            INTEGER NOT NULL,   -- this member's derived seed
+    seed            INTEGER,            -- this member's derived seed; NULL for a sensitivity member (ADR-007 §5)
     recipe_tree_id  TEXT NOT NULL,      -- the recipe's own scenario_tree_id at generation time
     generated_at    TEXT NOT NULL,
     mode            TEXT NOT NULL DEFAULT 'monte_carlo'   -- ADR-007 §5

@@ -495,7 +495,7 @@ def _run_sensitivity(
     """ADR-007 §2: generate and run an OAT sensitivity batch -- a base member
     (every varying row central) plus one member per (row, quantile). Fully
     deterministic, so ``scenario.seed`` isn't required."""
-    seed, _meta_json, recipe_tree_id = _recipe_identity(recipe_intent_path)
+    _seed, _meta_json, recipe_tree_id = _recipe_identity(recipe_intent_path)
     rows = _unresolved_vary_names(recipe_intent_path)
     try:
         plan = oat_plan(rows, quantiles, only)
@@ -507,7 +507,7 @@ def _run_sensitivity(
     failures = _run_members(
         recipe_intent_path, member_intent_dir, member_runs_dir,
         list(enumerate(plan)),
-        seed=seed or 0, recipe_tree_id=recipe_tree_id, mode="sensitivity",
+        seed=None, recipe_tree_id=recipe_tree_id, mode="sensitivity",
         run_by=run_by, allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
         jobs=jobs,
     )
@@ -577,7 +577,7 @@ def _run_members(
     member_runs_dir: Path,
     specs: list[tuple[int, dict[str, float] | None]],
     *,
-    seed: int,
+    seed: int | None,
     recipe_tree_id: str,
     mode: str,
     run_by: str,
@@ -632,7 +632,7 @@ def _run_members(
 
 def _run_one_member(
     recipe_intent_path: Path, member_intent_path: Path, member_run_path: Path,
-    member_index: int, overrides: dict[str, float] | None, seed: int, member_count: int,
+    member_index: int, overrides: dict[str, float] | None, seed: int | None, member_count: int,
     recipe_tree_id: str, mode: str, run_by: str, allow_dirty_data: bool, allow_dirty_code: bool,
 ) -> str | None:
     """Resolve and run one member; the error text on failure, else ``None``.
@@ -866,7 +866,7 @@ def ensemble_sensitivity(
     """Which of SCENARIO_NAME's varying rows matter, and when (ADR-007).
 
     On a sensitivity batch ('sim run --sensitivity'): per-year one-at-a-time
-    deltas, swings and shares, plus a rank-by-year grid. On a Monte Carlo
+    deltas, swings, impacts and shares, plus a rank-by-year grid. On a Monte Carlo
     batch: per-year Spearman correlations with 95% intervals, rank-regression
     coefficients and R^2, and which rows could be pinned to a literal.
     """
@@ -1024,6 +1024,7 @@ def _report_oat(
             deltas_text = " ".join(f"{_fmt_delta(row[c], relative):>12}" for c in delta_cols)
             click.echo(
                 f"    {name:<24} {deltas_text}  swing={_fmt_delta(row['swing'], relative):>12}  "
+                f"impact={_fmt_delta(row['impact'], relative).lstrip('+'):>11}  "
                 f"share={row['share']:>4.0%}  {row['flags']:<16} ({values})"
             )
 

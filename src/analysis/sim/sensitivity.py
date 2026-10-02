@@ -54,7 +54,7 @@ adjacent rungs exceeds the median slope by more than this factor, or the
 slope changes sign."""
 
 DEFAULT_NEGLIGIBLE = 0.05
-"""Share of the total swing below which a row is a pin candidate -- in every
+"""Share of the total impact below which a row is a pin candidate -- in every
 reporting year, not just the last."""
 
 _FLAT_DOLLARS = 1.0
@@ -183,9 +183,15 @@ def oat_table(
     deltas: pd.DataFrame, year: int, *, measure: str = "net_worth", relative: bool = False,
 ) -> pd.DataFrame:
     """ADR-007 §6.1's per-year tornado table: one row per perturbed varying
-    row, sorted by |swing| descending, with ``value@q`` and ``delta@q`` per
-    quantile, ``swing`` (delta at the highest quantile minus at the lowest),
-    ``share`` (|swing| over the sum of |swing|s) and ``flags``."""
+    row, sorted by ``impact`` descending, with ``value@q`` and ``delta@q`` per
+    quantile, ``swing`` (signed: delta at the highest quantile minus at the
+    lowest, for direction), ``impact`` (the spread of every delta *and the
+    base's zero*: ``max(0, deltas) - min(0, deltas)``), ``share`` (impact
+    over the sum of impacts) and ``flags``.
+
+    Importance is ``impact``, not ``|swing|``: a non-monotonic row whose low
+    and high quantiles both move the outcome the same way has a swing near
+    zero but a large impact, and must not read as negligible."""
     column = "relative" if relative else "delta"
     flat = _FLAT_DOLLARS / 1e5 if relative else _FLAT_DOLLARS
     at = deltas[(deltas["year"] == year) & (deltas["measure"] == measure)]
@@ -201,14 +207,16 @@ def oat_table(
         for q, d in zip(group["quantile"], group[column], strict=True):
             record[f"delta@{q:g}"] = d
         record["swing"] = points.iloc[-1] - points.iloc[0]
+        record["impact"] = max(0.0, points.max()) - min(0.0, points.min())
         record["flags"] = ",".join(_flags(points, flat))
         rows.append(record)
     table = pd.DataFrame(rows).set_index("row")
-    total = table["swing"].abs().sum()
-    table["share"] = table["swing"].abs() / total if total else 0.0
-    order = table["swing"].abs().sort_values(ascending=False).index
-    columns = [c for c in table.columns if c not in ("swing", "share", "flags")]
-    return table.loc[order, [*columns, "swing", "share", "flags"]]
+    total = table["impact"].sum()
+    table["share"] = table["impact"] / total if total else 0.0
+    order = table["impact"].sort_values(ascending=False).index
+    tail = ("swing", "impact", "share", "flags")
+    columns = [c for c in table.columns if c not in tail]
+    return table.loc[order, [*columns, *tail]]
 
 
 def rank_by_year(
@@ -216,7 +224,7 @@ def rank_by_year(
     value: str = "share",
 ) -> pd.DataFrame:
     """Parameter x reporting-year grid (ADR-007 §6.1): ``share``, signed
-    ``swing``, or ``rank`` (1 = largest |swing| that year; NA for a row with
+    ``swing``, or ``rank`` (1 = largest impact that year; NA for a row with
     no effect that year). Rows are sorted
     by peak share, so the overview heatmap reads top-down by importance."""
     if value not in ("share", "swing", "rank"):
@@ -524,16 +532,24 @@ def correlation_table(draws: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataFra
 
 
 def classify(table: pd.DataFrame, negligible: float = DEFAULT_NEGLIGIBLE) -> pd.Series:
-    """Per row: ``pin_candidate`` when the upper bound of rho^2's interval is
-    below ``negligible`` in every year with a varying outcome;
-    ``inconclusive`` when rho^2 itself is below it every year but the
-    interval is too wide to say so; otherwise ``keep``."""
+    """Per row, over every year whose outcome varies at all:
+
+    - ``pin_candidate``: the upper bound of rho^2's interval is below
+      ``negligible`` *and* that year's R^2 meets ``R2_TRUST``, in every year;
+    - ``inconclusive``: rho^2 itself is below ``negligible`` every year, but
+      either an interval is too wide to say so, or R^2 is too low to trust a
+      marginal correlation at all -- with a pure interaction (outcome =
+      x1 * x2) each row's rho is near zero although together they decide
+      the outcome, so a small rho is no evidence of irrelevance there;
+    - ``keep``: otherwise.
+    """
     informative = table.dropna(subset=["rho"])
     result = {}
     for row, group in informative.groupby("row", sort=False):
         upper = np.maximum(group["rho_low"] ** 2, group["rho_high"] ** 2)
         # An interval straddling zero has rho^2 upper bound at its wider end.
-        if (upper < negligible).all():
+        trusted = group["r2"] >= R2_TRUST
+        if ((upper < negligible) & trusted).all():
             result[row] = "pin_candidate"
         elif (group["rho"] ** 2 < negligible).all():
             result[row] = "inconclusive"

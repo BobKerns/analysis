@@ -185,7 +185,7 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
 
 def _resolve_value(
     row: sqlite3.Row, dist: Uniform | TruncatedNormal, *, as_int: bool,
-    overrides: dict[str, float] | None, seed: int, member_index: int,
+    overrides: dict[str, float] | None, seed: int | None, member_index: int,
 ) -> tuple[float, float | None]:
     """One varying row's value on one member, and the OAT quantile it was
     resolved at (``None`` unless ``overrides`` names this row):
@@ -204,6 +204,8 @@ def _resolve_value(
             raise EnsembleError(f"row {row['name']!r}: {e}") from e
     if overrides is not None or member_index == 0:
         return (dist.central_int() if as_int else dist.central()), None
+    if seed is None:
+        raise EnsembleError(f"row {row['name']!r}: a random draw needs the ensemble's seed")
     rng = member_rng(seed, member_index, row["name"])
     return (dist.draw_int(rng) if as_int else dist.draw(rng)), None
 
@@ -212,7 +214,7 @@ def resolve_member(
     recipe_intent_path: Path,
     member_path: Path,
     *,
-    seed: int,
+    seed: int | None,
     member_index: int,
     member_count: int,
     recipe_tree_id: str,
@@ -232,8 +234,12 @@ def resolve_member(
     ``overrides`` (ADR-007 §2) makes this an OAT sensitivity member: a row
     named there resolves to that quantile of its distribution, and every
     other row to its central value, exactly as member 0's does -- no RNG is
-    consulted at all. ``mode`` is recorded in ``ensemble_manifest``.
+    consulted at all. ``mode`` is recorded in ``ensemble_manifest``; a
+    ``sensitivity`` member records a NULL seed, since it draws nothing, and
+    ``seed`` may be ``None`` for one.
     """
+    if mode == "monte_carlo" and seed is None:
+        raise EnsembleError("a Monte Carlo member needs the ensemble's seed")
     if mode not in ENSEMBLE_MODES:
         raise EnsembleError(f"unknown ensemble mode {mode!r}")
     member_path.parent.mkdir(parents=True, exist_ok=True)
@@ -309,7 +315,8 @@ def resolve_member(
             "recipe_tree_id, generated_at, mode) VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ensemble_name, member_index, member_count,
-                _member_seed(seed, member_index), recipe_tree_id, _now_iso(), mode,
+                None if mode == "sensitivity" else _member_seed(seed, member_index),
+                recipe_tree_id, _now_iso(), mode,
             ),
         )
         con.executemany(

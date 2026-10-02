@@ -46,6 +46,29 @@ def test_oat_table_relative_uses_relative_column() -> None:
     assert table.loc["r", "swing"] == pytest.approx(0.03)
 
 
+def test_non_monotonic_row_ranks_by_impact_not_swing() -> None:
+    """Both quantiles move the outcome +$100k: signed swing is 0, but the row
+    matters, so it must rank first and never be a pin candidate (PR #23
+    review)."""
+    frame = _deltas({
+        "u_shaped": {0.1: 100_000, 0.9: 100_000},
+        "monotonic": {0.1: -10_000, 0.9: 10_000},
+    })
+    table = sensitivity.oat_table(frame, 2030)
+    assert table.loc["u_shaped", "swing"] == 0
+    assert table.loc["u_shaped", "impact"] == 100_000
+    assert list(table.index) == ["u_shaped", "monotonic"]
+    assert table.loc["u_shaped", "share"] == pytest.approx(100 / 120)
+    assert "u_shaped" not in sensitivity.pin_candidates(frame, 0.05)
+
+
+def test_impact_includes_the_base() -> None:
+    table = sensitivity.oat_table(_deltas({"r": {0.1: -30_000, 0.9: 50_000}}), 2030)
+    assert table.loc["r", "impact"] == 80_000
+    one_sided = sensitivity.oat_table(_deltas({"r": {0.1: 20_000, 0.9: 50_000}}), 2030)
+    assert one_sided.loc["r", "impact"] == 50_000  # from the base (0) up to the larger
+
+
 def test_asymmetric_flag() -> None:
     table = sensitivity.oat_table(_deltas({
         "one_sided": {0.1: -30_000, 0.9: 0},
@@ -298,10 +321,14 @@ def test_correlation_is_inconclusive_at_small_n() -> None:
     assert status["x2"] == "inconclusive"
 
 
-def test_pure_interaction_gives_low_r2() -> None:
+def test_pure_interaction_is_never_pinned() -> None:
+    """Each row's marginal rho is ~0, but together they decide the outcome:
+    low R^2 must make them inconclusive, not droppable (PR #23 review)."""
     draws, outcomes = _synthetic(400, lambda x1, x2: x1 * x2)
     table = sensitivity.correlation_table(draws, outcomes)
     assert table["r2"].iloc[0] < 0.2
+    status = sensitivity.classify(table, 0.05)
+    assert status.to_dict() == {"x1": "inconclusive", "x2": "inconclusive"}
 
 
 def test_constant_outcome_year_is_skipped_not_negligible() -> None:

@@ -678,6 +678,28 @@ def test_resolve_member_rejects_unknown_override(
         )
 
 
+def test_resolve_member_sensitivity_needs_no_seed_and_records_none(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    _two_varying_rows(append_calendar_row)
+    recipe = load_test_copy().intent_path
+    member = resolve_member(
+        recipe, tmp_path / "m.sqlite3", seed=None, member_index=1, member_count=5,
+        recipe_tree_id="deadbeef", overrides={"checking_rate_vary": 0.1}, mode="sensitivity",
+    )
+    con = sqlite3.connect(member)
+    try:
+        assert con.execute("SELECT seed FROM ensemble_manifest").fetchone() == (None,)
+    finally:
+        con.close()
+    with pytest.raises(EnsembleError, match="seed"):
+        resolve_member(
+            recipe, tmp_path / "mc.sqlite3", seed=None, member_index=1, member_count=5,
+            recipe_tree_id="deadbeef",
+        )
+
+
 def test_resolve_member_rejects_unknown_mode(
     load_test_copy: Callable[[], LoadResult], tmp_path: Path,
 ) -> None:

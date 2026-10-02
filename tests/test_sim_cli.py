@@ -1909,7 +1909,9 @@ def test_sim_run_sensitivity_generates_oat_batch(
 
     con = sqlite3.connect(member_runs[2])  # checking_rate_vary @ 0.9
     try:
-        assert con.execute("SELECT mode FROM ensemble_manifest").fetchone()[0] == "sensitivity"
+        mode, seed = con.execute("SELECT mode, seed FROM ensemble_manifest").fetchone()
+        assert mode == "sensitivity"
+        assert seed is None  # draws nothing, so records no seed (PR #23 review)
         assert con.execute(
             "SELECT amount FROM calendar_event WHERE name = 'checking_rate_vary'"
         ).fetchone()[0] == 49_000

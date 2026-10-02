@@ -152,8 +152,11 @@ Moving every row by an *equally plausible* amount, rather than a fixed
 The report shows, for a few years across the horizon (`--years` to pick
 your own):
 
-- each row's change in net worth at its low and high quantile, its
-  **swing** (high minus low) and its **share** of the total swing;
+- each row's change in net worth at its low and high quantile; its
+  **swing** (high minus low, for direction); its **impact** (how far its
+  outcomes spread, counting the base, so a row that moves things the
+  same way at both ends still counts); and its **share** of the total
+  impact;
 - a **rank-by-year** grid, because importance changes over time. A
   retirement date matters from that date on; a growth rate compounds, so it
   matters little early and a lot late; a fund's return stops mattering when

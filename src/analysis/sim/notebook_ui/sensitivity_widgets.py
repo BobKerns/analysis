@@ -136,7 +136,7 @@ def _quantile_color(q: float, quantiles: list[float]) -> str | tuple[float, ...]
 def _share_cells(data: np.ndarray) -> tuple[dict, str, list[list[str]], np.ndarray]:
     """Sequential 0-100% styling: (imshow kwargs, colorbar label, cell text, dark cells)."""
     text = [[f"{v:.0%}" if v >= 0.005 else "" for v in r] for r in data]
-    return ({"cmap": _SHARE_CMAP, "vmin": 0, "vmax": 1}, "share of the year's total swing",
+    return ({"cmap": _SHARE_CMAP, "vmin": 0, "vmax": 1}, "share of the year's total impact",
             text, data > 0.55)
 
 
@@ -182,7 +182,7 @@ def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax:
 
 def tornado_view(table: pd.DataFrame, scale: DeltaScale, ax: Any = None) -> Any:
     """``sensitivity.oat_table`` at one year: each row's delta at its lowest
-    and highest quantile, largest swing on top."""
+    and highest quantile, largest impact on top."""
     delta_cols = [c for c in table.columns if c.startswith("delta@")]
     low_col, high_col = delta_cols[0], delta_cols[-1]
     if ax is None:
@@ -411,7 +411,7 @@ def sensitivity_widget(*,
             fmt = "{:+.1%}" if scale_picker.value == DeltaScale.RELATIVE else _signed_dollars
             display(table.style.format(
                 {**{c: fmt for c in table.columns if c.startswith("delta@")},
-                 "swing": fmt, "share": "{:.0%}"}, na_rep="-"))
+                 "swing": fmt, "impact": fmt, "share": "{:.0%}"}, na_rep="-"))
         _show(outs["tornado"], draw)
 
     def _draw_time(*_: object) -> None:
