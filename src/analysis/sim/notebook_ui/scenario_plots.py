@@ -129,10 +129,13 @@ def show_calendar_view(sc):
     """
     view = calendar_view(sc)
     formats = {
-        "amount": "${:,.2f}", "date": truncate(7),
+        "date": truncate(7),
         **{c: _breakable for c in ("kind", "scheduled_name", "account_1", "lot_1",
                                    "account_2", "lot_2", "description")},
     }
     styled = view.style.format(formats, na_rep="-").hide(axis="index")
     styled = _fit_to_width(styled, nowrap=["date", "amount"])
-    return scrollable(styled.set_properties(subset=["date"], **{"width": "7ch"}))
+    styled = styled.set_properties(subset=["date"], **{"width": "7ch"})
+    # Amounts are display text now (a rate or dollars, by kind): keep them
+    # right-aligned like the numbers they are.
+    return scrollable(styled.set_properties(subset=["amount"], **{"text-align": "right"}))

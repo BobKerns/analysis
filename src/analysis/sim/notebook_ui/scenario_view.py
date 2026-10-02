@@ -13,6 +13,7 @@ from collections.abc import Callable
 
 import pandas as pd
 
+from analysis.sim import registries
 from analysis.sim.connection import ScenarioConnection
 
 
@@ -153,11 +154,13 @@ _CALENDAR_COLS = [
 
 
 def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
-    """Calendar events, human-readable (dollars), by date.
+    """Calendar events, human-readable, by date.
 
-    ``amount`` is left as a float (NaN where the event carries none) so
-    numeric formatting still works -- display it with
-    ``.style.format({"amount": ...}, na_rep="-")`` rather than filling it here.
+    ``amount`` is display text in the unit its ``kind`` gives it (issue #24):
+    a ``set_rate`` as a percent, a ``set_amount``/``one_off_transfer`` as
+    dollars, ``-`` where the event carries none. One column for both,
+    rather than separate rate and dollar columns, because a calendar row
+    sets exactly one of them.
     """
     events = sc.items("calendar_event").copy()
     resolve = _chain_targets(sc)
@@ -165,8 +168,10 @@ def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
         targets = [resolve(name) for name in events[column]]
         events[column] = [account for account, _lot in targets]
         events[lot_column] = [lot for _account, lot in targets]
-    events["amount"] = events["amount"].apply(lambda c: None if pd.isna(c) else c / 100)
+    events["amount"] = [
+        registries.format_calendar_amount(kind, amount)
+        for kind, amount in zip(events["kind"], events["amount"], strict=True)
+    ]
     events = events[_CALENDAR_COLS].sort_values("date").reset_index(drop=True)
-    text_cols = [c for c in _CALENDAR_COLS if c != "amount"]
-    events[text_cols] = events[text_cols].fillna("-")
+    events[_CALENDAR_COLS] = events[_CALENDAR_COLS].fillna("-")
     return events

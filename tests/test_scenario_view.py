@@ -222,3 +222,15 @@ def test_tables_scroll_sideways_instead_of_overflowing(test_data_dir: Path) -> N
         scheduled = show_scheduled_view(scenario)
     for output in (chains, calendar, scheduled.children[1]):
         assert output.layout.overflow == "auto" and output.layout.max_width == "100%"
+
+
+def test_calendar_view_formats_amount_by_kind(test_data_dir: Path) -> None:
+    """Issue #24: a set_rate amount is a rate in micros, not cents -- 4.5%,
+    not $450.00. Money kinds stay dollars; kinds without an amount show "-"."""
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = calendar_view(scenario)
+    amounts = dict(zip(view["kind"] + ":" + view["date"], view["amount"], strict=True))
+    assert amounts["set_rate:2027-01-31"] == "4.5%"
+    assert amounts["set_amount:2028-07-31"] == "$1,200.00"
+    assert amounts["one_off_transfer:2029-03-31"] == "$50,000.00"
+    assert amounts["retire_scheduled:2028-06-30"] == "-"
