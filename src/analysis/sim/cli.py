@@ -898,9 +898,14 @@ def ensemble_sensitivity(
     if attribute is not None:
         if batch_mode(batch_dir) != "sensitivity":
             raise click.UsageError("--attribute needs a sensitivity batch")
+        if measure != "net_worth":
+            raise click.UsageError(
+                "--attribute decomposes net worth itself; --measure min_net_worth "
+                "has no flow decomposition"
+            )
         _report_attribution(
             scenario_name, batch_dir, attribute, by=by, dollar_mode=dollar_mode,
-            years=requested_years,
+            years=requested_years, relative=relative,
         )
         return
     if batch_mode(batch_dir) == "sensitivity":
@@ -931,17 +936,24 @@ def _report_years(batch_dir: Path, available: list[int], requested: list[int] | 
 
 def _report_attribution(
     scenario_name: str, batch_dir: Path, row: str, *, by: str, dollar_mode: DollarMode,
-    years: list[int] | None,
+    years: list[int] | None, relative: bool = False,
 ) -> None:
     """ADR-007 §6.1: one table per reporting year, one line per key, one
-    column per quantile ``row`` was perturbed to."""
+    column per quantile ``row`` was perturbed to. ``relative`` divides each
+    year by the base's net worth that year (blank where it's near zero)."""
     try:
         by_quantile = sensitivity.oat_attribution(batch_dir, row, by=by, dollars=dollar_mode)
+        if relative:
+            base = sensitivity.base_net_worth(batch_dir, dollar_mode).abs()
+            base = base.where(base >= sensitivity.RELATIVE_NEAR_ZERO_DOLLARS)
+            by_quantile = {q: t.div(base.reindex(t.index), axis=0) for q, t in by_quantile.items()}
     except EnsembleError as exc:
         raise click.ClickException(str(exc)) from None
     tables = list(by_quantile.values())
     years = _report_years(batch_dir, [int(y) for y in tables[0].index], years)
-    unit = "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
+    unit = "% of base" if relative else (
+        "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
+    )
     click.echo(f"attribution {scenario_name} ({batch_dir.name}): {row} by {by}, {unit}")
     quantiles = list(by_quantile)
     keys = [k for t in tables for k in t.columns if k not in (sensitivity.UNATTRIBUTED, sensitivity.TOTAL)]
@@ -951,10 +963,11 @@ def _report_attribution(
         click.echo(f"\n  {year}{' ' * 27}{header}")
         for key in [*keys, sensitivity.UNATTRIBUTED, sensitivity.TOTAL]:
             values = [t.loc[year, key] if key in t.columns else 0.0 for t in tables]
-            if key == sensitivity.UNATTRIBUTED and all(v == 0 for v in values):
+            if key == sensitivity.UNATTRIBUTED and all(v == 0 or pd.isna(v) for v in values):
                 continue
             label = f"{key} (!)" if key == sensitivity.UNATTRIBUTED else key
-            click.echo(f"    {label:<30}" + "".join(f"{v:>+14,.0f}" for v in values))
+            cells = ("-" if pd.isna(v) else f"{v:+.2%}" if relative else f"{v:+,.0f}" for v in values)
+            click.echo(f"    {label:<30}" + "".join(f"{c:>14}" for c in cells))
 
 
 def _report_correlation(
@@ -1035,7 +1048,8 @@ def _report_oat(
             click.echo(
                 f"    {name:<24} {deltas_text}  swing={_fmt_delta(row['swing'], relative):>12}  "
                 f"impact={_fmt_delta(row['impact'], relative).lstrip('+'):>11}  "
-                f"share={row['share']:>4.0%}  {row['flags']:<16} ({values})"
+                f"share={'-' if pd.isna(row['share']) else format(row['share'], '.0%'):>4}  "
+                f"{row['flags']:<16} ({values})"
             )
 
     grid = sensitivity.rank_by_year(deltas, measure=measure, relative=relative, value="rank")

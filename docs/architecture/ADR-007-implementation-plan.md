@@ -25,6 +25,11 @@ The phase breakdown below is kept as a record of the design sequencing.
   - `--negligible` must be in (0, 1);
   - rows with no estimable correlation are `inconclusive`;
   - `ParameterPicker` selects its first parameter rather than leaving its views blank.
+- Third Copilot round on PR #25:
+  - the trust gate uses adjusted R², undefined without residual degrees of freedom;
+  - `oat_deltas` carries the batch's quantile list, so a missing arm is detected even when that quantile failed for every row;
+  - `--attribute` honors `--relative` and rejects `--measure min_net_worth`;
+  - the signed-swing heatmap survives all-undefined values.
 - The double-entry identity was checked on the prototype before relying on it: it holds to the cent, growth included, with nothing unattributed.
 
 Companion to [ADR-007](ADR-007-sensitivity-analysis.md). Phases are ordered so each ends with a green test suite and a shippable state. As in [ADR-006's plan](ADR-006-implementation-plan.md), `run_scenario`/`open_run_file` are never modified. Every phase adds code *around* them.

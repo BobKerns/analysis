@@ -144,7 +144,7 @@ Opening balances are set directly in lot state rather than posted as transfers (
 
 For the two flow axes, an `unattributed` remainder (Δ net worth minus the sum of the rows) is computed and shown whenever it's non-zero. By the identity it should always be zero, so a non-zero value is a ledger bug worth knowing about, not a modeling result. **CPI-constant attribution stays exact:** each member's cumulative flows at Y are deflated by *that member's own* CPI at Y, the same deflator its net worth uses. When the inflation rate is the perturbed row, the base and the member deflate the *same* opening balance by different CPI paths. That difference gets its own `opening_balances` row ("what higher inflation did to the purchasing power of what you started with"), so the rows still sum to the CPI-constant Δ. In nominal dollars, and for any other row, it's zero and omitted. A cent or two of residue from the stored CPI-constant rounding is treated as zero (`UNATTRIBUTED_TOLERANCE`).
 
-The CLI shows attribution for one row at a time (`--attribute NAME [--by category|flow_account|holding_account]`), because a full table for every row is too much for a terminal. The notebook (§9) is the main interface for it.
+The CLI shows attribution for one row at a time (`--attribute NAME [--by category|flow_account|holding_account]`), because a full table for every row is too much for a terminal. `--relative` divides by the base's net worth that year, as in the notebook. `--measure min_net_worth` is rejected with `--attribute`: attribution decomposes net worth itself, and a running minimum has no flow decomposition. The notebook (§9) is the main interface for it.
 
 #### 6.2 Correlation over a Monte Carlo batch
 
@@ -166,7 +166,7 @@ A fan-chart-sized batch (30–100) is too small to prune with any confidence. **
 **Standardized rank-regression coefficients (SRRC) and R².** Alongside each per-row ρ, the report fits one multiple regression per reporting year: rank-transformed, standardized net worth regressed on all rows' rank-transformed, standardized draws (`numpy.linalg.lstsq`; numpy is now declared as a direct dependency rather than relied on through pandas). The two outputs serve different purposes:
 
 - **SRRCᵢ** is each parameter's weight on the outcome, holding the others fixed. Because the draws are independent by construction (ADR-006 §3), SRRCᵢ ≈ ρᵢ and SRRCᵢ² approximates parameter i's share of the outcome variance.
-- **R²** is the single most useful number in this report: *how much of the outcome's variation is explained by monotonic, additive parameter effects at all.*
+- **R²** is the single most useful number in this report: *how much of the outcome's variation is explained by monotonic, additive parameter effects at all.* It's **adjusted** R² (`1 − (1 − R²)(n − 1)/(n − k − 1)` for n members and k rows), because in-sample R² climbs toward 1 as k approaches n whatever the outcome, which would let noise pass the trust gate. With no residual degrees of freedom (n ≤ k + 1) it's undefined, and the year is untrusted.
   - **R² ≥ 0.7:** the per-row rankings and pin candidates can be trusted.
   - **R² below that:** a substantial part of the outcome comes from interactions or transitions that no per-parameter number captures. The report says so, and suggests the OAT ladder (§3) or Morris (deferred). **No row can be a pin candidate in such a year.** With a pure interaction (outcome = x₁·x₂), each row's marginal ρ is near zero even though together they decide the outcome, so a small ρ is no evidence that a row doesn't matter.
 

@@ -464,3 +464,55 @@ def test_cumulative_flows_exclude_both_ytd_kinds(
         assert flows.loc[first_year, "salary"] == pytest.approx(simulated / 100)
     finally:
         rc.close()
+
+
+def test_missing_arm_detected_from_batch_quantiles() -> None:
+    """A one-row batch whose p90 member failed: without the batch's own
+    quantile list, p10 alone would look like the complete set."""
+    frame = _deltas({"only": {0.1: -10_000}})
+    frame.attrs["quantiles"] = (0.1, 0.9)
+    table = sensitivity.oat_table(frame, 2030)
+    assert table.loc["only", "flags"] == "incomplete"
+    assert pd.isna(table.loc["only", "impact"])
+
+
+def test_oat_deltas_carries_batch_quantiles(oat_batch: Path) -> None:
+    assert sensitivity.oat_deltas(oat_batch).attrs["quantiles"] == (0.1, 0.9)
+
+
+def test_adjusted_r2_does_not_trust_overfit_noise() -> None:
+    """With rows approaching members, in-sample R^2 is high for pure noise;
+    adjusted R^2 isn't, so nothing becomes a pin candidate on its strength."""
+    import numpy as np
+
+    rng = np.random.default_rng(5)
+    n, k = 12, 9
+    draws = pd.DataFrame(rng.uniform(size=(n, k)), columns=[f"x{i}" for i in range(k)],
+                         index=[f"member_{i:04d}" for i in range(1, n + 1)])
+    outcomes = pd.DataFrame({2030: rng.normal(size=n)}, index=draws.index)
+    table = sensitivity.correlation_table(draws, outcomes)
+    assert table["r2"].iloc[0] < sensitivity.R2_TRUST
+    assert "pin_candidate" not in set(sensitivity.classify(table, 0.05))
+
+
+def test_adjusted_r2_undefined_without_residual_freedom() -> None:
+    draws, outcomes = _synthetic(4, lambda x1, x2: 3 * x1)  # n - k - 1 = 1
+    three = draws.assign(x3=draws["x1"] * 0.5 + draws["x2"])
+    table = sensitivity.correlation_table(three, outcomes)
+    assert table["r2"].isna().all()
+
+
+def test_cli_attribute_relative_and_measure(oat_batch: Path, runs_dir: Path) -> None:
+    relative = CliRunner().invoke(main, [
+        "sim", "ensemble", "sensitivity", "retire_alice", "--runs-dir", str(runs_dir),
+        "--attribute", "gift", "--years", "2030", "--relative",
+    ])
+    assert relative.exit_code == 0, relative.output
+    assert "gift by category, % of base" in relative.output
+    assert "%" in relative.output.splitlines()[-1]
+    rejected = CliRunner().invoke(main, [
+        "sim", "ensemble", "sensitivity", "retire_alice", "--runs-dir", str(runs_dir),
+        "--attribute", "gift", "--measure", "min_net_worth",
+    ])
+    assert rejected.exit_code == 2
+    assert "min_net_worth" in rejected.output

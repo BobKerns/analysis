@@ -142,7 +142,10 @@ def _share_cells(data: np.ndarray) -> tuple[dict, str, list[list[str]], np.ndarr
 
 def _swing_cells(data: np.ndarray, scale: DeltaScale) -> tuple[dict, str, list[list[str]], np.ndarray]:
     """Diverging styling centered on zero, symmetric about the largest |swing|."""
-    bound = float(np.nanmax(np.abs(data))) or 1.0
+    finite = np.abs(data[np.isfinite(data)])
+    # Every swing undefined (relative mode, base near zero throughout) leaves
+    # nothing to scale by; any positive bound keeps the norm valid.
+    bound = float(finite.max()) if finite.size and finite.max() > 0 else 1.0
     fmt = (lambda v: f"{v:+.0%}") if scale == DeltaScale.RELATIVE else (lambda v: f"{v / 1000:+,.0f}k")
     text = [[fmt(v) if abs(v) > bound * 0.02 else "" for v in r] for r in data]
     return ({"cmap": _SWING_CMAP, "norm": TwoSlopeNorm(vmin=-bound, vcenter=0, vmax=bound)},

@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from analysis.sim.connection import RunConnection, year_end_values
-from analysis.sim.ensemble import EnsembleError, load_ensemble
+from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
 from analysis.sim.types import DollarMode
 
 __all__ = [
@@ -31,7 +31,7 @@ __all__ = [
     "DEFAULT_NEGLIGIBLE", "oat_members", "member_measures", "oat_deltas", "oat_table",
     "rank_by_year", "pin_candidates", "default_report_years", "months_per_year",
     "display_value", "ATTRIBUTION_AXES", "OPENING_BALANCES", "UNATTRIBUTED", "TOTAL",
-    "attribution", "oat_attribution", "R2_TRUST", "draws_frame", "outcomes_frame",
+    "attribution", "oat_attribution", "base_net_worth", "R2_TRUST", "draws_frame", "outcomes_frame",
     "rho_interval", "required_members", "correlation_table", "classify", "mc_correlation",
 ]
 
@@ -157,7 +157,12 @@ def oat_deltas(batch_dir: Path, dollars: DollarMode = DollarMode.CPI_CONSTANT) -
             rc.close()
     if not frames:
         raise EnsembleError(f"{batch_dir}: no succeeded perturbed members")
-    return pd.concat(frames, ignore_index=True)
+    result = pd.concat(frames, ignore_index=True)
+    # The batch's own quantile list (ADR-007 §5), so oat_table can tell a
+    # missing arm even when that quantile failed for every row.
+    manifest = read_batch_manifest(batch_dir) or {}
+    result.attrs["quantiles"] = tuple(manifest.get("quantiles") or sorted(result["quantile"].unique()))
+    return result
 
 
 def _flags(points: pd.Series, flat: float) -> list[str]:
@@ -204,7 +209,7 @@ def oat_table(
     at = deltas[(deltas["year"] == year) & (deltas["measure"] == measure)]
     if at.empty:
         raise EnsembleError(f"no deltas for year {year} ({measure})")
-    expected = set(deltas["quantile"].unique())
+    expected = set(deltas.attrs.get("quantiles") or deltas["quantile"].unique())
     rows = []
     for name, group in at.groupby("row", sort=False):
         group = group.sort_values("quantile")
@@ -420,6 +425,20 @@ def attribution(
     return delta
 
 
+def base_net_worth(batch_dir: Path, dollars: DollarMode = DollarMode.CPI_CONSTANT) -> pd.Series:
+    """Year-end net worth of an OAT batch's base member, in ``dollars`` --
+    the denominator for relative attribution."""
+    connections = load_ensemble(batch_dir)
+    try:
+        base = next((m for m in oat_members(connections) if m.row is None), None)
+        if base is None:
+            raise EnsembleError(f"{batch_dir}: no succeeded base member")
+        return member_measures(connections[base.stem], dollars)["net_worth"]
+    finally:
+        for rc in connections.values():
+            rc.close()
+
+
 def oat_attribution(
     batch_dir: Path, row: str, *, by: str = "category",
     dollars: DollarMode = DollarMode.CPI_CONSTANT,
@@ -515,9 +534,10 @@ def _ranks(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
 def correlation_table(draws: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataFrame:
     """ADR-007 §6.2: per (row, year): Spearman ``rho`` with its 95% interval
     (``rho_low``/``rho_high``), the standardized rank-regression coefficient
-    ``srrc``, and that year's regression ``r2`` (repeated per row). A year
-    whose outcome doesn't vary across members has NaN throughout -- there's
-    nothing to explain."""
+    ``srrc``, and that year's adjusted regression ``r2`` (repeated per row;
+    NaN, so untrusted, when there are too few members for the number of
+    rows). A year whose outcome doesn't vary across members has NaN
+    throughout -- there's nothing to explain."""
     members = draws.index.intersection(outcomes.index)
     draws, outcomes = draws.loc[members], outcomes.loc[members]
     n = len(members)
@@ -537,6 +557,12 @@ def correlation_table(draws: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataFra
         coef, *_ = np.linalg.lstsq(x.to_numpy(), y.to_numpy(), rcond=None)
         fitted = x.to_numpy() @ coef
         r2 = 1 - float(np.sum((y.to_numpy() - fitted) ** 2)) / float(np.sum(y.to_numpy() ** 2))
+        # Adjusted for the number of rows: in-sample R^2 climbs toward 1 as
+        # rows approach members whatever the outcome, which would let noise
+        # pass the trust gate. With no residual degrees of freedom there's
+        # nothing to adjust from, so it's undefined (and untrusted).
+        k = x.shape[1]
+        r2 = 1 - (1 - r2) * (n - 1) / (n - k - 1) if n - k - 1 > 0 else np.nan
         for i, row in enumerate(draws.columns):
             rho = float(draws[row].rank().corr(outcomes[year].rank()))
             low, high = rho_interval(rho, n)

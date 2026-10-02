@@ -258,3 +258,9 @@ def test_sensitivity_widget_attribution_follows_delta_scale(
     styled = [s for s in shown if hasattr(s, "data") and "q=0.1" in getattr(s, "data", pd.DataFrame()).columns]
     assert styled, "attribution table redrawn"
     assert styled[-1].data.abs().max().max() < 1  # fractions of base, not dollars
+
+
+def test_swing_heatmap_survives_all_undefined_values() -> None:
+    grid = pd.DataFrame({2030: [float("nan")], 2031: [float("nan")]}, index=["r"])
+    sw.heatmap_view(grid, HeatmapValue.SWING, DeltaScale.RELATIVE)
+    plt.close("all")
