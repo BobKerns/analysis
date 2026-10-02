@@ -45,7 +45,7 @@ def list_ensemble_recipes(runs_dir: Path) -> list[str]:
         return []
     return sorted(
         p.name for p in runs_dir.iterdir()
-        if p.is_dir() and latest_ensemble_batch(p) is not None
+        if p.is_dir() and latest_ensemble_batch(p, mode="monte_carlo") is not None
     )
 
 
@@ -127,7 +127,7 @@ def ensemble_widget(*,
         out.clear_output(wait=True)
         if not dropdown.value:
             return
-        batch_dir = latest_ensemble_batch(runs_dir / dropdown.value)
+        batch_dir = latest_ensemble_batch(runs_dir / dropdown.value, mode="monte_carlo")
         statuses = member_run_statuses(batch_dir)
         failed_count = sum(1 for status in statuses.values() if status != "succeeded")
         connections = load_ensemble(batch_dir)

@@ -43,7 +43,7 @@ __all__ = [
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
     "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
-    "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
+    "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
     "read_current_scenario", "resolve_scenario_name", "find_state_dir",
     "growth_rule_name",
     "write_current_scenario",
@@ -182,7 +182,17 @@ without ``loader.py`` importing from ``ensemble.py`` (which itself imports
 from here)."""
 
 
-def latest_ensemble_batch(recipe_dir: Path) -> Path | None:
+def batch_mode(batch_dir: Path) -> str:
+    """A batch's ADR-007 §5 mode from its ``batch_manifest.json``:
+    ``"monte_carlo"`` when absent (every batch written before ADR-007, or
+    one synthesized directly by a test, is a Monte Carlo batch)."""
+    path = Path(batch_dir) / BATCH_MANIFEST_FILENAME
+    if not path.is_file():
+        return "monte_carlo"
+    return json.loads(path.read_text()).get("mode", "monte_carlo")
+
+
+def latest_ensemble_batch(recipe_dir: Path, mode: str | None = None) -> Path | None:
     """The most recently generated batch subfolder under ``recipe_dir`` that
     holds at least one member run file or a batch manifest, or ``None`` if
     there isn't one.
@@ -195,6 +205,9 @@ def latest_ensemble_batch(recipe_dir: Path) -> Path | None:
     no member file was ever created for any of them, but the batch itself
     (and its recorded failures) still needs to be discoverable, not silently
     invisible.
+
+    ``mode`` (ADR-007 §5) restricts the search to ``"monte_carlo"`` or
+    ``"sensitivity"`` batches; ``None`` accepts either.
     """
     recipe_dir = Path(recipe_dir)
     if not recipe_dir.is_dir():
@@ -203,7 +216,7 @@ def latest_ensemble_batch(recipe_dir: Path) -> Path | None:
         p for p in recipe_dir.iterdir()
         if p.is_dir() and (
             any(p.glob("member_*.sqlite3")) or (p / BATCH_MANIFEST_FILENAME).is_file()
-        )
+        ) and (mode is None or batch_mode(p) == mode)
     )
     return batches[-1] if batches else None
 

@@ -1,10 +1,12 @@
-"""ADR-006 Phases 2 and 4: resolving a recipe intent, and summarizing members."""
+"""ADR-006 Phases 2 and 4: resolving a recipe intent, and summarizing members;
+ADR-007 Phase 1: OAT sensitivity members."""
 
 from __future__ import annotations
 
 import shutil
 import sqlite3
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from analysis.sim.ensemble import (
     load_ensemble,
     member_run_statuses,
     members_net_worth_by_month,
+    oat_plan,
     read_batch_manifest,
     resolve_member,
     summary,
@@ -520,3 +523,213 @@ def test_read_batch_manifest_round_trips(tmp_path: Path) -> None:
 
 def test_read_batch_manifest_none_when_absent(tmp_path: Path) -> None:
     assert read_batch_manifest(tmp_path) is None
+
+
+# --- ADR-007 Phase 1: OAT sensitivity members ------------------------------
+
+
+def _two_varying_rows(append_calendar_row: Callable[..., None]) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    append_calendar_row(
+        date="2027-06-30", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="uniform",
+        vary_low="2029-01-01", vary_high="2029-12-31",
+    )
+
+
+def _calendar_and_draws(member: Path) -> tuple[list[tuple], list[tuple], str]:
+    con = sqlite3.connect(member)
+    try:
+        calendar = con.execute(
+            "SELECT name, date, amount, vary_distribution FROM calendar_event ORDER BY id"
+        ).fetchall()
+        draws = con.execute(
+            "SELECT calendar_event_name, drawn_value, quantile FROM ensemble_draw "
+            "ORDER BY calendar_event_name"
+        ).fetchall()
+        mode = con.execute("SELECT mode FROM ensemble_manifest").fetchone()[0]
+    finally:
+        con.close()
+    return calendar, draws, mode
+
+
+def test_resolve_member_override_lands_on_quantile_others_central(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    _two_varying_rows(append_calendar_row)
+    recipe = load_test_copy().intent_path
+    member = resolve_member(
+        recipe, tmp_path / "member_0001.sqlite3",
+        seed=1, member_index=1, member_count=5, recipe_tree_id="deadbeef",
+        overrides={"checking_rate_vary": 0.1}, mode="sensitivity",
+    )
+    _, draws, mode = _calendar_and_draws(member)
+    assert mode == "sensitivity"
+    retire_mid = date.fromordinal(round(
+        (date(2029, 1, 1).toordinal() + date(2029, 12, 31).toordinal()) / 2
+    )).isoformat()
+    assert draws == [
+        ("checking_rate_vary", "41000", 0.1),
+        ("retire_bob_vary", retire_mid, None),
+    ]
+
+
+def test_resolve_member_date_override_uses_quantile(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    _two_varying_rows(append_calendar_row)
+    recipe = load_test_copy().intent_path
+    member = resolve_member(
+        recipe, tmp_path / "member_0004.sqlite3",
+        seed=1, member_index=4, member_count=5, recipe_tree_id="deadbeef",
+        overrides={"retire_bob_vary": 1.0}, mode="sensitivity",
+    )
+    _, draws, _ = _calendar_and_draws(member)
+    assert ("retire_bob_vary", "2029-12-31", 1.0) in draws
+
+
+def test_oat_base_member_matches_monte_carlo_member_zero(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """ADR-007 §3: the OAT base *is* ADR-006's member 0, row for row."""
+    _two_varying_rows(append_calendar_row)
+    recipe = load_test_copy().intent_path
+    mc = resolve_member(
+        recipe, tmp_path / "mc" / "member_0000.sqlite3",
+        seed=1, member_index=0, member_count=5, recipe_tree_id="deadbeef",
+    )
+    oat = resolve_member(
+        recipe, tmp_path / "oat" / "member_0000.sqlite3",
+        seed=1, member_index=0, member_count=5, recipe_tree_id="deadbeef",
+        overrides={}, mode="sensitivity",
+    )
+    mc_calendar, mc_draws, mc_mode = _calendar_and_draws(mc)
+    oat_calendar, oat_draws, oat_mode = _calendar_and_draws(oat)
+    assert mc_calendar == oat_calendar
+    assert mc_draws == oat_draws
+    assert (mc_mode, oat_mode) == ("monte_carlo", "sensitivity")
+
+
+def test_resolve_member_with_overrides_never_draws(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """A nonzero member index with overrides still resolves the un-overridden
+    rows centrally -- never from member_rng."""
+    _two_varying_rows(append_calendar_row)
+    recipe = load_test_copy().intent_path
+    a = resolve_member(
+        recipe, tmp_path / "a.sqlite3", seed=1, member_index=3, member_count=5,
+        recipe_tree_id="deadbeef", overrides={"retire_bob_vary": 0.9}, mode="sensitivity",
+    )
+    b = resolve_member(
+        recipe, tmp_path / "b.sqlite3", seed=999, member_index=7, member_count=5,
+        recipe_tree_id="deadbeef", overrides={"retire_bob_vary": 0.9}, mode="sensitivity",
+    )
+    assert _calendar_and_draws(a)[1] == _calendar_and_draws(b)[1]
+
+
+def test_resolve_member_ramp_at_quantile_lands_on_perturbed_target(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-06-30", kind="set_rate", name="checking_rate_ramp",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="50000", vary_high="70000", vary_ramp_months="3",
+    )
+    recipe = load_test_copy().intent_path
+    member = resolve_member(
+        recipe, tmp_path / "member_0001.sqlite3",
+        seed=1, member_index=1, member_count=3, recipe_tree_id="deadbeef",
+        overrides={"checking_rate_ramp": 0.9}, mode="sensitivity",
+    )
+    con = sqlite3.connect(member)
+    try:
+        last = con.execute(
+            "SELECT date, amount FROM calendar_event WHERE series = 'Asset_Checking' "
+            "AND kind = 'set_rate' AND date >= '2027-06-30' ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        con.close()
+    assert last == ("2027-09-30", 68_000)
+
+
+def test_resolve_member_rejects_unknown_override(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    _two_varying_rows(append_calendar_row)
+    recipe = load_test_copy().intent_path
+    with pytest.raises(EnsembleError, match="no_such_row"):
+        resolve_member(
+            recipe, tmp_path / "m.sqlite3", seed=1, member_index=1, member_count=3,
+            recipe_tree_id="deadbeef", overrides={"no_such_row": 0.1}, mode="sensitivity",
+        )
+
+
+def test_resolve_member_rejects_unknown_mode(
+    load_test_copy: Callable[[], LoadResult], tmp_path: Path,
+) -> None:
+    with pytest.raises(EnsembleError, match="mode"):
+        resolve_member(
+            load_test_copy().intent_path, tmp_path / "m.sqlite3", seed=1,
+            member_index=0, member_count=1, recipe_tree_id="deadbeef", mode="bogus",
+        )
+
+
+def test_oat_plan_layout() -> None:
+    plan = oat_plan(["b_row", "a_row"], (0.1, 0.9))
+    assert plan == [{}, {"a_row": 0.1}, {"a_row": 0.9}, {"b_row": 0.1}, {"b_row": 0.9}]
+    assert len(oat_plan(["a", "b", "c"], (0.1, 0.25, 0.75, 0.9))) == 1 + 3 * 4
+
+
+def test_oat_plan_only_restricts_rows() -> None:
+    assert oat_plan(["a", "b", "c"], (0.1, 0.9), only=["b"]) == [{}, {"b": 0.1}, {"b": 0.9}]
+    with pytest.raises(EnsembleError, match="nope"):
+        oat_plan(["a", "b"], (0.1, 0.9), only=["nope"])
+
+
+def test_sensitivity_batch_manifest_round_trips(tmp_path: Path) -> None:
+    write_batch_manifest(
+        tmp_path, member_count=5, failures=[], mode="sensitivity",
+        quantiles=(0.1, 0.9), rows=["a", "b"],
+    )
+    manifest = read_batch_manifest(tmp_path)
+    assert manifest["mode"] == "sensitivity"
+    assert manifest["quantiles"] == [0.1, 0.9]
+    assert manifest["rows"] == ["a", "b"]
+
+
+def test_read_batch_manifest_defaults_old_batches_to_monte_carlo(tmp_path: Path) -> None:
+    (tmp_path / "batch_manifest.json").write_text('{"member_count": 3, "failures": []}')
+    assert read_batch_manifest(tmp_path)["mode"] == "monte_carlo"
+
+
+def test_latest_ensemble_batch_filters_by_mode(tmp_path: Path) -> None:
+    recipe_dir = tmp_path / "runs" / "retire_alice"
+    mc = recipe_dir / "2026-01-01T000000Z"
+    oat = recipe_dir / "2026-06-01T000000Z"
+    legacy = recipe_dir / "2025-06-01T000000Z"  # no manifest: Monte Carlo
+    for d in (mc, oat, legacy):
+        d.mkdir(parents=True)
+        (d / "member_0000.sqlite3").touch()
+    write_batch_manifest(mc, member_count=1, failures=[])
+    write_batch_manifest(oat, member_count=1, failures=[], mode="sensitivity",
+                         quantiles=(0.1, 0.9), rows=[])
+    assert latest_ensemble_batch(recipe_dir) == oat
+    assert latest_ensemble_batch(recipe_dir, mode="monte_carlo") == mc
+    assert latest_ensemble_batch(recipe_dir, mode="sensitivity") == oat
+    mc_manifest = mc / "batch_manifest.json"
+    mc_manifest.unlink()
+    assert latest_ensemble_batch(recipe_dir, mode="monte_carlo") == mc  # legacy-style

@@ -25,7 +25,7 @@ from analysis.expenses.baseline import (
     load_expense_account_map,
     replace_generated_scheduled_rows,
 )
-from analysis.sim import allocation, prices, registries
+from analysis.sim import allocation, prices, registries, sensitivity
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import open_run, open_scenario, year_end_values
 from analysis.sim.holdings import (
@@ -34,13 +34,19 @@ from analysis.sim.holdings import (
     render_holdings_table,
     symbol_holders,
 )
-from analysis.sim.distributions import DistributionError, resolve_truncated_normal_bounds
+from analysis.sim.distributions import (
+    DistributionError,
+    parse_quantiles,
+    resolve_truncated_normal_bounds,
+)
 from analysis.sim.engine import run_scenario
 from analysis.sim.ensemble import (
+    EnsembleError,
     latest_ensemble_batch,
     load_ensemble,
     member_run_statuses,
     members_net_worth_by_month,
+    oat_plan,
     resolve_member,
     write_batch_manifest,
 )
@@ -52,6 +58,7 @@ from analysis.sim.loader import (
     DataDirtyRefused,
     LoadError,
     ScenarioRef,
+    batch_mode,
     list_scenario_names,
     load_scenario,
     open_intent_db,
@@ -65,7 +72,7 @@ from analysis.sim.quicken import (
     parse_net_worth_export,
 )
 import analysis.sim.scenario as sc
-from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode
 
 
 def _resolve_state_dir(
@@ -254,6 +261,24 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
     help="Member count for an ensemble recipe, overriding scenario.meta_json.ensemble_size "
          "(ADR-006). Ignored for an ordinary (non-recipe) scenario.",
 )
+@click.option(
+    "--sensitivity", is_flag=True, default=False,
+    help="Run a one-at-a-time sensitivity batch over the recipe's varying rows "
+         "instead of a Monte Carlo ensemble (ADR-007).",
+)
+@click.option(
+    "--only", "only", default=None, metavar="NAME[,NAME...]",
+    help="With --sensitivity: perturb only these varying rows; the rest stay central.",
+)
+@click.option(
+    "--jobs", type=int, default=1, show_default=True,
+    help="Ensemble/sensitivity members to run in parallel; 0 = one per CPU (ADR-007 §8).",
+)
+@click.option(
+    "--quantiles", "quantiles_text", default=None, metavar="Q[,Q...]",
+    help="With --sensitivity: quantiles each row is perturbed to "
+         "(default 0.1,0.9; e.g. 0.1,0.25,0.4,0.6,0.75,0.9 for a response curve).",
+)
 def run(
     scenario_name: str | None,
     data_dir: Path | None,
@@ -263,6 +288,10 @@ def run(
     allow_dirty_data: bool,
     allow_dirty_code: bool,
     ensemble_size: int | None,
+    sensitivity: bool,
+    only: str | None,
+    quantiles_text: str | None,
+    jobs: int,
 ) -> None:
     """Load <scenario> fresh from the data repo, then run it and write a new run file.
 
@@ -274,8 +303,13 @@ def run(
     this only needs the already-built intent file, unchanged.
 
     If the loaded intent still has any unresolved ``vary_distribution`` row
-    (ADR-006), this generates and runs an ensemble instead of a single run.
+    (ADR-006), this generates and runs an ensemble instead of a single run;
+    with ``--sensitivity``, a one-at-a-time sensitivity batch (ADR-007).
     """
+    quantiles, only_names, jobs = _batch_options(
+        sensitivity=sensitivity, ensemble_size=ensemble_size, only=only,
+        quantiles_text=quantiles_text, jobs=jobs,
+    )
     explicit = scenario_name is not None
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
@@ -308,12 +342,26 @@ def run(
 
     resolved_by = run_by or os.environ.get("USER") or "unknown"
 
+    if sensitivity:
+        if not _has_unresolved_vary(intent_path):
+            raise click.ClickException(
+                f"{scenario_name}: nothing to perturb -- no calendar row has "
+                "vary_distribution set (ADR-007)"
+            )
+        _run_sensitivity(
+            scenario_name, intent_path,
+            resolved_intent_dir, resolved_runs_dir,
+            quantiles=quantiles, only=only_names, run_by=resolved_by,
+            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code, jobs=jobs,
+        )
+        return
+
     if _has_unresolved_vary(intent_path):
         _run_ensemble(
             scenario_name, intent_path,
             resolved_intent_dir, resolved_runs_dir,
             ensemble_size=ensemble_size, run_by=resolved_by,
-            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code, jobs=jobs,
         )
         return
 
@@ -333,6 +381,32 @@ def run(
         click.echo(str(exc), err=True)
         raise click.ClickException("data dirty; refusing to run") from None
     click.echo(f"run {out}")
+
+
+def _batch_options(
+    *, sensitivity: bool, ensemble_size: int | None, only: str | None,
+    quantiles_text: str | None, jobs: int,
+) -> tuple[tuple[float, ...], list[str] | None, int]:
+    """Validate ``sim run``'s ensemble/sensitivity options: (quantiles,
+    ``--only`` names, worker count)."""
+    if not sensitivity and (only is not None or quantiles_text is not None):
+        raise click.UsageError("--only and --quantiles require --sensitivity")
+    if sensitivity and ensemble_size is not None:
+        raise click.UsageError(
+            "--sensitivity and --ensemble-size are exclusive: a sensitivity batch's "
+            "size is fixed by its rows and quantiles"
+        )
+    try:
+        quantiles = (
+            parse_quantiles(quantiles_text) if quantiles_text is not None
+            else registries.DEFAULT_SENSITIVITY_QUANTILES
+        )
+    except DistributionError as exc:
+        raise click.UsageError(str(exc)) from None
+    only_names = [n.strip() for n in only.split(",") if n.strip()] if only else None
+    if jobs < 0:
+        raise click.UsageError(f"--jobs must be 0 (one per CPU) or positive (got {jobs})")
+    return quantiles, only_names, jobs or os.cpu_count() or 1
 
 
 def _has_unresolved_vary(intent_path: Path) -> bool:
@@ -358,6 +432,7 @@ def _run_ensemble(
     run_by: str,
     allow_dirty_data: bool,
     allow_dirty_code: bool,
+    jobs: int = 1,
 ) -> None:
     """ADR-006 §7: generate and run every member of a recipe scenario.
 
@@ -365,14 +440,7 @@ def _run_ensemble(
     (kept, not discarded) is the specific input that failed, one open-file
     away.
     """
-    con = sqlite3.connect(recipe_intent_path)
-    try:
-        seed, meta_json, recipe_tree_id = con.execute(
-            "SELECT scenario.seed, scenario.meta_json, intent_manifest.scenario_tree_id "
-            "FROM scenario, intent_manifest"
-        ).fetchone()
-    finally:
-        con.close()
+    seed, meta_json, recipe_tree_id = _recipe_identity(recipe_intent_path)
     if seed is None:
         raise click.ClickException(
             f"{scenario_name}: ensemble recipe requires scenario.seed to be set"
@@ -394,13 +462,96 @@ def _run_ensemble(
             f"{scenario_name}: {source} must be a positive integer (got {member_count})"
         )
 
-    # One timestamped batch subfolder per invocation -- like an ordinary run
-    # file, a batch is never overwritten, so rerunning a recipe (more members,
-    # a tweaked distribution, ...) keeps every previous batch's history. A
-    # disambiguating suffix covers two runs within the same wall-clock second.
-    # Reserved by exclusive mkdir (no separate existence check first), so two
-    # concurrent `sim run` processes can never both win the same batch name
-    # and race on the same member files.
+    batch, member_intent_dir, member_runs_dir = _reserve_batch(scenario_name, intent_dir, runs_dir)
+    failures = _run_members(
+        recipe_intent_path, member_intent_dir, member_runs_dir,
+        [(i, None) for i in range(member_count)],
+        seed=seed, recipe_tree_id=recipe_tree_id, mode="monte_carlo",
+        run_by=run_by, allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+        jobs=jobs,
+    )
+    # A member whose resolve_member call itself raised never got a run file
+    # at all -- member_run_statuses can only see files that exist, so this
+    # batch-level record is the only place a failure like that (or every
+    # member failing, leaving no member_*.sqlite3 at all) is still visible
+    # to a later `sim ensemble summary`/notebook widget.
+    write_batch_manifest(member_runs_dir, member_count=member_count, failures=failures)
+    _report_batch(f"ensemble {scenario_name} ({batch})", member_count, failures)
+
+
+def _run_sensitivity(
+    scenario_name: str,
+    recipe_intent_path: Path,
+    intent_dir: Path,
+    runs_dir: Path,
+    *,
+    quantiles: tuple[float, ...],
+    only: list[str] | None,
+    run_by: str,
+    allow_dirty_data: bool,
+    allow_dirty_code: bool,
+    jobs: int = 1,
+) -> None:
+    """ADR-007 §2: generate and run an OAT sensitivity batch -- a base member
+    (every varying row central) plus one member per (row, quantile). Fully
+    deterministic, so ``scenario.seed`` isn't required."""
+    seed, _meta_json, recipe_tree_id = _recipe_identity(recipe_intent_path)
+    rows = _unresolved_vary_names(recipe_intent_path)
+    try:
+        plan = oat_plan(rows, quantiles, only)
+    except EnsembleError as exc:
+        raise click.ClickException(f"{scenario_name}: {exc}") from None
+    perturbed = sorted({name for overrides in plan for name in overrides})
+
+    batch, member_intent_dir, member_runs_dir = _reserve_batch(scenario_name, intent_dir, runs_dir)
+    failures = _run_members(
+        recipe_intent_path, member_intent_dir, member_runs_dir,
+        list(enumerate(plan)),
+        seed=seed or 0, recipe_tree_id=recipe_tree_id, mode="sensitivity",
+        run_by=run_by, allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+        jobs=jobs,
+    )
+    write_batch_manifest(
+        member_runs_dir, member_count=len(plan), failures=failures,
+        mode="sensitivity", quantiles=quantiles, rows=perturbed,
+    )
+    _report_batch(f"sensitivity {scenario_name} ({batch})", len(plan), failures)
+
+
+def _recipe_identity(recipe_intent_path: Path) -> tuple[int | None, str | None, str]:
+    """(scenario.seed, scenario.meta_json, intent_manifest.scenario_tree_id)."""
+    con = sqlite3.connect(recipe_intent_path)
+    try:
+        return con.execute(
+            "SELECT scenario.seed, scenario.meta_json, intent_manifest.scenario_tree_id "
+            "FROM scenario, intent_manifest"
+        ).fetchone()
+    finally:
+        con.close()
+
+
+def _unresolved_vary_names(intent_path: Path) -> list[str]:
+    con = sqlite3.connect(intent_path)
+    try:
+        return [r[0] for r in con.execute(
+            "SELECT name FROM calendar_event WHERE vary_distribution IS NOT NULL ORDER BY name"
+        )]
+    finally:
+        con.close()
+
+
+def _reserve_batch(scenario_name: str, intent_dir: Path, runs_dir: Path) -> tuple[str, Path, Path]:
+    """Reserve a fresh timestamped batch: (batch name, member intent dir,
+    member runs dir).
+
+    One timestamped batch subfolder per invocation -- like an ordinary run
+    file, a batch is never overwritten, so rerunning a recipe (more members,
+    a tweaked distribution, ...) keeps every previous batch's history. A
+    disambiguating suffix covers two runs within the same wall-clock second.
+    Reserved by exclusive mkdir (no separate existence check first), so two
+    concurrent `sim run` processes can never both win the same batch name
+    and race on the same member files.
+    """
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
     suffix = 1
     while True:
@@ -417,38 +568,94 @@ def _run_ensemble(
         except FileExistsError:
             suffix += 1
             continue
-        break
+        return batch, member_intent_dir, member_runs_dir
 
+
+def _run_members(
+    recipe_intent_path: Path,
+    member_intent_dir: Path,
+    member_runs_dir: Path,
+    specs: list[tuple[int, dict[str, float] | None]],
+    *,
+    seed: int,
+    recipe_tree_id: str,
+    mode: str,
+    run_by: str,
+    allow_dirty_data: bool,
+    allow_dirty_code: bool,
+    jobs: int = 1,
+) -> list[tuple[int, Path, str]]:
+    """Resolve and run each ``(member index, overrides)`` spec; return the
+    failures as ``(index, member intent path, error)``, sorted by index. A
+    failure is reported and skipped, never retried (ADR-006 §7).
+
+    With ``jobs > 1`` members run in a process pool (ADR-007 §8): they share
+    no files, so the only ordering that changes is the progress lines, which
+    are printed as members finish.
+    """
+    tasks = [
+        (
+            recipe_intent_path, member_intent_dir / f"member_{i:04d}.sqlite3",
+            member_runs_dir / f"member_{i:04d}.sqlite3", i, overrides,
+            seed, len(specs), recipe_tree_id, mode, run_by, allow_dirty_data, allow_dirty_code,
+        )
+        for i, overrides in specs
+    ]
     failures: list[tuple[int, Path, str]] = []
-    for i in range(member_count):
-        member_intent_path = member_intent_dir / f"member_{i:04d}.sqlite3"
-        member_run_path = member_runs_dir / f"member_{i:04d}.sqlite3"
-        try:
-            resolve_member(
-                recipe_intent_path, member_intent_path,
-                seed=seed, member_index=i, member_count=member_count,
-                recipe_tree_id=recipe_tree_id,
-            )
-            run_scenario(
-                member_intent_path, member_run_path,
-                run_by=run_by,
-                allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
-            )
-        except Exception as exc:
-            failures.append((i, member_intent_path, str(exc)))
-            click.echo(f"  member {i}: FAILED ({exc}) -- intent: {member_intent_path}", err=True)
+
+    def _report(i: int, overrides: dict[str, float] | None, intent_path: Path,
+                run_path: Path, error: str | None) -> None:
+        if error is not None:
+            failures.append((i, intent_path, error))
+            click.echo(f"  member {i}: FAILED ({error}) -- intent: {intent_path}", err=True)
         else:
-            click.echo(f"  member {i}: {member_run_path}")
+            label = "" if not overrides else " " + ", ".join(f"{k}@{q:g}" for k, q in overrides.items())
+            click.echo(f"  member {i}:{label} {run_path}")
 
-    # A member whose resolve_member call itself raised never got a run file
-    # at all -- member_run_statuses can only see files that exist, so this
-    # batch-level record is the only place a failure like that (or every
-    # member failing, leaving no member_*.sqlite3 at all) is still visible
-    # to a later `sim ensemble summary`/notebook widget.
-    write_batch_manifest(member_runs_dir, member_count=member_count, failures=failures)
+    if jobs <= 1 or len(tasks) <= 1:
+        for task in tasks:
+            _report(task[3], task[4], task[1], task[2], _run_one_member(*task))
+    else:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
 
+        with ProcessPoolExecutor(max_workers=min(jobs, len(tasks))) as pool:
+            futures = {pool.submit(_run_one_member, *task): task for task in tasks}
+            for future in as_completed(futures):
+                task = futures[future]
+                try:
+                    error = future.result()
+                except Exception as exc:  # the worker process itself died
+                    error = f"worker failed: {exc}"
+                _report(task[3], task[4], task[1], task[2], error)
+    return sorted(failures)
+
+
+def _run_one_member(
+    recipe_intent_path: Path, member_intent_path: Path, member_run_path: Path,
+    member_index: int, overrides: dict[str, float] | None, seed: int, member_count: int,
+    recipe_tree_id: str, mode: str, run_by: str, allow_dirty_data: bool, allow_dirty_code: bool,
+) -> str | None:
+    """Resolve and run one member; the error text on failure, else ``None``.
+    Module-level (not a closure) so a process pool can pickle it."""
+    try:
+        resolve_member(
+            recipe_intent_path, member_intent_path,
+            seed=seed, member_index=member_index, member_count=member_count,
+            recipe_tree_id=recipe_tree_id, overrides=overrides, mode=mode,
+        )
+        run_scenario(
+            member_intent_path, member_run_path,
+            run_by=run_by,
+            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+        )
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
+def _report_batch(label: str, member_count: int, failures: list[tuple[int, Path, str]]) -> None:
     succeeded = member_count - len(failures)
-    click.echo(f"ensemble {scenario_name} ({batch}): {succeeded}/{member_count} member(s) succeeded")
+    click.echo(f"{label}: {succeeded}/{member_count} member(s) succeeded")
     if failures:
         click.echo(f"  {len(failures)} failure(s):")
         for i, path, _error in failures:
@@ -566,9 +773,18 @@ def ensemble_summary(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     recipe_runs_dir = resolved_runs_dir / scenario_name
-    batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir)
+    batch_dir = (
+        recipe_runs_dir / batch if batch
+        else latest_ensemble_batch(recipe_runs_dir, mode="monte_carlo")
+    )
     if batch_dir is None or not batch_dir.is_dir():
         raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+    if batch_mode(batch_dir) != "monte_carlo":
+        # ADR-007 §5: a fan-chart summary over an OAT batch is meaningless.
+        raise click.ClickException(
+            f"{batch_dir.name} is a sensitivity batch; use "
+            f"'sim ensemble sensitivity {scenario_name} --batch {batch_dir.name}'"
+        )
 
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
@@ -591,6 +807,241 @@ def ensemble_summary(
     finally:
         for con in connections.values():
             con.close()
+
+
+@ensemble_group_command.command("sensitivity")
+@click.argument("scenario_name")
+@click.option(
+    "--runs-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Default: data-repo state/runs when activated, else state/runs.",
+)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Data repo (default: $ANALYSIS_DATA_DIR)",
+)
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp) to report on; default: the latest "
+         "batch of --mode.",
+)
+@click.option(
+    "--mode", "mode", type=click.Choice(registries.ENSEMBLE_MODES), default=None,
+    help="Which kind of batch to pick when --batch isn't given; default: the latest of either.",
+)
+@click.option(
+    "--dollars", type=click.Choice([m.value for m in DollarMode]),
+    default=DollarMode.CPI_CONSTANT.value, show_default=True,
+)
+@click.option("--relative", is_flag=True, default=False, help="Report deltas as % of the base.")
+@click.option(
+    "--measure", type=click.Choice(sensitivity.MEASURES), default="net_worth", show_default=True,
+    help="net_worth at each year-end, or the lowest net worth up to it.",
+)
+@click.option(
+    "--years", default=None, metavar="YYYY[,YYYY...]",
+    help="Reporting years to print; default: first full year, every fifth year, final year.",
+)
+@click.option(
+    "--negligible", type=float, default=sensitivity.DEFAULT_NEGLIGIBLE, show_default=True,
+    help="Share below which a row is a pin candidate (in every year).",
+)
+@click.option(
+    "--attribute", "attribute", default=None, metavar="NAME",
+    help="Sensitivity batches: break NAME's net-worth deltas down along --by, exactly.",
+)
+@click.option(
+    "--by", "by", type=click.Choice(sensitivity.ATTRIBUTION_AXES), default="category",
+    show_default=True, help="With --attribute: income/expense category, flow account, or "
+                            "holding account.",
+)
+def ensemble_sensitivity(
+    scenario_name: str, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    mode: str | None, dollars: str, relative: bool, measure: str, years: str | None,
+    negligible: float, attribute: str | None, by: str,
+) -> None:
+    """Which of SCENARIO_NAME's varying rows matter, and when (ADR-007).
+
+    On a sensitivity batch ('sim run --sensitivity'): per-year one-at-a-time
+    deltas, swings and shares, plus a rank-by-year grid. On a Monte Carlo
+    batch: per-year Spearman correlations with 95% intervals, rank-regression
+    coefficients and R^2, and which rows could be pinned to a literal.
+    """
+    data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
+    resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
+    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
+    recipe_runs_dir = resolved_runs_dir / scenario_name
+    batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
+    if batch_dir is None or not batch_dir.is_dir():
+        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+    dollar_mode = DollarMode(dollars)
+    try:
+        requested_years = (
+            [int(y) for y in years.split(",") if y.strip()] if years else None
+        )
+    except ValueError:
+        raise click.UsageError(f"--years: not a comma-separated list of years: {years!r}") from None
+
+    if attribute is not None:
+        if batch_mode(batch_dir) != "sensitivity":
+            raise click.UsageError("--attribute needs a sensitivity batch")
+        _report_attribution(
+            scenario_name, batch_dir, attribute, by=by, dollar_mode=dollar_mode,
+            years=requested_years,
+        )
+        return
+    if batch_mode(batch_dir) == "sensitivity":
+        _report_oat(
+            scenario_name, batch_dir, dollar_mode, relative=relative, measure=measure,
+            years=requested_years, negligible=negligible,
+        )
+    else:
+        _report_correlation(
+            scenario_name, batch_dir, dollar_mode, measure=measure,
+            years=requested_years, negligible=negligible,
+        )
+
+
+def _report_years(batch_dir: Path, available: list[int], requested: list[int] | None) -> list[int]:
+    """``--years`` checked against the batch's reporting years, or the
+    default set (first full year, every fifth year, final year)."""
+    available = sorted(available)
+    if requested is None:
+        return sensitivity.default_report_years(available, sensitivity.months_per_year(batch_dir))
+    missing = sorted(set(requested) - set(available))
+    if missing:
+        raise click.UsageError(
+            f"--years: no reporting year(s) {missing}; available {available[0]}-{available[-1]}"
+        )
+    return requested
+
+
+def _report_attribution(
+    scenario_name: str, batch_dir: Path, row: str, *, by: str, dollar_mode: DollarMode,
+    years: list[int] | None,
+) -> None:
+    """ADR-007 §6.1: one table per reporting year, one line per key, one
+    column per quantile ``row`` was perturbed to."""
+    try:
+        by_quantile = sensitivity.oat_attribution(batch_dir, row, by=by, dollars=dollar_mode)
+    except EnsembleError as exc:
+        raise click.ClickException(str(exc)) from None
+    tables = list(by_quantile.values())
+    years = _report_years(batch_dir, [int(y) for y in tables[0].index], years)
+    unit = "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
+    click.echo(f"attribution {scenario_name} ({batch_dir.name}): {row} by {by}, {unit}")
+    quantiles = list(by_quantile)
+    keys = [k for t in tables for k in t.columns if k not in (sensitivity.UNATTRIBUTED, sensitivity.TOTAL)]
+    keys = list(dict.fromkeys(keys))
+    header = "".join(f"{'@' + format(q, 'g'):>14}" for q in quantiles)
+    for year in years:
+        click.echo(f"\n  {year}{' ' * 27}{header}")
+        for key in [*keys, sensitivity.UNATTRIBUTED, sensitivity.TOTAL]:
+            values = [t.loc[year, key] if key in t.columns else 0.0 for t in tables]
+            if key == sensitivity.UNATTRIBUTED and all(v == 0 for v in values):
+                continue
+            label = f"{key} (!)" if key == sensitivity.UNATTRIBUTED else key
+            click.echo(f"    {label:<30}" + "".join(f"{v:>+14,.0f}" for v in values))
+
+
+def _report_correlation(
+    scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
+    measure: str, years: list[int] | None, negligible: float,
+) -> None:
+    """ADR-007 §6.2: rho [interval] and SRRC per row and year, R^2 per year,
+    and each row's keep / pin_candidate / inconclusive status."""
+    try:
+        table = sensitivity.mc_correlation(batch_dir, measure=measure, dollars=dollar_mode)
+    except EnsembleError as exc:
+        raise click.ClickException(str(exc)) from None
+    n = int(table["n"].iloc[0])
+    years = _report_years(batch_dir, [int(y) for y in table["year"].unique()], years)
+    click.echo(
+        f"correlation {scenario_name} ({batch_dir.name}): {measure}, {n} drawn member(s) "
+        "(member 0 excluded)"
+    )
+    needed = sensitivity.required_members(negligible)
+    if n < needed:
+        click.echo(
+            f"  warning: {n} members can't call a row negligible at {negligible:.0%}; "
+            f"that needs about {needed} -- expect 'inconclusive'"
+        )
+    for year in years:
+        at = table[table["year"] == year]
+        r2 = at["r2"].iloc[0]
+        if pd.isna(r2):
+            click.echo(f"\n  {year}: outcome doesn't vary across members")
+            continue
+        trust = "" if r2 >= sensitivity.R2_TRUST else (
+            "  -- low: interactions or transitions dominate; try an OAT ladder"
+        )
+        click.echo(f"\n  {year}  R2={r2:.2f}{trust}")
+        for _, row in at.reindex(at["rho"].abs().sort_values(ascending=False).index).iterrows():
+            click.echo(
+                f"    {row['row']:<24} rho={row['rho']:+.2f} [{row['rho_low']:+.2f}, "
+                f"{row['rho_high']:+.2f}]  srrc={row['srrc']:+.2f}"
+            )
+    status = sensitivity.classify(table, negligible)
+    click.echo(f"\n  status (rho^2 vs {negligible:.0%}, every year):")
+    for name, value in status.items():
+        click.echo(f"    {name:<24} {value}")
+
+
+def _fmt_delta(value: float, relative: bool) -> str:
+    if pd.isna(value):
+        return "-"
+    return f"{value:+.1%}" if relative else f"{value:+,.0f}"
+
+
+def _report_oat(
+    scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
+    relative: bool, measure: str, years: list[int] | None, negligible: float,
+) -> None:
+    try:
+        deltas = sensitivity.oat_deltas(batch_dir, dollar_mode)
+    except EnsembleError as exc:
+        raise click.ClickException(str(exc)) from None
+    statuses = member_run_statuses(batch_dir)
+    failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
+    years = _report_years(batch_dir, [int(y) for y in deltas["year"].unique()], years)
+    unit = "% of base" if relative else (
+        "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
+    )
+    click.echo(
+        f"sensitivity {scenario_name} ({batch_dir.name}): {measure}, {unit}; "
+        f"{len(statuses) - len(failed)} succeeded member(s), {len(failed)} failed"
+    )
+    for year in years:
+        table = sensitivity.oat_table(deltas, year, measure=measure, relative=relative)
+        click.echo(f"\n  {year}")
+        value_cols = [c for c in table.columns if c.startswith("value@")]
+        delta_cols = [c for c in table.columns if c.startswith("delta@")]
+        for name, row in table.iterrows():
+            values = " ".join(f"{c[6:]}={row[c]}" for c in value_cols)
+            deltas_text = " ".join(f"{_fmt_delta(row[c], relative):>12}" for c in delta_cols)
+            click.echo(
+                f"    {name:<24} {deltas_text}  swing={_fmt_delta(row['swing'], relative):>12}  "
+                f"share={row['share']:>4.0%}  {row['flags']:<16} ({values})"
+            )
+
+    grid = sensitivity.rank_by_year(deltas, measure=measure, relative=relative, value="rank")
+    click.echo("\n  rank by year:")
+    click.echo("    " + " " * 24 + " ".join(f"{str(y)[-2:]:>3}" for y in grid.columns))
+    for name, ranks in grid.iterrows():
+        click.echo(f"    {name:<24}" + " ".join(f"{'-' if pd.isna(r) else r:>3}" for r in ranks))
+
+    pins = sensitivity.pin_candidates(deltas, negligible, measure=measure)
+    if pins:
+        click.echo(
+            f"\n  pin candidates (share < {negligible:.0%} in every year): {', '.join(pins)}"
+        )
+    if failed:
+        click.echo(f"\n  {len(failed)} failed member(s), excluded above:")
+        for stem in failed:
+            click.echo(f"    {stem}: {statuses[stem]}")
 
 
 @sim_group_command.command(name="all")
