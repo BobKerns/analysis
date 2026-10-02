@@ -24,6 +24,7 @@ import pandas as pd
 
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
+from analysis.sim.registries import format_calendar_amount
 from analysis.sim.types import DollarMode
 
 __all__ = [
@@ -80,9 +81,7 @@ def display_value(kind: str, target: str, raw: str) -> str:
     dollars."""
     if target == "date":
         return raw
-    if kind == "set_rate":
-        return f"{int(raw) / 10_000:.2f}%"
-    return f"${int(raw) / 100:,.0f}"
+    return format_calendar_amount(kind, int(raw), cents=False, rate_places=2)
 
 
 def oat_members(connections: dict[str, RunConnection]) -> list[OatMember]:

@@ -314,6 +314,32 @@ DEFAULT_SENSITIVITY_QUANTILES: tuple[float, ...] = (0.1, 0.9)
 # SUPPORTED_CALENDAR_KINDS) has no amount column a draw could affect.
 AMOUNT_VARYING_KINDS: set[str] = {"set_rate", "set_amount", "one_off_transfer"}
 
+# What a calendar_event row's `amount` means, by kind: an annual rate in
+# micros (millionths, so 30000 is 3%) for `set_rate` -- inflation series
+# included -- and cents for the kinds that move or set money.
+RATE_MICROS_CALENDAR_KINDS: frozenset[str] = frozenset({"set_rate"})
+
+
+def format_calendar_amount(
+    kind: str, amount: float | None, *, cents: bool = True, rate_places: int | None = None,
+) -> str:
+    """A calendar_event ``amount`` in its own unit (issue #24): a ``set_rate``
+    as a percent, anything else as dollars; ``-`` when absent.
+
+    A rate is exact by default (``3%``, ``4.5%``, ``3.125%``: the authored
+    value), or fixed to ``rate_places`` decimals for a column of computed
+    values. Dollars show cents unless ``cents=False``."""
+    if amount is None or amount != amount:  # None or NaN
+        return "-"
+    if kind in RATE_MICROS_CALENDAR_KINDS:
+        if rate_places is not None:
+            return f"{amount / 10_000:.{rate_places}f}%"
+        percent = f"{amount / 10_000:.4f}".rstrip("0").rstrip(".")
+        return f"{percent}%"
+    sign = "-" if amount < 0 else ""
+    dollars = abs(amount) / 100
+    return f"{sign}${dollars:,.2f}" if cents else f"{sign}${dollars:,.0f}"
+
 # ADR-006: vary_low/vary_high/vary_mean/vary_sd columns each distribution
 # actually reads; any other bound column left non-blank alongside it is a
 # parameter the eventual draw silently ignores. `truncated_normal` reads all
