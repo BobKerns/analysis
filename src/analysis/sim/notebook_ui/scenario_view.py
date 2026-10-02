@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import json
+
 import pandas as pd
 
 from analysis.sim import registries
@@ -148,9 +150,20 @@ def scheduled_view(sc: ScenarioConnection) -> pd.DataFrame:
 
 
 _CALENDAR_COLS = [
-    "date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
+    "date", "kind", "target", "account_1", "lot_1", "account_2", "lot_2",
     "amount", "description",
 ]
+
+
+def _calendar_target(kind: str, scheduled_name: str | None, series: str | None,
+                     payload_json: str | None) -> str | None:
+    """What one calendar row acts on: a ``set_rate``'s series (plus its aux
+    kind, when that isn't ``rate``), else its scheduled row."""
+    if kind == "set_rate" and isinstance(series, str):
+        payload = json.loads(payload_json) if isinstance(payload_json, str) and payload_json else {}
+        aux_kind = payload.get("aux_kind", "rate")
+        return series if aux_kind == "rate" else f"{series} ({aux_kind})"
+    return scheduled_name if isinstance(scheduled_name, str) else None
 
 
 def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
@@ -161,8 +174,20 @@ def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
     dollars, ``-`` where the event carries none. One column for both,
     rather than separate rate and dollar columns, because a calendar row
     sets exactly one of them.
+
+    ``target`` is what the row acts on, by kind (issue #27): the rate
+    series for a ``set_rate`` (with its aux kind when it isn't an ordinary
+    rate, e.g. ``cpi (inflation)``), otherwise the scheduled row it changes
+    or retires. Again one column, since each kind acts on exactly one.
     """
     events = sc.items("calendar_event").copy()
+    events["target"] = [
+        _calendar_target(kind, scheduled, series, payload)
+        for kind, scheduled, series, payload in zip(
+            events["kind"], events["scheduled_name"], events["series"],
+            events["payload_json"], strict=True,
+        )
+    ]
     resolve = _chain_targets(sc)
     for column, lot_column in (("account_1", "lot_1"), ("account_2", "lot_2")):
         targets = [resolve(name) for name in events[column]]

@@ -234,3 +234,24 @@ def test_calendar_view_formats_amount_by_kind(test_data_dir: Path) -> None:
     assert amounts["set_amount:2028-07-31"] == "$1,200.00"
     assert amounts["one_off_transfer:2029-03-31"] == "$50,000.00"
     assert amounts["retire_scheduled:2028-06-30"] == "-"
+
+
+def test_calendar_view_target_names_what_each_row_acts_on(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+) -> None:
+    """Issue #27: a set_rate row shows which series it sets -- with its aux
+    kind when that isn't an ordinary rate -- and set_amount/retire_scheduled
+    rows show their scheduled row, all in one `target` column."""
+    append_calendar_row(
+        date="2027-03-31", kind="set_rate", series="cpi", amount="25000",
+        params_json='{"aux_kind": "inflation"}', description="CPI eases",
+    )
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        view = calendar_view(scenario)
+    assert "scheduled_name" not in view.columns
+    targets = dict(zip(view["kind"] + ":" + view["date"], view["target"], strict=True))
+    assert targets["set_rate:2027-01-31"] == "Asset_Checking"
+    assert targets["set_rate:2027-03-31"] == "cpi (inflation)"
+    assert targets["set_amount:2028-07-31"] == "healthcare"
+    assert targets["retire_scheduled:2028-06-30"] == "salary_alice"
+    assert targets["one_off_transfer:2029-03-31"] == "-"  # its accounts are the target
