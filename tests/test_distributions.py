@@ -1,4 +1,4 @@
-"""ADR-006 Phase 1: pure distribution/draw tests, no I/O."""
+"""ADR-006 Phase 1 / ADR-007 Phase 0: pure distribution/draw/quantile tests, no I/O."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from analysis.sim.distributions import (
     TruncatedNormal,
     Uniform,
     member_rng,
+    parse_quantiles,
     resolve_truncated_normal_bounds,
 )
 
@@ -124,3 +125,79 @@ def test_member_rng_differs_by_row_name() -> None:
     a = dist.draw(member_rng(seed=42, member_index=0, row_name="row_a"))
     b = dist.draw(member_rng(seed=42, member_index=0, row_name="row_b"))
     assert a != b
+
+
+# --- ADR-007 §3: quantiles -------------------------------------------------
+
+
+def test_uniform_quantile_hits_bounds_and_center() -> None:
+    dist = Uniform(low=40_000, high=50_000)
+    assert dist.quantile(0) == 40_000
+    assert dist.quantile(1) == 50_000
+    assert dist.quantile(0.5) == dist.central()
+    assert dist.quantile(0.1) == pytest.approx(41_000)
+
+
+def test_uniform_quantile_int_stays_in_date_range() -> None:
+    dist = Uniform(low=738_000, high=738_364)
+    assert dist.quantile_int(0) == 738_000
+    assert dist.quantile_int(1) == 738_364
+    assert all(738_000 <= dist.quantile_int(q / 20) <= 738_364 for q in range(21))
+
+
+@pytest.mark.parametrize("dist", [
+    Uniform(low=-5, high=5),
+    TruncatedNormal(mean=0, sd=1, clip_low=-3, clip_high=3),
+    TruncatedNormal(mean=0, sd=1, clip_low=-0.5, clip_high=3),
+])
+def test_quantile_is_monotonic_and_in_bounds(dist: Uniform | TruncatedNormal) -> None:
+    values = [dist.quantile(q / 50) for q in range(51)]
+    assert values == sorted(values)
+    low = dist.low if isinstance(dist, Uniform) else dist.clip_low
+    high = dist.high if isinstance(dist, Uniform) else dist.clip_high
+    assert values[0] == pytest.approx(low) and values[-1] == pytest.approx(high)
+
+
+def test_symmetric_truncated_normal_median_is_mean() -> None:
+    dist = TruncatedNormal(mean=100, sd=10, clip_low=70, clip_high=130)
+    assert dist.quantile(0.5) == pytest.approx(100)
+
+
+def test_asymmetric_clip_shifts_the_median_away_from_the_clipped_side() -> None:
+    dist = TruncatedNormal(mean=0, sd=1, clip_low=-0.5, clip_high=3)
+    assert dist.quantile(0.5) > 0
+
+
+def test_one_sided_clip_at_mean_starts_at_mean() -> None:
+    dist = TruncatedNormal(mean=10, sd=2, clip_low=10, clip_high=16)
+    assert dist.quantile(0) == 10
+    assert dist.quantile(0.1) > 10
+
+
+@pytest.mark.parametrize("q", [0.1, 0.25, 0.9])
+def test_truncated_normal_quantile_matches_empirical_draws(q: float) -> None:
+    dist = TruncatedNormal(mean=0, sd=1, clip_low=-1, clip_high=2)
+    rng = member_rng(seed=7, member_index=0, row_name="empirical")
+    draws = [dist.draw(rng) for _ in range(10_000)]
+    threshold = dist.quantile(q)
+    fraction = sum(d <= threshold for d in draws) / len(draws)
+    assert fraction == pytest.approx(q, abs=0.02)
+
+
+@pytest.mark.parametrize("q", [-0.1, 1.1])
+def test_quantile_rejects_out_of_range(q: float) -> None:
+    with pytest.raises(DistributionError):
+        Uniform(low=0, high=1).quantile(q)
+    with pytest.raises(DistributionError):
+        TruncatedNormal(mean=0, sd=1, clip_low=-3, clip_high=3).quantile(q)
+
+
+def test_parse_quantiles_accepts_increasing_list() -> None:
+    assert parse_quantiles("0.1,0.9") == (0.1, 0.9)
+    assert parse_quantiles("0, 0.25,0.75,1") == (0.0, 0.25, 0.75, 1.0)
+
+
+@pytest.mark.parametrize("text", ["", "0.9,0.1", "0.1,0.1", "0.1,0.5,0.9", "1.2", "a,b"])
+def test_parse_quantiles_rejects_malformed(text: str) -> None:
+    with pytest.raises(DistributionError):
+        parse_quantiles(text)

@@ -299,6 +299,15 @@ ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal"}
 # (mainly how many dimensions -- varying rows -- the recipe has).
 DEFAULT_ENSEMBLE_SIZE = 30
 
+# ADR-007 §5: ensemble_manifest.mode / batch_manifest.json "mode" -- a random
+# Monte Carlo batch (ADR-006) or a deterministic one-at-a-time sensitivity
+# batch.
+ENSEMBLE_MODES: tuple[str, ...] = ("monte_carlo", "sensitivity")
+
+# ADR-007 §3: `sim run --sensitivity`'s default perturbation quantiles --
+# "plausibly low / plausibly high", not the authored extremes.
+DEFAULT_SENSITIVITY_QUANTILES: tuple[float, ...] = (0.1, 0.9)
+
 # ADR-006: calendar_event kinds whose `amount` column has a real meaning to
 # vary (a rate in `set_rate`, a new base amount in `set_amount`, a transfer
 # amount in `one_off_transfer`). `retire_scheduled` (and every kind outside

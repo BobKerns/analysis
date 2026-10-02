@@ -9,10 +9,12 @@ from __future__ import annotations
 import hashlib
 import random
 from dataclasses import dataclass
+from statistics import NormalDist
 
 __all__ = [
     "DistributionError", "Uniform", "TruncatedNormal", "member_rng",
     "DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD", "resolve_truncated_normal_bounds",
+    "parse_quantiles",
 ]
 
 DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD = 3.0
@@ -54,6 +56,16 @@ class Uniform:
     def central_int(self) -> int:
         return round(self.central())
 
+    def quantile(self, q: float) -> float:
+        """The ``q``-quantile of ``[low, high]`` (ADR-007 §3) -- the value an
+        OAT sensitivity member perturbs this row to."""
+        _check_quantile(q)
+        return self.low + q * (self.high - self.low)
+
+    def quantile_int(self, q: float) -> int:
+        """``quantile`` rounded to a day ordinal, for a date target."""
+        return round(self.quantile(q))
+
 
 @dataclass(frozen=True)
 class TruncatedNormal:
@@ -93,6 +105,59 @@ class TruncatedNormal:
         if self.clip_high is not None:
             value = min(value, self.clip_high)
         return value
+
+    def quantile(self, q: float) -> float:
+        """The ``q``-quantile of the *truncated* distribution (ADR-007 §3):
+        ``inv_cdf(Phi(a) + q * (Phi(b) - Phi(a)))`` -- always inside the clip
+        bounds, and honoring a one-sided clip."""
+        _check_quantile(q)
+        normal = NormalDist(self.mean, self.sd)
+        lo = 0.0 if self.clip_low is None else normal.cdf(self.clip_low)
+        hi = 1.0 if self.clip_high is None else normal.cdf(self.clip_high)
+        p = lo + q * (hi - lo)
+        # inv_cdf rejects exactly 0 and 1; those quantiles are the bounds
+        # themselves (or unbounded, which a resolved row never is).
+        if p <= 0.0:
+            if self.clip_low is None:
+                raise DistributionError("truncated_normal: quantile(0) is unbounded")
+            return self.clip_low
+        if p >= 1.0:
+            if self.clip_high is None:
+                raise DistributionError("truncated_normal: quantile(1) is unbounded")
+            return self.clip_high
+        value = normal.inv_cdf(p)
+        # Guard float round-off at the edges.
+        if self.clip_low is not None:
+            value = max(value, self.clip_low)
+        if self.clip_high is not None:
+            value = min(value, self.clip_high)
+        return value
+
+
+def _check_quantile(q: float) -> None:
+    if not 0.0 <= q <= 1.0:
+        raise DistributionError(f"quantile must be in [0, 1] (got {q})")
+
+
+def parse_quantiles(text: str) -> tuple[float, ...]:
+    """Parse ``--quantiles`` (ADR-007 §3): comma-separated values in
+    ``[0, 1]``, strictly increasing, excluding ``0.5`` -- the base member
+    already covers the center."""
+    try:
+        values = tuple(float(part) for part in text.split(","))
+    except ValueError as exc:
+        raise DistributionError(f"quantiles: not a comma-separated list of numbers: {text!r}") from exc
+    if not values:
+        raise DistributionError("quantiles: at least one value is required")
+    for q in values:
+        _check_quantile(q)
+        if q == 0.5:
+            raise DistributionError(
+                "quantiles: 0.5 is the base member's own center; omit it"
+            )
+    if any(b <= a for a, b in zip(values, values[1:], strict=False)):
+        raise DistributionError(f"quantiles must be strictly increasing (got {text!r})")
+    return values
 
 
 def resolve_truncated_normal_bounds(
