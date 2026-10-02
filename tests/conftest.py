@@ -642,3 +642,122 @@ def no_FigureCanvasAgg_warning():
                                 message=".*FigureCanvasAgg.*"
                                 )
         yield
+
+
+# --- ADR-007 sensitivity batches -------------------------------------------
+
+
+def _add_varying_gift_and_retirement(append_calendar_row: Callable[..., None]) -> None:
+    """A gift whose size is uncertain, and a retirement date uncertain by
+    six months either side of the prototype's own 2030-12-31."""
+    append_calendar_row(
+        date="2029-06-30", kind="one_off_transfer", name="gift",
+        account_1="Income_Inheritance", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="2000000", tax_character="none",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="1000000", vary_high="3000000",
+    )
+    append_calendar_row(
+        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="uniform",
+        vary_low="2030-06-30", vary_high="2031-06-30",
+    )
+
+
+def _load_and_run_batch(
+    test_data_dir: Path, intent_dir: Path, runs_dir: Path, *run_args: str,
+) -> str:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    runner = CliRunner()
+    load = runner.invoke(main, [
+        "sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+        "--intent-dir", str(intent_dir), "--allow-dirty-data", "--no-run",
+    ])
+    assert load.exit_code == 0, load.output
+    if "--sensitivity" not in run_args:
+        con = sqlite3.connect(intent_dir / "retire_alice.sqlite3")
+        con.execute("UPDATE scenario SET seed = 7")
+        con.commit()
+        con.close()
+    run = runner.invoke(main, [
+        "sim", "run", "retire_alice", "--intent-dir", str(intent_dir),
+        "--runs-dir", str(runs_dir), "--allow-dirty-data", *run_args,
+    ])
+    assert run.exit_code == 0, run.output
+    return run.output
+
+
+@pytest.fixture(scope="function")
+def oat_batch(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> Path:
+    """An OAT sensitivity batch (default p10/p90) over a varying gift and a
+    varying retirement date on the private retire_alice copy: 5 members."""
+    from analysis.sim.loader import latest_ensemble_batch
+
+    _add_varying_gift_and_retirement(append_calendar_row)
+    output = _load_and_run_batch(test_data_dir, intent_dir, runs_dir, "--sensitivity")
+    assert "5/5 member(s) succeeded" in output, output
+    batch = latest_ensemble_batch(runs_dir / "retire_alice", mode="sensitivity")
+    assert batch is not None
+    return batch
+
+
+@pytest.fixture(scope="function")
+def ladder_batch(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> Path:
+    """Like ``oat_batch``, but a 4-rung quantile ladder: 9 members."""
+    from analysis.sim.loader import latest_ensemble_batch
+
+    _add_varying_gift_and_retirement(append_calendar_row)
+    output = _load_and_run_batch(
+        test_data_dir, intent_dir, runs_dir, "--sensitivity", "--quantiles", "0.1,0.25,0.75,0.9",
+    )
+    assert "9/9 member(s) succeeded" in output, output
+    batch = latest_ensemble_batch(runs_dir / "retire_alice", mode="sensitivity")
+    assert batch is not None
+    return batch
+
+
+@pytest.fixture(scope="function")
+def mc_batch(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> Path:
+    """An 8-member Monte Carlo batch over the same two varying rows as
+    ``oat_batch`` (seed 7)."""
+    from analysis.sim.loader import latest_ensemble_batch
+
+    _add_varying_gift_and_retirement(append_calendar_row)
+    _load_and_run_batch(test_data_dir, intent_dir, runs_dir, "--ensemble-size", "8")
+    batch = latest_ensemble_batch(runs_dir / "retire_alice", mode="monte_carlo")
+    assert batch is not None
+    return batch
+
+
+@pytest.fixture(scope="function")
+def inflation_batch(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> Path:
+    """An OAT batch (p10/p90) perturbing the CPI inflation rate itself: 3 members."""
+    from analysis.sim.loader import latest_ensemble_batch
+
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="cpi_vary", series="cpi",
+        amount="25000", params_json='{"aux_kind": "inflation"}',
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="15000", vary_high="35000",
+    )
+    output = _load_and_run_batch(test_data_dir, intent_dir, runs_dir, "--sensitivity")
+    assert "3/3 member(s) succeeded" in output, output
+    batch = latest_ensemble_batch(runs_dir / "retire_alice", mode="sensitivity")
+    assert batch is not None
+    return batch

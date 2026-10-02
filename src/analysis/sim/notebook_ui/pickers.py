@@ -36,7 +36,7 @@ from analysis.sim.readme import description_view
 from analysis.sim.registries import AssetClass
 from analysis.sim.types import (
     AccountKind, AccountKindAny, DollarMode, LogLinearMode, ValuePlotMode,
-    AccountName, ScenarioName,
+    AccountName, ScenarioName, AttributionAxis, DeltaScale, HeatmapValue,
 )
 
 
@@ -732,6 +732,95 @@ class LogLinearModePicker(widgets.ToggleButtons):
 
     def _on_value_change(self, change):
         self.label = "Log" if self.value == LogLinearMode.LOG else "Linear"
+
+
+_TOGGLE_LAYOUT = dict(border="1px solid #888", padding="4px 6px", margin="0 20px 0 0")
+
+
+class DeltaScalePicker(widgets.ToggleButtons):
+    """Sensitivity deltas in dollars or as % of the base (ADR-007 §4).
+    Composes with ``DollarModePicker``: the two together give all four of
+    nominal/CPI-constant x absolute/relative."""
+    value: DeltaScale = traitlets.UseEnum(DeltaScale)
+
+    def __init__(self, delta_scale: DeltaScale = DeltaScale.ABSOLUTE):
+        super().__init__(
+            options=[("$ delta", DeltaScale.ABSOLUTE), ("% of base", DeltaScale.RELATIVE)],
+            description="Delta:",
+            layout=widgets.Layout(**_TOGGLE_LAYOUT),
+        )
+        self.value = delta_scale
+
+
+class HeatmapValuePicker(widgets.ToggleButtons):
+    """Sensitivity heatmap cells: each row's share of the year's total
+    impact (the importance measure, which counts the base, so a row moving
+    the outcome the same way at both ends still registers), or its signed
+    swing, for direction (ADR-007 §6.1, §9)."""
+    value: HeatmapValue = traitlets.UseEnum(HeatmapValue)
+
+    def __init__(self, heatmap_value: HeatmapValue = HeatmapValue.SHARE):
+        super().__init__(
+            options=[("Share", HeatmapValue.SHARE), ("Signed swing", HeatmapValue.SWING)],
+            description="Cells:",
+            layout=widgets.Layout(**_TOGGLE_LAYOUT),
+        )
+        self.value = heatmap_value
+
+
+class AttributionPicker(widgets.ToggleButtons):
+    """How a sensitivity delta is decomposed (ADR-007 §6.1): by income/
+    expense category, by income/expense account, or by holding account."""
+    value: AttributionAxis = traitlets.UseEnum(AttributionAxis)
+
+    def __init__(self, axis: AttributionAxis = AttributionAxis.CATEGORY):
+        super().__init__(
+            options=[("Category", AttributionAxis.CATEGORY),
+                     ("Flow account", AttributionAxis.FLOW_ACCOUNT),
+                     ("Holding account", AttributionAxis.HOLDING_ACCOUNT)],
+            description="Attribute by:",
+            layout=widgets.Layout(**_TOGGLE_LAYOUT),
+        )
+        self.value = axis
+
+
+class ParameterPicker(widgets.Dropdown):
+    """One of a sensitivity batch's varying rows, labeled with its target
+    and perturbed range ("gift -- amount, $12,000 to $28,000")."""
+
+    def __init__(self, parameters: dict[str, str] | None = None):
+        """``parameters`` maps row name to its label suffix; see ``set_parameters``."""
+        super().__init__(options=[], description="Parameter:",
+                         layout=widgets.Layout(width="max-content"))
+        self.set_parameters(parameters or {})
+
+    def set_parameters(self, parameters: dict[str, str]) -> None:
+        """Replace the options, keeping the selection when it's still offered
+        and otherwise selecting the first -- never leaving the views that
+        depend on it blank."""
+        previous = self.value
+        self.options = [(f"{name} — {label}" if label else name, name)
+                        for name, label in parameters.items()]
+        if previous in parameters:
+            self.value = previous
+        elif parameters:
+            self.value = next(iter(parameters))
+
+
+class ReportYearPicker(widgets.SelectionSlider):
+    """One of a batch's annual reporting years (ADR-007 §4)."""
+
+    def __init__(self, years: list[int] | None = None, value: int | None = None):
+        years = years or [0]
+        super().__init__(options=years, value=value if value in years else years[-1],
+                         description="Year:", continuous_update=False,
+                         layout=widgets.Layout(width="60%"))
+
+    def set_years(self, years: list[int]) -> None:
+        """Replace the options, keeping the selected year when it's still offered."""
+        previous = self.value
+        self.options = years
+        self.value = previous if previous in years else years[-1]
 
 
 class AccountKindPicker(widgets.Dropdown):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -334,15 +334,24 @@ CREATE TABLE ensemble_manifest (
     ensemble_name   TEXT NOT NULL,
     member_index    INTEGER NOT NULL,
     member_count    INTEGER NOT NULL,
-    seed            INTEGER NOT NULL,
+    -- NULL for a sensitivity member (ADR-007 §5): an OAT batch draws
+    -- nothing, so there is no seed to record.
+    seed            INTEGER,
     recipe_tree_id  TEXT NOT NULL,
-    generated_at    TEXT NOT NULL
+    generated_at    TEXT NOT NULL,
+    -- ADR-007 §5: a random Monte Carlo member, or a deterministic OAT
+    -- sensitivity member.
+    mode            TEXT NOT NULL DEFAULT 'monte_carlo'
+                        CHECK (mode IN ('monte_carlo','sensitivity'))
 );
 
 CREATE TABLE ensemble_draw (
     calendar_event_name TEXT NOT NULL,
     vary_target         TEXT NOT NULL,
     drawn_value         TEXT NOT NULL,
+    -- ADR-007 §5: the OAT override quantile this row was resolved at; NULL
+    -- for a random draw or a row resolved to its central value.
+    quantile            REAL,
     PRIMARY KEY (calendar_event_name)
 );
 """

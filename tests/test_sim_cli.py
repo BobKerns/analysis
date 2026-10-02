@@ -1854,3 +1854,297 @@ def test_sim_calendar_add_transfer_vary_amount_is_not_shadowed_by_params_json(
         assert 100_000 <= amount <= 200_000  # the drawn/resolved value, in cents
     finally:
         con.close()
+
+
+# --- ADR-007 Phase 2: `sim run --sensitivity` -------------------------------
+
+
+def _append_two_varying_rows(append_calendar_row: Callable[..., None]) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    append_calendar_row(
+        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="uniform",
+        vary_low="2030-06-30", vary_high="2031-06-30",
+    )
+
+
+def _sim_run_sensitivity(intent_dir: Path, runs_dir: Path, runner: CliRunner, *extra: str):
+    return runner.invoke(
+        main,
+        [
+            "sim", "run", "retire_alice", "--sensitivity",
+            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+            "--run-by", "tester", "--allow-dirty-data", *extra,
+        ],
+    )
+
+
+def test_sim_run_sensitivity_generates_oat_batch(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    from analysis.sim.ensemble import read_batch_manifest
+
+    _append_two_varying_rows(append_calendar_row)
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+
+    result = _sim_run_sensitivity(intent_dir, runs_dir, runner)
+    assert result.exit_code == 0, result.output
+    assert "5/5 member(s) succeeded" in result.output
+    assert "checking_rate_vary@0.1" in result.output
+
+    member_runs = sorted((runs_dir / "retire_alice").glob("*/member_*.sqlite3"))
+    assert len(member_runs) == 5
+    manifest = read_batch_manifest(member_runs[0].parent)
+    assert manifest["mode"] == "sensitivity"
+    assert manifest["quantiles"] == [0.1, 0.9]
+    assert manifest["rows"] == ["checking_rate_vary", "retire_bob_vary"]
+
+    con = sqlite3.connect(member_runs[2])  # checking_rate_vary @ 0.9
+    try:
+        mode, seed = con.execute("SELECT mode, seed FROM ensemble_manifest").fetchone()
+        assert mode == "sensitivity"
+        assert seed is None  # draws nothing, so records no seed (PR #23 review)
+        assert con.execute(
+            "SELECT amount FROM calendar_event WHERE name = 'checking_rate_vary'"
+        ).fetchone()[0] == 49_000
+    finally:
+        con.close()
+
+
+def test_sim_run_sensitivity_only_and_quantiles_set_member_count(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    _append_two_varying_rows(append_calendar_row)
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+
+    result = _sim_run_sensitivity(
+        intent_dir, runs_dir, runner,
+        "--only", "retire_bob_vary", "--quantiles", "0.1,0.25,0.75,0.9",
+    )
+    assert result.exit_code == 0, result.output
+    assert "5/5 member(s) succeeded" in result.output  # 1 + 1 row x 4 quantiles
+
+
+@pytest.mark.parametrize(("extra", "message"), [
+    (("--ensemble-size", "3"), "exclusive"),
+    (("--quantiles", "0.9,0.1"), "strictly increasing"),
+    (("--only", "nope"), "nope"),
+])
+def test_sim_run_sensitivity_rejects_bad_options(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path, extra: tuple[str, ...], message: str,
+) -> None:
+    _append_two_varying_rows(append_calendar_row)
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+    result = _sim_run_sensitivity(intent_dir, runs_dir, runner, *extra)
+    assert result.exit_code != 0
+    assert message in result.output
+
+
+def test_sim_run_only_requires_sensitivity(intent_dir: Path, runs_dir: Path) -> None:
+    result = CliRunner().invoke(
+        main,
+        ["sim", "run", "retire_alice", "--intent-dir", str(intent_dir),
+         "--runs-dir", str(runs_dir), "--only", "x"],
+    )
+    assert result.exit_code != 0
+    assert "require --sensitivity" in result.output
+
+
+def test_sim_run_sensitivity_with_nothing_to_perturb(
+    test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+    result = _sim_run_sensitivity(intent_dir, runs_dir, runner)
+    assert result.exit_code != 0
+    assert "nothing to perturb" in result.output
+
+
+def test_sim_ensemble_summary_skips_sensitivity_batches(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    _append_two_varying_rows(append_calendar_row)
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+    mc = runner.invoke(main, [
+        "sim", "run", "retire_alice", "--intent-dir", str(intent_dir),
+        "--runs-dir", str(runs_dir), "--ensemble-size", "2", "--allow-dirty-data",
+    ])
+    assert mc.exit_code == 0, mc.output
+    oat = _sim_run_sensitivity(intent_dir, runs_dir, runner, "--only", "checking_rate_vary")
+    assert oat.exit_code == 0, oat.output
+
+    batches = sorted(p for p in (runs_dir / "retire_alice").iterdir() if p.is_dir())
+    assert len(batches) == 2
+    result = runner.invoke(
+        main, ["sim", "ensemble", "summary", "retire_alice", "--runs-dir", str(runs_dir)],
+    )
+    assert result.exit_code == 0, result.output
+    assert f"({batches[0].name})" in result.output  # the Monte Carlo batch, not the newer OAT one
+
+    explicit = runner.invoke(main, [
+        "sim", "ensemble", "summary", "retire_alice", "--runs-dir", str(runs_dir),
+        "--batch", batches[1].name,
+    ])
+    assert explicit.exit_code != 0
+    assert "sensitivity batch" in explicit.output
+
+
+def test_sim_run_sensitivity_reports_member_failures_without_stopping(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path, monkeypatch,
+) -> None:
+    _append_two_varying_rows(append_calendar_row)
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+
+    import analysis.sim.cli as sim_cli
+
+    real_resolve_member = sim_cli.resolve_member
+
+    def _flaky_resolve_member(*args, member_index, **kwargs):
+        if member_index == 2:
+            raise RuntimeError("boom")
+        return real_resolve_member(*args, member_index=member_index, **kwargs)
+
+    monkeypatch.setattr(sim_cli, "resolve_member", _flaky_resolve_member)
+    result = _sim_run_sensitivity(intent_dir, runs_dir, runner)
+    assert result.exit_code == 0, result.output
+    assert "member 2: FAILED (boom)" in result.output
+    assert "4/5 member(s) succeeded" in result.output
+
+
+# --- ADR-007 Phase 7: parallel members (--jobs) --------------------------------
+
+
+def _batch_results(runs_dir: Path) -> dict[str, tuple[list, list]]:
+    """Per member: its draws and its monthly net worth -- what must match
+    between sequential and parallel runs (file bytes won't: timestamps)."""
+    batch = max(p for p in (runs_dir / "retire_alice").iterdir() if p.is_dir())
+    results = {}
+    for path in sorted(batch.glob("member_*.sqlite3")):
+        con = sqlite3.connect(path)
+        try:
+            draws = con.execute(
+                "SELECT calendar_event_name, drawn_value, quantile FROM ensemble_draw ORDER BY 1"
+            ).fetchall()
+            net_worth = con.execute("SELECT month, net_worth FROM net_worth ORDER BY month").fetchall()
+        finally:
+            con.close()
+        results[path.stem] = (draws, net_worth)
+    return results
+
+
+@pytest.mark.parametrize("mode_args", [("--ensemble-size", "3"), ("--sensitivity",)])
+def test_sim_run_jobs_matches_sequential(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, tmp_path: Path, mode_args: tuple[str, ...],
+) -> None:
+    _append_two_varying_rows(append_calendar_row)
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+    con = sqlite3.connect(intent_dir / "retire_alice.sqlite3")
+    con.execute("UPDATE scenario SET seed = 11")
+    con.commit()
+    con.close()
+    results = {}
+    for jobs in ("1", "2"):
+        runs = tmp_path / f"runs_{jobs}"
+        result = runner.invoke(main, [
+            "sim", "run", "retire_alice", "--intent-dir", str(intent_dir),
+            "--runs-dir", str(runs), "--allow-dirty-data", "--allow-dirty-code",
+            "--jobs", jobs, *mode_args,
+        ])
+        assert result.exit_code == 0, result.output
+        assert "FAILED" not in result.output
+        results[jobs] = _batch_results(runs)
+    assert results["1"] == results["2"]
+    assert len(results["2"]) == (3 if "--ensemble-size" in mode_args else 5)
+
+
+def test_sim_run_jobs_reports_failures_without_taking_down_the_pool(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    update_account_value: Callable[..., None], intent_dir: Path, runs_dir: Path,
+) -> None:
+    """A ramp on a series with no baseline rate fails in resolve_member for
+    every member -- in worker processes, each is still reported."""
+    update_account_value("Asset_Brokerage_Joint", "default", series="never_before_seen_series")
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="no_baseline_ramp",
+        series="never_before_seen_series", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000", vary_ramp_months="3",
+    )
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+    result = runner.invoke(main, [
+        "sim", "run", "retire_alice", "--sensitivity", "--intent-dir", str(intent_dir),
+        "--runs-dir", str(runs_dir), "--allow-dirty-data", "--allow-dirty-code", "--jobs", "2",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "0/3 member(s) succeeded" in result.output
+    assert result.output.count("FAILED") == 3
+
+
+def test_sim_run_rejects_negative_jobs(intent_dir: Path, runs_dir: Path) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "run", "retire_alice", "--intent-dir", str(intent_dir),
+        "--runs-dir", str(runs_dir), "--jobs", "-1",
+    ])
+    assert result.exit_code != 0
+    assert "--jobs" in result.output
+
+
+def test_sensitivity_manifest_is_written_before_members_run(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path, monkeypatch,
+) -> None:
+    """An interrupted OAT batch must still read as a sensitivity batch (PR #25
+    review): the manifest exists before any member runs."""
+    from analysis.sim.loader import batch_mode
+
+    _append_two_varying_rows(append_calendar_row)
+    runner = CliRunner()
+    assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
+    import analysis.sim.cli as sim_cli
+
+    seen: list[str] = []
+    real = sim_cli._run_one_member
+
+    def _spy(recipe, member_intent_path, member_run_path, *args, **kwargs):
+        seen.append(batch_mode(member_run_path.parent))
+        return real(recipe, member_intent_path, member_run_path, *args, **kwargs)
+
+    monkeypatch.setattr(sim_cli, "_run_one_member", _spy)
+    assert _sim_run_sensitivity(intent_dir, runs_dir, runner).exit_code == 0
+    assert seen and set(seen) == {"sensitivity"}
+
+
+def test_batch_mode_falls_back_to_member_manifests(oat_batch: Path) -> None:
+    from analysis.sim.loader import batch_mode
+
+    (oat_batch / "batch_manifest.json").unlink()
+    assert batch_mode(oat_batch) == "sensitivity"
+
+
+@pytest.mark.parametrize("value", ["0", "1", "-0.1", "1.5"])
+def test_ensemble_sensitivity_rejects_bad_negligible(runs_dir: Path, value: str) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "sensitivity", "retire_alice", "--runs-dir", str(runs_dir),
+        "--negligible", value,
+    ])
+    assert result.exit_code == 2
+    assert "--negligible" in result.output

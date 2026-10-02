@@ -34,12 +34,13 @@ from analysis.sim.distributions import (
     resolve_truncated_normal_bounds,
 )
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
+from analysis.sim.registries import ENSEMBLE_MODES
 from analysis.sim.types import DollarMode
 
 __all__ = [
     "EnsembleError", "resolve_member", "load_ensemble", "member_run_statuses",
     "latest_ensemble_batch", "members_net_worth_by_month", "summary",
-    "write_batch_manifest", "read_batch_manifest",
+    "write_batch_manifest", "read_batch_manifest", "oat_plan",
 ]
 
 
@@ -182,14 +183,43 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
         )
 
 
+def _resolve_value(
+    row: sqlite3.Row, dist: Uniform | TruncatedNormal, *, as_int: bool,
+    overrides: dict[str, float] | None, seed: int | None, member_index: int,
+) -> tuple[float, float | None]:
+    """One varying row's value on one member, and the OAT quantile it was
+    resolved at (``None`` unless ``overrides`` names this row):
+
+    - named in ``overrides``: that quantile of ``dist`` (ADR-007 §2);
+    - otherwise, on member 0 or any OAT member: ``dist``'s central value;
+    - otherwise: a draw from this (member, row)'s own RNG stream (ADR-006 §3).
+
+    ``as_int`` selects the discrete (day-ordinal) form, for a date target.
+    """
+    if overrides is not None and row["name"] in overrides:
+        q = overrides[row["name"]]
+        try:
+            return (dist.quantile_int(q) if as_int else dist.quantile(q)), q
+        except DistributionError as e:
+            raise EnsembleError(f"row {row['name']!r}: {e}") from e
+    if overrides is not None or member_index == 0:
+        return (dist.central_int() if as_int else dist.central()), None
+    if seed is None:
+        raise EnsembleError(f"row {row['name']!r}: a random draw needs the ensemble's seed")
+    rng = member_rng(seed, member_index, row["name"])
+    return (dist.draw_int(rng) if as_int else dist.draw(rng)), None
+
+
 def resolve_member(
     recipe_intent_path: Path,
     member_path: Path,
     *,
-    seed: int,
+    seed: int | None,
     member_index: int,
     member_count: int,
     recipe_tree_id: str,
+    overrides: dict[str, float] | None = None,
+    mode: str = "monte_carlo",
 ) -> Path:
     """Copy ``recipe_intent_path`` to ``member_path`` and resolve every
     `vary_distribution` row into a literal value: every `vary_target='date'`
@@ -200,7 +230,18 @@ def resolve_member(
     plausible, in-bounds "base case" instead of just a bag of random draws,
     and anything that only knows how to open a single run file can treat an
     ensemble recipe's member 0 as that scenario's one run (ADR-006 §8).
+
+    ``overrides`` (ADR-007 §2) makes this an OAT sensitivity member: a row
+    named there resolves to that quantile of its distribution, and every
+    other row to its central value, exactly as member 0's does -- no RNG is
+    consulted at all. ``mode`` is recorded in ``ensemble_manifest``; a
+    ``sensitivity`` member records a NULL seed, since it draws nothing, and
+    ``seed`` may be ``None`` for one.
     """
+    if mode == "monte_carlo" and seed is None:
+        raise EnsembleError("a Monte Carlo member needs the ensemble's seed")
+    if mode not in ENSEMBLE_MODES:
+        raise EnsembleError(f"unknown ensemble mode {mode!r}")
     member_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(recipe_intent_path, member_path)
 
@@ -210,8 +251,14 @@ def resolve_member(
         rows = con.execute(
             "SELECT * FROM calendar_event WHERE vary_distribution IS NOT NULL"
         ).fetchall()
+        if overrides is not None:
+            unknown = set(overrides) - {r["name"] for r in rows}
+            if unknown:
+                raise EnsembleError(
+                    f"overrides name no unresolved vary_* row: {sorted(unknown)}"
+                )
 
-        draws: list[tuple[str, str, str]] = []
+        draws: list[tuple[str, str, str, float | None]] = []
 
         for row in [r for r in rows if r["vary_target"] == "date"]:
             dist = _build_distribution(row, "date")
@@ -223,23 +270,22 @@ def resolve_member(
                     f"row {row['name']!r}: {row['vary_distribution']!r} has no "
                     "discrete date draw"
                 )
-            drawn_ordinal = (
-                dist.central_int() if member_index == 0
-                else dist.draw_int(member_rng(seed, member_index, row["name"]))
+            drawn_ordinal, quantile = _resolve_value(
+                row, dist, as_int=True, overrides=overrides, seed=seed, member_index=member_index,
             )
-            drawn = date.fromordinal(drawn_ordinal)
+            drawn = date.fromordinal(int(drawn_ordinal))
             con.execute(
                 "UPDATE calendar_event SET date = ?, vary_distribution = NULL WHERE id = ?",
                 (drawn.isoformat(), row["id"]),
             )
-            draws.append((row["name"], "date", drawn.isoformat()))
+            draws.append((row["name"], "date", drawn.isoformat(), quantile))
 
         for row in [r for r in rows if r["vary_target"] == "amount"]:
             dist = _build_distribution(row, "amount")
-            target = round(
-                dist.central() if member_index == 0
-                else dist.draw(member_rng(seed, member_index, row["name"]))
+            value, quantile = _resolve_value(
+                row, dist, as_int=False, overrides=overrides, seed=seed, member_index=member_index,
             )
+            target = round(value)
             if row["kind"] == "one_off_transfer" and target <= 0:
                 # Belt-and-suspenders: the loader already requires a strictly
                 # positive uniform range / truncated_normal clip floor for a
@@ -260,21 +306,22 @@ def resolve_member(
                     "WHERE id = ?",
                     (target, row["id"]),
                 )
-            draws.append((row["name"], "amount", str(target)))
+            draws.append((row["name"], "amount", str(target), quantile))
 
         ensemble_name = con.execute("SELECT name FROM scenario").fetchone()[0]
         con.execute(
             "INSERT INTO ensemble_manifest("
             "id, ensemble_name, member_index, member_count, seed, "
-            "recipe_tree_id, generated_at) VALUES (1, ?, ?, ?, ?, ?, ?)",
+            "recipe_tree_id, generated_at, mode) VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ensemble_name, member_index, member_count,
-                _member_seed(seed, member_index), recipe_tree_id, _now_iso(),
+                None if mode == "sensitivity" else _member_seed(seed, member_index),
+                recipe_tree_id, _now_iso(), mode,
             ),
         )
         con.executemany(
-            "INSERT INTO ensemble_draw(calendar_event_name, vary_target, drawn_value) "
-            "VALUES (?, ?, ?)",
+            "INSERT INTO ensemble_draw(calendar_event_name, vary_target, drawn_value, "
+            "quantile) VALUES (?, ?, ?, ?)",
             draws,
         )
         con.commit()
@@ -283,9 +330,30 @@ def resolve_member(
     return member_path
 
 
+def oat_plan(
+    row_names: list[str], quantiles: tuple[float, ...], only: list[str] | None = None,
+) -> list[dict[str, float]]:
+    """The ``overrides`` for every member of an OAT sensitivity batch
+    (ADR-007 §2): index 0 is ``{}`` (the base -- every row central), then one
+    ``{name: q}`` per (row, quantile), rows by name, quantiles ascending.
+
+    ``only`` restricts which rows are perturbed; naming a row that isn't
+    varying raises, so a typo can't silently perturb nothing.
+    """
+    if only is not None:
+        unknown = set(only) - set(row_names)
+        if unknown:
+            raise EnsembleError(f"--only names no varying row: {sorted(unknown)}")
+        row_names = [n for n in row_names if n in set(only)]
+    return [{}] + [{name: q} for name in sorted(row_names) for q in quantiles]
+
+
 def write_batch_manifest(
     batch_dir: Path, *, member_count: int,
     failures: list[tuple[int, Path, str]],
+    mode: str = "monte_carlo",
+    quantiles: tuple[float, ...] | None = None,
+    rows: list[str] | None = None,
 ) -> None:
     """Persist what ``_run_ensemble`` knows that a run file alone can't show:
     how many members were expected, and which ones failed before
@@ -295,13 +363,19 @@ def write_batch_manifest(
     all and is invisible to every other function in this module.
     """
     path = Path(batch_dir) / BATCH_MANIFEST_FILENAME
-    path.write_text(json.dumps({
+    manifest: dict[str, Any] = {
+        "mode": mode,
         "member_count": member_count,
         "failures": [
             {"index": i, "intent_path": str(intent_path), "error": error}
             for i, intent_path, error in failures
         ],
-    }, indent=2))
+    }
+    if mode == "sensitivity":
+        # ADR-007 §5: what an OAT batch perturbed, in oat_plan's member order.
+        manifest["quantiles"] = list(quantiles or ())
+        manifest["rows"] = list(rows or ())
+    path.write_text(json.dumps(manifest, indent=2))
 
 
 def read_batch_manifest(batch_dir: Path) -> dict[str, Any] | None:
@@ -311,7 +385,10 @@ def read_batch_manifest(batch_dir: Path) -> dict[str, Any] | None:
     path = Path(batch_dir) / BATCH_MANIFEST_FILENAME
     if not path.is_file():
         return None
-    return json.loads(path.read_text())
+    manifest = json.loads(path.read_text())
+    # Batches written before ADR-007 carry no mode; they're all Monte Carlo.
+    manifest.setdefault("mode", "monte_carlo")
+    return manifest
 
 
 def member_run_statuses(batch_dir: Path) -> dict[str, str]:

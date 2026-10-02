@@ -39,6 +39,22 @@ class LogLinearMode(StrEnum):
     LOG = "log"
     LINEAR = "linear"
 
+class DeltaScale(StrEnum):
+    """Sensitivity delta scale (ADR-007 §4): dollars, or % of the base."""
+    ABSOLUTE = "absolute"
+    RELATIVE = "relative"
+
+class HeatmapValue(StrEnum):
+    """What a sensitivity heatmap cell shows (ADR-007 §9)."""
+    SHARE = "share"
+    SWING = "swing"
+
+class AttributionAxis(StrEnum):
+    """How a sensitivity delta is decomposed (ADR-007 §6.1)."""
+    CATEGORY = "category"
+    FLOW_ACCOUNT = "flow_account"
+    HOLDING_ACCOUNT = "holding_account"
+
 class InvestmentAssetSubkind(StrEnum):
     """
     Investment asset subkind type.
