@@ -24,7 +24,7 @@ from typing import Literal
 
 __all__ = [
     "MONTH_FORMAT_HINT", "VaryBoundRole", "parse_day", "parse_month", "month_end_iso",
-    "parse_vary_date", "vary_date_iso", "is_month_or_date",
+    "parse_vary_date", "vary_date_iso", "is_full_date", "is_month_or_date",
 ]
 
 MONTH_FORMAT_HINT = "YYYY-MM or YYYY-MM-DD"
@@ -108,6 +108,15 @@ def parse_vary_date(s: str, role: VaryBoundRole) -> date:
 def vary_date_iso(s: str, role: VaryBoundRole) -> str:
     """``parse_vary_date`` as an ISO string -- the canonical stored form."""
     return parse_vary_date(s, role).isoformat()
+
+
+def is_full_date(s: str) -> bool:
+    """True if ``s`` is a strict ``YYYY-MM-DD`` (``parse_day``)."""
+    try:
+        parse_day(s)
+    except ValueError:
+        return False
+    return True
 
 
 def is_month_or_date(s: str) -> bool:

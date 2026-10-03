@@ -1743,3 +1743,21 @@ def test_vary_date_bound_rejects_iso_week_date(
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any("vary_low '2029-W01-1' is not a valid" in issue for issue in ei.value.issues)
+
+
+@pytest.mark.parametrize("bad", ["2021-W01-1", "20210104", "1960-03"])
+def test_day_precise_dates_are_strict(
+    bad: str, test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """birthdate and a lot's acquired keep their day, so they must be a
+    strict YYYY-MM-DD (not a week date, basic format, or bare month)."""
+    persons = pd.read_csv(test_data_dir / "persons.csv", dtype=str, keep_default_na=False)
+    persons.loc[0, "birthdate"] = bad
+    persons.to_csv(test_data_dir / "persons.csv", index=False)
+    values = pd.read_csv(retire_alice_csv("account_values.csv"), dtype=str, keep_default_na=False)
+    values.loc[0, "acquired"] = bad
+    values.to_csv(retire_alice_csv("account_values.csv"), index=False)
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(f"birthdate '{bad}' is not YYYY-MM-DD" in issue for issue in ei.value.issues)
+    assert any(f"acquired '{bad}' is not YYYY-MM-DD" in issue for issue in ei.value.issues)

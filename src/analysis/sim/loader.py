@@ -693,6 +693,7 @@ def load_scenario(
     warnings: list[str] = []
 
     persons = _read_csv(data_dir / "persons.csv", issues)
+    _validate_birthdates(persons, issues)
     securities = _read_csv(data_dir / "securities.csv", issues, optional=True)
     _validate_securities(securities, issues)
     allocations = _read_csv(data_dir / "allocations.csv", issues, optional=True)
@@ -1335,6 +1336,20 @@ def _expand_account_growth(
             })
 
 
+def _validate_birthdates(rows: list[dict[str, str]], issues: list[str]) -> None:
+    """A birthdate is day-precise (ages turn on it), so a strict YYYY-MM-DD."""
+    for i, row in enumerate(rows, start=2):
+        birthdate = row.get("birthdate", "")
+        if birthdate:
+            try:
+                parse_day(birthdate)
+            except ValueError:
+                issues.append(
+                    f"persons.csv row {i} ({row.get('id') or '?'}): birthdate "
+                    f"'{birthdate}' is not YYYY-MM-DD"
+                )
+
+
 def _validate_securities(rows: list[dict[str, str]], issues: list[str]) -> None:
     seen: set[str] = set()
     for i, row in enumerate(rows, start=2):
@@ -1593,11 +1608,11 @@ def _validate_account_model_money(
         acquired = row.get("acquired", "")
         if acquired:
             try:
-                date.fromisoformat(acquired)
+                parse_day(acquired)
             except ValueError:
                 issues.append(
                     f"account_values.csv row {i} ({name}): acquired '{acquired}' "
-                    "is not an ISO date"
+                    "is not YYYY-MM-DD"
                 )
         quantity = row.get("quantity", "")
         if quantity:

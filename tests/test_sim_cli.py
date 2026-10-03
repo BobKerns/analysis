@@ -2208,3 +2208,19 @@ def test_sim_calendar_add_accepts_year_month(
     assert ("2027-02-28",) in con.execute(
         "SELECT date FROM calendar_event WHERE kind = 'set_rate' AND amount = 45000"
     ).fetchall()
+
+
+@pytest.mark.parametrize(("start", "ok"), [("2030-03", False), ("2030-03-13", True)])
+def test_scheduled_add_biweekly_start_needs_a_full_date(
+    test_data_dir: Path, start: str, ok: bool,
+) -> None:
+    """The loader rejects a bare-month biweekly start (it is the 14-day
+    anchor), so the CLI must not write one."""
+    result = CliRunner().invoke(main, [
+        "sim", "scheduled", "add", start, "Asset_Checking", "Asset_Savings", "75.00",
+        "--cadence", "biweekly", "--end", "2031-06", "--scenario", "retire_alice",
+        "--data-dir", str(test_data_dir),
+    ])
+    assert (result.exit_code == 0) == ok, result.output
+    if not ok:
+        assert "biweekly start needs a full YYYY-MM-DD" in result.output

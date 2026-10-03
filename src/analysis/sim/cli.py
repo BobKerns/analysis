@@ -74,7 +74,7 @@ from analysis.sim.quicken import (
     parse_net_worth_export,
 )
 import analysis.sim.scenario as sc
-from analysis.sim.dates import MONTH_FORMAT_HINT, is_month_or_date, month_end_iso
+from analysis.sim.dates import MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode
 
 
@@ -2403,6 +2403,10 @@ def scheduled_add(
     if not date:
         date = _prompt_with_completion("start date (YYYY-MM or YYYY-MM-DD)")
     date = _validate_month_date(date)
+    if cadence == "biweekly" and not is_full_date(date):
+        raise click.ClickException(
+            f"a biweekly start needs a full YYYY-MM-DD, its first payday: {date!r}"
+        )
     if end_date:
         end_date = _validate_month_date(end_date)
 
