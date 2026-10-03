@@ -130,7 +130,7 @@ def show_calendar_view(sc):
     view = calendar_view(sc)
     formats = {
         "date": truncate(7),
-        **{c: _breakable for c in ("kind", "scheduled_name", "account_1", "lot_1",
+        **{c: _breakable for c in ("kind", "target", "account_1", "lot_1",
                                    "account_2", "lot_2", "description")},
     }
     styled = view.style.format(formats, na_rep="-").hide(axis="index")
