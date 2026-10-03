@@ -284,21 +284,18 @@ def build_expense_baseline(
     raw["category"] = raw["category"].replace(merges)
     splits = category_splits or {}
     _apply_category_splits(raw, splits, has_accounts=True)
-    excluded_payee_re = re.compile(
-        "|".join(
-            f"(?:{pattern})"
-            for pattern in (*_ALWAYS_EXCLUDED_PAYEE_PATTERNS, *excluded_payee_patterns)
-        ),
-        re.IGNORECASE,
-    )
+    # Each pattern is searched for by itself, exactly as load_excluded_payees
+    # validated it: joined into one expression, inline flags and group
+    # references in one pattern would break or change another.
+    payee_excluded = pd.Series(False, index=raw.index)
+    for pattern in (*_ALWAYS_EXCLUDED_PAYEE_PATTERNS, *excluded_payee_patterns):
+        search = re.compile(pattern, re.IGNORECASE).search
+        payee_excluded |= raw["payee"].map(lambda payee, search=search: bool(search(payee)))
     categories_to_exclude = {str(category) for category in (excluded_categories or ())}
     raw["exclude_reason"] = ""
     raw.loc[raw["amount_cents"] >= 0, "exclude_reason"] = "non_expense"
     raw.loc[raw["transfer"].ne(""), "exclude_reason"] = "transfer"
-    raw.loc[
-        raw["payee"].str.contains(excluded_payee_re, na=False),
-        "exclude_reason",
-    ] = "modeled_separately"
+    raw.loc[payee_excluded, "exclude_reason"] = "modeled_separately"
     raw.loc[
         raw["category"].str.contains(_EXCLUDED_CATEGORY_RE, na=False),
         "exclude_reason",
@@ -323,7 +320,12 @@ def build_expense_baseline(
     _apply_category_splits(amazon, splits, has_accounts=False)
     amazon = amazon.loc[~amazon["category"].isin(categories_to_exclude)].copy()
     observed_categories = set(included["category_raw"]) | set(amazon["category"])
-    explicitly_mapped = set(merges) | categories_to_exclude
+    # A split's category and its targets are configured, not unmapped, so the
+    # default category must not swallow them.
+    split_categories = set(splits) | {
+        target for targets in splits.values() for target in targets.values()
+    }
+    explicitly_mapped = set(merges) | categories_to_exclude | split_categories
     defaulted_categories = tuple(sorted(
         category for category in observed_categories
         if category not in explicitly_mapped and category not in {default_category, ""}

@@ -247,6 +247,57 @@ def test_build_expense_baseline_split_without_a_default_leaves_the_rest_alone(
     ]
 
 
+def test_build_expense_baseline_split_categories_are_not_defaulted_to_other(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quicken.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Alice Checking",,,,,,,,,,,\n'
+        # Categorized as Food directly in Quicken, so no merge row names it.
+        ',,"2026-01-02","2026-01-03","2026-01-02","","Market","Food","","","","-12.34"\n'
+        ',,"2026-01-03","2026-01-04","2026-01-03","","Store","Mystery","","","","-7.00"\n',
+        encoding="utf-8",
+    )
+    amazon = pd.DataFrame(
+        {
+            "summary_month_start": ["2026-01-01"],
+            "category": ["Groceries"],
+            "amount_total": [20.00],
+        }
+    )
+
+    result = build_expense_baseline(
+        path,
+        amazon,
+        category_merges={"Groceries": "Food"},
+        category_splits={"Food": {"Alice Checking": "Alice Food", "": "Bill Food"}},
+        default_category="Other",
+    )
+
+    assert result.categories_defaulted_to_other == ("Mystery",)
+    assert result.category_totals.to_dict("records") == [
+        {"category": "Bill Food", "amount_total": 20.0},
+        {"category": "Alice Food", "amount_total": 12.34},
+        {"category": "Other", "amount_total": 7.0},
+    ]
+
+
+def test_build_expense_baseline_applies_each_payee_pattern_independently(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quicken.csv"
+    _write_export(path)
+    no_amazon = pd.DataFrame(columns=["summary_month_start", "category", "amount_total"])
+
+    # An inline flag and a group are both valid alone; neither may disturb the other.
+    result = build_expense_baseline(
+        path, no_amazon, excluded_payee_patterns=["(?i)nothing here", r"(acme)\s+insurance"],
+    )
+
+    assert result.transactions["payee"].tolist() == ["Market"]
+
+
 def test_load_category_splits_reads_accounts_and_a_blank_default(tmp_path: Path) -> None:
     path = tmp_path / "expense_category_split.csv"
     path.write_text(
