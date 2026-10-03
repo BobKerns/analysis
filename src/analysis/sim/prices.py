@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import json
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +23,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+import certifi
 import pandas as pd
 
 if TYPE_CHECKING:
@@ -48,9 +50,24 @@ class PriceProvider(Protocol):
         """Unadjusted daily closes for ``symbol`` from ``start`` to ``end``, oldest first."""
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """Python's default verification context, plus certifi's root bundle (#40).
+
+    Verifying Yahoo's certificate needs a store of trusted root authorities.
+    The python.org build of Python on macOS ships with none (until its
+    "Install Certificates.command" is run) and doesn't read the system
+    keychain, so the default context alone fails with CERTIFICATE_VERIFY_FAILED.
+    Adding certifi's bundle on top of the defaults makes it work however
+    Python was installed, while still honoring SSL_CERT_FILE and any system
+    store the default context does find."""
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return context
+
+
 def _http_get(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (analysis sim)"})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=30, context=_ssl_context()) as response:
         return response.read()
 
 

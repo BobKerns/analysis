@@ -203,3 +203,43 @@ def test_a_symbol_that_stopped_trading_says_when_it_last_did() -> None:
     }], "error": None}}).encode()
     with pytest.raises(PriceError, match=r"no prices since 2026-04-01 \(last traded 2024-12-07"):
         YahooProvider(lambda url: payload).closes("OLD", date(2026, 4, 1), date(2026, 9, 24))
+
+
+def test_http_get_verifies_with_a_root_bundle_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#40: python.org's macOS Python has no root certificate store by
+    default, so fetching failed with CERTIFICATE_VERIFY_FAILED. _http_get
+    must pass a verifying context with certifi's roots loaded. (Every other
+    test injects a fake http_get, which is why this went unnoticed.)"""
+    import ssl
+    import urllib.request
+
+    from analysis.sim import prices
+
+    seen: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def fake_urlopen(request, *, timeout, context):  # type: ignore[no-untyped-def]
+        seen.update(url=request.full_url, context=context)
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert prices._http_get("https://example.invalid/x") == b"{}"
+    context = seen["context"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    assert context.get_ca_certs(), "no root certificates loaded"
+
+
+def test_the_default_yahoo_provider_uses_the_real_http_get() -> None:
+    from analysis.sim import prices
+
+    assert prices.YahooProvider()._get is prices._http_get
