@@ -11,8 +11,8 @@ first day as a lower bound, its last day as an upper bound, and its middle
 (the 15th) as an interior point (a mode or median). A cutoff known to fall
 mid-month then doesn't over-sample that month.
 
-Day-precise inputs (birthdates, lot ``acquired`` dates, prices) keep using
-``date.fromisoformat`` directly.
+Day-precise inputs (birthdates, lot ``acquired`` dates, prices) keep the
+exact day; ``parse_day`` is the strict ``YYYY-MM-DD`` check for them.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from datetime import date
 from typing import Literal
 
 __all__ = [
-    "MONTH_FORMAT_HINT", "VaryBoundRole", "parse_month", "month_end_iso",
+    "MONTH_FORMAT_HINT", "VaryBoundRole", "parse_day", "parse_month", "month_end_iso",
     "parse_vary_date", "vary_date_iso", "is_month_or_date",
 ]
 
@@ -35,6 +35,7 @@ VaryBoundRole = Literal["low", "high", "point"]
 month's first day, ``high`` on its last, ``point`` (a mode/median) mid-month."""
 
 _YEAR_MONTH = re.compile(r"(\d{4})-(\d{2})")
+_FULL_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MID_MONTH_DAY = 15
 
 
@@ -50,6 +51,16 @@ def _year_month(s: str) -> tuple[int, int] | None:
     return year, month
 
 
+def parse_day(s: str) -> date:
+    """A strict ``YYYY-MM-DD``, exactly that day. ``date.fromisoformat``
+    alone also takes ISO week dates (``2021-W01-1``) and basic format
+    (``20210104``), which no column here means. Raises ``ValueError``."""
+    raw = s.strip()
+    if _FULL_DATE.fullmatch(raw) is None:
+        raise ValueError(f"not YYYY-MM-DD: {s!r}")
+    return date.fromisoformat(raw)
+
+
 def _month_end(year: int, month: int) -> date:
     return date(year, month, monthrange(year, month)[1])
 
@@ -61,9 +72,10 @@ def parse_month(s: str) -> date:
     raw = s.strip()
     ym = _year_month(raw)
     if ym is None:
-        d = date.fromisoformat(raw) if len(raw) == 10 else None
-        if d is None:
-            raise ValueError(f"not {MONTH_FORMAT_HINT}: {s!r}")
+        try:
+            d = parse_day(raw)
+        except ValueError:
+            raise ValueError(f"not {MONTH_FORMAT_HINT}: {s!r}") from None
         ym = d.year, d.month
     return _month_end(*ym)
 
@@ -79,9 +91,10 @@ def parse_vary_date(s: str, role: VaryBoundRole) -> date:
     raw = s.strip()
     ym = _year_month(raw)
     if ym is None:
-        if len(raw) != 10:
-            raise ValueError(f"not {MONTH_FORMAT_HINT}: {s!r}")
-        return date.fromisoformat(raw)
+        try:
+            return parse_day(raw)
+        except ValueError:
+            raise ValueError(f"not {MONTH_FORMAT_HINT}: {s!r}") from None
     year, month = ym
     match role:
         case "low":

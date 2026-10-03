@@ -23,7 +23,7 @@ from typing import Any, NamedTuple
 
 from analysis.sim import registries
 from analysis.sim.dates import (
-    MONTH_FORMAT_HINT, VaryBoundRole, month_end_iso, vary_date_iso,
+    MONTH_FORMAT_HINT, VaryBoundRole, month_end_iso, parse_day, vary_date_iso,
 )
 from analysis.sim.distributions import (
     DistributionError,
@@ -1006,17 +1006,20 @@ def _read_aux_files(
                 else:
                     payload[c] = _coerce(raw)
             effective = row["effective_date"]
-            if kind != "security_price":
-                # Prices are dated by their actual close; every other aux
-                # and series row takes effect for a whole month (#34).
-                try:
+            # Prices are dated by their actual close, so keep the day; every
+            # other aux and series row takes effect for a whole month (#34).
+            try:
+                if kind == "security_price":
+                    parse_day(effective)
+                else:
                     effective = month_end_iso(effective)
-                except ValueError:
-                    issues.append(
-                        f"aux/{csv_path.name} row {i}: effective_date "
-                        f"'{effective}' is not {MONTH_FORMAT_HINT}"
-                    )
-                    row_ok = False
+            except ValueError:
+                expected = "YYYY-MM-DD" if kind == "security_price" else MONTH_FORMAT_HINT
+                issues.append(
+                    f"aux/{csv_path.name} row {i}: effective_date "
+                    f"'{effective}' is not {expected}"
+                )
+                row_ok = False
             if row_ok:
                 out.append((kind, series, payload, effective))
     return out

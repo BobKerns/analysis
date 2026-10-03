@@ -6,7 +6,9 @@ from datetime import date
 
 import pytest
 
-from analysis.sim.dates import is_month_or_date, month_end_iso, parse_month, parse_vary_date
+from analysis.sim.dates import (
+    is_month_or_date, month_end_iso, parse_day, parse_month, parse_vary_date,
+)
 
 
 @pytest.mark.parametrize(("raw", "expected"), [
@@ -22,7 +24,7 @@ def test_parse_month_lands_on_month_end(raw: str, expected: date) -> None:
 
 
 @pytest.mark.parametrize("raw", ["", "2030", "2030-1", "2030-13", "2030-00", "2029-1-1",
-                                 "20300101", "2030-02-30", "soon"])
+                                 "20300101", "2030-02-30", "soon", "2021-W01-1", "2021-W01"])
 def test_parse_month_rejects_other_forms(raw: str) -> None:
     with pytest.raises(ValueError):
         parse_month(raw)
@@ -43,6 +45,14 @@ def test_vary_date_bare_month_spans_the_month_and_full_date_is_exact(
     assert parse_vary_date(raw, role) == expected
 
 
-def test_vary_date_rejects_other_forms() -> None:
+@pytest.mark.parametrize("raw", ["2029-1-1", "2021-W01-1"])
+def test_vary_date_rejects_other_forms(raw: str) -> None:
     with pytest.raises(ValueError):
-        parse_vary_date("2029-1-1", "low")
+        parse_vary_date(raw, "low")
+
+
+def test_parse_day_is_strict_and_keeps_the_day() -> None:
+    assert parse_day("2030-02-10") == date(2030, 2, 10)
+    for raw in ("2030-02", "2021-W01-1", "20300210"):
+        with pytest.raises(ValueError):
+            parse_day(raw)
