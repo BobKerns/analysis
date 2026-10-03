@@ -702,22 +702,17 @@ def test_an_unused_factor_still_draws_and_is_recorded(
     assert _resolve(recipe, tmp_path / "z", 0)["draws"]["someday"][2] == 0.0
 
 
-def test_an_unused_factor_does_not_mark_a_batch_correlated(
-    append_calendar_row: Callable[..., None], test_data_dir: Path,
-    intent_dir: Path, runs_dir: Path,
-) -> None:
-    """PR #37 review: an isolated factor records a score for provenance, but
-    every modeled row is still independent, so no correlation note."""
-    from analysis.sim import sensitivity
+def _small_mc_batch(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> Path:
+    """Load the private retire_alice copy (after a test's calendar edits) and
+    run a 3-member Monte Carlo batch of it."""
     from analysis.sim.loader import latest_ensemble_batch
 
-    _factor(append_calendar_row, "someday")
-    _varying_rate(append_calendar_row, "free_rate")
     runner = CliRunner()
-    assert runner.invoke(main, [
+    load = runner.invoke(main, [
         "sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
         "--intent-dir", str(intent_dir), "--allow-dirty-data", "--no-run",
-    ]).exit_code == 0
+    ])
+    assert load.exit_code == 0, load.output
     con = sqlite3.connect(intent_dir / "retire_alice.sqlite3")
     con.execute("UPDATE scenario SET seed = 5")
     con.commit()
@@ -727,4 +722,63 @@ def test_an_unused_factor_does_not_mark_a_batch_correlated(
         "--runs-dir", str(runs_dir), "--ensemble-size", "3", "--allow-dirty-data",
     ])
     assert run.exit_code == 0, run.output
-    assert not sensitivity.has_correlated_rows(latest_ensemble_batch(runs_dir / "retire_alice"))
+    batch = latest_ensemble_batch(runs_dir / "retire_alice")
+    assert batch is not None
+    return batch
+
+
+@pytest.mark.parametrize("case", ["unused factor", "lone child", "zero rho"])
+def test_independent_inputs_are_not_marked_correlated(
+    append_calendar_row: Callable[..., None], test_data_dir: Path,
+    intent_dir: Path, runs_dir: Path, case: str,
+) -> None:
+    """PR #37 review: the note needs two modeled rows that actually depend on
+    each other -- not an unused factor's provenance, a lone row under a
+    factor, or a link whose rho is 0."""
+    from analysis.sim import sensitivity
+
+    _factor(append_calendar_row, "f")
+    if case == "lone child":
+        _varying_rate(append_calendar_row, "tied", vary_correlate_with="f", vary_correlation="0.8")
+    elif case == "zero rho":
+        _varying_rate(append_calendar_row, "tied", vary_correlate_with="f", vary_correlation="0.8")
+        append_calendar_row(
+            date="2028-02-29", kind="set_rate", name="untied", series="Asset_Checking",
+            amount="45000", vary_target="amount", vary_distribution="uniform",
+            vary_low="40000", vary_high="50000", vary_correlate_with="f", vary_correlation="0",
+        )
+    append_calendar_row(
+        date="2029-02-28", kind="set_rate", name="free_rate", series="Asset_Checking",
+        amount="45000", vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000",
+    )
+    batch = _small_mc_batch(test_data_dir, intent_dir, runs_dir)
+    assert not sensitivity.has_correlated_rows(batch)
+
+
+def test_two_dependent_rows_mark_a_batch_correlated(
+    append_calendar_row: Callable[..., None], test_data_dir: Path,
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    from analysis.sim import sensitivity
+
+    _factor(append_calendar_row, "f")
+    _varying_rate(append_calendar_row, "a", vary_correlate_with="f", vary_correlation="0.8")
+    append_calendar_row(
+        date="2028-02-29", kind="set_rate", name="b", series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform", vary_low="40000", vary_high="50000",
+        vary_correlate_with="f", vary_correlation="0.5",
+    )
+    assert sensitivity.has_correlated_rows(_small_mc_batch(test_data_dir, intent_dir, runs_dir))
+
+
+@pytest.mark.parametrize(("column", "value"), [("params_json", '{"x": 1}'), ("tags", "role:x")])
+def test_latent_factor_rejects_payload_and_tags(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    column: str, value: str,
+) -> None:
+    """ADR-003 §3.10: a factor carries only a name, a description and the
+    correlation pair (PR #37 review: params_json was missing from the check)."""
+    _factor(append_calendar_row, "f", **{column: value})
+    _varying_rate(append_calendar_row, "rate_a", vary_correlate_with="f", vary_correlation="0.5")
+    assert any(f"has no {column}" in i for i in _issues(load_test_copy))

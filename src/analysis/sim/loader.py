@@ -1883,7 +1883,8 @@ def _validate_calendar_vary(
 
 _FACTOR_FORBIDDEN_COLUMNS = (
     "scheduled_name", "account_1", "lot_1", "account_2", "lot_2", "series", "amount",
-    "param_date", "tax_character", "vary_target", "vary_distribution", "vary_low", "vary_high",
+    "param_date", "tax_character", "params_json", "tags",
+    "vary_target", "vary_distribution", "vary_low", "vary_high",
     "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
 )
 """Columns a ``latent_factor`` row must leave blank: it has no date, amount
