@@ -871,7 +871,8 @@ def _normalize_month_columns(
     rows: list[dict[str, str]], filename: str, issues: list[str],
 ) -> None:
     """Rewrite ``filename``'s month columns (``_MONTH_COLUMNS``) in place to
-    their canonical month-end ISO date, reporting any that don't parse."""
+    their canonical month-end ISO date, reporting and blanking any that
+    don't parse."""
     for i, row in enumerate(rows, start=2):
         for col in _MONTH_COLUMNS.get(filename, ()):
             raw = row.get(col) or ""
@@ -881,6 +882,9 @@ def _normalize_month_columns(
                 row[col] = month_end_iso(raw)
             except ValueError:
                 issues.append(f"{filename} row {i}: {col} '{raw}' is not {MONTH_FORMAT_HINT}")
+                # Blank (NULL) from here on: later stages read these columns
+                # before ``issues`` is raised, and must not trip on the raw text.
+                row[col] = ""
 
 
 def _normalize_vary_dates(rows: list[dict[str, str]]) -> None:

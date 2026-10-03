@@ -1662,3 +1662,17 @@ def test_vary_date_bounds_bare_month_spans_the_month_full_date_is_exact(
         "SELECT date, vary_low, vary_mode, vary_high FROM calendar_event "
         "WHERE name = 'retire_bob_vary'"
     ).fetchone() == ("2029-06-30", "2029-01-01", "2029-06-15", "2029-12-10")
+
+
+def test_malformed_month_is_a_load_error_not_a_crash(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A reported bad month value must not reach later loader stages (e.g.
+    the opening-balance derivation's ``int(start[:4])``) as a raw string."""
+    path = retire_alice_csv("scenario.csv")
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df.loc[0, "start"] = "soon"
+    df.to_csv(path, index=False)
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("start 'soon' is not YYYY-MM or YYYY-MM-DD" in issue for issue in ei.value.issues)
