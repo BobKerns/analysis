@@ -1292,6 +1292,7 @@ def test_sim_run_ensemble_reports_member_failures_without_stopping(
             "sim", "run", "retire_alice",
             "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
             "--ensemble-size", "2", "--allow-dirty-data",
+            "--jobs", "1",  # in-process, so the patch reaches the members
         ],
     )
     assert result.exit_code == 0, result.output
@@ -2021,7 +2022,8 @@ def test_sim_run_sensitivity_reports_member_failures_without_stopping(
         return real_resolve_member(*args, member_index=member_index, **kwargs)
 
     monkeypatch.setattr(sim_cli, "resolve_member", _flaky_resolve_member)
-    result = _sim_run_sensitivity(intent_dir, runs_dir, runner)
+    # In-process, so the patch reaches the members.
+    result = _sim_run_sensitivity(intent_dir, runs_dir, runner, "--jobs", "1")
     assert result.exit_code == 0, result.output
     assert "member 2: FAILED (boom)" in result.output
     assert "4/5 member(s) succeeded" in result.output
@@ -2129,7 +2131,8 @@ def test_sensitivity_manifest_is_written_before_members_run(
         return real(recipe, member_intent_path, member_run_path, *args, **kwargs)
 
     monkeypatch.setattr(sim_cli, "_run_one_member", _spy)
-    assert _sim_run_sensitivity(intent_dir, runs_dir, runner).exit_code == 0
+    # In-process, so the spy sees every member.
+    assert _sim_run_sensitivity(intent_dir, runs_dir, runner, "--jobs", "1").exit_code == 0
     assert seen and set(seen) == {"sensitivity"}
 
 
@@ -2224,3 +2227,21 @@ def test_scheduled_add_biweekly_start_needs_a_full_date(
     assert (result.exit_code == 0) == ok, result.output
     if not ok:
         assert "biweekly start needs a full YYYY-MM-DD" in result.output
+
+
+@pytest.mark.parametrize(("available", "expected"), [(6, 6), (None, 1)])
+def test_sim_run_jobs_defaults_to_available_cpus(
+    monkeypatch, available: int | None, expected: int,
+) -> None:
+    """#42: with no --jobs, members run one per CPU available to the process
+    (1 if that can't be determined)."""
+    import analysis.sim.cli as sim_cli
+
+    jobs_param = next(p for p in sim_cli.run.params if p.name == "jobs")
+    assert jobs_param.default == 0
+    monkeypatch.setattr(sim_cli.os, "process_cpu_count", lambda: available)
+    *_, jobs = sim_cli._batch_options(
+        sensitivity=False, ensemble_size=3, only=None, quantiles_text=None,
+        jobs=jobs_param.default,
+    )
+    assert jobs == expected

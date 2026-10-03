@@ -284,8 +284,9 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
     help="With --sensitivity: perturb only these varying rows; the rest stay central.",
 )
 @click.option(
-    "--jobs", type=int, default=1, show_default=True,
-    help="Ensemble/sensitivity members to run in parallel; 0 = one per CPU (ADR-007 §8).",
+    "--jobs", type=int, default=0,
+    help="Ensemble/sensitivity members to run in parallel (default 0: one per CPU "
+         "available to this process; 1 runs them in-process, one at a time; ADR-007 §8).",
 )
 @click.option(
     "--quantiles", "quantiles_text", default=None, metavar="Q[,Q...]",
@@ -419,7 +420,7 @@ def _batch_options(
     only_names = [n.strip() for n in only.split(",") if n.strip()] if only else None
     if jobs < 0:
         raise click.UsageError(f"--jobs must be 0 (one per CPU) or positive (got {jobs})")
-    return quantiles, only_names, jobs or os.cpu_count() or 1
+    return quantiles, only_names, jobs or os.process_cpu_count() or 1
 
 
 def _has_unresolved_vary(intent_path: Path) -> bool:
