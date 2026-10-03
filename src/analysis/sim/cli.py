@@ -58,6 +58,7 @@ from analysis.sim.loader import (
     DEFAULT_STATE_DIR,
     DataDirtyRefused,
     LoadError,
+    LoadResult,
     ScenarioRef,
     batch_mode,
     list_scenario_names,
@@ -164,6 +165,8 @@ def load(
     except DataDirtyRefused as exc:
         click.echo(str(exc), err=True)
         raise click.ClickException("data dirty; refusing to load") from None
+    if not run_after_load:
+        _echo_load_warnings(result)  # otherwise `run` reloads and prints them, once
     if explicit:
         write_current_scenario(resolved, ref.name)
     click.echo(f"loaded {result.intent_path}")
@@ -197,14 +200,22 @@ def check(scenario_name: str | None, data_dir: Path | None) -> None:
     ref = _resolve_scenario(resolved, scenario_name)
     with tempfile.TemporaryDirectory() as td:
         try:
-            load_scenario(
+            result = load_scenario(
                 resolved, ref.name, intent_dir=Path(td), compute_stamps=False,
             )
         except LoadError as exc:
             for issue in exc.issues:
                 click.echo(f"  error: {issue}", err=True)
             raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+    _echo_load_warnings(result)
     click.echo("ok")
+
+
+def _echo_load_warnings(result: LoadResult) -> None:
+    """Print a load's non-fatal warnings (ADR-008: e.g. an unused latent
+    factor) to stderr, the way errors are printed, without failing."""
+    for warning in result.warnings:
+        click.echo(f"WARN: {warning}", err=True)  # ADR-004 §6's format
 
 
 def _resolve_scenario(
@@ -322,10 +333,10 @@ def run(
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
     if resolved_data_dir is not None:
         try:
-            load_scenario(
+            _echo_load_warnings(load_scenario(
                 resolved_data_dir, scenario_name, intent_dir=resolved_intent_dir,
                 allow_dirty_data=allow_dirty_data,
-            )
+            ))
         except LoadError as exc:
             for issue in exc.issues:
                 click.echo(f"  error: {issue}", err=True)
@@ -1510,6 +1521,7 @@ def _validate_iso_date(s: str) -> str:
 _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
     "name", "vary_target", "vary_distribution", "vary_low", "vary_high",
     "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
+    "vary_correlate_with", "vary_correlation",
 })
 
 
@@ -1563,7 +1575,9 @@ def _append_and_validate(
     _append_csv_row(path, header, row)
     with tempfile.TemporaryDirectory() as td:
         try:
-            load_scenario(data_dir, scenario_name, intent_dir=Path(td), compute_stamps=False)
+            _echo_load_warnings(
+                load_scenario(data_dir, scenario_name, intent_dir=Path(td), compute_stamps=False)
+            )
         except LoadError as exc:
             if original is None:
                 path.unlink()
