@@ -1,10 +1,17 @@
-# Flow chain definitions
+# Chains for the `retire_alice` scenario
 
-Flow chains are policies for how money is either obtained or distributed.
+A chain is a named, ordered list of places money can come from (or go to):
+try this step first, then the next. Every account and lot already has its own
+one-step chain, so a file here is only needed for more than one step. Each
+file is named `<kind>__<name>.csv`, where `<kind>` is `asset` or `income`, and
+the chain is referred to by `<name>`.
 
-## Policies
+The column layout and how a draw moves through the steps are documented in:
 
-A chain is a set of accounts that act as a unit.
+- [ADR-003 §4.7](../../../../docs/architecture/ADR-003-registries-and-csv-schemas.md#47-per-scenario-data_reposcenariosnamechainskind__namecsv)
+  (columns `account_name`, `lot`, `maximum`, `percent`, `series`, `cadence`)
+- [User guide §4.6](../../../../docs/user-guide.md#46-chains-as-default-policies)
+  (chains as default policies)
 
 * Every account is a chain with one element, with the same name
   * This allows accounts and chains to be used interchangeably

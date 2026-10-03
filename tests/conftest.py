@@ -122,6 +122,23 @@ def _no_current_scenario_writes(
 
 
 @pytest.fixture(autouse=True)
+def _one_cpu_for_default_jobs(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolve ``sim run``'s default ``--jobs`` to 1, so batches run in-process.
+
+    A pool worker starts a fresh interpreter and re-imports the package
+    (~1 s each); a test batch's members take a fraction of that, so the
+    pool made the suite slower, not faster. Parallel execution is covered
+    by the tests that pass ``--jobs 2`` explicitly, and the default's own
+    resolution by a test marked ``@pytest.mark.uses_real_cpu_count``.
+    """
+    if request.node.get_closest_marker("uses_real_cpu_count"):
+        return
+    monkeypatch.setattr("analysis.sim.cli._available_cpus", lambda: 1)
+
+
+@pytest.fixture(autouse=True)
 def _negative_balance_is_an_error(request: pytest.FixtureRequest) -> Generator[None]:
     """Promote engine.py's "account went negative" RuntimeWarning to a hard
     error for every test.

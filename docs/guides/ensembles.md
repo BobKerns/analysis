@@ -210,10 +210,11 @@ own "Consequences" section). Time one ordinary run of the parent scenario
 run` itself) and multiply by the member count you're considering to gauge
 what an ensemble run will cost.
 
-`--jobs N` runs members in parallel (`--jobs 0` uses one per CPU). The
-members are independent, so the results are identical to a sequential
-run; only the order of the progress lines changes. Divide the estimate
-above by roughly the number of cores you give it.
+Members run in parallel, by default one per CPU available to the
+process; `--jobs N` sets the count, and `--jobs 1` runs them one at a
+time. The members are independent, so the results are identical to a
+sequential run; only the order of the progress lines changes. Divide the
+estimate above by roughly the number of cores in use.
 
 **A quick way to tell if you need more:** run the ensemble, look at
 `notebooks/ensemble.ipynb`'s fan chart, then rerun it with a bigger

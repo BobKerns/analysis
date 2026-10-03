@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-01
 - **Supersedes:** —
-- **Amended by:** [#31](https://github.com/BobKerns/analysis/issues/31): `truncated_normal` quantiles follow its new sinh-arcsinh shape, `triangular` added, and the base case is every family's median (§3); the parameters view shows shape and implied moments (§9).
+- **Amended by:** [#31](https://github.com/BobKerns/analysis/issues/31): `truncated_normal` quantiles follow its new sinh-arcsinh shape, `triangular` added, and the base case is every family's median (§3); the parameters view shows shape and implied moments (§9). [#42](https://github.com/BobKerns/analysis/issues/42): `--jobs` now defaults to one worker per available CPU, not 1 (§8).
 - **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios — `vary_*` columns, `resolve_member`, `ensemble_manifest`/`ensemble_draw`, member 0), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility, provenance).
 
 ## Context
@@ -190,7 +190,7 @@ sim ensemble sensitivity <recipe> [--batch B] [--mode sensitivity|monte_carlo]
 
 ### 8. Parallel members
 
-`sim run` (both modes) gains `--jobs N`, which defaults to 1 so today's behavior is unchanged. Members are dispatched to a `concurrent.futures.ProcessPoolExecutor`, with each worker running `resolve_member` and then `run_scenario` for one member. Members share no files: each has its own intent and run file, and the recipe intent is only read. Batch-directory reservation and `write_batch_manifest` stay in the parent process. Progress lines are printed as members complete (not in index order), and the final summary is sorted by index.
+`sim run` (both modes) gains `--jobs N`. It defaults to 0, one worker per CPU available to the process (`os.process_cpu_count()`, which honors CPU affinity), since members are independent and a batch is otherwise idle-bound on one core (#42; it was 1 when first added). `--jobs 1` keeps the in-process path with no pool. Members are dispatched to a `concurrent.futures.ProcessPoolExecutor`, with each worker running `resolve_member` and then `run_scenario` for one member. Members share no files: each has its own intent and run file, and the recipe intent is only read. Batch-directory reservation and `write_batch_manifest` stay in the parent process. Progress lines are printed as members complete (not in index order), and the final summary is sorted by index.
 
 `run_scenario`'s provenance step (`provenance.py`) doesn't modify the worktree or its index. Its `write-tree` uses a private temporary `GIT_INDEX_FILE`, and the tree objects it writes are content-addressed and safe to write concurrently. Concurrent members therefore don't contend for anything in git.
 
