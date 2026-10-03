@@ -112,6 +112,7 @@ unspsc
 upserts
 vaccts
 worktree
+worktrees
 xdate
 xfer
 xfers
