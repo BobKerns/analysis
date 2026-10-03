@@ -262,8 +262,8 @@ def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[s
 
 
 def _member_scores(
-    links: dict[str, Link], *, overrides: dict[str, float] | None, seed: int | None,
-    member_index: int,
+    links: dict[str, Link], factors: list[str], *, overrides: dict[str, float] | None,
+    seed: int | None, member_index: int,
 ) -> dict[str, float]:
     """Every tree member's standard normal score on this member (ADR-008 §5):
 
@@ -273,8 +273,11 @@ def _member_scores(
     - an OAT member: 0, except an overridden row at ``Phi^-1(q)``. Its
       children aren't moved: OAT stays "this row alone" (ADR-008 §5).
 
-    Rows outside every tree get no score and resolve exactly as before."""
-    members = tree_members(links)
+    Every latent factor gets a score, even one nothing depends on yet (an
+    unused factor still resolves to its own draw, ADR-008 §4, and is
+    recorded). Rows outside every tree get no score and resolve exactly as
+    before."""
+    members = tree_members(links) | set(factors)
     if not members:
         return {}
     if overrides is not None or member_index == 0:
@@ -287,10 +290,12 @@ def _member_scores(
         return scores
     if seed is None:
         raise EnsembleError("a correlated draw needs the ensemble's seed")
+    noise = {name: standard_normal(member_rng(seed, member_index, name)) for name in members}
     try:
-        return resolve_scores(links, {
-            name: standard_normal(member_rng(seed, member_index, name)) for name in members
-        })
+        scores = resolve_scores(links, noise)
+        # An isolated factor (no parent, no dependents) is its own root.
+        scores.update({name: noise[name] for name in members if name not in scores})
+        return scores
     except CorrelationError as e:  # the loader rejects these first
         raise EnsembleError(str(e)) from e
 
@@ -344,7 +349,7 @@ def resolve_member(
                 )
         links, factors = _correlation_links(con)
         scores = _member_scores(
-            links, overrides=overrides, seed=seed, member_index=member_index,
+            links, factors, overrides=overrides, seed=seed, member_index=member_index,
         )
 
         draws: list[tuple[str, str, str, float | None, str | None, float | None]] = []

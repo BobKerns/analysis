@@ -680,3 +680,23 @@ def test_uncorrelated_batch_has_no_correlation_note(mc_batch: Path) -> None:
     from analysis.sim import sensitivity
 
     assert not sensitivity.has_correlated_rows(mc_batch)
+
+
+def test_an_unused_factor_still_draws_and_is_recorded(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """PR #37 review: a factor with neither parent nor dependents (allowed,
+    with a warning) still resolves to its own draw and gets provenance, and
+    its presence doesn't disturb any row."""
+    from analysis.sim.distributions import member_rng
+
+    _correlated_recipe(append_calendar_row)
+    before = _resolve(load_test_copy().intent_path, tmp_path / "b", 3)["draws"]
+    _factor(append_calendar_row, "someday")
+    recipe = load_test_copy().intent_path
+    after = _resolve(recipe, tmp_path / "a", 3)["draws"]
+    expected = standard_normal(member_rng(21, 3, "someday"))
+    assert after["someday"] == ("factor", repr(expected), expected)
+    assert {n: v for n, v in after.items() if n != "someday"} == before
+    assert _resolve(recipe, tmp_path / "z", 0)["draws"]["someday"][2] == 0.0
