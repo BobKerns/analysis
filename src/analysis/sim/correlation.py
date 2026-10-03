@@ -24,6 +24,7 @@ from statistics import NormalDist
 __all__ = [
     "CorrelationError", "Link", "tree_members", "topological_order", "resolve_scores",
     "standard_normal", "probability", "expected_rank_correlation", "implied_correlation",
+    "conditional_scores",
 ]
 
 _STANDARD = NormalDist()
@@ -82,6 +83,21 @@ def resolve_scores(links: Mapping[str, Link], noise: Mapping[str, float]) -> dic
         else:
             rho = link.rho
             scores[node] = rho * scores[link.parent] + math.sqrt(max(0.0, 1 - rho * rho)) * noise[node]
+    return scores
+
+
+def conditional_scores(links: Mapping[str, Link], node: str, z: float) -> dict[str, float]:
+    """Every descendant of ``node`` at its conditional median given
+    ``node``'s score is ``z``: the product of rho along the path down to it,
+    times ``z`` (ADR-008 §5). Intermediate nodes are marginalized out, not
+    held at their own medians: a grandchild's conditional mean given its
+    grandparent is ``rho_1 * rho_2 * z``. ``node`` itself is not included."""
+    scores = {node: z}
+    for member in topological_order(links):
+        link = links.get(member)
+        if link is not None and link.parent in scores and member not in scores:
+            scores[member] = link.rho * scores[link.parent]
+    del scores[node]
     return scores
 
 

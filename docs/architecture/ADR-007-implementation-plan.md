@@ -73,9 +73,9 @@ Exit: pure functions, nothing wired up. Existing intent and run files are recrea
    - Every other row resolves as member 0 does today: `central()`, with `quantile` NULL.
    - With `overrides` given, `member_rng` is never called.
    - `mode` is written to `ensemble_manifest.mode`.
-   - An `overrides` key that isn't an unresolved `vary_*` row raises `EnsembleError`, so a typo in `--only` can't silently do nothing.
+   - An `overrides` key that isn't an unresolved `vary_*` row or a latent factor (#39) raises `EnsembleError`, so a typo in `--only` can't silently do nothing.
    - The dates-then-amounts order, ramp expansion and the `one_off_transfer` positivity check are unchanged.
-2. `ensemble.py`: `oat_plan(row_names, quantiles, only=None) -> list[dict[str, float]]`. Index 0 is `{}` (the base), followed by one `{name: q}` per (row, quantile) in a stable order: rows by name, quantiles ascending. An `only` name not in `row_names` raises.
+2. `ensemble.py`: `oat_plan(row_names, quantiles, only=None) -> list[dict[str, float]]`. Index 0 is `{}` (the base), followed by one `{name: q}` per (row, quantile) in a stable order: rows by name, quantiles ascending. An `only` name not in `row_names` raises. Since #39 it also takes `factors` (from `factor_reach`) and sweeps every latent factor that moves at least one varying row.
 3. `write_batch_manifest` gains `mode`, plus `quantiles` and `rows` for sensitivity batches. `read_batch_manifest` treats a missing `mode` as `monte_carlo`, which covers existing batches.
 4. `loader.latest_ensemble_batch(recipe_dir, mode=None)` filters on the manifest's `mode` when one is given. The member-0 fallback (`_latest_ensemble_member_zero`) stays mode-agnostic, since member 0 is the same resolved intent either way.
 5. Tests (`tests/test_ensemble.py`):

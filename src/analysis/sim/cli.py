@@ -43,6 +43,7 @@ from analysis.sim.distributions import (
 from analysis.sim.engine import run_scenario
 from analysis.sim.ensemble import (
     EnsembleError,
+    factor_reach,
     latest_ensemble_batch,
     load_ensemble,
     member_run_statuses,
@@ -281,7 +282,9 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 )
 @click.option(
     "--only", "only", default=None, metavar="NAME[,NAME...]",
-    help="With --sensitivity: perturb only these varying rows; the rest stay central.",
+    help="With --sensitivity: perturb only these varying rows or latent factors; the rest "
+         "stay central. By default every varying row is perturbed, and every latent factor "
+         "that a varying row depends on, moving its whole family (ADR-007 §2).",
 )
 @click.option(
     "--jobs", type=int, default=0,
@@ -515,12 +518,12 @@ def _run_sensitivity(
     jobs: int = 1,
 ) -> None:
     """ADR-007 §2: generate and run an OAT sensitivity batch -- a base member
-    (every varying row central) plus one member per (row, quantile). Fully
-    deterministic, so ``scenario.seed`` isn't required."""
+    (every varying row central) plus one member per (row or latent factor,
+    quantile). Fully deterministic, so ``scenario.seed`` isn't required."""
     _seed, _meta_json, recipe_tree_id = _recipe_identity(recipe_intent_path)
     rows = _unresolved_vary_names(recipe_intent_path)
     try:
-        plan = oat_plan(rows, quantiles, only)
+        plan = oat_plan(rows, quantiles, only, factor_reach(recipe_intent_path))
     except EnsembleError as exc:
         raise click.ClickException(f"{scenario_name}: {exc}") from None
     perturbed = sorted({name for overrides in plan for name in overrides})
@@ -1054,6 +1057,7 @@ def _report_oat(
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
     years = _report_years(batch_dir, [int(y) for y in deltas["year"].unique()], years)
+    factors = sensitivity.factor_rows(deltas)
     unit = "% of base" if relative else (
         "CPI-constant $" if dollar_mode == DollarMode.CPI_CONSTANT else "nominal $"
     )
@@ -1067,10 +1071,11 @@ def _report_oat(
         value_cols = [c for c in table.columns if c.startswith("value@")]
         delta_cols = [c for c in table.columns if c.startswith("delta@")]
         for name, row in table.iterrows():
+            label = sensitivity.row_label(name, factors)
             values = " ".join(f"{c[6:]}={row[c]}" for c in value_cols)
             deltas_text = " ".join(f"{_fmt_delta(row[c], relative):>12}" for c in delta_cols)
             click.echo(
-                f"    {name:<24} {deltas_text}  swing={_fmt_delta(row['swing'], relative):>12}  "
+                f"    {label:<24} {deltas_text}  swing={_fmt_delta(row['swing'], relative):>12}  "
                 f"impact={_fmt_delta(row['impact'], relative).lstrip('+'):>11}  "
                 f"share={'-' if pd.isna(row['share']) else format(row['share'], '.0%'):>4}  "
                 f"{row['flags']:<16} ({values})"
@@ -1080,7 +1085,8 @@ def _report_oat(
     click.echo("\n  rank by year:")
     click.echo("    " + " " * 24 + " ".join(f"{str(y)[-2:]:>3}" for y in grid.columns))
     for name, ranks in grid.iterrows():
-        click.echo(f"    {name:<24}" + " ".join(f"{'-' if pd.isna(r) else r:>3}" for r in ranks))
+        label = sensitivity.row_label(name, factors)
+        click.echo(f"    {label:<24}" + " ".join(f"{'-' if pd.isna(r) else r:>3}" for r in ranks))
 
     pins = sensitivity.pin_candidates(deltas, negligible, measure=measure)
     if pins:

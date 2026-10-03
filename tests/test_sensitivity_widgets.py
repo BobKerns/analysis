@@ -88,6 +88,18 @@ def test_heatmap_view(value: HeatmapValue, scale: DeltaScale) -> None:
     plt.close("all")
 
 
+def test_heatmap_and_tornado_mark_latent_factors() -> None:
+    """#39: a factor's row is labeled as one, not read as one more row."""
+    deltas = _deltas()
+    deltas.loc[deltas["row"] == "a", "target"] = sensitivity.FACTOR_TARGET
+    grid = sensitivity.rank_by_year(deltas)
+    ax = sw.heatmap_view(grid, HeatmapValue.SHARE, DeltaScale.ABSOLUTE)
+    assert [t.get_text() for t in ax.get_yticklabels()] == ["a (factor)", "b"]
+    ax = sw.tornado_view(sensitivity.oat_table(deltas, 2031), DeltaScale.ABSOLUTE)
+    assert {t.get_text() for t in ax.get_yticklabels()} == {"a (factor)", "b"}
+    plt.close("all")
+
+
 def test_tornado_view_puts_largest_swing_on_top() -> None:
     ax = sw.tornado_view(sensitivity.oat_table(_deltas(), 2031), DeltaScale.ABSOLUTE)
     by_height = sorted(zip(ax.get_yticks(), (t.get_text() for t in ax.get_yticklabels()), strict=True))

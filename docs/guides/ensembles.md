@@ -165,9 +165,12 @@ What to expect:
 - **Use coarse values.** ±0.3 (weakly), ±0.6 (clearly) and ±0.9 (nearly
   lockstep) are about as precise as anyone can justify. Even the sign of
   some historical correlations has changed over the decades.
-- **Member 0 and one-at-a-time sensitivity runs are unchanged.** Member 0
-  is still every row at its median. A sensitivity run still moves one row
-  alone, without dragging its dependents along.
+- **Member 0 is unchanged.** It's still every row at its median.
+- **Sensitivity runs can move a whole family.** A sensitivity run moves an
+  ordinary row alone, without dragging its dependents along. It also moves
+  each latent factor, and that carries every row under the factor to where
+  it would most likely be given the factor's value (see "Which varying
+  rows matter, and when?" below).
 - **The Monte Carlo correlation report notes a correlated batch.** Its
   per-row numbers assume independent inputs, so a row's correlation with
   the outcome includes its correlates' effects. Read it as "this family of
@@ -277,6 +280,22 @@ Useful options:
   on the rows that look interesting; it costs 6 runs per row instead of 2.
   The report flags `asymmetric` (low and high effects very different) and,
   with a ladder, `bend` (a sharp change of slope between steps).
+
+**Latent factors are swept too.** If the recipe has correlated rows under
+a latent factor, `--sensitivity` also moves each factor that at least one
+varying row depends on, at the same quantiles. Moving a factor asks "what
+if the whole family moves?" (say, "what if inflation runs hot
+generally?"): every row under it goes to its most likely value given the
+factor, scaled by the correlations along the way, while rows outside the
+family stay central. Each factor adds 2 runs, and `--only` can name a
+factor as well as a row.
+
+The report labels these rows `(factor)`, and shows the factor's value as a
+standard score (`z=+1.28` is its 90th percentile). A factor's share is
+measured against the ordinary rows' total and isn't added to it, since its
+effect *is* its rows' effect. It can be bigger than any one row's share,
+which is the point. A factor is never a pin candidate; to drop one, remove
+its rows' correlations. `--attribute` works on a factor too.
 
 One-at-a-time can't see two rows that only matter *together*. The Monte
 Carlo report below can, partly.

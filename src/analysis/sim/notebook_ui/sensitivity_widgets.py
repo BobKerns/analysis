@@ -155,7 +155,8 @@ def _swing_cells(data: np.ndarray, scale: DeltaScale) -> tuple[dict, str, list[l
 def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax: Any = None) -> Any:
     """Parameters x reporting years (``sensitivity.rank_by_year`` output):
     sequential share, or diverging signed swing centered on zero. Cells are
-    labeled while the grid is small enough to read."""
+    labeled while the grid is small enough to read. Latent factors are
+    marked ``(factor)``."""
     if ax is None:
         _fig, ax = plt.subplots(figsize=(10, 0.5 * len(grid) + 1.5))
     data = grid.astype(float).to_numpy()
@@ -163,7 +164,8 @@ def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax:
         _share_cells(data) if value == HeatmapValue.SHARE else _swing_cells(data, scale)
     )
     image = ax.imshow(data, aspect="auto", **style)
-    ax.set_yticks(range(len(grid)), grid.index)
+    factors = grid.attrs.get("factors", set())
+    ax.set_yticks(range(len(grid)), [sensitivity.row_label(r, factors) for r in grid.index])
     ax.set_xticks(range(len(grid.columns)), [str(y) for y in grid.columns], rotation=90)
     if len(grid.columns) <= 25:
         for i in range(data.shape[0]):
@@ -185,7 +187,8 @@ def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax:
 
 def tornado_view(table: pd.DataFrame, scale: DeltaScale, ax: Any = None) -> Any:
     """``sensitivity.oat_table`` at one year: each row's delta at its lowest
-    and highest quantile, largest impact on top."""
+    and highest quantile, largest impact on top. Latent factors are marked
+    ``(factor)``."""
     delta_cols = [c for c in table.columns if c.startswith("delta@")]
     low_col, high_col = delta_cols[0], delta_cols[-1]
     if ax is None:
@@ -202,7 +205,8 @@ def tornado_view(table: pd.DataFrame, scale: DeltaScale, ax: Any = None) -> Any:
         ax.barh(y[known] + offset, table[column].to_numpy(dtype=float)[known], height=height,
                 color=color, edgecolor="white", linewidth=1, label=label)
     ax.axvline(0, color=MUTED, linewidth=0.8)
-    ax.set_yticks(y, table.index)
+    factors = set(table.index[table["target"] == sensitivity.FACTOR_TARGET])
+    ax.set_yticks(y, [sensitivity.row_label(r, factors) for r in table.index])
     _format_value_axis(ax.xaxis, scale)
     _recessive(ax, grid_axis="x")
     ax.legend(framealpha=FRAME_ALPHA, loc="lower right")
@@ -383,7 +387,9 @@ def parameters_note(mode: str | None) -> str:
     if mode == "sensitivity":
         return note + (
             " Each other one-at-a-time member holds every row at its center except one, "
-            "which it moves to the **value@q** shown."
+            "which it moves to the **value@q** shown. A latent factor's value is its standard "
+            "score; moving it carries every row under it to its likeliest value given the "
+            "factor, and the charts label it **(factor)**."
         )
     if mode == "monte_carlo":
         return note + (

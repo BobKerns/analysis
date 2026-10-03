@@ -782,3 +782,158 @@ def test_latent_factor_rejects_payload_and_tags(
     _factor(append_calendar_row, "f", **{column: value})
     _varying_rate(append_calendar_row, "rate_a", vary_correlate_with="f", vary_correlation="0.5")
     assert any(f"has no {column}" in i for i in _issues(load_test_copy))
+
+
+# --- #39: one-at-a-time perturbation of latent factors ------------------------------
+
+
+def test_conditional_scores_multiply_rho_down_the_family() -> None:
+    """Each descendant at its conditional median given the node: the product
+    of rho along the path, times the node's score. Other trees, and the
+    node's own ancestors, aren't included."""
+    from analysis.sim.correlation import conditional_scores
+
+    links = {
+        "a": Link("f", 0.5), "b": Link("a", 0.4), "c": Link("f", -0.6),
+        "f": Link("top", 0.9), "x": Link("other", 0.7),
+    }
+    assert conditional_scores(links, "f", 2.0) == pytest.approx({"a": 1.0, "b": 0.4, "c": -1.2})
+    assert conditional_scores(links, "b", 2.0) == {}
+
+
+def _quantiles(member: Path) -> dict[str, float | None]:
+    con = sqlite3.connect(member)
+    try:
+        return dict(con.execute("SELECT calendar_event_name, quantile FROM ensemble_draw"))
+    finally:
+        con.close()
+
+
+def test_oat_factor_moves_its_family_to_conditional_medians(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """ADR-007 §2: perturbing a factor sets its score to Phi^-1(q) and moves
+    every descendant to its conditional median, through its own value_at;
+    rows outside the tree stay central, and only the factor records a
+    quantile, so the report knows which node the member moved."""
+    from datetime import date
+    from statistics import NormalDist
+
+    _correlated_recipe(append_calendar_row)
+    recipe = load_test_copy().intent_path
+    z = NormalDist().inv_cdf(0.9)
+    resolved = _resolve(recipe, tmp_path, 1, seed=None, overrides={"economy": 0.9},
+                        mode="sensitivity")
+    draws = resolved["draws"]
+    assert draws["economy"] == ("factor", repr(z), z)
+    assert draws["tied_rate"][2] == pytest.approx(0.8 * z)
+    assert draws["tied_date"][2] == pytest.approx(-0.6 * z)
+    rate = TruncatedNormal(45_000, 5_000, 38_000, 70_000, skew=0.5)
+    assert draws["tied_rate"][1] == str(round(rate.value_at(probability(0.8 * z))))
+    day = Uniform(date(2030, 6, 30).toordinal(), date(2031, 6, 30).toordinal()).value_at_int(
+        probability(-0.6 * z))
+    assert draws["tied_date"][1] == date.fromordinal(day).isoformat()
+    # A higher-than-median rate and an earlier-than-median date: the family moved.
+    assert int(draws["tied_rate"][1]) > 45_000 and draws["tied_date"][1] < "2030-12-30"
+    base = _resolve(recipe, tmp_path / "base", 0, seed=None, overrides={}, mode="sensitivity")
+    for name in ("free_rate", "free_date"):
+        assert draws[name] == base["draws"][name]
+    quantiles = _quantiles(tmp_path / "member_0001.sqlite3")
+    assert quantiles == {"economy": 0.9, "tied_rate": None, "tied_date": None,
+                         "free_rate": None, "free_date": None}
+
+
+def test_oat_plan_sweeps_factors_that_move_something(tmp_path: Path) -> None:
+    from analysis.sim.ensemble import EnsembleError, oat_plan
+
+    plan = oat_plan(["r1", "r2"], (0.1, 0.9), factors={"economy": 2, "someday": 0})
+    assert plan == [{}, {"economy": 0.1}, {"economy": 0.9}, {"r1": 0.1}, {"r1": 0.9},
+                    {"r2": 0.1}, {"r2": 0.9}]
+    assert oat_plan(["r1"], (0.1, 0.9), ["economy"], {"economy": 2}) == [
+        {}, {"economy": 0.1}, {"economy": 0.9}]
+    with pytest.raises(EnsembleError, match="no varying row depends on"):
+        oat_plan(["r1"], (0.1, 0.9), ["someday"], {"someday": 0})
+    with pytest.raises(EnsembleError, match="no varying row or latent factor"):
+        oat_plan(["r1"], (0.1, 0.9), ["econmy"], {"economy": 2})  # cspell:ignore econmy
+
+
+def test_factor_reach_counts_varying_descendants(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Through a sub-factor, too; an unused factor reaches nothing."""
+    from analysis.sim.ensemble import factor_reach
+
+    _correlated_recipe(append_calendar_row)
+    _factor(append_calendar_row, "regime")
+    _factor(append_calendar_row, "inflation", vary_correlate_with="regime", vary_correlation="0.7")
+    append_calendar_row(
+        date="2029-02-28", kind="set_rate", name="cpi_rate", series="Asset_Checking",
+        amount="45000", vary_target="amount", vary_distribution="uniform", vary_low="40000",
+        vary_high="50000", vary_correlate_with="inflation", vary_correlation="0.9",
+    )
+    _factor(append_calendar_row, "someday")
+    reach = factor_reach(load_test_copy().intent_path)
+    assert reach == {"economy": 2, "inflation": 1, "regime": 1, "someday": 0}
+
+
+@pytest.fixture
+def factor_oat_batch(
+    append_calendar_row: Callable[..., None], test_data_dir: Path,
+    intent_dir: Path, runs_dir: Path,
+) -> Path:
+    """An OAT batch of the correlated recipe, perturbing the factor and one
+    ordinary row (5 members)."""
+    from analysis.sim.loader import latest_ensemble_batch
+
+    _correlated_recipe(append_calendar_row)
+    runner = CliRunner()
+    load = runner.invoke(main, [
+        "sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+        "--intent-dir", str(intent_dir), "--allow-dirty-data", "--no-run",
+    ])
+    assert load.exit_code == 0, load.output
+    run = runner.invoke(main, [
+        "sim", "run", "retire_alice", "--sensitivity", "--only", "economy,free_rate",
+        "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir), "--allow-dirty-data",
+    ])
+    assert run.exit_code == 0 and "5/5 member(s) succeeded" in run.output, run.output
+    batch = latest_ensemble_batch(runs_dir / "retire_alice")
+    assert batch is not None
+    return batch
+
+
+def test_factor_rows_are_labeled_and_left_out_of_share(
+    factor_oat_batch: Path, runs_dir: Path,
+) -> None:
+    """A factor appears in the table as target 'factor', its share is over
+    the ordinary rows' total (so theirs still sum to 1), it's never a pin
+    candidate, and the CLI and parameters view label it."""
+    from analysis.sim import sensitivity
+
+    deltas = sensitivity.oat_deltas(factor_oat_batch)
+    assert sensitivity.factor_rows(deltas) == {"economy"}
+    table = sensitivity.oat_table(deltas, 2035)
+    assert table.loc["economy", "target"] == "factor"
+    assert table.loc["economy", "value@0.9"] == "z=+1.28"
+    assert table.loc[table["target"] != "factor", "share"].sum() == pytest.approx(1.0)
+    assert "economy" not in sensitivity.pin_candidates(deltas, negligible=0.999)
+    assert sensitivity.rank_by_year(deltas).attrs["factors"] == {"economy"}
+    assert sensitivity.parameters(factor_oat_batch).loc["economy", "value@0.1"] == "z=-1.28"
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "sensitivity", "retire_alice", "--runs-dir", str(runs_dir),
+        "--years", "2035",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "economy (factor)" in result.output
+
+
+def test_attribution_works_for_a_factor(factor_oat_batch: Path) -> None:
+    """A factor member's delta decomposes exactly like a row's: nothing
+    unattributed."""
+    from analysis.sim import sensitivity
+
+    by_q = sensitivity.oat_attribution(factor_oat_batch, "economy")
+    assert sorted(by_q) == [0.1, 0.9]
+    for table in by_q.values():
+        assert (table[sensitivity.UNATTRIBUTED] == 0).all()
