@@ -358,7 +358,9 @@ class Moments:
     excess_kurtosis: float
 
 
-def moments(dist: Distribution, points: int = 4_000, *, whole_days: bool = False) -> Moments:
+def moments(
+    dist: Distribution, points: int = 4_000, *, whole_days: bool = False, rounded: bool = False,
+) -> Moments:
     """Mean, SD, skewness and excess kurtosis, integrated numerically over
     the quantile function (midpoint rule) -- one method for every family,
     including truncated and shaped ones with no tidy closed form.
@@ -368,12 +370,16 @@ def moments(dist: Distribution, points: int = 4_000, *, whole_days: bool = False
     ``[round(low), round(high)]`` equal weight (``draw_int``), any other
     family rounds a continuous draw (``draw_int``/``quantile_int``). It
     matters for a short span -- two days drawn equally have SD 0.5 day,
-    not a continuous uniform's 0.29."""
+    not a continuous uniform's 0.29.
+
+    ``rounded`` describes an amount target as stored: resolved amounts are
+    rounded to whole cents or micros (``resolve_member``), whatever the
+    family. Negligible for any realistic spread, but exact."""
     if whole_days and isinstance(dist, Uniform):
         values = [float(day) for day in range(round(dist.low), round(dist.high) + 1)]
     else:
         values = [dist.quantile((i + 0.5) / points) for i in range(points)]
-        if whole_days:
+        if whole_days or rounded:
             values = [float(round(v)) for v in values]
     count = len(values)
     mean = math.fsum(values) / count

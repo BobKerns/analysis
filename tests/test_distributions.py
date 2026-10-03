@@ -372,3 +372,13 @@ def test_date_moments_count_whole_days() -> None:
     # Over a realistic span the difference vanishes.
     year = moments(Uniform(0, 364), whole_days=True)
     assert year.sd == pytest.approx(moments(Uniform(0, 364)).sd, rel=1e-2)
+
+
+def test_amount_moments_follow_stored_rounding() -> None:
+    """Amounts are stored rounded to whole cents/micros for every family, so
+    a 0-to-1 uniform amount resolves to 0 or 1 (SD 0.5, not the continuous
+    0.29). Over a realistic spread the rounding is invisible."""
+    tiny = moments(Uniform(0, 1), rounded=True)
+    assert tiny.mean == pytest.approx(0.5) and tiny.sd == pytest.approx(0.5)
+    realistic = moments(Uniform(40_000, 50_000), rounded=True)
+    assert realistic.sd == pytest.approx(moments(Uniform(40_000, 50_000)).sd, rel=1e-6)
