@@ -1666,9 +1666,13 @@ def _append_and_validate(
 # validates the row exactly as it does for ``add``.
 _CALENDAR_REPLACE_ROW = "analysis.sim.calendar.replace_row"
 
-# params_json keys the calendar commands write themselves; any other key in a
-# row being replaced was put there by hand and is kept.
-_CALENDAR_OWN_PARAM_KEYS = frozenset({"aux_kind", "description"})
+# params_json keys each kind's command writes itself. Any other key in a row
+# being replaced was put there by hand and is kept -- including one of these
+# names on a kind whose command does not write it.
+_CALENDAR_OWN_PARAM_KEYS: dict[str, frozenset[str]] = {
+    "set_rate": frozenset({"aux_kind"}),
+    "one_off_transfer": frozenset({"description"}),
+}
 
 
 def _read_calendar_rows(path: Path) -> list[dict[str, str]]:
@@ -1740,14 +1744,12 @@ def _write_calendar_row(
             row["tags"] = chosen["tags"]
         old_params = json.loads(chosen["params_json"]) if chosen["params_json"] else {}
         new_params = json.loads(row["params_json"]) if row.get("params_json") else {}
+        own = _CALENDAR_OWN_PARAM_KEYS.get(row["kind"], frozenset())
         # A transfer's command copies its description into params_json; a row
         # that kept it only in the description column goes on doing so.
-        if "description" not in old_params:
+        if "description" in own and "description" not in old_params:
             new_params.pop("description", None)
-        params = {
-            **{k: v for k, v in old_params.items() if k not in _CALENDAR_OWN_PARAM_KEYS},
-            **new_params,
-        }
+        params = {**{k: v for k, v in old_params.items() if k not in own}, **new_params}
         row["params_json"] = json.dumps(params, separators=(",", ":")) if params else ""
         _append_csv_row(staged, registries.CALENDAR_HEADER, row, replace=index)
     return "updated"
@@ -2246,7 +2248,10 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
         "from_account": row["account_1"], "from_lot": row["lot_1"],
         "to_account": row["account_2"], "to_lot": row["lot_2"],
         "tax_character": row["tax_character"] or "none",
-        "description": row["description"] or str(params.get("description", "")),
+        "description": row["description"] or (
+            # Only a transfer's command keeps a copy of it in params_json.
+            str(params.get("description", "")) if command == "transfer" else ""
+        ),
         "tags": row["tags"],
         "name": row["name"],
         "row_name": row["name"],

@@ -172,6 +172,48 @@ def test_edit_keeps_what_the_guide_has_no_field_for(
     assert json.loads(row["params_json"])["note"] == "hand-authored"
 
 
+def test_edit_keeps_a_hand_authored_key_another_kinds_command_would_own(
+    calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+    append_calendar_row: Callable[..., None],
+) -> None:
+    # aux_kind is set-rate's to write, and description is transfer's; on the
+    # other kind each is just a key someone put there.
+    append_calendar_row(
+        date="2031-05", kind="one_off_transfer", account_1="Asset_Savings",
+        account_2="Asset_Checking", amount="10000", tax_character="none",
+        params_json=json.dumps({"aux_kind": "by hand"}),
+    )
+    append_calendar_row(
+        date="2031-06", kind="set_rate", series="Asset_Checking", amount="30000",
+        params_json=json.dumps({"description": "by hand"}),
+    )
+
+    transfer = calendar_edit("6", answers=["amount", "250.00", ""])
+    rate = calendar_edit("7", answers=["rate-percent", "3.5", ""])
+
+    assert transfer.exit_code == 0, transfer.output
+    assert rate.exit_code == 0, rate.output
+    rows = calendar_rows()
+    assert json.loads(rows.loc[5, "params_json"]) == {"aux_kind": "by hand"}
+    assert json.loads(rows.loc[6, "params_json"]) == {"description": "by hand"}
+    assert rows.loc[6, "description"] == ""    # not promoted into the row's own column
+
+
+def test_edit_compares_another_rows_values_without_their_stray_spaces(
+    calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+    append_calendar_row: Callable[..., None],
+) -> None:
+    append_calendar_row(date="2028-01", kind="set_rate", series=" Asset_Checking ", amount="30000")
+    before = calendar_rows()
+
+    # Row 1 is Asset_Checking's rate; moved to 2028-01 at 3% it would be row 6 again.
+    result = calendar_edit("1", answers=["date", "2028-01", "rate-percent", "3", "", "cancel"])
+
+    assert result.exit_code == 1
+    assert "that would duplicate another row" in result.output
+    pd.testing.assert_frame_equal(calendar_rows(), before)
+
+
 def test_edit_returns_to_the_review_when_the_scenario_would_not_load(
     calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
 ) -> None:

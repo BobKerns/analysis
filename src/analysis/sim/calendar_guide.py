@@ -479,7 +479,9 @@ class Guide:
         key: list[object] = []
         for param in spec.key:
             field_ = next(f for f in spec.fields if f.param == param)
-            value = answers.get(param, "") if field_.applies(ctx, answers) else ""
+            # Trimmed, as the loader trims every cell: another row's value is
+            # compared as authored, spaces and all.
+            value = answers.get(param, "").strip() if field_.applies(ctx, answers) else ""
             type_ = value_type(spec, field_, answers)
             checker = self._checkers.get(type_)
             if value and type_ == "date" and self._canonical_date is not None:
