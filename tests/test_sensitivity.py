@@ -599,8 +599,9 @@ def test_parameters_describes_shape_and_moments(
 
     table = sensitivity.parameters(latest_ensemble_batch(runs_dir / "retire_alice"))
     rate = table.loc["checking_vary"]
-    assert rate["center"] == "4.50%" and rate["shape"] == "sd 0.50%, skew 0.7"
+    assert rate["center"] == "4.50%" and rate["shape"] == "scale 0.50%, skew 0.7"
     assert "skew +" in rate["moments"]  # a positive skew parameter gives a right-skewed shape
     retire = table.loc["retire_bob_vary"]
     assert retire["shape"] == "mode 2030-12-31"
     assert retire["moments"].startswith("mean 2031-") and "days" in retire["moments"]
+

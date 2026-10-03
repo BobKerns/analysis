@@ -317,7 +317,7 @@ def test_unreachable_median_is_a_clear_error() -> None:
     left-skewed, heavy-tailed shape can't put its median near the top of a
     narrow window. That's a contradictory spec, reported with the reachable
     range, not a silent misfit."""
-    with pytest.raises(DistributionError, match="isn't reachable.*only reaches"):
+    with pytest.raises(DistributionError, match="isn't reachable.*only reaches.*tailweight toward 1"):
         TruncatedNormal(median=0, sd=1, clip_low=-4, clip_high=1, skew=-0.5, tailweight=0.6)
 
 

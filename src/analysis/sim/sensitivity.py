@@ -635,7 +635,7 @@ def _display_number(kind: str, target: str, value: float) -> str:
 
 
 def _spread(kind: str, target: str, sd: float) -> str:
-    """A standard deviation in display units (a duration has no date form)."""
+    """A spread (SD or scale) in display units (a duration has no date form)."""
     if kind == "set_rate":
         return f"{sd / 10_000:.2f}%"
     return f"${sd / 100:,.0f}"
@@ -650,17 +650,11 @@ def _affects(row: sqlite3.Row) -> str:
 
 def _row_distribution(row: sqlite3.Row, target: str) -> Distribution | None:
     """The distribution a member file's resolved row was drawn from, or
-    ``None`` if its stored parameters no longer describe a valid one (an
-    older batch's one-sided ``vary_mean == vary_low`` row, say)."""
+    ``None`` if its stored parameters don't describe a valid one."""
     from analysis.sim.ensemble import build_distribution
 
-    values = {**dict(row), "vary_distribution": row["distribution"]}
-    for column in ("vary_median", "vary_skew", "vary_tailweight", "vary_mode"):
-        values.setdefault(column, None)
-    if values["vary_median"] is None:
-        values["vary_median"] = values.get("vary_mean")  # before schema 29
     try:
-        return build_distribution(values, target)
+        return build_distribution({**dict(row), "vary_distribution": row["distribution"]}, target)
     except EnsembleError:
         return None
 
@@ -672,7 +666,10 @@ def _describe(dist: Distribution, kind: str, target: str) -> dict[str, str]:
 
     if isinstance(dist, TruncatedNormal):
         low, high = dist.clip_low, dist.clip_high
-        shape = [f"sd {_spread(kind, target, dist.sd)}"]
+        # vary_sd is the SD only for the default shape; with skew or tail
+        # weight it's a scale factor (the moments cell shows the real SD).
+        default_shape = dist.skew == 0 and dist.tailweight == 1
+        shape = [f"{'sd' if default_shape else 'scale'} {_spread(kind, target, dist.sd)}"]
         if dist.skew:
             shape.append(f"skew {dist.skew:g}")
         if dist.tailweight != 1:
@@ -704,8 +701,7 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
 
     Read from the batch's own member files, so it describes what was run --
     not the recipe as it stands now. A batch written before schema 28
-    doesn't record the distribution, so its description columns are blank;
-    one written before schema 29 stores ``vary_mean``, read as the median."""
+    doesn't record the distribution, so its description columns are blank."""
     from analysis.sim.loader import batch_mode
 
     connections = load_ensemble(batch_dir)

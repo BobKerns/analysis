@@ -69,8 +69,12 @@ every `vary_*` column and what each distribution needs.
 - **`truncated_normal`** (`--vary-median`, `--vary-sd`, optionally
   `--vary-low`/`--vary-high`): values cluster around a center and thin out
   with distance. This suits rates. `--vary-median` is the center, and the
-  base case is exactly that value. `--vary-sd` is the spread. Bounds you
-  leave out default to 3 SDs out. Two optional shape controls:
+  base case is exactly that value. `--vary-sd` is the scale: the standard
+  deviation for the plain (unshaped) normal, but only a scale factor once
+  skew or tail weight is set, so check the implied SD the parameters table
+  shows. Bounds you leave out default to 3 SDs out for the plain normal
+  (the 3-standard-normal-score points of a shaped one). Two optional shape
+  controls:
   - `--vary-skew`: positive gives a longer high tail ("usually about 6%,
     but a big year is more likely than a terrible one"), negative a longer
     low tail. 0.3 to 1 is a noticeable but sensible skew.

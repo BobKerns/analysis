@@ -217,7 +217,8 @@ class TruncatedNormal:
                 f"truncated_normal: vary_median {self.median:g} isn't reachable with this "
                 f"vary_skew/vary_tailweight inside vary_low..vary_high (its truncated "
                 f"median only reaches {min(reached):g} to {max(reached):g}); move the "
-                "median, widen the bounds, or reduce the skew or tail weight"
+                "median, widen the bounds, or bring vary_skew toward 0 or vary_tailweight "
+                "toward 1 (lower tail weight means heavier tails, which make this worse)"
             )
         lo, hi = min(brackets, key=lambda b: abs((b[0] + b[1]) / 2 - untruncated))
         g_lo = gap(lo)

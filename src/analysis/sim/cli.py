@@ -1662,10 +1662,11 @@ def _vary_row_options(f):
     )(f)
     f = click.option(
         "--vary-sd", default=None,
-        help="truncated_normal spread: the standard deviation of the underlying "
-             "distribution before clipping (same unit as the value above). May be "
-             "omitted, for the default shape, if vary_median plus vary_low or "
-             "vary_high is given.",
+        help="truncated_normal scale (same unit as the value above): the standard "
+             "deviation of the underlying normal before clipping, when skew and tail "
+             "weight are at their defaults; with a shape set it's a scale factor, not "
+             "the SD (the parameters table shows the implied SD). May be omitted, for "
+             "the default shape, if vary_median plus vary_low or vary_high is given.",
     )(f)
     f = click.option(
         "--vary-median", default=None,
@@ -1677,15 +1678,17 @@ def _vary_row_options(f):
         "--vary-high", default=None,
         help="uniform's or triangular's upper bound, or truncated_normal's upper clip "
              "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
-             "date). For truncated_normal, omitting it places it 3 standard "
-             "deviations out instead of leaving that side unbounded.",
+             "date). For truncated_normal, omitting it places it at the underlying "
+             "distribution's 3-standard-normal-score point (3 x vary_sd for the "
+             "default shape) instead of leaving that side unbounded.",
     )(f)
     f = click.option(
         "--vary-low", default=None,
         help="uniform's or triangular's lower bound, or truncated_normal's lower clip "
              "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
-             "date). For truncated_normal, omitting it places it 3 standard "
-             "deviations out instead of leaving that side unbounded.",
+             "date). For truncated_normal, omitting it places it at the underlying "
+             "distribution's 3-standard-normal-score point (3 x vary_sd for the "
+             "default shape) instead of leaving that side unbounded.",
     )(f)
     f = click.option(
         "--vary-distribution", type=click.Choice(sorted(registries.ENSEMBLE_DISTRIBUTIONS)),
