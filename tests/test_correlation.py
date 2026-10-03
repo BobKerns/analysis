@@ -999,3 +999,25 @@ def test_oat_rejects_an_out_of_range_factor_quantile(
     with pytest.raises(EnsembleError, match="quantile must be in"):
         _resolve(load_test_copy().intent_path, tmp_path, 1, seed=None,
                  overrides={"economy": q}, mode="sensitivity")
+
+
+def test_a_zero_rho_date_under_a_swept_factor_stays_exactly_at_the_base(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """PR #53 review: a uniform date under a zero rho keeps central_int(),
+    which can differ by a day from value_at_int(0.5), when a sibling makes
+    the factor worth sweeping."""
+    _correlated_recipe(append_calendar_row)
+    # A two-day range: central_int() rounds the midpoint half to even (the
+    # 1st here), while value_at_int(0.5) picks the second of the two days.
+    append_calendar_row(
+        date="2030-01-01", kind="retire_scheduled", name="flat_date", scheduled_name="salary_alice",
+        vary_target="date", vary_distribution="uniform", vary_low="2030-01-01",
+        vary_high="2030-01-02", vary_correlate_with="economy", vary_correlation="0",
+    )
+    recipe = load_test_copy().intent_path
+    base = _resolve(recipe, tmp_path / "base", 0, seed=None, overrides={}, mode="sensitivity")
+    moved = _resolve(recipe, tmp_path, 1, seed=None, overrides={"economy": 0.9},
+                     mode="sensitivity")
+    assert moved["draws"]["flat_date"][1] == base["draws"]["flat_date"][1]

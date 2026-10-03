@@ -377,12 +377,13 @@ def r2_view(table: pd.DataFrame, ax: Any = None) -> Any:
 def parameters_note(mode: str | None) -> str:
     """The explanation shown above a batch's parameters table."""
     note = (
-        "Each row is a `calendar.csv` row with `vary_*` columns set: **affects** is what it "
-        "acts on, **target** whether its date or amount varies, and **range**/**center**/"
-        "**shape** come from its distribution; **moments** are what those settings imply. "
-        "The center is the deterministic base case: member 0 resolves every row to it. "
-        "A correlated row names its **correlate_with** parent and **rho**; latent factors "
-        "appear as their own rows."
+        "Each varying row is a `calendar.csv` row with `vary_*` columns set: **affects** is "
+        "what it acts on, **target** whether its date or amount varies, and **range**/"
+        "**center**/**shape** come from its distribution; **moments** are what those settings "
+        "imply. The center is the deterministic base case: member 0 resolves every row to it. "
+        "A correlated row names its **correlate_with** parent and **rho**. Latent factors "
+        "appear as their own rows with target **factor**: they have no distribution, so no "
+        "range, center, shape or moments, and only a parent and rho if they have one."
     )
     if mode == "sensitivity":
         return note + (

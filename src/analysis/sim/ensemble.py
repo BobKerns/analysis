@@ -318,7 +318,10 @@ def _member_scores(
                 if name in factors:
                     family = conditional_scores(links, name, scores[name])
                     scores.update(family)
-                    moved |= set(family)
+                    # A zero score (through a zero rho) is the row's median: it
+                    # stays at central(), exactly the base, not value_at(0.5),
+                    # which can differ by a day for a uniform date.
+                    moved |= {n for n, z in family.items() if z != 0.0}
         return scores, moved
     if seed is None:
         raise EnsembleError("a correlated draw needs the ensemble's seed")
