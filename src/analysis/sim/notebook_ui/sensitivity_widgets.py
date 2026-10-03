@@ -22,7 +22,7 @@ import ipywidgets as widgets
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from IPython.display import Markdown, display
+from IPython.display import display
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
 from analysis.sim import sensitivity
@@ -39,6 +39,7 @@ from analysis.sim.notebook_ui.pickers import (
 )
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.types import DeltaScale, DollarMode, HeatmapValue
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = [
     "list_sensitivity_recipes", "list_batches", "parameter_labels", "parameters_note",
@@ -441,7 +442,7 @@ def _show(out: widgets.Output, draw) -> None:
         try:
             draw()
         except EnsembleError as exc:
-            display(Markdown(f"_{exc}_"))
+            display(StyledMarkdown(f"_{exc}_"))
 
 
 def sensitivity_widget(*,
@@ -559,7 +560,7 @@ def sensitivity_widget(*,
             )
             plt.show()
             if report.correlated:
-                display(Markdown(
+                display(StyledMarkdown(
                     "_This batch's rows are correlated, so a row's rank correlation includes its "
                     "correlates' effects. Rows are ranked and pinned by their rank-regression "
                     "coefficient (SRRC), which holds the others fixed._"
@@ -571,10 +572,10 @@ def sensitivity_widget(*,
                     f"that needs about {needed}") if report.by == "rho" and n < needed else ""
             # As in the CLI: that count follows from rho's interval, and
             # SRRC's has no fixed one (it narrows as R^2 rises).
-            display(Markdown(f"**{n} drawn members**{note}"))
+            display(StyledMarkdown(f"**{n} drawn members**{note}"))
             display(status.to_frame())
             if not report.scores.empty:
-                display(Markdown(
+                display(StyledMarkdown(
                     "**Did the batch reproduce its correlations?** The achieved correlation of "
                     "each correlated pair's normal scores, with its 95% interval, against the "
                     "expected one (**link**: the pair's own rho; **implied**: the product along "
@@ -610,9 +611,9 @@ def sensitivity_widget(*,
         def draw() -> None:
             table = sensitivity.parameters(batch.value)
             if table.empty:
-                display(Markdown("_This batch has no varying rows._"))
+                display(StyledMarkdown("_This batch has no varying rows._"))
                 return
-            display(Markdown(parameters_note(state["mode"])))
+            display(StyledMarkdown(parameters_note(state["mode"])))
             display(table)
         _show(outs["parameters"], draw)
 
@@ -665,7 +666,7 @@ def sensitivity_widget(*,
         except EnsembleError as exc:
             message = widgets.Output()
             with message:
-                display(Markdown(f"_{exc}_"))
+                display(StyledMarkdown(f"_{exc}_"))
             body.children = [message]
             state["mode"] = None
             return

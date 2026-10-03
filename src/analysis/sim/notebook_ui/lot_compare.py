@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 
 import ipywidgets as widgets
 import pandas as pd
-from IPython.display import Markdown, clear_output, display
+from IPython.display import clear_output, display
 
 from analysis.sim.connection import RunConnection
 from analysis.sim.notebook_ui.compare_plots import _observe_dollar_mode
@@ -28,6 +28,7 @@ from analysis.sim.notebook_ui.pickers import (
     to_markdown,
 )
 from analysis.sim.types import DollarMode, ValuePlotMode
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = [
     "account_definition_differences",
@@ -206,13 +207,13 @@ def account_definitions_widget(
         if accounts.empty:
             display_warning("**All scenarios define accounts and lots identically.**")
         else:
-            display(Markdown("### Accounts and lots"))
+            display(StyledMarkdown("### Accounts and lots"))
             display(accounts.fillna(ABSENT))
         year_to_date = year_to_date_differences(connections, scenarios, baseline)
         if year_to_date.empty:
             display_warning("**All scenarios have identical year-to-date rows.**")
         else:
-            display(Markdown("### Year-to-date rows"))
+            display(StyledMarkdown("### Year-to-date rows"))
             display(year_to_date.fillna(ABSENT))
 
 
@@ -354,11 +355,11 @@ def show_lot_balance_diffs(
         )
         with output:
             clear_output(wait=True)
-            display(Markdown(
+            display(StyledMarkdown(
                 f"### {lot_picker.value} - {LOT_MEASURE_LABELS[measure_picker.value]}"
             ))
             if frame.empty:
-                display(Markdown("_No difference in this measure._"))
+                display(StyledMarkdown("_No difference in this measure._"))
             else:
                 display(frame.style.format(_format(measure_picker.value)))
 
