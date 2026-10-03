@@ -2284,8 +2284,10 @@ def _guide_context(
     def column(con: sqlite3.Connection, sql: str, *args: str) -> list[str]:
         return sorted({r[0] for r in con.execute(sql, args) if r[0]})
 
+    # Names are compared trimmed, as the loader trims every cell before it
+    # checks them.
     others = [row for index, row in enumerate(rows or []) if index != editing]
-    own_name = rows[editing]["name"] if rows and editing is not None else ""
+    own_name = rows[editing]["name"].strip() if rows and editing is not None else ""
     other_rows: dict[str, list[dict[str, str]]] = {}
     if editing is not None:
         for row in others:
@@ -2314,7 +2316,7 @@ def _guide_context(
                 if name != own_name
             ],
             other_rows=other_rows,
-            taken_names=frozenset(row["name"] for row in others if row["name"]),
+            taken_names=frozenset(row["name"].strip() for row in others if row["name"].strip()),
         )
 
 
@@ -2384,7 +2386,7 @@ def calendar_add_group_command(
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
     _echo_calendar_scenario(scenario_name, path, defaulted=scenario is None)
-    context = _guide_context(data_dir_p, scenario, rows=_read_calendar_rows(path))
+    context = _guide_context(data_dir_p, scenario_name, rows=_read_calendar_rows(path))
     guide = _calendar_guide()
     click.echo("What kind of calendar row?")
     for spec in calendar_guide.KINDS:
@@ -2396,9 +2398,11 @@ def calendar_add_group_command(
     answers = guide.complete(spec, context, {})
 
     def submit(params: dict[str, object]) -> None:
+        # The scenario announced above, by name: a defaulted scenario is not
+        # resolved again, in case the default changed during the prompts.
         ctx.invoke(
             calendar_add_group_command.commands[kind],
-            scenario=scenario, data_dir=data_dir, **params,
+            scenario=scenario_name, data_dir=data_dir_p, **params,
         )
 
     if not guide.review(
@@ -2486,16 +2490,18 @@ def calendar_edit(
         )
     spec, answers = converted
     click.echo(f"Editing row {index + 1}: {_calendar_row_label(rows[index])}")
-    context = _guide_context(data_dir_p, scenario, rows=rows, editing=index)
+    context = _guide_context(data_dir_p, scenario_name, rows=rows, editing=index)
     guide = _calendar_guide()
     guide.complete(spec, context, answers)
 
     def submit(params: dict[str, object]) -> None:
         ctx.meta[_CALENDAR_REPLACE_ROW] = (index, rows[index])
         try:
+            # The scenario announced above, by name: a defaulted scenario is
+            # not resolved again, in case the default changed meanwhile.
             ctx.invoke(
                 calendar_add_group_command.commands[spec.command],
-                scenario=scenario, data_dir=data_dir, **params,
+                scenario=scenario_name, data_dir=data_dir_p, **params,
             )
         finally:
             del ctx.meta[_CALENDAR_REPLACE_ROW]

@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
+from analysis.sim import cli as cli_module
 from analysis.sim.cli import (
     _CALENDAR_REPLACE_ROW,
     _read_calendar_rows,
@@ -315,3 +316,49 @@ def test_edit_says_which_scenario_before_asking_anything(
     assert defaulted.output.startswith(
         "Scenario: retire_alice (the default; use --scenario for another)\n"
     )
+
+
+def test_edit_compares_names_without_their_stray_spaces(
+    calendar_edit: Callable[..., Result], append_calendar_row: Callable[..., None],
+) -> None:
+    for name, low in ((" first_vary ", "2029-01"), ("second_vary", "2029-02")):
+        append_calendar_row(
+            date=low, kind="retire_scheduled", name=name, scheduled_name="salary_alice",
+            vary_target="date", vary_distribution="uniform", vary_low=low, vary_high="2029-12",
+        )
+
+    renamed = calendar_edit("second_vary", answers=["name", "first_vary", "second_vary", "cancel"])
+    own = calendar_edit("6", answers=["correlate", "y", "second_vary", "0.5", "cancel"])
+
+    assert "another row is already named 'first_vary'" in renamed.output
+    offered = own.output.split("correlate with:")[0].rsplit("choices:", 1)[-1]
+    assert "second_vary" in offered and "first_vary" not in offered
+
+
+@pytest.mark.parametrize("command", ["edit", "add"])
+def test_a_defaulted_scenario_is_resolved_once_and_then_named(
+    test_data_dir: Path, monkeypatch: pytest.MonkeyPatch, command: str,
+) -> None:
+    """The default could change while the prompts are open; what was
+    announced is what must be written."""
+    asked_for: list[str | None] = []
+    resolve = cli_module._resolve_scenario
+
+    def recording(data_dir: Path, scenario: str | None, **kwargs: object) -> object:
+        asked_for.append(scenario)
+        return resolve(data_dir, scenario, **kwargs)
+
+    monkeypatch.setattr(cli_module, "_resolve_scenario", recording)
+    answers = {
+        "edit": ["3", "amount", "1500.00", ""],
+        "add": ["latent-factor", "economy", "", "n", ""],
+    }[command]
+
+    result = CliRunner().invoke(
+        main, ["sim", "calendar", command, "--data-dir", str(test_data_dir)],
+        input="".join(answer + "\n" for answer in answers),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert asked_for[0] is None
+    assert set(asked_for[1:]) == {"retire_alice"}
