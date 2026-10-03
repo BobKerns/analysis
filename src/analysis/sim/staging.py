@@ -157,7 +157,8 @@ def _check_unchanged(real: Path, baseline: dict[Path, str], paths: list[Path]) -
 
 
 def _affected_scenarios(stage: Path, touched: set[str]) -> list[str]:
-    """Touched scenarios that still exist, plus every scenario inheriting from one."""
+    """Touched scenarios that still exist, plus every scenario inheriting from
+    one, as a parent or a mix-in."""
     scenarios_dir = stage / SCENARIOS
     return sorted(
         d.name for d in scenarios_dir.iterdir()

@@ -44,10 +44,18 @@ Each box above only shows what it changes. Everything else comes from `base`.
 A fix to `base` reaches every scenario below it, the next time that scenario
 loads.
 
+A scenario can also combine several others. List more than one parent in
+`parent_scenario`, separated by colons: the main parent first, then
+**mix-ins**, such as `base:current-cut:hsa_2027`. The main parent is loaded in full.
+Each mix-in then adds its own changes on top, stopping at the first scenario
+already included (here, `base`), so a mix-in derived from `base` contributes
+just what it changes. When two mix-ins change the same row, the later one
+wins. Making the combination sensible is up to you.
+
 Create a derived scenario with:
 
 ```sh
-sim scenario create <name> <parent>
+sim scenario create <name> <parent> [<mixin> ...]
 ```
 
 This creates the new scenario's folder, with empty CSV files ready for you to
@@ -77,7 +85,7 @@ is pointed out.
 | Word | What it means here |
 | --- | --- |
 | **Scenario** | One full model of your household finances. Stored as a folder under `scenarios/<name>/`. |
-| **Derived scenario** | A scenario that has `parent_scenario` set. It starts from its parent and only lists what is different. See Part 1. |
+| **Derived scenario** | A scenario that has `parent_scenario` set. It starts from its parent (and any mix-ins) and only lists what is different. See Part 1. |
 | **Lot** | One holding inside an account. A brokerage account can have several lots: different funds, or shares bought on different dates. Every account has at least one lot. It is named `default` unless you split the account into more than one lot. |
 | **Chain** | A named, ordered list of places money can come from, or go to. Think: try this place first, then that place. Every account (and every lot) already has its own one-step chain, automatically. You only write a `chains/*.csv` file when you want more than one step. See Part 4.6. |
 | **Series** | A named set of numbers a scenario can refer to by name: a growth or interest rate (`rate__*`), or an inflation projection (`inflation__*`). These files live in that scenario's own `series/` folder. This is a different idea from *asset class*, below. |

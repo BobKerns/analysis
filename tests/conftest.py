@@ -62,6 +62,7 @@ import shutil
 import sqlite3
 import warnings
 
+import git
 import pandas as pd
 import pytest
 
@@ -72,7 +73,7 @@ from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
-from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER, CALENDAR_HEADER
+from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER, CALENDAR_HEADER, SCENARIO_HEADER
 
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
@@ -524,6 +525,66 @@ def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
         df.to_csv(values_path, index=False)
 
     return _fund
+
+
+@pytest.fixture(scope="function")
+def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
+    """Create a scenario in the private data copy deriving from ``parents``
+    (a ``parent_scenario`` value: one name, or colon-separated mix-ins after
+    it). It overrides nothing beyond ``files``, a {relative path: text} map
+    written into its folder."""
+    def _derive(name: str, parents: str, files: dict[str, str] | None = None) -> Path:
+        folder = test_scenarios_dir / name
+        folder.mkdir()
+        row = {**dict.fromkeys(SCENARIO_HEADER, ""), "name": name, "parent_scenario": parents}
+        pd.DataFrame([row], columns=list(SCENARIO_HEADER)).to_csv(
+            folder / "scenario.csv", index=False,
+        )
+        for relative, text in (files or {}).items():
+            path = folder / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return folder
+    return _derive
+
+
+@pytest.fixture(scope="session")
+def scheduled_override(prototype_data: Path) -> Callable[..., str]:
+    """scheduled.csv text repeating the prototype retire_alice rows named as
+    keywords with only their ``amount`` changed -- an override replaces a row
+    whole, so it has to repeat every other column."""
+    def _override(**amounts: str) -> str:
+        rows = pd.read_csv(prototype_data / "scenarios" / "retire_alice" / "scheduled.csv",
+                           dtype=str, keep_default_na=False)
+        rows = rows[rows["name"].isin(amounts)].copy()
+        rows["amount"] = rows["name"].map(amounts)
+        return rows.to_csv(index=False)
+    return _override
+
+
+@pytest.fixture(scope="function")
+def load_test_scenario(test_data_dir: Path, intent_dir: Path) -> Callable[[str], Path]:
+    """Load any scenario of the private data copy (after a test has added or
+    edited it); returns its intent file."""
+    def _load(name: str) -> Path:
+        return load_scenario(test_data_dir, name, intent_dir=intent_dir / name,
+                             allow_dirty_data=True).intent_path
+    return _load
+
+
+@pytest.fixture(scope="function")
+def commit_test_data(test_data_dir: Path) -> Callable[[], Path]:
+    """Make the private data copy a git repo with everything committed, for
+    provenance tests; call it once the test's scenarios are in place."""
+    def _commit() -> Path:
+        repo = git.Repo.init(test_data_dir, b="main")
+        repo.git.add(A=True)
+        with repo.config_writer() as cw:
+            cw.set_value("commit", "gpgsign", "false")
+        actor = git.Actor("t", "t@t")
+        repo.index.commit("init", author=actor, committer=actor)
+        return test_data_dir
+    return _commit
 
 
 @pytest.fixture(scope="function")

@@ -4252,21 +4252,26 @@ def scenario_group_command() -> None:
 @scenario_group_command.command("create")
 @click.argument("name")
 @click.argument("parent")
+@click.argument("mixins", nargs=-1)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 @click.option("--description", default=None,
-              help="Default: 'Derived from <parent>'.")
+              help="Default: 'Derived from <parent> + <mixin>...'.")
 def scenario_create(
     name: str,
     parent: str,
+    mixins: tuple[str, ...],
     data_dir: Path | None,
     description: str | None,
 ) -> None:
     """Create scenario NAME deriving from PARENT, and make it current.
 
     The new scenario inherits everything from PARENT; only the rows you add to
-    its (empty) overlay CSVs differ. See ADR-003 §4.5 for merge semantics.
+    its (empty) overlay CSVs differ. Each MIXIN is then applied on top of
+    PARENT, in order, down to the first ancestor already inherited -- usually
+    just the mix-in itself, stopping at the shared base. See ADR-003 §4.5 for
+    merge semantics.
     """
 
     skeletons: dict[str, tuple[str, ...]] = {
@@ -4279,13 +4284,15 @@ def scenario_create(
         data_dir_p = _resolve_data_dir(data_dir)
         # Preflights PARENT, then creates and validates NAME in a staged copy.
         with _scenario_edit(data_dir_p, parent) as edit:
-            sc.create_scenario(edit.data_dir, name, parent, description=description)
+            sc.create_scenario(
+                edit.data_dir, name, parent, description=description, mixins=mixins,
+            )
         target = data_dir_p / "scenarios" / name
 
-        parent_ref = _resolve_scenario(data_dir_p, parent)
+        inherits = [_resolve_scenario(data_dir_p, p).name for p in (parent, *mixins)]
         write_current_scenario(data_dir_p, name)
         click.echo(f"created {target}")
-        click.echo(f"  inherits: {parent_ref.name}")
+        click.echo(f"  inherits: {' + '.join(inherits)}")
         for filename in ("scenario.csv", *skeletons):
             click.echo(f"  {filename}")
         click.echo("  chains/")
