@@ -174,6 +174,19 @@ reads Quicken and Amazon inputs from sibling top-level data-repo directories:
 `category,target_account`. If a canonical category already matches a scenario
 expense account, no map row is needed. Supply the funding account explicitly
 with `--from-account`. Invalid target accounts are warned about and skipped.
+
+Two more optional files in `quicken/` hold household-specific choices, so none
+of them live in the code:
+
+- `expense_category_split.csv`, columns `category,account,target_category`:
+  splits one canonical category by the Quicken account that paid. A row with a
+  blank `account` is that category's default, taking every expense no named
+  account claims, including Amazon summaries. For example, `Food,Alice
+  Checking,Alice Food` and `Food,,Bill Food` divide Food between two people.
+- `expense_excluded_payees.csv`, one column `payee_pattern`: case-insensitive
+  regular expressions for payees whose expenses the scenario models separately
+  (an insurer, HOA dues). Amazon and mortgage payees are always excluded.
+
 Amounts are monthly averages over the observed baseline months and use the
 scenario start date by default.
 
