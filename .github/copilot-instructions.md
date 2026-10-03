@@ -87,11 +87,13 @@ if the venv isn't on `PATH`.
 
 ## Verifying a change
 
-Three gates, all of which should pass before reporting a simulator change done:
+Five gates, all of which should pass before reporting a change done:
 
 ```sh
 .venv/bin/python -m pytest -q                     # tests
 .venv/bin/python -m ruff check src tests          # lint
+cspell --no-progress .                            # spelling
+markdownlint .                                    # markdown
 for s in "$ANALYSIS_DATA_DIR"/scenarios/*/; do    # real scenarios still load
   .venv/bin/analysis sim check "$(basename "$s")"
 done
@@ -121,7 +123,9 @@ Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_na
   a new reusable need becomes a new fixture. Its module docstring explains the
   session (shared, read-only) vs. function (private, mutation-safe) families.
 - **Tabs are forbidden** in all text files (code, markdown, docs) — spaces only.
-- Spell checking (cspell) runs over docs, markdown, and comments only; add
-  project-specific words to `.cspell/project-words.txt`.
+- Spell checking (cspell) runs over markdown, Python, CSV, and TOML (see
+  `cspell.json`). Add project-specific words to `.cspell/project-words.txt`,
+  kept sorted; for strings one test asserts verbatim, use an inline
+  `# cspell:ignore` in that file instead.
 - `data/`, `out/`, and `state/` are gitignored and protected by a pre-commit
   hook — never try to make code or tests pass by editing files there.

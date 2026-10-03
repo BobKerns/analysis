@@ -1,5 +1,7 @@
 """Fetching security prices into aux files (ADR-005 §6)."""
 
+# cspell:ignore Brok
+
 from __future__ import annotations
 
 import json

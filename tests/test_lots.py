@@ -1,5 +1,8 @@
 """Lot-keyed state (ADR-005): one account_model_member row per lot."""
 
+# Abbreviated growth-series names, asserted verbatim below.
+# cspell:ignore asse brok chec vangu vangua rollov settl
+
 from __future__ import annotations
 
 import sqlite3

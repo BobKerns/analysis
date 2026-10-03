@@ -3,6 +3,8 @@
 whole-file and via parent_scenario lineage. aux/, prices/ and itemizations/
 also have a shared data repo root default; series/ does not."""
 
+# cspell:ignore NEWFUND
+
 from __future__ import annotations
 
 import csv
