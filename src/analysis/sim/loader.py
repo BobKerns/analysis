@@ -605,10 +605,7 @@ def _read_scenario_inputs(
     calendar_rows_raw = read_overlay("calendar.csv")
     _check_duplicate_calendar_names(calendar_rows_raw, issues)
     calendar_rows = _merge_calendar_rows(
-        parent_calendar, calendar_rows_raw,
-        ("date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
-         "series", "amount"),
-        issues,
+        parent_calendar, calendar_rows_raw, registries.CALENDAR_KEY_COLUMNS, issues,
     )
     lifespan_rows = _merge_scenario_rows(
         parent_lifespan, read_overlay("lifespan.csv"), ("person",),

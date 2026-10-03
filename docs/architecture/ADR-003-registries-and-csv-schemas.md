@@ -803,7 +803,7 @@ inherited along the parent chain.
 ### 7. CLI edits are validated before they are written
 
 The CSVs are the source of truth and the loader is their only validator, so
-every `analysis sim` command that edits scenario CSVs (`calendar add`,
+every `analysis sim` command that edits scenario CSVs (`calendar add|edit`,
 `transfer add`, `scheduled add`/`import-baseline`, `account
 add|edit|rename|delete|sync|import-quicken`, the `tag` commands, `scenario
 create`, `ensemble create`) goes through one staged edit

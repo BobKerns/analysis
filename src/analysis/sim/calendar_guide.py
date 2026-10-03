@@ -46,6 +46,11 @@ class GuideContext:
     series: Mapping[str, Sequence[str]] = field(default_factory=dict)
     # named calendar rows and latent factors, for --vary-correlate-with
     row_names: Sequence[str] = ()
+    # The scenario's other calendar rows (when editing, all but the row being
+    # edited), as answers, by command: what a row must not duplicate.
+    other_rows: Mapping[str, Sequence[Answers]] = field(default_factory=dict)
+    # names those other rows already use
+    taken_names: frozenset[str] = frozenset()
 
 
 def _always(ctx: GuideContext, answers: Answers) -> bool:  # noqa: ARG001
@@ -68,6 +73,7 @@ class Field:
     default: str | None = None  # what the command uses when the option is omitted
     choices: Callable[[GuideContext, Answers], Sequence[str]] | None = None
     strict: bool = False  # the answer must be one of ``choices``
+    unique: bool = False  # the answer must not be a name another row uses
     applies: Callable[[GuideContext, Answers], bool] = _always
 
     @property
@@ -98,6 +104,10 @@ class KindSpec:
     summary: str
     fields: tuple[Field, ...]
     amount_unit: FieldType | None = None  # what ``--vary-target amount`` varies
+    # The fields that identify the row: two rows alike in all of them are one
+    # event to the loader (registries.CALENDAR_KEY_COLUMNS), so a second is
+    # refused.
+    key: tuple[str, ...] = ()
 
     def field_named(self, name: str) -> Field | None:
         return next((f for f in self.fields if f.name == name), None)
@@ -149,8 +159,15 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
                  "instead of using one fixed value.",
         ),
         Field(
-            "row_name", "name for this varying row", option="--name", applies=varying,
-            help="A unique name; reports and other rows refer to the row by it.",
+            "row_name", "name for this row", option="--name", unique=True,
+            required=lambda answers: answers.get("_vary") == "y",
+            # Asked when the row varies; a name an existing row already has is
+            # kept (and can be changed) either way.
+            applies=lambda ctx, answers: (  # noqa: ARG005
+                answers.get("_vary") == "y" or bool(answers.get("row_name"))
+            ),
+            help="A unique name, needed when the row varies; reports and other rows "
+                 "refer to the row by it.",
         ),
         Field(
             "vary_target", "what varies", option="--vary-target", applies=varying,
@@ -256,6 +273,7 @@ def _accounts(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: AR
 KINDS: tuple[KindSpec, ...] = (
     KindSpec(
         "set-rate", "a series starts earning a new rate", amount_unit="percent",
+        key=("date", "series", "rate_percent"),
         fields=(
             _DATE,
             Field(
@@ -275,6 +293,7 @@ KINDS: tuple[KindSpec, ...] = (
     ),
     KindSpec(
         "set-amount", "a scheduled rule's amount changes", amount_unit="dollars",
+        key=("date", "scheduled_name", "amount"),
         fields=(
             _DATE, _SCHEDULED_NAME,
             Field("amount", "new amount in dollars", type="dollars"),
@@ -287,7 +306,7 @@ KINDS: tuple[KindSpec, ...] = (
         ),
     ),
     KindSpec(
-        "retire-scheduled", "a scheduled rule stops",
+        "retire-scheduled", "a scheduled rule stops", key=("date", "scheduled_name"),
         fields=(
             _DATE, _SCHEDULED_NAME, _DESCRIPTION, _TAGS,
             *_vary_fields(targets=("date",), ramp=False),
@@ -295,6 +314,7 @@ KINDS: tuple[KindSpec, ...] = (
     ),
     KindSpec(
         "transfer", "a one-time transfer between accounts", amount_unit="dollars",
+        key=("date", "from_account", "from_lot", "to_account", "to_lot", "amount", "series"),
         fields=(
             _DATE,
             Field("from_account", "from account", choices=_accounts, strict=True),
@@ -321,7 +341,7 @@ KINDS: tuple[KindSpec, ...] = (
     KindSpec(
         "latent-factor", "a shared influence that varying rows correlate with",
         fields=(
-            Field("name", "factor name"),
+            Field("name", "factor name", unique=True),
             Field(
                 "description", "what this factor stands for", option="--description",
                 required=False,
@@ -419,6 +439,10 @@ class Guide:
         choices = list(field_.choices(ctx, answers)) if field_.choices else []
         if field_.type == "yesno":
             choices = ["y", "n"]
+        choices = [
+            choice for choice in choices
+            if not self._duplicates(spec, ctx, {**answers, field_.param: choice}, field_)
+        ]
         required = field_.is_required(answers)
         if field_.help:
             self._echo(f"  {field_.help}")
@@ -438,20 +462,56 @@ class Guide:
             answer = self._ask(text, choices or None, default).strip()
             if answer == CLEAR and not required:
                 return ""
-            problem = self._problem(spec, field_, answers, answer, choices)
+            problem = self._problem(spec, field_, ctx, answers, answer, choices)
             if problem is None:
                 return answer.lower() if field_.type == "yesno" else answer
             self._echo(f"  {problem}")
 
+    def _key(self, spec: KindSpec, answers: Answers) -> tuple[object, ...]:
+        """``answers``' key fields, each in a form that compares equal however
+        it was typed (``100`` and ``100.00``)."""
+        key: list[object] = []
+        for param in spec.key:
+            value = answers.get(param, "")
+            field_ = next(f for f in spec.fields if f.param == param)
+            checker = self._checkers.get(value_type(spec, field_, answers))
+            if value and checker is not None:
+                try:
+                    key.append(checker(value))
+                    continue
+                except (click.ClickException, ValueError):
+                    pass
+            key.append(value)
+        return tuple(key)
+
+    def _duplicates(
+        self, spec: KindSpec, ctx: GuideContext, answers: Answers, field_: Field,
+    ) -> bool:
+        """Whether ``answers`` would be a second copy of another row. Only
+        judged once every argument in the key has an answer."""
+        if field_.param not in spec.key:
+            return False
+        arguments = {f.param for f in spec.fields if f.is_argument}
+        if any(param in arguments and not answers.get(param) for param in spec.key):
+            return False
+        key = self._key(spec, answers)
+        return any(self._key(spec, other) == key for other in ctx.other_rows.get(spec.command, ()))
+
     def _problem(
-        self, spec: KindSpec, field_: Field, answers: Answers, answer: str, choices: list[str],
+        self, spec: KindSpec, field_: Field, ctx: GuideContext, answers: Answers,
+        answer: str, choices: list[str],
     ) -> str | None:
         if answer == "":
             return "an answer is required" if field_.is_required(answers) else None
         if field_.type == "yesno":
             return None if answer.lower() in ("y", "n") else "answer y or n"
+        # Before the choices check: a choice left out for this reason should say so.
+        if self._duplicates(spec, ctx, {**answers, field_.param: answer}, field_):
+            return "that would duplicate another row"
         if field_.strict and answer not in choices:
             return f"not one of: {', '.join(choices)}" if choices else "there is nothing to choose from"
+        if field_.unique and answer in ctx.taken_names:
+            return f"another row is already named {answer!r}"
         checker = self._checkers.get(value_type(spec, field_, answers))
         if checker is None:
             return None
@@ -484,7 +544,7 @@ class Guide:
             answer = answers.get(field_.param)
             if answer and not arguments_only:
                 choices = list(field_.choices(ctx, answers)) if field_.choices else []
-                if self._problem(spec, field_, answers, answer, choices) is not None:
+                if self._problem(spec, field_, ctx, answers, answer, choices) is not None:
                     self._echo(f"  {field_.name} can no longer be {answer!r}")
                     answer = None
             if answer is None:
@@ -495,10 +555,12 @@ class Guide:
         self, spec: KindSpec, ctx: GuideContext, answers: Answers,
         submit: Callable[[dict[str, Any]], None],
         *, scenario: str | None = None, data_dir: str | None = None,
+        show_command: bool = True,
     ) -> bool:
         """Show the answers, then write, change a field, or cancel -- as often
         as needed. A row the command rejects comes back here with its answers
-        intact. Returns whether a row was written."""
+        intact. Returns whether a row was written. ``show_command`` is off
+        when no single command would do the same, as when changing a row."""
         while True:
             shown = [f for f in spec.fields if f.param in answers]
             width = max(len(f.name) for f in shown)
@@ -506,9 +568,10 @@ class Guide:
             for field_ in shown:
                 self._echo(f"  {field_.name:<{width}}  {answers[field_.param] or '(blank)'}")
             self._echo("")
-            self._echo("Equivalent command:")
-            command = equivalent_command(spec, answers, scenario=scenario, data_dir=data_dir)
-            self._echo(f"  {command}")
+            if show_command:
+                self._echo("Equivalent command:")
+                command = equivalent_command(spec, answers, scenario=scenario, data_dir=data_dir)
+                self._echo(f"  {command}")
             names = [f.name for f in shown]
             action = self._ask(
                 "write this row, cancel, or name a field to change it",
