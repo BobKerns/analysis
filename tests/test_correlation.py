@@ -873,8 +873,15 @@ def test_factor_reach_counts_varying_descendants(
         vary_high="50000", vary_correlate_with="inflation", vary_correlation="0.9",
     )
     _factor(append_calendar_row, "someday")
+    _factor(append_calendar_row, "inert")
+    append_calendar_row(
+        date="2029-05-31", kind="set_rate", name="unmoved_rate", series="Asset_Checking",
+        amount="45000", vary_target="amount", vary_distribution="uniform", vary_low="40000",
+        vary_high="50000", vary_correlate_with="inert", vary_correlation="0",
+    )
     reach = factor_reach(load_test_copy().intent_path)
-    assert reach == {"economy": 2, "inflation": 1, "regime": 1, "someday": 0}
+    # A row reached only through a zero rho isn't moved (PR #53 review).
+    assert reach == {"economy": 2, "inert": 0, "inflation": 1, "regime": 1, "someday": 0}
 
 
 @pytest.fixture

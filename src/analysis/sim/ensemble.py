@@ -472,7 +472,8 @@ def resolve_member(
 def factor_reach(intent_path: Path) -> dict[str, int]:
     """Each latent factor in an intent (ADR-008 §3), and how many unresolved
     varying rows perturbing it would move: its varying descendants, through
-    any sub-factors. A factor that reaches none is a no-op to perturb."""
+    any sub-factors, other than those it reaches only through a zero rho. A
+    factor that moves none is a no-op to perturb."""
     con = sqlite3.connect(intent_path)
     try:
         links, factors = _correlation_links(con)
@@ -483,7 +484,13 @@ def factor_reach(intent_path: Path) -> dict[str, int]:
     finally:
         con.close()
     try:
-        return {f: len(set(conditional_scores(links, f, 1.0)) & varying) for f in factors}
+        # A descendant reached only through a zero rho stays at its median
+        # (score 0), so it doesn't count: moving the factor wouldn't move it.
+        return {
+            f: sum(1 for name, z in conditional_scores(links, f, 1.0).items()
+                   if name in varying and z != 0.0)
+            for f in factors
+        }
     except CorrelationError as e:  # the loader rejects these first
         raise EnsembleError(str(e)) from e
 

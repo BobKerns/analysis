@@ -386,10 +386,11 @@ def parameters_note(mode: str | None) -> str:
     )
     if mode == "sensitivity":
         return note + (
-            " Each other one-at-a-time member holds every row at its center except one, "
-            "which it moves to the **value@q** shown. A latent factor's value is its standard "
-            "score; moving it carries every row under it to its likeliest value given the "
-            "factor, and the charts label it **(factor)**."
+            " Each other one-at-a-time member moves one row or latent factor to the "
+            "**value@q** shown and holds the rest at their centers, with one exception: a "
+            "latent factor (target **factor**, no distribution of its own; its value is a "
+            "standard score) also carries every row under it to that row's likeliest value "
+            "given the factor. The charts label it **(factor)**."
         )
     if mode == "monte_carlo":
         return note + (
