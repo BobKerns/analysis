@@ -34,11 +34,11 @@ def _steps(test_data_dir: Path):
 
 def test_description_view_relevels_the_readme_heading(test_data_dir: Path) -> None:
     (test_data_dir / "scenarios" / "retire_alice" / "README.md").write_text(
-        "# Retirement baseline\n\nAlice and Bob's main plan.\n"
+        "# Retirement baseline\n\nAlice and Bill's main plan.\n"
     )
     with open_scenario(test_data_dir, "retire_alice") as scenario:
         md = description_view(scenario)
-    assert md.data == "### Retirement baseline\n\nAlice and Bob's main plan."
+    assert md.data == "### Retirement baseline\n\nAlice and Bill's main plan."
 
 
 def test_description_view_regenerates_the_more_link_against_data_dir(
@@ -48,13 +48,13 @@ def test_description_view_regenerates_the_more_link_against_data_dir(
     it was generated under (ADR-003 §4.1e); passing the connection's own
     data_dir back in repoints it rather than leaving it stale."""
     (test_data_dir / "scenarios" / "retire_alice" / "README.md").write_text(
-        "# Retirement baseline\n\nAlice and Bob's main plan.\n\nMore detail here.\n"
+        "# Retirement baseline\n\nAlice and Bill's main plan.\n\nMore detail here.\n"
     )
     with open_scenario(test_data_dir, "retire_alice") as scenario:
         md = description_view(scenario, data_dir=test_data_dir)
     expected_readme = test_data_dir / "scenarios" / "retire_alice" / "README.md"
     assert md.data == (
-        "### Retirement baseline\n\nAlice and Bob's main plan.\n\n"
+        "### Retirement baseline\n\nAlice and Bill's main plan.\n\n"
         f"_See [scenarios/retire_alice/README.md]({expected_readme}) for more._"
     )
 

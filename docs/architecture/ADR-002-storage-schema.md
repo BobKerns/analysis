@@ -44,7 +44,7 @@ data_repo/
             year_to_date.csv # partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10)
             chains/
                 asset__Family_Cash.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
-                income__SS_Bob.csv
+                income__SS_Bill.csv
         retire_2032/
             ...             # a derived scenario names `parent_scenario` in
                             # scenario.csv and ships only the files it overrides

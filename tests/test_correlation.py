@@ -409,7 +409,7 @@ def _correlated_recipe(append_calendar_row: Callable[..., None], *, correlated: 
         vary_skew="0.5", **link("economy", "0.8"),
     )
     append_calendar_row(
-        date="2030-12-31", kind="retire_scheduled", name="tied_date", scheduled_name="salary_bob",
+        date="2030-12-31", kind="retire_scheduled", name="tied_date", scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform", vary_low="2030-06-30",
         vary_high="2031-06-30", **link("economy", "-0.6"),
     )

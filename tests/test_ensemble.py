@@ -71,8 +71,8 @@ def test_resolve_member_date_target_draws_within_bounds(
     tmp_path: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-06-30", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-06-30", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2029-01-01", vary_high="2029-12-31",
     )
@@ -85,7 +85,7 @@ def test_resolve_member_date_target_draws_within_bounds(
     try:
         row = con.execute(
             "SELECT date, vary_target, vary_distribution FROM calendar_event "
-            "WHERE name = 'retire_bob_vary'"
+            "WHERE name = 'retire_bill_vary'"
         ).fetchone()
         drawn_date, vary_target, vary_distribution = row
         assert "2029-01-01" <= drawn_date <= "2029-12-31"
@@ -153,8 +153,8 @@ def test_resolve_member_zero_date_target_uses_the_midpoint(
 ) -> None:
     from datetime import date as _date
     append_calendar_row(
-        date="2027-06-30", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-06-30", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2029-01-01", vary_high="2029-12-31",
     )
@@ -169,7 +169,7 @@ def test_resolve_member_zero_date_target_uses_the_midpoint(
     con = sqlite3.connect(member)
     try:
         drawn_date = con.execute(
-            "SELECT date FROM calendar_event WHERE name = 'retire_bob_vary'"
+            "SELECT date FROM calendar_event WHERE name = 'retire_bill_vary'"
         ).fetchone()[0]
         assert drawn_date == expected
     finally:
@@ -536,8 +536,8 @@ def _two_varying_rows(append_calendar_row: Callable[..., None]) -> None:
         vary_low="40000", vary_high="50000",
     )
     append_calendar_row(
-        date="2027-06-30", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-06-30", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2029-01-01", vary_high="2029-12-31",
     )
@@ -585,7 +585,7 @@ def test_resolve_member_override_lands_on_quantile_others_central(
     )).isoformat()
     assert draws == [
         ("checking_rate_vary", "41000", 0.1),
-        ("retire_bob_vary", retire_mid, None),
+        ("retire_bill_vary", retire_mid, None),
     ]
 
 
@@ -598,10 +598,10 @@ def test_resolve_member_date_override_uses_quantile(
     member = resolve_member(
         recipe, tmp_path / "member_0004.sqlite3",
         seed=1, member_index=4, member_count=5, recipe_tree_id="deadbeef",
-        overrides={"retire_bob_vary": 1.0}, mode="sensitivity",
+        overrides={"retire_bill_vary": 1.0}, mode="sensitivity",
     )
     _, draws, _ = _calendar_and_draws(member)
-    assert ("retire_bob_vary", "2029-12-31", 1.0) in draws
+    assert ("retire_bill_vary", "2029-12-31", 1.0) in draws
 
 
 def test_oat_base_member_matches_monte_carlo_member_zero(
@@ -637,11 +637,11 @@ def test_resolve_member_with_overrides_never_draws(
     recipe = load_test_copy().intent_path
     a = resolve_member(
         recipe, tmp_path / "a.sqlite3", seed=1, member_index=3, member_count=5,
-        recipe_tree_id="deadbeef", overrides={"retire_bob_vary": 0.9}, mode="sensitivity",
+        recipe_tree_id="deadbeef", overrides={"retire_bill_vary": 0.9}, mode="sensitivity",
     )
     b = resolve_member(
         recipe, tmp_path / "b.sqlite3", seed=999, member_index=7, member_count=5,
-        recipe_tree_id="deadbeef", overrides={"retire_bob_vary": 0.9}, mode="sensitivity",
+        recipe_tree_id="deadbeef", overrides={"retire_bill_vary": 0.9}, mode="sensitivity",
     )
     assert _calendar_and_draws(a)[1] == _calendar_and_draws(b)[1]
 
@@ -802,8 +802,8 @@ def test_resolve_member_triangular_date_row(
     """A triangular date: member 0 at its median (between the mode and the
     long tail), drawn members inside the bounds, distribution recorded."""
     append_calendar_row(
-        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2030-12-31", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="triangular",
         vary_low="2030-06-30", vary_mode="2030-12-31", vary_high="2031-12-31",
     )
@@ -817,7 +817,7 @@ def test_resolve_member_triangular_date_row(
         con = sqlite3.connect(member)
         try:
             dates.append(con.execute(
-                "SELECT date FROM calendar_event WHERE name = 'retire_bob_vary'"
+                "SELECT date FROM calendar_event WHERE name = 'retire_bill_vary'"
             ).fetchone()[0])
             if i == 0:
                 assert con.execute(

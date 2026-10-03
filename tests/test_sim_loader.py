@@ -40,7 +40,7 @@ def test_load_retire_alice(tmp_path: Path) -> None:
     con.row_factory = sqlite3.Row
     try:
         person_ids = {r["id"] for r in con.execute("SELECT id FROM person")}
-        assert {"alice", "bob"} <= person_ids
+        assert {"alice", "bill"} <= person_ids
 
         account_names = {r["name"] for r in con.execute("SELECT name FROM account")}
         assert "Asset_Checking" in account_names
@@ -105,13 +105,13 @@ def test_readme_overrides_scenario_csv_description(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
 ) -> None:
     (retire_alice_csv("README.md")).write_text(
-        "# Retirement baseline\n\nAlice and Bob's main plan.\n"
+        "# Retirement baseline\n\nAlice and Bill's main plan.\n"
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     con = sqlite3.connect(result.intent_path)
     try:
         description = con.execute("SELECT description FROM scenario").fetchone()[0]
-        assert description == "# Retirement baseline\n\nAlice and Bob's main plan."
+        assert description == "# Retirement baseline\n\nAlice and Bill's main plan."
     finally:
         con.close()
 
@@ -1122,8 +1122,8 @@ def test_vary_amount_target_rejected_on_kind_without_amount_column(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="amount", vary_distribution="uniform",
         vary_low="1", vary_high="2",
     )
@@ -1138,8 +1138,8 @@ def test_vary_truncated_normal_rejected_with_date_target(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="truncated_normal",
         vary_median="2029-06-30", vary_sd="30",
     )
@@ -1185,8 +1185,8 @@ def test_vary_uniform_rejects_reversed_date_bounds(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2029-12-31", vary_high="2029-01-01",
     )
@@ -1344,8 +1344,8 @@ def test_vary_date_target_bounds_must_be_iso_dates(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2029-01-01", vary_high="not-a-date",
     )
@@ -1576,8 +1576,8 @@ def test_vary_triangular_date_target_loads(
     """The three-point estimate for a date: most likely 2030-12-31, no
     earlier than mid-2030, could slip to the end of 2031."""
     append_calendar_row(
-        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2030-12-31", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="triangular",
         vary_low="2030-06-30", vary_mode="2030-12-31", vary_high="2031-12-31",
     )
@@ -1618,7 +1618,7 @@ def test_month_columns_accept_year_month_and_land_on_month_end(
 
     edit("scenario.csv", start="2026-05", end="2040-12")
     edit("scheduled.csv", start="2026-05", base_date="2026-05-15")
-    append_calendar_row(date="2029-03", kind="retire_scheduled", scheduled_name="salary_bob")
+    append_calendar_row(date="2029-03", kind="retire_scheduled", scheduled_name="salary_bill")
     write_aux("inflation__cpi.csv", "effective_date,annual_rate_micros\n2021-01,14000\n")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
@@ -1628,7 +1628,7 @@ def test_month_columns_accept_year_month_and_land_on_month_end(
         "SELECT start, base_date FROM scheduled_transaction WHERE name = 'salary_alice'"
     ).fetchone() == ("2026-05-31", "2026-05-31")
     assert ("2029-03-31",) in con.execute(
-        "SELECT date FROM calendar_event WHERE scheduled_name = 'salary_bob'"
+        "SELECT date FROM calendar_event WHERE scheduled_name = 'salary_bill'"
     ).fetchall()
     assert con.execute(
         "SELECT effective_date FROM aux_table WHERE kind = 'inflation'"
@@ -1638,7 +1638,7 @@ def test_month_columns_accept_year_month_and_land_on_month_end(
 def test_month_column_that_is_not_a_month_is_reported(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
-    append_calendar_row(date="2029-3", kind="retire_scheduled", scheduled_name="salary_bob")
+    append_calendar_row(date="2029-3", kind="retire_scheduled", scheduled_name="salary_bill")
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any("date '2029-3' is not YYYY-MM or YYYY-MM-DD" in issue for issue in ei.value.issues)
@@ -1650,8 +1650,8 @@ def test_vary_date_bounds_bare_month_spans_the_month_full_date_is_exact(
     """#34: a bare month as a lower bound is its first day, as an upper
     bound its last, as a mode mid-month; a full date stays exact."""
     append_calendar_row(
-        date="2029-06", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2029-06", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="triangular",
         vary_low="2029-01", vary_mode="2029-06", vary_high="2029-12-10",
     )
@@ -1660,7 +1660,7 @@ def test_vary_date_bounds_bare_month_spans_the_month_full_date_is_exact(
     con = sqlite3.connect(result.intent_path)
     assert con.execute(
         "SELECT date, vary_low, vary_mode, vary_high FROM calendar_event "
-        "WHERE name = 'retire_bob_vary'"
+        "WHERE name = 'retire_bill_vary'"
     ).fetchone() == ("2029-06-30", "2029-01-01", "2029-06-15", "2029-12-10")
 
 
@@ -1693,7 +1693,7 @@ def test_biweekly_dates_keep_their_day(
     a full date keeps its day; a bare-month end is still the month's end."""
     _set_scheduled(retire_alice_csv, "salary_alice",
                    cadence="biweekly", start="2026-05-15", end="2030-06")
-    _set_scheduled(retire_alice_csv, "salary_bob",
+    _set_scheduled(retire_alice_csv, "salary_bill",
                    cadence="biweekly", start="2026-05-08", end="2030-06-12")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
@@ -1701,11 +1701,11 @@ def test_biweekly_dates_keep_their_day(
     assert dict(
         (name, (start, end)) for name, start, end in con.execute(
             'SELECT name, start, "end" FROM scheduled_transaction '
-            "WHERE name IN ('salary_alice', 'salary_bob')"
+            "WHERE name IN ('salary_alice', 'salary_bill')"
         )
     ) == {
         "salary_alice": ("2026-05-15", "2030-06-30"),
-        "salary_bob": ("2026-05-08", "2030-06-12"),
+        "salary_bill": ("2026-05-08", "2030-06-12"),
     }
 
 
@@ -1722,7 +1722,7 @@ def test_retire_scheduled_date_keeps_its_day(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     """It becomes the rule's end, where the day matters (ADR-006 §2)."""
-    append_calendar_row(date="2029-03-12", kind="retire_scheduled", scheduled_name="salary_bob")
+    append_calendar_row(date="2029-03-12", kind="retire_scheduled", scheduled_name="salary_bill")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
     con = sqlite3.connect(result.intent_path)
@@ -1735,8 +1735,8 @@ def test_vary_date_bound_rejects_iso_week_date(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2029-W01-1", vary_high="2029-12-31",
     )

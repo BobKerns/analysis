@@ -91,7 +91,7 @@ def test_duplicate_account_and_lot_rejected(
 def test_lot_label_may_not_contain_colon(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
-    _edit(retire_alice_csv("account_values.csv"), "Asset_Roth_Bob,default,", "Asset_Roth_Bob,a:b,")
+    _edit(retire_alice_csv("account_values.csv"), "Asset_Roth_Bill,default,", "Asset_Roth_Bill,a:b,")
     with pytest.raises(LoadError, match="may not contain ':'"):
         load_test_copy()
 
@@ -99,8 +99,8 @@ def test_lot_label_may_not_contain_colon(
 def test_investment_account_row_requires_explicit_lot(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
-    _edit(retire_alice_csv("account_values.csv"), "Asset_Roth_Bob,default,", "Asset_Roth_Bob,,")
-    with pytest.raises(LoadError, match=r"Asset_Roth_Bob\): investment account requires an explicit lot"):
+    _edit(retire_alice_csv("account_values.csv"), "Asset_Roth_Bill,default,", "Asset_Roth_Bill,,")
+    with pytest.raises(LoadError, match=r"Asset_Roth_Bill\): investment account requires an explicit lot"):
         load_test_copy()
 
 
@@ -703,7 +703,7 @@ def test_state_tax_still_treats_gains_as_ordinary(
 
 
 @pytest.mark.parametrize(("account", "lot", "expected"), [
-    ("Bob Vanguard Rollover", "settlement", "growth_bob_vang_roll_sett"),
+    ("Bill Vanguard Rollover", "settlement", "growth_bill_vang_roll_sett"),
     ("Asset_Checking", "default", "growth_asse_chec"),      # the default lot adds nothing
     ("Asset_Brokerage_Joint", "2024-03", "growth_asse_brok_join_2024_03"),
     ("IRA", "a", "growth_ira_a"),                           # short words are kept whole

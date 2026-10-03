@@ -104,7 +104,7 @@ def test_widgets_offer_every_account_and_the_symbols_of_investment_and_cash_lots
     two_lot_run: RunConnection, test_data_dir: Path, update_account_value,
 ) -> None:
     assert holding_accounts(two_lot_run) == sorted([
-        "Asset_Checking", "Asset_Home", BROKERAGE, "Asset_Roth_Alice", "Asset_Roth_Bob",
+        "Asset_Checking", "Asset_Home", BROKERAGE, "Asset_Roth_Alice", "Asset_Roth_Bill",
         "Asset_Savings", "Asset_TraditionalIRA_Alice", "Liability_Mortgage",
     ])
     assert holding_symbols(two_lot_run) == ["AAA", "BBB"]

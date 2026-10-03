@@ -675,8 +675,8 @@ def _add_varying_gift_and_retirement(append_calendar_row: Callable[..., None]) -
         vary_low="1000000", vary_high="3000000",
     )
     append_calendar_row(
-        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2030-12-31", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2030-06-30", vary_high="2031-06-30",
     )

@@ -138,7 +138,7 @@ def test_oat_deltas_shape_and_timing(oat_batch: Path) -> None:
     # No effect before the gift arrives; after, a bigger gift is worth more.
     assert (gift.loc[:2028].abs() < 1).all().all()
     assert (gift.loc[2029:, 0.1] < 0).all() and (gift.loc[2029:, 0.9] > 0).all()
-    retire = nw[nw["row"] == "retire_bob_vary"].pivot(index="year", columns="quantile", values="delta")
+    retire = nw[nw["row"] == "retire_bill_vary"].pivot(index="year", columns="quantile", values="delta")
     assert (retire.loc[:2029].abs() < 1).all().all()  # before the earliest date in range
     assert (retire.loc[2031:, 0.1] < 0).all()  # retiring earlier costs money
 
@@ -146,8 +146,8 @@ def test_oat_deltas_shape_and_timing(oat_batch: Path) -> None:
 def test_oat_table_ranks_retirement_date_above_gift(oat_batch: Path) -> None:
     deltas = sensitivity.oat_deltas(oat_batch, DollarMode.NOMINAL)
     table = sensitivity.oat_table(deltas, 2035)
-    assert list(table.index) == ["retire_bob_vary", "gift"]
-    assert table.loc["retire_bob_vary", "delta@0.1"] < 0 < table.loc["retire_bob_vary", "delta@0.9"]
+    assert list(table.index) == ["retire_bill_vary", "gift"]
+    assert table.loc["retire_bill_vary", "delta@0.1"] < 0 < table.loc["retire_bill_vary", "delta@0.9"]
     assert table["share"].sum() == pytest.approx(1.0)
 
 
@@ -221,7 +221,7 @@ def test_cli_rejects_unknown_year(oat_batch: Path, runs_dir: Path) -> None:
 
 @pytest.mark.parametrize("by", sensitivity.ATTRIBUTION_AXES)
 @pytest.mark.parametrize("dollars", list(DollarMode))
-@pytest.mark.parametrize("row", ["gift", "retire_bob_vary"])
+@pytest.mark.parametrize("row", ["gift", "retire_bill_vary"])
 def test_attribution_sums_exactly(oat_batch: Path, row: str, by: str, dollars: DollarMode) -> None:
     """The double-entry identity: rows sum to the net-worth delta, with
     nothing unattributed, along every axis and in both dollar modes."""
@@ -366,7 +366,7 @@ def test_draws_frame_excludes_member_zero(mc_batch: Path) -> None:
             rc.close()
     assert "member_0000" not in draws.index
     assert len(draws) == 7
-    assert list(draws.columns) == ["gift", "retire_bob_vary"]
+    assert list(draws.columns) == ["gift", "retire_bill_vary"]
 
 
 def test_cli_reports_monte_carlo_batch(mc_batch: Path, runs_dir: Path) -> None:
@@ -523,7 +523,7 @@ def test_cli_attribute_relative_and_measure(oat_batch: Path, runs_dir: Path) -> 
 
 def test_parameters_describes_an_oat_batch(oat_batch: Path) -> None:
     table = sensitivity.parameters(oat_batch)
-    assert list(table.index) == ["gift", "retire_bob_vary"]
+    assert list(table.index) == ["gift", "retire_bill_vary"]
     gift = table.loc["gift"]
     assert gift["kind"] == "one_off_transfer"
     assert gift["affects"].startswith("Income_Inheritance → Asset_Brokerage_Joint")
@@ -533,8 +533,8 @@ def test_parameters_describes_an_oat_batch(oat_batch: Path) -> None:
     assert (gift["value@0.1"], gift["value@0.9"]) == ("$12,000", "$28,000")
     assert gift["shape"] == ""  # uniform has no shape parameters
     assert gift["moments"].startswith("mean $20,000, sd $5,774, skew +0.00, excess kurtosis -1.20")
-    retire = table.loc["retire_bob_vary"]
-    assert (retire["target"], retire["affects"]) == ("date", "salary_bob")
+    retire = table.loc["retire_bill_vary"]
+    assert (retire["target"], retire["affects"]) == ("date", "salary_bill")
     assert retire["range"] == "2030-06-30 to 2031-06-30"
 
 
@@ -579,8 +579,8 @@ def test_parameters_describes_shape_and_moments(
         vary_skew="0.7",
     )
     append_calendar_row(
-        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2030-12-31", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="triangular",
         vary_low="2030-06-30", vary_mode="2030-12-31", vary_high="2031-12-31",
     )
@@ -601,7 +601,7 @@ def test_parameters_describes_shape_and_moments(
     rate = table.loc["checking_vary"]
     assert rate["center"] == "4.50%" and rate["shape"] == "scale 0.50%, skew 0.7"
     assert "skew +" in rate["moments"]  # a positive skew parameter gives a right-skewed shape
-    retire = table.loc["retire_bob_vary"]
+    retire = table.loc["retire_bill_vary"]
     assert retire["shape"] == "mode 2030-12-31"
     assert retire["moments"].startswith("mean 2031-") and "days" in retire["moments"]
 

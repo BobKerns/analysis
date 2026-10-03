@@ -27,7 +27,7 @@ Month to Date: 2026-08-01 - 2026-08-18
 ," - Total Checking","324.28"
 ,"Investments",
 ," - Retirement",
-," -  - Bob Fidelity","10,000.38"
+," -  - Bill Fidelity","10,000.38"
 ," -  - Total Retirement","10,000.38"
 ," - Total Investments","10,000.38"
 ,"Total Assets","10,324.66"
@@ -50,7 +50,7 @@ def test_parse_net_worth_export_extracts_leaf_accounts_only(tmp_path: Path) -> N
     assert balances == {
         "Business": 30417,
         "WF CA": 2011,
-        "Bob Fidelity": 1000038,
+        "Bill Fidelity": 1000038,
         "Amex": -837891,
     }
 
