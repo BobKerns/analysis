@@ -123,10 +123,18 @@ def _needs(column: str) -> Callable[[Answers], bool]:
     return required
 
 
+def _distributions(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
+    """The distributions that can draw the chosen target. A truncated normal's
+    spread is a number, not a span of days, so it cannot draw a date."""
+    unusable = {"truncated_normal"} if answers.get("vary_target") == "date" else set()
+    return sorted(registries.ENSEMBLE_DISTRIBUTIONS - unusable)
+
+
 _DISTRIBUTION_HELP = (
     "uniform: anywhere between low and high, equally likely. "
     "triangular: a most likely value, with a low and a high. "
-    "truncated_normal: a bell curve around a median, clipped to low and high."
+    "truncated_normal: a bell curve around a median, clipped to low and high "
+    "(amounts only)."
 )
 
 
@@ -152,8 +160,7 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
         ),
         Field(
             "vary_distribution", "distribution", option="--vary-distribution", applies=varying,
-            choices=lambda ctx, answers: sorted(registries.ENSEMBLE_DISTRIBUTIONS),  # noqa: ARG005
-            strict=True, help=_DISTRIBUTION_HELP,
+            choices=_distributions, strict=True, help=_DISTRIBUTION_HELP,
         ),
         Field(
             "vary_median", "median", type="value", option="--vary-median", required=False,
@@ -307,6 +314,7 @@ KINDS: tuple[KindSpec, ...] = (
                 strict=True,
             ),
             _DESCRIPTION,
+            Field("series", "series tag", option="--series", required=False),
             *_vary_fields(targets=("amount", "date"), ramp=False),
         ),
     ),
@@ -362,9 +370,12 @@ def command_params(spec: KindSpec, answers: Answers) -> dict[str, Any]:
 
 
 def equivalent_command(
-    spec: KindSpec, answers: Answers, *, scenario: str | None = None,
+    spec: KindSpec, answers: Answers,
+    *, scenario: str | None = None, data_dir: str | None = None,
 ) -> str:
-    """The non-interactive command line that writes the same row."""
+    """The non-interactive command line that writes the same row.
+    ``scenario`` and ``data_dir`` are included when the guide was given them,
+    so the command acts on the same scenario wherever it is run."""
     words = ["sim", "calendar", "add", spec.command]
     options: list[str] = []
     for field_ in spec.fields:
@@ -377,6 +388,8 @@ def equivalent_command(
             options += [field_.option, value]
     if scenario:
         options += ["--scenario", scenario]
+    if data_dir:
+        options += ["--data-dir", data_dir]
     return " ".join(shlex.quote(word) for word in [*words, *options])
 
 
@@ -456,17 +469,32 @@ class Guide:
     ) -> Answers:
         """Ask every applicable field ``answers`` lacks, in order, and drop
         answers to fields that no longer apply. With ``arguments_only``, ask
-        only the positional arguments -- what the command cannot run without."""
+        only the positional arguments -- what the command cannot run without,
+        leaving everything else for the command itself to judge.
+
+        Otherwise an answer that a later change has made unacceptable (a
+        distribution that cannot draw the target now chosen, a dollar bound
+        on what is now a date) is asked again."""
         for field_ in spec.fields:
             if not field_.applies(ctx, answers):
                 answers.pop(field_.param, None)
-            elif field_.param not in answers and (field_.is_argument or not arguments_only):
+                continue
+            if arguments_only and not field_.is_argument:
+                continue
+            answer = answers.get(field_.param)
+            if answer and not arguments_only:
+                choices = list(field_.choices(ctx, answers)) if field_.choices else []
+                if self._problem(spec, field_, answers, answer, choices) is not None:
+                    self._echo(f"  {field_.name} can no longer be {answer!r}")
+                    answer = None
+            if answer is None:
                 answers[field_.param] = self.ask_field(spec, field_, ctx, answers)
         return answers
 
     def review(
         self, spec: KindSpec, ctx: GuideContext, answers: Answers,
-        submit: Callable[[dict[str, Any]], None], *, scenario: str | None = None,
+        submit: Callable[[dict[str, Any]], None],
+        *, scenario: str | None = None, data_dir: str | None = None,
     ) -> bool:
         """Show the answers, then write, change a field, or cancel -- as often
         as needed. A row the command rejects comes back here with its answers
@@ -479,7 +507,8 @@ class Guide:
                 self._echo(f"  {field_.name:<{width}}  {answers[field_.param] or '(blank)'}")
             self._echo("")
             self._echo("Equivalent command:")
-            self._echo(f"  {equivalent_command(spec, answers, scenario=scenario)}")
+            command = equivalent_command(spec, answers, scenario=scenario, data_dir=data_dir)
+            self._echo(f"  {command}")
             names = [f.name for f in shown]
             action = self._ask(
                 "write this row, cancel, or name a field to change it",

@@ -38,6 +38,7 @@ def calendar_rows(retire_alice_csv: Callable[[str], Path]) -> Callable[[], pd.Da
 
 def test_guide_writes_a_varying_row_and_shows_the_equivalent_command(
     calendar_add: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+    test_data_dir: Path,
 ) -> None:
     result = calendar_add(answers=[
         "set-rate", "2027-02", "", "Asset_Checking", "4.5", "", "",   # aux kind, description, tags blank
@@ -49,7 +50,7 @@ def test_guide_writes_a_varying_row_and_shows_the_equivalent_command(
     assert (
         "sim calendar add set-rate 2027-02 Asset_Checking 4.5 --name checking_vary "
         "--vary-target amount --vary-distribution uniform --vary-low 4 --vary-high 5 "
-        "--scenario retire_alice"
+        f"--scenario retire_alice --data-dir {test_data_dir}"
     ) in result.output
     row = calendar_rows().query("name == 'checking_vary'").iloc[0]
     assert (row["kind"], row["date"], row["amount"]) == ("set_rate", "2027-02", "45000")
@@ -151,7 +152,7 @@ def test_guide_asks_for_a_lot_only_on_an_investment_account(
 ) -> None:
     result = calendar_add(answers=[
         "transfer", "2030-06", "Asset_Checking", "Asset_Brokerage_Joint", "default",
-        "42.00", "", "", "n", "",
+        "42.00", "", "", "", "n", "",         # tax character, description, series tag blank
     ])
 
     assert result.exit_code == 0, result.output
@@ -196,10 +197,49 @@ def test_every_guide_field_is_a_parameter_of_its_command(spec: calendar_guide.Ki
     must not drift from the commands they describe."""
     command = calendar_add_group_command.commands[spec.command]
     callback_params = set(inspect.signature(command.callback).parameters)
-    options = {opt for param in command.params for opt in param.opts}
+    options = {opt for param in command.params for opt in param.opts if opt.startswith("--")}
     arguments = [param.name for param in command.params if param.param_type_name == "argument"]
 
     passed_on = [f for f in spec.fields if not f.is_question_only]
     assert {f.param for f in passed_on} <= callback_params
-    assert {f.option for f in passed_on if f.option} <= options
     assert [f.param for f in passed_on if f.is_argument] == arguments
+    # Both ways: the guide offers every option the command has, bar the two
+    # that say which scenario (the guide itself is started with those) and
+    # the ramp, which every kind accepts but only set-rate can use.
+    not_offered = {"--scenario", "--data-dir"}
+    if spec.command != "set-rate":
+        not_offered.add("--vary-ramp-months")
+    assert {f.option for f in passed_on if f.option} == options - not_offered
+
+
+def test_guide_does_not_offer_a_distribution_that_cannot_draw_a_date(
+    calendar_add: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+) -> None:
+    result = calendar_add(answers=[
+        "set-amount", "2028-01", "salary_bill", "100.00", "", "", "",
+        "y", "raise_vary", "date",
+        "truncated_normal", "uniform",        # refused, then a usable one
+        "2028-01", "2028-06", "n", "",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "choices: triangular, uniform" in result.output
+    assert calendar_rows().query("name == 'raise_vary'").iloc[0]["vary_distribution"] == "uniform"
+
+
+def test_guide_asks_again_for_an_answer_a_later_change_rules_out(
+    calendar_add: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+) -> None:
+    result = calendar_add(answers=[
+        "set-amount", "2028-01", "salary_bill", "100.00", "", "", "",
+        "y", "raise_vary", "amount", "truncated_normal", "100", "", "90", "110", "", "", "n",
+        "vary-target", "date",                # at the review: now the distribution is impossible
+        "uniform", "2028-01", "2028-06",
+        "",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "vary-distribution can no longer be 'truncated_normal'" in result.output
+    row = calendar_rows().query("name == 'raise_vary'").iloc[0]
+    assert (row["vary_target"], row["vary_distribution"]) == ("date", "uniform")
+    assert (row["vary_low"], row["vary_high"]) == ("2028-01", "2028-06")

@@ -2190,7 +2190,10 @@ def calendar_add_group_command(
             scenario=scenario, data_dir=data_dir, **params,
         )
 
-    if not guide.review(spec, context, answers, submit, scenario=scenario):
+    if not guide.review(
+        spec, context, answers, submit,
+        scenario=scenario, data_dir=str(data_dir) if data_dir is not None else None,
+    ):
         ctx.exit(1)
 
 
