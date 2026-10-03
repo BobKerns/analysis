@@ -33,6 +33,7 @@ columnless
 configfile
 conftest
 counterclock
+cpus
 dataviz
 dateutil
 ddof

@@ -2,6 +2,9 @@
   "name": "analysis-lint-tools",
   "private": true,
   "description": "Pinned spelling and markdown linters for the verification gates; the project itself is Python (see pyproject.toml).",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
   "scripts": {
     "spell": "cspell --no-progress .",
     "markdownlint": "markdownlint ."
