@@ -4,13 +4,11 @@ in ``lineage.load_order``."""
 
 from __future__ import annotations
 
-import io
 import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
-import git
 import pandas as pd
 import pytest
 from click.testing import CliRunner
@@ -21,35 +19,12 @@ from analysis.sim.loader import LoadError, load_scenario
 from analysis.sim.provenance import data_stamps
 from analysis.sim.staging import _affected_scenarios
 
-PROTOTYPE = Path(__file__).resolve().parents[1] / "prototype_data"
 ROOT = "retire_alice"
-
-
-def _scheduled_override(**amounts: str) -> str:
-    """scheduled.csv text repeating the prototype's rows named in ``amounts``
-    with only their ``amount`` changed (an override replaces a row whole)."""
-    rows = pd.read_csv(
-        PROTOTYPE / "scenarios" / ROOT / "scheduled.csv", dtype=str, keep_default_na=False,
-    )
-    rows = rows[rows["name"].isin(amounts)].copy()
-    rows["amount"] = rows["name"].map(amounts)
-    out = io.StringIO()
-    rows.to_csv(out, index=False)
-    return out.getvalue()
 
 
 def _amounts(intent_path: Path) -> dict[str, int]:
     with sqlite3.connect(intent_path) as con:
         return dict(con.execute("SELECT name, amount_cents FROM scheduled_transaction"))
-
-
-@pytest.fixture
-def load(test_data_dir: Path, tmp_path: Path) -> Callable[[str], Path]:
-    def _load(name: str) -> Path:
-        return load_scenario(
-            test_data_dir, name, intent_dir=tmp_path / "intent" / name, allow_dirty_data=True,
-        ).intent_path
-    return _load
 
 
 # -- load order -------------------------------------------------------------
@@ -105,39 +80,41 @@ def test_a_cycle_through_a_mixin_is_rejected_strictly_and_tolerated_otherwise(
 
 
 def test_mixins_contribute_their_rows_and_the_later_one_wins(
-    derive_scenario: Callable[..., Path], load: Callable[[str], Path],
+    scheduled_override: Callable[..., str],
+    derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
 ) -> None:
     derive_scenario("mix_a", ROOT, {
-        "scheduled.csv": _scheduled_override(salary_alice="9000.00"),
+        "scheduled.csv": scheduled_override(salary_alice="9000.00"),
     })
     derive_scenario("mix_b", ROOT, {
-        "scheduled.csv": _scheduled_override(salary_alice="9500.00", salary_bill="7000.00"),
+        "scheduled.csv": scheduled_override(salary_alice="9500.00", salary_bill="7000.00"),
     })
     derive_scenario("combo", f"{ROOT}:mix_a:mix_b")
     derive_scenario("combo_ab", f"{ROOT}:mix_b:mix_a")
 
-    base = _amounts(load(ROOT))
-    combo = _amounts(load("combo"))
+    base = _amounts(load_test_scenario(ROOT))
+    combo = _amounts(load_test_scenario("combo"))
     assert combo["salary_alice"] == 950000
     assert combo["salary_bill"] == 700000
     assert set(combo) == set(base)
-    assert _amounts(load("combo_ab"))["salary_alice"] == 900000
+    assert _amounts(load_test_scenario("combo_ab"))["salary_alice"] == 900000
 
 
 def test_the_scenarios_own_rows_beat_its_mixins(
-    derive_scenario: Callable[..., Path], load: Callable[[str], Path],
+    scheduled_override: Callable[..., str],
+    derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
 ) -> None:
     derive_scenario("mix_a", ROOT, {
-        "scheduled.csv": _scheduled_override(salary_alice="9000.00"),
+        "scheduled.csv": scheduled_override(salary_alice="9000.00"),
     })
     derive_scenario("combo", f"{ROOT}:mix_a", {
-        "scheduled.csv": _scheduled_override(salary_alice="8500.00"),
+        "scheduled.csv": scheduled_override(salary_alice="8500.00"),
     })
-    assert _amounts(load("combo"))["salary_alice"] == 850000
+    assert _amounts(load_test_scenario("combo"))["salary_alice"] == 850000
 
 
 def test_a_mixins_series_and_chain_overrides_are_inherited(
-    derive_scenario: Callable[..., Path], load: Callable[[str], Path],
+    derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
 ) -> None:
     derive_scenario("mix_rates", ROOT, {
         "series/rate__Asset_Checking.csv": "effective_date,annual_rate_micros\n2026-01-31,10000\n",
@@ -147,7 +124,7 @@ def test_a_mixins_series_and_chain_overrides_are_inherited(
         ),
     })
     derive_scenario("combo", f"{ROOT}:mix_rates")
-    with sqlite3.connect(load("combo")) as con:
+    with sqlite3.connect(load_test_scenario("combo")) as con:
         (payload,) = con.execute(
             "SELECT payload_json FROM aux_table WHERE kind = 'rate' AND series = 'Asset_Checking'"
         ).fetchone()
@@ -180,26 +157,22 @@ def test_a_missing_mixin_fails_the_load(
 
 
 @pytest.fixture
-def committed_combo(test_data_dir: Path, derive_scenario: Callable[..., Path]) -> Path:
-    """A ``combo`` of ``retire_alice`` and a ``mix`` mix-in, committed to git,
-    plus an ``unrelated`` sibling."""
+def mixin_scenarios(derive_scenario: Callable[..., Path]) -> None:
+    """``combo`` = ``retire_alice`` + a ``mix`` mix-in, plus an ``unrelated`` sibling."""
     derive_scenario("mix", ROOT)
     derive_scenario("combo", f"{ROOT}:mix")
     derive_scenario("unrelated", ROOT)
-    repo = git.Repo.init(test_data_dir, b="main")
-    repo.git.add(A=True)
-    with repo.config_writer() as cw:
-        cw.set_value("commit", "gpgsign", "false")
-    actor = git.Actor("t", "t@t")
-    repo.index.commit("init", author=actor, committer=actor)
-    return test_data_dir
 
 
-def test_a_mixin_edit_moves_the_combos_tree_id(committed_combo: Path) -> None:
+def test_a_mixin_edit_moves_the_combos_tree_id(
+    mixin_scenarios: None, commit_test_data: Callable[[], Path],
+    scheduled_override: Callable[..., str],
+) -> None:
+    committed_combo = commit_test_data()
     before = data_stamps(committed_combo, "combo")
     assert not before.dirty
     (committed_combo / "scenarios" / "mix" / "scheduled.csv").write_text(
-        _scheduled_override(salary_alice="9000.00"), encoding="utf-8",
+        scheduled_override(salary_alice="9000.00"), encoding="utf-8",
     )
     after = data_stamps(committed_combo, "combo")
     assert after.dirty
@@ -207,8 +180,10 @@ def test_a_mixin_edit_moves_the_combos_tree_id(committed_combo: Path) -> None:
     assert not data_stamps(committed_combo, "unrelated").dirty
 
 
-def test_editing_a_mixin_marks_scenarios_using_it_affected(committed_combo: Path) -> None:
-    assert _affected_scenarios(committed_combo, {"mix"}) == ["combo", "mix"]
+def test_editing_a_mixin_marks_scenarios_using_it_affected(
+    mixin_scenarios: None, test_data_dir: Path,
+) -> None:
+    assert _affected_scenarios(test_data_dir, {"mix"}) == ["combo", "mix"]
 
 
 # -- scenario create ----------------------------------------------------------
@@ -216,11 +191,12 @@ def test_editing_a_mixin_marks_scenarios_using_it_affected(committed_combo: Path
 
 @pytest.mark.uses_current_scenario_write
 def test_scenario_create_records_mixins(
+    scheduled_override: Callable[..., str],
     test_data_dir: Path, derive_scenario: Callable[..., Path],
-    load: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch,
+    load_test_scenario: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     derive_scenario("mix_a", ROOT, {
-        "scheduled.csv": _scheduled_override(salary_alice="9000.00"),
+        "scheduled.csv": scheduled_override(salary_alice="9000.00"),
     })
     monkeypatch.setenv("ANALYSIS_DATA_DIR", str(test_data_dir))
     result = CliRunner().invoke(main, ["sim", "scenario", "create", "combo", ROOT, "mix_a"])
@@ -231,7 +207,7 @@ def test_scenario_create_records_mixins(
                       dtype=str, keep_default_na=False).iloc[0]
     assert row["parent_scenario"] == f"{ROOT}:mix_a"
     assert row["description"] == f"Derived from {ROOT} + mix_a"
-    assert _amounts(load("combo"))["salary_alice"] == 900000
+    assert _amounts(load_test_scenario("combo"))["salary_alice"] == 900000
 
 
 def test_scenario_create_rejects_an_unknown_mixin(

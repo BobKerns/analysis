@@ -62,6 +62,7 @@ import shutil
 import sqlite3
 import warnings
 
+import git
 import pandas as pd
 import pytest
 
@@ -545,6 +546,45 @@ def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
             path.write_text(text, encoding="utf-8")
         return folder
     return _derive
+
+
+@pytest.fixture(scope="session")
+def scheduled_override(prototype_data: Path) -> Callable[..., str]:
+    """scheduled.csv text repeating the prototype retire_alice rows named as
+    keywords with only their ``amount`` changed -- an override replaces a row
+    whole, so it has to repeat every other column."""
+    def _override(**amounts: str) -> str:
+        rows = pd.read_csv(prototype_data / "scenarios" / "retire_alice" / "scheduled.csv",
+                           dtype=str, keep_default_na=False)
+        rows = rows[rows["name"].isin(amounts)].copy()
+        rows["amount"] = rows["name"].map(amounts)
+        return rows.to_csv(index=False)
+    return _override
+
+
+@pytest.fixture(scope="function")
+def load_test_scenario(test_data_dir: Path, intent_dir: Path) -> Callable[[str], Path]:
+    """Load any scenario of the private data copy (after a test has added or
+    edited it); returns its intent file."""
+    def _load(name: str) -> Path:
+        return load_scenario(test_data_dir, name, intent_dir=intent_dir / name,
+                             allow_dirty_data=True).intent_path
+    return _load
+
+
+@pytest.fixture(scope="function")
+def commit_test_data(test_data_dir: Path) -> Callable[[], Path]:
+    """Make the private data copy a git repo with everything committed, for
+    provenance tests; call it once the test's scenarios are in place."""
+    def _commit() -> Path:
+        repo = git.Repo.init(test_data_dir, b="main")
+        repo.git.add(A=True)
+        with repo.config_writer() as cw:
+            cw.set_value("commit", "gpgsign", "false")
+        actor = git.Actor("t", "t@t")
+        repo.index.commit("init", author=actor, committer=actor)
+        return test_data_dir
+    return _commit
 
 
 @pytest.fixture(scope="function")
