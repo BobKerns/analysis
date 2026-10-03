@@ -320,12 +320,15 @@ def build_expense_baseline(
     _apply_category_splits(amazon, splits, has_accounts=False)
     amazon = amazon.loc[~amazon["category"].isin(categories_to_exclude)].copy()
     observed_categories = set(included["category_raw"]) | set(amazon["category"])
-    # A split's category and its targets are configured, not unmapped, so the
-    # default category must not swallow them.
+    # A merge target, a split's category and a split's targets are configured,
+    # not unmapped, so the default category must not swallow them. (Amazon
+    # rows are observed after merging, so a merge target is what they carry.)
     split_categories = set(splits) | {
         target for targets in splits.values() for target in targets.values()
     }
-    explicitly_mapped = set(merges) | categories_to_exclude | split_categories
+    explicitly_mapped = (
+        set(merges) | set(merges.values()) | categories_to_exclude | split_categories
+    )
     defaulted_categories = tuple(sorted(
         category for category in observed_categories
         if category not in explicitly_mapped and category not in {default_category, ""}

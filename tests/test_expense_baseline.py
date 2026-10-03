@@ -356,6 +356,34 @@ def test_build_expense_baseline_defaults_unmapped_categories_to_other(tmp_path: 
     assert set(result.transactions["category"]) == {"Dining", "Other"}
 
 
+def test_build_expense_baseline_does_not_default_merge_targets_to_other(tmp_path: Path) -> None:
+    path = tmp_path / "quicken.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n'
+        # Already carries the merge target's name, so no merge row names it as a source.
+        ',,"2026-01-02","2026-01-03","2026-01-02","","Market","Food","","","","-12.00"\n',
+        encoding="utf-8",
+    )
+    amazon = pd.DataFrame(
+        {
+            "summary_month_start": ["2026-01-01", "2026-01-01"],
+            "category": ["Groceries", "Gadgets"],
+            "amount_total": [20.00, 9.00],
+        }
+    )
+
+    result = build_expense_baseline(
+        path, amazon, category_merges={"Groceries": "Food"}, default_category="Other",
+    )
+
+    assert result.categories_defaulted_to_other == ("Gadgets",)
+    assert result.category_totals.to_dict("records") == [
+        {"category": "Food", "amount_total": 32.0},
+        {"category": "Other", "amount_total": 9.0},
+    ]
+
+
 def test_scheduled_baseline_rows_are_rerunnable_and_remove_stale_rows(tmp_path: Path) -> None:
     path = tmp_path / "quicken.csv"
     path.write_text(

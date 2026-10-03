@@ -46,7 +46,9 @@ beside them.
 
 An ADR is edited in place to describe the current design, so it stays easy
 to read: rewrite the affected sections and add a brief note (e.g. an "Amended
-by" line in the header naming the issue or PR) that it was amended. Don't keep
+by" line in the header naming the issue or PR) that it was amended. The note
+marks a change to the design; an editorial edit (an example's names, a typo, a
+link) needs none. Don't keep
 superseded text as tombstones or ask for it to be kept; git history holds the
 previous decisions and their rationale. If the code and an ADR disagree, fix the drift in the
 same change — the ADRs are load-bearing, not historical.
