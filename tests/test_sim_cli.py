@@ -1679,7 +1679,7 @@ def test_sim_calendar_add_truncated_normal_accepts_low_and_high_alone(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
     """vary_low/vary_high double as truncated_normal's own bounds (ADR-006):
-    giving just those two infers vary_mean as their midpoint and vary_sd as
+    giving just those two infers vary_median as their midpoint and vary_sd as
     the spread that puts them 3 SDs out."""
     runner = CliRunner()
     result = runner.invoke(
@@ -1695,7 +1695,7 @@ def test_sim_calendar_add_truncated_normal_accepts_low_and_high_alone(
     df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
     row = df[df["name"] == "cpi_vary"].iloc[0]
     assert row["vary_low"] == "20000" and row["vary_high"] == "40000"
-    assert row["vary_mean"] == "" and row["vary_sd"] == ""  # left for resolve_member to infer
+    assert row["vary_median"] == "" and row["vary_sd"] == ""  # left for resolve_member to infer
 
 
 def test_sim_calendar_add_rejects_clip_low_option_that_no_longer_exists(
@@ -1708,7 +1708,7 @@ def test_sim_calendar_add_rejects_clip_low_option_that_no_longer_exists(
             "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
             "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
             "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
-            "--vary-distribution", "truncated_normal", "--vary-mean", "3.0", "--vary-sd", "0.5",
+            "--vary-distribution", "truncated_normal", "--vary-median", "3.0", "--vary-sd", "0.5",
             "--vary-clip-low", "0",
         ],
     )
@@ -1719,7 +1719,7 @@ def test_sim_calendar_add_rejects_clip_low_option_that_no_longer_exists(
 def test_sim_calendar_add_rejects_truncated_normal_with_insufficient_params(
     test_data_dir: Path,
 ) -> None:
-    """--vary-mean alone isn't enough to resolve a truncated_normal: sd needs
+    """--vary-median alone isn't enough to resolve a truncated_normal: sd needs
     either its own value or one of vary_low/vary_high to infer it from."""
     runner = CliRunner()
     result = runner.invoke(
@@ -1728,7 +1728,7 @@ def test_sim_calendar_add_rejects_truncated_normal_with_insufficient_params(
             "sim", "calendar", "add", "set-rate", "2028-01-31", "cpi", "3.5",
             "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
             "--scenario", "retire_alice", "--name", "cpi_vary", "--vary-target", "amount",
-            "--vary-distribution", "truncated_normal", "--vary-mean", "3.0",
+            "--vary-distribution", "truncated_normal", "--vary-median", "3.0",
         ],
     )
     assert result.exit_code != 0
@@ -2148,3 +2148,41 @@ def test_ensemble_sensitivity_rejects_bad_negligible(runs_dir: Path, value: str)
     ])
     assert result.exit_code == 2
     assert "--negligible" in result.output
+
+
+
+# --- #31: shape and triangular options on `sim calendar add` --------------------------
+
+
+def test_sim_calendar_add_writes_shape_and_mode(test_data_dir: Path) -> None:
+    runner = CliRunner()
+    skewed = runner.invoke(main, [
+        "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+        "--data-dir", str(test_data_dir), "--name", "checking_vary",
+        "--vary-target", "amount", "--vary-distribution", "truncated_normal",
+        "--vary-median", "4.5", "--vary-sd", "1.0", "--vary-skew", "0.5", "--vary-tailweight", "0.8",
+    ])
+    assert skewed.exit_code == 0, skewed.output
+    triangle = runner.invoke(main, [
+        "sim", "calendar", "add", "retire-scheduled", "2030-12-31", "salary_bob",
+        "--data-dir", str(test_data_dir), "--name", "retire_bob_vary",
+        "--vary-target", "date", "--vary-distribution", "triangular",
+        "--vary-low", "2030-06-30", "--vary-mode", "2030-12-31", "--vary-high", "2031-12-31",
+    ])
+    assert triangle.exit_code == 0, triangle.output
+    rows = pd.read_csv(test_data_dir / "scenarios" / "retire_alice" / "calendar.csv",
+                       dtype=str, keep_default_na=False).set_index("name")
+    assert rows.loc["checking_vary", ["vary_median", "vary_sd", "vary_skew", "vary_tailweight"]].tolist() \
+        == ["45000", "10000", "0.5", "0.8"]
+    assert rows.loc["retire_bob_vary", "vary_mode"] == "2030-12-31"
+
+
+def test_sim_calendar_add_rejects_skew_without_sd(test_data_dir: Path) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+        "--data-dir", str(test_data_dir), "--name", "checking_vary",
+        "--vary-target", "amount", "--vary-distribution", "truncated_normal",
+        "--vary-low", "3.0", "--vary-high", "6.0", "--vary-skew", "0.5",
+    ])
+    assert result.exit_code != 0
+    assert "vary_sd is required" in result.output

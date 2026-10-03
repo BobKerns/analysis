@@ -114,7 +114,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 28) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 29) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -279,14 +279,17 @@ CREATE TABLE calendar_event (
     -- Ensemble variation (ADR-006): a row with vary_distribution set has this
     -- row's own `amount` or `date` (per vary_target) drawn per member, instead
     -- of using the value above literally -- which is then just a placeholder.
-    -- vary_low/high/mean/sd are in the *target* column's own unit: cents/
+    -- vary_low/high/median/sd/mode are in the *target* column's own unit: cents/
     -- micros for `amount` (whichever this row's own `amount` column would
     -- already mean for its `kind`), an ISO date string for `date`.
-    -- vary_low/vary_high are `uniform`'s own bounds, and also double as
-    -- `truncated_normal`'s optional clip bounds; any one of vary_mean/
-    -- vary_sd/vary_low/vary_high may be inferred from the other three when
-    -- blank (distributions.resolve_truncated_normal_bounds), so
-    -- truncated_normal is never actually unbounded.
+    -- vary_low/vary_high are `uniform`'s and `triangular`'s own bounds, and
+    -- also double as `truncated_normal`'s optional clip bounds; any of
+    -- vary_median/vary_sd/vary_low/vary_high may be inferred from the others
+    -- when blank (distributions.resolve_truncated_normal_bounds), so
+    -- truncated_normal is never actually unbounded. vary_median is the
+    -- *truncated* distribution's median (#31). vary_skew/vary_tailweight are
+    -- unitless sinh-arcsinh shape parameters (defaults 0 and 1: a normal);
+    -- vary_mode is a triangular's peak.
     -- vary_ramp_months is only meaningful for vary_target='amount' on a
     -- kind='set_rate' row: it expands into that many additional set_rate rows,
     -- ramping to the drawn target (ADR-006 §4) instead of jumping to it.
@@ -294,8 +297,11 @@ CREATE TABLE calendar_event (
     vary_distribution  TEXT,
     vary_low           TEXT,
     vary_high          TEXT,
-    vary_mean          TEXT,
+    vary_median        TEXT,
     vary_sd            TEXT,
+    vary_skew          REAL,
+    vary_tailweight    REAL,
+    vary_mode          TEXT,
     vary_ramp_months   INTEGER
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);

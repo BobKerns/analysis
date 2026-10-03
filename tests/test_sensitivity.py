@@ -531,6 +531,8 @@ def test_parameters_describes_an_oat_batch(oat_batch: Path) -> None:
     assert gift["range"] == "$10,000 to $30,000"
     assert gift["center"] == "$20,000"
     assert (gift["value@0.1"], gift["value@0.9"]) == ("$12,000", "$28,000")
+    assert gift["shape"] == ""  # uniform has no shape parameters
+    assert gift["moments"].startswith("mean $20,000, sd $5,774, skew +0.00, excess kurtosis -1.20")
     retire = table.loc["retire_bob_vary"]
     assert (retire["target"], retire["affects"]) == ("date", "salary_bob")
     assert retire["range"] == "2030-06-30 to 2031-06-30"
@@ -560,3 +562,45 @@ def test_parameters_tolerates_batches_before_schema_28(oat_batch: Path) -> None:
     table = sensitivity.parameters(oat_batch)
     assert (table["distribution"] == "").all() and (table["range"] == "").all()
     assert table.loc["gift", "value@0.1"] == "$12,000"
+
+
+
+def test_parameters_describes_shape_and_moments(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    """#31: a skewed truncated_normal shows its shape and implied moments; a
+    triangular date shows its mode, and its moments in days."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="45000", vary_sd="5000", vary_low="40000", vary_high="70000",
+        vary_skew="0.7",
+    )
+    append_calendar_row(
+        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="triangular",
+        vary_low="2030-06-30", vary_mode="2030-12-31", vary_high="2031-12-31",
+    )
+    runner = CliRunner()
+    load = runner.invoke(main, [
+        "sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+        "--intent-dir", str(intent_dir), "--allow-dirty-data", "--no-run",
+    ])
+    assert load.exit_code == 0, load.output
+    run = runner.invoke(main, [
+        "sim", "run", "retire_alice", "--sensitivity", "--intent-dir", str(intent_dir),
+        "--runs-dir", str(runs_dir), "--allow-dirty-data",
+    ])
+    assert run.exit_code == 0, run.output
+    from analysis.sim.ensemble import latest_ensemble_batch
+
+    table = sensitivity.parameters(latest_ensemble_batch(runs_dir / "retire_alice"))
+    rate = table.loc["checking_vary"]
+    assert rate["center"] == "4.50%" and rate["shape"] == "sd 0.50%, skew 0.7"
+    assert "skew +" in rate["moments"]  # a positive skew parameter gives a right-skewed shape
+    retire = table.loc["retire_bob_vary"]
+    assert retire["shape"] == "mode 2030-12-31"
+    assert retire["moments"].startswith("mean 2031-") and "days" in retire["moments"]

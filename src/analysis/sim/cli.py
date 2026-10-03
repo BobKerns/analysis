@@ -36,6 +36,7 @@ from analysis.sim.holdings import (
 )
 from analysis.sim.distributions import (
     DistributionError,
+    TruncatedNormal,
     parse_quantiles,
     resolve_truncated_normal_bounds,
 )
@@ -1508,7 +1509,7 @@ def _validate_iso_date(s: str) -> str:
 # an accounts.csv missing e.g. `kind` is a malformed file, not an old one.
 _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
     "name", "vary_target", "vary_distribution", "vary_low", "vary_high",
-    "vary_mean", "vary_sd", "vary_ramp_months",
+    "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
 })
 
 
@@ -1644,28 +1645,47 @@ def _vary_row_options(f):
              "(set-rate, --vary-target amount, only).",
     )(f)
     f = click.option(
-        "--vary-sd", default=None,
-        help="truncated_normal standard deviation (same unit as the value above). "
-             "May be omitted if vary_mean plus vary_low or vary_high is given.",
+        "--vary-mode", default=None,
+        help="triangular's peak, the most likely value (same unit as the value above, "
+             "or YYYY-MM-DD for --vary-target date). Defaults to midway between "
+             "vary_low and vary_high.",
     )(f)
     f = click.option(
-        "--vary-mean", default=None,
-        help="truncated_normal mean (same unit as the value above). "
-             "May be omitted if both vary_low and vary_high are given.",
+        "--vary-tailweight", default=None,
+        help="truncated_normal tail weight: 1 (default) is normal, below 1 heavier "
+             "tails (more extreme values), above 1 lighter. Requires --vary-sd.",
+    )(f)
+    f = click.option(
+        "--vary-skew", default=None,
+        help="truncated_normal skew: 0 (default) is symmetric, positive a longer "
+             "high tail, negative a longer low tail. Requires --vary-sd.",
+    )(f)
+    f = click.option(
+        "--vary-sd", default=None,
+        help="truncated_normal spread: the standard deviation of the underlying "
+             "distribution before clipping (same unit as the value above). May be "
+             "omitted, for the default shape, if vary_median plus vary_low or "
+             "vary_high is given.",
+    )(f)
+    f = click.option(
+        "--vary-median", default=None,
+        help="truncated_normal median, after clipping: the base case exactly (same "
+             "unit as the value above). May be omitted if both vary_low and vary_high "
+             "are given (it's then their midpoint).",
     )(f)
     f = click.option(
         "--vary-high", default=None,
-        help="uniform's upper bound, or truncated_normal's upper reject-and-redraw "
+        help="uniform's or triangular's upper bound, or truncated_normal's upper clip "
              "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
-             "date). For truncated_normal, omitting it ramps out to "
-             "vary_mean + 3*vary_sd instead of leaving that side unbounded.",
+             "date). For truncated_normal, omitting it places it 3 standard "
+             "deviations out instead of leaving that side unbounded.",
     )(f)
     f = click.option(
         "--vary-low", default=None,
-        help="uniform's lower bound, or truncated_normal's lower reject-and-redraw "
+        help="uniform's or triangular's lower bound, or truncated_normal's lower clip "
              "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
-             "date). For truncated_normal, omitting it ramps out to "
-             "vary_mean - 3*vary_sd instead of leaving that side unbounded.",
+             "date). For truncated_normal, omitting it places it 3 standard "
+             "deviations out instead of leaving that side unbounded.",
     )(f)
     f = click.option(
         "--vary-distribution", type=click.Choice(sorted(registries.ENSEMBLE_DISTRIBUTIONS)),
@@ -1691,8 +1711,11 @@ def _vary_row_fields(
     vary_distribution: str | None,
     vary_low: str | None,
     vary_high: str | None,
-    vary_mean: str | None,
+    vary_median: str | None,
     vary_sd: str | None,
+    vary_skew: str | None,
+    vary_tailweight: str | None,
+    vary_mode: str | None,
     vary_ramp_months: int | None,
     amount_parser: Callable[[str], int] | None,
 ) -> dict[str, str]:
@@ -1707,8 +1730,8 @@ def _vary_row_fields(
     """
     if not vary_distribution:
         if any([
-            vary_target, vary_low, vary_high, vary_mean, vary_sd,
-            vary_ramp_months is not None,
+            vary_target, vary_low, vary_high, vary_median, vary_sd,
+            vary_skew, vary_tailweight, vary_mode, vary_ramp_months is not None,
         ]):
             raise click.ClickException("--vary-* options require --vary-distribution")
         return {"name": row_name or ""}
@@ -1725,7 +1748,8 @@ def _vary_row_fields(
     allowed = registries.DISTRIBUTION_PARAMS.get(vary_distribution, frozenset())
     provided = {
         "vary_low": vary_low, "vary_high": vary_high,
-        "vary_mean": vary_mean, "vary_sd": vary_sd,
+        "vary_median": vary_median, "vary_sd": vary_sd, "vary_mode": vary_mode,
+        "vary_skew": vary_skew, "vary_tailweight": vary_tailweight,
     }
     for col, raw in provided.items():
         if raw is not None and col not in allowed:
@@ -1748,19 +1772,31 @@ def _vary_row_fields(
             return _validate_iso_date(raw)
         return str(amount_parser(raw))
 
+    shape: dict[str, float] = {}
+    for col, raw in (("vary_skew", vary_skew), ("vary_tailweight", vary_tailweight)):
+        if raw is not None:
+            try:
+                shape[col] = float(raw)
+            except ValueError:
+                raise click.ClickException(f"--{col.replace('_', '-')} must be a number") from None
+
     if vary_distribution == "truncated_normal" and vary_target == "amount":
         # Not in DISTRIBUTION_REQUIRED_PARAMS: any of mean/sd/low/high may be
         # inferred from the other three (ADR-006), so no fixed column list
         # is "required" -- but *some* combination must be enough to resolve
         # every one, which is worth catching now rather than only at the
         # separate 'sim load' step.
+        skew = shape.get("vary_skew", 0.0)
+        tailweight = shape.get("vary_tailweight", 1.0)
         try:
-            resolve_truncated_normal_bounds(
-                float(amount_parser(vary_mean)) if vary_mean is not None else None,
+            median, sd, low, high = resolve_truncated_normal_bounds(
+                float(amount_parser(vary_median)) if vary_median is not None else None,
                 float(amount_parser(vary_sd)) if vary_sd is not None else None,
                 float(amount_parser(vary_low)) if vary_low is not None else None,
                 float(amount_parser(vary_high)) if vary_high is not None else None,
+                skew=skew, tailweight=tailweight,
             )
+            TruncatedNormal(median, sd, low, high, skew=skew, tailweight=tailweight)
         except DistributionError as e:
             raise click.ClickException(str(e)) from None
 
@@ -1770,8 +1806,11 @@ def _vary_row_fields(
         "vary_distribution": vary_distribution,
         "vary_low": convert(vary_low),
         "vary_high": convert(vary_high),
-        "vary_mean": convert(vary_mean),
+        "vary_median": convert(vary_median),
         "vary_sd": convert(vary_sd),
+        "vary_skew": vary_skew if vary_skew is not None else "",
+        "vary_tailweight": vary_tailweight if vary_tailweight is not None else "",
+        "vary_mode": convert(vary_mode),
         "vary_ramp_months": str(vary_ramp_months) if vary_ramp_months is not None else "",
     }
 
@@ -1799,8 +1838,11 @@ def _do_add_transfer(
     vary_distribution: str | None,
     vary_low: str | None,
     vary_high: str | None,
-    vary_mean: str | None,
+    vary_median: str | None,
     vary_sd: str | None,
+    vary_skew: str | None,
+    vary_tailweight: str | None,
+    vary_mode: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Shared body of ``sim transfer add`` / ``sim calendar add transfer``."""
@@ -1841,7 +1883,8 @@ def _do_add_transfer(
 
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
-        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
+        vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
     )
 
@@ -1912,8 +1955,11 @@ def transfer_add(
     vary_distribution: str | None,
     vary_low: str | None,
     vary_high: str | None,
-    vary_mean: str | None,
+    vary_median: str | None,
     vary_sd: str | None,
+    vary_skew: str | None,
+    vary_tailweight: str | None,
+    vary_mode: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a one-time transfer to <scenario>/calendar.csv."""
@@ -1922,7 +1968,8 @@ def transfer_add(
         from_lot=from_lot, to_lot=to_lot, scenario=scenario, data_dir=data_dir,
         tax_character=tax_character, description=description, series=series,
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
-        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
+        vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_ramp_months=vary_ramp_months,
     )
 
@@ -1969,7 +2016,8 @@ def calendar_add_set_rate(
     date: str, series: str, rate_percent: str, aux_kind: str,
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
-    vary_low: str | None, vary_high: str | None, vary_mean: str | None, vary_sd: str | None,
+    vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
+    vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a set_rate event: SERIES starts earning RATE_PERCENT (e.g. 4.5) from DATE.
@@ -1984,7 +2032,8 @@ def calendar_add_set_rate(
     micros = _percent_to_rate_micros(rate_percent)
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
-        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
+        vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_ramp_months=vary_ramp_months, amount_parser=_percent_to_rate_micros,
     )
 
@@ -2026,7 +2075,8 @@ def calendar_add_set_amount(
     date: str, scheduled_name: str, amount: str, param_date: str,
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
-    vary_low: str | None, vary_high: str | None, vary_mean: str | None, vary_sd: str | None,
+    vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
+    vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a set_amount event: SCHEDULED_NAME's amount changes to AMOUNT
@@ -2050,7 +2100,8 @@ def calendar_add_set_amount(
     cents = _parse_amount_cents(amount)
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
-        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
+        vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
     )
 
@@ -2084,7 +2135,8 @@ def calendar_add_retire_scheduled(
     date: str, scheduled_name: str,
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
-    vary_low: str | None, vary_high: str | None, vary_mean: str | None, vary_sd: str | None,
+    vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
+    vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a retire_scheduled event: SCHEDULED_NAME stops firing from DATE.
@@ -2108,7 +2160,8 @@ def calendar_add_retire_scheduled(
     date = _validate_iso_date(date)
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
-        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
+        vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_ramp_months=vary_ramp_months, amount_parser=None,
     )
 
@@ -2156,8 +2209,11 @@ def calendar_add_transfer(
     vary_distribution: str | None,
     vary_low: str | None,
     vary_high: str | None,
-    vary_mean: str | None,
+    vary_median: str | None,
     vary_sd: str | None,
+    vary_skew: str | None,
+    vary_tailweight: str | None,
+    vary_mode: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a one-time transfer (same as ``sim transfer add``)."""
@@ -2166,7 +2222,8 @@ def calendar_add_transfer(
         from_lot=from_lot, to_lot=to_lot, scenario=scenario, data_dir=data_dir,
         tax_character=tax_character, description=description, series=series,
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
-        vary_low=vary_low, vary_high=vary_high, vary_mean=vary_mean, vary_sd=vary_sd,
+        vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
+        vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_ramp_months=vary_ramp_months,
     )
 

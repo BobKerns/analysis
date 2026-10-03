@@ -1141,7 +1141,7 @@ def test_vary_truncated_normal_rejected_with_date_target(
         date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
         scheduled_name="salary_bob",
         vary_target="date", vary_distribution="truncated_normal",
-        vary_mean="2029-06-30", vary_sd="30",
+        vary_median="2029-06-30", vary_sd="30",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1158,12 +1158,12 @@ def test_vary_uniform_rejects_columns_it_does_not_use(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000", vary_mean="45000",
+        vary_low="40000", vary_high="50000", vary_median="45000",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any(
-        "vary_mean is not used by uniform" in issue for issue in ei.value.issues
+        "vary_median is not used by uniform" in issue for issue in ei.value.issues
     )
 
 
@@ -1202,43 +1202,58 @@ def test_vary_truncated_normal_rejects_nonpositive_sd(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_sd="0",
+        vary_median="45000", vary_sd="0",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any("vary_sd must be positive" in issue for issue in ei.value.issues)
 
 
-def test_vary_truncated_normal_low_equal_to_mean_without_sd_is_degenerate(
+def test_vary_truncated_normal_low_equal_to_median_without_sd_is_degenerate(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
-    """Setting vary_low to vary_mean is how to get a single-tailed draw (the
-    still-blank vary_high ramps out to +3sd) -- but only when vary_sd is
-    given directly. Leaving vary_sd blank too has nothing left to infer a
-    nonzero spread from (vary_mean - vary_low = 0), so this must still be
-    rejected rather than silently drawing a single point."""
+    """With vary_sd blank, vary_low = vary_median leaves nothing to infer a
+    nonzero spread from (median - low = 0), so it's rejected rather than
+    silently drawing a single point (and a median on a bound is invalid
+    anyway, #31)."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_low="45000",
+        vary_median="45000", vary_low="45000",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any("vary_sd must be positive" in issue for issue in ei.value.issues)
 
 
-def test_vary_truncated_normal_single_tailed_with_explicit_sd_loads(
+def test_vary_truncated_normal_median_on_a_bound_is_rejected(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
-    """The working version of the case above: vary_sd given directly, so
-    vary_low=vary_mean is a real (zero-width-avoiding) one-sided bound and
-    vary_high infers to mean + 3*sd."""
+    """#31: "vary_low = the center" used to give a one-sided draw. With the
+    center now the truncated median, a median can't sit on a bound (half
+    the mass would have to be on it) -- the error points at vary_skew."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_sd="5000", vary_low="45000",
+        vary_median="45000", vary_sd="5000", vary_low="45000",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("strictly between" in issue and "vary_skew" in issue for issue in ei.value.issues)
+
+
+def test_vary_truncated_normal_skewed_one_sided_spread_loads(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """The replacement for the one-sided trick: a right skew, with the low
+    bound just under the median."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="45000", vary_sd="5000", vary_low="44000", vary_skew="1.0",
     )
     load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
 
@@ -1250,12 +1265,12 @@ def test_vary_truncated_normal_rejects_reversed_low_high(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_sd="5000",
+        vary_median="45000", vary_sd="5000",
         vary_low="50000", vary_high="40000",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
-    assert any("vary_low must be <= vary_high" in issue for issue in ei.value.issues)
+    assert any("vary_low must be below vary_high" in issue for issue in ei.value.issues)
 
 
 def test_vary_one_off_transfer_uniform_requires_positive_low(
@@ -1303,7 +1318,7 @@ def test_vary_one_off_transfer_truncated_normal_requires_positive_effective_low(
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
         amount="100000", tax_character="none",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="50000", vary_sd="20000",
+        vary_median="50000", vary_sd="20000",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1320,7 +1335,7 @@ def test_vary_one_off_transfer_truncated_normal_with_positive_low_loads(
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
         amount="100000", tax_character="none",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="100000", vary_sd="20000", vary_low="1",
+        vary_median="100000", vary_sd="20000", vary_low="1",
     )
     load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
 
@@ -1473,3 +1488,116 @@ def test_chain_step_series_with_a_calendar_supplier_loads_cleanly(
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert result.intent_path.exists()
+
+
+# --- #31: vary_median rename, shape, triangular ------------------------------------
+
+
+def test_vary_mean_column_is_rejected_as_renamed(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A calendar.csv still carrying vary_mean must fail loudly: its meaning
+    changed (it's now the truncated median), and the CSV reader would
+    otherwise ignore the unknown column silently."""
+    path = retire_alice_csv("calendar.csv")
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    for col in ("name", "vary_target", "vary_distribution", "vary_mean", "vary_sd"):
+        if col not in df.columns:
+            df[col] = ""
+    df.loc[len(df)] = dict.fromkeys(df.columns, "") | {
+        "date": "2027-02-28", "kind": "set_rate", "series": "Asset_Checking", "amount": "45000",
+        "name": "checking_rate_vary", "vary_target": "amount",
+        "vary_distribution": "truncated_normal", "vary_mean": "45000", "vary_sd": "5000",
+    }
+    df.to_csv(path, index=False)
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_mean was renamed to vary_median" in issue for issue in ei.value.issues)
+
+
+def test_vary_truncated_normal_shape_loads_and_is_stored(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="45000", vary_sd="5000", vary_skew="0.5", vary_tailweight="0.8",
+    )
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    try:
+        stored = con.execute(
+            "SELECT vary_median, vary_skew, vary_tailweight FROM calendar_event "
+            "WHERE name = 'checking_rate_vary'"
+        ).fetchone()
+    finally:
+        con.close()
+    assert stored == ("45000", 0.5, 0.8)
+
+
+@pytest.mark.parametrize(("extra", "message"), [
+    ({"vary_skew": "0.5"}, "vary_sd is required"),               # shape needs an explicit sd
+    ({"vary_sd": "5000", "vary_tailweight": "0"}, "tailweight must be positive"),
+    ({"vary_sd": "5000", "vary_skew": "lots"}, "is not a number"),
+])
+def test_vary_truncated_normal_rejects_bad_shape(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+    extra: dict[str, str], message: str,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="45000", vary_low="30000", vary_high="60000", **extra,
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(message in issue for issue in ei.value.issues), ei.value.issues
+
+
+def test_vary_shape_rejected_on_uniform(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="40000", vary_high="50000", vary_skew="0.5",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_skew is not used by uniform" in issue for issue in ei.value.issues)
+
+
+def test_vary_triangular_date_target_loads(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """The three-point estimate for a date: most likely 2030-12-31, no
+    earlier than mid-2030, could slip to the end of 2031."""
+    append_calendar_row(
+        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="triangular",
+        vary_low="2030-06-30", vary_mode="2030-12-31", vary_high="2031-12-31",
+    )
+    load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+
+
+@pytest.mark.parametrize(("extra", "message"), [
+    ({"vary_low": "40000", "vary_high": "50000", "vary_mode": "60000"}, "vary_mode must lie within"),
+    ({"vary_low": "40000"}, "triangular requires vary_high"),
+    ({"vary_low": "40000", "vary_high": "50000", "vary_sd": "100"}, "vary_sd is not used by triangular"),
+])
+def test_vary_triangular_rejects_bad_parameters(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+    extra: dict[str, str], message: str,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="triangular", **extra,
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(message in issue for issue in ei.value.issues), ei.value.issues

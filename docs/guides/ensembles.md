@@ -53,6 +53,41 @@ a bad combination — wrong series name, a range that doesn't make sense —
 is caught immediately rather than at `sim run` time. See ADR-006 §2 for
 every `vary_*` column and what each distribution needs.
 
+**Choosing a distribution.** Three are available:
+
+- **`uniform`** (`--vary-low`, `--vary-high`): anything in the range is
+  equally plausible. Use it when you really have no idea where in the
+  range the value will land.
+- **`triangular`** (`--vary-low`, `--vary-mode`, `--vary-high`): the
+  three-point estimate, "most likely X, no less than A, possibly as much
+  as B". It's the one to reach for with a **date** that will probably land
+  on time but could slip: a home sale that most likely closes in June,
+  can't close before April, but could drag on to December. It's also the
+  only skewed choice for a date. It suits a one-off amount you'd estimate
+  the same way, like a roof replacement: "about $25k, at least $18k,
+  maybe $40k".
+- **`truncated_normal`** (`--vary-median`, `--vary-sd`, optionally
+  `--vary-low`/`--vary-high`): values cluster around a center and thin out
+  with distance. This suits rates. `--vary-median` is the center, and the
+  base case is exactly that value. `--vary-sd` is the spread. Bounds you
+  leave out default to 3 SDs out. Two optional shape controls:
+  - `--vary-skew`: positive gives a longer high tail ("usually about 6%,
+    but a big year is more likely than a terrible one"), negative a longer
+    low tail. 0.3 to 1 is a noticeable but sensible skew.
+  - `--vary-tailweight`: below 1 makes extreme values more likely than a
+    normal would ("fat tails", like market returns), above 1 less likely.
+    0.7 to 0.9 is noticeably fat-tailed.
+
+  With either one set, `--vary-sd` is required. The notebook's
+  **Parameters** table and ADR-007's parameters view show the mean, SD,
+  skewness and excess kurtosis your settings imply, so you can check that
+  they mean what you intended.
+
+`vary_mean` was renamed to `vary_median` (it's the median after the
+bounds clip the distribution, so the base case is exactly what you wrote).
+A `calendar.csv` that still has a `vary_mean` value fails to load with a
+message saying so; rename the column.
+
 **3. Run it:**
 
 ```sh
@@ -68,8 +103,9 @@ Carlo "fan chart" — mean/median with the min–max range shaded behind them).
 ### Member 0 is always a deterministic base case
 
 Every ensemble's `member_0000` resolves each varying row to its
-distribution's central value (a `uniform` row's midpoint, a
-`truncated_normal` row's mean) rather than a random draw. Every other
+distribution's central value, its median (a `uniform` row's midpoint, a
+`truncated_normal` row's `vary_median`, a `triangular` row's median)
+rather than a random draw. Every other
 member draws as usual. This gives every ensemble one always-present,
 always-in-bounds "what if the uncertain inputs landed right in the
 middle" run — useful on its own, and it's what any tool that only knows how

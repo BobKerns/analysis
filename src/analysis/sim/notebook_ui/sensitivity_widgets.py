@@ -374,9 +374,9 @@ def parameters_note(mode: str | None) -> str:
     """The explanation shown above a batch's parameters table."""
     note = (
         "Each row is a `calendar.csv` row with `vary_*` columns set: **affects** is what it "
-        "acts on, **target** whether its date or amount varies, and **range**/**center** "
-        "come from its distribution. The center is the deterministic base case: member 0 "
-        "resolves every row to it."
+        "acts on, **target** whether its date or amount varies, and **range**/**center**/"
+        "**shape** come from its distribution; **moments** are what those settings imply. "
+        "The center is the deterministic base case: member 0 resolves every row to it."
     )
     if mode == "sensitivity":
         return note + (

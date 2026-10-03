@@ -1,30 +1,37 @@
 """ADR-006: ensemble variation distributions -- pure functions, no I/O.
 
-Two families to start (`registries.ENSEMBLE_DISTRIBUTIONS`); a third
-(triangular, lognormal, ...) is a one-line addition, not a redesign.
+Three families (`registries.ENSEMBLE_DISTRIBUTIONS`): `uniform`,
+`truncated_normal` (optionally skewed / heavy-tailed, #31) and `triangular`.
+Every family exposes ``quantile(q)``, which sensitivity analysis (ADR-007)
+and correlated draws (#30) are built on.
 """
 
 from __future__ import annotations
 
 import hashlib
+import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from statistics import NormalDist
 
 __all__ = [
-    "DistributionError", "Uniform", "TruncatedNormal", "member_rng",
+    "DistributionError", "Uniform", "TruncatedNormal", "Triangular", "Distribution",
+    "Moments", "moments", "member_rng",
     "DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD", "resolve_truncated_normal_bounds",
     "parse_quantiles",
 ]
 
 DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD = 3.0
-"""Standard deviations used to fill in a `truncated_normal` bound nobody
-specified (ADR-006) -- the classic three-sigma range, ~99.7% coverage on the
-unclipped side, so rejection sampling rarely has to retry."""
+"""How far (in standard normal scores) a `truncated_normal` bound nobody
+specified is placed (ADR-006) -- the classic three-sigma range, ~99.7%
+coverage, so the clip only trims the extreme tails."""
 
 
 class DistributionError(RuntimeError):
     """A distribution's parameters make no valid draw possible."""
+
+
+_STANDARD = NormalDist()
 
 
 @dataclass(frozen=True)
@@ -67,71 +74,263 @@ class Uniform:
         return round(self.quantile(q))
 
 
+def _shape(z: float, skew: float, tailweight: float) -> float:
+    """Sinh-arcsinh transform of a standard normal score (Jones & Pewsey
+    2009): identity at ``skew=0, tailweight=1``."""
+    return math.sinh((math.asinh(z) + skew) / tailweight)
+
+
+def _unshape(x: float, skew: float, tailweight: float) -> float:
+    """Inverse of ``_shape``: the standard normal score of a standardized value."""
+    return math.sinh(tailweight * math.asinh(x) - skew)
+
+
 @dataclass(frozen=True)
 class TruncatedNormal:
-    """A normal draw, rejected and redrawn outside [clip_low, clip_high]
-    (either bound may be omitted for one-sided or unbounded)."""
+    """A normal -- or, with ``skew``/``tailweight``, a sinh-arcsinh normal
+    (Jones & Pewsey 2009) -- restricted to ``[clip_low, clip_high]`` (#31).
 
-    mean: float
+    Specified by its **median**: the median of the *truncated* distribution,
+    so the base case (``central()``, ADR-006 §9) is exactly the authored
+    value even when the bounds are asymmetric. ``sd`` is the scale of the
+    underlying distribution before clipping. ``skew`` (0 = symmetric, > 0
+    longer right tail) and ``tailweight`` (1 = normal, < 1 heavier tails,
+    > 1 lighter) shape it; at their defaults this is exactly a normal.
+
+    The underlying variable is ``location + sd * sinh((asinh(Z) + skew) /
+    tailweight)`` with ``Z ~ N(0, 1)``; ``location`` is solved so that the
+    truncated median lands on ``median``. CDF and quantile are closed-form,
+    so draws use inverse-CDF sampling: exact for any shape, never a retry.
+    """
+
+    median: float
     sd: float
     clip_low: float | None = None
     clip_high: float | None = None
-    max_attempts: int = 10_000
+    skew: float = 0.0
+    tailweight: float = 1.0
+    location: float = field(init=False, repr=False)
 
-    def draw(self, rng: random.Random) -> float:
-        for _ in range(self.max_attempts):
-            value = rng.gauss(self.mean, self.sd)
-            if self.clip_low is not None and value < self.clip_low:
-                continue
-            if self.clip_high is not None and value > self.clip_high:
-                continue
-            return value
-        raise DistributionError(
-            f"truncated_normal(mean={self.mean}, sd={self.sd}, "
-            f"clip_low={self.clip_low}, clip_high={self.clip_high}): no draw "
-            f"landed inside the clip bounds in {self.max_attempts} attempts"
-        )
+    def __post_init__(self) -> None:
+        if not self.sd > 0:
+            raise DistributionError(f"truncated_normal: vary_sd must be positive (got {self.sd})")
+        if not self.tailweight > 0:
+            raise DistributionError(
+                f"truncated_normal: vary_tailweight must be positive (got {self.tailweight})"
+            )
+        if self.clip_low is not None and self.clip_high is not None and self.clip_low >= self.clip_high:
+            raise DistributionError("truncated_normal: vary_low must be below vary_high")
+        if (self.clip_low is not None and self.median <= self.clip_low) or (
+            self.clip_high is not None and self.median >= self.clip_high
+        ):
+            raise DistributionError(
+                "truncated_normal: vary_median must lie strictly between vary_low and "
+                "vary_high (a median can't sit on a bound; use vary_skew for a "
+                "one-sided spread)"
+            )
+        object.__setattr__(self, "location", self._solve_location())
 
-    def central(self) -> float:
-        """``mean``, clamped into ``[clip_low, clip_high]`` (ADR-006 §8: the
-        recipe's deterministic member 0). The clamp guards the one case
-        where this could land outside the bounds: ``resolve_truncated_normal_bounds``
-        only checks mean/low/high for mutual consistency when inferring one
-        from the others, not when an author gives all three explicitly.
-        """
-        value = self.mean
-        if self.clip_low is not None:
-            value = max(value, self.clip_low)
-        if self.clip_high is not None:
-            value = min(value, self.clip_high)
-        return value
+    # -- the underlying (untruncated) distribution at a given location --------
 
-    def quantile(self, q: float) -> float:
-        """The ``q``-quantile of the *truncated* distribution (ADR-007 §3):
-        ``inv_cdf(Phi(a) + q * (Phi(b) - Phi(a)))`` -- always inside the clip
-        bounds, and honoring a one-sided clip."""
-        _check_quantile(q)
-        normal = NormalDist(self.mean, self.sd)
-        lo = 0.0 if self.clip_low is None else normal.cdf(self.clip_low)
-        hi = 1.0 if self.clip_high is None else normal.cdf(self.clip_high)
-        p = lo + q * (hi - lo)
-        # inv_cdf rejects exactly 0 and 1; those quantiles are the bounds
-        # themselves (or unbounded, which a resolved row never is).
-        if p <= 0.0:
-            if self.clip_low is None:
-                raise DistributionError("truncated_normal: quantile(0) is unbounded")
-            return self.clip_low
-        if p >= 1.0:
-            if self.clip_high is None:
-                raise DistributionError("truncated_normal: quantile(1) is unbounded")
-            return self.clip_high
-        value = normal.inv_cdf(p)
+    def _z(self, x: float | None, location: float, default: float) -> float:
+        """The standard normal score of ``x`` (``default`` for a missing bound)."""
+        if x is None:
+            return default
+        return _unshape((x - location) / self.sd, self.skew, self.tailweight)
+
+    def _truncated_z(self, q: float, location: float) -> float | None:
+        """The standard normal score of the truncated ``q``-quantile, or
+        ``None`` when the window holds no representable probability (it sits
+        so far into a tail that the CDF has saturated). Works from whichever
+        tail the window is in -- survival probabilities for a window above
+        the center -- so a far-out window keeps its precision."""
+        za = self._z(self.clip_low, location, -math.inf)
+        zb = self._z(self.clip_high, location, math.inf)
+        if za >= 0:  # wholly above the center: use the upper tail
+            sa, sb = _STANDARD.cdf(-za), (0.0 if zb == math.inf else _STANDARD.cdf(-zb))
+            mass = sa - sb
+            if mass <= 0:
+                return None
+            s_q = sa - q * mass
+            if s_q <= 0:
+                return zb
+            return za if s_q >= 1 else -_STANDARD.inv_cdf(s_q)
+        pa = 0.0 if za == -math.inf else _STANDARD.cdf(za)
+        pb = 1.0 if zb == math.inf else _STANDARD.cdf(zb)
+        mass = pb - pa
+        if mass <= 0:
+            return None
+        p = pa + q * mass
+        if p <= 0:
+            return za
+        return zb if p >= 1 else _STANDARD.inv_cdf(p)
+
+    def _truncated_quantile(self, q: float, location: float) -> float | None:
+        z = self._truncated_z(q, location)
+        if z is None:
+            return None
+        if z == -math.inf or z == math.inf:
+            raise DistributionError(f"truncated_normal: quantile({q}) is unbounded")
+        value = location + self.sd * _shape(z, self.skew, self.tailweight)
         # Guard float round-off at the edges.
         if self.clip_low is not None:
             value = max(value, self.clip_low)
         if self.clip_high is not None:
             value = min(value, self.clip_high)
         return value
+
+    def _solve_location(self) -> float:
+        """The location whose *truncated* median is ``median``.
+
+        For the normal and lighter tails (``tailweight >= 1``) the truncated
+        median rises steadily with the location, from ``clip_low`` to
+        ``clip_high``. With heavy tails it needn't: far out, the window sits
+        in a tail whose shape no longer changes much, so some medians are
+        unreachable and the relationship can even turn back. So: scan a wide
+        range of locations for the real crossings, take the one nearest the
+        untruncated location (the least-distorted fit), and bisect it; if
+        there is none, say which medians this shape can reach.
+        """
+        untruncated = self.median - self.sd * _shape(0.0, self.skew, self.tailweight)
+        if self.clip_low is None and self.clip_high is None:
+            return untruncated
+
+        def gap(location: float) -> float | None:
+            value = self._truncated_quantile(0.5, location)
+            return None if value is None else value - self.median
+
+        width = 0.0
+        if self.clip_low is not None and self.clip_high is not None:
+            width = self.clip_high - self.clip_low
+        span = max(50 * self.sd, 10 * width)
+        steps = 400
+        grid = [untruncated + span * (2 * i / steps - 1) for i in range(steps + 1)]
+        gaps = [gap(x) for x in grid]
+        brackets = [
+            (grid[i], grid[i + 1]) for i in range(steps)
+            if gaps[i] is not None and gaps[i + 1] is not None
+            and (gaps[i] == 0 or gaps[i] * gaps[i + 1] < 0)
+        ]
+        if not brackets:
+            reached = [g + self.median for g in gaps if g is not None]
+            raise DistributionError(
+                f"truncated_normal: vary_median {self.median:g} isn't reachable with this "
+                f"vary_skew/vary_tailweight inside vary_low..vary_high (its truncated "
+                f"median only reaches {min(reached):g} to {max(reached):g}); move the "
+                "median, widen the bounds, or reduce the skew or tail weight"
+            )
+        lo, hi = min(brackets, key=lambda b: abs((b[0] + b[1]) / 2 - untruncated))
+        g_lo = gap(lo)
+        if g_lo == 0:
+            return lo
+        for _ in range(200):
+            mid = (lo + hi) / 2
+            if mid in (lo, hi):
+                break
+            g_mid = gap(mid)
+            if g_mid is None or g_mid == 0:
+                return mid
+            if (g_mid < 0) == (g_lo < 0):
+                lo, g_lo = mid, g_mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
+    # -- the truncated distribution ------------------------------------------
+
+    def draw(self, rng: random.Random) -> float:
+        """An inverse-CDF draw: exact for any shape, no rejection loop."""
+        u = rng.random()
+        while u == 0.0:  # quantile(0) is a bound; keep draws in the open interval
+            u = rng.random()
+        return self.quantile(u)
+
+    def central(self) -> float:
+        """The authored median -- exactly the truncated distribution's median
+        (ADR-006 §9: the recipe's deterministic member 0)."""
+        return self.median
+
+    def quantile(self, q: float) -> float:
+        """The ``q``-quantile of the *truncated* distribution (ADR-007 §3):
+        always inside the clip bounds, and honoring a one-sided clip."""
+        _check_quantile(q)
+        value = self._truncated_quantile(q, self.location)
+        if value is None:  # pragma: no cover - the solved location always holds mass
+            raise DistributionError("truncated_normal: the bounds hold no probability")
+        return value
+
+
+@dataclass(frozen=True)
+class Triangular:
+    """Linearly rising from ``low`` to a peak at ``mode``, then falling to
+    ``high`` (#31): bounded, skewed whenever the mode is off-center, and
+    easy to state ("probably around X, could be as high as Y"). Valid for a
+    date target, like ``Uniform``. Its center is its median."""
+
+    low: float
+    mode: float
+    high: float
+
+    def __post_init__(self) -> None:
+        if not self.low < self.high:
+            raise DistributionError("triangular: vary_low must be below vary_high")
+        if not self.low <= self.mode <= self.high:
+            raise DistributionError("triangular: vary_mode must lie within vary_low..vary_high")
+
+    def quantile(self, q: float) -> float:
+        _check_quantile(q)
+        width = self.high - self.low
+        at_mode = (self.mode - self.low) / width
+        if q <= at_mode:
+            return self.low + math.sqrt(q * width * (self.mode - self.low))
+        return self.high - math.sqrt((1 - q) * width * (self.high - self.mode))
+
+    def quantile_int(self, q: float) -> int:
+        """``quantile`` rounded to a day ordinal, for a date target."""
+        return round(self.quantile(q))
+
+    def draw(self, rng: random.Random) -> float:
+        return self.quantile(rng.random())
+
+    def draw_int(self, rng: random.Random) -> int:
+        return round(self.draw(rng))
+
+    def central(self) -> float:
+        """The median (ADR-006 §9's base case), not the mode."""
+        return self.quantile(0.5)
+
+    def central_int(self) -> int:
+        return round(self.central())
+
+
+Distribution = Uniform | TruncatedNormal | Triangular
+
+
+@dataclass(frozen=True)
+class Moments:
+    """A distribution's implied summary, for showing authors what their
+    parameters mean (#31)."""
+
+    mean: float
+    sd: float
+    skewness: float
+    excess_kurtosis: float
+
+
+def moments(dist: Distribution, points: int = 4_000) -> Moments:
+    """Mean, SD, skewness and excess kurtosis, integrated numerically over
+    the quantile function (midpoint rule) -- one method for every family,
+    including truncated and shaped ones with no tidy closed form."""
+    values = [dist.quantile((i + 0.5) / points) for i in range(points)]
+    mean = math.fsum(values) / points
+    centered = [v - mean for v in values]
+    variance = math.fsum(c * c for c in centered) / points
+    sd = math.sqrt(variance)
+    if sd == 0:
+        return Moments(mean, 0.0, 0.0, 0.0)
+    skewness = math.fsum(c**3 for c in centered) / points / sd**3
+    kurtosis = math.fsum(c**4 for c in centered) / points / variance**2 - 3.0
+    return Moments(mean, sd, skewness, kurtosis)
 
 
 def _check_quantile(q: float) -> None:
@@ -162,39 +361,52 @@ def parse_quantiles(text: str) -> tuple[float, ...]:
 
 
 def resolve_truncated_normal_bounds(
-    mean: float | None, sd: float | None, low: float | None, high: float | None,
-    *, cutoff: float = DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD,
+    median: float | None, sd: float | None, low: float | None, high: float | None,
+    *, skew: float = 0.0, tailweight: float = 1.0,
+    cutoff: float = DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD,
 ) -> tuple[float, float, float, float]:
-    """Fill in whichever of (mean, sd, low, high) an author left blank, so a
+    """Fill in whichever of (median, sd, low, high) an author left blank, so a
     `truncated_normal` row is never actually unbounded on a side nobody
-    specified (ADR-006) -- unlike `uniform`, mean/sd alone already fully
-    describe a distribution, so any of the four may be inferred from the
-    others rather than required outright:
+    specified (ADR-006, #31):
 
-    - ``mean`` missing: the midpoint of ``low`` and ``high`` (both required
+    - ``median`` missing: the midpoint of ``low`` and ``high`` (both required
       in that case).
-    - ``sd`` missing: the distance from ``mean`` to whichever of
+    - ``sd`` missing: the distance from ``median`` to whichever of
       ``low``/``high`` is given, divided by ``cutoff`` (if both are given
-      with an explicit ``mean``, they must imply the same ``sd``).
-    - ``low``/``high`` still missing after the above: ``mean -/+ cutoff * sd``.
+      with an explicit ``median``, they must imply the same ``sd``). Only
+      for the default shape: with ``skew`` or ``tailweight`` set, the
+      distance to a bound no longer says what the scale is, so ``sd`` must
+      be given.
+    - ``low``/``high`` still missing after the above: the untruncated
+      distribution's ``-/+ cutoff`` standard-normal-score points around the
+      median -- ``median -/+ cutoff * sd`` for the default shape.
 
     Raises ``DistributionError`` if that still isn't enough to resolve every
     value, or if ``low``/``high`` disagree about the implied ``sd``.
     """
-    if mean is None:
+    if not tailweight > 0:
+        raise DistributionError(
+            f"truncated_normal: vary_tailweight must be positive (got {tailweight})"
+        )
+    if median is None:
         if low is None or high is None:
             raise DistributionError(
-                "truncated_normal: vary_mean requires both vary_low and "
+                "truncated_normal: vary_median requires both vary_low and "
                 "vary_high when omitted"
             )
-        mean = (low + high) / 2
+        median = (low + high) / 2
 
     if sd is None:
+        if skew != 0.0 or tailweight != 1.0:
+            raise DistributionError(
+                "truncated_normal: vary_sd is required with vary_skew or "
+                "vary_tailweight (a bound no longer implies the scale)"
+            )
         candidates = []
         if low is not None:
-            candidates.append((mean - low) / cutoff)
+            candidates.append((median - low) / cutoff)
         if high is not None:
-            candidates.append((high - mean) / cutoff)
+            candidates.append((high - median) / cutoff)
         if not candidates:
             raise DistributionError(
                 "truncated_normal: vary_sd requires vary_low or vary_high "
@@ -203,16 +415,17 @@ def resolve_truncated_normal_bounds(
         if len(candidates) == 2 and abs(candidates[0] - candidates[1]) > 1e-9:
             raise DistributionError(
                 "truncated_normal: vary_low and vary_high aren't symmetric "
-                "around vary_mean, so vary_sd can't be inferred from them -- "
+                "around vary_median, so vary_sd can't be inferred from them -- "
                 "specify vary_sd explicitly"
             )
         sd = candidates[0]
 
+    center = median - sd * _shape(0.0, skew, tailweight)  # untruncated location
     if low is None:
-        low = mean - cutoff * sd
+        low = center + sd * _shape(-cutoff, skew, tailweight)
     if high is None:
-        high = mean + cutoff * sd
-    return mean, sd, low, high
+        high = center + sd * _shape(cutoff, skew, tailweight)
+    return median, sd, low, high
 
 
 def member_rng(seed: int, member_index: int, row_name: str) -> random.Random:
