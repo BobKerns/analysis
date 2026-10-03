@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism.
+- **Amended by:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism. [#59](https://github.com/BobKerns/analysis/issues/59): the scenario tree id covers mix-in scenarios' folders too.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture — summarizes reproducibility & activation), [ADR-002](ADR-002-storage-schema.md) (storage schema — `intent_manifest`, `simulation_run` stamps), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries used by `--check`).
 
 ## Context
@@ -56,7 +56,7 @@ The single-row `simulation_run` manifest ([ADR-002](ADR-002-storage-schema.md) �
 
 **Data version.** Always the HEAD SHA of the data repo at `$ANALYSIS_DATA_DIR`. If the data dir is not a git repo at all (rare; only legitimate inside the prototype tree before it's been initialized), `data_version` is set to the literal string `"unversioned"` and the run is treated as dirty for gating purposes (§3).
 
-**Scenario tree id.** Per [ADR-002](ADR-002-storage-schema.md), this is a content-addressed git tree SHA covering exactly the files the scenario load actually read: `scenarios/<name>/`, the folder of every scenario reached through `parent_scenario`, `persons.csv`, `aux/`, and `itemizations/`. Clean repo → use `git ls-tree HEAD -- <paths>` and `git mktree` to assemble the synthetic tree object. Dirty repo → use a sidecar index (`GIT_INDEX_FILE=<tmp> git add -- <paths>; git write-tree`) and optionally pin it under `refs/analysis-dirty/<tree-id>` so the object stays reachable through GC.
+**Scenario tree id.** Per [ADR-002](ADR-002-storage-schema.md), this is a content-addressed git tree SHA covering exactly the files the scenario load actually read: `scenarios/<name>/`, the folder of every scenario reached through `parent_scenario` (mix-ins included), `persons.csv`, `aux/`, and `itemizations/`. Clean repo → use `git ls-tree HEAD -- <paths>` and `git mktree` to assemble the synthetic tree object. Dirty repo → use a sidecar index (`GIT_INDEX_FILE=<tmp> git add -- <paths>; git write-tree`) and optionally pin it under `refs/analysis-dirty/<tree-id>` so the object stays reachable through GC.
 
 This means: edit one comment in an unrelated CSV, `scenario_tree_id` doesn't change. Edit a referenced file, it does. The key tracks what the scenario actually depends on, not the whole repo's state.
 

@@ -72,7 +72,7 @@ from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
-from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER, CALENDAR_HEADER
+from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER, CALENDAR_HEADER, SCENARIO_HEADER
 
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
@@ -524,6 +524,27 @@ def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
         df.to_csv(values_path, index=False)
 
     return _fund
+
+
+@pytest.fixture(scope="function")
+def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
+    """Create a scenario in the private data copy deriving from ``parents``
+    (a ``parent_scenario`` value: one name, or colon-separated mix-ins after
+    it). It overrides nothing beyond ``files``, a {relative path: text} map
+    written into its folder."""
+    def _derive(name: str, parents: str, files: dict[str, str] | None = None) -> Path:
+        folder = test_scenarios_dir / name
+        folder.mkdir()
+        row = {**dict.fromkeys(SCENARIO_HEADER, ""), "name": name, "parent_scenario": parents}
+        pd.DataFrame([row], columns=list(SCENARIO_HEADER)).to_csv(
+            folder / "scenario.csv", index=False,
+        )
+        for relative, text in (files or {}).items():
+            path = folder / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return folder
+    return _derive
 
 
 @pytest.fixture(scope="function")

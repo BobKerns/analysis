@@ -31,6 +31,7 @@ from analysis.sim.distributions import (
     TruncatedNormal,
     resolve_truncated_normal_bounds,
 )
+from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -535,87 +536,95 @@ def _merge_scenario_rows(
     return [merged[key] for key in order]
 
 
+def _strict_load_order(scenarios_dir: Path, scenario_name: str) -> list[str]:
+    """``lineage.load_order``, with a cycle reported as a ``LoadError``."""
+    try:
+        return load_order(scenarios_dir, scenario_name, strict=True)
+    except ScenarioCycleError as exc:
+        raise LoadError([str(exc)]) from exc
+
+
 def _read_scenario_inputs(
     data_dir: Path,
     scenario_name: str,
     issues: list[str],
     *,
     scenarios_dir: Path | None = None,
-    stack: tuple[str, ...] = (),
 ) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]]]:
-    """Read a scenario and recursively overlay any declared parent."""
+    """Read a scenario and every scenario it inherits from, overlaying each in
+    load order (``lineage.load_order``: root first, mix-ins after the main
+    parent's line, the scenario itself last)."""
     scenarios_dir = Path(scenarios_dir or (data_dir / "scenarios"))
-    scenario_dir = scenarios_dir / scenario_name
-    if scenario_name in stack:
-        raise LoadError([f"scenario inheritance cycle: {' -> '.join((*stack, scenario_name))}"])
-    if not scenario_dir.is_dir():
-        raise LoadError([f"scenario folder not found: {scenario_dir}"])
+    scenario_row: dict[str, str] = {}
+    accounts: list[dict[str, str]] = []
+    model_rows: list[dict[str, str]] = []
+    scheduled_rows: list[dict[str, str]] = []
+    calendar_rows: list[dict[str, str]] = []
+    lifespan_rows: list[dict[str, str]] = []
+    ytd_rows: list[dict[str, str]] = []
+    for name in _strict_load_order(scenarios_dir, scenario_name):
+        scenario_dir = scenarios_dir / name
+        if not scenario_dir.is_dir():
+            raise LoadError([f"scenario folder not found: {scenario_dir}"])
 
-    scenario_rows = _read_csv(scenario_dir / "scenario.csv", issues)
-    _normalize_month_columns(scenario_rows, "scenario.csv", issues)
-    if len(scenario_rows) != 1:
-        issues.append(
-            f"scenario.csv must have exactly one data row (got {len(scenario_rows)})"
-        )
-    child_scenario = scenario_rows[0] if scenario_rows else {}
-    if child_scenario.get("name") and child_scenario["name"] != scenario_name:
-        issues.append(
-            f"scenario.csv name='{child_scenario['name']}' != folder '{scenario_name}'"
-        )
-    parent_name = child_scenario.get("parent_scenario", "")
-    if parent_name:
-        parent = _read_scenario_inputs(
-            data_dir, parent_name, issues, stack=(*stack, scenario_name)
-        )
-        parent_scenario, parent_accounts, parent_models, parent_scheduled, \
-            parent_calendar, parent_lifespan, parent_ytd = parent
-    else:
-        parent_scenario = {}
-        parent_accounts = parent_models = parent_scheduled = []
-        parent_calendar = parent_lifespan = []
-        parent_ytd = []
+        scenario_rows = _read_csv(scenario_dir / "scenario.csv", issues)
+        _normalize_month_columns(scenario_rows, "scenario.csv", issues)
+        if len(scenario_rows) != 1:
+            issues.append(
+                f"scenario.csv must have exactly one data row (got {len(scenario_rows)})"
+            )
+        own_scenario = scenario_rows[0] if scenario_rows else {}
+        if own_scenario.get("name") and own_scenario["name"] != name:
+            issues.append(
+                f"scenario.csv name='{own_scenario['name']}' != folder '{name}'"
+            )
+        # Only a scenario with no parent of its own must supply the core
+        # files; anything deriving from another may leave them out to inherit.
+        has_parent = bool(parse_parents(own_scenario.get("parent_scenario")))
 
-    def read_overlay(filename: str, *, required: bool = False) -> list[dict[str, str]]:
-        rows = _read_csv(
-            scenario_dir / filename,
+        def read_overlay(
+            filename: str, *, required: bool = False,
+            scenario_dir: Path = scenario_dir, has_parent: bool = has_parent,
+        ) -> list[dict[str, str]]:
+            rows = _read_csv(
+                scenario_dir / filename,
+                issues,
+                optional=has_parent or not required,
+            )
+            _normalize_month_columns(rows, filename, issues)
+            return rows
+
+        scenario_row.update({k: v for k, v in own_scenario.items() if v != ""})
+        accounts = _merge_scenario_rows(
+            accounts, read_overlay("accounts.csv", required=True), ("name",)
+        )
+        model_rows = _merge_scenario_rows(
+            model_rows, _default_lots(
+                read_overlay("account_values.csv", required=True), issues,
+                {a["name"] for a in accounts if a.get("subkind") in INVESTMENT_ASSET_SUBKINDS},
+            ),
+            ("account_name", "lot"),
+        )
+        scheduled_rows = _merge_scenario_rows(
+            scheduled_rows, read_overlay("scheduled.csv", required=True), ("name",)
+        )
+        calendar_rows_raw = read_overlay("calendar.csv")
+        _check_duplicate_calendar_names(calendar_rows_raw, issues)
+        calendar_rows = _merge_calendar_rows(
+            calendar_rows, calendar_rows_raw,
+            ("date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
+             "series", "amount"),
             issues,
-            optional=bool(parent_name) or not required,
         )
-        _normalize_month_columns(rows, filename, issues)
-        return rows
-
-    scenario_row = dict(parent_scenario)
-    scenario_row.update({k: v for k, v in child_scenario.items() if v != ""})
+        lifespan_rows = _merge_scenario_rows(
+            lifespan_rows, read_overlay("lifespan.csv"), ("person",),
+        )
+        ytd_rows = _merge_scenario_rows(
+            ytd_rows, read_overlay("year_to_date.csv"), ("name",),
+        )
     scenario_row["name"] = scenario_name
-    accounts = _merge_scenario_rows(
-        parent_accounts, read_overlay("accounts.csv", required=True), ("name",)
-    )
-    model_rows = _merge_scenario_rows(
-        parent_models, _default_lots(
-            read_overlay("account_values.csv", required=True), issues,
-            {a["name"] for a in accounts if a.get("subkind") in INVESTMENT_ASSET_SUBKINDS},
-        ),
-        ("account_name", "lot"),
-    )
-    scheduled_rows = _merge_scenario_rows(
-        parent_scheduled, read_overlay("scheduled.csv", required=True), ("name",)
-    )
-    calendar_rows_raw = read_overlay("calendar.csv")
-    _check_duplicate_calendar_names(calendar_rows_raw, issues)
-    calendar_rows = _merge_calendar_rows(
-        parent_calendar, calendar_rows_raw,
-        ("date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
-         "series", "amount"),
-        issues,
-    )
-    lifespan_rows = _merge_scenario_rows(
-        parent_lifespan, read_overlay("lifespan.csv"), ("person",),
-    )
-    ytd_rows = _merge_scenario_rows(
-        parent_ytd, read_overlay("year_to_date.csv"), ("name",),
-    )
     return (
         scenario_row, accounts, model_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
@@ -969,18 +978,11 @@ def _merged_override_files(
 
 
 def _scenario_lineage_names(scenarios_dir: Path, scenario_name: str) -> list[str]:
-    """``scenario_name`` followed by each ancestor via ``parent_scenario``, most
-    specific first. Tolerant of read problems -- the main scenario read reports
-    them properly; this is only used to seed override search paths."""
-    lineage: list[str] = []
-    seen: set[str] = set()
-    name = scenario_name
-    while name and name not in seen:
-        lineage.append(name)
-        seen.add(name)
-        rows = _read_csv(scenarios_dir / name / "scenario.csv", [], optional=True)
-        name = (rows[0].get("parent_scenario", "") if rows else "").strip()
-    return lineage
+    """``scenario_name`` and every scenario it inherits from, most specific
+    first (the reverse of ``lineage.load_order``). Tolerant of read problems
+    -- the main scenario read reports them properly; this is only used to seed
+    override search paths."""
+    return load_order(scenarios_dir, scenario_name)[::-1]
 
 
 def _read_aux_files(
@@ -2310,27 +2312,22 @@ def _chain_name_from_filename(path: Path) -> tuple[str, str] | None:
 
 
 def _read_chain_files(
-    data_dir: Path, scenario_name: str, issues: list[str], *, stack: tuple[str, ...] = (),
+    data_dir: Path, scenario_name: str, issues: list[str],
 ) -> dict[str, tuple[str, list[dict[str, str]]]]:
-    """Read ``chains/*.csv`` for a scenario, recursively overlaying any parent.
+    """Read ``chains/*.csv`` for a scenario and every scenario it inherits
+    from, in load order.
 
     Unlike the other per-scenario CSVs, chains merge by WHOLE FILE per chain
-    name (ADR-003 §4.7): a child's ``chains/<kind>__<name>.csv`` entirely
-    replaces the parent's file of that name; a chain not overridden by the
-    child is inherited unchanged.
+    name (ADR-003 §4.7): a later scenario's ``chains/<kind>__<name>.csv``
+    entirely replaces an earlier one's file of that name; a chain no later
+    scenario overrides is inherited unchanged.
     """
-    scenario_dir = data_dir / "scenarios" / scenario_name
-    if scenario_name in stack:
-        raise LoadError([f"scenario inheritance cycle: {' -> '.join((*stack, scenario_name))}"])
-    scenario_rows = _read_csv(scenario_dir / "scenario.csv", issues, optional=True)
-    parent_name = scenario_rows[0].get("parent_scenario", "") if scenario_rows else ""
+    scenarios_dir = data_dir / "scenarios"
     chains: dict[str, tuple[str, list[dict[str, str]]]] = {}
-    if parent_name:
-        chains.update(
-            _read_chain_files(data_dir, parent_name, issues, stack=(*stack, scenario_name))
-        )
-    chains_dir = scenario_dir / "chains"
-    if chains_dir.is_dir():
+    for name in _strict_load_order(scenarios_dir, scenario_name):
+        chains_dir = scenarios_dir / name / "chains"
+        if not chains_dir.is_dir():
+            continue
         for path in sorted(chains_dir.glob("*.csv")):
             if path.stem.startswith("_"):
                 continue
@@ -2338,8 +2335,8 @@ def _read_chain_files(
             if parsed is None:
                 issues.append(f"chains/{path.name}: filename must be '<kind>__<name>.csv'")
                 continue
-            kind, name = parsed
-            chains[name] = (kind, _read_csv(path, issues))
+            kind, chain_name = parsed
+            chains[chain_name] = (kind, _read_csv(path, issues))
     return chains
 
 

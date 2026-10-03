@@ -6,8 +6,9 @@ within the simulation framework.
 """
 
 import os
-from pathlib import Path
 import re
+from collections.abc import Sequence
+from pathlib import Path
 
 import pandas as pd
 
@@ -19,9 +20,13 @@ from analysis.sim import cli
 
 def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
                     description: str | None = None,
-                    intent_dir: Path | None = None) -> Path:
+                    intent_dir: Path | None = None,
+                    mixins: Sequence[str] = ()) -> Path:
     """
     Create a new scenario with the given name, parent, and optional description.
+
+    ``mixins`` are further parents applied after ``parent``'s line, in order
+    (ADR-003 §4.5); ``parent_scenario`` records them colon-separated.
 
     Returns the path to the created scenario.
     """
@@ -34,10 +39,14 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
             parent_ref = resolve_scenario_name(data_dir, parent, intent_dir=intent_dir)
         case _:
             raise LoadError(f"invalid parent type: {type(parent)}")
+    mixin_names = [
+        resolve_scenario_name(data_dir, mixin, intent_dir=intent_dir).name for mixin in mixins
+    ]
     target = data_dir / "scenarios" / name
     if target.exists():
         raise LoadError(f"scenario already exists: {target}")
     target.mkdir(parents=True, exist_ok=True)
+    parents = [parent_ref.name, *mixin_names]
 
     skeletons: dict[str, tuple[str, ...]] = {
         "accounts.csv": registries.ACCOUNTS_CSV_HEADER,
@@ -57,8 +66,8 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
         registries.SCENARIO_HEADER,
         {
             "name": name,
-            "description": description or f"Derived from {parent_ref.name}",
-            "parent_scenario": parent_ref.name,
+            "description": description or f"Derived from {' + '.join(parents)}",
+            "parent_scenario": ":".join(parents),
             "created_by": os.environ.get("ANALYSIS_USER")
             or os.environ.get("USER")
             or "unknown",
