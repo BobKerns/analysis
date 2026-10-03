@@ -36,7 +36,7 @@ __all__ = [
     "display_value", "ATTRIBUTION_AXES", "OPENING_BALANCES", "UNATTRIBUTED", "TOTAL",
     "attribution", "oat_attribution", "base_net_worth", "parameters", "R2_TRUST", "draws_frame", "outcomes_frame",
     "rho_interval", "required_members", "correlation_table", "classify", "mc_correlation",
-    "has_correlated_rows",
+    "has_correlated_rows", "FACTOR_TARGET", "factor_rows", "row_label",
 ]
 
 MEASURES: tuple[str, ...] = ("net_worth", "min_net_worth")
@@ -61,6 +61,10 @@ DEFAULT_NEGLIGIBLE = 0.05
 """Share of the total impact below which a row is a pin candidate -- in every
 reporting year, not just the last."""
 
+FACTOR_TARGET = "factor"
+"""The ``target`` of a latent factor (ADR-008 §3) in an OAT batch's deltas
+and tables: perturbing one moves its whole family (ADR-007 §2)."""
+
 _FLAT_DOLLARS = 1.0
 """Deltas smaller than this (or this fraction, for relative) count as zero."""
 
@@ -80,10 +84,13 @@ class OatMember:
 
 def display_value(kind: str, target: str, raw: str) -> str:
     """An ``ensemble_draw.drawn_value`` in display units: a date as-is, a
-    ``set_rate`` amount (micros) as a percent, any other amount (cents) as
-    dollars."""
+    latent factor's standard normal score as ``z=+1.28`` (``z=+inf`` at an
+    endpoint quantile), a ``set_rate``
+    amount (micros) as a percent, any other amount (cents) as dollars."""
     if target == "date":
         return raw
+    if target == FACTOR_TARGET:
+        return f"z={float(raw):+.2f}"
     return format_calendar_amount(kind, int(raw), cents=False, rate_places=2)
 
 
@@ -190,11 +197,18 @@ def oat_table(
     deltas: pd.DataFrame, year: int, *, measure: str = "net_worth", relative: bool = False,
 ) -> pd.DataFrame:
     """ADR-007 §6.1's per-year tornado table: one row per perturbed varying
-    row, sorted by ``impact`` descending, with ``value@q`` and ``delta@q`` per
+    row or latent factor, sorted by ``impact`` descending, with ``value@q`` and ``delta@q`` per
     quantile, ``swing`` (signed: delta at the highest quantile minus at the
     lowest, for direction), ``impact`` (the spread of every delta *and the
     base's zero*: ``max(0, deltas) - min(0, deltas)``), ``share`` (impact
-    over the sum of impacts) and ``flags``.
+    over the sum of the ordinary rows' impacts) and ``flags``.
+
+    A latent factor's effect reaches the outcome only through its rows, so
+    its impact is left out of the ``share`` denominator, which would
+    otherwise count that effect twice. Its own share is still over that
+    total: "the whole family" against the rows taken one at a time. (When
+    the ordinary rows' total is zero -- a batch that perturbed only factors,
+    say -- shares are over the factors' total instead.)
 
     Importance is ``impact``, not ``|swing|``: a non-monotonic row whose low
     and high quantiles both move the outcome the same way has a swing near
@@ -231,7 +245,11 @@ def oat_table(
             record["flags"] = ",".join(_flags(points, flat))
         rows.append(record)
     table = pd.DataFrame(rows).set_index("row")
-    total = table["impact"].sum()  # NaN-skipping
+    # With no ordinary impact to compare against (--only naming factors
+    # alone, or rows that only matter jointly), share over the factors'.
+    total = table.loc[table["target"] != FACTOR_TARGET, "impact"].sum()  # NaN-skipping
+    if not total:
+        total = table["impact"].sum()
     table["share"] = table["impact"] / total if total else table["impact"] * 0.0
     order = table["impact"].sort_values(ascending=False, na_position="last").index
     tail = ("swing", "impact", "share", "flags")
@@ -246,7 +264,8 @@ def rank_by_year(
     """Parameter x reporting-year grid (ADR-007 §6.1): ``share``, signed
     ``swing``, or ``rank`` (1 = largest impact that year; NA for a row with
     no effect that year). Rows are sorted
-    by peak share, so the overview heatmap reads top-down by importance."""
+    by peak share, so the overview heatmap reads top-down by importance.
+    ``attrs["factors"]`` names the latent factors among the rows."""
     if value not in ("share", "swing", "rank"):
         raise ValueError(f"value must be share, swing or rank (got {value!r})")
     years = sorted(deltas.loc[deltas["measure"] == measure, "year"].unique())
@@ -262,6 +281,7 @@ def rank_by_year(
         grid = share.where(share > 0).rank(ascending=False, method="min").astype("Int64")
     grid = grid.loc[order]
     grid.columns.name = "year"
+    grid.attrs["factors"] = factor_rows(deltas)  # for labeling (row_label)
     return grid
 
 
@@ -269,9 +289,23 @@ def pin_candidates(
     deltas: pd.DataFrame, negligible: float = DEFAULT_NEGLIGIBLE, *, measure: str = "net_worth",
 ) -> list[str]:
     """Rows whose share stays below ``negligible`` in *every* reporting year:
-    a parameter that only matters in the short term still matters."""
+    a parameter that only matters in the short term still matters. Never a
+    latent factor: it has no literal to be pinned to."""
     share = rank_by_year(deltas, measure=measure, value="share")
-    return [row for row, shares in share.iterrows() if (shares < negligible).all()]
+    factors = factor_rows(deltas)
+    return [row for row, shares in share.iterrows()
+            if row not in factors and (shares < negligible).all()]
+
+
+def factor_rows(deltas: pd.DataFrame) -> set[str]:
+    """The latent factors an OAT batch perturbed (ADR-007 §2)."""
+    return set(deltas.loc[deltas["target"] == FACTOR_TARGET, "row"])
+
+
+def row_label(name: str, factors: set[str]) -> str:
+    """A row's name for a table or chart axis, marking a latent factor so it
+    isn't read as one more row: its effect is its whole family's."""
+    return f"{name} (factor)" if name in factors else name
 
 
 def default_report_years(years: list[int], months_per_year: dict[int, int] | None = None) -> list[int]:

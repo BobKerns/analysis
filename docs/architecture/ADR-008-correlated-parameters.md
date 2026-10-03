@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-03
 - **Supersedes:** —
+- **Amended by:** [#39](https://github.com/BobKerns/analysis/issues/39): one-at-a-time sensitivity can perturb a latent factor, moving its family to their conditional medians (§5, §6).
 - **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios: `vary_*` rows, keyed RNG streams, member 0), [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity analysis, which assumes independent draws), [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.8 (`calendar.csv`), issues [#30](https://github.com/BobKerns/analysis/issues/30) (this design; decisions recorded there) and [#31](https://github.com/BobKerns/analysis/issues/31) (`quantile()` on every family, the median as center).
 
 ## Context
@@ -88,18 +89,18 @@ The loader rejects:
 
 `value_at(u)` is the family's quantile, with dates in whole days as drawn. For a `uniform` date that means each day is equally likely, `low + floor(u · days)`, matching `draw_int`. For other families it's `round(quantile(u))`.
 
-**One-at-a-time sensitivity (ADR-007) is unchanged** in this ADR: it moves one row with every other row at its center, which is still a well-defined "effect of this row alone". Perturbing a latent factor, which moves its whole family to their conditional medians, is a follow-up.
+**One-at-a-time sensitivity (ADR-007 §2)** still moves an overridden row alone, with every other row at its center: a well-defined "effect of this row alone", even for a row with dependents. A **latent factor** can be overridden too. Its score is set to Φ⁻¹(q), and each descendant takes its conditional median given the factor, `z = (product of ρ along the path) · z_factor`, mapped through `value_at`. Intermediate nodes are averaged over, not held at their medians: a grandchild's conditional median given its grandparent uses ρ₁·ρ₂, which is what the tree implies (§2).
 
 ### 6. Provenance and reporting
 
-- `ensemble_draw` gains **`z REAL`**: each row's normal score. It's NULL for a row outside every tree, Φ⁻¹(q) for an OAT override, and 0 for member 0. Each **factor** also gets an `ensemble_draw` row (`vary_target = 'factor'`, `drawn_value` = its `z`), so achieved correlations can be checked after the fact.
+- `ensemble_draw` gains **`z REAL`**: each row's normal score. It's NULL for a row outside every tree, Φ⁻¹(q) for an OAT override, the conditional score for a descendant of an overridden factor (§5), and 0 for member 0. Each **factor** also gets an `ensemble_draw` row (`vary_target = 'factor'`, `drawn_value` = its `z`), so achieved correlations can be checked after the fact.
 - Factor rows stay in member intent files as provenance. The engine treats `latent_factor` as inert: no effect, and not counted as an unsupported kind.
 - The **parameters table** (ADR-007 §9) shows each row's parent and ρ, and lists the factors.
 - The **Monte Carlo correlation report** (ADR-007 §6.2) leaves factors out of its inputs (their effect reaches the outcome only through their dependents), and notes when a batch's rows are correlated, since its per-row numbers assume independence.
 
 **Follow-ups, as sub-issues of #30:**
 - **The Monte Carlo sensitivity report assumes independent inputs** (ADR-007 §6.2: SRRC ≈ ρ, pinning by marginal ρ). With correlated inputs it should rank and pin by SRRC or partial rank correlation (PRCC), and show, per correlated pair, the achieved correlation of the recorded normal scores (`z`) against the specified or implied ρ. That's scores rather than values, since tied values (§1) don't follow `(6/π)·asin(ρ/2)`. This is [#38](https://github.com/BobKerns/analysis/issues/38).
-- **One-at-a-time perturbation of latent factors** ([#39](https://github.com/BobKerns/analysis/issues/39)).
+- **One-at-a-time perturbation of latent factors** ([#39](https://github.com/BobKerns/analysis/issues/39)): done, §5 and ADR-007 §2.
 
 ### 7. Schema
 

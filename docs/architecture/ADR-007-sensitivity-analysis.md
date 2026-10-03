@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-01
 - **Supersedes:** —
-- **Amended by:** [#31](https://github.com/BobKerns/analysis/issues/31): `truncated_normal` quantiles follow its new sinh-arcsinh shape, `triangular` added, and the base case is every family's median (§3); the parameters view shows shape and implied moments (§9). [#42](https://github.com/BobKerns/analysis/issues/42): `--jobs` now defaults to one worker per available CPU, not 1 (§8).
+- **Amended by:** [#31](https://github.com/BobKerns/analysis/issues/31): `truncated_normal` quantiles follow its new sinh-arcsinh shape, `triangular` added, and the base case is every family's median (§3); the parameters view shows shape and implied moments (§9). [#42](https://github.com/BobKerns/analysis/issues/42): `--jobs` now defaults to one worker per available CPU, not 1 (§8). [#39](https://github.com/BobKerns/analysis/issues/39): an OAT batch also perturbs [ADR-008](ADR-008-correlated-parameters.md) latent factors, each moving its whole family to their conditional medians, and reports them labeled as factors (§2, §5, §6.1, §7, §9).
 - **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios — `vary_*` columns, `resolve_member`, `ensemble_manifest`/`ensemble_draw`, member 0), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility, provenance).
 
 ## Context
@@ -68,7 +68,11 @@ An OAT batch for rows `r1 … rk` and quantiles `q1 … qm` is:
 
 No RNG is consulted anywhere in an OAT batch, so it's fully deterministic. `scenario.seed` isn't required, is ignored if set, and isn't recorded: a sensitivity member's `ensemble_manifest.seed` is NULL (§5). Members are still ordinary intent files run by the unmodified `run_scenario`, and the same failure reporting as ADR-006 §7 applies: reported, not retried, with the intent file kept.
 
-`--only NAME[,NAME...]` restricts the sweep to a subset of rows; the rest stay central.
+**Latent factors** ([ADR-008](ADR-008-correlated-parameters.md) §3) are swept too, because with correlated rows the more useful question is often "what if the whole family moves?" (say, "what if inflation runs hot generally?"), not "what if this one row moves?". `overrides` may name a factor. Its score is set to Φ⁻¹(q), and every descendant, through any sub-factors, moves to its **conditional median** given the factor: a score of (the product of ρ along the path) × the factor's score, mapped through the row's own `value_at` (ADR-008 §5). At q = 0 or 1 the score is infinite, so each descendant lands exactly on its bound (or stays at its median through a ρ of 0). Rows outside the factor's tree stay central. A factor's member records the quantile on the factor's own `ensemble_draw` row and NULL on its descendants' rows, which record their conditional `z`, so each OAT member still names exactly one perturbed node. Every factor that at least one varying row depends on is swept by default, at the same quantiles; one that moves nothing would only repeat the base, so it's skipped.
+
+Overriding an ordinary row still moves that row alone, even when other rows depend on it, so a row's entry keeps one meaning: "this row alone". The family question belongs to a factor. If it's wanted for a row with dependents, put a factor above them.
+
+`--only NAME[,NAME...]` restricts the sweep to a subset of rows and factors; the rest stay central. Naming a factor that no varying row depends on is an error rather than a batch of base-case copies.
 
 ### 3. Quantiles, not deltas, and ladders to find transitions
 
@@ -106,25 +110,27 @@ The CLI default is CPI-constant dollars. Across a 20-year horizon a nominal swin
 
 ### 5. Provenance: `ensemble_manifest.mode`
 
-`ensemble_manifest` gains `mode TEXT NOT NULL DEFAULT 'monte_carlo'` (`'monte_carlo'` or `'sensitivity'`). `ensemble_draw` gains `quantile REAL`, which is NULL for a random draw, the override quantile for an OAT-perturbed row, and NULL for a row resolved to `central()`. It also gains `distribution TEXT`, the row's `vary_distribution`, which resolving clears from `calendar_event`; without it a batch couldn't say how a row was drawn (schema 28; NULL in older files). `ensemble_manifest.seed` becomes nullable: NULL for a sensitivity member, which draws nothing, rather than a made-up seed that would suggest it was drawn. A sensitivity member is self-documenting in the same way an ADR-006 member is.
+`ensemble_manifest` gains `mode TEXT NOT NULL DEFAULT 'monte_carlo'` (`'monte_carlo'` or `'sensitivity'`). `ensemble_draw` gains `quantile REAL`, which is NULL for a random draw, the override quantile for an OAT-perturbed row or factor (§2), and NULL for a row resolved to `central()` or moved to a conditional median by a perturbed factor. It also gains `distribution TEXT`, the row's `vary_distribution`, which resolving clears from `calendar_event`; without it a batch couldn't say how a row was drawn (schema 28; NULL in older files). `ensemble_manifest.seed` becomes nullable: NULL for a sensitivity member, which draws nothing, rather than a made-up seed that would suggest it was drawn. A sensitivity member is self-documenting in the same way an ADR-006 member is.
 
-`batch_manifest.json` gains `mode`, plus `quantiles` and `rows` for a sensitivity batch. It's written provisionally as soon as the batch directory is reserved, and rewritten with the failures at the end, so an interrupted batch still reads as the right mode. `batch_mode` also falls back to the members' own `ensemble_manifest.mode` when there's no batch manifest. Both kinds of batch live side by side under `state/runs/<recipe>/<timestamp>/`. `latest_ensemble_batch` gains an optional `mode` filter. `sim ensemble summary` and the fan chart use `mode='monte_carlo'`, because a fan chart over an OAT batch is meaningless. `sim ensemble sensitivity` takes the latest batch of either mode unless `--batch`/`--mode` says otherwise.
+`batch_manifest.json` gains `mode`, plus `quantiles` and `rows` (the perturbed rows and factors) for a sensitivity batch. It's written provisionally as soon as the batch directory is reserved, and rewritten with the failures at the end, so an interrupted batch still reads as the right mode. `batch_mode` also falls back to the members' own `ensemble_manifest.mode` when there's no batch manifest. Both kinds of batch live side by side under `state/runs/<recipe>/<timestamp>/`. `latest_ensemble_batch` gains an optional `mode` filter. `sim ensemble summary` and the fan chart use `mode='monte_carlo'`, because a fan chart over an OAT batch is meaningless. `sim ensemble sensitivity` takes the latest batch of either mode unless `--batch`/`--mode` says otherwise.
 
 ### 6. Reports
 
 #### 6.1 OAT
 
-One table per reporting year, one row per varying row, sorted by `impact` descending:
+One table per reporting year, one row per perturbed varying row or latent factor, sorted by `impact` descending:
 
 | column | meaning |
 | --- | --- |
-| `name`, `target` | the row, and whether its `date` or `amount` was moved |
+| `name`, `target` | the row, and whether its `date` or `amount` was moved; `factor` for a latent factor, whose value is its score (`z=+1.28`) |
 | `value@q` for each quantile | the resolved values, in display units (dates, dollars, percent), not storage units |
 | `Δ@q` for each quantile | metric(row at q) − metric(base), signed |
 | `swing` | Δ at the highest quantile − Δ at the lowest. Signed, for direction only |
 | `impact` | max(0, every Δ) − min(0, every Δ): the spread of the row's outcomes *including the base*. This is the importance measure |
-| `share` | impact / Σ impacts, at that year |
+| `share` | impact / Σ of the ordinary rows' impacts, at that year |
 | `flags` | `asymmetric`, and `bend` (with a ladder of ≥ 4 quantiles) when the response changes slope sharply between rungs (§3). `incomplete` when a member for one of the batch's quantiles failed, and `undefined` when a relative Δ is blank because the base is near zero: such a row's swing, impact and share are blank, never zero, so it can't be read as negligible or become a pin candidate |
+
+**Factor rows** sit in the same table, ranking and grid as ordinary rows, sorted by impact with them and labeled `(factor)`, so "the inflation regime as a whole" can be compared directly with any single row. A factor's effect reaches the outcome only through its rows, so its impact is left out of the `share` denominator, which would otherwise count that effect twice. Its own share is over the ordinary rows' total, so it can exceed what any one row has and, rarely, 100%. When the ordinary rows' total is zero (a batch that perturbed only factors, or rows that only matter jointly), shares are over the factors' total instead. A factor is never a pin candidate, because it has no literal value to pin.
 
 Importance is `impact`, not `|swing|`. A row whose low and high quantiles both move the outcome the same way (+$100k at p10 and +$100k at p90, say: a non-monotonic response with the base at a trough) has a swing of zero, but it plainly matters. Ranking, share and pin candidates by swing would rank it last and could drop it. Including the base's zero in the spread also means a one-sided row is measured from where it actually starts.
 
@@ -146,7 +152,7 @@ Opening balances are set directly in lot state rather than posted as transfers (
 
 For the two flow axes, an `unattributed` remainder (Δ net worth minus the sum of the rows) is computed and shown whenever it's non-zero. By the identity it should always be zero, so a non-zero value is a ledger bug worth knowing about, not a modeling result. **CPI-constant attribution stays exact:** each member's cumulative flows at Y are deflated by *that member's own* CPI at Y, the same deflator its net worth uses. When the inflation rate is the perturbed row, the base and the member deflate the *same* opening balance by different CPI paths. That difference gets its own `opening_balances` row ("what higher inflation did to the purchasing power of what you started with"), so the rows still sum to the CPI-constant Δ. In nominal dollars, and for any other row, it's zero and omitted. A cent or two of residue from the stored CPI-constant rounding is treated as zero (`UNATTRIBUTED_TOLERANCE`).
 
-The CLI shows attribution for one row at a time (`--attribute NAME [--by category|flow_account|holding_account]`), because a full table for every row is too much for a terminal. `--relative` divides by the base's net worth that year, as in the notebook. `--measure min_net_worth` is rejected with `--attribute`: attribution decomposes net worth itself, and a running minimum has no flow decomposition. The notebook (§9) is the main interface for it.
+Attribution works for a factor the same way: its member's Δ decomposes exactly, whichever of its rows moved. The CLI shows attribution for one row or factor at a time (`--attribute NAME [--by category|flow_account|holding_account]`), because a full table for every row is too much for a terminal. `--relative` divides by the base's net worth that year, as in the notebook. `--measure min_net_worth` is rejected with `--attribute`: attribution decomposes net worth itself, and a running minimum has no flow decomposition. The notebook (§9) is the main interface for it.
 
 #### 6.2 Correlation over a Monte Carlo batch
 
@@ -186,7 +192,7 @@ sim ensemble sensitivity <recipe> [--batch B] [--mode sensitivity|monte_carlo]
                                   [--attribute NAME [--by category|flow_account|holding_account]]
 ```
 
-`--sensitivity` on a scenario with no unresolved `vary_*` rows is an error ("nothing to perturb"), not a silent single run. `--sensitivity` together with `--ensemble-size` is also an error, because an OAT batch's size is always `1 + k × m`.
+`--sensitivity` on a scenario with no unresolved `vary_*` rows is an error ("nothing to perturb"), not a silent single run. `--sensitivity` together with `--ensemble-size` is also an error, because an OAT batch's size is always `1 + k × m`, where `k` counts the swept factors (§2) as well as the rows.
 
 ### 8. Parallel members
 
@@ -210,7 +216,7 @@ This is a separate notebook from `ensemble.ipynb`. It reuses existing pickers, a
 Widgets (`notebook_ui/sensitivity_widgets.py`):
 
 0. **Parameters** (first, for either kind of batch): `sensitivity.parameters` lists the batch's varying rows. For each it gives what the row acts on, which column varies, the distribution, range, center (the base case, its median), its shape (a truncated normal's SD and any skew or tail weight, a triangular's mode), the implied moments (mean, SD, skewness, excess kurtosis, #31), and the author's description. A sensitivity batch adds the value used at each quantile, and a Monte Carlo batch adds the range actually drawn. It's read from the batch's own member files, so it describes what was run, not the recipe as it stands now.
-1. **Overview heatmap** (the first chart): parameters × reporting years, with rows sorted by peak share. A `HeatmapValuePicker` (new, `ToggleButtons`) chooses between share, which shows who dominates when, and signed swing, which uses a diverging scale centered on zero and responds to the units pickers. One glance shows which parameter matters when; the widgets below drill into one parameter or one year.
+1. **Overview heatmap** (the first chart): parameters × reporting years, latent factors labeled `(factor)` here and in the tornado, with rows sorted by peak share. A `HeatmapValuePicker` (new, `ToggleButtons`) chooses between share, which shows who dominates when, and signed swing, which uses a diverging scale centered on zero and responds to the units pickers. One glance shows which parameter matters when; the widgets below drill into one parameter or one year.
 2. **Tornado at a year:** `ReportYearPicker` + units pickers. Bars are `Δ@q_lo`/`Δ@q_hi` per parameter, sorted by impact at the selected year. Dragging the slider shows the ranking reshuffle over time.
 3. **Δ over time for one parameter:** `ParameterPicker` + units pickers. One line per quantile (Δ against reporting year), with a zero line. A fund-exhaustion plateau, a retirement-date step, or a compounding growth-rate curve each read directly off this chart.
 4. **Response curve** (only for a ladder batch): `ParameterPicker` + `ReportYearPicker`, plotting Δ against quantile. This is where a transition inside a range is visible as a step.
@@ -228,6 +234,7 @@ For a `monte_carlo` batch the same notebook shows the ρ-by-year grid with CI wh
 ## Open questions deferred
 
 - **Morris elementary effects**: an interaction-aware screening method that costs `r × (k + 1)` runs (r ≈ 10–20) and would reuse `overrides` directly, by moving one row at a time from random starting points rather than always from the center. It's the natural next step if OAT and the correlation report disagree about a parameter, which hints at an interaction.
+- **`--with-dependents`**: an option for an overridden ordinary row to drag its own descendants to their conditional medians, as a factor does. Factors cover the "whole family" question (§2), and keeping a row's entry as "this row alone" keeps the table unambiguous. Revisit if inserting a factor above a row's dependents turns out to be friction, for instance for a series correlated with itself over time.
 - **Sobol indices**: a full variance decomposition that separates each parameter's solo effect from its interaction effects. It costs `N × (k + 2)` runs, with N in the hundreds or more, so it's only practical after `--jobs` and only for small `k`.
 - **Ad-hoc perturbation of literal rows** (`--perturb name=±10%` without marking the row varying): convenient, but it reintroduces the fixed-delta problems in the Context section. Revisit if marking rows varying turns out to be friction in practice.
 - **Trajectory PCA + regression, and PLS:** treat each Monte Carlo member's vector of year-end net worth as one observation. PCA across members finds the dominant *shapes* of variation, typically an overall level (lifetime income − expenses) and an early-versus-late timing component. Regressing each member's component scores on its draws then says which parameters drive the level and which drive the timing. Partial least squares does both steps at once, finding input-weighted axes that best explain the output vector. Both are promising complements to the heatmap; worth judging once real batches exist. PCA or ICA on the *inputs* is not: the inputs are independent draws by construction, so there's no structure to find, and ICA would at best rediscover the `vary_*` rows already recorded in `ensemble_draw`.

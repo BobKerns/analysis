@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 import sqlite3
 from calendar import monthrange
@@ -40,6 +41,7 @@ from analysis.sim.distributions import (
 from analysis.sim.correlation import (
     CorrelationError,
     Link,
+    conditional_scores,
     probability,
     resolve_scores,
     standard_normal,
@@ -53,6 +55,7 @@ __all__ = [
     "EnsembleError", "resolve_member", "load_ensemble", "member_run_statuses",
     "latest_ensemble_batch", "members_net_worth_by_month", "summary",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
+    "factor_reach",
 ]
 
 
@@ -214,12 +217,15 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
 def _resolve_value(
     row: sqlite3.Row, dist: Distribution, *, as_int: bool,
     overrides: dict[str, float] | None, seed: int | None, member_index: int,
-    score: float | None = None,
+    score: float | None = None, conditional: bool = False,
 ) -> tuple[float, float | None]:
     """One varying row's value on one member, and the OAT quantile it was
     resolved at (``None`` unless ``overrides`` names this row):
 
     - named in ``overrides``: that quantile of ``dist`` (ADR-007 §2);
+    - ``conditional``: an OAT member perturbing a latent factor above this
+      row, which sits at its conditional median, ``dist.value_at(Phi(score))``
+      (ADR-007 §2, ADR-008 §5);
     - otherwise, on member 0 or any OAT member: ``dist``'s central value;
     - otherwise, in a correlation tree (ADR-008): ``dist.value_at(Phi(score))``,
       ``score`` being this row's correlated standard normal score;
@@ -234,6 +240,9 @@ def _resolve_value(
             return (dist.quantile_int(q) if as_int else dist.quantile(q)), q
         except DistributionError as e:
             raise EnsembleError(f"row {row['name']!r}: {e}") from e
+    if conditional and score is not None:
+        u = probability(score)
+        return (dist.value_at_int(u) if as_int else dist.value_at(u)), None
     if overrides is not None or member_index == 0:
         return (dist.central_int() if as_int else dist.central()), None
     if score is not None:
@@ -261,17 +270,37 @@ def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[s
     return links, factors
 
 
+def _score_at(name: str, q: float) -> float:
+    """``Phi^-1(q)``, exact at the ends: q = 0 or 1 (valid quantiles) is an
+    infinite score, so a factor's family reaches its conditional endpoint
+    -- each descendant at its own bound -- rather than just short of it.
+    A quantile outside [0, 1] raises, as ``Distribution.quantile`` does for
+    a row: a factor has no distribution to reject it later."""
+    if not 0.0 <= q <= 1.0:
+        raise EnsembleError(f"{name!r}: quantile must be in [0, 1] (got {q})")
+    if q == 0.0:
+        return -math.inf
+    if q == 1.0:
+        return math.inf
+    return NormalDist().inv_cdf(q)
+
+
 def _member_scores(
     links: dict[str, Link], factors: list[str], *, overrides: dict[str, float] | None,
     seed: int | None, member_index: int,
-) -> dict[str, float]:
-    """Every tree member's standard normal score on this member (ADR-008 §5):
+) -> tuple[dict[str, float], set[str]]:
+    """Every tree member's standard normal score on this member (ADR-008 §5),
+    and the rows an OAT member moves to a conditional median:
 
     - a random member: each node's noise from its own keyed stream
       (``member_rng(seed, member, name)``), combined down the tree;
     - member 0: all 0 -- every row at its median, its ``central()``;
-    - an OAT member: 0, except an overridden row at ``Phi^-1(q)``. Its
-      children aren't moved: OAT stays "this row alone" (ADR-008 §5).
+    - an OAT member: 0, except an overridden node at ``Phi^-1(q)``. An
+      overridden row's children aren't moved: that stays "this row alone".
+      An overridden latent factor moves its whole family: each descendant
+      to its conditional median given the factor, the product of rho along
+      the path times the factor's score (ADR-007 §2). Those descendants are
+      the second element.
 
     Every latent factor gets a score, even one nothing depends on yet (an
     unused factor still resolves to its own draw, ADR-008 §4, and is
@@ -279,15 +308,21 @@ def _member_scores(
     before."""
     members = tree_members(links) | set(factors)
     if not members:
-        return {}
+        return {}, set()
     if overrides is not None or member_index == 0:
         scores = dict.fromkeys(members, 0.0)
+        moved: set[str] = set()
         for name, q in (overrides or {}).items():
             if name in scores:
-                # Keep q = 0 or 1 finite: the score is provenance, and the
-                # value itself comes from dist.quantile(q).
-                scores[name] = NormalDist().inv_cdf(min(max(q, 1e-12), 1 - 1e-12))
-        return scores
+                scores[name] = _score_at(name, q)
+                if name in factors:
+                    family = conditional_scores(links, name, scores[name])
+                    scores.update(family)
+                    # A zero score (through a zero rho) is the row's median: it
+                    # stays at central(), exactly the base, not value_at(0.5),
+                    # which can differ by a day for a uniform date.
+                    moved |= {n for n, z in family.items() if z != 0.0}
+        return scores, moved
     if seed is None:
         raise EnsembleError("a correlated draw needs the ensemble's seed")
     noise = {name: standard_normal(member_rng(seed, member_index, name)) for name in members}
@@ -295,7 +330,7 @@ def _member_scores(
         scores = resolve_scores(links, noise)
         # An isolated factor (no parent, no dependents) is its own root.
         scores.update({name: noise[name] for name in members if name not in scores})
-        return scores
+        return scores, set()
     except CorrelationError as e:  # the loader rejects these first
         raise EnsembleError(str(e)) from e
 
@@ -341,14 +376,14 @@ def resolve_member(
         rows = con.execute(
             "SELECT * FROM calendar_event WHERE vary_distribution IS NOT NULL"
         ).fetchall()
+        links, factors = _correlation_links(con)
         if overrides is not None:
-            unknown = set(overrides) - {r["name"] for r in rows}
+            unknown = set(overrides) - {r["name"] for r in rows} - set(factors)
             if unknown:
                 raise EnsembleError(
-                    f"overrides name no unresolved vary_* row: {sorted(unknown)}"
+                    f"overrides name no unresolved vary_* row or latent factor: {sorted(unknown)}"
                 )
-        links, factors = _correlation_links(con)
-        scores = _member_scores(
+        scores, moved = _member_scores(
             links, factors, overrides=overrides, seed=seed, member_index=member_index,
         )
 
@@ -366,7 +401,7 @@ def resolve_member(
                 )
             drawn_ordinal, quantile = _resolve_value(
                 row, dist, as_int=True, overrides=overrides, seed=seed, member_index=member_index,
-                score=scores.get(row["name"]),
+                score=scores.get(row["name"]), conditional=row["name"] in moved,
             )
             drawn = date.fromordinal(int(drawn_ordinal))
             con.execute(
@@ -380,7 +415,7 @@ def resolve_member(
             dist = build_distribution(row, "amount")
             value, quantile = _resolve_value(
                 row, dist, as_int=False, overrides=overrides, seed=seed, member_index=member_index,
-                score=scores.get(row["name"]),
+                score=scores.get(row["name"]), conditional=row["name"] in moved,
             )
             target = round(value)
             if row["kind"] == "one_off_transfer" and target <= 0:
@@ -407,10 +442,13 @@ def resolve_member(
                           row["vary_distribution"], scores.get(row["name"])))
         # Factors are drawn too (ADR-008 §6), so achieved correlations can be
         # checked after the fact; their value is just their score.
+        # An OAT-perturbed factor records its quantile, so the report can tell
+        # which node a member moved (ADR-007 §5).
         for factor in factors:
             z = scores.get(factor)
             if z is not None:
-                draws.append((factor, "factor", repr(z), None, None, z))
+                quantile = overrides.get(factor) if overrides is not None else None
+                draws.append((factor, "factor", repr(z), quantile, None, z))
 
         ensemble_name = con.execute("SELECT name FROM scenario").fetchone()[0]
         con.execute(
@@ -434,22 +472,63 @@ def resolve_member(
     return member_path
 
 
+def factor_reach(intent_path: Path) -> dict[str, int]:
+    """Each latent factor in an intent (ADR-008 §3), and how many unresolved
+    varying rows perturbing it would move: its varying descendants, through
+    any sub-factors, other than those it reaches only through a zero rho. A
+    factor that moves none is a no-op to perturb."""
+    con = sqlite3.connect(intent_path)
+    try:
+        links, factors = _correlation_links(con)
+        varying = {name for (name,) in con.execute(
+            "SELECT name FROM calendar_event "
+            "WHERE vary_distribution IS NOT NULL AND name IS NOT NULL"
+        )}
+    finally:
+        con.close()
+    try:
+        # A descendant reached only through a zero rho stays at its median
+        # (score 0), so it doesn't count: moving the factor wouldn't move it.
+        return {
+            f: sum(1 for name, z in conditional_scores(links, f, 1.0).items()
+                   if name in varying and z != 0.0)
+            for f in factors
+        }
+    except CorrelationError as e:  # the loader rejects these first
+        raise EnsembleError(str(e)) from e
+
+
 def oat_plan(
     row_names: list[str], quantiles: tuple[float, ...], only: list[str] | None = None,
+    factors: Mapping[str, int] | None = None,
 ) -> list[dict[str, float]]:
     """The ``overrides`` for every member of an OAT sensitivity batch
     (ADR-007 §2): index 0 is ``{}`` (the base -- every row central), then one
-    ``{name: q}`` per (row, quantile), rows by name, quantiles ascending.
+    ``{name: q}`` per (row or factor, quantile), names sorted, quantiles
+    ascending.
 
-    ``only`` restricts which rows are perturbed; naming a row that isn't
-    varying raises, so a typo can't silently perturb nothing.
+    ``factors`` maps each latent factor to how many varying rows it moves
+    (``factor_reach``). A factor that moves at least one is swept like a
+    row; one that moves none is left out, since its members would all equal
+    the base.
+
+    ``only`` restricts which rows and factors are perturbed; naming one that
+    isn't varying (or isn't a factor), or a factor that moves nothing,
+    raises, so a typo can't silently perturb nothing.
     """
+    factors = dict(factors or {})
+    names = set(row_names) | {f for f, reach in factors.items() if reach}
     if only is not None:
-        unknown = set(only) - set(row_names)
+        unknown = set(only) - set(row_names) - set(factors)
         if unknown:
-            raise EnsembleError(f"--only names no varying row: {sorted(unknown)}")
-        row_names = [n for n in row_names if n in set(only)]
-    return [{}] + [{name: q} for name in sorted(row_names) for q in quantiles]
+            raise EnsembleError(
+                f"--only names no varying row or latent factor: {sorted(unknown)}"
+            )
+        idle = sorted(set(only) - names)
+        if idle:
+            raise EnsembleError(f"--only names a latent factor no varying row depends on: {idle}")
+        names &= set(only)
+    return [{}] + [{name: q} for name in sorted(names) for q in quantiles]
 
 
 def write_batch_manifest(

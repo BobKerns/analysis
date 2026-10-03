@@ -88,6 +88,30 @@ def test_heatmap_view(value: HeatmapValue, scale: DeltaScale) -> None:
     plt.close("all")
 
 
+def test_heatmap_and_tornado_mark_latent_factors() -> None:
+    """#39: a factor's row is labeled as one, not read as one more row."""
+    deltas = _deltas()
+    deltas.loc[deltas["row"] == "a", "target"] = sensitivity.FACTOR_TARGET
+    grid = sensitivity.rank_by_year(deltas)
+    ax = sw.heatmap_view(grid, HeatmapValue.SHARE, DeltaScale.ABSOLUTE)
+    assert [t.get_text() for t in ax.get_yticklabels()] == ["a (factor)", "b"]
+    ax = sw.tornado_view(sensitivity.oat_table(deltas, 2031), DeltaScale.ABSOLUTE)
+    assert {t.get_text() for t in ax.get_yticklabels()} == {"a (factor)", "b"}
+    plt.close("all")
+
+
+def test_share_heatmap_scales_to_a_factor_share_above_one() -> None:
+    """PR #53 review: a factor's share can exceed 100% (it's over the
+    ordinary rows' total); the scale must reach it rather than clip."""
+    deltas = _deltas()
+    deltas.loc[deltas["row"] == "a", "target"] = sensitivity.FACTOR_TARGET
+    grid = sensitivity.rank_by_year(deltas)
+    assert grid.loc["a"].max() > 1
+    ax = sw.heatmap_view(grid, HeatmapValue.SHARE, DeltaScale.ABSOLUTE)
+    assert ax.images[0].norm.vmax == pytest.approx(grid.to_numpy(dtype=float).max())
+    plt.close("all")
+
+
 def test_tornado_view_puts_largest_swing_on_top() -> None:
     ax = sw.tornado_view(sensitivity.oat_table(_deltas(), 2031), DeltaScale.ABSOLUTE)
     by_height = sorted(zip(ax.get_yticks(), (t.get_text() for t in ax.get_yticklabels()), strict=True))
@@ -273,5 +297,7 @@ def test_parameters_note_mentions_mode_specific_columns() -> None:
     assert "drawn" in sw.parameters_note("monte_carlo")
     # "Hold the others at their center" describes only one-at-a-time members
     # (PR #26 review): Monte Carlo members draw every row.
-    assert "except one" in sw.parameters_note("sensitivity")
-    assert "except one" not in sw.parameters_note("monte_carlo")
+    assert "holds the rest at their centers" in sw.parameters_note("sensitivity")
+    assert "holds the rest at their centers" not in sw.parameters_note("monte_carlo")
+    # A factor member moves its family too (#39).
+    assert "latent factor" in sw.parameters_note("sensitivity")

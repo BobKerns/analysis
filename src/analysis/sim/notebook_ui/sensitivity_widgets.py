@@ -134,10 +134,16 @@ def _quantile_color(q: float, quantiles: list[float]) -> str | tuple[float, ...]
 
 
 def _share_cells(data: np.ndarray) -> tuple[dict, str, list[list[str]], np.ndarray]:
-    """Sequential 0-100% styling: (imshow kwargs, colorbar label, cell text, dark cells)."""
+    """Sequential styling from 0 to 100%, or to the largest share when a latent
+    factor's exceeds 100% (#39: a factor's share is over the ordinary rows'
+    total, so it isn't capped), so such cells stay distinguishable rather
+    than clipping to one color: (imshow kwargs, colorbar label, cell text,
+    dark cells)."""
+    finite = data[np.isfinite(data)]
+    top = max(1.0, float(finite.max())) if finite.size else 1.0
     text = [[f"{v:.0%}" if v >= 0.005 else "" for v in r] for r in data]
-    return ({"cmap": _SHARE_CMAP, "vmin": 0, "vmax": 1}, "share of the year's total impact",
-            text, data > 0.55)
+    return ({"cmap": _SHARE_CMAP, "vmin": 0, "vmax": top}, "share of the year's total impact",
+            text, data > 0.55 * top)
 
 
 def _swing_cells(data: np.ndarray, scale: DeltaScale) -> tuple[dict, str, list[list[str]], np.ndarray]:
@@ -155,7 +161,8 @@ def _swing_cells(data: np.ndarray, scale: DeltaScale) -> tuple[dict, str, list[l
 def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax: Any = None) -> Any:
     """Parameters x reporting years (``sensitivity.rank_by_year`` output):
     sequential share, or diverging signed swing centered on zero. Cells are
-    labeled while the grid is small enough to read."""
+    labeled while the grid is small enough to read. Latent factors are
+    marked ``(factor)``."""
     if ax is None:
         _fig, ax = plt.subplots(figsize=(10, 0.5 * len(grid) + 1.5))
     data = grid.astype(float).to_numpy()
@@ -163,7 +170,8 @@ def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax:
         _share_cells(data) if value == HeatmapValue.SHARE else _swing_cells(data, scale)
     )
     image = ax.imshow(data, aspect="auto", **style)
-    ax.set_yticks(range(len(grid)), grid.index)
+    factors = grid.attrs.get("factors", set())
+    ax.set_yticks(range(len(grid)), [sensitivity.row_label(r, factors) for r in grid.index])
     ax.set_xticks(range(len(grid.columns)), [str(y) for y in grid.columns], rotation=90)
     if len(grid.columns) <= 25:
         for i in range(data.shape[0]):
@@ -185,7 +193,8 @@ def heatmap_view(grid: pd.DataFrame, value: HeatmapValue, scale: DeltaScale, ax:
 
 def tornado_view(table: pd.DataFrame, scale: DeltaScale, ax: Any = None) -> Any:
     """``sensitivity.oat_table`` at one year: each row's delta at its lowest
-    and highest quantile, largest impact on top."""
+    and highest quantile, largest impact on top. Latent factors are marked
+    ``(factor)``."""
     delta_cols = [c for c in table.columns if c.startswith("delta@")]
     low_col, high_col = delta_cols[0], delta_cols[-1]
     if ax is None:
@@ -202,7 +211,8 @@ def tornado_view(table: pd.DataFrame, scale: DeltaScale, ax: Any = None) -> Any:
         ax.barh(y[known] + offset, table[column].to_numpy(dtype=float)[known], height=height,
                 color=color, edgecolor="white", linewidth=1, label=label)
     ax.axvline(0, color=MUTED, linewidth=0.8)
-    ax.set_yticks(y, table.index)
+    factors = set(table.index[table["target"] == sensitivity.FACTOR_TARGET])
+    ax.set_yticks(y, [sensitivity.row_label(r, factors) for r in table.index])
     _format_value_axis(ax.xaxis, scale)
     _recessive(ax, grid_axis="x")
     ax.legend(framealpha=FRAME_ALPHA, loc="lower right")
@@ -373,17 +383,21 @@ def r2_view(table: pd.DataFrame, ax: Any = None) -> Any:
 def parameters_note(mode: str | None) -> str:
     """The explanation shown above a batch's parameters table."""
     note = (
-        "Each row is a `calendar.csv` row with `vary_*` columns set: **affects** is what it "
-        "acts on, **target** whether its date or amount varies, and **range**/**center**/"
-        "**shape** come from its distribution; **moments** are what those settings imply. "
-        "The center is the deterministic base case: member 0 resolves every row to it. "
-        "A correlated row names its **correlate_with** parent and **rho**; latent factors "
-        "appear as their own rows."
+        "Each varying row is a `calendar.csv` row with `vary_*` columns set: **affects** is "
+        "what it acts on, **target** whether its date or amount varies, and **range**/"
+        "**center**/**shape** come from its distribution; **moments** are what those settings "
+        "imply. The center is the deterministic base case: member 0 resolves every row to it. "
+        "A correlated row names its **correlate_with** parent and **rho**. Latent factors "
+        "appear as their own rows with target **factor**: they have no distribution, so no "
+        "range, center, shape or moments, and only a parent and rho if they have one."
     )
     if mode == "sensitivity":
         return note + (
-            " Each other one-at-a-time member holds every row at its center except one, "
-            "which it moves to the **value@q** shown."
+            " Each other one-at-a-time member moves one row or latent factor to the "
+            "**value@q** shown and holds the rest at their centers, with one exception: a "
+            "latent factor (target **factor**, no distribution of its own; its value is a "
+            "standard score) also carries every row under it to that row's likeliest value "
+            "given the factor. The charts label it **(factor)**."
         )
     if mode == "monte_carlo":
         return note + (
