@@ -3,9 +3,10 @@
 Computes ``code_version``, ``data_version``, ``data_dirty``, and
 ``scenario_tree_id`` via GitPython. ``scenario_tree_id`` is a real git tree
 SHA, computed via a sidecar index (the user's index is never touched), over
-exactly the paths the loader read for a scenario: ``scenarios/<name>/`` plus the
+the data repo paths a scenario's load can read: ``scenarios/<name>/`` plus the
 folder of every scenario it inherits from via ``parent_scenario`` (mix-ins
-included), ``persons.csv``, ``aux/``, ``prices/``, and ``itemizations/`` (each also
+included), ``persons.csv``, ``securities.csv``, ``allocations.csv``, and the
+whole shared ``aux/``, ``prices/``, and ``itemizations/`` folders (each also
 resolved per scenario under ``scenarios/<name>/``, ADR-003 §4.1d; covered
 automatically since that whole folder is already in scope). ``series/`` has no
 shared root tier at all -- only the per-scenario ``scenarios/<name>/series/``
