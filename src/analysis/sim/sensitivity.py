@@ -84,7 +84,8 @@ class OatMember:
 
 def display_value(kind: str, target: str, raw: str) -> str:
     """An ``ensemble_draw.drawn_value`` in display units: a date as-is, a
-    latent factor's standard normal score as ``z=+1.28``, a ``set_rate``
+    latent factor's standard normal score as ``z=+1.28`` (``z=+inf`` at an
+    endpoint quantile), a ``set_rate``
     amount (micros) as a percent, any other amount (cents) as dollars."""
     if target == "date":
         return raw
@@ -205,8 +206,9 @@ def oat_table(
     A latent factor's effect reaches the outcome only through its rows, so
     its impact is left out of the ``share`` denominator, which would
     otherwise count that effect twice. Its own share is still over that
-    total: "the whole family" against the rows taken one at a time. (A batch
-    that perturbed only factors shares over the factors' total instead.)
+    total: "the whole family" against the rows taken one at a time. (When
+    the ordinary rows' total is zero -- a batch that perturbed only factors,
+    say -- shares are over the factors' total instead.)
 
     Importance is ``impact``, not ``|swing|``: a non-monotonic row whose low
     and high quantiles both move the outcome the same way has a swing near
@@ -243,9 +245,11 @@ def oat_table(
             record["flags"] = ",".join(_flags(points, flat))
         rows.append(record)
     table = pd.DataFrame(rows).set_index("row")
-    ordinary = table["target"] != FACTOR_TARGET
-    # With --only naming factors alone there are no rows to compare against.
-    total = table.loc[ordinary if ordinary.any() else ~ordinary, "impact"].sum()  # NaN-skipping
+    # With no ordinary impact to compare against (--only naming factors
+    # alone, or rows that only matter jointly), share over the factors'.
+    total = table.loc[table["target"] != FACTOR_TARGET, "impact"].sum()  # NaN-skipping
+    if not total:
+        total = table["impact"].sum()
     table["share"] = table["impact"] / total if total else table["impact"] * 0.0
     order = table["impact"].sort_values(ascending=False, na_position="last").index
     tail = ("swing", "impact", "share", "flags")

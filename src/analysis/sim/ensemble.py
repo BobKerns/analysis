@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 import sqlite3
 from calendar import monthrange
@@ -269,6 +270,17 @@ def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[s
     return links, factors
 
 
+def _score_at(q: float) -> float:
+    """``Phi^-1(q)``, exact at the ends: q = 0 or 1 (valid quantiles) is an
+    infinite score, so a factor's family reaches its conditional endpoint
+    -- each descendant at its own bound -- rather than just short of it."""
+    if q <= 0.0:
+        return -math.inf
+    if q >= 1.0:
+        return math.inf
+    return NormalDist().inv_cdf(q)
+
+
 def _member_scores(
     links: dict[str, Link], factors: list[str], *, overrides: dict[str, float] | None,
     seed: int | None, member_index: int,
@@ -298,10 +310,7 @@ def _member_scores(
         moved: set[str] = set()
         for name, q in (overrides or {}).items():
             if name in scores:
-                # Keep q = 0 or 1 finite: a row's score is provenance (its
-                # value comes from dist.quantile(q)), and a factor's
-                # descendants need a finite score to map through value_at.
-                scores[name] = NormalDist().inv_cdf(min(max(q, 1e-12), 1 - 1e-12))
+                scores[name] = _score_at(q)
                 if name in factors:
                     family = conditional_scores(links, name, scores[name])
                     scores.update(family)

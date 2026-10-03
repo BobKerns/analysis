@@ -287,8 +287,8 @@ varying row depends on, at the same quantiles. Moving a factor asks "what
 if the whole family moves?" (say, "what if inflation runs hot
 generally?"): every row under it goes to its most likely value given the
 factor, scaled by the correlations along the way, while rows outside the
-family stay central. Each factor adds 2 runs, and `--only` can name a
-factor as well as a row.
+family stay central. Each factor adds one run per quantile (2 by
+default), and `--only` can name a factor as well as a row.
 
 The report labels these rows `(factor)`, and shows the factor's value as a
 standard score (`z=+1.28` is its 90th percentile). A factor's share is

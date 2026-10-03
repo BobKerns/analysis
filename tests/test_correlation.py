@@ -937,3 +937,43 @@ def test_attribution_works_for_a_factor(factor_oat_batch: Path) -> None:
     assert sorted(by_q) == [0.1, 0.9]
     for table in by_q.values():
         assert (table[sensitivity.UNATTRIBUTED] == 0).all()
+
+
+def test_conditional_scores_at_an_endpoint_respect_a_zero_rho() -> None:
+    """PR #53 review: an infinite (endpoint) score propagates as +/-inf, and
+    a zero rho leaves its child at its median rather than 0 * inf = nan."""
+    from analysis.sim.correlation import conditional_scores
+
+    links = {"a": Link("f", 0.5), "b": Link("f", 0.0), "c": Link("f", -0.3)}
+    assert conditional_scores(links, "f", math.inf) == {"a": math.inf, "b": 0.0, "c": -math.inf}
+
+
+def test_oat_factor_at_an_endpoint_puts_its_family_on_their_bounds(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """PR #53 review: q = 1 is a valid quantile. The factor's family lands
+    exactly on its conditional endpoint -- each row at its own bound -- not
+    just short of it."""
+    _correlated_recipe(append_calendar_row)
+    draws = _resolve(load_test_copy().intent_path, tmp_path, 1, seed=None,
+                     overrides={"economy": 1.0}, mode="sensitivity")["draws"]
+    assert draws["economy"][2] == math.inf
+    assert draws["tied_rate"][1] == "70000"  # the upper clip bound (rho +0.8)
+    assert draws["tied_date"][1] == "2030-06-30"  # the earliest date (rho -0.6)
+
+
+def test_factor_share_survives_a_zero_ordinary_total() -> None:
+    """PR #53 review: rows whose own impact is zero (say, they only matter
+    jointly) mustn't make a factor's real impact read as a zero share."""
+    from analysis.sim import sensitivity
+
+    records = []
+    for row, target, d in (("f", sensitivity.FACTOR_TARGET, 50_000.0), ("r", "amount", 0.0)):
+        for q, sign in ((0.1, -1), (0.9, 1)):
+            records.append({"row": row, "target": target, "quantile": q, "value": "", "year": 2030,
+                            "measure": "net_worth", "level": 1e6 + sign * d, "base": 1e6,
+                            "delta": sign * d, "relative": sign * d / 1e6})
+    table = sensitivity.oat_table(pd.DataFrame(records), 2030)
+    assert table.loc["f", "share"] == pytest.approx(1.0)
+    assert table.loc["r", "share"] == 0.0

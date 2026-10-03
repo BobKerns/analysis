@@ -91,12 +91,16 @@ def conditional_scores(links: Mapping[str, Link], node: str, z: float) -> dict[s
     ``node``'s score is ``z``: the product of rho along the path down to it,
     times ``z`` (ADR-008 §5). Intermediate nodes are marginalized out, not
     held at their own medians: a grandchild's conditional mean given its
-    grandparent is ``rho_1 * rho_2 * z``. ``node`` itself is not included."""
+    grandparent is ``rho_1 * rho_2 * z``. ``node`` itself is not included.
+    ``z`` may be infinite (an endpoint quantile): a descendant then sits at
+    its bound, or at its median through a zero rho."""
     scores = {node: z}
     for member in topological_order(links):
         link = links.get(member)
         if link is not None and link.parent in scores and member not in scores:
-            scores[member] = link.rho * scores[link.parent]
+            # rho = 0 leaves a child at its median even under an infinite
+            # (endpoint) score, where the product would be 0 * inf = nan.
+            scores[member] = link.rho * scores[link.parent] if link.rho else 0.0
     del scores[node]
     return scores
 
