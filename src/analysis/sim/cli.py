@@ -27,7 +27,7 @@ from analysis.expenses.baseline import (
     load_expense_account_map,
     replace_generated_scheduled_rows,
 )
-from analysis.sim import allocation, prices, registries, sensitivity
+from analysis.sim import allocation, calendar_guide, prices, registries, sensitivity
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import open_run, open_scenario, year_end_values
 from analysis.sim.holdings import (
@@ -1479,8 +1479,7 @@ def _prompt_with_completion(text: str, choices: list[str] | None = None,
     try:
         import readline
     except ImportError:
-        return click.prompt(text, default=default,
-                            show_default=default is not None)
+        return click.prompt(text, default=default, show_default=bool(default))
     completer_choices = list(choices or [])
 
     def completer(prefix: str, state: int) -> str | None:
@@ -1494,8 +1493,7 @@ def _prompt_with_completion(text: str, choices: list[str] | None = None,
     else:
         readline.parse_and_bind("tab: complete")
     try:
-        return click.prompt(text, default=default,
-                            show_default=default is not None)
+        return click.prompt(text, default=default, show_default=bool(default))
     finally:
         readline.set_completer(old)
 
@@ -2077,10 +2075,104 @@ def calendar_group_command() -> None:
     """Append calendar.csv rows of any kind, including ensemble variation (ADR-006)."""
 
 
-@calendar_group_command.group(name="add")
-def calendar_add_group_command() -> None:
+def _guide_context(data_dir: Path, scenario: str | None) -> calendar_guide.GuideContext:
+    """The scenario's names, as completions for the guided prompts (#32)."""
+    def column(con: sqlite3.Connection, sql: str, *args: str) -> list[str]:
+        return sorted({r[0] for r in con.execute(sql, args) if r[0]})
+
+    with _intent_db(data_dir, scenario) as (con, _name):
+        aux = "SELECT series FROM aux_table WHERE kind = ?"
+        return calendar_guide.GuideContext(
+            accounts=column(con, "SELECT name FROM account"),
+            lots=_lot_info(con),
+            scheduled_names=column(con, "SELECT name FROM scheduled_transaction"),
+            series={
+                "rate": sorted({
+                    *column(con, aux, "rate"),
+                    *column(con, "SELECT series FROM account_model_member"),
+                }),
+                "inflation": sorted({
+                    *column(con, aux, "inflation"),
+                    *column(con, "SELECT series FROM scheduled_transaction"),
+                } - {"fixed"}),
+            },
+            row_names=column(con, "SELECT name FROM calendar_event"),
+        )
+
+
+def _calendar_guide() -> calendar_guide.Guide:
+    return calendar_guide.Guide(
+        ask=lambda text, choices, default: _prompt_with_completion(
+            text, choices=choices, default=default,
+        ),
+        checkers={
+            "date": _validate_month_date,
+            "dollars": _parse_amount_cents,
+            "percent": _percent_to_rate_micros,
+            "number": float,
+            "integer": int,
+            "tags": registries.parse_tags,
+        },
+    )
+
+
+def _ask_missing_arguments(
+    command: str, data_dir: Path | None, scenario: str | None, **given: str | None,
+) -> dict[str, str]:
+    """``given`` with any positional argument of ``command`` that was left
+    out prompted for (#32). Nothing is opened or asked when none is missing."""
+    spec = calendar_guide.kind_named(command)
+    answers = {param: value for param, value in given.items() if value is not None}
+    if all(f.param in answers for f in spec.fields if f.is_argument):
+        return answers
+    context = _guide_context(_resolve_data_dir(data_dir), scenario)
+    return _calendar_guide().complete(spec, context, answers, arguments_only=True)
+
+
+@calendar_group_command.group(name="add", invoke_without_command=True)
+@click.option("--scenario", default=None,
+              help="For the guided mode: scenario folder name "
+                   "(default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="For the guided mode: data repo (default: $ANALYSIS_DATA_DIR).")
+@click.pass_context
+def calendar_add_group_command(
+    ctx: click.Context, scenario: str | None, data_dir: Path | None,
+) -> None:
     """Append one calendar.csv row. Each kind has its own subcommand -- the
-    row shape differs by kind (ADR-003 §4.8)."""
+    row shape differs by kind (ADR-003 §4.8).
+
+    With no kind, asks for everything a question at a time, shows the row and
+    the equivalent command, and writes it once you confirm. A subcommand
+    given without its arguments asks for just those.
+    """
+    if ctx.invoked_subcommand is not None:
+        if scenario is not None or data_dir is not None:
+            raise click.UsageError(
+                "--scenario and --data-dir go after the kind: "
+                f"sim calendar add {ctx.invoked_subcommand} ... --scenario NAME"
+            )
+        return
+    context = _guide_context(_resolve_data_dir(data_dir), scenario)
+    guide = _calendar_guide()
+    click.echo("What kind of calendar row?")
+    for spec in calendar_guide.KINDS:
+        click.echo(f"  {spec.command:<17} {spec.summary}")
+    commands = [spec.command for spec in calendar_guide.KINDS]
+    while (kind := _prompt_with_completion("kind", choices=commands).strip()) not in commands:
+        click.echo(f"  not one of: {', '.join(commands)}")
+    spec = calendar_guide.kind_named(kind)
+    answers = guide.complete(spec, context, {})
+
+    def submit(params: dict[str, object]) -> None:
+        ctx.invoke(
+            calendar_add_group_command.commands[kind],
+            scenario=scenario, data_dir=data_dir, **params,
+        )
+
+    if not guide.review(spec, context, answers, submit, scenario=scenario):
+        ctx.exit(1)
 
 
 def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
@@ -2089,9 +2181,9 @@ def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
 
 
 @calendar_add_group_command.command("set-rate")
-@click.argument("date")
-@click.argument("series")
-@click.argument("rate_percent")
+@click.argument("date", required=False)
+@click.argument("series", required=False)
+@click.argument("rate_percent", required=False)
 @click.option(
     "--aux-kind", default="rate", show_default=True,
     help="aux_table kind this rate belongs to. The default 'rate' is an asset's own "
@@ -2108,7 +2200,7 @@ def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
 @_vary_row_options
 def calendar_add_set_rate(
-    date: str, series: str, rate_percent: str, aux_kind: str,
+    date: str | None, series: str | None, rate_percent: str | None, aux_kind: str,
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
@@ -2119,11 +2211,17 @@ def calendar_add_set_rate(
     """Append a set_rate event: SERIES starts earning RATE_PERCENT (e.g. 4.5) from DATE.
 
     RATE_PERCENT is a schema placeholder, ignored, when --vary-target=amount.
+    Arguments left out are asked for.
     """
     try:
         registries.parse_tags(tags)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
+    given = _ask_missing_arguments(
+        "set-rate", data_dir, scenario,
+        date=date, series=series, rate_percent=rate_percent, aux_kind=aux_kind,
+    )
+    date, series, rate_percent = given["date"], given["series"], given["rate_percent"]
     date = _validate_month_date(date)
     micros = _percent_to_rate_micros(rate_percent)
     vary_fields = _vary_row_fields(
@@ -2154,9 +2252,9 @@ def calendar_add_set_rate(
 
 
 @calendar_add_group_command.command("set-amount")
-@click.argument("date")
-@click.argument("scheduled_name")
-@click.argument("amount")
+@click.argument("date", required=False)
+@click.argument("scheduled_name", required=False)
+@click.argument("amount", required=False)
 @click.option("--param-date", default="",
               help="New base date for the rule (YYYY-MM or YYYY-MM-DD), optional.")
 @click.option("--scenario", default=None,
@@ -2169,7 +2267,7 @@ def calendar_add_set_rate(
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
 @_vary_row_options
 def calendar_add_set_amount(
-    date: str, scheduled_name: str, amount: str, param_date: str,
+    date: str | None, scheduled_name: str | None, amount: str | None, param_date: str,
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
@@ -2181,11 +2279,17 @@ def calendar_add_set_amount(
     (dollars) from DATE.
 
     AMOUNT is a schema placeholder, ignored, when --vary-target=amount.
+    Arguments left out are asked for.
     """
     try:
         registries.parse_tags(tags)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
+    given = _ask_missing_arguments(
+        "set-amount", data_dir, scenario,
+        date=date, scheduled_name=scheduled_name, amount=amount,
+    )
+    date, scheduled_name, amount = given["date"], given["scheduled_name"], given["amount"]
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     names = _scheduled_names(data_dir_p, scenario)
@@ -2219,8 +2323,8 @@ def calendar_add_set_amount(
 
 
 @calendar_add_group_command.command("retire-scheduled")
-@click.argument("date")
-@click.argument("scheduled_name")
+@click.argument("date", required=False)
+@click.argument("scheduled_name", required=False)
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -2231,7 +2335,7 @@ def calendar_add_set_amount(
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
 @_vary_row_options
 def calendar_add_retire_scheduled(
-    date: str, scheduled_name: str,
+    date: str | None, scheduled_name: str | None,
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
@@ -2242,6 +2346,7 @@ def calendar_add_retire_scheduled(
     """Append a retire_scheduled event: SCHEDULED_NAME stops firing from DATE.
 
     Only --vary-target=date is meaningful here (no amount column to vary).
+    Arguments left out are asked for.
     """
     if vary_target == "amount":
         raise click.ClickException(
@@ -2251,6 +2356,10 @@ def calendar_add_retire_scheduled(
         registries.parse_tags(tags)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
+    given = _ask_missing_arguments(
+        "retire-scheduled", data_dir, scenario, date=date, scheduled_name=scheduled_name,
+    )
+    date, scheduled_name = given["date"], given["scheduled_name"]
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     names = _scheduled_names(data_dir_p, scenario)
@@ -2277,7 +2386,7 @@ def calendar_add_retire_scheduled(
 
 
 @calendar_add_group_command.command("latent-factor")
-@click.argument("name")
+@click.argument("name", required=False)
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -2289,15 +2398,17 @@ def calendar_add_retire_scheduled(
 @click.option("--vary-correlation", default=None,
               help="rho with --vary-correlate-with, between -1 and 1.")
 def calendar_add_latent_factor(
-    name: str, scenario: str | None, data_dir: Path | None, description: str,
+    name: str | None, scenario: str | None, data_dir: Path | None, description: str,
     vary_correlate_with: str | None, vary_correlation: str | None,
 ) -> None:
     """Append a latent factor NAME (ADR-008): a shared influence ("the
     inflation regime") that varying rows correlate with through
     --vary-correlate-with, but that isn't itself a modeled value.
 
-    A factor with no dependents yet loads with a warning.
+    A factor with no dependents yet loads with a warning. NAME is asked for
+    if left out.
     """
+    name = _ask_missing_arguments("latent-factor", data_dir, scenario, name=name)["name"]
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     row = {
