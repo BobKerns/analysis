@@ -98,8 +98,8 @@ The loader rejects:
 - The **Monte Carlo correlation report** (ADR-007 §6.2) leaves factors out of its inputs (their effect reaches the outcome only through their dependents), and notes when a batch's rows are correlated, since its per-row numbers assume independence.
 
 **Follow-ups, as sub-issues of #30:**
-- **The Monte Carlo sensitivity report assumes independent inputs** (ADR-007 §6.2: SRRC ≈ ρ, pinning by marginal ρ). With correlated inputs it should rank and pin by SRRC or partial rank correlation (PRCC), and show the achieved rank correlations next to the expected `(6/π)·asin(ρ/2)` per pair.
-- **One-at-a-time perturbation of latent factors.**
+- **The Monte Carlo sensitivity report assumes independent inputs** (ADR-007 §6.2: SRRC ≈ ρ, pinning by marginal ρ). With correlated inputs it should rank and pin by SRRC or partial rank correlation (PRCC), and show, per correlated pair, the achieved correlation of the recorded normal scores (`z`) against the specified or implied ρ. That's scores rather than values, since tied values (§1) don't follow `(6/π)·asin(ρ/2)`. This is [#38](https://github.com/BobKerns/analysis/issues/38).
+- **One-at-a-time perturbation of latent factors** ([#39](https://github.com/BobKerns/analysis/issues/39)).
 
 ### 7. Schema
 
