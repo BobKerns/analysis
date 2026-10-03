@@ -48,7 +48,7 @@ sim calendar add retire-scheduled 2029-06-30 salary_bob \
 ```
 
 `sim calendar add <kind> ...` validates the row by loading the whole
-scenario before it commits the write (reverting it if it doesn't load), so
+scenario from a staged copy, and writes it only if that load succeeds, so
 a bad combination — wrong series name, a range that doesn't make sense —
 is caught immediately rather than at `sim run` time. See ADR-006 §2 for
 every `vary_*` column and what each distribution needs.

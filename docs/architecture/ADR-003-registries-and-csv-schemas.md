@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior. Also amended in place after acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7); and [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8). [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.10), the correlation columns (§4.8), and factors merged by name (§4.5). [#34](https://github.com/BobKerns/analysis/issues/34): month date columns accept `YYYY-MM` or `YYYY-MM-DD`, pinned to month-end; day-precise columns are named, a biweekly rule's dates and a `retire_scheduled` date keep a full date's day, and a date-varying row's bare-month bounds span the month (§4, §4.8). Git history has the earlier text.
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior. Also amended in place after acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7); and [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8). [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.10), the correlation columns (§4.8), and factors merged by name (§4.5). [#34](https://github.com/BobKerns/analysis/issues/34): month date columns accept `YYYY-MM` or `YYYY-MM-DD`, pinned to month-end; day-precise columns are named, a biweekly rule's dates and a `retire_scheduled` date keep a full date's day, and a date-varying row's bare-month bounds span the month (§4, §4.8). [#44](https://github.com/BobKerns/analysis/issues/44): CLI edits are validated on a staged copy before anything is written (§7). Git history has the earlier text.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility).
 
 ## Context
@@ -799,6 +799,35 @@ CSV row's `tags` cell via pandas, preserving the existing header-validation
 contract. Calendar events are tagged via CSV directly (no stable CLI key yet).
 Tags are scenario-scoped today; when scenario inheritance lands they will be
 inherited along the parent chain.
+
+### 7. CLI edits are validated before they are written
+
+The CSVs are the source of truth and the loader is their only validator, so
+every `analysis sim` command that edits scenario CSVs (`calendar add`,
+`transfer add`, `scheduled add`/`import-baseline`, `account
+add|edit|rename|delete|sync|import-quicken`, the `tag` commands, `scenario
+create`, `ensemble create`) goes through one staged edit
+(`analysis.sim.staging.staged_edit`):
+
+1. **Preflight.** The scenario being edited (or a new scenario's parent) is
+   loaded as it stands. If it already fails, the command stops before any
+   prompt, saying the scenario is already broken -- the failure is not
+   pinned on the row being added.
+2. **Stage.** The command writes its changes to a private copy of
+   `scenarios/` (and the data repo's top-level files), never in place.
+3. **Validate.** Every scenario whose folder changed, and every scenario
+   inheriting from one, is loaded from the copy. Any failure -- a load issue
+   or a loader crash -- rejects the edit with nothing written. An inheriting
+   scenario that already failed before the edit is reported as a warning,
+   not blamed on it.
+4. **Commit.** Only then are the changed files copied back, each by an
+   atomic rename.
+
+A rejected edit, a crash midway through a multi-file edit (`account rename`,
+`account delete`), or an interrupt at a prompt therefore leaves the data
+repo exactly as it was. `account delete` also removes `calendar.csv`
+`set_rate` rows for the account's own growth series when nothing else reads
+that series, since the loader would otherwise reject them as dead.
 
 ## Consequences
 

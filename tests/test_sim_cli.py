@@ -579,14 +579,13 @@ def test_sim_account_delete_lists_references_and_removes_them(test_data_dir: Pat
         values = list(csv.DictReader(fh))
     assert next(row for row in values if row["account_name"] == "Asset_Savings")["refill_chain"] == ""
 
-    # account delete doesn't know calendar.csv's series column named this
-    # account's own growth rate -- with the account gone, that row is now
-    # unread by anything, so drop it too (the series/reference validator
-    # would otherwise correctly flag it as dead).
+    # calendar.csv's set_rate row for the account's own growth series has no
+    # reader once the account is gone, so it is listed and deleted with it.
+    assert "calendar.csv row 2: series (its growth rate)" in result.output
     calendar_path = data / "scenarios" / "retire_alice" / "calendar.csv"
     calendar = pd.read_csv(calendar_path, dtype=str, keep_default_na=False)
-    calendar = calendar[calendar["series"] != "Asset_Checking"]
-    calendar.to_csv(calendar_path, index=False)
+    assert "Asset_Checking" not in set(calendar["series"])
+    assert len(calendar) == 4
 
     check = runner.invoke(
         main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
@@ -1612,8 +1611,8 @@ def test_sim_calendar_add_set_rate_rejects_series_nothing_reads(
 ) -> None:
     """A row that's individually well-formed can still break the scenario --
     nothing reads (inflation, 'no_such_series') -- and the loader is the only
-    place that knows that, so `calendar add` re-validates by loading and
-    reverts the CSV write rather than leaving a dead row behind."""
+    place that knows that, so `calendar add` validates a staged copy by
+    loading it and never writes the dead row to the real CSV (issue #44)."""
     path = retire_alice_csv("calendar.csv")
     before = path.read_text()
     runner = CliRunner()
@@ -1627,7 +1626,7 @@ def test_sim_calendar_add_set_rate_rejects_series_nothing_reads(
     )
     assert result.exit_code != 0
     assert "is never read" in result.output
-    assert "reverted" in result.output
+    assert "nothing was written" in result.output
     assert path.read_text() == before
 
 

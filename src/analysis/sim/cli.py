@@ -6,7 +6,7 @@ import csv as _csv
 import json
 import secrets
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import os
 import sqlite3
 import tempfile
@@ -74,6 +74,7 @@ from analysis.sim.quicken import (
     parse_net_worth_export,
 )
 import analysis.sim.scenario as sc
+from analysis.sim.staging import EditRejected, ScenarioAlreadyBroken, StagedEdit, staged_edit
 from analysis.sim.dates import MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode
 
@@ -735,32 +736,21 @@ def ensemble_create(
         raise click.ClickException(f"--size must be a positive integer (got {ensemble_size})")
     data_dir_p = _resolve_data_dir(data_dir)
     seed = seed if seed is not None else secrets.randbelow(2**31)
-    try:
-        target = sc.create_scenario(data_dir_p, name, parent, description=description)
-    except Exception as exc:
-        raise click.ClickException(f"failed to create scenario {name}: {exc}") from None
-
-    scenario_csv = target / "scenario.csv"
-    df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
-    meta = json.loads(df.loc[0, "meta_json"] or "{}")
-    meta["ensemble_size"] = ensemble_size
-    df.loc[0, "seed"] = str(seed)
-    df.loc[0, "meta_json"] = json.dumps(meta, separators=(",", ":"))
-    df.to_csv(scenario_csv, index=False)
-
-    with tempfile.TemporaryDirectory() as td:
+    # Preflights PARENT, then creates and validates the recipe in a staged copy.
+    with _scenario_edit(data_dir_p, parent) as edit:
         try:
-            load_scenario(
-                data_dir_p, name, intent_dir=Path(td), compute_stamps=False,
-                allow_dirty_data=True,
-            )
-        except LoadError as exc:
-            for issue in exc.issues:
-                click.echo(f"  error: {issue}", err=True)
-            raise click.ClickException(
-                f"created {target}, but it does not load; leaving it in place "
-                "for inspection"
-            ) from None
+            staged = sc.create_scenario(edit.data_dir, name, parent, description=description)
+        except Exception as exc:
+            raise click.ClickException(f"failed to create scenario {name}: {exc}") from None
+
+        scenario_csv = staged / "scenario.csv"
+        df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
+        meta = json.loads(df.loc[0, "meta_json"] or "{}")
+        meta["ensemble_size"] = ensemble_size
+        df.loc[0, "seed"] = str(seed)
+        df.loc[0, "meta_json"] = json.dumps(meta, separators=(",", ":"))
+        df.to_csv(scenario_csv, index=False)
+    target = data_dir_p / "scenarios" / name
 
     parent_ref = _resolve_scenario(data_dir_p, parent)
     write_current_scenario(data_dir_p, name)
@@ -1571,36 +1561,64 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
     df.to_csv(path, index=False)
 
 
+@contextmanager
+def _scenario_edit(data_dir: Path, scenario: str | None) -> Iterator[StagedEdit]:
+    """``staged_edit`` for a CLI command: edits land only if every affected
+    scenario still loads (issue #44). Issues go to stderr as ``error:`` lines,
+    like ``sim check``, and the command fails with nothing written."""
+    try:
+        with staged_edit(data_dir, scenario) as edit:
+            yield edit
+    except ScenarioAlreadyBroken as exc:
+        for issue in exc.issues:
+            click.echo(f"  error: {issue}", err=True)
+        raise click.ClickException(
+            f"scenario {exc.scenario!r} already fails to load, before this change "
+            f"({len(exc.issues)} issue(s)); fix it first ('sim check {exc.scenario}'). "
+            "Nothing was written."
+        ) from None
+    except EditRejected as exc:
+        for issue in exc.issues:
+            click.echo(f"  error: {issue}", err=True)
+        raise click.ClickException(
+            f"this change would leave {len(exc.issues)} issue(s); nothing was written"
+        ) from None
+    except LoadError as exc:  # e.g. an unknown scenario, before anything was staged
+        raise click.ClickException("; ".join(exc.issues)) from None
+    for warning in edit.warnings:
+        click.echo(f"WARN: {warning}", err=True)  # ADR-004 §6's format
+
+
+@contextmanager
+def _intent_db(data_dir: Path, scenario: str | None) -> Iterator[tuple[sqlite3.Connection, str]]:
+    """``open_intent_db`` for an edit command's up-front checks: a scenario
+    that doesn't load says so plainly, rather than as a traceback or as if the
+    row being added were at fault."""
+    with ExitStack() as stack:
+        try:
+            con, name = stack.enter_context(open_intent_db(data_dir, scenario))
+        except LoadError as exc:
+            for issue in exc.issues:
+                click.echo(f"  error: {issue}", err=True)
+            raise click.ClickException(
+                f"scenario {scenario or 'current'!r} already fails to load "
+                f"({len(exc.issues)} issue(s)); fix it first (sim check). Nothing was written."
+            ) from None
+        yield con, name
+
+
 def _append_and_validate(
     path: Path, header: tuple[str, ...], row: dict[str, str],
     *, data_dir: Path, scenario_name: str,
 ) -> None:
-    """``_append_csv_row``, then re-validate the whole scenario by loading it.
+    """``_append_csv_row``, written only if the scenario still loads with it.
 
     A CLI-authored row can be individually well-formed and still break the
-    scenario -- e.g. a series/aux_kind pair nothing reads (ADR-006). Revert
-    the write and raise rather than leaving a broken CSV behind for the next
-    ``sim load``/``sim run`` to discover it. Same temp-dir/no-stamps pattern
-    as ``sim check``, so this never touches the real intent file or trips
-    the git-dirty gate on the very row it just wrote.
+    scenario -- e.g. a series/aux_kind pair nothing reads (ADR-006) -- so the
+    row is appended to a staged copy and validated there by ``_scenario_edit``.
     """
-    original = path.read_text() if path.exists() else None
-    _append_csv_row(path, header, row)
-    with tempfile.TemporaryDirectory() as td:
-        try:
-            _echo_load_warnings(
-                load_scenario(data_dir, scenario_name, intent_dir=Path(td), compute_stamps=False)
-            )
-        except LoadError as exc:
-            if original is None:
-                path.unlink()
-            else:
-                path.write_text(original)
-            for issue in exc.issues:
-                click.echo(f"  error: {issue}", err=True)
-            raise click.ClickException(
-                f"{len(exc.issues)} issue(s); reverted {path}"
-            ) from None
+    with _scenario_edit(data_dir, scenario_name) as edit:
+        _append_csv_row(edit.path(path), header, row)
 
 
 def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
@@ -1911,7 +1929,7 @@ def _do_add_transfer(
     """Shared body of ``sim transfer add`` / ``sim calendar add transfer``."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    with open_intent_db(data_dir_p, scenario) as (con, _name):
+    with _intent_db(data_dir_p, scenario) as (con, _name):
         accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
         lot_info = _lot_info(con)
 
@@ -2056,7 +2074,7 @@ def calendar_add_group_command() -> None:
 
 
 def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
-    with open_intent_db(data_dir, scenario) as (con, _name):
+    with _intent_db(data_dir, scenario) as (con, _name):
         return {r[0] for r in con.execute("SELECT name FROM scheduled_transaction")}
 
 
@@ -2398,8 +2416,8 @@ def scheduled_add(
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
-    with open_intent_db(data_dir_p, scenario) as (con, _name):
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    with _intent_db(data_dir_p, scenario) as (con, _name):
         accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
         lot_info = _lot_info(con)
         existing_names = {
@@ -2476,7 +2494,8 @@ def scheduled_add(
         "tags": tags,
     }
     path = scenario_dir / "scheduled.csv"
-    _append_csv_row(path, registries.SCHEDULED_CSV_HEADER, row)
+    _append_and_validate(path, registries.SCHEDULED_CSV_HEADER, row,
+                         data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
         f"appended scheduled row '{row_name}' ({cadence}) "
         f"{from_account} -> {to_account} {_fmt_cents(cents).strip()} to {path}"
@@ -2563,7 +2582,7 @@ def scheduled_import_baseline(
         if account_map_path.exists()
         else {}
     )
-    with open_intent_db(data_dir_p, scenario_name) as (con, _):
+    with _intent_db(data_dir_p, scenario_name) as (con, _):
         scenario_accounts = {row[0] for row in con.execute("SELECT name FROM account")}
         scenario_sources = scenario_accounts | {
             row[0] for row in con.execute("SELECT name FROM chain")
@@ -2618,7 +2637,8 @@ def scheduled_import_baseline(
         for row in rows:
             click.echo(f"  {row['name']}: {row['amount']} -> {row['to_account']}")
         return
-    replace_generated_scheduled_rows(scheduled_path, rows)
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        replace_generated_scheduled_rows(edit.path(scheduled_path), rows)
     click.echo(
         f"replaced {len(rows)} generated baseline row(s) in {scheduled_path} "
         f"for scenario {scenario_name}"
@@ -2765,7 +2785,7 @@ def add_account(
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     data_dir_p = _resolve_data_dir(data_dir)
-    with open_intent_db(data_dir_p, scenario) as (con, scen_name):
+    with _intent_db(data_dir_p, scenario) as (con, scen_name):
         existing = {r[0] for r in con.execute("SELECT name FROM account")}
         persons = [r[0] for r in con.execute("SELECT id FROM person ORDER BY id")]
 
@@ -2833,30 +2853,33 @@ def add_account(
         "opened": opened, "closed": closed, "meta_json": "{}",
         "tags": tags,
     }
-    accounts_path = data_dir_p / "scenarios" / scen_name / "accounts.csv"
-    _append_csv_row(accounts_path, registries.ACCOUNTS_CSV_HEADER, row)
-    click.echo(f"appended account '{name}' to {accounts_path}")
-
     if opening_balance is None and kind in {"asset", "liability"}:
         if click.confirm("set opening balance now?", default=True):
             opening_balance = _prompt_with_completion(
                 "opening balance (dollars, e.g. 1234.56)"
             )
+    cents = _parse_amount_cents(opening_balance) if opening_balance else None
 
-    if opening_balance:
-        cents = _parse_amount_cents(opening_balance)
-        values_path = data_dir_p / "scenarios" / scen_name / "account_values.csv"
-        _append_csv_row(
-            values_path,
-            registries.ACCOUNT_VALUES_CSV_HEADER,
-            {
-                "account_name": name,
-                "lot": registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else "",
-                "opening_balance": f"{cents // 100}.{cents % 100:02d}",
-                "opening_cost_basis": "",
-                "prior_year_end_balance": "",
-            },
-        )
+    # Both rows go in as one edit, after every prompt: the account and its
+    # opening balance are validated together and land together or not at all.
+    accounts_path = data_dir_p / "scenarios" / scen_name / "accounts.csv"
+    values_path = data_dir_p / "scenarios" / scen_name / "account_values.csv"
+    with _scenario_edit(data_dir_p, scen_name) as edit:
+        _append_csv_row(edit.path(accounts_path), registries.ACCOUNTS_CSV_HEADER, row)
+        if cents is not None:
+            _append_csv_row(
+                edit.path(values_path),
+                registries.ACCOUNT_VALUES_CSV_HEADER,
+                {
+                    "account_name": name,
+                    "lot": registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else "",
+                    "opening_balance": f"{cents // 100}.{cents % 100:02d}",
+                    "opening_cost_basis": "",
+                    "prior_year_end_balance": "",
+                },
+            )
+    click.echo(f"appended account '{name}' to {accounts_path}")
+    if cents is not None:
         click.echo(
             f"appended opening balance {_fmt_cents(cents).strip()} to {values_path}"
         )
@@ -2881,15 +2904,22 @@ def _rename_account_row_values(path: Path, field_names: tuple[str, ...], old_nam
 
 def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: str, new_name: str) -> None:
     """Rename an account and update references across scenario CSV files."""
-    scenario_dir, _ = _resolve_scenario_dir(data_dir, scenario)
-    with open_intent_db(data_dir, scenario) as (con, _name):
-        existing = {r[0] for r in con.execute("SELECT name FROM account")}
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir, scenario)
+    with _scenario_edit(data_dir, scenario_name) as edit:
+        existing = {r[0] for r in edit.con.execute("SELECT name FROM account")}
+        if old_name not in existing:
+            raise click.ClickException(f"unknown account: {old_name!r}")
+        if new_name in existing and old_name != new_name:
+            raise click.ClickException(f"account already exists: {new_name!r}")
+        if not _rename_account_files(edit.scenario_dir, old_name, new_name):
+            raise click.ClickException(f"account not found in scenario files: {old_name!r}")
 
-    if old_name not in existing:
-        raise click.ClickException(f"unknown account: {old_name!r}")
-    if new_name in existing and old_name != new_name:
-        raise click.ClickException(f"account already exists: {new_name!r}")
+    click.echo(f"renamed account '{old_name}' to '{new_name}' in {scenario_dir}")
 
+
+def _rename_account_files(scenario_dir: Path, old_name: str, new_name: str) -> bool:
+    """Rename an account's references across one scenario folder's CSVs;
+    whether anything changed."""
     changed = False
     accounts_path = scenario_dir / "accounts.csv"
     changed |= _rename_account_row_values(accounts_path, ("name",), old_name, new_name)
@@ -2909,11 +2939,7 @@ def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: 
     changed |= _rename_account_row_values(scenario_dir / "year_to_date.csv",
                                           ("from_account", "to_account"),
                                           old_name, new_name)
-
-    if not changed:
-        raise click.ClickException(f"account not found in scenario files: {old_name!r}")
-
-    click.echo(f"renamed account '{old_name}' to '{new_name}' in {scenario_dir}")
+    return changed
 
 
 _LOT_CHAIN_FIELDS = ("refill_chain", "overflow_chain")
@@ -2927,8 +2953,45 @@ _ACCOUNT_REFERENCE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
-    """Return direct CSV references to an account in deterministic display order."""
+def _own_growth_series(con: sqlite3.Connection, name: str, series: str) -> str | None:
+    """``series`` (account ``name``'s accounts.csv growth series) if nothing
+    else reads it.
+
+    calendar.csv set_rate rows for that series (aux_kind 'rate') have no
+    reader once the account is gone, and the loader rejects them as dead, so
+    ``account delete`` removes them with the account. A series another
+    account or a scheduled row also uses is left alone: if the rows are still
+    dead without this account, validation says so rather than guessing.
+    """
+    if not series:
+        return None
+    # The loader turns an account's growth series into a scheduled row into
+    # that account; rows touching the account are deleted along with it.
+    shared = con.execute(
+        "SELECT 1 FROM scheduled_transaction st "
+        "JOIN chain cf ON cf.id = st.from_account JOIN chain ct ON ct.id = st.to_account "
+        "WHERE st.series = ? AND cf.name != ? AND ct.name != ? "
+        "UNION ALL SELECT 1 FROM account_model_member m JOIN account a ON a.id = m.account_id "
+        "WHERE m.series = ? AND a.name != ?",
+        (series, name, name, series, name),
+    ).fetchone()
+    return None if shared else series
+
+
+def _is_growth_rate_row(row: pd.Series, series: str | None) -> bool:
+    """A calendar.csv set_rate row for ``series`` under aux_kind 'rate'."""
+    if not series or row.get("kind") != "set_rate" or row.get("series") != series:
+        return False
+    try:
+        params = json.loads(row.get("params_json") or "{}")
+    except json.JSONDecodeError:
+        return False
+    return params.get("aux_kind", "rate") == "rate"
+
+
+def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = None) -> list[str]:
+    """Return direct CSV references to an account in deterministic display order,
+    plus calendar.csv's set_rate rows for its own growth ``series``."""
     references: list[str] = []
     values_path = scenario_dir / "account_values.csv"
     if values_path.exists():
@@ -2960,6 +3023,8 @@ def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
         available_fields = tuple(field for field in fields if field in df.columns)
         for idx, row in df.iterrows():
             matched_fields = [field for field in available_fields if row[field] == name]
+            if path.name == "calendar.csv" and _is_growth_rate_row(row, series):
+                matched_fields.append("series (its growth rate)")
             if matched_fields:
                 references.append(
                     f"  {path.relative_to(scenario_dir)} row {idx + 2}: "
@@ -2968,8 +3033,9 @@ def _account_reference_rows(scenario_dir: Path, name: str) -> list[str]:
     return references
 
 
-def _delete_account_references(scenario_dir: Path, name: str) -> None:
-    """Remove rows dependent on an account, preserving the CSV headers."""
+def _delete_account_references(scenario_dir: Path, name: str, series: str | None = None) -> None:
+    """Remove rows dependent on an account, and calendar.csv's set_rate rows
+    for its own growth ``series``, preserving the CSV headers."""
     paths = [
         (scenario_dir / filename, fields)
         for filename, fields in _ACCOUNT_REFERENCE_FIELDS
@@ -2986,6 +3052,11 @@ def _delete_account_references(scenario_dir: Path, name: str) -> None:
         if not available_fields:
             continue
         keep = ~df[available_fields].eq(name).any(axis=1)
+        if path.name == "calendar.csv" and series:
+            keep &= pd.Series(
+                [not _is_growth_rate_row(row, series) for _, row in df.iterrows()],
+                index=df.index, dtype=bool,
+            )
         if not keep.all():
             df.loc[keep].to_csv(path, index=False)
 
@@ -3019,7 +3090,7 @@ def _delete_account_references(scenario_dir: Path, name: str) -> None:
 def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> None:
     """Delete an account and any direct CSV rows that reference it."""
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     accounts_path = scenario_dir / "accounts.csv"
     if not accounts_path.exists():
         raise click.ClickException(f"accounts.csv not found: {accounts_path}")
@@ -3028,7 +3099,10 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
     if "name" not in df.columns or not (df["name"] == name).any():
         raise click.ClickException(f"unknown account: {name!r}")
 
-    references = _account_reference_rows(scenario_dir, name)
+    own_series = df.loc[df["name"] == name, "series"].iloc[0] if "series" in df.columns else ""
+    with _intent_db(data_dir_p, scenario_name) as (con, _name):
+        series = _own_growth_series(con, name, own_series)
+    references = _account_reference_rows(scenario_dir, name, series)
     if references:
         click.echo(f"account '{name}' is referenced by:")
         click.echo("\n".join(references))
@@ -3036,7 +3110,8 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
             click.echo("aborted")
             return
 
-    _delete_account_references(scenario_dir, name)
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        _delete_account_references(edit.scenario_dir, name, series)
     click.echo(f"deleted account '{name}' from {accounts_path}")
 
 
@@ -3072,7 +3147,7 @@ def edit_account(
 ) -> None:
     """Edit an account's fields, prompting with current values as defaults when needed."""
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _ = _resolve_scenario_dir(data_dir_p, scenario)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     accounts_path = scenario_dir / "accounts.csv"
     if not accounts_path.exists():
         raise click.ClickException(f"accounts.csv not found: {accounts_path}")
@@ -3086,8 +3161,9 @@ def edit_account(
     idx = matches[0]
     current = df.loc[idx].to_dict()
 
-    with open_intent_db(data_dir_p, scenario) as (con, _name):
+    with _intent_db(data_dir_p, scenario_name) as (con, _name):
         persons = [r[0] for r in con.execute("SELECT id FROM person ORDER BY id")]
+        existing = {r[0] for r in con.execute("SELECT name FROM account")}
 
     direct_values = (
         new_name, kind, subkind, owner, tax_treatment,
@@ -3181,10 +3257,13 @@ def edit_account(
         new_name, kind, subkind, owner, tax_treatment,
         opened, closed, meta_json, tags,
     ]
-    df.to_csv(accounts_path, index=False)
-
-    if new_name != name:
-        _rename_account_in_scenario(data_dir_p, scenario, name, new_name)
+    if new_name != name and new_name in existing:
+        raise click.ClickException(f"account already exists: {new_name!r}")
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        df.to_csv(edit.path(accounts_path), index=False)
+        if new_name != name:
+            # accounts.csv already carries new_name; this renames the references.
+            _rename_account_files(edit.scenario_dir, name, new_name)
 
     click.echo(f"updated account '{new_name}' in {accounts_path}")
 
@@ -3553,10 +3632,11 @@ def sync_account_values(
         })
 
     # Write back
-    with values_path.open("w", newline="", encoding="utf-8") as f:
-        writer = _csv.DictWriter(f, fieldnames=values_header, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(values_rows)
+    with _scenario_edit(data_dir_p, scen_name) as edit:
+        with edit.path(values_path).open("w", newline="", encoding="utf-8") as f:
+            writer = _csv.DictWriter(f, fieldnames=values_header, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(values_rows)
 
     click.echo(f"synced {len(missing)} missing account(s) to {values_path}")
     for name in missing:
@@ -3723,7 +3803,8 @@ def import_quicken(
         )
         return
 
-    df.to_csv(values_path, index=False)
+    with _scenario_edit(data_dir_p, scen_name) as edit:
+        df.to_csv(edit.path(values_path), index=False)
     click.echo(
         f"updated {changed} account(s) in {values_path} "
         f"({len(skipped)} skipped, {len(ineligible)} ineligible, "
@@ -3824,12 +3905,13 @@ def _scenario_write(
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     data_dir_p = _resolve_data_dir(data_dir)
-    try:
-        with open_scenario(data_dir_p, scenario) as sc:
-            method = sc.add_tags if op == "add" else sc.remove_tags
-            new_val = method(item_type, item_name, tag_tokens)  # type: ignore[arg-type]
-    except (FileNotFoundError, KeyError, ValueError) as e:
-        raise click.ClickException(str(e)) from None
+    with _scenario_edit(data_dir_p, scenario) as edit:
+        try:
+            with open_scenario(edit.data_dir, edit.name) as sc:
+                method = sc.add_tags if op == "add" else sc.remove_tags
+                new_val = method(item_type, item_name, tag_tokens)  # type: ignore[arg-type]
+        except (FileNotFoundError, KeyError, ValueError) as e:
+            raise click.ClickException(str(e)) from None
     click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
 
 
@@ -3984,21 +4066,10 @@ def scenario_create(
     }
     try:
         data_dir_p = _resolve_data_dir(data_dir)
-        target = sc.create_scenario(data_dir_p, name, parent,
-                                        description=description)
-        with tempfile.TemporaryDirectory() as td:
-            try:
-                load_scenario(
-                    data_dir_p, name, intent_dir=Path(td), compute_stamps=False,
-                    allow_dirty_data=True,
-                )
-            except LoadError as exc:
-                for issue in exc.issues:
-                    click.echo(f"  error: {issue}", err=True)
-                raise click.ClickException(
-                    f"created {target}, but it does not load; leaving it in place "
-                    "for inspection"
-                ) from None
+        # Preflights PARENT, then creates and validates NAME in a staged copy.
+        with _scenario_edit(data_dir_p, parent) as edit:
+            sc.create_scenario(edit.data_dir, name, parent, description=description)
+        target = data_dir_p / "scenarios" / name
 
         parent_ref = _resolve_scenario(data_dir_p, parent)
         write_current_scenario(data_dir_p, name)
