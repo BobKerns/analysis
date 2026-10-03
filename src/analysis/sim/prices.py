@@ -23,8 +23,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-import certifi
 import pandas as pd
+import truststore
 
 if TYPE_CHECKING:
     from analysis.sim.connection import ScenarioConnection
@@ -51,18 +51,15 @@ class PriceProvider(Protocol):
 
 
 def _ssl_context() -> ssl.SSLContext:
-    """Python's default verification context, plus certifi's root bundle (#40).
+    """An SSL context that verifies certificates with the operating system's
+    own trust store (#40): the macOS keychain, the Windows certificate store,
+    or the system bundle on Linux, via ``truststore``.
 
-    Verifying Yahoo's certificate needs a store of trusted root authorities.
-    The python.org build of Python on macOS ships with none (until its
-    "Install Certificates.command" is run) and doesn't read the system
-    keychain, so the default context alone fails with CERTIFICATE_VERIFY_FAILED.
-    Adding certifi's bundle on top of the defaults makes it work however
-    Python was installed, while still honoring SSL_CERT_FILE and any system
-    store the default context does find."""
-    context = ssl.create_default_context()
-    context.load_verify_locations(cafile=certifi.where())
-    return context
+    So a root you've trusted locally (a corporate proxy, a home CA) is
+    honored, the root list follows OS updates, and it doesn't matter that
+    the python.org build of Python on macOS ships with no root store of its
+    own (which made fetching fail with CERTIFICATE_VERIFY_FAILED)."""
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
 
 def _http_get(url: str) -> bytes:
@@ -90,7 +87,18 @@ class YahooProvider:
             raise PriceError(
                 "not found at Yahoo" if exc.code == 404 else f"Yahoo returned HTTP {exc.code}"
             ) from None
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                # OpenSSL's own wording ("unable to get local issuer
+                # certificate") is misleading: what's missing is a trusted
+                # *root* for Yahoo's certificate chain.
+                detail = exc.reason.verify_message or exc.reason.reason or exc.reason
+                raise PriceError(
+                    "could not verify Yahoo's HTTPS certificate: its chain doesn't lead to a "
+                    f"root certificate this system trusts ({detail})"
+                ) from None
+            raise PriceError(f"could not reach Yahoo ({exc.reason})") from None
+        except (TimeoutError, json.JSONDecodeError) as exc:
             raise PriceError(f"could not reach Yahoo ({exc})") from None
         chart = payload.get("chart", {})
         if chart.get("error"):

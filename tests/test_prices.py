@@ -205,13 +205,16 @@ def test_a_symbol_that_stopped_trading_says_when_it_last_did() -> None:
         YahooProvider(lambda url: payload).closes("OLD", date(2026, 4, 1), date(2026, 9, 24))
 
 
-def test_http_get_verifies_with_a_root_bundle_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """#40: python.org's macOS Python has no root certificate store by
-    default, so fetching failed with CERTIFICATE_VERIFY_FAILED. _http_get
-    must pass a verifying context with certifi's roots loaded. (Every other
-    test injects a fake http_get, which is why this went unnoticed.)"""
-    import ssl
+def test_http_get_verifies_with_the_system_trust_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#40: python.org's macOS Python has no root certificate store of its
+    own, so fetching failed with CERTIFICATE_VERIFY_FAILED. _http_get must
+    verify through the OS trust store (truststore: the macOS keychain, the
+    Windows store, the Linux system bundle), which also honors locally
+    trusted roots. (Every other test injects a fake http_get, which is why
+    this went unnoticed.)"""
     import urllib.request
+
+    import truststore
 
     from analysis.sim import prices
 
@@ -233,10 +236,33 @@ def test_http_get_verifies_with_a_root_bundle_loaded(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     assert prices._http_get("https://example.invalid/x") == b"{}"
-    context = seen["context"]
-    assert isinstance(context, ssl.SSLContext)
-    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
-    assert context.get_ca_certs(), "no root certificates loaded"
+    assert isinstance(seen["context"], truststore.SSLContext)
+
+
+def test_a_certificate_failure_says_what_is_missing() -> None:
+    """OpenSSL's "unable to get local issuer certificate" is misleading: the
+    message says the chain doesn't lead to a trusted root."""
+    import ssl
+    import urllib.error
+
+    error = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    error.verify_message = "unable to get local issuer certificate"
+
+    def get(url: str) -> bytes:
+        raise urllib.error.URLError(error)
+
+    with pytest.raises(PriceError, match="doesn't lead to a root certificate this system trusts"):
+        YahooProvider(get).closes("X", date(2026, 5, 1), date(2026, 6, 1))
+
+
+def test_other_connection_failures_still_say_unreachable() -> None:
+    import urllib.error
+
+    def get(url: str) -> bytes:
+        raise urllib.error.URLError("nodename nor servname provided")
+
+    with pytest.raises(PriceError, match="could not reach Yahoo"):
+        YahooProvider(get).closes("X", date(2026, 5, 1), date(2026, 6, 1))
 
 
 def test_the_default_yahoo_provider_uses_the_real_http_get() -> None:
