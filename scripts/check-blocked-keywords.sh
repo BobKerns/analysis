@@ -2,9 +2,10 @@
 # Fail if blocked keywords (.githooks/blocked-keywords.txt) appear in:
 #   --staged        the staged version of every file in the pending commit
 #   --all           every tracked file
-#   --message FILE  a commit message ('#' comment lines skipped, as git does)
-#   --text FILE     any other text, every line checked (a pull request's
-#                   title and body, where '#' starts a Markdown heading)
+#   --message FILE  a commit message being written ('#' comment lines
+#                   skipped, as git does)
+#   --text FILE     any other text, every line checked (a stored commit
+#                   message, or a pull request's title and body)
 # Set ALLOW_BLOCKED_KEYWORDS=1 to let a deliberate use through.
 # cspell:ignore ACMR
 set -eu

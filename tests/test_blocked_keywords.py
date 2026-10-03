@@ -119,6 +119,7 @@ def test_pull_request_text_is_checked_including_markdown_headings(scratch_repo: 
     assert result.returncode == 1
     assert "3:" in result.stderr
 
+
 def test_the_override_lets_a_deliberate_use_through(scratch_repo: Path) -> None:
     _stage(scratch_repo, "notes.txt", _keywords()[0] + "\n")
 
