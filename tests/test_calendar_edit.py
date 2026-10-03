@@ -362,3 +362,22 @@ def test_a_defaulted_scenario_is_resolved_once_and_then_named(
     assert result.exit_code == 0, result.output
     assert asked_for[0] is None
     assert set(asked_for[1:]) == {"retire_alice"}
+
+
+def test_edit_refuses_to_clear_a_field_when_that_would_copy_another_row(
+    calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+    append_calendar_row: Callable[..., None],
+) -> None:
+    transfer = {
+        "date": "2031-05", "kind": "one_off_transfer", "account_1": "Asset_Savings",
+        "account_2": "Asset_Checking", "amount": "10000", "tax_character": "none",
+    }
+    append_calendar_row(**transfer)                 # row 6
+    append_calendar_row(**transfer, series="cpi")   # row 7: differs only in its series
+    before = calendar_rows()
+
+    result = calendar_edit("7", answers=["series", "-", "", "cancel"])
+
+    assert result.exit_code == 1
+    assert "left blank, that would duplicate another row" in result.output
+    pd.testing.assert_frame_equal(calendar_rows(), before)

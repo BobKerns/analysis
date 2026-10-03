@@ -465,7 +465,7 @@ class Guide:
         while True:
             answer = self._ask(text, choices or None, default).strip()
             if answer == CLEAR and not required:
-                return ""
+                answer = ""  # judged like any other answer: a blank can duplicate too
             problem = self._problem(spec, field_, ctx, answers, answer, choices)
             if problem is None:
                 return answer.lower() if field_.type == "yesno" else answer
@@ -518,7 +518,11 @@ class Guide:
         answer: str, choices: list[str],
     ) -> str | None:
         if answer == "":
-            return "an answer is required" if field_.is_required(answers) else None
+            if field_.is_required(answers):
+                return "an answer is required"
+            if self._duplicates(spec, ctx, {**answers, field_.param: ""}, field_):
+                return "left blank, that would duplicate another row"
+            return None
         if field_.type == "yesno":
             return None if answer.lower() in ("y", "n") else "answer y or n"
         # Before the choices check: a choice left out for this reason should say so.
