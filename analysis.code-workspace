@@ -1,60 +1,89 @@
 {
-	"folders": [
-		{
-			"path": "."
-		},
-		{
-			"path": "../../../kerns-ono/.finance"
-		}
-	],
-	"settings": {
-		"cSpell.configFile": "${workspaceFolder:analysis}/cspell.json",
-		"cSpell.import": ["./cspell.json"],
-		"explorerExclude.backup": {},
-		"explorerExcludeManager.backup": {},
-		"chat.mcp.discovery.enabled": {
-			"cursor-workspace": true
-		},
-		"explorer.fileNesting.patterns": {
-			"AGENTS.MD": "CLAUDE.MD,CONVENTIONS.MD,.mcp.json",
-			"README.md": "LICENSE,LICENSE.md,CONTRIBUTORS.md",
-			"pyproject.toml": "uv.lock,.python-version,.markdownlint.json,cspell.json,*.code-workspace,.coverage",
-			".gitignore": ".gitattributes"
-		},
-		"files.exclude": {
-			"**/..cache": true,
-			"**/.*_checkpoints": true,
-			"**/.coverage": true,
-			"**/.venv": true,
-			"**/*_cache": true
-		},
-		"interactiveWindow.collapseCellInputCode": "always",
-		"notebook.cellToolbarVisibility": "hover",
-		"notebook.inlineValues": "on",
-		"notebook.variablesView": true,
-		"explorer.autoRevealExclude": {
-			"**/.venv": true
-		},
-		"files.watcherExclude": {
-			"*/*_cache": true
-		},
-		"search.exclude": {
-			"**/.venv": true,
-			"**/*_cache": true
-		},
-		"python.terminal.useEnvFile": true,
-		"python.envFile": "${workspaceFolder}/.env.default",
-		"terminal.integrated.env.linux": {
-			"PYTHON_THREAD_INHERIT_CONTEXT": "1",
-			"PYTHON_CONTEXT_AWARE_WARNINGS": "1"
-		},
-		"terminal.integrated.env.osx": {
-			"PYTHON_THREAD_INHERIT_CONTEXT": "1",
-			"PYTHON_CONTEXT_AWARE_WARNINGS": "1"
-		},
-		"terminal.integrated.env.windows": {
-			"PYTHON_THREAD_INHERIT_CONTEXT": "1",
-			"PYTHON_CONTEXT_AWARE_WARNINGS": "1"
-		},
-	}
+    "folders": [
+        {
+            "path": "."
+        },
+        {
+            "path": "../../../kerns-ono/.finance"
+        }
+    ],
+    "settings": {
+        "cSpell.configFile": "${workspaceFolder:analysis}/cspell.json",
+        "cSpell.import": ["./cspell.json"],
+        "explorerExclude.backup": {},
+        "explorerExcludeManager.backup": {},
+        "chat.mcp.discovery.enabled": {
+            "cursor-workspace": true
+        },
+        "explorer.fileNesting.patterns": {
+            "AGENTS.MD": "CLAUDE.MD,CONVENTIONS.MD,.mcp.json",
+            "README.md": "LICENSE,LICENSE.md,CONTRIBUTORS.md",
+            "pyproject.toml": "uv.lock,.python-version,.markdownlint.json,cspell.json,*.code-workspace,.coverage",
+            ".gitignore": ".gitattributes"
+        },
+        "files.exclude": {
+            "**/..cache": true,
+            "**/.*_checkpoints": true,
+            "**/.coverage": true,
+            "**/.venv": true,
+            "**/*_cache": true
+        },
+        "interactiveWindow.collapseCellInputCode": "always",
+        "notebook.cellToolbarVisibility": "hover",
+        "notebook.inlineValues": "on",
+        "notebook.variablesView": true,
+        "explorer.autoRevealExclude": {
+            "**/.venv": true
+        },
+        "files.watcherExclude": {
+            "*/*_cache": true
+        },
+        "search.exclude": {
+            "**/.venv": true,
+            "**/*_cache": true
+        },
+        "python.terminal.useEnvFile": true,
+        "python.envFile": "${workspaceFolder}/.env.default",
+        "terminal.integrated.env.linux": {
+            "PYTHON_THREAD_INHERIT_CONTEXT": "1",
+            "PYTHON_CONTEXT_AWARE_WARNINGS": "1"
+        },
+        "terminal.integrated.env.osx": {
+            "PYTHON_THREAD_INHERIT_CONTEXT": "1",
+            "PYTHON_CONTEXT_AWARE_WARNINGS": "1"
+        },
+        "terminal.integrated.env.windows": {
+            "PYTHON_THREAD_INHERIT_CONTEXT": "1",
+            "PYTHON_CONTEXT_AWARE_WARNINGS": "1"
+        },
+        "workbench.colorCustomizations": {
+            "editorCodeLens.foreground": "#777777",
+            "editorInlayHint.foreground": "#777777",
+            "editorInlayHint.background": "#00000000",
+            "diffEditor.insertedLineBackground": "#00ff6608",
+            "diffEditor.insertedTextBackground": "#00ff6615",
+            "diffEditor.removedLineBackground": "#ff003308",
+            "diffEditor.removedTextBackground": "#ff00335b",
+            "titleBar.activeForeground": "#d5e774",
+            "titleBar.inactiveForeground": "#d5e77499",
+            "commandCenter.foreground": "#d5e774",
+            "commandCenter.activeForeground": "#d5e774",
+            "commandCenter.inactiveForeground": "#d5e77499",
+            "commandCenter.border": "#d5e77433",
+            "commandCenter.inactiveBorder": "#d5e77433",
+            "activityBar.foreground": "#d5e774",
+            "activityBar.inactiveForeground": "#d5e77499",
+            "activityBarTop.foreground": "#d5e774",
+            "activityBarTop.inactiveForeground": "#d5e77499",
+            "statusBar.foreground": "#d5e774",
+            "window.activeBorder": "#d5e774",
+            "window.inactiveBorder": "#a6ae7b",
+            "activityBarBadge.background": "#798924",
+            "activityBarBadge.foreground": "#e7e7e7",
+            "activityBar.activeBorder": "#d5e774",
+            "activityBarTop.activeBorder": "#d5e774",
+            "sideBar.background": "#24251e"
+        },
+        "window.title": "🌸 ${rootName} ▸ ${activeRepositoryBranchName}${separator}${activeEditorShort}",
+    }
 }
