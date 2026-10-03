@@ -1045,7 +1045,7 @@ def _report_correlation(
         at = table[table["year"] == year]
         r2 = at["r2"].iloc[0]
         rows = at[~at["factor"]]
-        if rows["srrc"].isna().all():
+        if rows["srrc"].isna().all() and rows["rho"].isna().all():
             # correlation_table estimates nothing below 4 members, varying
             # outcome or not; say which it is.
             why = "too few members to estimate" if n < 4 else "outcome doesn't vary across members"

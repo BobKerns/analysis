@@ -329,13 +329,16 @@ negligible:
 
 So for pruning, plan on about 100 members, and 200 or more with five or
 more varying rows, where each row's share is naturally smaller. The report
-warns when the batch is too small for the threshold you asked for.
+warns when the batch is too small for the threshold you asked for (except
+with correlated rows, below).
 
 **With correlated rows**, a row's plain correlation with the outcome
 includes its correlates' effects: a row tied to an important one looks
 important even if it does nothing itself. So the report ranks rows and
 judges pin candidates by **srrc**, the row's regression weight with the
-other rows held fixed, using its own confidence interval. It also shows:
+other rows held fixed, using its own confidence interval. That interval
+narrows as R² rises, so there's no fixed member count to warn about: read
+the intervals and statuses instead. It also shows:
 
 - **prcc**, the partial rank correlation, as another view of the same
   "holding the others fixed" effect. It grows with R², so it isn't used for

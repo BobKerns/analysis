@@ -376,7 +376,11 @@ def correlation_view(
         labels += [sensitivity.row_label(name, set(factor_rows.index)) for name in factor_rows.index]
     ax.axvline(0, color=MUTED, linewidth=0.8)
     ax.set_yticks(np.arange(len(at)), labels)
-    ax.set_xlim(-1, 1)
+    # rho lives in [-1, 1]; SRRC can pass 1 under collinearity, so widen
+    # the axis to its intervals rather than clip them.
+    reach = max(1.0, float(np.nanmax(np.abs(rows[[f"{by}_low", f"{by}_high", by]].to_numpy()),
+                                     initial=0.0)))
+    ax.set_xlim(-reach, reach)
     ax.set_xlabel(
         "Spearman rank correlation with net worth" if by == "rho"
         else "standardized rank-regression coefficient (others held fixed)", color=MUTED,

@@ -198,6 +198,9 @@ def test_correlation_view_plots_srrc_and_labels_factors() -> None:
     # Ranked by |SRRC|, not rho; the factor goes last, labeled.
     assert [t.get_text() for t in ax.get_yticklabels()] == ["a", "b", "f (factor)"]
     assert "others held fixed" in ax.get_xlabel()
+    wide = table.assign(srrc_high=table["srrc_high"].where(table["row"] != "b", 1.4))
+    ax = sw.correlation_view(wide, 2030, 0.05, by="srrc")
+    assert ax.get_xlim()[1] >= 1.4  # SRRC can pass 1; its whisker isn't clipped
     plt.close("all")
 
 

@@ -449,6 +449,19 @@ def test_a_row_that_never_varies_costs_no_degree_of_freedom() -> None:
         assert padded.loc["x1", column] == pytest.approx(plain.loc["x1", column])
 
 
+def test_collinear_and_constant_rows_have_no_srrc() -> None:
+    """PR #57 review: a rho of +-1 makes ranks exactly collinear, so no
+    coefficient is identifiable; lstsq's minimum-norm answer mustn't be
+    reported or ranked. A row that never varies has no coefficient either."""
+    draws, outcomes = _correlated(100)
+    twin = sensitivity.correlation_table(draws.assign(x2=draws["x1"] * 2), outcomes)
+    assert twin["srrc"].isna().all() and twin["prcc"].isna().all()
+    assert not twin["rho"].isna().any()
+    assert set(sensitivity.classify(twin, 0.05, by="srrc")) == {"inconclusive"}
+    constant = sensitivity.correlation_table(draws.assign(x3=1.0), outcomes).set_index("row")
+    assert pd.isna(constant.loc["x3", "srrc"]) and not pd.isna(constant.loc["x1", "srrc"])
+
+
 def test_classify_rejects_an_unknown_measure() -> None:
     draws, outcomes = _correlated(30)
     with pytest.raises(ValueError, match="by must be one of"):

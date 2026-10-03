@@ -665,6 +665,10 @@ def correlation_table(
     x = (x - x.mean()) / spread
     x = x.fillna(0.0)  # a row that never varies (zero spread) explains nothing
     varying = (spread > 0).to_numpy()
+    xv = x.to_numpy()[:, varying]
+    # With exactly collinear ranks (a rho of +-1 makes them so) lstsq still
+    # returns a minimum-norm answer, but no coefficient is identifiable.
+    identifiable = bool(varying.any()) and int(np.linalg.matrix_rank(xv.T @ xv)) == xv.shape[1]
     nan = float("nan")
     records = []
     for year in outcomes.columns:
@@ -699,7 +703,10 @@ def correlation_table(
             rho = float(draws[row].rank().corr(outcomes[year].rank())) if varying[i] else nan
             rho_low, rho_high = rho_interval(rho, n)
             records.append({"row": row, "year": year, "rho": rho, "rho_low": rho_low,
-                            "rho_high": rho_high, "srrc": float(coef[i]),
+                            "rho_high": rho_high,
+                            # A row that never varies has no coefficient to
+                            # report, and none is identifiable without full rank.
+                            "srrc": float(coef[i]) if varying[i] and identifiable else nan,
                             "srrc_low": float(low[i]), "srrc_high": float(high[i]),
                             "prcc": float(prcc[i]), "r2": r2, "n": n, "factor": False})
         for row in factors.columns:

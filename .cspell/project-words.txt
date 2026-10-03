@@ -89,6 +89,7 @@ mtimes
 mult
 multimonth
 munknown
+nanmax
 nbstripout
 networth
 nextstrain
