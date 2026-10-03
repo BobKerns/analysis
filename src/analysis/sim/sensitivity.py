@@ -36,6 +36,7 @@ __all__ = [
     "display_value", "ATTRIBUTION_AXES", "OPENING_BALANCES", "UNATTRIBUTED", "TOTAL",
     "attribution", "oat_attribution", "base_net_worth", "parameters", "R2_TRUST", "draws_frame", "outcomes_frame",
     "rho_interval", "required_members", "correlation_table", "classify", "mc_correlation",
+    "has_correlated_rows",
 ]
 
 MEASURES: tuple[str, ...] = ("net_worth", "min_net_worth")
@@ -486,7 +487,10 @@ def draws_frame(connections: dict[str, RunConnection]) -> pd.DataFrame:
         try:
             index = con.execute("SELECT member_index FROM ensemble_manifest").fetchone()
             draws = con.execute(
-                "SELECT calendar_event_name, vary_target, drawn_value FROM ensemble_draw"
+                # Latent factors (ADR-008) aren't inputs of their own: their
+                # effect reaches the outcome only through their dependents.
+                "SELECT calendar_event_name, vary_target, drawn_value FROM ensemble_draw "
+                "WHERE vary_target != 'factor'"
             ).fetchall()
         finally:
             con.close()
@@ -605,6 +609,27 @@ def classify(table: pd.DataFrame, negligible: float = DEFAULT_NEGLIGIBLE) -> pd.
         else:
             result[row] = "keep"
     return pd.Series(result, name="status", dtype=object)
+
+
+def has_correlated_rows(batch_dir: Path) -> bool:
+    """Whether a batch's rows were drawn with correlations (ADR-008): any
+    member records a normal score. The Monte Carlo report's per-row numbers
+    assume independent inputs, so it says so when they aren't."""
+    connections = load_ensemble(batch_dir)
+    try:
+        con = sqlite3.connect(next(iter(connections.values())).run_path)
+        try:
+            columns = {c[1] for c in con.execute("PRAGMA table_info(ensemble_draw)")}
+            if "z" not in columns:
+                return False
+            return con.execute(
+                "SELECT 1 FROM ensemble_draw WHERE z IS NOT NULL LIMIT 1"
+            ).fetchone() is not None
+        finally:
+            con.close()
+    finally:
+        for rc in connections.values():
+            rc.close()
 
 
 def mc_correlation(
@@ -729,6 +754,8 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
                 "distribution": row["distribution"] or "", "range": "", "center": "",
                 "shape": "", "moments": "", "ramp_months": row["vary_ramp_months"] or "",
                 "description": row["description"] or "",
+                "correlate_with": row["vary_correlate_with"] or "",
+                "rho": "" if row["vary_correlation"] is None else f"{row['vary_correlation']:+g}",
             }
             dist = _row_distribution(row, target) if row["distribution"] else None
             if dist is not None:

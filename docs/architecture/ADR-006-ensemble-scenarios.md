@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-29
 - **Supersedes:** —
-- **Amended by:** [#31](https://github.com/BobKerns/analysis/issues/31) (skewed and heavy-tailed distributions): `vary_mean` renamed to `vary_median`, the *truncated* median; `vary_skew`/`vary_tailweight` shape a `truncated_normal`; new `triangular` family with `vary_mode`; inverse-CDF sampling. §2, §3 and §9 below are updated in place.
+- **Amended by:** [#31](https://github.com/BobKerns/analysis/issues/31) (skewed and heavy-tailed distributions): `vary_mean` renamed to `vary_median`, the *truncated* median; `vary_skew`/`vary_tailweight` shape a `truncated_normal`; new `triangular` family with `vary_mode`; inverse-CDF sampling. §2, §3 and §9 below are updated in place. Also amended by [ADR-008](ADR-008-correlated-parameters.md) (#30): varying rows may be correlated through `vary_correlate_with`/`vary_correlation` and `latent_factor` rows; draws are no longer always independent (§3), and resolution computes correlated normal scores before the date and amount passes (§5).
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-002](ADR-002-storage-schema.md) (storage schema, `scenario.seed` — "reserved for ensembles; unused in v1"), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries, CSV layouts, calendar events §3, scenario hierarchy §4.5), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility, provenance).
 
 ## Context
@@ -70,7 +70,7 @@ The registry is closed, but adding a family is additive, not a redesign. Every f
 
 Each family's center (§9) is its median: `uniform`'s midpoint, `truncated_normal`'s authored median, `triangular`'s median (between its mode and its longer side). `distributions.moments` reports any family's implied mean, SD, skewness and excess kurtosis, so authors can see what shape parameters mean in practice (ADR-007's parameters table shows them).
 
-Every draw uses an **independent RNG stream per (member, row name)**, derived by hashing `(ensemble seed, member index, row name)` through `hashlib.sha256` into a `random.Random` seed. One shared stream in call order would mean adding or removing one variation silently shifts every other variation's draws for every member; keyed streams don't.
+Every draw uses an **independent RNG stream per (member, row name)** (a row in an [ADR-008](ADR-008-correlated-parameters.md) correlation tree uses its stream for its own noise, combined with its parent's score), derived by hashing `(ensemble seed, member index, row name)` through `hashlib.sha256` into a `random.Random` seed. One shared stream in call order would mean adding or removing one variation silently shifts every other variation's draws for every member; keyed streams don't.
 
 **Two passes, in this order: every `vary_target=date` row first, then every `vary_target=amount`/rate row.** A ramp's reference point, or an amount meant to reflect "whatever the ramped rate is as of this (possibly also-varying) date," needs the date side already resolved before the amount side draws — resolving dates first makes that always true rather than order-dependent by accident.
 

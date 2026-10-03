@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior. Also amended in place after acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7); and [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8). Git history has the earlier text.
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior. Also amended in place after acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7); and [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8). [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.10), the correlation columns (§4.8), and factors merged by name (§4.5). Git history has the earlier text.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility).
 
 ## Context
@@ -187,14 +187,17 @@ Fires once, automatically, the month a person dies -- for one-time death-trigger
 
 ### 3. `calendar_event.kind` registry
 
-Nine kinds in v1. Per the §2 invariant, calendar events never write to `transfer_event` directly. They fall into two classes:
+Ten kinds. Per the §2 invariant, calendar events never write to `transfer_event` directly. They fall into three classes:
 
 - **Intent-mutating** (no money moves at expansion time; the event amends the in-memory intent — rates, schedules, aux tables): `set_rate`, `set_amount`, `add_scheduled`, `retire_scheduled`, `swap_aux_table`.
 - **Rule-synthesizing** (the event inserts one or more `cadence='one_off'` scheduled_transactions with `created_by_event_id = calendar_event.id`; those rules then fire on `event.date` through the normal monthly step): `one_off_transfer`, `sell_asset`, `buy_asset`, `life_transition`. `life_transition` may also perform intent-mutating sub-actions (e.g. retiring a salary rule).
+- **Inert** (no effect in a run; read only by ensemble resolution): `latent_factor` (§3.10).
 
 Where expansions produce multiple synthesized rules, each rule's first (and only) firing is one row in `transfer_event`; linkage across siblings is via the shared `created_by_event_id` on `scheduled_transaction` plus `applied_calendar_event`.
 
 **Ensemble variation ([ADR-006](ADR-006-ensemble-scenarios.md)):** a row may additionally carry `vary_distribution` (and the paired `vary_target`/`vary_low`/etc. columns, §4.8), marking its own `amount` or `date` as drawn per ensemble member rather than literal — the "vary" step resolves every such row (dates first, then amounts/rates) before handing the intent to the ordinary, unmodified run path. A row that still has `vary_distribution` set when it would fire is always a mistake (a recipe run directly, or a resolution step skipped), so the engine raises rather than using the placeholder value underneath it.
+
+**Correlated variation ([ADR-008](ADR-008-correlated-parameters.md)):** a varying row (or a `latent_factor`) may name one parent in `vary_correlate_with`, with a correlation `vary_correlation` between their normal scores (§4.8). The rows form a forest of trees, and each row's draw is correlated with its tree while keeping exactly its own authored distribution.
 
 #### 3.1 `set_rate` (primitive)
 
@@ -284,6 +287,14 @@ Author-named bundle of changes that represent a real-world transition. The `kind
   - **`retire`**: retire salary rule for the subject person; start Medicare premium rules; flip discretionary-spending `set_amount`.
   - **`long_term_care`**: add a large `fixed_amount` expense rule with COLA series `cpi_medical`.
 - **Use:** the scenario-as-checklist payoff ([ADR-001](ADR-001-overall-architecture.md) principle 5). The `--check life-transitions` validator flags any expected transition missing from a scenario that runs past a person's life-expectancy threshold.
+
+#### 3.10 `latent_factor` (inert)
+
+A shared influence that varying rows correlate with but that isn't itself a modeled value, such as "the inflation regime" ([ADR-008](ADR-008-correlated-parameters.md) §3).
+
+- **Columns:** `name` (required) and `description`; optionally `vary_correlate_with`/`vary_correlation`, to depend on another factor and form a hierarchy. Every other column must be blank. `date` may be blank: the loader stores the scenario start as a placeholder, which nothing reads.
+- **Effect:** none in a run (the engine skips it). Ensemble resolution draws its standard normal score, and its dependents' draws correlate with it.
+- **A factor with no dependents** loads with a warning, not an error: it may be work in progress, or meant for child scenarios to use.
 
 ### 4. CSV file layouts
 
@@ -599,7 +610,7 @@ A scenario naming a `parent_scenario` inherits the parent's rows and overlays it
 | `account_values.csv` | `account_name` |
 | `scheduled.csv` | `name` |
 | `chains/<kind>__<name>.csv` | whole file by chain name |
-| `calendar.csv` | (`date`, `kind`, `scheduled_name`, `account_1`, `account_2`, `series`, `amount`) |
+| `calendar.csv` | (`date`, `kind`, `scheduled_name`, `account_1`, `lot_1`, `account_2`, `lot_2`, `series`, `amount`); a `latent_factor` row's key is its `name` alone, since its other key fields are blank |
 | `lifespan.csv` | `person` |
 | `year_to_date.csv` | `name` |
 
@@ -689,6 +700,8 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `vary_skew`, `vary_tailweight` | number | optional, `truncated_normal` only | sinh-arcsinh shape (#31): skew 0 symmetric, > 0 longer high tail; tail weight 1 normal, < 1 heavier tails. Either one requires `vary_sd` |
 | `vary_mode` | text | optional, `triangular` only | the most likely value, in the target's unit; defaults to the midpoint of the bounds |
 | `vary_ramp_months` | int | optional, `vary_target='amount'` on a `kind='set_rate'` row only | see §3.1's ramp note |
+| `vary_correlate_with` | text | optional, on a varying row or a `latent_factor` | this row's parent in a correlation tree: another varying row's or a `latent_factor`'s `name` ([ADR-008](ADR-008-correlated-parameters.md)). The parent must exist (after inheritance), and the chain of parents can't loop |
+| `vary_correlation` | number | with `vary_correlate_with` | ρ in [-1, 1] between this row's and its parent's normal scores. Siblings under one parent correlate at the product of their ρ |
 
 #### 4.9 Per-scenario: `data_repo/scenarios/<name>/lifespan.csv` (optional)
 

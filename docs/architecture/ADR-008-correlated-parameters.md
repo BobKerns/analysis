@@ -1,6 +1,6 @@
 # ADR-008: Correlated parameters in ensembles
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-03
 - **Supersedes:** —
 - **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios: `vary_*` rows, keyed RNG streams, member 0), [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity analysis, which assumes independent draws), [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.8 (`calendar.csv`), issues [#30](https://github.com/BobKerns/analysis/issues/30) (this design; decisions recorded there) and [#31](https://github.com/BobKerns/analysis/issues/31) (`quantile()` on every family, the median as center).
@@ -95,6 +95,7 @@ The loader rejects:
 - `ensemble_draw` gains **`z REAL`**: each row's normal score. It's NULL for a row outside every tree, Φ⁻¹(q) for an OAT override, and 0 for member 0. Each **factor** also gets an `ensemble_draw` row (`vary_target = 'factor'`, `drawn_value` = its `z`), so achieved correlations can be checked after the fact.
 - Factor rows stay in member intent files as provenance. The engine treats `latent_factor` as inert: no effect, and not counted as an unsupported kind.
 - The **parameters table** (ADR-007 §9) shows each row's parent and ρ, and lists the factors.
+- The **Monte Carlo correlation report** (ADR-007 §6.2) leaves factors out of its inputs (their effect reaches the outcome only through their dependents), and notes when a batch's rows are correlated, since its per-row numbers assume independence.
 
 **Follow-ups, as sub-issues of #30:**
 - **The Monte Carlo sensitivity report assumes independent inputs** (ADR-007 §6.2: SRRC ≈ ρ, pinning by marginal ρ). With correlated inputs it should rank and pin by SRRC or partial rank correlation (PRCC), and show the achieved rank correlations next to the expected `(6/π)·asin(ρ/2)` per pair.

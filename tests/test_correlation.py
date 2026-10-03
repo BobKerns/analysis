@@ -562,3 +562,121 @@ def test_correlated_ramp_lands_on_its_drawn_target(
     finally:
         con.close()
     assert 50_000 <= target <= 70_000 and last == target
+
+
+# --- Phase 3: authoring and reporting --------------------------------------------
+
+
+def test_cli_adds_a_factor_and_a_correlated_row(test_data_dir: Path) -> None:
+    runner = CliRunner()
+    factor = runner.invoke(main, [
+        "sim", "calendar", "add", "latent-factor", "economy", "--data-dir", str(test_data_dir),
+        "--description", "the broad economy",
+    ])
+    assert factor.exit_code == 0, factor.output
+    assert "WARN:" in factor.output and "no dependents" in factor.output  # not yet used
+    rate = runner.invoke(main, [
+        "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+        "--data-dir", str(test_data_dir), "--name", "rate_vary",
+        "--vary-target", "amount", "--vary-distribution", "uniform",
+        "--vary-low", "4.0", "--vary-high", "5.0",
+        "--vary-correlate-with", "economy", "--vary-correlation", "0.7",
+    ])
+    assert rate.exit_code == 0, rate.output
+    assert "WARN:" not in rate.output  # the factor has a dependent now
+    rows = pd.read_csv(test_data_dir / "scenarios" / "retire_alice" / "calendar.csv",
+                       dtype=str, keep_default_na=False).set_index("name")
+    assert rows.loc["economy", "kind"] == "latent_factor"
+    assert rows.loc["rate_vary", ["vary_correlate_with", "vary_correlation"]].tolist() == ["economy", "0.7"]
+
+
+@pytest.mark.parametrize(("extra", "message"), [
+    (["--vary-correlate-with", "economy"], "go together"),
+    (["--vary-correlate-with", "economy", "--vary-correlation", "2"], "between -1 and 1"),
+])
+def test_cli_rejects_bad_correlation_options(
+    test_data_dir: Path, extra: list[str], message: str,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+        "--data-dir", str(test_data_dir), "--name", "rate_vary",
+        "--vary-target", "amount", "--vary-distribution", "uniform",
+        "--vary-low", "4.0", "--vary-high", "5.0", *extra,
+    ])
+    assert result.exit_code != 0 and message in result.output
+
+
+def test_cli_rejects_correlation_without_a_distribution(test_data_dir: Path) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+        "--data-dir", str(test_data_dir),
+        "--vary-correlate-with", "economy", "--vary-correlation", "0.5",
+    ])
+    assert result.exit_code != 0 and "require --vary-distribution" in result.output
+
+
+@pytest.fixture
+def correlated_mc_batch(
+    append_calendar_row: Callable[..., None], test_data_dir: Path,
+    intent_dir: Path, runs_dir: Path,
+) -> Path:
+    """A 6-member Monte Carlo batch of the correlated recipe."""
+    from analysis.sim.loader import latest_ensemble_batch
+
+    _correlated_recipe(append_calendar_row)
+    runner = CliRunner()
+    load = runner.invoke(main, [
+        "sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+        "--intent-dir", str(intent_dir), "--allow-dirty-data", "--no-run",
+    ])
+    assert load.exit_code == 0, load.output
+    con = sqlite3.connect(intent_dir / "retire_alice.sqlite3")
+    con.execute("UPDATE scenario SET seed = 5")
+    con.commit()
+    con.close()
+    run = runner.invoke(main, [
+        "sim", "run", "retire_alice", "--intent-dir", str(intent_dir),
+        "--runs-dir", str(runs_dir), "--ensemble-size", "6", "--allow-dirty-data",
+    ])
+    assert run.exit_code == 0 and "6/6 member(s) succeeded" in run.output, run.output
+    batch = latest_ensemble_batch(runs_dir / "retire_alice")
+    assert batch is not None
+    return batch
+
+
+def test_parameters_show_parents_rho_and_factors(correlated_mc_batch: Path) -> None:
+    from analysis.sim import sensitivity
+
+    table = sensitivity.parameters(correlated_mc_batch)
+    assert table.loc["tied_rate", ["correlate_with", "rho"]].tolist() == ["economy", "+0.8"]
+    assert table.loc["tied_date", ["correlate_with", "rho"]].tolist() == ["economy", "-0.6"]
+    assert table.loc["free_rate", ["correlate_with", "rho"]].tolist() == ["", ""]
+    assert table.loc["economy", "kind"] == "latent_factor"
+    assert table.loc["economy", "target"] == "factor"
+
+
+def test_monte_carlo_report_leaves_factors_out_and_notes_correlation(
+    correlated_mc_batch: Path, runs_dir: Path,
+) -> None:
+    from analysis.sim import sensitivity
+    from analysis.sim.ensemble import load_ensemble
+
+    connections = load_ensemble(correlated_mc_batch)
+    try:
+        assert "economy" not in sensitivity.draws_frame(connections).columns
+    finally:
+        for rc in connections.values():
+            rc.close()
+    assert sensitivity.has_correlated_rows(correlated_mc_batch)
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "sensitivity", "retire_alice", "--runs-dir", str(runs_dir),
+        "--mode", "monte_carlo", "--years", "2035",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "rows are correlated" in result.output
+
+
+def test_uncorrelated_batch_has_no_correlation_note(mc_batch: Path) -> None:
+    from analysis.sim import sensitivity
+
+    assert not sensitivity.has_correlated_rows(mc_batch)

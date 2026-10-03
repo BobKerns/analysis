@@ -1,6 +1,8 @@
 # [ADR-008](ADR-008-correlated-parameters.md) implementation plan: correlated parameters
 
-**Status: not started.**
+**Status: implemented.** Phase 0 (`8f77956`): schema, the `latent_factor` kind, validation, load warnings. Phase 1 (`6c2fe37`): `correlation.py` and `value_at`. Phase 2 (`912c27e`): `resolve_member` integration and provenance. Phase 3: CLI authoring, the parameters table, and docs.
+
+**Beyond the plan:** factors are left out of the Monte Carlo correlation report's inputs, and the report notes a correlated batch, since its per-row numbers assume independence until the follow-up sub-issue lands.
 
 Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a green suite. As in ADR-006 and ADR-007, `run_scenario` changes only to treat `latent_factor` as inert. Tests reuse `tests/conftest.py`'s fixtures (`append_calendar_row`, `load_test_copy`, the batch fixtures).
 
