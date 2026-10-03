@@ -32,7 +32,7 @@ Because `u` is uniform on its own, **each row's distribution, taken alone, is ex
 
 **Bounds never move.** A correlated draw can't leave its row's authored range, so none of the edge cases that moving bounds would bring can arise: negative transfer amounts, dates outside the scenario, a distribution centered off its peak.
 
-**ρ means the same thing for every family.** The copula correlation ρ between two normal scores gives a rank (Spearman) correlation between the two rows' *values* of `(6/π)·asin(ρ/2)`, whatever their distributions are. That's within 0.02 of ρ everywhere. So "ρ = 0.6" predictably means "rank correlation about 0.58" for a uniform date and a skewed rate alike. Reports (§6) compare achieved rank correlations against this.
+**ρ means the same thing for every family, as long as values don't tie.** The copula correlation ρ between two normal scores gives a rank (Spearman) correlation between the two rows' *values* of `(6/π)·asin(ρ/2)`, whatever their continuous distributions are. That's within 0.02 of ρ everywhere, so "ρ = 0.6" predictably means "rank correlation about 0.58" for a long date range and a skewed rate alike. **Ties break this.** Amounts rounded to cents or micros over a realistic spread have negligible ties. A date range of only a few days doesn't: a two-day uniform date at ρ = 0.6 has a value rank correlation of about 0.41, not 0.58. So checks and reports (§6, and the plan's tests) compare the **recorded normal scores** (`z`), which never tie and correlate at ρ exactly. A value-level rank correlation is shown only as a description.
 
 ### 2. Structure: one parent per row, no cycles
 
@@ -67,13 +67,15 @@ Two new `calendar.csv` columns, valid on a varying row and on a `latent_factor` 
 
 A `latent_factor` row's `date` may be blank. The loader stores the scenario start as a placeholder, because the `calendar_event.date` column is required and nothing reads it.
 
+**Factors are merged across scenario inheritance by name.** The calendar overlay key (ADR-003 §4.5) is an event's fields, `date`, `kind`, `scheduled_name`, accounts, `series` and `amount`, and deliberately not `name`. A factor leaves all of those blank, so on that key two factors would collide, and a parent scenario's factor couldn't be overridden reliably. A `latent_factor` row's overlay key is therefore its `name` alone: a child scenario's factor of the same name replaces the parent's.
+
 The loader rejects:
 - a parent that names no varying row or factor in the scenario, after inheritance merges the calendar (ADR-003 §4.5);
 - a cycle;
 - |ρ| > 1;
 - a `latent_factor` row with `vary_distribution` or any other `vary_*` parameter.
 
-**A factor with no dependents is a warning, not an error.** It may be work in progress, or defined in a parent scenario for its child scenarios to use, in which case it has no dependents in the parent itself. The loader gains a warnings channel for this: a `warnings` list on `LoadResult`, which `sim load` and `sim run` print. A warning doesn't stop the load. An unused factor resolves to its own draw and affects nothing.
+**A factor with no dependents is a warning, not an error.** It may be work in progress, or defined in a parent scenario for its child scenarios to use, in which case it has no dependents in the parent itself. The loader gains a warnings channel for this: a `warnings` list on `LoadResult`, printed as `WARN:` lines (ADR-004 §6's format) by `sim check`, `sim load`, `sim run` and `sim calendar add`'s validating load. A warning doesn't stop the load or change the exit status. `sim load`, which by default goes on to `sim run` (and so loads again), prints each warning once. An unused factor resolves to its own draw and affects nothing.
 
 `sim calendar add latent-factor NAME [--description …] [--vary-correlate-with … --vary-correlation …]` adds a factor. Every other `add` subcommand gains `--vary-correlate-with` and `--vary-correlation`.
 
