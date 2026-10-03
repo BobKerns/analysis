@@ -66,6 +66,9 @@ class LoadResult:
     intent_path: Path
     scenario_name: str
     counts: dict[str, int] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    """Problems worth telling the author about that don't stop the load
+    (ADR-008: e.g. a latent factor nothing depends on yet)."""
 
 
 class LoadError(ValueError):
@@ -469,13 +472,24 @@ def _merge_calendar_rows(
     share every other key field are almost certainly two different events
     that happen to collide on it (an authoring mistake, not an override), so
     that combination is reported rather than silently collapsed one way.
+
+    A ``latent_factor`` row (ADR-008) is the exception: it is keyed by its
+    name alone.
     """
+    def key_of(row: dict[str, str]) -> tuple[str, ...]:
+        # A latent factor (ADR-008) has no date or event fields -- only its
+        # name identifies it, so two factors don't collide on blank fields,
+        # and a child scenario's factor of the same name overrides its parent's.
+        if row.get("kind") == registries.LATENT_FACTOR_KIND:
+            return (registries.LATENT_FACTOR_KIND, (row.get("name") or "").strip())
+        return tuple(row.get(c, "") for c in key_columns)
+
     merged: dict[tuple[str, ...], dict[str, str]] = {
-        tuple(row.get(c, "") for c in key_columns): dict(row) for row in parent_rows
+        key_of(row): dict(row) for row in parent_rows
     }
     order = list(merged)
     for row in child_rows:
-        key = tuple(row.get(c, "") for c in key_columns)
+        key = key_of(row)
         if key in merged:
             existing_name = (merged[key].get("name") or "").strip()
             new_name = (row.get("name") or "").strip()
@@ -670,6 +684,7 @@ def load_scenario(
     money_resolver = _MoneyReferenceResolver(data_dir, scenario_dirs)
 
     issues: list[str] = []
+    warnings: list[str] = []
 
     persons = _read_csv(data_dir / "persons.csv", issues)
     securities = _read_csv(data_dir / "securities.csv", issues, optional=True)
@@ -718,6 +733,7 @@ def load_scenario(
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_calendar(calendar_rows, leaves, issues)
+    _validate_calendar_correlation(calendar_rows, issues, warnings)
     _validate_series_references(scheduled_rows, calendar_rows, aux_rows, chains, issues)
     _validate_chains(chains, model_rows, leaves, issues, money_resolver=money_resolver)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
@@ -726,6 +742,11 @@ def load_scenario(
 
     if issues:
         raise LoadError(issues)
+    # A latent factor has no date of its own (ADR-008 §4); calendar_event.date
+    # is required, so it carries the scenario start as an unread placeholder.
+    for row in calendar_rows:
+        if row.get("kind") == registries.LATENT_FACTOR_KIND and not row.get("date"):
+            row["date"] = scenario_row.get("start", "")
 
 
     if compute_stamps:
@@ -799,7 +820,8 @@ def load_scenario(
 
     return LoadResult(intent_path=intent_path,
                       scenario_name=scenario_name,
-                      counts=counts)
+                      counts=counts,
+                      warnings=warnings)
 
 
 # ---------- CSV reading ----------
@@ -1859,6 +1881,101 @@ def _validate_calendar_vary(
                 issues.append(f"{where}: vary_ramp_months must be a positive integer")
 
 
+_FACTOR_FORBIDDEN_COLUMNS = (
+    "scheduled_name", "account_1", "lot_1", "account_2", "lot_2", "series", "amount",
+    "param_date", "tax_character", "params_json", "tags",
+    "vary_target", "vary_distribution", "vary_low", "vary_high",
+    "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
+)
+"""Columns a ``latent_factor`` row must leave blank: it has no date, amount
+or series meaning, and its value is a standard normal score, not a draw from
+an authored distribution (ADR-008 §3)."""
+
+
+def _validate_calendar_correlation(
+    rows: list[dict[str, str]], issues: list[str], warnings: list[str],
+) -> None:
+    """ADR-008 §4, over the merged calendar (so a child scenario's row can
+    name a parent scenario's factor): latent_factor rows are named and carry
+    nothing but a description and correlation columns; the correlation
+    columns come as a pair, on a varying row or a factor, with rho in
+    [-1, 1]; every parent exists; there are no cycles. A factor nothing
+    depends on is a warning: work in progress, or meant for child scenarios."""
+    nodes: dict[str, int] = {}
+    parents: dict[str, str] = {}
+    for i, row in enumerate(rows, start=2):
+        kind = row.get("kind", "")
+        name = (row.get("name") or "").strip()
+        where = f"calendar.csv row {i} ({name or '?'})"
+        is_factor = kind == registries.LATENT_FACTOR_KIND
+        varying = bool((row.get("vary_distribution") or "").strip())
+        if is_factor:
+            if not name:
+                issues.append(f"{where}: a latent_factor row needs a name")
+            stray = [c for c in _FACTOR_FORBIDDEN_COLUMNS if (row.get(c) or "").strip()]
+            if stray:
+                issues.append(
+                    f"{where}: a latent_factor row has no {', '.join(stray)} -- only a name, "
+                    "a description, and optionally vary_correlate_with/vary_correlation"
+                )
+        if (is_factor or varying) and name:
+            nodes[name] = i
+        parent = (row.get("vary_correlate_with") or "").strip()
+        raw_rho = (row.get("vary_correlation") or "").strip()
+        if not parent and not raw_rho:
+            continue
+        if not (is_factor or varying):
+            issues.append(
+                f"{where}: vary_correlate_with/vary_correlation are only valid on a varying "
+                "row (vary_distribution set) or a latent_factor row"
+            )
+            continue
+        if not parent or not raw_rho:
+            issues.append(f"{where}: vary_correlate_with and vary_correlation go together")
+            continue
+        try:
+            rho = float(raw_rho)
+        except ValueError:
+            issues.append(f"{where}: vary_correlation '{raw_rho}' is not a number")
+            continue
+        if not -1.0 <= rho <= 1.0:  # also rejects NaN
+            issues.append(f"{where}: vary_correlation must be between -1 and 1 (got {raw_rho})")
+            continue
+        if name:
+            parents[name] = parent
+
+    for child, parent in parents.items():
+        if parent not in nodes:
+            issues.append(
+                f"calendar.csv row {nodes[child]} ({child}): vary_correlate_with '{parent}' "
+                "names no varying row or latent_factor"
+            )
+    reported: set[str] = set()
+    for start in parents:
+        path: list[str] = []
+        node: str | None = start
+        while node in parents and node not in path:
+            path.append(node)
+            node = parents[node]
+        if node in path:
+            cycle = path[path.index(node):]
+            if not reported & set(cycle):
+                reported.update(cycle)
+                issues.append(
+                    "calendar.csv: correlation cycle "
+                    f"{' -> '.join([*cycle, cycle[0]])} (each row may have one parent, "
+                    "and the chain of parents must end)"
+                )
+    used = set(parents.values())
+    for name, i in nodes.items():
+        row_kind = rows[i - 2].get("kind")
+        if row_kind == registries.LATENT_FACTOR_KIND and name not in used:
+            warnings.append(
+                f"calendar.csv row {i} ({name}): latent_factor has no dependents yet, so it "
+                "affects nothing (fine for work in progress, or a factor for child scenarios)"
+            )
+
+
 def _parse_vary_params(
     row: dict[str, str], distribution: str, target: str, where: str, issues: list[str],
 ) -> tuple[dict[str, int], dict[str, float], bool]:
@@ -2451,8 +2568,9 @@ def _write_intent(
             "scheduled_name, account_1, account_2, series, amount, "
             "param_date, tax_character, payload_json, description, "
             "vary_target, vary_distribution, vary_low, vary_high, vary_median, "
-            "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months, "
+            "vary_correlate_with, vary_correlation) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -2474,6 +2592,8 @@ def _write_intent(
                 _opt_float(ce.get("vary_tailweight")),
                 vary_bound(ce.get("vary_mode")),
                 _opt_int(ce.get("vary_ramp_months")),
+                ce.get("vary_correlate_with") or None,
+                _opt_float(ce.get("vary_correlation")),
             ),
         )
         _insert_tags(con, cur.lastrowid, ce.get("tags", ""),

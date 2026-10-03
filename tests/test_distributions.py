@@ -382,3 +382,14 @@ def test_amount_moments_follow_stored_rounding() -> None:
     assert tiny.mean == pytest.approx(0.5) and tiny.sd == pytest.approx(0.5)
     realistic = moments(Uniform(40_000, 50_000), rounded=True)
     assert realistic.sd == pytest.approx(moments(Uniform(40_000, 50_000)).sd, rel=1e-6)
+
+
+def test_an_unplaceable_median_with_nothing_reachable_is_a_clean_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#35: if every sampled location has no representable probability in the
+    window, there's no reachable range to report -- min()/max() of nothing
+    raised ValueError instead of the promised DistributionError."""
+    monkeypatch.setattr(TruncatedNormal, "_truncated_quantile", lambda self, q, location: None)
+    with pytest.raises(DistributionError, match="can't be placed"):
+        TruncatedNormal(median=0, sd=1, clip_low=-3, clip_high=3)

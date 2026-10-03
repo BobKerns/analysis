@@ -376,7 +376,9 @@ def parameters_note(mode: str | None) -> str:
         "Each row is a `calendar.csv` row with `vary_*` columns set: **affects** is what it "
         "acts on, **target** whether its date or amount varies, and **range**/**center**/"
         "**shape** come from its distribution; **moments** are what those settings imply. "
-        "The center is the deterministic base case: member 0 resolves every row to it."
+        "The center is the deterministic base case: member 0 resolves every row to it. "
+        "A correlated row names its **correlate_with** parent and **rho**; latent factors "
+        "appear as their own rows."
     )
     if mode == "sensitivity":
         return note + (

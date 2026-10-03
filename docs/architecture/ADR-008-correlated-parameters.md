@@ -1,6 +1,6 @@
 # ADR-008: Correlated parameters in ensembles
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-03
 - **Supersedes:** —
 - **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios: `vary_*` rows, keyed RNG streams, member 0), [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity analysis, which assumes independent draws), [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.8 (`calendar.csv`), issues [#30](https://github.com/BobKerns/analysis/issues/30) (this design; decisions recorded there) and [#31](https://github.com/BobKerns/analysis/issues/31) (`quantile()` on every family, the median as center).
@@ -32,7 +32,7 @@ Because `u` is uniform on its own, **each row's distribution, taken alone, is ex
 
 **Bounds never move.** A correlated draw can't leave its row's authored range, so none of the edge cases that moving bounds would bring can arise: negative transfer amounts, dates outside the scenario, a distribution centered off its peak.
 
-**ρ means the same thing for every family.** The copula correlation ρ between two normal scores gives a rank (Spearman) correlation between the two rows' *values* of `(6/π)·asin(ρ/2)`, whatever their distributions are. That's within 0.02 of ρ everywhere. So "ρ = 0.6" predictably means "rank correlation about 0.58" for a uniform date and a skewed rate alike. Reports (§6) compare achieved rank correlations against this.
+**ρ means the same thing for every family, as long as values don't tie.** The copula correlation ρ between two normal scores gives a rank (Spearman) correlation between the two rows' *values* of `(6/π)·asin(ρ/2)`, whatever their continuous distributions are. That's within 0.02 of ρ everywhere, so "ρ = 0.6" predictably means "rank correlation about 0.58" for a long date range and a skewed rate alike. **Ties break this.** Amounts rounded to cents or micros over a realistic spread have negligible ties. A date range of only a few days doesn't: a two-day uniform date at ρ = 0.6 has a value rank correlation of about 0.41, not 0.58. So checks and reports (§6, and the plan's tests) compare the **recorded normal scores** (`z`), which never tie and correlate at ρ exactly. A value-level rank correlation is shown only as a description.
 
 ### 2. Structure: one parent per row, no cycles
 
@@ -67,13 +67,15 @@ Two new `calendar.csv` columns, valid on a varying row and on a `latent_factor` 
 
 A `latent_factor` row's `date` may be blank. The loader stores the scenario start as a placeholder, because the `calendar_event.date` column is required and nothing reads it.
 
+**Factors are merged across scenario inheritance by name.** The calendar overlay key (ADR-003 §4.5) is an event's fields, `date`, `kind`, `scheduled_name`, accounts, `series` and `amount`, and deliberately not `name`. A factor leaves all of those blank, so on that key two factors would collide, and a parent scenario's factor couldn't be overridden reliably. A `latent_factor` row's overlay key is therefore its `name` alone: a child scenario's factor of the same name replaces the parent's.
+
 The loader rejects:
 - a parent that names no varying row or factor in the scenario, after inheritance merges the calendar (ADR-003 §4.5);
 - a cycle;
 - |ρ| > 1;
 - a `latent_factor` row with `vary_distribution` or any other `vary_*` parameter.
 
-**A factor with no dependents is a warning, not an error.** It may be work in progress, or defined in a parent scenario for its child scenarios to use, in which case it has no dependents in the parent itself. The loader gains a warnings channel for this: a `warnings` list on `LoadResult`, which `sim load` and `sim run` print. A warning doesn't stop the load. An unused factor resolves to its own draw and affects nothing.
+**A factor with no dependents is a warning, not an error.** It may be work in progress, or defined in a parent scenario for its child scenarios to use, in which case it has no dependents in the parent itself. The loader gains a warnings channel for this: a `warnings` list on `LoadResult`, printed as `WARN:` lines (ADR-004 §6's format) by `sim check`, `sim load`, `sim run` and `sim calendar add`'s validating load. A warning doesn't stop the load or change the exit status. `sim load`, which by default goes on to `sim run` (and so loads again), prints each warning once. An unused factor resolves to its own draw and affects nothing.
 
 `sim calendar add latent-factor NAME [--description …] [--vary-correlate-with … --vary-correlation …]` adds a factor. Every other `add` subcommand gains `--vary-correlate-with` and `--vary-correlation`.
 
@@ -93,10 +95,11 @@ The loader rejects:
 - `ensemble_draw` gains **`z REAL`**: each row's normal score. It's NULL for a row outside every tree, Φ⁻¹(q) for an OAT override, and 0 for member 0. Each **factor** also gets an `ensemble_draw` row (`vary_target = 'factor'`, `drawn_value` = its `z`), so achieved correlations can be checked after the fact.
 - Factor rows stay in member intent files as provenance. The engine treats `latent_factor` as inert: no effect, and not counted as an unsupported kind.
 - The **parameters table** (ADR-007 §9) shows each row's parent and ρ, and lists the factors.
+- The **Monte Carlo correlation report** (ADR-007 §6.2) leaves factors out of its inputs (their effect reaches the outcome only through their dependents), and notes when a batch's rows are correlated, since its per-row numbers assume independence.
 
 **Follow-ups, as sub-issues of #30:**
-- **The Monte Carlo sensitivity report assumes independent inputs** (ADR-007 §6.2: SRRC ≈ ρ, pinning by marginal ρ). With correlated inputs it should rank and pin by SRRC or partial rank correlation (PRCC), and show the achieved rank correlations next to the expected `(6/π)·asin(ρ/2)` per pair.
-- **One-at-a-time perturbation of latent factors.**
+- **The Monte Carlo sensitivity report assumes independent inputs** (ADR-007 §6.2: SRRC ≈ ρ, pinning by marginal ρ). With correlated inputs it should rank and pin by SRRC or partial rank correlation (PRCC), and show, per correlated pair, the achieved correlation of the recorded normal scores (`z`) against the specified or implied ρ. That's scores rather than values, since tied values (§1) don't follow `(6/π)·asin(ρ/2)`. This is [#38](https://github.com/BobKerns/analysis/issues/38).
+- **One-at-a-time perturbation of latent factors** ([#39](https://github.com/BobKerns/analysis/issues/39)).
 
 ### 7. Schema
 

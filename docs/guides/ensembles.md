@@ -125,6 +125,61 @@ is negligible next to the sampling noise you'd have anyway. See
 [ADR-006 §9](../architecture/ADR-006-ensemble-scenarios.md) if you want the
 full reasoning.
 
+## Correlated parameters
+
+By default every varying row is drawn independently. Real uncertainties
+usually aren't independent: inflation and interest rates move together,
+stocks and bonds are related (sometimes oppositely), and a growth rate in
+2040 isn't unrelated to the same rate in 2030. Ignoring that understates
+the spread when uncertainties compound, and overstates it when they offset
+([ADR-008](../architecture/ADR-008-correlated-parameters.md)).
+
+Give a varying row a **parent** and a correlation **ρ** (between -1 and 1):
+
+```sh
+sim calendar add latent-factor economy --scenario inflation_1 \
+  --description "the broad economy: high inflation, high rates"
+sim calendar add set-rate 2027-01-31 cpi 3.0 --aux-kind inflation \
+  --scenario inflation_1 --name cpi_vary \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 3.0 --vary-sd 1.0 \
+  --vary-correlate-with economy --vary-correlation 0.8
+```
+
+A parent is another varying row, or a **latent factor**: a named shared
+influence that isn't itself a modeled value. Factors can depend on other
+factors too. Each row has at most one parent, and the chain of parents
+can't loop.
+
+What to expect:
+
+- **Each row keeps exactly its own distribution.** Correlation only changes
+  how rows move *together*. A row's range still means "over all futures,
+  this value is in here", and a correlated draw never leaves it.
+- **ρ is roughly the rank correlation you'll see** between the two rows'
+  values (within 0.02), for any pair of distributions. A date range of only
+  a few days is the exception, because tied dates correlate less.
+- **Siblings correlate at the product.** Two rows under one factor at 0.8
+  and 0.6 correlate with each other at about 0.48. To make two siblings
+  correlate at 0.6, give each about 0.77.
+- **Use coarse values.** ±0.3 (weakly), ±0.6 (clearly) and ±0.9 (nearly
+  lockstep) are about as precise as anyone can justify. Even the sign of
+  some historical correlations has changed over the decades.
+- **Member 0 and one-at-a-time sensitivity runs are unchanged.** Member 0
+  is still every row at its median. A sensitivity run still moves one row
+  alone, without dragging its dependents along.
+- **The Monte Carlo correlation report notes a correlated batch.** Its
+  per-row numbers assume independent inputs, so a row's correlation with
+  the outcome includes its correlates' effects. Read it as "this family of
+  rows matters" rather than "this row alone matters".
+- **Joint extremes are a little rarer than in reality.** The method used
+  (a Gaussian copula) doesn't make crashes cluster the way markets do. This
+  could be added later if it matters for your scenarios.
+
+A factor nothing depends on yet loads with a `WARN:` line rather than an
+error. That's fine for work in progress, or for a factor defined in a
+parent scenario for its child scenarios to use.
+
 ## How many members?
 
 There's no single right answer — it depends on what you're trying to learn

@@ -1,6 +1,8 @@
 # [ADR-008](ADR-008-correlated-parameters.md) implementation plan: correlated parameters
 
-**Status: not started.**
+**Status: implemented.** Phase 0 (`8f77956`): schema, the `latent_factor` kind, validation, load warnings. Phase 1 (`6c2fe37`): `correlation.py` and `value_at`. Phase 2 (`912c27e`): `resolve_member` integration and provenance. Phase 3: CLI authoring, the parameters table, and docs.
+
+**Beyond the plan:** factors are left out of the Monte Carlo correlation report's inputs, and the report notes a correlated batch, since its per-row numbers assume independence until the follow-up sub-issue lands.
 
 Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a green suite. As in ADR-006 and ADR-007, `run_scenario` changes only to treat `latent_factor` as inert. Tests reuse `tests/conftest.py`'s fixtures (`append_calendar_row`, `load_test_copy`, the batch fixtures).
 
@@ -12,9 +14,10 @@ Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a
    - A `latent_factor` row: needs a `name`; may leave `date` blank (the scenario start is stored as a placeholder); has no `vary_distribution` or other `vary_*` parameter except the two correlation columns.
    - `vary_correlate_with` and `vary_correlation` are given together, ρ ∈ [-1, 1].
    - Over the merged calendar (after inheritance): every parent names a varying row or a factor; there are no cycles (report the cycle's names).
-   - **Warnings** (new): `LoadResult.warnings: list[str]`, printed by `sim load` / `sim run` (and `sim calendar add`'s validating load) without failing. First use: a factor with no dependents, which may be work in progress or meant for child scenarios.
+   - **Warnings** (new): `LoadResult.warnings: list[str]`, printed as `WARN:` lines (ADR-004 §6) by `sim check`, `sim load`, `sim run` and `sim calendar add`'s validating load, without failing. `sim load`'s default run prints each warning once. First use: a factor with no dependents, which may be work in progress or meant for child scenarios.
+   - **Merge key:** a `latent_factor` row's calendar overlay key is its `name` (ADR-008 §4), so two factors don't collide on their blank event fields, and a child scenario's factor overrides its parent's by name.
 4. `engine.py`: `latent_factor` is inert. It's skipped, and not counted in `skipped_calendar`.
-5. Tests: each rejection; an unused factor loads with a warning (and is printed by the CLI); a valid two-level tree (factor → factor → rows) loads; inheritance (a child recipe's row naming a parent scenario's factor); a recipe with factors still runs as an ensemble, and an ordinary scenario is unaffected.
+5. Tests: each rejection; an unused factor loads with a warning, printed once by `sim load` (which runs) and by `sim check`; two factors in one scenario both survive the merge, and a child scenario's same-named factor overrides the parent's; a valid two-level tree (factor → factor → rows) loads; inheritance (a child recipe's row naming a parent scenario's factor); a recipe with factors still runs as an ensemble, and an ordinary scenario is unaffected.
 
 ## Phase 1 — Copula math (pure, no I/O)
 
@@ -27,7 +30,7 @@ Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a
    - `implied_correlation(tree, a, b)`: the product of ρ along the path, 0 for different trees.
 3. Tests:
    - **Each row's own distribution is preserved:** over 5,000 simulated members, a child's empirical quantiles match its own `quantile` for uniform, skewed `truncated_normal` and `triangular`, within sampling tolerance.
-   - **Rank correlation:** the achieved Spearman ρ between parent and child, and between two siblings, matches `expected_rank_correlation` of the specified or implied ρ, within tolerance.
+   - **Correlation:** the recorded normal scores' correlation between parent and child, and between two siblings, matches the specified or implied ρ, within tolerance. For continuous values (amounts, long date ranges), the value-level Spearman also matches `expected_rank_correlation`. A short date range's tied values are tested on scores, not values (ADR-008 §1).
    - ρ = 0 gives independent rows; ρ = ±1 makes the child a monotone function of the parent (Spearman ±1).
    - Draws stay within bounds.
 
@@ -43,7 +46,7 @@ Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a
    - a resolved child is within bounds and its `z` is recorded;
    - adding an unrelated tree doesn't change an existing tree's draws (keyed streams);
    - ramps still work for a correlated `set_rate`;
-   - over a 200-member batch, achieved Spearman between two correlated rows' `ensemble_draw` values is within tolerance of expected.
+   - over a 200-member batch, the correlation of two correlated rows' recorded `ensemble_draw.z` is within tolerance of ρ.
 
 ## Phase 3 — Authoring, reporting, docs
 

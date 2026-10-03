@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -193,7 +193,11 @@ CREATE TABLE calendar_event (
     vary_skew          REAL,
     vary_tailweight    REAL,
     vary_mode          TEXT,
-    vary_ramp_months   INTEGER
+    vary_ramp_months   INTEGER,
+    -- ADR-008: this row's parent in a correlation tree (another varying
+    -- row's or a latent_factor's name), and rho between their normal scores.
+    vary_correlate_with TEXT,
+    vary_correlation    REAL
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
@@ -361,6 +365,9 @@ CREATE TABLE ensemble_draw (
     -- The row's vary_distribution, which resolving clears from calendar_event
     -- (ADR-007 §5); NULL in files written before schema 28.
     distribution        TEXT,
+    -- ADR-008 §6: the row's standard normal score in its correlation tree;
+    -- NULL for a row outside every tree.
+    z                   REAL,
     PRIMARY KEY (calendar_event_name)
 );
 """

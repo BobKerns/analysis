@@ -73,6 +73,18 @@ class Uniform:
         """``quantile`` rounded to a day ordinal, for a date target."""
         return round(self.quantile(q))
 
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
+    def value_at_int(self, u: float) -> int:
+        """A date as a correlated draw resolves it: each whole day in
+        ``[round(low), round(high)]`` equally likely, matching ``draw_int``
+        (not ``quantile_int``'s rounding, which gives the end days half
+        weight)."""
+        low, high = round(self.low), round(self.high)
+        return min(high, low + int(_clamp_unit(u) * (high - low + 1)))
+
 
 def _shape(z: float, skew: float, tailweight: float) -> float:
     """Sinh-arcsinh transform of a standard normal score (Jones & Pewsey
@@ -242,6 +254,16 @@ class TruncatedNormal:
             span *= 4
         if not brackets:
             reached = [g + self.median for g in gaps if g is not None]
+            if not reached:
+                # Every sampled location left the window with no representable
+                # probability (#35): nothing was reachable at all, so there's
+                # no range to report -- still a clean validation error.
+                raise DistributionError(
+                    f"truncated_normal: vary_median {self.median:g} can't be placed: at every "
+                    "location tried, the bounds hold no representable probability for this "
+                    "vary_sd and shape; widen the bounds, change vary_sd, or bring vary_skew "
+                    "toward 0 and vary_tailweight toward 1"
+                )
             if self.tailweight >= 1:
                 # Normal or lighter tails reach every interior median in
                 # principle, so this is numeric: the fit would need the
@@ -300,6 +322,10 @@ class TruncatedNormal:
             raise DistributionError("truncated_normal: the bounds hold no probability")
         return value
 
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
 
 @dataclass(frozen=True)
 class Triangular:
@@ -335,6 +361,14 @@ class Triangular:
 
     def draw_int(self, rng: random.Random) -> int:
         return round(self.draw(rng))
+
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
+    def value_at_int(self, u: float) -> int:
+        """A date as a correlated draw resolves it, rounded like ``draw_int``."""
+        return round(self.value_at(u))
 
     def central(self) -> float:
         """The median (ADR-006 §9's base case), not the mode."""
@@ -391,6 +425,11 @@ def moments(
     skewness = math.fsum(c**3 for c in centered) / count / sd**3
     kurtosis = math.fsum(c**4 for c in centered) / count / variance**2 - 3.0
     return Moments(mean, sd, skewness, kurtosis)
+
+
+def _clamp_unit(u: float) -> float:
+    """A copula probability, kept inside [0, 1] against float round-off."""
+    return min(1.0, max(0.0, u))
 
 
 def _check_quantile(q: float) -> None:

@@ -83,7 +83,13 @@ def withdrawal_tax_character(tax_treatment: str | None, subkind: str) -> str | N
 CALENDAR_EVENT_KINDS: set[str] = {
     "set_rate", "set_amount", "add_scheduled", "retire_scheduled", "swap_aux_table",
     "one_off_transfer", "sell_asset", "buy_asset", "life_transition",
+    "latent_factor",
 }
+
+# ADR-008 §3: a shared influence (an "inflation regime") that rows correlate
+# with but that isn't itself a modeled value. Inert in the engine; only the
+# ensemble's correlated draws read it.
+LATENT_FACTOR_KIND = "latent_factor"
 
 CADENCES: set[str] = {"monthly", "biweekly", "quarterly", "annual", "one_off"}
 
@@ -284,6 +290,9 @@ CALENDAR_HEADER: tuple[str, ...] = (
     # shape a truncated_normal; vary_mode is a triangular's peak (#31).
     "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_median",
     "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
+    # ADR-008: this row's (or latent factor's) parent in a correlation tree,
+    # and the correlation rho between their normal scores.
+    "vary_correlate_with", "vary_correlation",
 )
 
 # ADR-006: which of a varying calendar_event row's own columns is drawn.
