@@ -897,8 +897,11 @@ def ensemble_sensitivity(
 
     On a sensitivity batch ('sim run --sensitivity'): per-year one-at-a-time
     deltas, swings, impacts and shares, plus a rank-by-year grid. On a Monte Carlo
-    batch: per-year Spearman correlations with 95% intervals, rank-regression
-    coefficients and R^2, and which rows could be pinned to a literal.
+    batch: per-year Spearman correlations and rank-regression coefficients with
+    95% intervals, partial rank correlations and R^2, and which rows could be
+    pinned to a literal (judged by the regression coefficient when rows are
+    correlated). A correlated batch also shows how closely its draws reproduce
+    the specified correlations.
     """
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
@@ -990,50 +993,86 @@ def _report_attribution(
             click.echo(f"    {label:<30}" + "".join(f"{c:>14}" for c in cells))
 
 
+def _signed(value: float) -> str:
+    """A correlation or coefficient for a report line; n/a where undefined."""
+    return "n/a" if pd.isna(value) else f"{value:+.2f}"
+
+
 def _report_correlation(
     scenario_name: str, batch_dir: Path, dollar_mode: DollarMode, *,
     measure: str, years: list[int] | None, negligible: float,
 ) -> None:
-    """ADR-007 §6.2: rho [interval] and SRRC per row and year, R^2 per year,
-    and each row's keep / pin_candidate / inconclusive status."""
+    """ADR-007 §6.2: rho [interval], SRRC [interval] and PRCC per row and
+    year, R^2 per year, each latent factor's rho, the achieved score
+    correlations of a correlated batch, and each row's keep / pin_candidate /
+    inconclusive status -- by rho, or by SRRC when rows are correlated."""
     try:
-        table = sensitivity.mc_correlation(batch_dir, measure=measure, dollars=dollar_mode)
+        report = sensitivity.mc_report(batch_dir, measure=measure, dollars=dollar_mode)
     except EnsembleError as exc:
         raise click.ClickException(str(exc)) from None
+    table, by = report.table, report.by
     n = int(table["n"].iloc[0])
     years = _report_years(batch_dir, [int(y) for y in table["year"].unique()], years)
     click.echo(
         f"correlation {scenario_name} ({batch_dir.name}): {measure}, {n} drawn member(s) "
         "(member 0 excluded)"
     )
-    if sensitivity.has_correlated_rows(batch_dir):
+    if report.correlated:
         click.echo(
-            "  note: this batch's rows are correlated (ADR-008); per-row rho and pin status "
-            "assume independent inputs, so a row's numbers include its correlates' effects"
+            "  note: this batch's rows are correlated (ADR-008), so a row's rho includes its "
+            "correlates' effects; rows are ranked and pinned by SRRC, which holds the others fixed"
         )
+    # The member count rho needs follows from its interval alone. SRRC's
+    # interval also narrows as R^2 rises and widens with collinearity, so
+    # there's no fixed count to warn against; its intervals speak for it.
     needed = sensitivity.required_members(negligible)
-    if n < needed:
+    if by == "rho" and n < needed:
         click.echo(
             f"  warning: {n} members can't call a row negligible at {negligible:.0%}; "
             f"that needs about {needed} -- expect 'inconclusive'"
         )
+    if not report.scores.empty:
+        click.echo("\n  correlations achieved (normal scores) vs expected:")
+        for _, pair in report.scores.iterrows():
+            flag = "  -- outside the interval" if pair["outside"] else ""
+            click.echo(
+                f"    {pair['a'] + ' ~ ' + pair['b']:<32} {pair['kind']:<8} "
+                f"{_signed(pair['expected'])}  achieved {_signed(pair['achieved'])} "
+                f"[{_signed(pair['low'])}, {_signed(pair['high'])}]{flag}"
+            )
+    factors = set(table.loc[table["factor"], "row"])
     for year in years:
         at = table[table["year"] == year]
         r2 = at["r2"].iloc[0]
-        if pd.isna(r2):
-            click.echo(f"\n  {year}: outcome doesn't vary across members")
+        rows = at[~at["factor"]]
+        if rows["srrc"].isna().all() and rows["rho"].isna().all():
+            # correlation_table estimates nothing below 4 members, varying
+            # outcome or not; say which it is.
+            why = "too few members to estimate" if n < 4 else "outcome doesn't vary across members"
+            click.echo(f"\n  {year}: {why}")
             continue
-        trust = "" if r2 >= sensitivity.R2_TRUST else (
-            "  -- low: interactions or transitions dominate; try an OAT ladder"
-        )
-        click.echo(f"\n  {year}  R2={r2:.2f}{trust}")
-        for _, row in at.reindex(at["rho"].abs().sort_values(ascending=False).index).iterrows():
-            click.echo(
-                f"    {row['row']:<24} rho={row['rho']:+.2f} [{row['rho_low']:+.2f}, "
-                f"{row['rho_high']:+.2f}]  srrc={row['srrc']:+.2f}"
+        if pd.isna(r2):
+            # The regression ran, but with no residual degrees of freedom
+            # there's no R^2 to adjust, so nothing in this year is trusted.
+            click.echo(f"\n  {year}  R2=n/a  -- too few members for {len(rows)} rows")
+        else:
+            trust = "" if r2 >= sensitivity.R2_TRUST else (
+                "  -- low: interactions or transitions dominate; try an OAT ladder"
             )
-    status = sensitivity.classify(table, negligible)
-    click.echo(f"\n  status (rho^2 vs {negligible:.0%}, every year):")
+            click.echo(f"\n  {year}  R2={r2:.2f}{trust}")
+        for _, row in rows.reindex(rows[by].abs().sort_values(ascending=False).index).iterrows():
+            click.echo(
+                f"    {row['row']:<24} rho={_signed(row['rho'])} [{_signed(row['rho_low'])}, "
+                f"{_signed(row['rho_high'])}]  srrc={_signed(row['srrc'])} [{_signed(row['srrc_low'])}, "
+                f"{_signed(row['srrc_high'])}]  prcc={_signed(row['prcc'])}"
+            )
+        for _, row in at[at["factor"]].iterrows():
+            click.echo(
+                f"    {sensitivity.row_label(row['row'], factors):<24} rho={_signed(row['rho'])} "
+                f"[{_signed(row['rho_low'])}, {_signed(row['rho_high'])}]  (its family, through it)"
+            )
+    status = sensitivity.classify(table, negligible, by=by)
+    click.echo(f"\n  status ({by}^2 vs {negligible:.0%}, every year):")
     for name, value in status.items():
         click.echo(f"    {name:<24} {value}")
 

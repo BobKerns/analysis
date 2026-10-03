@@ -2,7 +2,7 @@
 
 **Status: implemented.** Phase 0 (`8f77956`): schema, the `latent_factor` kind, validation, load warnings. Phase 1 (`6c2fe37`): `correlation.py` and `value_at`. Phase 2 (`912c27e`): `resolve_member` integration and provenance. Phase 3: CLI authoring, the parameters table, and docs.
 
-**Beyond the plan:** factors are left out of the Monte Carlo correlation report's inputs, and the report notes a correlated batch, since its per-row numbers assume independence until the follow-up sub-issue lands.
+**Beyond the plan:** factors are left out of the Monte Carlo correlation report's inputs, and the report notes a correlated batch, since its per-row numbers assumed independence until the follow-up, [#38](https://github.com/BobKerns/analysis/issues/38), made it rank and pin correlated rows by SRRC.
 
 Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a green suite. As in ADR-006 and ADR-007, `run_scenario` changes only to treat `latent_factor` as inert. Tests reuse `tests/conftest.py`'s fixtures (`append_calendar_row`, `load_test_copy`, the batch fixtures).
 
@@ -59,4 +59,4 @@ Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a
 
 - **Choosing ρ:** authors may over-specify precision. The guide recommends coarse values and explains the product rule for siblings.
 - **A child's ρ is relative to its parent, not to other rows.** Authors who think in pairwise correlations may be surprised that siblings correlate at the product. The parameters table should show each pair's implied correlation, or at least each row's tree, to make this visible.
-- **The Monte Carlo report's per-row ρ is misleading for correlated inputs** until the follow-up lands. The report should note when a batch has correlated rows.
+- **The Monte Carlo report's per-row ρ is misleading for correlated inputs.** The report should note when a batch has correlated rows. [#38](https://github.com/BobKerns/analysis/issues/38) has since made it rank and pin them by SRRC.

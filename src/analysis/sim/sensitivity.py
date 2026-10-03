@@ -23,7 +23,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from scipy.stats import t as student_t
+
 from analysis.sim.connection import RunConnection, year_end_values
+from analysis.sim.correlation import Link, implied_correlation
 from analysis.sim.distributions import Distribution, Triangular, TruncatedNormal, moments
 from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
 from analysis.sim.registries import format_calendar_amount
@@ -36,7 +39,8 @@ __all__ = [
     "display_value", "ATTRIBUTION_AXES", "OPENING_BALANCES", "UNATTRIBUTED", "TOTAL",
     "attribution", "oat_attribution", "base_net_worth", "parameters", "R2_TRUST", "draws_frame", "outcomes_frame",
     "rho_interval", "required_members", "correlation_table", "classify", "mc_correlation",
-    "has_correlated_rows", "FACTOR_TARGET", "factor_rows", "row_label",
+    "has_correlated_rows", "FACTOR_TARGET", "factor_rows", "row_label", "RANKING_MEASURES",
+    "score_correlations", "McReport", "mc_report",
 ]
 
 MEASURES: tuple[str, ...] = ("net_worth", "min_net_worth")
@@ -511,20 +515,30 @@ _SPEARMAN_VARIANCE = 1.06
 """Fisher-z variance correction for Spearman's rho: ``1.06 / (n - 3)``."""
 
 
-def draws_frame(connections: dict[str, RunConnection]) -> pd.DataFrame:
-    """Member x varying-row matrix of numeric draws (dates as day ordinals)
-    from each member's own ``ensemble_draw``, excluding member 0 -- the
-    deterministic base, not a draw (ADR-006 §9)."""
+def _member_draws(
+    connections: dict[str, RunConnection],
+) -> tuple[pd.DataFrame, pd.DataFrame, set[str]]:
+    """One pass over the drawn members' ``ensemble_draw`` rows, excluding
+    member 0 -- the deterministic base, not a draw (ADR-006 §9):
+
+    - member x varying-row matrix of numeric draws (dates as day ordinals);
+      latent factors (ADR-008) aren't inputs of their own, since their effect
+      reaches the outcome only through their dependents;
+    - member x tree-node matrix of recorded normal scores ``z`` (ADR-008 §6),
+      factors included; a row outside every tree has none;
+    - the latent factors' names.
+    """
     records: dict[str, dict[str, float]] = {}
+    scores: dict[str, dict[str, float]] = {}
+    factors: set[str] = set()
     for stem, rc in connections.items():
         con = sqlite3.connect(rc.run_path)
         try:
             index = con.execute("SELECT member_index FROM ensemble_manifest").fetchone()
+            columns = {c[1] for c in con.execute("PRAGMA table_info(ensemble_draw)")}
+            z = "z" if "z" in columns else "NULL"  # files written before ADR-008
             draws = con.execute(
-                # Latent factors (ADR-008) aren't inputs of their own: their
-                # effect reaches the outcome only through their dependents.
-                "SELECT calendar_event_name, vary_target, drawn_value FROM ensemble_draw "
-                "WHERE vary_target != 'factor'"
+                f"SELECT calendar_event_name, vary_target, drawn_value, {z} FROM ensemble_draw"
             ).fetchall()
         finally:
             con.close()
@@ -532,9 +546,22 @@ def draws_frame(connections: dict[str, RunConnection]) -> pd.DataFrame:
             continue
         records[stem] = {
             name: float(pd.Timestamp(raw).toordinal()) if target == "date" else float(raw)
-            for name, target, raw in draws
+            for name, target, raw, _z in draws if target != FACTOR_TARGET
         }
-    return pd.DataFrame.from_dict(records, orient="index").sort_index(axis=1)
+        scores[stem] = {name: float(score) for name, _t, _r, score in draws if score is not None}
+        factors |= {name for name, target, _r, _z in draws if target == FACTOR_TARGET}
+    return (
+        pd.DataFrame.from_dict(records, orient="index").sort_index(axis=1),
+        pd.DataFrame.from_dict(scores, orient="index").sort_index(axis=1),
+        factors,
+    )
+
+
+def draws_frame(connections: dict[str, RunConnection]) -> pd.DataFrame:
+    """Member x varying-row matrix of numeric draws (dates as day ordinals)
+    from each member's own ``ensemble_draw``, excluding member 0 and latent
+    factors (see ``_member_draws``)."""
+    return _member_draws(connections)[0]
 
 
 def outcomes_frame(
@@ -547,16 +574,22 @@ def outcomes_frame(
     }).T
 
 
+def _fisher_interval(r: float, n: int, variance: float) -> tuple[float, float]:
+    """95% interval on a correlation via the Fisher z-transform, with
+    ``variance / (n - 3)`` on the transformed scale."""
+    if n <= 3 or pd.isna(r):
+        return (float("nan"), float("nan"))
+    z = np.arctanh(np.clip(r, -0.999999, 0.999999))
+    half = _Z95 * np.sqrt(variance / (n - 3))
+    # The clip keeps arctanh finite at |r| = 1 (every member ranked the
+    # same), but then the transformed interval stops just short of r
+    # itself; widen it to include r so it's always a valid interval.
+    return (min(float(np.tanh(z - half)), r), max(float(np.tanh(z + half)), r))
+
+
 def rho_interval(rho: float, n: int) -> tuple[float, float]:
     """95% confidence interval on Spearman's rho via the Fisher z-transform."""
-    if n <= 3 or pd.isna(rho):
-        return (float("nan"), float("nan"))
-    z = np.arctanh(np.clip(rho, -0.999999, 0.999999))
-    half = _Z95 * np.sqrt(_SPEARMAN_VARIANCE / (n - 3))
-    # The clip keeps arctanh finite at |rho| = 1 (every member ranked the
-    # same), but then the transformed interval stops just short of rho
-    # itself; widen it to include rho so it's always a valid interval.
-    return (min(float(np.tanh(z - half)), rho), max(float(np.tanh(z + half)), rho))
+    return _fisher_interval(rho, n, _SPEARMAN_VARIANCE)
 
 
 def required_members(negligible: float) -> int:
@@ -570,79 +603,195 @@ def _ranks(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
     return frame.rank(method="average")
 
 
-def correlation_table(draws: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataFrame:
+def _srrc_intervals(
+    x: np.ndarray, varying: np.ndarray, coef: np.ndarray, residuals: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per row: the 95% interval on its SRRC from the rank regression's
+    standard errors (t with ``n - k - 1`` degrees of freedom, ``k`` counting
+    only the rows that vary), and its PRCC,
+    which shares the coefficient's t statistic: ``t / sqrt(t^2 + dof)``.
+
+    All NaN without residual degrees of freedom, or when the varying rows'
+    ranks are exactly collinear (no coefficient is identifiable). A row that
+    never varies gets NaN too: it has no coefficient to bound.
+    """
+    n, k = x.shape
+    # A row that never varies is an all-zero column: no fitted parameter,
+    # so it costs no degree of freedom.
+    dof = n - int(varying.sum()) - 1
+    low, high, prcc = (np.full(k, np.nan) for _ in range(3))
+    if dof <= 0 or not varying.any():
+        return low, high, prcc
+    xv = x[:, varying]
+    gram = xv.T @ xv
+    if np.linalg.matrix_rank(gram) < xv.shape[1]:
+        return low, high, prcc
+    sigma2 = float(residuals @ residuals) / dof
+    se = np.sqrt(sigma2 * np.diag(np.linalg.inv(gram)))
+    half = float(student_t.ppf(0.975, dof)) * se
+    b = coef[varying]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = b / se
+        # A perfect fit has se = 0: the partial correlation is +-1 (or 0
+        # for a zero coefficient), not the NaN that inf / inf gives.
+        partial = np.where(se > 0, t / np.sqrt(t**2 + dof), np.sign(b))
+    low[varying], high[varying], prcc[varying] = b - half, b + half, partial
+    return low, high, prcc
+
+
+def correlation_table(
+    draws: pd.DataFrame, outcomes: pd.DataFrame, factors: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """ADR-007 §6.2: per (row, year): Spearman ``rho`` with its 95% interval
     (``rho_low``/``rho_high``), the standardized rank-regression coefficient
-    ``srrc``, and that year's adjusted regression ``r2`` (repeated per row;
-    NaN, so untrusted, when there are too few members for the number of
-    rows). A year whose outcome doesn't vary across members has NaN
-    throughout -- there's nothing to explain."""
+    ``srrc`` with its 95% interval (``srrc_low``/``srrc_high``), the partial
+    rank correlation ``prcc``, and that year's adjusted regression ``r2``
+    (repeated per row; NaN, so untrusted, when there are too few members for
+    the number of rows). A year whose outcome doesn't vary across members has
+    NaN throughout -- there's nothing to explain.
+
+    ``factors`` (member x latent factor normal scores) adds a row per factor
+    with ``factor`` True: its ``rho`` with the outcome, the effect of its
+    whole family through it. Factors aren't regressors -- their effect is
+    only through their dependents, which are -- so their SRRC and PRCC are
+    NaN, and ``classify`` gives them no status.
+    """
     members = draws.index.intersection(outcomes.index)
     draws, outcomes = draws.loc[members], outcomes.loc[members]
+    factors = pd.DataFrame(index=members) if factors is None else factors.reindex(members)
     n = len(members)
     x = _ranks(draws)
-    x = (x - x.mean()) / x.std(ddof=0)
+    spread = x.std(ddof=0)
+    x = (x - x.mean()) / spread
     x = x.fillna(0.0)  # a row that never varies (zero spread) explains nothing
+    varying = (spread > 0).to_numpy()
+    xv = x.to_numpy()[:, varying]
+    # With exactly collinear ranks (a rho of +-1 makes them so) lstsq still
+    # returns a minimum-norm answer, but no coefficient is identifiable.
+    identifiable = bool(varying.any()) and int(np.linalg.matrix_rank(xv.T @ xv)) == xv.shape[1]
+    nan = float("nan")
     records = []
     for year in outcomes.columns:
         y = _ranks(outcomes[year])
-        spread = y.std(ddof=0)
-        if n < 4 or not spread:
+        y_spread = y.std(ddof=0)
+        if n < 4 or not y_spread:
             for row in draws.columns:
-                records.append({"row": row, "year": year, "rho": np.nan, "rho_low": np.nan,
-                                "rho_high": np.nan, "srrc": np.nan, "r2": np.nan, "n": n})
+                records.append({"row": row, "year": year, "rho": nan, "rho_low": nan,
+                                "rho_high": nan, "srrc": nan, "srrc_low": nan, "srrc_high": nan,
+                                "prcc": nan, "r2": nan, "n": n, "factor": False})
+            for row in factors.columns:
+                records.append({"row": row, "year": year, "rho": nan, "rho_low": nan,
+                                "rho_high": nan, "srrc": nan, "srrc_low": nan, "srrc_high": nan,
+                                "prcc": nan, "r2": nan, "n": n, "factor": True})
             continue
-        y = (y - y.mean()) / spread
+        y = (y - y.mean()) / y_spread
         coef, *_ = np.linalg.lstsq(x.to_numpy(), y.to_numpy(), rcond=None)
-        fitted = x.to_numpy() @ coef
-        r2 = 1 - float(np.sum((y.to_numpy() - fitted) ** 2)) / float(np.sum(y.to_numpy() ** 2))
+        residuals = y.to_numpy() - x.to_numpy() @ coef
+        r2 = 1 - float(np.sum(residuals**2)) / float(np.sum(y.to_numpy() ** 2))
         # Adjusted for the number of rows: in-sample R^2 climbs toward 1 as
         # rows approach members whatever the outcome, which would let noise
         # pass the trust gate. With no residual degrees of freedom there's
         # nothing to adjust from, so it's undefined (and untrusted).
-        k = x.shape[1]
+        # Only rows that vary are fitted predictors; a constant one is an
+        # all-zero column and mustn't count against the adjustment.
+        k = int(varying.sum())
         r2 = 1 - (1 - r2) * (n - 1) / (n - k - 1) if n - k - 1 > 0 else np.nan
+        low, high, prcc = _srrc_intervals(x.to_numpy(), varying, coef, residuals)
         for i, row in enumerate(draws.columns):
-            rho = float(draws[row].rank().corr(outcomes[year].rank()))
-            low, high = rho_interval(rho, n)
-            records.append({"row": row, "year": year, "rho": rho, "rho_low": low,
-                            "rho_high": high, "srrc": float(coef[i]), "r2": r2, "n": n})
+            # A row that never varies has no rank correlation (and computing
+            # one only warns about dividing by its zero spread).
+            rho = float(draws[row].rank().corr(outcomes[year].rank())) if varying[i] else nan
+            rho_low, rho_high = rho_interval(rho, n)
+            records.append({"row": row, "year": year, "rho": rho, "rho_low": rho_low,
+                            "rho_high": rho_high,
+                            # A row that never varies has no coefficient to
+                            # report, and none is identifiable without full rank.
+                            "srrc": float(coef[i]) if varying[i] and identifiable else nan,
+                            "srrc_low": float(low[i]), "srrc_high": float(high[i]),
+                            "prcc": float(prcc[i]), "r2": r2, "n": n, "factor": False})
+        for row in factors.columns:
+            rho = float(factors[row].rank().corr(outcomes[year].rank()))
+            rho_low, rho_high = rho_interval(rho, n)
+            records.append({"row": row, "year": year, "rho": rho, "rho_low": rho_low,
+                            "rho_high": rho_high, "srrc": nan, "srrc_low": nan,
+                            "srrc_high": nan, "prcc": nan, "r2": r2, "n": n, "factor": True})
     return pd.DataFrame(records)
 
 
-def classify(table: pd.DataFrame, negligible: float = DEFAULT_NEGLIGIBLE) -> pd.Series:
-    """Per row, over every year whose outcome varies at all:
+RANKING_MEASURES: tuple[str, ...] = ("rho", "srrc")
+"""What ``classify`` ranks and pins by: marginal ``rho`` for independent
+inputs, ``srrc`` when rows are correlated (ADR-007 §6.2)."""
 
-    - ``pin_candidate``: the upper bound of rho^2's interval is below
+
+def classify(
+    table: pd.DataFrame, negligible: float = DEFAULT_NEGLIGIBLE, by: str = "rho",
+) -> pd.Series:
+    """Per row (latent factors excluded), over every year whose outcome
+    varies at all, with ``m`` the ``by`` measure (``rho`` or ``srrc``):
+
+    - ``pin_candidate``: the upper bound of m^2's interval is below
       ``negligible`` *and* that year's R^2 meets ``R2_TRUST``, in every year;
-    - ``inconclusive``: rho^2 itself is below ``negligible`` every year, but
+    - ``inconclusive``: m^2 itself is below ``negligible`` every year, but
       either an interval is too wide to say so, or R^2 is too low to trust a
-      marginal correlation at all -- with a pure interaction (outcome =
-      x1 * x2) each row's rho is near zero although together they decide
-      the outcome, so a small rho is no evidence of irrelevance there;
+      per-row number at all -- with a pure interaction (outcome = x1 * x2)
+      each row's rho is near zero although together they decide the
+      outcome, so a small rho is no evidence of irrelevance there;
     - ``keep``: otherwise.
 
-    Every row in ``table`` gets a status; one with no estimable correlation
-    in any year is ``inconclusive``.
+    Every row in ``table`` gets a status; one with no estimable value in any
+    year is ``inconclusive``.
     """
+    if by not in RANKING_MEASURES:
+        raise ValueError(f"by must be one of {RANKING_MEASURES} (got {by!r})")
+    if "factor" in table.columns:
+        table = table[~table["factor"].astype(bool)]
     result = {}
     for row, group in table.groupby("row", sort=False):
-        group = group.dropna(subset=["rho"])
+        group = group.dropna(subset=[by])
         if group.empty:
-            # No year gave an estimable correlation (too few members, or a
-            # draw that never varies): nothing says it's negligible.
+            # No year gave an estimable value (too few members, or a draw
+            # that never varies): nothing says it's negligible.
             result[row] = "inconclusive"
             continue
-        upper = np.maximum(group["rho_low"] ** 2, group["rho_high"] ** 2)
-        # An interval straddling zero has rho^2 upper bound at its wider end.
+        # An interval straddling zero has its m^2 upper bound at its wider
+        # end. A NaN bound (no residual freedom) compares False: not pinned.
+        upper = np.maximum(group[f"{by}_low"] ** 2, group[f"{by}_high"] ** 2)
         trusted = group["r2"] >= R2_TRUST
         if ((upper < negligible) & trusted).all():
             result[row] = "pin_candidate"
-        elif (group["rho"] ** 2 < negligible).all():
+        elif (group[by] ** 2 < negligible).all():
             result[row] = "inconclusive"
         else:
             result[row] = "keep"
     return pd.Series(result, name="status", dtype=object)
+
+
+def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str]]:
+    """A member run file's correlation links (ADR-008) and its modeled
+    (non-factor) varying rows."""
+    con = sqlite3.connect(run_path)
+    try:
+        columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
+        links = {} if "vary_correlate_with" not in columns else {
+            name: Link(parent, rho) for name, parent, rho in con.execute(
+                "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
+                "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
+            )
+        }
+        modeled = sorted(name for (name,) in con.execute(
+            "SELECT calendar_event_name FROM ensemble_draw WHERE vary_target != ?",
+            (FACTOR_TARGET,),
+        ))
+    finally:
+        con.close()
+    return links, modeled
+
+
+def _any_dependent(links: dict[str, Link], modeled: list[str]) -> bool:
+    return any(
+        implied_correlation(links, a, b) != 0
+        for i, a in enumerate(modeled) for b in modeled[i + 1:]
+    )
 
 
 def has_correlated_rows(batch_dir: Path) -> bool:
@@ -650,51 +799,100 @@ def has_correlated_rows(batch_dir: Path) -> bool:
     (ADR-008): some pair has a nonzero implied correlation through the
     correlation links stored in the batch. A row merely being in a tree isn't
     enough -- a lone row under a factor, or a zero-rho link, leaves the
-    report's inputs independent. The Monte Carlo report's per-row numbers
-    assume independent inputs, so it says so when they aren't."""
-    from analysis.sim.correlation import Link, implied_correlation
-
+    report's inputs independent. The Monte Carlo report ranks and pins by
+    marginal rho for independent inputs, and by SRRC when they aren't."""
     connections = load_ensemble(batch_dir)
     try:
-        con = sqlite3.connect(next(iter(connections.values())).run_path)
-        try:
-            columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
-            if "vary_correlate_with" not in columns:
-                return False
-            links = {
-                name: Link(parent, rho) for name, parent, rho in con.execute(
-                    "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
-                    "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
-                )
-            }
-            modeled = sorted(name for (name,) in con.execute(
-                "SELECT calendar_event_name FROM ensemble_draw WHERE vary_target != 'factor'"
-            ))
-        finally:
-            con.close()
+        links, modeled = _links_and_rows(next(iter(connections.values())).run_path)
     finally:
         for rc in connections.values():
             rc.close()
-    return any(
-        implied_correlation(links, a, b) != 0
-        for i, a in enumerate(modeled) for b in modeled[i + 1:]
+    return _any_dependent(links, modeled)
+
+
+def score_correlations(
+    scores: pd.DataFrame, links: dict[str, Link], nodes: list[str],
+) -> pd.DataFrame:
+    """ADR-007 §6.2, ADR-008 §6: per pair of ``nodes`` with a nonzero implied
+    correlation, the correlation the batch achieved between their recorded
+    normal scores (Pearson; scores never tie, unlike values) with its 95%
+    Fisher interval, against the ``expected`` one: the pair's own rho when one
+    is the other's parent (``kind`` "link"), else the product along the path
+    joining them ("implied"). ``outside`` marks an expected rho outside the
+    achieved interval -- a sign the batch is too small to reproduce the
+    structure, or something is wrong with it."""
+    records = []
+    for i, a in enumerate(nodes):
+        for b in nodes[i + 1:]:
+            expected = implied_correlation(links, a, b)
+            if expected == 0 or a not in scores.columns or b not in scores.columns:
+                continue
+            pair = scores[[a, b]].dropna()
+            n = len(pair)
+            achieved = float(pair[a].corr(pair[b])) if n > 1 else float("nan")
+            low, high = _fisher_interval(achieved, n, 1.0)
+            direct = (a in links and links[a].parent == b) or (b in links and links[b].parent == a)
+            records.append({
+                "a": a, "b": b, "kind": "link" if direct else "implied", "expected": expected,
+                "achieved": achieved, "low": low, "high": high, "n": n,
+                "outside": bool(not pd.isna(low) and not low <= expected <= high),
+            })
+    return pd.DataFrame(records, columns=[
+        "a", "b", "kind", "expected", "achieved", "low", "high", "n", "outside",
+    ])
+
+
+@dataclass(frozen=True)
+class McReport:
+    """Everything the Monte Carlo report (ADR-007 §6.2) shows for a batch."""
+
+    table: pd.DataFrame
+    """``correlation_table``, with a row per latent factor that reaches a
+    modeled row."""
+    scores: pd.DataFrame
+    """``score_correlations`` over the modeled rows and the factors that
+    reach them; empty when no two of them are correlated."""
+    correlated: bool
+    """``has_correlated_rows``: whether ranking and pinning use SRRC."""
+
+    @property
+    def by(self) -> str:
+        """What rows are ranked and pinned by: marginal rho with independent
+        inputs, where SRRC ~ rho anyway; SRRC with correlated ones, where a
+        row's marginal rho includes its correlates' effects."""
+        return "srrc" if self.correlated else "rho"
+
+
+def mc_report(
+    batch_dir: Path, *, measure: str = "net_worth", dollars: DollarMode = DollarMode.CPI_CONSTANT,
+) -> McReport:
+    """The Monte Carlo report over a batch's succeeded members."""
+    connections = load_ensemble(batch_dir)
+    try:
+        draws, scores, factors = _member_draws(connections)
+        if draws.empty:
+            raise EnsembleError(f"{batch_dir}: no drawn members (member 0 is never a draw)")
+        outcomes = outcomes_frame(connections, list(draws.index), measure=measure, dollars=dollars)
+        links, modeled = _links_and_rows(next(iter(connections.values())).run_path)
+    finally:
+        for rc in connections.values():
+            rc.close()
+    # A factor that reaches no modeled row (unused, or only through a zero
+    # rho) moves nothing, so its correlation with the outcome is pure noise.
+    reaching = sorted(
+        f for f in factors
+        if f in scores.columns and any(implied_correlation(links, f, row) for row in modeled)
     )
+    table = correlation_table(draws, outcomes, scores[reaching] if reaching else None)
+    nodes = [*modeled, *reaching]
+    return McReport(table, score_correlations(scores, links, nodes), _any_dependent(links, modeled))
 
 
 def mc_correlation(
     batch_dir: Path, *, measure: str = "net_worth", dollars: DollarMode = DollarMode.CPI_CONSTANT,
 ) -> pd.DataFrame:
     """``correlation_table`` for a Monte Carlo batch's succeeded members."""
-    connections = load_ensemble(batch_dir)
-    try:
-        draws = draws_frame(connections)
-        if draws.empty:
-            raise EnsembleError(f"{batch_dir}: no drawn members (member 0 is never a draw)")
-        outcomes = outcomes_frame(connections, list(draws.index), measure=measure, dollars=dollars)
-    finally:
-        for rc in connections.values():
-            rc.close()
-    return correlation_table(draws, outcomes)
+    return mc_report(batch_dir, measure=measure, dollars=dollars).table
 
 
 # --- the varying rows themselves ----------------------------------------------

@@ -184,6 +184,26 @@ def test_correlation_and_r2_views() -> None:
     plt.close("all")
 
 
+def test_correlation_view_plots_srrc_and_labels_factors() -> None:
+    nan = float("nan")
+    table = pd.DataFrame([
+        {"row": "a", "year": 2030, "rho": 0.8, "rho_low": 0.7, "rho_high": 0.9, "srrc": 0.1,
+         "srrc_low": 0.0, "srrc_high": 0.2, "r2": 0.9, "n": 100, "factor": False},
+        {"row": "b", "year": 2030, "rho": 0.6, "rho_low": 0.5, "rho_high": 0.7, "srrc": 0.7,
+         "srrc_low": 0.6, "srrc_high": 0.8, "r2": 0.9, "n": 100, "factor": False},
+        {"row": "f", "year": 2030, "rho": 0.75, "rho_low": 0.65, "rho_high": 0.85, "srrc": nan,
+         "srrc_low": nan, "srrc_high": nan, "r2": 0.9, "n": 100, "factor": True},
+    ])
+    ax = sw.correlation_view(table, 2030, 0.05, by="srrc")
+    # Ranked by |SRRC|, not rho; the factor goes last, labeled.
+    assert [t.get_text() for t in ax.get_yticklabels()] == ["a", "b", "f (factor)"]
+    assert "others held fixed" in ax.get_xlabel()
+    wide = table.assign(srrc_high=table["srrc_high"].where(table["row"] != "b", 1.4))
+    ax = sw.correlation_view(wide, 2030, 0.05, by="srrc")
+    assert ax.get_xlim()[1] >= 1.4  # SRRC can pass 1; its whisker isn't clipped
+    plt.close("all")
+
+
 # --- the widget on real batches -------------------------------------------------
 
 
