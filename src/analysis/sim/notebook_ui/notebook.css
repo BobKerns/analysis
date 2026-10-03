@@ -1,0 +1,14 @@
+/* Styling for the HTML that notebook_ui emits. Every rule is scoped to
+   .analysis-md so it can't restyle anything else in the notebook, since a
+   front end can put every HTML output in one document. */
+
+/* Inline code (scenario, account and command names) in the ordinary text
+   color on a faint chip, so it reads in light and dark themes alike.
+   VS Code otherwise colors it with the theme's textPreformat foreground,
+   which is too light to read comfortably. */
+.analysis-md code {
+  color: inherit;
+  background-color: rgba(127, 127, 127, 0.15);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}

@@ -23,7 +23,7 @@ from dateutil import relativedelta
 
 import ipywidgets as widgets
 import traitlets
-from IPython.display import Markdown, clear_output, display
+from IPython.display import clear_output, display
 
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
@@ -38,6 +38,7 @@ from analysis.sim.types import (
     AccountKind, AccountKindAny, DollarMode, LogLinearMode, ValuePlotMode,
     AccountName, ScenarioName, AttributionAxis, DeltaScale, HeatmapValue,
 )
+from analysis.sim.notebook_ui.styled import StyledMarkdown, styled_html
 
 
 def to_month(year: int, month: int) -> datetime.date:
@@ -56,14 +57,15 @@ def warning_html(message: str) -> str:
 
     Markdown blockquotes (`> ⚠️ ...`) pick up the ambient text color in some
     notebook themes, which can render as black-on-black. This builds plain
-    HTML instead, with an explicit light-yellow background and dark text.
+    HTML instead, with an explicit light-yellow background and dark text;
+    ``notebook.css`` styles its inline code like the rest of our output.
     """
     # Escape first so literal "<...>" in messages (e.g. "sim load <name>")
     # isn't swallowed as an HTML tag; **bold**/`code` add real tags after.
     text = html_lib.escape(message)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
-    return (
+    return styled_html(
         '<div style="background-color:#fff8c5; color:#111; padding:6px 10px; '
         'border-left:4px solid #e6b800; border-radius:3px; margin:4px 0;">'
         f"⚠️ {text}</div>"
@@ -863,7 +865,7 @@ def to_markdown(*lines: str) -> widgets.Output:
     out = widgets.Output()
     with out:
         display(
-            Markdown("\n".join(lines))
+            StyledMarkdown("\n".join(lines))
         )
     return out
 

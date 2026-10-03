@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import matplotlib.pyplot as plt
 import pandas as pd
-from IPython.display import Markdown, display
+from IPython.display import display
 from ipywidgets import widgets
 
 from analysis.sim.allocation import (
@@ -15,6 +15,7 @@ from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.notebook_ui.holdings_widgets import _label, _month_dropdown
 from analysis.sim.notebook_ui.pickers import AssetClassPicker, GroupingPicker
 from analysis.sim.registries import AssetClass
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = ["allocation_view", "portfolio_allocation_widget"]
 
@@ -75,7 +76,7 @@ def portfolio_allocation_widget(
         heading, table = allocation_view(source, split, month, left_out)
         out.clear_output(wait=True)
         with out:
-            display(Markdown(heading))
+            display(StyledMarkdown(heading))
             display(_styled(table))
         with pie:
             _pie(table)

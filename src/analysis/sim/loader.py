@@ -32,6 +32,7 @@ from analysis.sim.distributions import (
     resolve_truncated_normal_bounds,
 )
 from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents, read_parents
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -311,6 +312,10 @@ class ScenarioRef:
 
     def _repr_markdown_(self) -> str:
         return self.describe()
+
+    def _repr_html_(self) -> str:
+        # The styled rendering, so its paths' inline code reads in VS Code.
+        return StyledMarkdown(self.describe())._repr_html_()
 
     def __str__(self) -> str:
         version = f"@{self.commit[:12]}" if self.commit else "@unversioned"

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from analysis.sim.connection import Connection
 
-from IPython.display import Markdown
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = ["ReadmeSummary", "parse_readme_summary", "readme_description"]
 
@@ -159,7 +159,7 @@ def readme_description(scenario_dir: Path, data_dir: Path) -> str | None:
 
 def description_view(conn: Connection, *,
                      heading_level: int = 3,
-                     data_dir: Path | str | None = None) -> Markdown:
+                     data_dir: Path | str | None = None) -> StyledMarkdown:
     """The scenario's description -- a README.md's title + first paragraph,
     baked in at load time, or scenario.csv's own description when there's
     no README.md (ADR-003 §4.1e) -- rendered as markdown, with any leading
@@ -175,7 +175,7 @@ def description_view(conn: Connection, *,
     if data_dir is not None:
         description = _regenerate_more_link(description, Path(data_dir))
     parts = [relevel_heading(description, heading_level), lineage_markdown(row)]
-    return Markdown("\n\n".join(part for part in parts if part))
+    return StyledMarkdown("\n\n".join(part for part in parts if part))
 
 
 def lineage_markdown(scenario_row: Mapping[str, Any]) -> str:
