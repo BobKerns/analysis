@@ -613,7 +613,7 @@ def classify(table: pd.DataFrame, negligible: float = DEFAULT_NEGLIGIBLE) -> pd.
 
 def has_correlated_rows(batch_dir: Path) -> bool:
     """Whether a batch's rows were drawn with correlations (ADR-008): any
-    member records a normal score. The Monte Carlo report's per-row numbers
+    modeled (non-factor) row records a normal score. The Monte Carlo report's per-row numbers
     assume independent inputs, so it says so when they aren't."""
     connections = load_ensemble(batch_dir)
     try:
@@ -622,8 +622,12 @@ def has_correlated_rows(batch_dir: Path) -> bool:
             columns = {c[1] for c in con.execute("PRAGMA table_info(ensemble_draw)")}
             if "z" not in columns:
                 return False
+            # A modeled row with a score is in a correlation tree. Factors
+            # always record a score (provenance), even an unused one that
+            # correlates nothing, so they don't count.
             return con.execute(
-                "SELECT 1 FROM ensemble_draw WHERE z IS NOT NULL LIMIT 1"
+                "SELECT 1 FROM ensemble_draw WHERE z IS NOT NULL AND vary_target != 'factor' "
+                "LIMIT 1"
             ).fetchone() is not None
         finally:
             con.close()

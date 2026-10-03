@@ -700,3 +700,31 @@ def test_an_unused_factor_still_draws_and_is_recorded(
     assert after["someday"] == ("factor", repr(expected), expected)
     assert {n: v for n, v in after.items() if n != "someday"} == before
     assert _resolve(recipe, tmp_path / "z", 0)["draws"]["someday"][2] == 0.0
+
+
+def test_an_unused_factor_does_not_mark_a_batch_correlated(
+    append_calendar_row: Callable[..., None], test_data_dir: Path,
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    """PR #37 review: an isolated factor records a score for provenance, but
+    every modeled row is still independent, so no correlation note."""
+    from analysis.sim import sensitivity
+    from analysis.sim.loader import latest_ensemble_batch
+
+    _factor(append_calendar_row, "someday")
+    _varying_rate(append_calendar_row, "free_rate")
+    runner = CliRunner()
+    assert runner.invoke(main, [
+        "sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+        "--intent-dir", str(intent_dir), "--allow-dirty-data", "--no-run",
+    ]).exit_code == 0
+    con = sqlite3.connect(intent_dir / "retire_alice.sqlite3")
+    con.execute("UPDATE scenario SET seed = 5")
+    con.commit()
+    con.close()
+    run = runner.invoke(main, [
+        "sim", "run", "retire_alice", "--intent-dir", str(intent_dir),
+        "--runs-dir", str(runs_dir), "--ensemble-size", "3", "--allow-dirty-data",
+    ])
+    assert run.exit_code == 0, run.output
+    assert not sensitivity.has_correlated_rows(latest_ensemble_batch(runs_dir / "retire_alice"))
