@@ -564,7 +564,9 @@ def sensitivity_widget(*,
             n = int(table["n"].iloc[0])
             needed = sensitivity.required_members(negligible)
             note = (f" -- {n} members can't call a row negligible at {negligible:.0%}; "
-                    f"that needs about {needed}") if n < needed else ""
+                    f"that needs about {needed}") if report.by == "rho" and n < needed else ""
+            # As in the CLI: that count follows from rho's interval, and
+            # SRRC's has no fixed one (it narrows as R^2 rises).
             display(Markdown(f"**{n} drawn members**{note}"))
             display(status.to_frame())
             if not report.scores.empty:

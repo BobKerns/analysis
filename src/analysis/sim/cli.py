@@ -1046,7 +1046,10 @@ def _report_correlation(
         r2 = at["r2"].iloc[0]
         rows = at[~at["factor"]]
         if rows["srrc"].isna().all():
-            click.echo(f"\n  {year}: outcome doesn't vary across members")
+            # correlation_table estimates nothing below 4 members, varying
+            # outcome or not; say which it is.
+            why = "too few members to estimate" if n < 4 else "outcome doesn't vary across members"
+            click.echo(f"\n  {year}: {why}")
             continue
         if pd.isna(r2):
             # The regression ran, but with no residual degrees of freedom

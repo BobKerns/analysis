@@ -607,7 +607,8 @@ def _srrc_intervals(
     x: np.ndarray, varying: np.ndarray, coef: np.ndarray, residuals: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per row: the 95% interval on its SRRC from the rank regression's
-    standard errors (t with ``n - k - 1`` degrees of freedom), and its PRCC,
+    standard errors (t with ``n - k - 1`` degrees of freedom, ``k`` counting
+    only the rows that vary), and its PRCC,
     which shares the coefficient's t statistic: ``t / sqrt(t^2 + dof)``.
 
     All NaN without residual degrees of freedom, or when the varying rows'
@@ -615,7 +616,9 @@ def _srrc_intervals(
     never varies gets NaN too: it has no coefficient to bound.
     """
     n, k = x.shape
-    dof = n - k - 1
+    # A row that never varies is an all-zero column: no fitted parameter,
+    # so it costs no degree of freedom.
+    dof = n - int(varying.sum()) - 1
     low, high, prcc = (np.full(k, np.nan) for _ in range(3))
     if dof <= 0 or not varying.any():
         return low, high, prcc
@@ -685,7 +688,9 @@ def correlation_table(
         # rows approach members whatever the outcome, which would let noise
         # pass the trust gate. With no residual degrees of freedom there's
         # nothing to adjust from, so it's undefined (and untrusted).
-        k = x.shape[1]
+        # Only rows that vary are fitted predictors; a constant one is an
+        # all-zero column and mustn't count against the adjustment.
+        k = int(varying.sum())
         r2 = 1 - (1 - r2) * (n - 1) / (n - k - 1) if n - k - 1 > 0 else np.nan
         low, high, prcc = _srrc_intervals(x.to_numpy(), varying, coef, residuals)
         for i, row in enumerate(draws.columns):

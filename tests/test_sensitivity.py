@@ -437,6 +437,18 @@ def test_srrc_interval_is_undefined_for_a_row_that_never_varies() -> None:
     assert status["x3"] == "inconclusive"
 
 
+def test_a_row_that_never_varies_costs_no_degree_of_freedom() -> None:
+    """PR #57 review: a constant row is an all-zero column, not a fitted
+    predictor, so it mustn't widen the others' intervals or lower R^2."""
+    draws, outcomes = _correlated(12)
+    plain = sensitivity.correlation_table(draws, outcomes).set_index("row")
+    padded = sensitivity.correlation_table(
+        draws.assign(c1=1.0, c2=2.0, c3=3.0), outcomes,
+    ).set_index("row")
+    for column in ("srrc_low", "srrc_high", "prcc", "r2"):
+        assert padded.loc["x1", column] == pytest.approx(plain.loc["x1", column])
+
+
 def test_classify_rejects_an_unknown_measure() -> None:
     draws, outcomes = _correlated(30)
     with pytest.raises(ValueError, match="by must be one of"):
