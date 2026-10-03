@@ -425,10 +425,14 @@ class Guide:
         ask: Callable[[str, list[str] | None, str | None], str],
         checkers: Mapping[FieldType, Callable[[str], object]],
         echo: Callable[[str], None] = click.echo,
+        canonical_date: Callable[[KindSpec, str], str] | None = None,
     ) -> None:
         self._ask = ask
         self._checkers = checkers
         self._echo = echo
+        # How a kind's date reads once loaded, so that two spellings of one
+        # date compare equal when looking for a duplicate row.
+        self._canonical_date = canonical_date
 
     def ask_field(
         self, spec: KindSpec, field_: Field, ctx: GuideContext, answers: Answers,
@@ -467,14 +471,23 @@ class Guide:
                 return answer.lower() if field_.type == "yesno" else answer
             self._echo(f"  {problem}")
 
-    def _key(self, spec: KindSpec, answers: Answers) -> tuple[object, ...]:
+    def _key(self, spec: KindSpec, ctx: GuideContext, answers: Answers) -> tuple[object, ...]:
         """``answers``' key fields, each in a form that compares equal however
-        it was typed (``100`` and ``100.00``)."""
+        it was typed (``100`` and ``100.00``, ``2030-12`` and ``2030-12-31``).
+        A field that does not apply counts as blank, whatever answer it still
+        holds: the row will be written without it."""
         key: list[object] = []
         for param in spec.key:
-            value = answers.get(param, "")
             field_ = next(f for f in spec.fields if f.param == param)
-            checker = self._checkers.get(value_type(spec, field_, answers))
+            value = answers.get(param, "") if field_.applies(ctx, answers) else ""
+            type_ = value_type(spec, field_, answers)
+            checker = self._checkers.get(type_)
+            if value and type_ == "date" and self._canonical_date is not None:
+                try:
+                    key.append(self._canonical_date(spec, value))
+                    continue
+                except (click.ClickException, ValueError):
+                    pass
             if value and checker is not None:
                 try:
                     key.append(checker(value))
@@ -494,8 +507,9 @@ class Guide:
         arguments = {f.param for f in spec.fields if f.is_argument}
         if any(param in arguments and not answers.get(param) for param in spec.key):
             return False
-        key = self._key(spec, answers)
-        return any(self._key(spec, other) == key for other in ctx.other_rows.get(spec.command, ()))
+        key = self._key(spec, ctx, answers)
+        others = ctx.other_rows.get(spec.command, ())
+        return any(self._key(spec, ctx, other) == key for other in others)
 
     def _problem(
         self, spec: KindSpec, field_: Field, ctx: GuideContext, answers: Answers,

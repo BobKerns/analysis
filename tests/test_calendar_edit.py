@@ -7,11 +7,19 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+import click
 import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
+from analysis.sim.cli import (
+    _CALENDAR_REPLACE_ROW,
+    _read_calendar_rows,
+    _write_calendar_row,
+    calendar_edit as calendar_edit_command,
+)
+from analysis.sim.loader import calendar_row_key
 from analysis.sim.registries import CALENDAR_HEADER
 
 # The prototype calendar's own rows, by number:
@@ -105,7 +113,7 @@ def test_edit_refuses_a_change_that_would_copy_another_row(
     before = calendar_rows()
 
     result = calendar_edit("2", answers=[
-        "date", "2030-12-31",                   # still Alice's salary: no clash yet
+        "date", "2030-12",                      # row 5's date, spelled as a bare month
         "scheduled-name", "salary_bill",        # now a copy of row 5: refused
         "salary_alice",
         "cancel",
@@ -196,3 +204,54 @@ def test_edit_says_so_when_the_scenario_has_no_rows_of_its_own(
 
     assert result.exit_code != 0
     assert "has no calendar rows of its own to edit" in result.output
+
+
+def test_a_row_key_reads_dates_and_spacing_as_the_loader_does() -> None:
+    row = {"kind": "set_rate", "date": "2030-12-31", "series": "cpi", "amount": "30000"}
+
+    assert calendar_row_key({**row, "date": "2030-12"}) == calendar_row_key(row)
+    assert calendar_row_key({**row, "series": " cpi "}) == calendar_row_key(row)
+    assert calendar_row_key({**row, "date": "2030-11"}) != calendar_row_key(row)
+
+
+def test_edit_ignores_a_lot_the_changed_account_no_longer_has(
+    calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+    append_calendar_row: Callable[..., None],
+) -> None:
+    transfer = {
+        "date": "2031-05", "kind": "one_off_transfer", "account_2": "Asset_Checking",
+        "amount": "10000", "tax_character": "none",
+    }
+    append_calendar_row(**transfer, account_1="Asset_Savings")                           # row 6
+    append_calendar_row(**transfer, account_1="Asset_Brokerage_Joint", lot_1="default")  # row 7
+    before = calendar_rows()
+
+    # Row 7 from savings would be row 6 over again, once its lot is gone.
+    result = calendar_edit("7", answers=["from-account", "Asset_Savings", "", "cancel"])
+
+    assert result.exit_code == 1
+    assert "that would duplicate another row" in result.output
+    offered = result.output.split("from account [")[0].rsplit("choices", 1)[-1]
+    assert "Asset_Savings" not in offered
+    pd.testing.assert_frame_equal(calendar_rows(), before)
+
+
+def test_edit_refuses_to_write_when_the_file_changed_under_it(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("calendar.csv")
+    chosen = _read_calendar_rows(path)[2]
+    # Someone removes row 1 while the prompts are open: index 2 is now another row.
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame.drop(index=0).to_csv(path, index=False)
+    changed = path.read_text()
+
+    with click.Context(calendar_edit_command) as context:
+        context.meta[_CALENDAR_REPLACE_ROW] = (2, chosen)
+        with pytest.raises(click.ClickException, match="changed while this row was being edited"):
+            _write_calendar_row(
+                path, {**chosen, "amount": "150000"},
+                data_dir=test_data_dir, scenario_name="retire_alice",
+            )
+
+    assert path.read_text() == changed

@@ -13,7 +13,7 @@ import re
 import socket
 import sqlite3
 import tempfile
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -452,6 +452,18 @@ def _check_duplicate_calendar_names(rows: list[dict[str, str]], issues: list[str
             )
         else:
             seen[name] = i
+
+
+def calendar_row_key(row: Mapping[str, str]) -> tuple[str, ...]:
+    """The key ``_merge_calendar_rows`` gives a calendar.csv row as authored:
+    its key columns trimmed and its dates canonical, as the load sees them.
+    So ``2030-12`` and ``2030-12-31`` are the same date here, as they are
+    there. For checking, before a write, that two rows would not merge."""
+    canonical = {column: (value or "").strip() for column, value in row.items()}
+    _normalize_month_columns([canonical], "calendar.csv", [])
+    if canonical.get("kind") == registries.LATENT_FACTOR_KIND:
+        return (registries.LATENT_FACTOR_KIND, canonical.get("name", ""))
+    return tuple(canonical.get(column, "") for column in registries.CALENDAR_KEY_COLUMNS)
 
 
 def _merge_calendar_rows(

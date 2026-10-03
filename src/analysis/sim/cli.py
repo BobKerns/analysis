@@ -64,6 +64,7 @@ from analysis.sim.loader import (
     LoadResult,
     ScenarioRef,
     batch_mode,
+    calendar_row_key,
     list_scenario_names,
     load_scenario,
     open_intent_db,
@@ -1658,10 +1659,11 @@ def _append_and_validate(
         _append_csv_row(edit.path(path), header, row)
 
 
-# click context ``meta`` key: the data row (0-based) of the scenario's own
-# calendar.csv that a calendar command's row replaces instead of being
-# appended. Set by ``sim calendar edit`` around the kind's own command, so
-# that command builds and validates the row exactly as it does for ``add``.
+# click context ``meta`` key: ``(index, row)`` for the data row (0-based) of
+# the scenario's own calendar.csv that a calendar command's row replaces
+# instead of being appended, and that row as it was when chosen. Set by ``sim
+# calendar edit`` around the kind's own command, so that command builds and
+# validates the row exactly as it does for ``add``.
 _CALENDAR_REPLACE_ROW = "analysis.sim.calendar.replace_row"
 
 # params_json keys the calendar commands write themselves; any other key in a
@@ -1678,13 +1680,6 @@ def _read_calendar_rows(path: Path) -> list[dict[str, str]]:
         {column: row.get(column, "") for column in registries.CALENDAR_HEADER}
         for row in df.to_dict("records")
     ]
-
-
-def _calendar_row_key(row: dict[str, str]) -> tuple[str, ...]:
-    """What makes ``row`` the same event as another, as the loader merges them."""
-    if row.get("kind") == registries.LATENT_FACTOR_KIND:
-        return (registries.LATENT_FACTOR_KIND, (row.get("name") or "").strip())
-    return tuple(row.get(column) or "" for column in registries.CALENDAR_KEY_COLUMNS)
 
 
 def _calendar_row_label(row: dict[str, str]) -> str:
@@ -1718,21 +1713,32 @@ def _write_calendar_row(
     an existing row is given a name and a variation, ADR-006.)
     """
     context = click.get_current_context(silent=True)
-    replace = context.meta.get(_CALENDAR_REPLACE_ROW) if context is not None else None
-    if replace is not None:
-        existing = _read_calendar_rows(path)
-        for index, other in enumerate(existing):
-            if index != replace and _calendar_row_key(other) == _calendar_row_key(row):
+    replacing = context.meta.get(_CALENDAR_REPLACE_ROW) if context is not None else None
+    with _scenario_edit(data_dir, scenario_name) as edit:
+        staged = edit.path(path)
+        if replacing is None:
+            _append_csv_row(staged, registries.CALENDAR_HEADER, row)
+            return "appended"
+        index, chosen = replacing
+        # Read inside the staged edit: the prompts may have taken a while, and
+        # the index is only good if the file still has the chosen row there.
+        existing = _read_calendar_rows(staged)
+        if index >= len(existing) or existing[index] != chosen:
+            raise click.ClickException(
+                f"{path} changed while this row was being edited, so row {index + 1} "
+                "is no longer the row that was chosen. Nothing was written; start again."
+            )
+        for other_index, other in enumerate(existing):
+            if other_index != index and calendar_row_key(other) == calendar_row_key(row):
                 raise click.ClickException(
-                    f"this would duplicate row {index + 1} of {path.name} "
+                    f"this would duplicate row {other_index + 1} of {path.name} "
                     f"({_calendar_row_label(other)}); change one of them. Nothing was written."
                 )
-        old = existing[replace]
         row = dict(row)
         # Keep what the kind's command has no way to express.
         if "tags" not in row or (row["kind"] == "one_off_transfer" and not row["tags"]):
-            row["tags"] = old["tags"]
-        old_params = json.loads(old["params_json"]) if old["params_json"] else {}
+            row["tags"] = chosen["tags"]
+        old_params = json.loads(chosen["params_json"]) if chosen["params_json"] else {}
         new_params = json.loads(row["params_json"]) if row.get("params_json") else {}
         # A transfer's command copies its description into params_json; a row
         # that kept it only in the description column goes on doing so.
@@ -1743,9 +1749,8 @@ def _write_calendar_row(
             **new_params,
         }
         row["params_json"] = json.dumps(params, separators=(",", ":")) if params else ""
-    with _scenario_edit(data_dir, scenario_name) as edit:
-        _append_csv_row(edit.path(path), registries.CALENDAR_HEADER, row, replace=replace)
-    return "appended" if replace is None else "updated"
+        _append_csv_row(staged, registries.CALENDAR_HEADER, row, replace=index)
+    return "updated"
 
 
 def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
@@ -2308,6 +2313,13 @@ def _guide_context(
         )
 
 
+def _canonical_calendar_date(spec: calendar_guide.KindSpec, typed: str) -> str:
+    """A row's date as the loader will read it, for comparing rows: a bare
+    month and that month's last day are the same date (#34)."""
+    kind = next(k for k, command in _CALENDAR_COMMAND_OF_KIND.items() if command == spec.command)
+    return calendar_row_key({"kind": kind, "date": typed})[0]
+
+
 def _calendar_guide() -> calendar_guide.Guide:
     return calendar_guide.Guide(
         ask=lambda text, choices, default: _prompt_with_completion(
@@ -2321,6 +2333,7 @@ def _calendar_guide() -> calendar_guide.Guide:
             "integer": int,
             "tags": registries.parse_tags,
         },
+        canonical_date=_canonical_calendar_date,
     )
 
 
@@ -2464,7 +2477,7 @@ def calendar_edit(
     guide.complete(spec, context, answers)
 
     def submit(params: dict[str, object]) -> None:
-        ctx.meta[_CALENDAR_REPLACE_ROW] = index
+        ctx.meta[_CALENDAR_REPLACE_ROW] = (index, rows[index])
         try:
             ctx.invoke(
                 calendar_add_group_command.commands[spec.command],
