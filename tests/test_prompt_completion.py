@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import select
+import subprocess
 import sys
 import time
 
@@ -54,13 +55,18 @@ def typed_at_a_terminal():
     pseudo-terminal, where Tab reaches readline; returns the answer read."""
     pty = pytest.importorskip("pty")
     pytest.importorskip("readline")
-    children: list[tuple[int, int]] = []
+    children: list[tuple[subprocess.Popen[bytes], int]] = []
 
     def run(keys: bytes) -> str:
-        pid, fd = pty.fork()
-        if pid == 0:
-            os.execv(sys.executable, [sys.executable, "-c", _PROMPT_SCRIPT])
-        children.append((pid, fd))
+        # A child process on a pty, not pty.fork(): forking a threaded test
+        # process is unsafe.
+        fd, terminal = pty.openpty()
+        child = subprocess.Popen(
+            [sys.executable, "-c", _PROMPT_SCRIPT],
+            stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True,
+        )
+        os.close(terminal)
+        children.append((child, fd))
         output = ""
 
         def read_until(marker: str, timeout: float = 20.0) -> None:
@@ -81,9 +87,10 @@ def typed_at_a_terminal():
 
     yield run
 
-    for pid, fd in children:
+    for child, fd in children:
         os.close(fd)
-        os.waitpid(pid, 0)
+        child.kill()
+        child.wait()
 
 
 @pytest.mark.parametrize(("keys", "answer"), [
