@@ -15,7 +15,7 @@ from typing import Any
 
 import ipywidgets as widgets
 import pandas as pd
-from IPython.display import Markdown, clear_output, display
+from IPython.display import clear_output, display
 
 from analysis.sim.connection import RunConnection, ScenarioConnection, year_end_values
 from analysis.sim.notebook_ui.pickers import (
@@ -28,6 +28,7 @@ from analysis.sim.notebook_ui.pickers import (
 )
 from analysis.sim.plotting import FRAME_ALPHA, include_zero
 from analysis.sim.types import DollarMode, ValuePlotMode
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 # ---------- data helpers (pure; unchanged math from the old scenario_compare.py) ----------
 
@@ -254,7 +255,7 @@ def comparability_widget(container: MultiScenarioConnections,
             for warning in warnings:
                 display_warning(warning)
         else:
-            display(Markdown(
+            display(StyledMarkdown(
                 "> ✅ Same code and data version; differences below are the scenarios."
             ))
 
@@ -309,7 +310,7 @@ def rules_and_events_widget(container: MultiScenarioConnections,
             ignore_index=True,
         )
         if events.empty:
-            display(Markdown("_No calendar events in any scenario._"))
+            display(StyledMarkdown("_No calendar events in any scenario._"))
             return
 
         events["amount"] = (events["amount"].astype("Float64") / 100).map(
@@ -384,7 +385,7 @@ def breakeven_widget(
                 })
             )
             mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
-            display(Markdown(
+            display(StyledMarkdown(
                 f"`{baseline}` final net worth ({mode_label}): "
                 f"**${nw[baseline].iloc[-1]:,.0f}**"
             ))
@@ -401,7 +402,7 @@ def horizon_widget(container: MultiScenarioConnections, comparisons: dict) -> No
     def _redraw():
         filtered = filter_comparisons(comparisons, container.scenarios)
         if not has_any_comparisons(filtered):
-            display(Markdown(
+            display(StyledMarkdown(
                 "_None of the configured `COMPARISONS` pairs apply to this selection "
                 "— pick scenarios from `COMPARISONS`, or edit it above to add a pair "
                 "for this selection._"
@@ -488,7 +489,7 @@ def tax_impact_widget(container: MultiScenarioConnections) -> None:
 
         # Only the years where somebody's tax bill actually moves are worth reading.
         moved = tax_delta[tax_delta.abs().max(axis=1) >= 1]
-        display(Markdown(
+        display(StyledMarkdown(
             f"Tax owed vs `{container.baseline}`, for the {len(moved)} of {len(tax_delta)} years "
             "where it differs (negative = owes less):"
         ))

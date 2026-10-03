@@ -22,7 +22,7 @@ import ipywidgets as widgets
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from IPython.display import Markdown, display
+from IPython.display import display
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
 from analysis.sim import sensitivity
@@ -39,6 +39,7 @@ from analysis.sim.notebook_ui.pickers import (
 )
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.types import DeltaScale, DollarMode, HeatmapValue
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = [
     "list_sensitivity_recipes", "list_batches", "parameter_labels", "parameters_note",
@@ -341,26 +342,50 @@ def response_curve_view(deltas: pd.DataFrame, row: str, year: int, scale: DeltaS
     return ax
 
 
-def correlation_view(table: pd.DataFrame, year: int, negligible: float, ax: Any = None) -> Any:
-    """Per row at one year: Spearman rho with its 95% interval, against the
-    band inside which rho^2 is negligible."""
+def correlation_view(
+    table: pd.DataFrame, year: int, negligible: float, ax: Any = None, by: str = "rho",
+) -> Any:
+    """Per row at one year: ``by`` (Spearman rho, or SRRC for a correlated
+    batch) with its 95% interval, against the band inside which its square is
+    negligible. Latent factors, if the table has them, show their rho as
+    hollow markers labeled "(factor)": their whole family's effect, which has
+    no pin status."""
     at = table[table["year"] == year].set_index("row")
-    at = at.reindex(at["rho"].abs().sort_values().index)
+    is_factor = at["factor"].astype(bool) if "factor" in at.columns else pd.Series(False, at.index)
+    rows, factor_rows = at[~is_factor], at[is_factor]
+    rows = rows.reindex(rows[by].abs().sort_values().index)
     if ax is None:
         _fig, ax = plt.subplots(figsize=(10, 0.5 * len(at) + 1.2))
     band = float(np.sqrt(negligible))
-    ax.axvspan(-band, band, color=NEUTRAL, label=f"negligible (rho² < {negligible:.0%})")
-    y = np.arange(len(at))
+    ax.axvspan(-band, band, color=NEUTRAL, label=f"negligible ({by}² < {negligible:.0%})")
+    y = np.arange(len(rows))
     # Clipped at zero: float round-off must never make a whisker negative,
     # which errorbar rejects outright.
-    xerr = [(at["rho"] - at["rho_low"]).clip(lower=0), (at["rho_high"] - at["rho"]).clip(lower=0)]
-    ax.errorbar(at["rho"], y, xerr=xerr,
+    xerr = [(rows[by] - rows[f"{by}_low"]).clip(lower=0),
+            (rows[f"{by}_high"] - rows[by]).clip(lower=0)]
+    ax.errorbar(rows[by], y, xerr=xerr,
                 fmt="o", color=HIGH_ARM, ecolor=HIGH_ARM, elinewidth=2, capsize=4, markersize=7,
-                label="rho, 95% interval")
+                label=f"{by}, 95% interval")
+    labels = list(rows.index)
+    if not factor_rows.empty:
+        fy = np.arange(len(rows), len(at))
+        factor_err = [(factor_rows["rho"] - factor_rows["rho_low"]).clip(lower=0),
+                      (factor_rows["rho_high"] - factor_rows["rho"]).clip(lower=0)]
+        ax.errorbar(factor_rows["rho"], fy, xerr=factor_err, fmt="o", color=HIGH_ARM, ecolor=MUTED,
+                    markerfacecolor="white", elinewidth=1.5, capsize=4, markersize=7,
+                    label="factor's rho (its family)")
+        labels += [sensitivity.row_label(name, set(factor_rows.index)) for name in factor_rows.index]
     ax.axvline(0, color=MUTED, linewidth=0.8)
-    ax.set_yticks(y, at.index)
-    ax.set_xlim(-1, 1)
-    ax.set_xlabel("Spearman rank correlation with net worth", color=MUTED)
+    ax.set_yticks(np.arange(len(at)), labels)
+    # rho lives in [-1, 1]; SRRC can pass 1 under collinearity, so widen
+    # the axis to its intervals rather than clip them.
+    reach = max(1.0, float(np.nanmax(np.abs(rows[[f"{by}_low", f"{by}_high", by]].to_numpy()),
+                                     initial=0.0)))
+    ax.set_xlim(-reach, reach)
+    ax.set_xlabel(
+        "Spearman rank correlation with net worth" if by == "rho"
+        else "standardized rank-regression coefficient (others held fixed)", color=MUTED,
+    )
     _recessive(ax, grid_axis="x")
     ax.legend(framealpha=FRAME_ALPHA, loc="lower right")
     return ax
@@ -417,7 +442,7 @@ def _show(out: widgets.Output, draw) -> None:
         try:
             draw()
         except EnsembleError as exc:
-            display(Markdown(f"_{exc}_"))
+            display(StyledMarkdown(f"_{exc}_"))
 
 
 def sensitivity_widget(*,
@@ -526,27 +551,50 @@ def sensitivity_widget(*,
             plt.show()
 
         def draw_rho() -> None:
-            table = _correlation()
-            correlation_view(table, year_picker.value, negligible)
-            plt.title(f"Rank correlation with net worth in {year_picker.value}", loc="left")
+            report = _report()
+            table = report.table
+            correlation_view(table, year_picker.value, negligible, by=report.by)
+            plt.title(
+                f"Rank correlation with net worth in {year_picker.value}" if report.by == "rho"
+                else f"Effect on net worth in {year_picker.value}, others held fixed", loc="left",
+            )
             plt.show()
-            status = sensitivity.classify(table, negligible)
+            if report.correlated:
+                display(StyledMarkdown(
+                    "_This batch's rows are correlated, so a row's rank correlation includes its "
+                    "correlates' effects. Rows are ranked and pinned by their rank-regression "
+                    "coefficient (SRRC), which holds the others fixed._"
+                ))
+            status = sensitivity.classify(table, negligible, by=report.by)
             n = int(table["n"].iloc[0])
             needed = sensitivity.required_members(negligible)
             note = (f" -- {n} members can't call a row negligible at {negligible:.0%}; "
-                    f"that needs about {needed}") if n < needed else ""
-            display(Markdown(f"**{n} drawn members**{note}"))
+                    f"that needs about {needed}") if report.by == "rho" and n < needed else ""
+            # As in the CLI: that count follows from rho's interval, and
+            # SRRC's has no fixed one (it narrows as R^2 rises).
+            display(StyledMarkdown(f"**{n} drawn members**{note}"))
             display(status.to_frame())
+            if not report.scores.empty:
+                display(StyledMarkdown(
+                    "**Did the batch reproduce its correlations?** The achieved correlation of "
+                    "each correlated pair's normal scores, with its 95% interval, against the "
+                    "expected one (**link**: the pair's own rho; **implied**: the product along "
+                    "the path joining them). **outside** means the batch didn't reproduce it."
+                ))
+                display(report.scores.round(3))
         _show(outs["r2"], draw_r2)
         _show(outs["rho"], draw_rho)
 
-    correlation_cache: dict[tuple[Path, DollarMode], pd.DataFrame] = {}
+    correlation_cache: dict[tuple[Path, DollarMode], sensitivity.McReport] = {}
 
-    def _correlation() -> pd.DataFrame:
+    def _report() -> sensitivity.McReport:
         key = (batch.value, dollar_picker.value)
         if key not in correlation_cache:
-            correlation_cache[key] = sensitivity.mc_correlation(batch.value, dollars=dollar_picker.value)
+            correlation_cache[key] = sensitivity.mc_report(batch.value, dollars=dollar_picker.value)
         return correlation_cache[key]
+
+    def _correlation() -> pd.DataFrame:
+        return _report().table
 
     oat_sections = {
         "heatmap": (_draw_heatmap, _section("Overview", [heatmap_picker], outs["heatmap"])),
@@ -563,9 +611,9 @@ def sensitivity_widget(*,
         def draw() -> None:
             table = sensitivity.parameters(batch.value)
             if table.empty:
-                display(Markdown("_This batch has no varying rows._"))
+                display(StyledMarkdown("_This batch has no varying rows._"))
                 return
-            display(Markdown(parameters_note(state["mode"])))
+            display(StyledMarkdown(parameters_note(state["mode"])))
             display(table)
         _show(outs["parameters"], draw)
 
@@ -618,7 +666,7 @@ def sensitivity_widget(*,
         except EnsembleError as exc:
             message = widgets.Output()
             with message:
-                display(Markdown(f"_{exc}_"))
+                display(StyledMarkdown(f"_{exc}_"))
             body.children = [message]
             state["mode"] = None
             return

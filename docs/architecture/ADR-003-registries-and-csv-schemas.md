@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior. Also amended in place after acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7); and [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8). [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.10), the correlation columns (§4.8), and factors merged by name (§4.5). [#34](https://github.com/BobKerns/analysis/issues/34): month date columns accept `YYYY-MM` or `YYYY-MM-DD`, pinned to month-end; day-precise columns are named, a biweekly rule's dates and a `retire_scheduled` date keep a full date's day, and a date-varying row's bare-month bounds span the month (§4, §4.8). [#44](https://github.com/BobKerns/analysis/issues/44): CLI edits are validated on a staged copy before anything is written (§7). [#56](https://github.com/BobKerns/analysis/issues/56): `calendar edit` replaces a row in place under the same staged edit, after confirming it is still the row that was chosen (§7). Git history has the earlier text.
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior. Also amended in place after acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7); and [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8). [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.10), the correlation columns (§4.8), and factors merged by name (§4.5). [#34](https://github.com/BobKerns/analysis/issues/34): month date columns accept `YYYY-MM` or `YYYY-MM-DD`, pinned to month-end; day-precise columns are named, a biweekly rule's dates and a `retire_scheduled` date keep a full date's day, and a date-varying row's bare-month bounds span the month (§4, §4.8). [#44](https://github.com/BobKerns/analysis/issues/44): CLI edits are validated on a staged copy before anything is written (§7). [#56](https://github.com/BobKerns/analysis/issues/56): `calendar edit` replaces a row in place under the same staged edit, after confirming it is still the row that was chosen (§7). [#59](https://github.com/BobKerns/analysis/issues/59): `parent_scenario` may list mix-ins after the main parent, colon-separated, and inheritance follows a load order (§4.1d, §4.5). Git history has the earlier text.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility).
 
 ## Context
@@ -466,7 +466,8 @@ new filename to add something that tier doesn't have (a rate series only that sc
 lots use).
 
 - **Resolution is whole-file, per filename, most specific first:** the scenario's own file,
-  else its parent's (following `parent_scenario` all the way up, §4.5), else — for
+  else its ancestors' in reverse load order (§4.5: following `parent_scenario` all the way
+  up, mix-ins after the main parent's line, so a mix-in's file beats the main parent's), else — for
   `aux/`/`prices/`/`itemizations/` only — the shared file at the data repo root. A match
   replaces the entire file; there is no row-level merge across tiers (unlike
   `accounts.csv`/`account_values.csv`/etc., which do merge by key, §4.5).
@@ -594,7 +595,7 @@ Exactly one data row (the loader rejects more).
 | `start` | YYYY-MM | ✓ | first simulated month |
 | `end` | YYYY-MM | ✓ | last simulated month (inclusive) |
 | `seed` | int | | reserved for ensembles |
-| `parent_scenario` | text | | folder name of the scenario this one derives from; see "Derived scenarios" below |
+| `parent_scenario` | text | | folder name of the scenario this one derives from, optionally followed by mix-ins, colon-separated (`base:current-cut:hsa_2027`); see "Derived scenarios" below |
 | `created_by` | text | ✓ | `$ANALYSIS_USER` at authoring time |
 | `meta_json` | json | | default `{}` |
 
@@ -602,7 +603,17 @@ The calendar lives at `scenarios/<name>/calendar.csv` by filename convention —
 
 ##### Derived scenarios (`parent_scenario`)
 
-A scenario naming a `parent_scenario` inherits the parent's rows and overlays its own on top; chains are followed recursively and a cycle is rejected. `scenario.csv` merges field-by-field (a blank child field inherits the parent's), while the row-bearing CSVs merge by natural key:
+A scenario naming a `parent_scenario` inherits the parent's rows and overlays its own on top; chains are followed recursively and a cycle is rejected.
+
+`parent_scenario` may name more than one scenario, colon-separated: the main parent first, then **mix-ins**. Inheritance follows a **load order**, root first:
+
+```text
+order(S) = order(P1), then each scenario of order(P2) not already listed, ..., then S
+```
+
+The main parent's whole line comes first; each mix-in then contributes its own line down to the first scenario already listed — for the usual mix-in deriving from `base`, just the mix-in itself. The scenarios are overlaid in that order, each by the rules below, later winning. A mix-in's non-blank `scenario.csv` fields override the main parent's like any other overlay, and two mix-ins setting the same key resolve silently to the later one: composing mix-ins that make sense together is the author's responsibility. A single-parent scenario's order is just its ancestor chain, so everything below reads as "parent" for it. The loader records the scenario's own `parent_scenario` list and its load order in the intent's `scenario.parents_json` and `scenario.load_order_json` ([ADR-002](ADR-002-storage-schema.md)), so a run file can say what it inherited without the data repo; `description_view` (`analysis.sim.readme`) shows both under the description.
+
+`scenario.csv` merges field-by-field (a blank child field inherits the parent's), while the row-bearing CSVs merge by natural key:
 
 | file | key |
 | --- | --- |
@@ -614,9 +625,9 @@ A scenario naming a `parent_scenario` inherits the parent's rows and overlays it
 | `lifespan.csv` | `person` |
 | `year_to_date.csv` | `name` |
 
-A child row with a new key is appended; one whose key matches the parent replaces that row **entirely**, so an override must repeat every column it wants to keep, not just the changed ones. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits.
+A child row with a new key is appended; one whose key matches the parent replaces that row **entirely**, so an override must repeat every column it wants to keep, not just the changed ones. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits; only a scenario with no parent of its own must supply `accounts.csv`, `account_values.csv`, and `scheduled.csv`.
 
-`analysis sim scenario create <name> <parent>` creates one: it writes `scenario.csv` with the parent link and header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a).
+`analysis sim scenario create <name> <parent> [<mixin> ...]` creates one: it writes `scenario.csv` with the parent link (and any mix-ins) and header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a).
 
 #### 4.6 Per-scenario: `data_repo/scenarios/<name>/scheduled.csv`
 

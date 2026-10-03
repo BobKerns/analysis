@@ -10,7 +10,7 @@ from typing import Any
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
 import pandas as pd
-from IPython.display import Markdown, display
+from IPython.display import display
 
 from analysis.sim.connection import year_end_values
 from analysis.sim.ensemble import (
@@ -29,6 +29,7 @@ from analysis.sim.notebook_ui.pickers import (
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.readme import description_view
 from analysis.sim.types import DollarMode, LogLinearMode
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
@@ -143,7 +144,7 @@ def ensemble_widget(*,
             )
             heading, yearly = ensemble_summary_view(monthly_summary, len(connections), failed_count)
             with out:
-                display(Markdown(f"{heading} (batch {batch_dir.name})"))
+                display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
                 if show_description:
                     conn = next(iter(connections.values()))
                     display(description_view(conn, data_dir=resolved_data_dir))
@@ -157,7 +158,7 @@ def ensemble_widget(*,
                     # silently switching to linear would clip exactly the
                     # insolvency tail this chart exists to show, rather than
                     # just rendering it oddly.
-                    display(Markdown(
+                    display(StyledMarkdown(
                         "_Log scale can't show net worth that reaches zero "
                         "or below; showing linear instead._"
                     ))

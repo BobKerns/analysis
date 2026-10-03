@@ -655,9 +655,11 @@ def test_parameters_show_parents_rho_and_factors(correlated_mc_batch: Path) -> N
     assert table.loc["economy", "target"] == "factor"
 
 
-def test_monte_carlo_report_leaves_factors_out_and_notes_correlation(
+def test_monte_carlo_report_ranks_by_srrc_and_shows_factors_and_scores(
     correlated_mc_batch: Path, runs_dir: Path,
 ) -> None:
+    """#38: the factor isn't a regressor, but gets an informational line; a
+    correlated batch is ranked and pinned by SRRC and checks its scores."""
     from analysis.sim import sensitivity
     from analysis.sim.ensemble import load_ensemble
 
@@ -670,10 +672,22 @@ def test_monte_carlo_report_leaves_factors_out_and_notes_correlation(
     assert sensitivity.has_correlated_rows(correlated_mc_batch)
     result = CliRunner().invoke(main, [
         "sim", "ensemble", "sensitivity", "retire_alice", "--runs-dir", str(runs_dir),
-        "--mode", "monte_carlo", "--years", "2035",
+        "--mode", "monte_carlo",  # default years: 2035 doesn't vary in this recipe yet
     ])
     assert result.exit_code == 0, result.output
     assert "rows are correlated" in result.output
+    assert "ranked and pinned by SRRC" in result.output
+    assert "status (srrc^2 vs 5%, every year):" in result.output
+    assert "economy (factor)" in result.output
+    assert "correlations achieved (normal scores) vs expected:" in result.output
+    assert "tied_rate ~ economy" in result.output or "economy ~ tied_rate" in result.output
+    report = sensitivity.mc_report(correlated_mc_batch)
+    assert report.correlated and report.by == "srrc"
+    assert set(report.table.loc[report.table["factor"], "row"]) == {"economy"}
+    pairs = report.scores.set_index(["a", "b"])
+    assert pairs.loc[("tied_date", "tied_rate"), "kind"] == "implied"
+    assert pairs.loc[("tied_date", "tied_rate"), "expected"] == pytest.approx(0.8 * -0.6)
+    assert "free_rate" not in set(report.scores["a"]) | set(report.scores["b"])
 
 
 def test_uncorrelated_batch_has_no_correlation_note(mc_batch: Path) -> None:

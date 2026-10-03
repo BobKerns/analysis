@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from IPython.display import Markdown, clear_output, display
+from IPython.display import clear_output, display
 from ipywidgets import widgets
 from analysis.sim.notebook_ui.pickers import AccountKindPicker
 import matplotlib.pyplot as plt
@@ -22,6 +22,7 @@ from analysis.sim.types import AccountKind, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.pickers import (
     DollarModePicker, ValuePlotModePicker, YAxisPlotModePicker,
 )
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 
 # Income/expense balances are cumulative totals, unlike asset/liability's
@@ -75,7 +76,7 @@ def account_balance_history_widget(
         with caveat_out:
             clear_output(wait=True)
             if kind_picker.value in _CUMULATIVE_KINDS:
-                display(Markdown(_CUMULATIVE_CAVEAT))
+                display(StyledMarkdown(_CUMULATIVE_CAVEAT))
 
     def _redraw(*_):
         selected = list(picker.value)

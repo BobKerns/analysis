@@ -9,7 +9,7 @@ from __future__ import annotations
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
 import pandas as pd
-from IPython.display import Markdown, clear_output, display
+from IPython.display import clear_output, display
 
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.connection import (
@@ -21,6 +21,7 @@ from analysis.sim.connection import (
 )
 from analysis.sim.notebook_ui.pickers import DollarModePicker
 from analysis.sim.types import INCOME_CATEGORIES, DollarMode
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 
 def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:
@@ -118,7 +119,7 @@ def expenses_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = No
     chart_out = widgets.Output()
     caveat_out = widgets.Output()
     with caveat_out:
-        display(Markdown(_EXPENSES_CAVEAT))
+        display(StyledMarkdown(_EXPENSES_CAVEAT))
 
     def _redraw(*_):
         mode = dollar_mode.value

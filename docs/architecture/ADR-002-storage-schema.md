@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-008](ADR-008-correlated-parameters.md) (correlation columns, `ensemble_draw.z`; schema 30). [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed. [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar_event` gains `name` and the `vary_*` columns; new tables `ensemble_manifest`, `ensemble_draw`. [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity analysis): `ensemble_manifest.mode`, `ensemble_draw.quantile`.
+- **Amended by:** [ADR-008](ADR-008-correlated-parameters.md) (correlation columns, `ensemble_draw.z`; schema 30). [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed. [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar_event` gains `name` and the `vary_*` columns; new tables `ensemble_manifest`, `ensemble_draw`. [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity analysis): `ensemble_manifest.mode`, `ensemble_draw.quantile`. [#59](https://github.com/BobKerns/analysis/issues/59): `scenario_tree_id` covers mix-in scenarios' folders too, and `scenario` records `parents_json` and `load_order_json` in place of the never-populated `parent_id` (schema 31).
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-003](ADR-003-registries-and-csv-schemas.md) (rule and event-kind registries — referenced by `amount_rule_kind` and `calendar_event.kind` values used below), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility stamps on the run manifest).
 
 ## Context
@@ -46,8 +46,9 @@ data_repo/
                 asset__asset_checking_liquidity.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
                 income__salary_split.csv
         retire_2032/
-            ...             # a derived scenario names `parent_scenario` in
-                            # scenario.csv and ships only the files it overrides
+            ...             # a derived scenario names `parent_scenario` (plus any
+                            # colon-separated mix-ins) in scenario.csv and ships
+                            # only the files it overrides
     activate-analysis
 
 state/
@@ -114,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 30) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 31) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -371,7 +372,12 @@ CREATE TABLE scenario (
     start             TEXT NOT NULL,
     "end"             TEXT NOT NULL,
     seed              INTEGER,
-    parent_id         INTEGER REFERENCES scenario(id),
+    -- JSON arrays of scenario names (ADR-003 §4.5): parent_scenario as
+    -- authored (main parent, then mix-ins), and the whole load order, root
+    -- first and this scenario last. Baked in so a run file can say what it
+    -- inherited without the data repo.
+    parents_json      TEXT NOT NULL DEFAULT '[]',
+    load_order_json   TEXT NOT NULL DEFAULT '[]',
     created_at        TEXT NOT NULL,
     created_by        TEXT NOT NULL,
     meta_json         TEXT NOT NULL DEFAULT '{}'
@@ -493,7 +499,7 @@ CREATE TABLE intent_manifest (
 );
 ```
 
-`scenario_tree_id` is a **git tree object SHA** covering the exact set of files the loader reads for this scenario: the scenario folder (`data_repo/scenarios/<name>/**`), the folders of every scenario it inherits from via `parent_scenario`, and the shared base paths it consumes (`persons.csv`, `aux/*.csv`, and any `itemizations/*.csv` reached by an `@name` reference).
+`scenario_tree_id` is a **git tree object SHA** covering the data repo paths this scenario's load can read: the scenario folder (`data_repo/scenarios/<name>/**`), the folders of every scenario it inherits from via `parent_scenario` (mix-ins included, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.5), and the shared base paths (`persons.csv`, `securities.csv`, `allocations.csv`, and the whole `aux/`, `prices/`, and `itemizations/` folders). The shared folders are scoped whole rather than per file read, so an edit to an unused file there also moves the id.
 
 - **Clean** (`data_dirty = 0`): computed by `git ls-tree` against `HEAD` for those paths and combined with `git mktree` into a single tree object, or equivalently by writing them to a temporary index and calling `git write-tree`. Either way the result is a normal git tree SHA, addressable forever.
 - **Dirty** (`data_dirty = 1`): the loader stages the working-tree contents of those paths into a **separate index file** (`GIT_INDEX_FILE=...` env var, never touching the user's index) and runs `git write-tree` against it. The output is a real tree SHA, identical to what a future commit of the same content would produce. Optionally the engine runs `git update-ref refs/analysis-dirty/<tree-id> <tree-id>` so the object is reachable from a ref and won't be garbage-collected before the run is forgotten.

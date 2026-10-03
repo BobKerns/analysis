@@ -223,10 +223,11 @@ What to expect:
   each latent factor, and that carries every row under the factor to where
   it would most likely be given the factor's value (see "Which varying
   rows matter, and when?" below).
-- **The Monte Carlo correlation report notes a correlated batch.** Its
-  per-row numbers assume independent inputs, so a row's correlation with
-  the outcome includes its correlates' effects. Read it as "this family of
-  rows matters" rather than "this row alone matters".
+- **The Monte Carlo correlation report handles a correlated batch.** A
+  row's plain correlation with the outcome includes its correlates'
+  effects, so the report ranks and pins rows by their regression weight
+  instead, and checks the correlations the batch achieved (see "Which
+  varying rows can I drop?" below).
 - **Joint extremes are a little rarer than in reality.** The method used
   (a Gaussian copula) doesn't make crashes cluster the way markets do. This
   could be added later if it matters for your scenarios.
@@ -380,4 +381,29 @@ negligible:
 
 So for pruning, plan on about 100 members, and 200 or more with five or
 more varying rows, where each row's share is naturally smaller. The report
-warns when the batch is too small for the threshold you asked for.
+warns when the batch is too small for the threshold you asked for (except
+with correlated rows, below).
+
+**With correlated rows**, a row's plain correlation with the outcome
+includes its correlates' effects: a row tied to an important one looks
+important even if it does nothing itself. So the report ranks rows and
+judges pin candidates by **srrc**, the row's regression weight with the
+other rows held fixed, using its own confidence interval. That interval
+narrows as R² rises, so there's no fixed member count to warn about: read
+the intervals and statuses instead. It also shows:
+
+- **prcc**, the partial rank correlation, as another view of the same
+  "holding the others fixed" effect. It grows with R², so it isn't used for
+  pinning.
+- A line for each **latent factor**, labeled "(factor)": the correlation of
+  the factor with the outcome, which is how much its whole family matters.
+  A factor never gets a status, since you can't pin one.
+- **Correlations achieved**: for each correlated pair, the correlation the
+  batch actually drew, with its interval, next to the one you specified
+  (**link**) or the one your tree implies (**implied**). One flagged as
+  outside its interval means the batch is too small to reproduce your
+  structure.
+
+Rows correlated very strongly are hard to tell apart, so they often come
+out inconclusive. If that happens, pin them together, or sweep their factor
+one at a time (above) to see what the family does.

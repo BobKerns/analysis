@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -262,7 +262,12 @@ CREATE TABLE scenario (
     start             TEXT NOT NULL,
     "end"             TEXT NOT NULL,
     seed              INTEGER,
-    parent_id         INTEGER REFERENCES scenario(id),
+    -- JSON arrays of scenario names (ADR-003 §4.5): parent_scenario as
+    -- authored (main parent, then mix-ins), and the whole load order, root
+    -- first and this scenario last. Baked in so a run file can say what it
+    -- inherited without the data repo.
+    parents_json      TEXT NOT NULL DEFAULT '[]',
+    load_order_json   TEXT NOT NULL DEFAULT '[]',
     created_at        TEXT NOT NULL,
     created_by        TEXT NOT NULL,
     meta_json         TEXT NOT NULL DEFAULT '{}'

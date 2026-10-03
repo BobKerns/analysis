@@ -369,6 +369,149 @@ def test_draws_frame_excludes_member_zero(mc_batch: Path) -> None:
     assert list(draws.columns) == ["gift", "retire_bill_vary"]
 
 
+# --- #38: correlated inputs -------------------------------------------------------
+
+
+def _correlated(
+    n: int, rho: float = 0.8, seed: int = 7, noise: float = 0.3,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """x2 correlated with x1 at ``rho``; the outcome depends on x1 alone."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    z1 = rng.normal(size=n)
+    z2 = rho * z1 + np.sqrt(1 - rho**2) * rng.normal(size=n)
+    draws = pd.DataFrame({"x1": z1, "x2": z2}, index=[f"member_{i:04d}" for i in range(1, n + 1)])
+    outcomes = pd.DataFrame({2030: 3 * z1 + rng.normal(0, noise, n)}, index=draws.index)
+    return draws, outcomes
+
+
+def test_srrc_pins_a_row_whose_rho_is_only_its_correlate() -> None:
+    draws, outcomes = _correlated(400)
+    table = sensitivity.correlation_table(draws, outcomes)
+    by_row = table.set_index("row")
+    assert by_row.loc["x2", "rho"] > 0.6  # credited with x1's effect
+    assert by_row.loc["x2", "srrc_low"] <= by_row.loc["x2", "srrc"] <= by_row.loc["x2", "srrc_high"]
+    assert sensitivity.classify(table, 0.05, by="rho")["x2"] == "keep"
+    status = sensitivity.classify(table, 0.05, by="srrc")
+    assert status.to_dict() == {"x1": "keep", "x2": "pin_candidate"}
+
+
+def test_srrc_interval_narrows_as_r2_rises() -> None:
+    """SRRC's interval scales with the unexplained variance, unlike rho's:
+    30 members can pin x2 when x1 explains nearly everything, but not when
+    R^2 is near the trust threshold."""
+    draws, outcomes = _correlated(30)
+    sharp = sensitivity.correlation_table(draws, outcomes)
+    assert sensitivity.classify(sharp, 0.05, by="srrc")["x2"] == "pin_candidate"
+    draws, outcomes = _correlated(30, noise=1.3)
+    noisy = sensitivity.correlation_table(draws, outcomes)
+    assert noisy["r2"].iloc[0] >= sensitivity.R2_TRUST
+    assert sensitivity.classify(noisy, 0.05, by="srrc")["x2"] == "inconclusive"
+
+
+def test_prcc_is_the_partial_rank_correlation() -> None:
+    """PRCC from the coefficient's t statistic equals the correlation of x1's
+    and the outcome's ranks after regressing x2's ranks out of both."""
+    import numpy as np
+
+    draws, outcomes = _correlated(200, rho=0.5)
+    table = sensitivity.correlation_table(draws, outcomes).set_index("row")
+
+    def residual(v: np.ndarray, on: np.ndarray) -> np.ndarray:
+        design = np.column_stack([np.ones_like(on), on])
+        return v - design @ np.linalg.lstsq(design, v, rcond=None)[0]
+
+    x1, x2 = draws["x1"].rank().to_numpy(), draws["x2"].rank().to_numpy()
+    y = outcomes[2030].rank().to_numpy()
+    expected = np.corrcoef(residual(x1, x2), residual(y, x2))[0, 1]
+    assert table.loc["x1", "prcc"] == pytest.approx(expected, abs=1e-9)
+
+
+def test_srrc_interval_is_undefined_for_a_row_that_never_varies() -> None:
+    draws, outcomes = _correlated(100)
+    table = sensitivity.correlation_table(draws.assign(x3=1.0), outcomes).set_index("row")
+    assert pd.isna(table.loc["x3", "srrc_low"]) and pd.isna(table.loc["x3", "prcc"])
+    assert not pd.isna(table.loc["x1", "srrc_low"])
+    status = sensitivity.classify(table.reset_index(), 0.05, by="srrc")
+    assert status["x3"] == "inconclusive"
+
+
+def test_a_row_that_never_varies_costs_no_degree_of_freedom() -> None:
+    """PR #57 review: a constant row is an all-zero column, not a fitted
+    predictor, so it mustn't widen the others' intervals or lower R^2."""
+    draws, outcomes = _correlated(12)
+    plain = sensitivity.correlation_table(draws, outcomes).set_index("row")
+    padded = sensitivity.correlation_table(
+        draws.assign(c1=1.0, c2=2.0, c3=3.0), outcomes,
+    ).set_index("row")
+    for column in ("srrc_low", "srrc_high", "prcc", "r2"):
+        assert padded.loc["x1", column] == pytest.approx(plain.loc["x1", column])
+
+
+def test_collinear_and_constant_rows_have_no_srrc() -> None:
+    """PR #57 review: a rho of +-1 makes ranks exactly collinear, so no
+    coefficient is identifiable; lstsq's minimum-norm answer mustn't be
+    reported or ranked. A row that never varies has no coefficient either."""
+    draws, outcomes = _correlated(100)
+    twin = sensitivity.correlation_table(draws.assign(x2=draws["x1"] * 2), outcomes)
+    assert twin["srrc"].isna().all() and twin["prcc"].isna().all()
+    assert not twin["rho"].isna().any()
+    assert set(sensitivity.classify(twin, 0.05, by="srrc")) == {"inconclusive"}
+    constant = sensitivity.correlation_table(draws.assign(x3=1.0), outcomes).set_index("row")
+    assert pd.isna(constant.loc["x3", "srrc"]) and not pd.isna(constant.loc["x1", "srrc"])
+
+
+def test_classify_rejects_an_unknown_measure() -> None:
+    draws, outcomes = _correlated(30)
+    with pytest.raises(ValueError, match="by must be one of"):
+        sensitivity.classify(sensitivity.correlation_table(draws, outcomes), 0.05, by="prcc")
+
+
+def test_factor_rows_carry_rho_and_no_status() -> None:
+    draws, outcomes = _correlated(200)
+    factors = pd.DataFrame({"f": draws["x1"] + draws["x2"]}, index=draws.index)
+    table = sensitivity.correlation_table(draws, outcomes, factors)
+    f = table[table["row"] == "f"].iloc[0]
+    assert bool(f["factor"]) and f["rho"] > 0.8 and pd.isna(f["srrc"])
+    assert not table.loc[table["row"] != "f", "factor"].any()
+    # The factor isn't a regressor: adding it leaves the rows' SRRC unchanged.
+    plain = sensitivity.correlation_table(draws, outcomes).set_index("row")
+    assert table.set_index("row").loc["x1", "srrc"] == pytest.approx(plain.loc["x1", "srrc"])
+    assert "f" not in sensitivity.classify(table, 0.05, by="srrc")
+
+
+def test_score_correlations_check_links_and_implied_pairs() -> None:
+    import numpy as np
+
+    from analysis.sim.correlation import Link, resolve_scores
+
+    links = {"a": Link("f", 0.8), "b": Link("f", 0.5)}
+    rng = np.random.default_rng(11)
+    scores = pd.DataFrame([
+        resolve_scores(links, {node: rng.normal() for node in ("f", "a", "b")})
+        for _ in range(2000)
+    ])
+    pairs = sensitivity.score_correlations(scores, links, ["a", "b", "f"]).set_index(["a", "b"])
+    assert pairs.loc[("a", "f"), "kind"] == "link"
+    assert pairs.loc[("a", "b"), "kind"] == "implied"
+    assert pairs.loc[("a", "b"), "expected"] == pytest.approx(0.4)
+    assert not pairs["outside"].any()
+    assert (pairs["low"] <= pairs["achieved"]).all() and (pairs["achieved"] <= pairs["high"]).all()
+    # The same scores against a structure they weren't drawn from.
+    wrong = {"a": Link("f", 0.2), "b": Link("f", 0.5)}
+    flagged = sensitivity.score_correlations(scores, wrong, ["a", "b", "f"]).set_index(["a", "b"])
+    assert flagged.loc[("a", "f"), "outside"]
+
+
+def test_score_correlations_skip_uncorrelated_pairs() -> None:
+    from analysis.sim.correlation import Link
+
+    scores = pd.DataFrame({"a": [0.1, 0.2, 0.3, 0.4], "c": [0.4, 0.1, 0.3, 0.2]})
+    pairs = sensitivity.score_correlations(scores, {"a": Link("f", 0.8)}, ["a", "c"])
+    assert pairs.empty and list(pairs.columns)[:3] == ["a", "b", "kind"]
+
+
 def test_cli_reports_monte_carlo_batch(mc_batch: Path, runs_dir: Path) -> None:
     result = CliRunner().invoke(main, [
         "sim", "ensemble", "sensitivity", "retire_alice", "--runs-dir", str(runs_dir),

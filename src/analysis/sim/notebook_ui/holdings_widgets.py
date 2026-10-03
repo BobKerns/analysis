@@ -6,7 +6,7 @@ and only offer investment accounts.
 from __future__ import annotations
 
 import pandas as pd
-from IPython.display import Markdown, display
+from IPython.display import display
 from ipywidgets import widgets
 
 from analysis.sim.connection import RunConnection, ScenarioConnection
@@ -20,6 +20,7 @@ from analysis.sim.holdings import (
     security_names,
 )
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = [
     "account_holdings_view", "account_holdings_widget",
@@ -117,7 +118,7 @@ def account_holdings_widget(
         month = month_picker.value if month_picker is not None else None
         heading, shown = account_holdings_view(source, account_picker.value, month)
         with out:
-            display(Markdown(heading), clear=True)
+            display(StyledMarkdown(heading), clear=True)
             display(_styled(shown))
 
     for picker in (account_picker, month_picker):
@@ -152,7 +153,7 @@ def symbol_holders_widget(
         month = month_picker.value if month_picker is not None else None
         heading, shown = symbol_holders_view(source, symbol_picker.value, month)
         with out:
-            display(Markdown(heading), clear=True)
+            display(StyledMarkdown(heading), clear=True)
             display(_styled(shown))
 
     for picker in (symbol_picker, month_picker):
@@ -168,5 +169,5 @@ def symbol_holders_widget(
 def _empty(message: str) -> widgets.VBox:
     out = widgets.Output()
     with out:
-        display(Markdown(f"_{message}_"))
+        display(StyledMarkdown(f"_{message}_"))
     return widgets.VBox([out])

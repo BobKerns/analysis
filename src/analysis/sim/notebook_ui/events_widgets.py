@@ -6,12 +6,13 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
-from IPython.display import Markdown, display
+from IPython.display import display
 from ipywidgets import widgets
 
 from analysis.sim import registries
 from analysis.sim.connection import RunConnection
 from analysis.sim.notebook_ui.pickers import DateRangeSlider
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = ["events_view", "events_widget", "run_date_bounds"]
 
@@ -97,7 +98,7 @@ def events_widget(rc: RunConnection) -> widgets.VBox:
         )
         out.clear_output(wait=True)
         with out:
-            display(Markdown(heading))
+            display(StyledMarkdown(heading))
             display(_styled(table))
 
     for control in (account_picker, reason_picker, tax_picker, date_picker):
