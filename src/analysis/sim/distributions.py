@@ -254,6 +254,16 @@ class TruncatedNormal:
             span *= 4
         if not brackets:
             reached = [g + self.median for g in gaps if g is not None]
+            if not reached:
+                # Every sampled location left the window with no representable
+                # probability (#35): nothing was reachable at all, so there's
+                # no range to report -- still a clean validation error.
+                raise DistributionError(
+                    f"truncated_normal: vary_median {self.median:g} can't be placed: at every "
+                    "location tried, the bounds hold no representable probability for this "
+                    "vary_sd and shape; widen the bounds, change vary_sd, or bring vary_skew "
+                    "toward 0 and vary_tailweight toward 1"
+                )
             if self.tailweight >= 1:
                 # Normal or lighter tails reach every interior median in
                 # principle, so this is numeric: the fit would need the
