@@ -22,6 +22,7 @@ from calendar import monthrange
 from datetime import UTC, date, datetime
 from collections.abc import Mapping
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 import pandas as pd
@@ -36,8 +37,16 @@ from analysis.sim.distributions import (
     member_rng,
     resolve_truncated_normal_bounds,
 )
+from analysis.sim.correlation import (
+    CorrelationError,
+    Link,
+    probability,
+    resolve_scores,
+    standard_normal,
+    tree_members,
+)
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
-from analysis.sim.registries import ENSEMBLE_MODES
+from analysis.sim.registries import ENSEMBLE_MODES, LATENT_FACTOR_KIND
 from analysis.sim.types import DollarMode
 
 __all__ = [
@@ -205,13 +214,17 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
 def _resolve_value(
     row: sqlite3.Row, dist: Distribution, *, as_int: bool,
     overrides: dict[str, float] | None, seed: int | None, member_index: int,
+    score: float | None = None,
 ) -> tuple[float, float | None]:
     """One varying row's value on one member, and the OAT quantile it was
     resolved at (``None`` unless ``overrides`` names this row):
 
     - named in ``overrides``: that quantile of ``dist`` (ADR-007 §2);
     - otherwise, on member 0 or any OAT member: ``dist``'s central value;
-    - otherwise: a draw from this (member, row)'s own RNG stream (ADR-006 §3).
+    - otherwise, in a correlation tree (ADR-008): ``dist.value_at(Phi(score))``,
+      ``score`` being this row's correlated standard normal score;
+    - otherwise: a draw from this (member, row)'s own RNG stream (ADR-006 §3),
+      exactly as before correlation existed.
 
     ``as_int`` selects the discrete (day-ordinal) form, for a date target.
     """
@@ -223,10 +236,63 @@ def _resolve_value(
             raise EnsembleError(f"row {row['name']!r}: {e}") from e
     if overrides is not None or member_index == 0:
         return (dist.central_int() if as_int else dist.central()), None
+    if score is not None:
+        u = probability(score)
+        return (dist.value_at_int(u) if as_int else dist.value_at(u)), None
     if seed is None:
         raise EnsembleError(f"row {row['name']!r}: a random draw needs the ensemble's seed")
     rng = member_rng(seed, member_index, row["name"])
     return (dist.draw_int(rng) if as_int else dist.draw(rng)), None
+
+
+def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[str]]:
+    """The intent's correlation forest (ADR-008): each varying row's or
+    factor's link to its parent, and the latent factors' names."""
+    links = {
+        name: Link(parent, rho) for name, parent, rho in con.execute(
+            "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
+            "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
+        )
+    }
+    factors = [name for (name,) in con.execute(
+        "SELECT name FROM calendar_event WHERE kind = ? AND name IS NOT NULL ORDER BY name",
+        (LATENT_FACTOR_KIND,),
+    )]
+    return links, factors
+
+
+def _member_scores(
+    links: dict[str, Link], *, overrides: dict[str, float] | None, seed: int | None,
+    member_index: int,
+) -> dict[str, float]:
+    """Every tree member's standard normal score on this member (ADR-008 §5):
+
+    - a random member: each node's noise from its own keyed stream
+      (``member_rng(seed, member, name)``), combined down the tree;
+    - member 0: all 0 -- every row at its median, its ``central()``;
+    - an OAT member: 0, except an overridden row at ``Phi^-1(q)``. Its
+      children aren't moved: OAT stays "this row alone" (ADR-008 §5).
+
+    Rows outside every tree get no score and resolve exactly as before."""
+    members = tree_members(links)
+    if not members:
+        return {}
+    if overrides is not None or member_index == 0:
+        scores = dict.fromkeys(members, 0.0)
+        for name, q in (overrides or {}).items():
+            if name in scores:
+                # Keep q = 0 or 1 finite: the score is provenance, and the
+                # value itself comes from dist.quantile(q).
+                scores[name] = NormalDist().inv_cdf(min(max(q, 1e-12), 1 - 1e-12))
+        return scores
+    if seed is None:
+        raise EnsembleError("a correlated draw needs the ensemble's seed")
+    try:
+        return resolve_scores(links, {
+            name: standard_normal(member_rng(seed, member_index, name)) for name in members
+        })
+    except CorrelationError as e:  # the loader rejects these first
+        raise EnsembleError(str(e)) from e
 
 
 def resolve_member(
@@ -276,8 +342,12 @@ def resolve_member(
                 raise EnsembleError(
                     f"overrides name no unresolved vary_* row: {sorted(unknown)}"
                 )
+        links, factors = _correlation_links(con)
+        scores = _member_scores(
+            links, overrides=overrides, seed=seed, member_index=member_index,
+        )
 
-        draws: list[tuple[str, str, str, float | None, str]] = []
+        draws: list[tuple[str, str, str, float | None, str | None, float | None]] = []
 
         for row in [r for r in rows if r["vary_target"] == "date"]:
             dist = build_distribution(row, "date")
@@ -291,18 +361,21 @@ def resolve_member(
                 )
             drawn_ordinal, quantile = _resolve_value(
                 row, dist, as_int=True, overrides=overrides, seed=seed, member_index=member_index,
+                score=scores.get(row["name"]),
             )
             drawn = date.fromordinal(int(drawn_ordinal))
             con.execute(
                 "UPDATE calendar_event SET date = ?, vary_distribution = NULL WHERE id = ?",
                 (drawn.isoformat(), row["id"]),
             )
-            draws.append((row["name"], "date", drawn.isoformat(), quantile, row["vary_distribution"]))
+            draws.append((row["name"], "date", drawn.isoformat(), quantile,
+                          row["vary_distribution"], scores.get(row["name"])))
 
         for row in [r for r in rows if r["vary_target"] == "amount"]:
             dist = build_distribution(row, "amount")
             value, quantile = _resolve_value(
                 row, dist, as_int=False, overrides=overrides, seed=seed, member_index=member_index,
+                score=scores.get(row["name"]),
             )
             target = round(value)
             if row["kind"] == "one_off_transfer" and target <= 0:
@@ -325,7 +398,14 @@ def resolve_member(
                     "WHERE id = ?",
                     (target, row["id"]),
                 )
-            draws.append((row["name"], "amount", str(target), quantile, row["vary_distribution"]))
+            draws.append((row["name"], "amount", str(target), quantile,
+                          row["vary_distribution"], scores.get(row["name"])))
+        # Factors are drawn too (ADR-008 §6), so achieved correlations can be
+        # checked after the fact; their value is just their score.
+        for factor in factors:
+            z = scores.get(factor)
+            if z is not None:
+                draws.append((factor, "factor", repr(z), None, None, z))
 
         ensemble_name = con.execute("SELECT name FROM scenario").fetchone()[0]
         con.execute(
@@ -340,7 +420,7 @@ def resolve_member(
         )
         con.executemany(
             "INSERT INTO ensemble_draw(calendar_event_name, vary_target, drawn_value, "
-            "quantile, distribution) VALUES (?, ?, ?, ?, ?)",
+            "quantile, distribution, z) VALUES (?, ?, ?, ?, ?, ?)",
             draws,
         )
         con.commit()
