@@ -1,45 +1,25 @@
-# Flow chain definitions
+# Chains for the `retire_alice` scenario
 
-Flow chains are policies for how money is either obtained or distributed.
+A chain is a named, ordered list of places money can come from (or go to):
+try this step first, then the next. Every account and lot already has its own
+one-step chain, so a file here is only needed for more than one step. Each
+file is named `<kind>__<name>.csv`, where `<kind>` is `asset` or `income`, and
+the chain is referred to by `<name>`.
 
-## Policies
+The column layout and how a draw moves through the steps are documented in:
 
-A chain is a set of accounts that act as a unit.
+- [ADR-003 §4.7](../../../../docs/architecture/ADR-003-registries-and-csv-schemas.md#47-per-scenario-data_reposcenariosnamechainskind__namecsv)
+  (columns `account_name`, `lot`, `maximum`, `percent`, `series`, `cadence`)
+- [User guide §4.6](../../../../docs/user-guide.md#46-chains-as-default-policies)
+  (chains as default policies)
 
-* Every account is a chain with one element, with the same name
-  * This allows accounts and chains to be used interchangably
-* Chains can have other chains as elements
-* You can use a chain wherever an account name is expected. (The chain must be of the same type as the type of account expected, i.e. asset or income)
-* Asset names follow the pattern \<asset|income>`__`\<name>`.csv`
-* Assets can have an _refill_ chain. A refill chain is triggered when the asset ballance drops below a threshold.
-
-### Asset chains
-
-An asset chain represents a set of accounts from which funds can be withdrawn. If one account lacks sufficient funds, it either transfers funds from the rest of the chain, or skips on to the rest of the chain.
-
-#### Asset Chain Columns
-
-* `account_name`—name of account or chain to supply funds
-* `threshold`—if non-zero, a minimum of this amount will be maintained (if possible) by transfering funds after withdrawing the required amount
-* `amount`—if non-zero and funds are insufficient, this amount is transferred from the rest of the chain first
-* `percent`—if unspecified or 100, all of the remaining funds will be supplied by this account/chain. If $< 100$, that proportion of the outstanding amount to be transferrd will be taken from this account, and move on to the next. (The last entry should always be 100).
-
-### Income chains
-
-An income chain distributes incoming funds to one or more target assets. An example is to split Social Security income between what pays Medicare Part B/D and what is deposited to a bank account.
-
-#### Income Chain Columns
-
-* `account_name`—name of account or chain to transfer funds to.
-* `ammount`—Fixed amount to transfer
-* `percent`—Fraction of the remaining amount to transnfer.
+Refilling is not a chain column. A lot's `minimum_balance` and `refill_chain`
+are set on its row in `account_values.csv`; before any payment that would take
+the lot below its minimum, the simulator first draws from the refill chain.
 
 ## Chains defined in this scenario
 
-* `asset__Bob_HSA`—Policy for paying Bob's medical expenses
-* `asset__HIromi_HSA`—Policy for paying Hiromi's medical expenses
-* `asset__Family_Cash`—Policy for most payments
-* `asset__Hiromi_Cash`—Policy for Hiromi initially drawing from `Hiromi FECU`.
-* `asset__Family_Refill`—Policy for refilling the `Family WF PMA` account.
-* `income__SS_Bob`—Splits raw Social Security income between Part B, Part D, and bank.
-* `income__SS_Hiromi`—Splits raw Social Security income betwen=en Part B and bakk.
+- `asset__asset_checking_liquidity.csv` (`asset_checking_liquidity`):
+  the `refill_chain` for `Asset_Checking`, which has a `minimum_balance` of
+  $2,000. It draws from `Asset_Savings` first, then from the `default` lot of
+  `Asset_TraditionalIRA_Alice`.
