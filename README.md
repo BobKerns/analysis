@@ -123,7 +123,7 @@ Outputs:
 - Use `--output-dir` to choose another directory.
 
 Why this exists:
-- These monthly files are designed to align with Amex billing cycles, not strict calendar months.
+- These monthly files are designed to align with credit-card billing cycles, not strict calendar months.
 - This makes reconciliation and statement matching easier.
 
 Monthly files use a billing cutoff on day 3:

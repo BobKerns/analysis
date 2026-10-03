@@ -107,7 +107,7 @@ One row per month and category, with these key columns:
 
 This is for reporting and trend views.
 
-Important: these months are billing-cycle months (Amex-aligned), not strict calendar months.
+Important: these months are billing-cycle months (aligned to the credit card), not strict calendar months.
 The default cutoff is day 3:
 
 - Dates on day 1-3 stay in that month.

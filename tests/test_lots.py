@@ -1,7 +1,7 @@
 """Lot-keyed state (ADR-005): one account_model_member row per lot."""
 
 # Abbreviated growth-series names, asserted verbatim below.
-# cspell:ignore asse brok chec vangu vangua rollov settl
+# cspell:ignore asse brok chec rollov settl
 
 from __future__ import annotations
 
@@ -703,7 +703,7 @@ def test_state_tax_still_treats_gains_as_ordinary(
 
 
 @pytest.mark.parametrize(("account", "lot", "expected"), [
-    ("Bill Vanguard Rollover", "settlement", "growth_bill_vang_roll_sett"),
+    ("Bill Brokerage Rollover", "settlement", "growth_bill_brok_roll_sett"),
     ("Asset_Checking", "default", "growth_asse_chec"),      # the default lot adds nothing
     ("Asset_Brokerage_Joint", "2024-03", "growth_asse_brok_join_2024_03"),
     ("IRA", "a", "growth_ira_a"),                           # short words are kept whole
@@ -716,12 +716,12 @@ def test_a_taken_growth_rule_name_widens_until_it_is_free() -> None:
     taken: set[str] = set()
     names = []
     for _ in range(7):
-        names.append(growth_rule_name("Vanguard Rollover", "settlement", taken))
+        names.append(growth_rule_name("Brokerage Rollover", "settlement", taken))
         taken.add(names[-1])
     assert names[:3] == [
-        "growth_vang_roll_sett", "growth_vangu_rollo_settl", "growth_vangua_rollov_settle",
+        "growth_brok_roll_sett", "growth_broke_rollo_settl", "growth_broker_rollov_settle",
     ]
-    assert names[-1] == "growth_vanguard_rollover_settlement"   # the untrimmed names, at the widest
+    assert names[-1] == "growth_brokerage_rollover_settlement"   # the untrimmed names, at the widest
     assert len(set(names)) == len(names)
 
 

@@ -508,8 +508,8 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     ) -> None:
     """Step 2 requests 1% of what's still outstanding, step 3 the default
     100% of whatever's left -- absent a shortfall this is a cascading
-    near-even split, but step 2 (Hiromi Vanguard) is nearly empty here, so
-    its unfulfilled share falls through and step 3 (Bill Vanguard) picks up
+    near-even split, but step 2 (Alice Brokerage) is nearly empty here, so
+    its unfulfilled share falls through and step 3 (Bill Brokerage) picks up
     the rest, exactly the parallel-draw-until-exhausted behavior ADR-003
     §4.7 describes rather than the old 'drain each step to zero in turn'
     bug."""
@@ -519,7 +519,7 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     account_kinds = dict.fromkeys(balances, "asset")
     account_tax_treatment = dict.fromkeys(balances, "taxable")
     account_subkind = dict.fromkeys(balances, "cash")
-    account_name = {1: "Target", 2: "Hiromi Vanguard", 3: "Bill Vanguard"}
+    account_name = {1: "Target", 2: "Alice Brokerage", 3: "Bill Brokerage"}
     graph = ChainGraph(
         members={100: [(2, None, 10_000), (3,)]},  # 2: percent=1%, 3: default 100%
         leaf_lot={2: 2, 3: 3},

@@ -7,7 +7,8 @@ Run the setup script (idempotent — safe to re-run):
 ```
 
 It installs [uv](https://github.com/astral-sh/uv) if missing, configures the
-`.githooks` pre-commit hook, runs `uv sync --group dev` (installing the Python
+`.githooks` hooks (which keep runtime data and real account names out of
+commits), runs `uv sync --group dev` (installing the Python
 version pinned in `.python-version` only if `uv sync` can't find a usable
 interpreter), and installs the notebook-cleaning `nbstripout` filter (strips
 outputs and per-run/per-machine metadata churn like `kernelspec.display_name`
@@ -33,7 +34,7 @@ simulator and notebooks don't need it, only those two verification gates do.
     ```
     The installer places the binary in `~/.local/bin`. Add that directory to
     your shell startup file if it is not already on `PATH`.
-3. Configure the pre-commit hook:
+3. Configure the git hooks (pre-commit and commit-msg):
     ```sh
     git config core.hooksPath .githooks
     ```

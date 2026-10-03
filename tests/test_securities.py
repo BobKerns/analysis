@@ -24,10 +24,10 @@ def test_rows_are_loaded_into_the_security_table(
     test_data_dir: Path, load_test_copy: Callable[[], LoadResult]
 ) -> None:
     (test_data_dir / "securities.csv").write_text(
-        "symbol,name\nVTI,Vanguard Total Stock Market ETF\nAAPL,Apple Inc.\n"
+        "symbol,name\nVTI,Total Stock Market ETF\nAAPL,Apple Inc.\n"
     )
     assert _securities(load_test_copy()) == [
-        ("AAPL", "Apple Inc."), ("VTI", "Vanguard Total Stock Market ETF"),
+        ("AAPL", "Apple Inc."), ("VTI", "Total Stock Market ETF"),
     ]
 
 

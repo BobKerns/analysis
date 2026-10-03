@@ -14,6 +14,17 @@ explicit `--data-dir`. Nothing in `data/`, `out/`, or `state/` here is tracked.
 Never edit the data repo to make code or tests pass. If scenario data looks
 wrong or stale, say so and let the user decide.
 
+**Real names stay in the data repo.** Account, chain, person and payee names
+from the real data must not appear in this repo's code, tests, docs,
+`prototype_data/`, commit messages, issues, or PR text. Use the prototype
+personas (Alice and Bill) and the prototype scenario's account names, and put
+household-specific choices in data-repo files, not in defaults or literals.
+`.githooks/blocked-keywords.txt` lists words that give such names away; the
+pre-commit and commit-msg hooks block commits containing them, and
+`tests/test_blocked_keywords.py` checks every tracked file. If you find one
+already in the repo, say so instead of tidying or quoting it. A deliberate use
+can be let through with `ALLOW_BLOCKED_KEYWORDS=1`.
+
 ## Architecture
 
 Read the ADRs before changing the simulator; they are the specification, and
@@ -132,4 +143,5 @@ Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_na
   kept sorted; for strings one test asserts verbatim, use an inline
   `# cspell:ignore` in that file instead.
 - `data/`, `out/`, and `state/` are gitignored and protected by a pre-commit
-  hook — never try to make code or tests pass by editing files there.
+  hook — never try to make code or tests pass by editing files there. The same
+  hook, and a commit-msg hook, run `scripts/check-blocked-keywords.sh`.

@@ -275,9 +275,9 @@ def test_load_category_splits_rejects_bad_rows(tmp_path: Path, rows: str, messag
 
 def test_load_excluded_payees_reads_patterns_and_rejects_bad_ones(tmp_path: Path) -> None:
     path = tmp_path / "expense_excluded_payees.csv"
-    path.write_text("payee_pattern\nacme\\s+insurance\n\nhoa dues\n", encoding="utf-8")
+    path.write_text("payee_pattern\nacme\\s+insurance\n\ngarden club\n", encoding="utf-8")
 
-    assert load_excluded_payees(path) == (r"acme\s+insurance", "hoa dues")
+    assert load_excluded_payees(path) == (r"acme\s+insurance", "garden club")
 
     path.write_text("payee_pattern\nacme (insurance\n", encoding="utf-8")
     with pytest.raises(ValueError, match="row 2: invalid payee pattern"):
