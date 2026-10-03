@@ -25,6 +25,13 @@ they are kept in sync with the code.
 | [`docs/architecture/ADR-002-storage-schema.md`](../docs/architecture/ADR-002-storage-schema.md) | Two-layer SQLite storage, DDL, glossary |
 | [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](../docs/architecture/ADR-003-registries-and-csv-schemas.md) | Locked vocabularies, every CSV schema |
 | [`docs/architecture/ADR-004-reproducibility-and-activation.md`](../docs/architecture/ADR-004-reproducibility-and-activation.md) | Provenance, determinism, activation |
+| [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](../docs/architecture/ADR-005-lots-and-per-lot-state.md) | Lots and per-lot state |
+| [`docs/architecture/ADR-006-ensemble-scenarios.md`](../docs/architecture/ADR-006-ensemble-scenarios.md) | Ensembles: parameter variation, Monte Carlo runs |
+| [`docs/architecture/ADR-007-sensitivity-analysis.md`](../docs/architecture/ADR-007-sensitivity-analysis.md) | Sensitivity analysis over ensemble parameters |
+| [`docs/architecture/ADR-008-correlated-parameters.md`](../docs/architecture/ADR-008-correlated-parameters.md) | Correlated parameters in ensembles |
+
+ADR-005 through ADR-008 each have a companion `ADR-00N-implementation-plan.md`
+beside them.
 
 An ADR is edited in place to describe the current design, so it stays easy
 to read: rewrite the affected sections and add a brief note (e.g. an "Amended
@@ -80,22 +87,26 @@ if the venv isn't on `PATH`.
 
 ## Verifying a change
 
-Three gates, all of which should pass before reporting a simulator change done:
+Four gates should pass before reporting any change done, plus a fifth for
+changes to the simulator or its loader:
 
 ```sh
 .venv/bin/python -m pytest -q                     # tests
 .venv/bin/python -m ruff check src tests          # lint
-for s in "$ANALYSIS_DATA_DIR"/scenarios/*/; do    # real scenarios still load
+npm run spell                                     # spelling (cspell)
+npm run markdownlint                              # markdown (markdownlint)
+for s in "$ANALYSIS_DATA_DIR"/scenarios/*/; do    # simulator changes: real scenarios still load
   .venv/bin/analysis sim check "$(basename "$s")"
 done
 ```
 
+`cspell` and `markdownlint` are pinned in `package.json` and installed by
+`scripts/setup.sh` (`npm ci`); see [`docs/SETUP.md`](../docs/SETUP.md).
+
 Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_name -q`
 (or `-k pattern` to match by substring).
 
-`ruff check` has pre-existing findings. Compare counts against the baseline
-(`git stash -u`, re-run, `git stash pop`) rather than assuming a clean slate,
-and leave unrelated findings alone.
+`ruff check` is clean on `main`; keep it that way.
 
 `mypy` is not installed; there is no type-check gate.
 
@@ -109,8 +120,16 @@ and leave unrelated findings alone.
   restating the line below it is noise; one recording a decision or a trap is
   worth keeping.
 - When a test's name stops describing what it asserts, rename it.
+- Test data on disk comes from the fixtures in `tests/conftest.py`
+  (`test_data_dir`, `intent_dir`, `runs_dir`, `retire_alice_csv`,
+  `load_test_copy`, `append_calendar_row`, ...), never from a local helper or
+  inline `shutil.copytree`/`tmp_path` setup. Check there before writing setup;
+  a new reusable need becomes a new fixture. Its module docstring explains the
+  session (shared, read-only) vs. function (private, mutation-safe) families.
 - **Tabs are forbidden** in all text files (code, markdown, docs) — spaces only.
-- Spell checking (cspell) runs over docs, markdown, and comments only; add
-  project-specific words to `.cspell/project-words.txt`.
+- Spell checking (cspell) runs over markdown, Python, CSV, and TOML (see
+  `cspell.json`). Add project-specific words to `.cspell/project-words.txt`,
+  kept sorted; for strings one test asserts verbatim, use an inline
+  `# cspell:ignore` in that file instead.
 - `data/`, `out/`, and `state/` are gitignored and protected by a pre-commit
   hook — never try to make code or tests pass by editing files there.

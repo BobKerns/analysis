@@ -59,3 +59,6 @@ test-output.*
 
 .analysis
 .analysis_user
+
+# Node (pinned lint tools; see package.json)
+node_modules/

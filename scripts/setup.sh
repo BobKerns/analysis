@@ -1,5 +1,6 @@
 #!/bin/sh
-# One-time repo setup: uv, pinned Python, git hooks, deps, notebook filter.
+# One-time repo setup: uv, pinned Python, git hooks, deps, notebook filter,
+# lint tools.
 # Safe to re-run; every step is idempotent.
 set -eu
 
@@ -40,5 +41,31 @@ echo "Installing nbstripout notebook filter..."
 uv run nbstripout --install
 # shellcheck disable=SC2016  # single-quoted: git expands $(...) later, not this script
 git config filter.nbstripout.clean '"$(git rev-parse --show-toplevel)/.venv/bin/python" -m nbstripout --extra-keys "metadata.kernelspec.display_name metadata.language_info.version"'
+
+# The pinned lint tools need a recent Node. Keep this test in step with
+# "engines" in package.json, the strictest range among the locked packages.
+node_supported() {
+    node -e '
+        const [major, minor, patch] = process.versions.node.split(".").map(Number);
+        const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 2)))
+            || (major === 24 && minor >= 15)
+            || major >= 26;
+        process.exit(ok ? 0 : 1);
+    '
+}
+
+# Neither case below is fatal: running the simulator and notebooks needs no
+# Node. Only the spelling and markdown gates do.
+if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+    echo "Node.js not found; skipping cspell/markdownlint. Install Node.js and re-run" >&2
+    echo "this script before using 'npm run spell' / 'npm run markdownlint'." >&2
+elif ! node_supported; then
+    echo "Node.js $(node --version) is too old for the pinned cspell/markdownlint, which" >&2
+    echo "need 22.22.2+, 24.15+, or 26+; skipping them. Upgrade Node.js and re-run" >&2
+    echo "this script before using 'npm run spell' / 'npm run markdownlint'." >&2
+else
+    echo "Installing pinned lint tools (cspell, markdownlint)..."
+    npm ci --no-audit --no-fund
+fi
 
 echo "Setup complete."
