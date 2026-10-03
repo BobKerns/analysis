@@ -24,7 +24,7 @@ Two things this design must not lose:
 
 For each member, every row in a correlation tree (§2) gets a **standard normal score** `z`. The scores are correlated as specified. Each row's value is then its own distribution's quantile at `u = Φ(z)`:
 
-```
+```text
 value = dist.value_at(Φ(z))
 ```
 
@@ -38,7 +38,7 @@ Because `u` is uniform on its own, **each row's distribution, taken alone, is ex
 
 Each row (or factor, §3) may name **at most one** parent, with a correlation ρ ∈ [-1, 1]:
 
-```
+```text
 z_child = ρ · z_parent + √(1 − ρ²) · ε_child
 ```
 

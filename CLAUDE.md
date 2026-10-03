@@ -1,5 +1,39 @@
 # Claude Configuration
 
+Project guidance (architecture, invariants, verification gates, conventions) is
+shared with Copilot; edit it there, not here:
+
+@.github/copilot-instructions.md
+
+## Branches and worktrees
+
+- Branch only when the live branch (`git branch --show-current`) is `main`;
+  otherwise the current branch is the one to use.
+- A branch for a GitHub issue is `issue/<number>-<brief-kebab-description>`
+  (e.g. `issue/40-cert-verify`). Never name a branch plain `issue`.
+- Base new branches on `origin/main` after `git fetch`, not local `main`, and
+  don't update local `main`.
+- Keep branches after their PR merges, locally and on GitHub.
+- Work in a worktree at `../analysis-worktrees/<branch with / flattened to ->`,
+  not in the main checkout. Remove the worktree (not the branch) once its PR
+  is merged.
+
+The nbstripout filter runs `<toplevel>/.venv/bin/python`, which a fresh worktree
+lacks, so bypass the filter for the initial checkout only:
+
+```sh
+git fetch origin
+git -c filter.nbstripout.clean=cat -c filter.nbstripout.smudge=cat \
+    -c filter.nbstripout.required=false \
+    worktree add --no-track -b <branch> ../analysis-worktrees/<flattened-branch> origin/main
+cd ../analysis-worktrees/<flattened-branch> && env -u VIRTUAL_ENV uv sync && npm ci
+```
+
+After `uv sync` the filter works normally; `npm ci` installs the pinned
+`cspell`/`markdownlint` for the spelling and markdown gates. Run commands there with
+`env -u VIRTUAL_ENV uv run ...`, since an editor terminal's `VIRTUAL_ENV` may
+point at the main checkout's `.venv`.
+
 ## ripwire — deterministic codebase maps (on PATH as `ripwire`)
 
 Reach for it BEFORE blind grep + whole-file reads. First call ~1s cold; after that warm, ~0.1s.

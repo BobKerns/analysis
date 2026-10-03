@@ -16,6 +16,11 @@ It also installs the `ripwire` CLI if it is missing. The CLI is used to save
 token usage and improve quality by creating and using
 deterministic repository maps and code-navigation checks; its optional MCP
 server is registered separately per coding-agent client below.
+Finally, if a recent enough Node.js is available (22.22.2+, 24.15+, or 26+;
+see `engines` in `package.json`), it installs the spelling and markdown linters
+(`cspell`, `markdownlint-cli`) at the versions pinned in `package.json` /
+`package-lock.json`. Without Node.js, or with an older one, the script warns and carries on: the
+simulator and notebooks don't need it, only those two verification gates do.
 
 ## What the script does, step by step (for reference or manual setup)
 
@@ -41,6 +46,15 @@ server is registered separately per coding-agent client below.
     ```
     (`--install --extra-keys` in one call does *not* persist the extra keys in
     this nbstripout version — the second command is required.)
+6. Install the pinned lint tools (needs [Node.js](https://nodejs.org) 22.22.2+,
+   24.15+, or 26+; `.npmrc` sets `engine-strict`, so `npm ci` refuses an
+   unsupported version):
+    ```sh
+    npm ci
+    ```
+    This puts `cspell` and `markdownlint` in `node_modules/` (gitignored). Run
+    them with `npm run spell` and `npm run markdownlint`. To change a version, edit
+    `package.json` and run `npm install` to update the lockfile.
 
 ## Jupyter and filesystem MCP servers
 
