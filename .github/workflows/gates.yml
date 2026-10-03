@@ -1,0 +1,105 @@
+# The verification gates from .github/copilot-instructions.md, run on GitHub so
+# a commit made without the local hooks (a fresh clone, a web edit,
+# --no-verify) is caught before merge. Mark these jobs as required checks in the
+# ruleset for main; they block merging, not pushing. The fifth gate, loading the
+# real scenarios, needs the private data repo and stays local.
+name: Gates
+
+on:
+  pull_request:
+    # edited: the title and body are checked too, and can change on their own.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  keywords:
+    name: Blocked keywords
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Every commit in the range, for its message.
+          fetch-depth: 0
+
+      - name: Tracked files
+        run: scripts/check-blocked-keywords.sh --all
+
+      - name: Commit messages
+        env:
+          # Only these SHAs come from the event; never interpolate its text
+          # into the script.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.after }}
+        run: |
+          # A new branch or a force push leaves no usable base: check the
+          # head commit alone.
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+              range="$BASE..$HEAD"
+          else
+              range="-1 $HEAD"
+          fi
+          status=0
+          for sha in $(git rev-list $range); do
+              git log -1 --format=%B "$sha" > "$RUNNER_TEMP/message.txt"
+              if ! scripts/check-blocked-keywords.sh --message "$RUNNER_TEMP/message.txt"; then
+                  echo "::error::Blocked keyword in the message of $sha"
+                  status=1
+              fi
+          done
+          exit $status
+
+      - name: Pull request title and body
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n\n%s\n' "$TITLE" "$BODY" > "$RUNNER_TEMP/pr.txt"
+          scripts/check-blocked-keywords.sh --text "$RUNNER_TEMP/pr.txt"
+
+  python:
+    name: Tests and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install Python and dependencies
+        # uv reads the pinned version from .python-version.
+        run: |
+          uv python install
+          uv sync --locked --group dev
+
+      - name: Tests
+        run: uv run --no-sync python -m pytest -q -n auto
+
+      - name: Lint
+        run: uv run --no-sync ruff check src tests
+
+  docs:
+    name: Spelling and markdown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Spelling
+        run: npm run spell
+
+      - name: Markdown
+        run: npm run markdownlint

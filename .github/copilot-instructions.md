@@ -21,9 +21,11 @@ personas (Alice and Bill) and the prototype scenario's account names, and put
 household-specific choices in data-repo files, not in defaults or literals.
 `.githooks/blocked-keywords.txt` lists words that give such names away; the
 pre-commit and commit-msg hooks block commits containing them, and
-`tests/test_blocked_keywords.py` checks every tracked file. If you find one
-already in the repo, say so instead of tidying or quoting it. A deliberate use
-can be let through with `ALLOW_BLOCKED_KEYWORDS=1`.
+`tests/test_blocked_keywords.py` checks every tracked file. The `Gates`
+workflow on GitHub checks tracked files, every commit message, and the pull
+request's title and body. If you find one already in the repo, say so instead
+of tidying or quoting it. A deliberate use can be let through locally with
+`ALLOW_BLOCKED_KEYWORDS=1`; the GitHub check has no override.
 
 ## Architecture
 
@@ -115,6 +117,11 @@ done
 
 `cspell` and `markdownlint` are pinned in `package.json` and installed by
 `scripts/setup.sh` (`npm ci`); see [`docs/SETUP.md`](../docs/SETUP.md).
+
+[`.github/workflows/gates.yml`](workflows/gates.yml) runs the first four gates
+and the blocked-keyword check on every pull request and push to `main`. It is
+a backstop, not a substitute: run the gates locally before pushing, since every
+push to a pull request also triggers a Copilot review.
 
 Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_name -q`
 (or `-k pattern` to match by substring).

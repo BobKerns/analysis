@@ -106,6 +106,19 @@ def test_a_commit_message_is_checked_but_its_comment_lines_are_not(scratch_repo:
     assert _check(scratch_repo, "--message", str(message)).returncode == 1
 
 
+def test_pull_request_text_is_checked_including_markdown_headings(scratch_repo: Path) -> None:
+    keyword = _keywords()[0]
+    text = scratch_repo / "pr.txt"
+
+    text.write_text("Fix import\n\n## Summary\nplain text\n", encoding="utf-8")
+    assert _check(scratch_repo, "--text", str(text)).returncode == 0
+
+    text.write_text(f"Fix import\n\n## The {keyword} import\n", encoding="utf-8")
+    result = _check(scratch_repo, "--text", str(text))
+
+    assert result.returncode == 1
+    assert "3:" in result.stderr
+
 def test_the_override_lets_a_deliberate_use_through(scratch_repo: Path) -> None:
     _stage(scratch_repo, "notes.txt", _keywords()[0] + "\n")
 
