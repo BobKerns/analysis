@@ -2,13 +2,16 @@
 # Fail if blocked keywords (.githooks/blocked-keywords.txt) appear in:
 #   --staged        the staged version of every file in the pending commit
 #   --all           every tracked file
-#   --message FILE  a commit message
+#   --message FILE  a commit message being written ('#' comment lines
+#                   skipped, as git does)
+#   --text FILE     any other text, every line checked (a stored commit
+#                   message, or a pull request's title and body)
 # Set ALLOW_BLOCKED_KEYWORDS=1 to let a deliberate use through.
 # cspell:ignore ACMR
 set -eu
 
 usage() {
-    echo "usage: $0 --staged | --all | --message FILE" >&2
+    echo "usage: $0 --staged | --all | --message FILE | --text FILE" >&2
     exit 2
 }
 
@@ -43,6 +46,10 @@ case $mode in
     --message)
         [ $# -eq 2 ] || usage
         hits=$(grep -v '^#' "$2" | grep -n -i -E -e "$pattern" || true)
+        ;;
+    --text)
+        [ $# -eq 2 ] || usage
+        hits=$(grep -n -i -E -e "$pattern" "$2" || true)
         ;;
     *)
         usage
