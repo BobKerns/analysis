@@ -122,7 +122,7 @@ def test_resolve_member_zero_uses_the_uniform_midpoint_not_a_draw(
         con.close()
 
 
-def test_resolve_member_zero_uses_the_truncated_normal_mean(
+def test_resolve_member_zero_uses_the_truncated_normal_median(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,
 ) -> None:
@@ -130,7 +130,7 @@ def test_resolve_member_zero_uses_the_truncated_normal_mean(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset_Checking", amount="45000",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_sd="2000", vary_low="40000", vary_high="50000",
+        vary_median="45000", vary_sd="2000", vary_low="40000", vary_high="50000",
     )
     recipe = load_test_copy().intent_path
     member = resolve_member(
@@ -763,3 +763,67 @@ def test_latest_ensemble_batch_filters_by_mode(tmp_path: Path) -> None:
     mc_manifest = mc / "batch_manifest.json"
     mc_manifest.unlink()
     assert latest_ensemble_batch(recipe_dir, mode="monte_carlo") == mc  # legacy-style
+
+
+# --- #31: shaped truncated_normal and triangular rows -------------------------------
+
+
+def test_resolve_member_zero_lands_on_a_skewed_rows_authored_median(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """The base case is exactly the authored median even with skew and
+    asymmetric bounds (#31)."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="45000",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="45000", vary_sd="5000", vary_low="40000", vary_high="70000",
+        vary_skew="0.7",
+    )
+    recipe = load_test_copy().intent_path
+    member = resolve_member(
+        recipe, tmp_path / "member_0000.sqlite3",
+        seed=1, member_index=0, member_count=3, recipe_tree_id="deadbeef",
+    )
+    con = sqlite3.connect(member)
+    try:
+        assert con.execute(
+            "SELECT amount FROM calendar_event WHERE name = 'checking_rate_vary'"
+        ).fetchone()[0] == 45_000
+    finally:
+        con.close()
+
+
+def test_resolve_member_triangular_date_row(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """A triangular date: member 0 at its median (between the mode and the
+    long tail), drawn members inside the bounds, distribution recorded."""
+    append_calendar_row(
+        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="triangular",
+        vary_low="2030-06-30", vary_mode="2030-12-31", vary_high="2031-12-31",
+    )
+    recipe = load_test_copy().intent_path
+    dates = []
+    for i in range(6):
+        member = resolve_member(
+            recipe, tmp_path / f"member_{i:04d}.sqlite3",
+            seed=9, member_index=i, member_count=6, recipe_tree_id="deadbeef",
+        )
+        con = sqlite3.connect(member)
+        try:
+            dates.append(con.execute(
+                "SELECT date FROM calendar_event WHERE name = 'retire_bob_vary'"
+            ).fetchone()[0])
+            if i == 0:
+                assert con.execute(
+                    "SELECT distribution FROM ensemble_draw"
+                ).fetchone() == ("triangular",)
+        finally:
+            con.close()
+    assert "2030-12-31" < dates[0] < "2031-06-30"  # median: past the mode, toward the long side
+    assert all("2030-06-30" <= d <= "2031-12-31" for d in dates)

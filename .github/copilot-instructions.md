@@ -26,9 +26,11 @@ they are kept in sync with the code.
 | [`docs/architecture/ADR-003-registries-and-csv-schemas.md`](../docs/architecture/ADR-003-registries-and-csv-schemas.md) | Locked vocabularies, every CSV schema |
 | [`docs/architecture/ADR-004-reproducibility-and-activation.md`](../docs/architecture/ADR-004-reproducibility-and-activation.md) | Provenance, determinism, activation |
 
-An ADR is amended, not silently rewritten: superseded sections stay as
-tombstones with the rationale, and material corrections go under "Later
-amendments to this ADR". If the code and an ADR disagree, fix the drift in the
+An ADR is edited in place to describe the current design, so it stays easy
+to read: rewrite the affected sections and add a brief note (e.g. an "Amended
+by" line in the header naming the issue or PR) that it was amended. Don't keep
+superseded text as tombstones or ask for it to be kept; git history holds the
+previous decisions and their rationale. If the code and an ADR disagree, fix the drift in the
 same change — the ADRs are load-bearing, not historical.
 
 Key modules:
