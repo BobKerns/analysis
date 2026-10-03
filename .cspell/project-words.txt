@@ -28,10 +28,12 @@ categoriser
 ccon
 clsname
 cmap
+collinearity
 colorbar
 columnless
 configfile
 conftest
+corrcoef
 counterclock
 cpus
 dataviz
@@ -43,6 +45,7 @@ ecolor
 edgecolor
 elinewidth
 errorbar
+errstate
 esac
 executemany
 executescript
@@ -76,6 +79,7 @@ lognormal
 lotb
 lstsq
 ltcg
+markerfacecolor
 markersize
 metas
 mktree
@@ -100,6 +104,7 @@ pcon
 Pewsey
 plottable
 PRCC
+PRCCᵢ
 preflighted
 preflights
 preroll
