@@ -1249,9 +1249,9 @@ def test_sim_calendar_add_rejects_non_zero_padded_vary_date(
     result = runner.invoke(
         main,
         [
-            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bob",
+            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bill",
             "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
-            "--name", "retire_bob_vary", "--vary-target", "date",
+            "--name", "retire_bill_vary", "--vary-target", "date",
             "--vary-distribution", "uniform",
             "--vary-low", "2029-1-1", "--vary-high", "2029-12-31",
         ],
@@ -1756,7 +1756,7 @@ def test_sim_calendar_add_retire_scheduled_rejects_amount_vary_target(
     result = runner.invoke(
         main,
         [
-            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bob",
+            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bill",
             "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
             "--name", "bad", "--vary-target", "amount", "--vary-distribution", "uniform",
             "--vary-low", "1", "--vary-high", "2",
@@ -1773,16 +1773,16 @@ def test_sim_calendar_add_retire_scheduled_with_date_vary(
     result = runner.invoke(
         main,
         [
-            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bob",
+            "sim", "calendar", "add", "retire-scheduled", "2029-06-30", "salary_bill",
             "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
-            "--name", "retire_bob_vary", "--vary-target", "date",
+            "--name", "retire_bill_vary", "--vary-target", "date",
             "--vary-distribution", "uniform",
             "--vary-low", "2029-01-01", "--vary-high", "2029-12-31",
         ],
     )
     assert result.exit_code == 0, result.output
     df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
-    row = df[df["name"] == "retire_bob_vary"].iloc[0]
+    row = df[df["name"] == "retire_bill_vary"].iloc[0]
     assert row["kind"] == "retire_scheduled"
     assert row["vary_target"] == "date"
     assert row["vary_low"] == "2029-01-01"
@@ -1866,8 +1866,8 @@ def _append_two_varying_rows(append_calendar_row: Callable[..., None]) -> None:
         vary_low="40000", vary_high="50000",
     )
     append_calendar_row(
-        date="2030-12-31", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2030-12-31", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2030-06-30", vary_high="2031-06-30",
     )
@@ -1904,7 +1904,7 @@ def test_sim_run_sensitivity_generates_oat_batch(
     manifest = read_batch_manifest(member_runs[0].parent)
     assert manifest["mode"] == "sensitivity"
     assert manifest["quantiles"] == [0.1, 0.9]
-    assert manifest["rows"] == ["checking_rate_vary", "retire_bob_vary"]
+    assert manifest["rows"] == ["checking_rate_vary", "retire_bill_vary"]
 
     con = sqlite3.connect(member_runs[2])  # checking_rate_vary @ 0.9
     try:
@@ -1928,7 +1928,7 @@ def test_sim_run_sensitivity_only_and_quantiles_set_member_count(
 
     result = _sim_run_sensitivity(
         intent_dir, runs_dir, runner,
-        "--only", "retire_bob_vary", "--quantiles", "0.1,0.25,0.75,0.9",
+        "--only", "retire_bill_vary", "--quantiles", "0.1,0.25,0.75,0.9",
     )
     assert result.exit_code == 0, result.output
     assert "5/5 member(s) succeeded" in result.output  # 1 + 1 row x 4 quantiles
@@ -2163,8 +2163,8 @@ def test_sim_calendar_add_writes_shape_and_mode(test_data_dir: Path) -> None:
     ])
     assert skewed.exit_code == 0, skewed.output
     triangle = runner.invoke(main, [
-        "sim", "calendar", "add", "retire-scheduled", "2030-12-31", "salary_bob",
-        "--data-dir", str(test_data_dir), "--name", "retire_bob_vary",
+        "sim", "calendar", "add", "retire-scheduled", "2030-12-31", "salary_bill",
+        "--data-dir", str(test_data_dir), "--name", "retire_bill_vary",
         "--vary-target", "date", "--vary-distribution", "triangular",
         "--vary-low", "2030-06-30", "--vary-mode", "2030-12-31", "--vary-high", "2031-12-31",
     ])
@@ -2173,7 +2173,7 @@ def test_sim_calendar_add_writes_shape_and_mode(test_data_dir: Path) -> None:
                        dtype=str, keep_default_na=False).set_index("name")
     assert rows.loc["checking_vary", ["vary_median", "vary_sd", "vary_skew", "vary_tailweight"]].tolist() \
         == ["45000", "10000", "0.5", "0.8"]
-    assert rows.loc["retire_bob_vary", "vary_mode"] == "2030-12-31"
+    assert rows.loc["retire_bill_vary", "vary_mode"] == "2030-12-31"
 
 
 def test_sim_calendar_add_rejects_skew_without_sd(test_data_dir: Path) -> None:

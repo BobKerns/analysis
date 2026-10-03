@@ -41,8 +41,8 @@ sim calendar add set-rate 2027-01-31 mutual_fund_retirement 4.0 \
 A retirement date uncertain within a year:
 
 ```sh
-sim calendar add retire-scheduled 2029-06-30 salary_bob \
-  --scenario inflation_1 --name retire_bob_vary \
+sim calendar add retire-scheduled 2029-06-30 salary_bill \
+  --scenario inflation_1 --name retire_bill_vary \
   --vary-target date --vary-distribution uniform \
   --vary-low 2029-01-01 --vary-high 2029-12-31
 ```

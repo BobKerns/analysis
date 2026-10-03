@@ -23,17 +23,17 @@ Month to Date: 2026-08-01 - 2026-08-18
 "Assets",,
 ,"Checking",
 ," - Business","304.17"
-," - WF CA","20.11"
+," - Bank CA","20.11"
 ," - Total Checking","324.28"
 ,"Investments",
 ," - Retirement",
-," -  - Bob Fidelity","10,000.38"
+," -  - Bill Brokerage","10,000.38"
 ," -  - Total Retirement","10,000.38"
 ," - Total Investments","10,000.38"
 ,"Total Assets","10,324.66"
 "Liabilities",,
 ,"Credit Card",
-," - Amex","-8,378.91"
+," - Card","-8,378.91"
 ," - Total Credit Card","-8,378.91"
 ,"Total Liabilities","-8,378.91"
 -------------------------,-------------------------,-------------------------
@@ -49,9 +49,9 @@ def test_parse_net_worth_export_extracts_leaf_accounts_only(tmp_path: Path) -> N
 
     assert balances == {
         "Business": 30417,
-        "WF CA": 2011,
-        "Bob Fidelity": 1000038,
-        "Amex": -837891,
+        "Bank CA": 2011,
+        "Bill Brokerage": 1000038,
+        "Card": -837891,
     }
 
 

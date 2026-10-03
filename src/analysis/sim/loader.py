@@ -1223,8 +1223,8 @@ def _abbreviate(name: str, width: int) -> str:
 
 def growth_rule_name(account: str, lot: str, taken: Collection[str] = ()) -> str:
     """Name of the rule generated for one lot's growth: ``growth_`` and the account
-    and lot with each word trimmed to four letters, so ``Bob Vanguard Rollover`` /
-    ``settlement`` is ``growth_bob_vang_roll_sett``. If that is already ``taken``,
+    and lot with each word trimmed to four letters, so ``Bill Roth Rollover`` /
+    ``settlement`` is ``growth_bill_roth_roll_sett``. If that is already ``taken``,
     words are trimmed less until it is free (the full names, at the widest)."""
     widest = max(len(word) for word in _slug(f"{account}_{lot}").split("_"))
     for width in range(_NAME_WORD_WIDTH, max(widest, _NAME_WORD_WIDTH) + 1):

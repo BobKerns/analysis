@@ -3,4 +3,4 @@ date,kind,scheduled_name,account_1,lot_1,account_2,lot_2,series,amount,param_dat
 2028-06-30,retire_scheduled,salary_alice,,,,,,,,,,Alice retires,
 2028-07-31,set_amount,healthcare,,,,,,120000,2028-07-31,,,ACA premium replaces employer share,
 2029-03-31,one_off_transfer,,Income_Inheritance,,Asset_Brokerage_Joint,default,,5000000,,none,,inheritance from fake great-aunt,
-2030-12-31,retire_scheduled,salary_bob,,,,,,,,,,Bob retires,
+2030-12-31,retire_scheduled,salary_bill,,,,,,,,,,Bill retires,

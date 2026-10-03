@@ -11,7 +11,7 @@ import pytest
 from analysis.sim.engine import EngineError, _active_filing_status, run_scenario
 from analysis.sim.loader import LoadResult
 
-TAXPAYERS = {"alice", "bob"}
+TAXPAYERS = {"alice", "bill"}
 
 
 def _aux(status: str = "MFJ") -> dict:
@@ -41,7 +41,7 @@ def test_only_taxpayers_count_and_only_joint_or_separate_filers_change() -> None
     for base, expected in (("MFJ", "Single"), ("MFS", "Single"), ("Single", "Single")):
         assert _active_filing_status(
             _aux(base), "filing_status", 2035, 1,
-            person_lifespan={"bob": "2030-01-01"}, taxpayers=TAXPAYERS,
+            person_lifespan={"bill": "2030-01-01"}, taxpayers=TAXPAYERS,
         ) == expected
 
 
@@ -49,7 +49,7 @@ def test_no_filing_status_row_is_an_error_unless_a_taxpayer_died() -> None:
     with pytest.raises(EngineError, match="no filing_status row"):
         _active_filing_status({}, "filing_status", 2030, 1, taxpayers=TAXPAYERS)
     assert _active_filing_status(
-        {}, "filing_status", 2035, 1, person_lifespan={"bob": "2030-01-01"}, taxpayers=TAXPAYERS,
+        {}, "filing_status", 2035, 1, person_lifespan={"bill": "2030-01-01"}, taxpayers=TAXPAYERS,
     ) == "Single"
 
 

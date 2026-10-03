@@ -1,7 +1,7 @@
 # JupyterHub on the Pi: setup plan (not yet implemented)
 
-Decided 2026-10-01, written up for reference — not acted on yet. Goal: give Bob and
-Hiromi each their own isolated JupyterLab (separate kernel, separate Python
+Decided 2026-10-01, written up for reference — not acted on yet. Goal: give each
+household member their own isolated JupyterLab (separate kernel, separate Python
 environment) reachable from any of their own devices over Tailscale, without
 exposing anything to the public internet.
 

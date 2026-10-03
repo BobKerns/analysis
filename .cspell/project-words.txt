@@ -48,7 +48,6 @@ executemany
 executescript
 execv
 extrasaction
-FECU
 fignums
 figsize
 fontsize
@@ -60,7 +59,6 @@ gpgsign
 heloc
 hexsha
 HIFO
-Hiromi
 htmlcov
 huggingface
 imshow
@@ -98,7 +96,6 @@ OBBBA
 oneoff
 overfit
 pathoplexus
-paylease
 pcon
 Pewsey
 plottable
@@ -109,6 +106,7 @@ preroll
 prio
 pyeb
 pypi
+pytestmark
 rcond
 recategorize
 recomputable

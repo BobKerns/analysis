@@ -22,6 +22,8 @@ from analysis.expenses.baseline import (
     build_expense_baseline,
     build_scheduled_baseline_rows,
     load_category_map,
+    load_category_splits,
+    load_excluded_payees,
     load_expense_account_map,
     replace_generated_scheduled_rows,
 )
@@ -2525,8 +2527,14 @@ def scheduled_add(
 @click.option("--category-map", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None,
               help="Category map (default: sibling data-repo/quicken/expense_category_map.csv).")
-@click.option("--food-owner-account", default="Hiromi FECU Checking", show_default=True,
-              help="Quicken account whose Food expenses are assigned to Hiromi Food.")
+@click.option("--category-split", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None,
+              help="Optional splits of a category by paying Quicken account "
+                   "(default: sibling data-repo/quicken/expense_category_split.csv).")
+@click.option("--excluded-payees", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None,
+              help="Optional payee patterns modeled separately in the scenario "
+                   "(default: sibling data-repo/quicken/expense_excluded_payees.csv).")
 @click.option("--account-map", type=click.Path(dir_okay=False, path_type=Path),
               default=None,
               help="Optional category account map (default: sibling data-repo/quicken/expense_account_map.csv).")
@@ -2546,7 +2554,8 @@ def scheduled_import_baseline(
     quicken_file: Path | None,
     amazon_state_dir: Path | None,
     category_map: Path | None,
-    food_owner_account: str,
+    category_split: Path | None,
+    excluded_payees: Path | None,
     account_map: Path | None,
     from_account: str,
     from_lot: str,
@@ -2562,6 +2571,12 @@ def scheduled_import_baseline(
     amazon_state_path = amazon_state_dir or data_repo_root / "state"
     category_map_path = category_map or data_repo_root / "quicken" / "expense_category_map.csv"
     account_map_path = account_map or data_repo_root / "quicken" / "expense_account_map.csv"
+    category_split_path = (
+        category_split or data_repo_root / "quicken" / "expense_category_split.csv"
+    )
+    excluded_payees_path = (
+        excluded_payees or data_repo_root / "quicken" / "expense_excluded_payees.csv"
+    )
 
     for path, label in (
         (quicken_path, "Quicken export"),
@@ -2583,7 +2598,12 @@ def scheduled_import_baseline(
         category_merges=merges,
         excluded_categories=exclusions,
         default_category="Other",
-        food_owner_account=food_owner_account,
+        category_splits=(
+            load_category_splits(category_split_path) if category_split_path.exists() else None
+        ),
+        excluded_payee_patterns=(
+            load_excluded_payees(excluded_payees_path) if excluded_payees_path.exists() else ()
+        ),
     )
     mappings = (
         load_expense_account_map(account_map_path)

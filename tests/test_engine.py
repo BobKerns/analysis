@@ -17,12 +17,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
 
 # Net cents into Asset_Checking per month from fixed_amount rules, before CPI
-# growth (salary_alice + salary_bob) - (living + housing + healthcare). All
+# growth (salary_alice + salary_bill) - (living + housing + healthcare). All
 # five rows share base_date = scenario start and series = cpi
 # (prototype_data/aux/inflation__cpi.csv: flat 2.5% APR), so each grows by the
 # same monthly-compounded factor. The mortgage payment isn't inflated.
 SALARY_ALICE_MONTHLY = 800000
-SALARY_BOB_MONTHLY = 750000
+SALARY_BILL_MONTHLY = 750000
 LIVING_MONTHLY = 450000
 HOUSING_MONTHLY = 80000
 HEALTHCARE_MONTHLY = 60000
@@ -57,7 +57,7 @@ def _project(steps: int) -> tuple[list[int], list[int]]:
         factor = _cpi_factor(i)
         net_checking = (
             SALARY_ALICE_MONTHLY * factor // 1_000_000
-            + SALARY_BOB_MONTHLY * factor // 1_000_000
+            + SALARY_BILL_MONTHLY * factor // 1_000_000
             - LIVING_MONTHLY * factor // 1_000_000
             - HOUSING_MONTHLY * factor // 1_000_000
             - HEALTHCARE_MONTHLY * factor // 1_000_000
@@ -208,8 +208,8 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         ss_alice_id = con.execute(
             "SELECT id FROM scheduled_transaction WHERE name='ss_alice'"
         ).fetchone()[0]
-        ss_bob_id = con.execute(
-            "SELECT id FROM scheduled_transaction WHERE name='ss_bob'"
+        ss_bill_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='ss_bill'"
         ).fetchone()[0]
         # step 69 = 2032-02-29: alice has not yet reached 67.
         n_pre = con.execute(
@@ -228,13 +228,13 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
             (steps[80]["id"], ss_alice_id),
         ).fetchone()[0]
         assert alice_80 == 307_500
-        # bob (b. 1967-08-20, claim_age=70) first fires at 2037-08-31 (step 135).
+        # bill (b. 1967-08-20, claim_age=70) first fires at 2037-08-31 (step 135).
         # mult = 1.24, factor = 1.0 → 350000 * 1.24 = 434000.
-        bob_135 = con.execute(
+        bill_135 = con.execute(
             "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
-            (steps[135]["id"], ss_bob_id),
+            (steps[135]["id"], ss_bill_id),
         ).fetchone()[0]
-        assert bob_135 == 434_000
+        assert bill_135 == 434_000
 
         # ADR-003 §2.3: alice reaches 73 in 2038 (b. 1965). RMD fires Dec
         # 2038 (step 151), Dec 2039 (163), Dec 2040 (175). IRA opening
@@ -291,7 +291,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
     try:
         # Per-rule firing counts after calendar events expand:
         #   salary_alice retires 2028-06-30 (step 25, fires 0..25 = 26)
-        #   salary_bob   retires 2030-12-31 (step 55, fires 0..55 = 56)
+        #   salary_bill   retires 2030-12-31 (step 55, fires 0..55 = 56)
         #   one_off_transfer 2029-03-31 synthesizes 1 fixed_amount rule.
         # The asset_checking_liquidity settle pass (ADR-003 §4.7) posts its own
         # 'refill' legs outside reason_kind='rule', so it's checked separately.
@@ -302,7 +302,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
             "GROUP BY st.name"
         ).fetchall())
         assert per_rule["salary_alice"] == 26
-        assert per_rule["salary_bob"] == 56
+        assert per_rule["salary_bill"] == 56
         assert per_rule["mortgage_pmt"] == 2 * 176  # 2 legs
         assert per_rule["living"] == 176
         assert per_rule["housing"] == 176
@@ -310,7 +310,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         assert per_rule[growth_rule_name("Asset_Checking", "default")] == 176
         assert per_rule[growth_rule_name("Asset_Brokerage_Joint", "default")] == 176
         assert per_rule["ss_alice"] == 176 - 70
-        assert per_rule["ss_bob"] == 176 - 135
+        assert per_rule["ss_bill"] == 176 - 135
         assert per_rule["rmd_alice"] == 3
         oneoff_count = sum(
             v for k, v in per_rule.items() if k.startswith("oneoff_evt_")
@@ -508,8 +508,8 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     ) -> None:
     """Step 2 requests 1% of what's still outstanding, step 3 the default
     100% of whatever's left -- absent a shortfall this is a cascading
-    near-even split, but step 2 (Hiromi Vanguard) is nearly empty here, so
-    its unfulfilled share falls through and step 3 (Bob Vanguard) picks up
+    near-even split, but step 2 (Alice Brokerage) is nearly empty here, so
+    its unfulfilled share falls through and step 3 (Bill Brokerage) picks up
     the rest, exactly the parallel-draw-until-exhausted behavior ADR-003
     §4.7 describes rather than the old 'drain each step to zero in turn'
     bug."""
@@ -519,7 +519,7 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     account_kinds = dict.fromkeys(balances, "asset")
     account_tax_treatment = dict.fromkeys(balances, "taxable")
     account_subkind = dict.fromkeys(balances, "cash")
-    account_name = {1: "Target", 2: "Hiromi Vanguard", 3: "Bob Vanguard"}
+    account_name = {1: "Target", 2: "Alice Brokerage", 3: "Bill Brokerage"}
     graph = ChainGraph(
         members={100: [(2, None, 10_000), (3,)]},  # 2: percent=1%, 3: default 100%
         leaf_lot={2: 2, 3: 3},

@@ -1,0 +1,24 @@
+# Words that occur in the names of real accounts, people and payees in the
+# private data repo. None is secret by itself, but one turning up in a commit
+# usually means real data is leaking into the code repo, so commits containing
+# them are blocked (scripts/check-blocked-keywords.sh).
+#
+# One keyword per line. Matching ignores case and needs a non-alphanumeric
+# character (or the line's edge) on each side, so `WF` matches `Joint_WF_Checking`
+# but not `swf`. A space matches any run of spaces, underscores and hyphens.
+Hiromi
+FECU
+Fidelity
+Vanguard
+Voya
+Animation
+Zeromater
+Tesla
+Disney
+Prius
+AppleCard
+Amex
+Marin
+State Farm
+WF
+Wells Fargo
