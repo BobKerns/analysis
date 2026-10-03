@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from analysis.sim.connection import RunConnection, year_end_values
+from analysis.sim.distributions import Distribution, Triangular, TruncatedNormal, moments
 from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
 from analysis.sim.registries import format_calendar_amount
 from analysis.sim.types import DollarMode
@@ -634,7 +635,7 @@ def _display_number(kind: str, target: str, value: float) -> str:
 
 
 def _spread(kind: str, target: str, sd: float) -> str:
-    """A standard deviation in display units (a duration has no date form)."""
+    """A spread (SD or scale) in display units (a duration has no date form)."""
     if kind == "set_rate":
         return f"{sd / 10_000:.2f}%"
     return f"${sd / 100:,.0f}"
@@ -647,19 +648,61 @@ def _affects(row: sqlite3.Row) -> str:
     return row["series"] or row["scheduled_name"] or ""
 
 
+def _row_distribution(row: sqlite3.Row, target: str) -> Distribution | None:
+    """The distribution a member file's resolved row was drawn from, or
+    ``None`` if its stored parameters don't describe a valid one."""
+    from analysis.sim.ensemble import build_distribution
+
+    try:
+        return build_distribution({**dict(row), "vary_distribution": row["distribution"]}, target)
+    except EnsembleError:
+        return None
+
+
+def _describe(dist: Distribution, kind: str, target: str) -> dict[str, str]:
+    """``range``, ``center``, ``shape`` and ``moments`` cells for one row."""
+    def show(value: float) -> str:
+        return _display_number(kind, target, value)
+
+    if isinstance(dist, TruncatedNormal):
+        low, high = dist.clip_low, dist.clip_high
+        # vary_sd is the SD only for the default shape; with skew or tail
+        # weight it's a scale factor (the moments cell shows the real SD).
+        default_shape = dist.skew == 0 and dist.tailweight == 1
+        shape = [f"{'sd' if default_shape else 'scale'} {_spread(kind, target, dist.sd)}"]
+        if dist.skew:
+            shape.append(f"skew {dist.skew:g}")
+        if dist.tailweight != 1:
+            shape.append(f"tail weight {dist.tailweight:g}")
+    else:
+        low, high = dist.low, dist.high
+        shape = [f"mode {show(dist.mode)}"] if isinstance(dist, Triangular) else []
+    # As actually resolved: dates in whole days, amounts rounded to cents/micros.
+    m = moments(dist, whole_days=target == "date", rounded=target != "date")
+    spread = f"{m.sd:,.0f} days" if target == "date" else _spread(kind, target, m.sd)
+    return {
+        "range": f"{show(low)} to {show(high)}",
+        "center": show(dist.central()),
+        "shape": ", ".join(shape),
+        "moments": (f"mean {show(m.mean)}, sd {spread}, skew {m.skewness:+.2f}, "
+                    f"excess kurtosis {m.excess_kurtosis:+.2f}"),
+    }
+
+
 def parameters(batch_dir: Path) -> pd.DataFrame:
     """The batch's varying rows (ADR-007 §9), one per row: what each acts on
     (``kind``, ``affects``), which column varies (``target``), its
-    ``distribution``, ``range`` and ``center`` (the base / member-0 value),
-    a ``truncated_normal``'s ``spread`` (mean ± sd), ``ramp_months`` and the
-    author's ``description``. A sensitivity batch adds the resolved value at
+    ``distribution``, ``range`` and ``center`` (the base / member-0 value:
+    the median), its ``shape`` (a ``truncated_normal``'s sd and any skew or
+    tail weight; a ``triangular``'s mode), the implied ``moments`` (mean, sd,
+    skewness, excess kurtosis -- what the shape parameters mean in
+    practice, #31), ``ramp_months`` and the author's ``description``. A sensitivity batch adds the resolved value at
     each perturbed quantile (``value@q``); a Monte Carlo batch adds the range
     actually ``drawn`` across its members.
 
     Read from the batch's own member files, so it describes what was run --
     not the recipe as it stands now. A batch written before schema 28
-    doesn't record the distribution; it shows as blank."""
-    from analysis.sim.ensemble import build_distribution
+    doesn't record the distribution, so its description columns are blank."""
     from analysis.sim.loader import batch_mode
 
     connections = load_ensemble(batch_dir)
@@ -684,20 +727,12 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
             record: dict[str, object] = {
                 "name": row["name"], "kind": kind, "affects": _affects(row), "target": target,
                 "distribution": row["distribution"] or "", "range": "", "center": "",
-                "spread": "", "ramp_months": row["vary_ramp_months"] or "",
+                "shape": "", "moments": "", "ramp_months": row["vary_ramp_months"] or "",
                 "description": row["description"] or "",
             }
-            if row["distribution"]:
-                dist = build_distribution({**dict(row), "vary_distribution": row["distribution"]},
-                                          target)
-                low, high = (dist.low, dist.high) if row["distribution"] == "uniform" else (
-                    dist.clip_low, dist.clip_high)
-                record["range"] = (f"{_display_number(kind, target, low)} to "
-                                   f"{_display_number(kind, target, high)}")
-                record["center"] = _display_number(kind, target, dist.central())
-                if row["distribution"] == "truncated_normal":
-                    record["spread"] = (f"{_display_number(kind, target, dist.mean)} ± "
-                                        f"{_spread(kind, target, dist.sd)}")
+            dist = _row_distribution(row, target) if row["distribution"] else None
+            if dist is not None:
+                record.update(_describe(dist, kind, target))
             records.append(record)
         table = pd.DataFrame(records).set_index("name") if records else pd.DataFrame()
         if table.empty:

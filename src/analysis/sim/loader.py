@@ -22,7 +22,12 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from analysis.sim import registries
-from analysis.sim.distributions import DistributionError, resolve_truncated_normal_bounds
+from analysis.sim.distributions import (
+    DistributionError,
+    Triangular,
+    TruncatedNormal,
+    resolve_truncated_normal_bounds,
+)
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -932,6 +937,10 @@ def _opt_int(raw: str | None) -> int | None:
     return int(v) if v != "" else None
 
 
+def _opt_float(raw: str | None) -> float | None:
+    return float(raw) if raw not in (None, "") else None
+
+
 def _vary_bound_writer(vary_target: str | None) -> Callable[[str | None], str | None]:
     """A `vary_low`/`vary_high`/etc. cell, stored in the target column's own
     unit (ADR-006): the row's own `amount` int, as text, for `vary_target`
@@ -1724,7 +1733,11 @@ def _validate_year_to_date(
                 issues.append(f"year_to_date.csv row {i} ({name}): amount {e}")
 
 
-_VARY_BOUND_COLUMNS = ("vary_low", "vary_high", "vary_mean", "vary_sd")
+_VARY_BOUND_COLUMNS = ("vary_low", "vary_high", "vary_median", "vary_sd", "vary_mode")
+"""vary_* parameters in the target column's own unit (ints, or ISO dates)."""
+
+_VARY_SHAPE_COLUMNS = ("vary_skew", "vary_tailweight")
+"""Unitless truncated_normal shape parameters (#31)."""
 
 
 def _validate_calendar(
@@ -1773,11 +1786,20 @@ def _validate_calendar_vary(
     `vary_target='amount'` on a `set_rate` row) an optional `vary_ramp_months`.
     """
     where = f"calendar.csv row {i} ({name or '?'})"
+    for old, new in registries.RENAMED_CALENDAR_COLUMNS.items():
+        if (row.get(old) or "").strip():
+            issues.append(
+                f"{where}: {old} was renamed to {new} (now the median of the truncated "
+                f"distribution, so the base case is exactly the authored value); "
+                f"rename the column"
+            )
     distribution = (row.get("vary_distribution") or "").strip()
     target = (row.get("vary_target") or "").strip()
     ramp_months = (row.get("vary_ramp_months") or "").strip()
     if not distribution:
-        if target or ramp_months or any(row.get(c) for c in _VARY_BOUND_COLUMNS):
+        if target or ramp_months or any(
+            row.get(c) for c in (*_VARY_BOUND_COLUMNS, *_VARY_SHAPE_COLUMNS)
+        ):
             issues.append(f"{where}: vary_* columns set without vary_distribution")
         return
     if not name:
@@ -1803,47 +1825,11 @@ def _validate_calendar_vary(
         )
         return
 
-    allowed = registries.DISTRIBUTION_PARAMS[distribution]
-    parsed: dict[str, int] = {}
-    parse_ok = True
-    for col in _VARY_BOUND_COLUMNS:
-        raw = (row.get(col) or "").strip()
-        if not raw:
-            continue
-        if col not in allowed:
-            issues.append(f"{where}: {col} is not used by {distribution} (ignored by the draw)")
-            continue
-        try:
-            parsed[col] = date.fromisoformat(raw).toordinal() if target == "date" else int(raw)
-        except ValueError:
-            unit = "ISO date" if target == "date" else "integer"
-            issues.append(f"{where}: {col} '{raw}' is not a valid {unit}")
-            parse_ok = False
-
-    effective_low: int | None = None
-    if distribution == "uniform":
-        for col in registries.DISTRIBUTION_REQUIRED_PARAMS[distribution]:
-            if not (row.get(col) or "").strip():
-                issues.append(f"{where}: {distribution} requires {col}")
-        if "vary_low" in parsed and "vary_high" in parsed and parsed["vary_low"] > parsed["vary_high"]:
-            issues.append(f"{where}: vary_low must be <= vary_high")
-        effective_low = parsed.get("vary_low")
-    elif parse_ok:
-        # truncated_normal: any of mean/sd/low/high may be inferred from the
-        # other three (ADR-006) -- resolve before checking ordering/sign.
-        try:
-            _mean, sd, low, high = resolve_truncated_normal_bounds(
-                parsed.get("vary_mean"), parsed.get("vary_sd"),
-                parsed.get("vary_low"), parsed.get("vary_high"),
-            )
-        except DistributionError as e:
-            issues.append(f"{where}: {e}")
-        else:
-            if sd <= 0:
-                issues.append(f"{where}: vary_sd must be positive")
-            if low > high:
-                issues.append(f"{where}: vary_low must be <= vary_high")
-            effective_low = low
+    parsed, shape, parse_ok = _parse_vary_params(row, distribution, target, where, issues)
+    effective_low = (
+        _check_vary_distribution(row, distribution, parsed, shape, where, issues)
+        if parse_ok or distribution != "truncated_normal" else None
+    )
 
     if (
         target == "amount" and kind == "one_off_transfer"
@@ -1856,7 +1842,7 @@ def _validate_calendar_vary(
         # one rule covers both distributions.
         issues.append(
             f"{where}: one_off_transfer requires vary_low > 0 (given directly, or "
-            "implied by vary_mean/vary_sd) -- a transfer amount must stay positive"
+            "implied by vary_median/vary_sd) -- a transfer amount must stay positive"
         )
 
     if ramp_months:
@@ -1871,6 +1857,80 @@ def _validate_calendar_vary(
                     raise ValueError
             except ValueError:
                 issues.append(f"{where}: vary_ramp_months must be a positive integer")
+
+
+def _parse_vary_params(
+    row: dict[str, str], distribution: str, target: str, where: str, issues: list[str],
+) -> tuple[dict[str, int], dict[str, float], bool]:
+    """A varying row's parameter cells: bounds in the target's own unit
+    (ints, or ISO dates as ordinals), and unitless shape numbers (#31).
+    A column the distribution doesn't read is reported, not parsed. Returns
+    ``(parsed, shape, parse_ok)``."""
+    allowed = registries.DISTRIBUTION_PARAMS[distribution]
+    parsed: dict[str, int] = {}
+    shape: dict[str, float] = {}
+    parse_ok = True
+    for col in (*_VARY_BOUND_COLUMNS, *_VARY_SHAPE_COLUMNS):
+        raw = (row.get(col) or "").strip()
+        if not raw:
+            continue
+        if col not in allowed:
+            issues.append(f"{where}: {col} is not used by {distribution} (ignored by the draw)")
+            continue
+        try:
+            if col in _VARY_SHAPE_COLUMNS:
+                shape[col] = float(raw)
+            else:
+                parsed[col] = date.fromisoformat(raw).toordinal() if target == "date" else int(raw)
+        except ValueError:
+            unit = "number" if col in _VARY_SHAPE_COLUMNS else (
+                "ISO date" if target == "date" else "integer"
+            )
+            prefix = "is not a" if unit == "number" else "is not a valid"
+            issues.append(f"{where}: {col} '{raw}' {prefix} {unit}")
+            parse_ok = False
+    return parsed, shape, parse_ok
+
+
+def _check_vary_distribution(
+    row: dict[str, str], distribution: str, parsed: dict[str, int], shape: dict[str, float],
+    where: str, issues: list[str],
+) -> int | None:
+    """Per-family checks on a varying row's parsed parameters; returns the
+    effective low bound (given, or resolved), for the transfer-positivity
+    rule, or ``None`` when it can't be determined."""
+    if distribution in ("uniform", "triangular"):
+        for col in registries.DISTRIBUTION_REQUIRED_PARAMS[distribution]:
+            if not (row.get(col) or "").strip():
+                issues.append(f"{where}: {distribution} requires {col}")
+        low, high = parsed.get("vary_low"), parsed.get("vary_high")
+        if low is None or high is None:
+            return low
+        if distribution == "uniform":
+            if low > high:
+                issues.append(f"{where}: vary_low must be <= vary_high")
+            return low
+        try:
+            Triangular(low, parsed.get("vary_mode", (low + high) / 2), high)
+        except DistributionError as e:
+            issues.append(f"{where}: {e}")
+        return low
+    # truncated_normal: any of median/sd/low/high may be inferred from the
+    # others (ADR-006, #31) -- resolve, then build it, which checks the
+    # median lies strictly inside and is reachable for the shape.
+    skew = shape.get("vary_skew", 0.0)
+    tailweight = shape.get("vary_tailweight", 1.0)
+    try:
+        median, sd, low, high = resolve_truncated_normal_bounds(
+            parsed.get("vary_median"), parsed.get("vary_sd"),
+            parsed.get("vary_low"), parsed.get("vary_high"),
+            skew=skew, tailweight=tailweight,
+        )
+        TruncatedNormal(median, sd, low, high, skew=skew, tailweight=tailweight)
+    except DistributionError as e:
+        issues.append(f"{where}: {e}")
+        return None
+    return low
 
 
 def _safe_json(raw: str | None) -> dict[str, Any] | None:
@@ -2390,9 +2450,9 @@ def _write_intent(
             "calendar_id, date, kind, name, "
             "scheduled_name, account_1, account_2, series, amount, "
             "param_date, tax_character, payload_json, description, "
-            "vary_target, vary_distribution, vary_low, vary_high, vary_mean, "
-            "vary_sd, vary_ramp_months) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_target, vary_distribution, vary_low, vary_high, vary_median, "
+            "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -2408,8 +2468,11 @@ def _write_intent(
                 ce.get("vary_distribution") or None,
                 vary_bound(ce.get("vary_low")),
                 vary_bound(ce.get("vary_high")),
-                vary_bound(ce.get("vary_mean")),
+                vary_bound(ce.get("vary_median")),
                 vary_bound(ce.get("vary_sd")),
+                _opt_float(ce.get("vary_skew")),
+                _opt_float(ce.get("vary_tailweight")),
+                vary_bound(ce.get("vary_mode")),
                 _opt_int(ce.get("vary_ramp_months")),
             ),
         )

@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-01
 - **Supersedes:** —
+- **Amended by:** [#31](https://github.com/BobKerns/analysis/issues/31): `truncated_normal` quantiles follow its new sinh-arcsinh shape, `triangular` added, and the base case is every family's median (§3); the parameters view shows shape and implied moments (§9).
 - **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios — `vary_*` columns, `resolve_member`, `ensemble_manifest`/`ensemble_draw`, member 0), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility, provenance).
 
 ## Context
@@ -74,16 +75,17 @@ No RNG is consulted anywhere in an OAT batch, so it's fully deterministic. `scen
 `distributions.py` gains `quantile(q)` on each family, using only the stdlib (`statistics.NormalDist`), so no new dependency:
 
 - **`Uniform`:** `low + q × (high − low)`. For a date target there's a matching `quantile_int` that rounds to a day ordinal, like `central_int`.
-- **`TruncatedNormal`:** the quantile of the *truncated* distribution: `inv_cdf(Φ(a) + q × (Φ(b) − Φ(a)))`, where `a`, `b` are the clip bounds and `Φ` is the untruncated CDF. The perturbation therefore always stays in bounds and respects one-sided truncation.
+- **`TruncatedNormal`:** the quantile of the *truncated* distribution: the underlying (sinh-arcsinh, [ADR-006](ADR-006-ensemble-scenarios.md) §3) distribution's quantile at `F(a) + q × (F(b) − F(a))`, where `a`, `b` are the clip bounds and `F` is the underlying CDF. Both are closed-form via `statistics.NormalDist`. The perturbation therefore always stays in bounds and respects one-sided truncation.
+- **`Triangular`:** closed-form, with `quantile_int` for a date target.
 
-The default is `--quantiles 0.1,0.9`, which is "plausibly low / plausibly high" rather than the extremes. `0,1` gives the full authored range, but `truncated_normal`'s clip bounds default to ±3σ and are rarely representative. There must be at least two values, in `[0, 1]`, strictly increasing, and not `0.5`, since the base already covers the center.
+The default is `--quantiles 0.1,0.9`, which is "plausibly low / plausibly high" rather than the extremes. `0,1` gives the full authored range, but `truncated_normal`'s clip bounds default to 3 standard scores out and are rarely representative. There must be at least two values, in `[0, 1]`, strictly increasing, and not `0.5`, since the base already covers the center.
 
 **Transitions.** Two signals in the report flag that a row's range contains a kink:
 
 - **Asymmetry**, which is visible even with the default two quantiles: `|Δ_high| / |Δ_low|` far from 1. Some asymmetry is normal (taxes, compounding), so this is a prompt to look, not a verdict.
 - **Non-monotonic or sharply bent response across a ladder:** `--quantiles 0.1,0.25,0.4,0.6,0.75,0.9` costs 6 runs per row instead of 2, and gives a response curve (Δ against quantile) per reporting year. A transition shows up as a step or a slope change between two adjacent rungs. That identifies roughly *where* in the range it happens, which is often the interesting finding in itself ("retiring after June costs a year of the higher bracket").
 
-The base case stays `central()`, not `quantile(0.5)`. For a symmetric distribution the two are the same. For an asymmetrically clipped `truncated_normal` they differ slightly, and keeping `central()` means the OAT base *is* ADR-006's member 0, byte-for-byte the same resolved intent.
+The base case is `central()`, which is every family's median, `quantile(0.5)` (for `truncated_normal`, the authored `vary_median`, exact even with asymmetric bounds). So the OAT base *is* ADR-006's member 0, byte-for-byte the same resolved intent, and it sits at the middle of every quantile ladder.
 
 ### 4. Reporting dates and units
 
@@ -207,7 +209,7 @@ This is a separate notebook from `ensemble.ipynb`. It reuses existing pickers, a
 
 Widgets (`notebook_ui/sensitivity_widgets.py`):
 
-0. **Parameters** (first, for either kind of batch): `sensitivity.parameters` lists the batch's varying rows. For each it gives what the row acts on, which column varies, the distribution, range, center (the base case), a truncated normal's spread, and the author's description. A sensitivity batch adds the value used at each quantile, and a Monte Carlo batch adds the range actually drawn. It's read from the batch's own member files, so it describes what was run, not the recipe as it stands now.
+0. **Parameters** (first, for either kind of batch): `sensitivity.parameters` lists the batch's varying rows. For each it gives what the row acts on, which column varies, the distribution, range, center (the base case, its median), its shape (a truncated normal's SD and any skew or tail weight, a triangular's mode), the implied moments (mean, SD, skewness, excess kurtosis, #31), and the author's description. A sensitivity batch adds the value used at each quantile, and a Monte Carlo batch adds the range actually drawn. It's read from the batch's own member files, so it describes what was run, not the recipe as it stands now.
 1. **Overview heatmap** (the first chart): parameters × reporting years, with rows sorted by peak share. A `HeatmapValuePicker` (new, `ToggleButtons`) chooses between share, which shows who dominates when, and signed swing, which uses a diverging scale centered on zero and responds to the units pickers. One glance shows which parameter matters when; the widgets below drill into one parameter or one year.
 2. **Tornado at a year:** `ReportYearPicker` + units pickers. Bars are `Δ@q_lo`/`Δ@q_hi` per parameter, sorted by impact at the selected year. Dragging the slider shows the ranking reshuffle over time.
 3. **Δ over time for one parameter:** `ParameterPicker` + units pickers. One line per quantile (Δ against reporting year), with a zero line. A fund-exhaustion plateau, a retirement-date step, or a compounding growth-rate curve each read directly off this chart.

@@ -28,7 +28,9 @@ import pandas as pd
 
 from analysis.sim.connection import RunConnection
 from analysis.sim.distributions import (
+    Distribution,
     DistributionError,
+    Triangular,
     TruncatedNormal,
     Uniform,
     member_rng,
@@ -84,27 +86,41 @@ def _bound(raw: str | None, target: str) -> float | None:
     return float(raw)
 
 
-def build_distribution(row: Mapping[str, Any], target: str) -> Uniform | TruncatedNormal:
+def build_distribution(row: Mapping[str, Any], target: str) -> Distribution:
     """The distribution a varying row's ``vary_*`` columns describe, in the
-    target column's own unit (a day ordinal for a date target)."""
+    target column's own unit (a day ordinal for a date target). The loader
+    already validated every row, so a failure here would mean an intent
+    that skipped validation, not a normal case."""
     kind = row["vary_distribution"]
-    if kind == "uniform":
-        return Uniform(low=_bound(row["vary_low"], target), high=_bound(row["vary_high"], target))
-    if kind == "truncated_normal":
-        # vary_low/vary_high double as truncated_normal's own (optional)
-        # clip bounds; any of mean/sd/low/high left blank is inferred from
-        # the other three (ADR-006, distributions.resolve_truncated_normal_bounds)
-        # -- the loader already validated this resolves, so a failure here
-        # would mean an intent that skipped validation, not a normal case.
-        try:
-            mean, sd, low, high = resolve_truncated_normal_bounds(
-                _bound(row["vary_mean"], target), _bound(row["vary_sd"], target),
+    try:
+        if kind == "uniform":
+            return Uniform(low=_bound(row["vary_low"], target), high=_bound(row["vary_high"], target))
+        if kind == "triangular":
+            low, high = _bound(row["vary_low"], target), _bound(row["vary_high"], target)
+            mode = _bound(row["vary_mode"], target)
+            return Triangular(low, (low + high) / 2 if mode is None else mode, high)
+        if kind == "truncated_normal":
+            # vary_low/vary_high double as truncated_normal's own (optional)
+            # clip bounds; any of median/sd/low/high left blank is inferred
+            # from the others (distributions.resolve_truncated_normal_bounds).
+            skew = _shape(row, "vary_skew", 0.0)
+            tailweight = _shape(row, "vary_tailweight", 1.0)
+            median, sd, low, high = resolve_truncated_normal_bounds(
+                _bound(row["vary_median"], target), _bound(row["vary_sd"], target),
                 _bound(row["vary_low"], target), _bound(row["vary_high"], target),
+                skew=skew, tailweight=tailweight,
             )
-        except DistributionError as e:
-            raise EnsembleError(f"row {row['name']!r}: {e}") from e
-        return TruncatedNormal(mean=mean, sd=sd, clip_low=low, clip_high=high)
+            return TruncatedNormal(median=median, sd=sd, clip_low=low, clip_high=high,
+                                   skew=skew, tailweight=tailweight)
+    except DistributionError as e:
+        raise EnsembleError(f"row {row['name']!r}: {e}") from e
     raise EnsembleError(f"row {row['name']!r}: unknown vary_distribution {kind!r}")
+
+
+def _shape(row: Mapping[str, Any], column: str, default: float) -> float:
+    """A unitless shape cell (#31), or its default when blank or absent."""
+    value = row.get(column) if hasattr(row, "get") else row[column]
+    return default if value in (None, "") else float(value)
 
 
 def _row_aux_kind(row: sqlite3.Row) -> str:
@@ -187,7 +203,7 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
 
 
 def _resolve_value(
-    row: sqlite3.Row, dist: Uniform | TruncatedNormal, *, as_int: bool,
+    row: sqlite3.Row, dist: Distribution, *, as_int: bool,
     overrides: dict[str, float] | None, seed: int | None, member_index: int,
 ) -> tuple[float, float | None]:
     """One varying row's value on one member, and the OAT quantile it was
@@ -265,10 +281,10 @@ def resolve_member(
 
         for row in [r for r in rows if r["vary_target"] == "date"]:
             dist = build_distribution(row, "date")
-            if not isinstance(dist, Uniform):
-                # The loader already rejects any other distribution with a
-                # date target (only a numeric spread ever needs one); this
-                # is unreachable for an intent that passed validation.
+            if not isinstance(dist, Uniform | Triangular):
+                # The loader rejects truncated_normal with a date target (its
+                # sd is a numeric spread, not a date span); this is
+                # unreachable for an intent that passed validation.
                 raise EnsembleError(
                     f"row {row['name']!r}: {row['vary_distribution']!r} has no "
                     "discrete date draw"

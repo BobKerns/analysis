@@ -276,21 +276,29 @@ CALENDAR_HEADER: tuple[str, ...] = (
     "tags",
     # Ensemble variation (ADR-006): a row with vary_distribution set has its own
     # amount/date (per vary_target) drawn per member instead of used literally.
-    # vary_low/vary_high are `uniform`'s own bounds, and also double as
-    # `truncated_normal`'s optional clip bounds -- each of vary_mean/vary_sd/
-    # vary_low/vary_high may be inferred from the other three when omitted
-    # (see distributions.resolve_truncated_normal_bounds), so truncated_normal
-    # is never actually unbounded.
-    "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_mean",
-    "vary_sd", "vary_ramp_months",
+    # vary_low/vary_high are `uniform`'s and `triangular`'s own bounds, and
+    # also double as `truncated_normal`'s optional clip bounds -- each of
+    # vary_median/vary_sd/vary_low/vary_high may be inferred from the others
+    # when omitted (see distributions.resolve_truncated_normal_bounds), so
+    # truncated_normal is never actually unbounded. vary_skew/vary_tailweight
+    # shape a truncated_normal; vary_mode is a triangular's peak (#31).
+    "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_median",
+    "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
 )
 
 # ADR-006: which of a varying calendar_event row's own columns is drawn.
 VARY_TARGETS: set[str] = {"amount", "date"}
 
-# ADR-006: closed like every other registry; a new family (triangular,
-# lognormal, ...) is a one-line addition when a concrete case needs one.
-ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal"}
+# ADR-006: closed like every other registry; a new family (lognormal, ...)
+# is a one-line addition when a concrete case needs one. `triangular` (#31)
+# is the three-point estimate -- "most likely X, no earlier/lower than A,
+# possibly as late/high as B" -- and the only skewed choice for a date.
+ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal", "triangular"}
+
+# #31: `vary_mean` was renamed to `vary_median` (the truncated distribution's
+# median, so the base case is exactly the authored value). Its meaning
+# changed for asymmetric bounds, so the old name is rejected, not aliased.
+RENAMED_CALENDAR_COLUMNS: dict[str, str] = {"vary_mean": "vary_median"}
 
 # ADR-006 §9: `sim ensemble create`'s default scenario.meta_json.ensemble_size
 # when --size is omitted, so a recipe always has a member count `sim run`/
@@ -340,15 +348,18 @@ def format_calendar_amount(
     dollars = abs(amount) / 100
     return f"{sign}${dollars:,.2f}" if cents else f"{sign}${dollars:,.0f}"
 
-# ADR-006: vary_low/vary_high/vary_mean/vary_sd columns each distribution
-# actually reads; any other bound column left non-blank alongside it is a
-# parameter the eventual draw silently ignores. `truncated_normal` reads all
-# four (any one may be inferred from the other three when blank, so none is
-# individually "required" here -- see DISTRIBUTION_REQUIRED_PARAMS and
-# distributions.resolve_truncated_normal_bounds).
+# ADR-006 / #31: the vary_* parameter columns each distribution actually
+# reads; any other one left non-blank alongside it is a parameter the
+# eventual draw silently ignores, so it's rejected. `truncated_normal`'s
+# median/sd/low/high may each be inferred from the others when blank, so
+# none is individually "required" here -- see DISTRIBUTION_REQUIRED_PARAMS
+# and distributions.resolve_truncated_normal_bounds.
 DISTRIBUTION_PARAMS: dict[str, frozenset[str]] = {
     "uniform": frozenset({"vary_low", "vary_high"}),
-    "truncated_normal": frozenset({"vary_mean", "vary_sd", "vary_low", "vary_high"}),
+    "truncated_normal": frozenset({
+        "vary_median", "vary_sd", "vary_low", "vary_high", "vary_skew", "vary_tailweight",
+    }),
+    "triangular": frozenset({"vary_low", "vary_high", "vary_mode"}),
 }
 
 # ADR-006: the subset of DISTRIBUTION_PARAMS[dist] that must actually be
@@ -358,6 +369,7 @@ DISTRIBUTION_PARAMS: dict[str, frozenset[str]] = {
 # needs distributions.resolve_truncated_normal_bounds, not a fixed column list.
 DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
     "uniform": ("vary_low", "vary_high"),
+    "triangular": ("vary_low", "vary_high"),
 }
 
 
