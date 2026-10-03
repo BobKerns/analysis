@@ -677,7 +677,7 @@ def _describe(dist: Distribution, kind: str, target: str) -> dict[str, str]:
     else:
         low, high = dist.low, dist.high
         shape = [f"mode {show(dist.mode)}"] if isinstance(dist, Triangular) else []
-    m = moments(dist)
+    m = moments(dist, whole_days=target == "date")  # dates are drawn in whole days
     spread = f"{m.sd:,.0f} days" if target == "date" else _spread(kind, target, m.sd)
     return {
         "range": f"{show(low)} to {show(high)}",

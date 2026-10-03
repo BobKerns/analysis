@@ -328,3 +328,47 @@ def test_far_out_window_keeps_precision() -> None:
     assert dist.quantile(0.5) == pytest.approx(20.5, abs=1e-6)
     values = [dist.quantile(q / 10) for q in range(11)]
     assert values == sorted(values) and values[0] == 20 and values[-1] == 21
+
+
+# --- PR #33 second review ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"skew": 1000.0},
+    {"tailweight": 1e-6},
+])
+def test_extreme_shape_is_a_clean_error_not_a_crash(kwargs: dict[str, float]) -> None:
+    """A finite but extreme shape overflowed math.sinh; it must surface as a
+    DistributionError the loader and CLI already report."""
+    with pytest.raises(DistributionError, match="too extreme to compute"):
+        resolve_truncated_normal_bounds(0, 1, None, None, **kwargs)
+
+
+@pytest.mark.parametrize("field", ["median", "sd", "skew", "tailweight"])
+def test_non_finite_parameters_are_rejected(field: str) -> None:
+    params = {"median": 0.0, "sd": 1.0, "clip_low": -3.0, "clip_high": 3.0, "skew": 0.0,
+              "tailweight": 1.0}
+    params[field] = float("inf")
+    with pytest.raises(DistributionError, match="finite"):
+        TruncatedNormal(**params)
+
+
+def test_median_hugging_a_bound_reports_the_numeric_limit() -> None:
+    """A plain normal can reach any interior median in principle, but one
+    hugging a bound relative to sd needs a location beyond double precision:
+    report that honestly (with what's reachable), not as a shape problem."""
+    with pytest.raises(DistributionError, match="too close to a bound for this vary_sd"):
+        TruncatedNormal(median=1, sd=1_000, clip_low=0, clip_high=3_001)
+    # A sensible median near the same bound is fine.
+    assert TruncatedNormal(median=100, sd=1_000, clip_low=0, clip_high=3_001).quantile(0.5) \
+        == pytest.approx(100, abs=1e-6)
+
+
+def test_date_moments_count_whole_days() -> None:
+    """Dates are drawn in whole days: two days drawn equally have SD 0.5 day
+    and excess kurtosis -2, not a continuous uniform's 0.29 and -1.2."""
+    two_days = moments(Uniform(0, 1), whole_days=True)
+    assert two_days.sd == pytest.approx(0.5) and two_days.excess_kurtosis == pytest.approx(-2.0)
+    # Over a realistic span the difference vanishes.
+    year = moments(Uniform(0, 364), whole_days=True)
+    assert year.sd == pytest.approx(moments(Uniform(0, 364)).sd, rel=1e-2)

@@ -76,13 +76,33 @@ class Uniform:
 
 def _shape(z: float, skew: float, tailweight: float) -> float:
     """Sinh-arcsinh transform of a standard normal score (Jones & Pewsey
-    2009): identity at ``skew=0, tailweight=1``."""
-    return math.sinh((math.asinh(z) + skew) / tailweight)
+    2009): identity at ``skew=0, tailweight=1``. An extreme shape that
+    overflows is a ``DistributionError``, not a crash."""
+    try:
+        return math.sinh((math.asinh(z) + skew) / tailweight)
+    except OverflowError:
+        raise DistributionError(_EXTREME_SHAPE) from None
 
 
 def _unshape(x: float, skew: float, tailweight: float) -> float:
     """Inverse of ``_shape``: the standard normal score of a standardized value."""
-    return math.sinh(tailweight * math.asinh(x) - skew)
+    try:
+        return math.sinh(tailweight * math.asinh(x) - skew)
+    except OverflowError:
+        raise DistributionError(_EXTREME_SHAPE) from None
+
+
+_EXTREME_SHAPE = (
+    "truncated_normal: vary_skew/vary_tailweight are too extreme to compute "
+    "(keep skew within about ±5 and tail weight within about 0.2 to 5)"
+)
+
+
+def _check_finite(**values: float | None) -> None:
+    """Reject inf/NaN parameters (a CSV ``inf`` parses as a float) up front."""
+    for name, value in values.items():
+        if value is not None and not math.isfinite(value):
+            raise DistributionError(f"truncated_normal: {name} must be a finite number (got {value})")
 
 
 @dataclass(frozen=True)
@@ -112,6 +132,9 @@ class TruncatedNormal:
     location: float = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        _check_finite(vary_median=self.median, vary_sd=self.sd, vary_low=self.clip_low,
+                      vary_high=self.clip_high, vary_skew=self.skew,
+                      vary_tailweight=self.tailweight)
         if not self.sd > 0:
             raise DistributionError(f"truncated_normal: vary_sd must be positive (got {self.sd})")
         if not self.tailweight > 0:
@@ -204,15 +227,32 @@ class TruncatedNormal:
             width = self.clip_high - self.clip_low
         span = max(50 * self.sd, 10 * width)
         steps = 400
-        grid = [untruncated + span * (2 * i / steps - 1) for i in range(steps + 1)]
-        gaps = [gap(x) for x in grid]
-        brackets = [
-            (grid[i], grid[i + 1]) for i in range(steps)
-            if gaps[i] is not None and gaps[i + 1] is not None
-            and (gaps[i] == 0 or gaps[i] * gaps[i + 1] < 0)
-        ]
+        brackets: list[tuple[float, float]] = []
+        gaps: list[float | None] = []
+        for _ in range(8):  # widen the scan (x4 each time) before giving up
+            grid = [untruncated + span * (2 * i / steps - 1) for i in range(steps + 1)]
+            gaps = [gap(x) for x in grid]
+            brackets = [
+                (grid[i], grid[i + 1]) for i in range(steps)
+                if gaps[i] is not None and gaps[i + 1] is not None
+                and (gaps[i] == 0 or gaps[i] * gaps[i + 1] < 0)
+            ]
+            if brackets or gaps[0] is None or gaps[-1] is None:
+                break  # found, or the scan already runs past what floats can represent
+            span *= 4
         if not brackets:
             reached = [g + self.median for g in gaps if g is not None]
+            if self.tailweight >= 1:
+                # Normal or lighter tails reach every interior median in
+                # principle, so this is numeric: the fit would need the
+                # distribution centered so far from the window (dozens of
+                # standard scores) that its probability there underflows --
+                # a median hugging a bound relative to sd.
+                raise DistributionError(
+                    f"truncated_normal: vary_median {self.median:g} is too close to a bound "
+                    f"for this vary_sd (it can be placed between {min(reached):g} and "
+                    f"{max(reached):g}); reduce vary_sd or move the median inward"
+                )
             raise DistributionError(
                 f"truncated_normal: vary_median {self.median:g} isn't reachable with this "
                 f"vary_skew/vary_tailweight inside vary_low..vary_high (its truncated "
@@ -318,19 +358,32 @@ class Moments:
     excess_kurtosis: float
 
 
-def moments(dist: Distribution, points: int = 4_000) -> Moments:
+def moments(dist: Distribution, points: int = 4_000, *, whole_days: bool = False) -> Moments:
     """Mean, SD, skewness and excess kurtosis, integrated numerically over
     the quantile function (midpoint rule) -- one method for every family,
-    including truncated and shaped ones with no tidy closed form."""
-    values = [dist.quantile((i + 0.5) / points) for i in range(points)]
-    mean = math.fsum(values) / points
+    including truncated and shaped ones with no tidy closed form.
+
+    ``whole_days`` describes a date target as it is actually drawn, in whole
+    days rather than a continuum: a ``Uniform`` date gives each day in
+    ``[round(low), round(high)]`` equal weight (``draw_int``), any other
+    family rounds a continuous draw (``draw_int``/``quantile_int``). It
+    matters for a short span -- two days drawn equally have SD 0.5 day,
+    not a continuous uniform's 0.29."""
+    if whole_days and isinstance(dist, Uniform):
+        values = [float(day) for day in range(round(dist.low), round(dist.high) + 1)]
+    else:
+        values = [dist.quantile((i + 0.5) / points) for i in range(points)]
+        if whole_days:
+            values = [float(round(v)) for v in values]
+    count = len(values)
+    mean = math.fsum(values) / count
     centered = [v - mean for v in values]
-    variance = math.fsum(c * c for c in centered) / points
+    variance = math.fsum(c * c for c in centered) / count
     sd = math.sqrt(variance)
     if sd == 0:
         return Moments(mean, 0.0, 0.0, 0.0)
-    skewness = math.fsum(c**3 for c in centered) / points / sd**3
-    kurtosis = math.fsum(c**4 for c in centered) / points / variance**2 - 3.0
+    skewness = math.fsum(c**3 for c in centered) / count / sd**3
+    kurtosis = math.fsum(c**4 for c in centered) / count / variance**2 - 3.0
     return Moments(mean, sd, skewness, kurtosis)
 
 
@@ -385,6 +438,8 @@ def resolve_truncated_normal_bounds(
     Raises ``DistributionError`` if that still isn't enough to resolve every
     value, or if ``low``/``high`` disagree about the implied ``sd``.
     """
+    _check_finite(vary_median=median, vary_sd=sd, vary_low=low, vary_high=high,
+                  vary_skew=skew, vary_tailweight=tailweight)
     if not tailweight > 0:
         raise DistributionError(
             f"truncated_normal: vary_tailweight must be positive (got {tailweight})"
