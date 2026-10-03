@@ -630,10 +630,7 @@ def _read_scenario_inputs(
         calendar_rows_raw = read_overlay("calendar.csv")
         _check_duplicate_calendar_names(calendar_rows_raw, issues)
         calendar_rows = _merge_calendar_rows(
-            calendar_rows, calendar_rows_raw,
-            ("date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
-             "series", "amount"),
-            issues,
+            calendar_rows, calendar_rows_raw, registries.CALENDAR_KEY_COLUMNS, issues,
         )
         lifespan_rows = _merge_scenario_rows(
             lifespan_rows, read_overlay("lifespan.csv"), ("person",),
@@ -642,30 +639,6 @@ def _read_scenario_inputs(
             ytd_rows, read_overlay("year_to_date.csv"), ("name",),
         )
     scenario_row["name"] = scenario_name
-    accounts = _merge_scenario_rows(
-        parent_accounts, read_overlay("accounts.csv", required=True), ("name",)
-    )
-    model_rows = _merge_scenario_rows(
-        parent_models, _default_lots(
-            read_overlay("account_values.csv", required=True), issues,
-            {a["name"] for a in accounts if a.get("subkind") in INVESTMENT_ASSET_SUBKINDS},
-        ),
-        ("account_name", "lot"),
-    )
-    scheduled_rows = _merge_scenario_rows(
-        parent_scheduled, read_overlay("scheduled.csv", required=True), ("name",)
-    )
-    calendar_rows_raw = read_overlay("calendar.csv")
-    _check_duplicate_calendar_names(calendar_rows_raw, issues)
-    calendar_rows = _merge_calendar_rows(
-        parent_calendar, calendar_rows_raw, registries.CALENDAR_KEY_COLUMNS, issues,
-    )
-    lifespan_rows = _merge_scenario_rows(
-        parent_lifespan, read_overlay("lifespan.csv"), ("person",),
-    )
-    ytd_rows = _merge_scenario_rows(
-        parent_ytd, read_overlay("year_to_date.csv"), ("name",),
-    )
     return (
         scenario_row, accounts, model_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
