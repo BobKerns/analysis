@@ -420,7 +420,12 @@ def _batch_options(
     only_names = [n.strip() for n in only.split(",") if n.strip()] if only else None
     if jobs < 0:
         raise click.UsageError(f"--jobs must be 0 (one per CPU) or positive (got {jobs})")
-    return quantiles, only_names, jobs or os.process_cpu_count() or 1
+    return quantiles, only_names, jobs or _available_cpus()
+
+
+def _available_cpus() -> int:
+    """CPUs this process may use (honoring affinity), for ``--jobs 0`` (#42)."""
+    return os.process_cpu_count() or 1
 
 
 def _has_unresolved_vary(intent_path: Path) -> bool:
