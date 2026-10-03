@@ -24,7 +24,7 @@ jobs:
     name: Blocked keywords
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # Every commit in the range, for its message.
           fetch-depth: 0
@@ -69,9 +69,13 @@ jobs:
     name: Tests and lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          # Pinned: an unpinned setup asks the GitHub API for the latest
+          # release on every run, and fails the job when that times out.
+          version: "0.12.23"
 
       - name: Install Python and dependencies
         # uv reads the pinned version from .python-version.
@@ -89,9 +93,9 @@ jobs:
     name: Spelling and markdown
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
