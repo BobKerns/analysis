@@ -151,10 +151,10 @@ Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only wa
 
 Run filenames embed `<timestamp>_<scenario>_<shortTreeId>` ([ADR-002](ADR-002-storage-schema.md) §File layout). If two runs collide on filename (sub-second invocations against an identical scenario), append `_<n>` starting at 2. The `simulation_run` row is the source of truth; the filename is for human convenience.
 
-### 9. Migration / install behavior
+### 9. Install and upgrade behavior
 
 - First-time install: `analysis sim load <scenario>` builds the intent file. If `state/` doesn't exist, it's created. If the data repo has no `persons.csv`, the engine refuses with a one-line how-to.
-- Code upgrade with breaking schema change: the intent file is silently rebuilt (it's a cache; [ADR-002](ADR-002-storage-schema.md) makes this explicit). Run files are read-mostly with lazy additive migration on open; an ADR-bump that introduces a non-additive change requires a new run-file major version, which `verify` and `compare` refuse to cross. This is captured in `intent_manifest.schema_version` and `simulation_run.schema_version` (additive columns to add when the first such migration is needed).
+- Code upgrade with a schema change: the intent file is silently rebuilt (it's a cache; [ADR-002](ADR-002-storage-schema.md) §Schema changes). Run files are never migrated: re-run a scenario to compare it with runs made under the current schema. Each file records the `SCHEMA_VERSION` it was written under (`intent_manifest.schema_version`, `simulation_run.schema_version`).
 
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 

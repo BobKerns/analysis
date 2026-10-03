@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior.
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior. Also amended in place after acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7); and [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8). Git history has the earlier text.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility).
 
 ## Context
@@ -16,7 +16,7 @@ Each registry is **closed in v1**: the loader rejects unknown values. New kinds 
 
 ### 1. `account.subkind` vocabulary
 
-CHECK-constrained at load time (the loader validates; the DDL keeps `subkind` as free TEXT so future ADRs can extend without a destructive migration).
+CHECK-constrained at load time (the loader validates; the DDL keeps `subkind` as free TEXT so future ADRs can extend it without a schema change).
 
 **Asset:**
 
@@ -74,9 +74,9 @@ The `_other` catch-alls are deliberate escape hatches; the `--check` mode ([ADR-
 
 ### 2. `amount_rule_kind` registry
 
-Seven rule kinds. (Nine were specified originally; `waterfall_fill` (§2.4) and `refill_transfer` (§2.8) were later removed in favour of liquidity chains — see §4.7. Their section numbers are retained rather than reused, so existing cross-references stay valid.) Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
+Seven rule kinds. (Section numbers 2.4 and 2.8 are unused, so existing cross-references to the others stay valid.) Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
 
-**Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. ([ADR-002](ADR-002-storage-schema.md) follow-up: tighten `transfer_event.reason_kind` CHECK to `('rule','initial')` and add `scheduled_transaction.created_by_event_id INTEGER REFERENCES calendar_event(id)` so synthesized rules trace back to their authoring calendar event.)
+**Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. [ADR-002](ADR-002-storage-schema.md)'s `transfer_event.reason_kind` CHECK and `scheduled_transaction.created_by_event_id` (tracing a synthesized rule back to its authoring calendar event) enforce this.
 
 **Multi-leg rules** (in v1: only `mortgage_payment`) emit more than one transfer event per fire; all legs share the same `(reason_kind, reason_id)` and are linked by `parent_event_id` for grouping. The `from_account`/`to_account` columns on the scheduled_transaction row are interpreted as the **primary leg** (cash → liability principal); the secondary leg (cash → interest expense) targets the account named by `interest_account`. This invariant — "each event traces to one rule, but a rule may emit multiple events per fire" — is the *direction* that matters: it makes audit, `explain`, and `compare` straightforward.
 
@@ -125,14 +125,6 @@ IRS Required Minimum Distribution.
 - **Start semantics:** the row's `start` column is a lower bound on candidate fire dates. The actual first fire is `max(row.start, year-end of the year person reaches start_age)`. Authors typically set `start = scenario.start` and let the age gate dominate.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
 - **Use:** post-age-73 required distributions for either spouse.
-
-#### 2.4 `waterfall_fill` — **removed** (superseded by liquidity chains, §4.7)
-
-Originally: cover a target account's end-of-month shortfall by draining an ordered list of `scheduled_transaction_source` rows, halting the run if the sources were exhausted.
-
-Removed because the source list encoded the household's *withdrawal ordering* inside each rule that needed it, so every rule drawing on the same pool had to repeat the list, and rule `priority` had to double as the topology encoding. That ordering is now a first-class, named, reusable object: a chain (§4.7), referenced by name from `from_account`/`to_account` or from an account's `refill_chain`. `scheduled_transaction_source` and `waterfall_sources.csv` were dropped with it.
-
-Migration: move the ordered source list into `chains/asset__<name>.csv` and point the rule's `from_account` at that chain name. A cushion that was expressed as the rule's `amount` becomes the target account's `minimum_balance`/`refill_chain` pair, which is checked per-transaction rather than at month end.
 
 #### 2.5 `ss_benefit` (priority band: 200)
 
@@ -183,14 +175,6 @@ Monthly P&I against a mortgage liability account.
   1. **Interest leg:** `from_account = Asset_Checking` (the row's `from_account`), `to_account = interest_account`, amount = `interest`, tax_character = `'none'`.
   2. **Principal leg:** `from_account = Asset_Checking`, `to_account = <liability>` (the row's `to_account`, reducing the liability balance), amount = `principal`, tax_character = `'none'`, `parent_event_id` linked to the interest leg.
 - **Use:** one row per active mortgage. Retired by a `retire_scheduled` calendar event when the home is sold (see §3.4).
-
-#### 2.8 `refill_transfer` — **removed** (superseded by per-lot refill, §4.3/§4.7)
-
-Originally: a scheduled rule that topped `to_account` up by a fixed `amount` whenever its balance was below `params_json.threshold_cents` at fire time.
-
-Removed for the same reason as §2.4, plus one of its own: as a *scheduled* rule it only fired on its own cadence, so an account could sit below its floor for the rest of the month. The replacement — `minimum_balance` + `refill_chain` on the account itself (§4.2) — is a look-ahead check on **every** debit against that account, so the floor is maintained continuously rather than sampled monthly.
-
-Migration: drop the rule row; set `minimum_balance` (the old threshold) and `refill_chain` on the target lot, plus `refill_amount` to reproduce the old fixed top-up size (or `refill_target` to fill to a fixed level instead).
 
 #### 2.9 `on_death` (priority band: author's choice; recommend 900)
 
@@ -535,7 +519,7 @@ Opening state for the accounts declared in §4.2, **one row per lot** ([ADR-005]
 | `opening_cost_basis` | dollars | | required for lots in `tax_treatment IN ('taxable')` accounts holding appreciable assets. A taxable asset lot with a zero balance and no basis starts at basis 0 |
 | `prior_year_end_balance` | dollars | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` accounts whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. Set on every lot of an account or on none. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
 
-**Balance management is per lot.** The columns below used to be on `accounts.csv` (§4.2); they are now on the lot, so the lots of one account can differ (a cash lot that refills from the fund lots beside it, next to a lot that does not). Moving them is the only change to existing data: put each account's values on its `account_values.csv` row, and remove the columns from `accounts.csv`, where a value is now a load error. The chain columns follow the same lot rule as every other reference: a `refill_chain` or `overflow_chain` that names an account is completed by `refill_lot` / `overflow_lot` (required for investment subkinds, blank meaning `default` otherwise, and blank when the name is a chain).
+**Balance management is per lot**, so the lots of one account can differ (a cash lot that refills from the fund lots beside it, next to a lot that does not). These columns are not accepted on `accounts.csv`. The chain columns follow the same lot rule as every other reference: a `refill_chain` or `overflow_chain` that names an account is completed by `refill_lot` / `overflow_lot` (required for investment subkinds, blank meaning `default` otherwise, and blank when the name is a chain).
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
@@ -675,6 +659,10 @@ Refill (`minimum_balance`/`refill_chain`, optionally `refill_target`/`refill_amo
 
 Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue -- a balance can only exceed its ceiling from accumulated credits over a month -- so it stays a month-end sweep after all of a month's rules have posted.
 
+`<kind>` is `asset` or `income` (`registries.CHAIN_KINDS`): the kind of the accounts the chain's steps name, matching the implicit leaf chain every account has.
+
+**Withdrawing from a taxable lot.** A draw or sweep leg out of a `taxable` non-cash lot (e.g. in a `brokerage_taxable` account) splits into a `return_of_capital` leg and a gain leg (`engine._post_withdrawal`). Basis is tracked **per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)); an account's basis is the sum over its lots (the `account_state` view). The split is pro-rata to the fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount // balance`); it reduces that lot's basis, and its `quantity` when tracked. The gain leg is `stcg` if the lot was acquired a year or less before the sale, else `ltcg`. Money moved into a basis-tracked lot adds to its basis (and shares), except built-in growth, which is total return and leaves basis alone. A realized loss (basis exceeds proceeds) is a negative gain leg, the same convention as a `year_to_date.csv` loss carryforward. The lot needs an `opening_cost_basis` (a zero balance starts at basis 0); an untracked basis (`NULL`) raises, telling the author to add it to `account_values.csv`.
+
 #### 4.8 Per-scenario: `data_repo/scenarios/<name>/calendar.csv`
 
 | column | type | required | notes |
@@ -697,7 +685,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `vary_target` | enum (`amount`, `date`) | with `vary_distribution` | which of *this row's own* columns is drawn instead of literal; exactly one target per row ([ADR-006](ADR-006-ensemble-scenarios.md) §2) |
 | `vary_distribution` | enum (`uniform`, `truncated_normal`, `triangular`) | to mark this row as varying | blank means an ordinary literal row, unaffected by any of the columns below |
 | `vary_low`, `vary_high` | text | see notes | `uniform`'s and `triangular`'s own bounds (required), in the target column's own unit (an ISO date for `date`; the row's own `amount` unit above for `amount`). Also `truncated_normal`'s own optional clip bounds (`amount`/rate only) -- for that distribution either may be left blank and inferred (see `vary_median`/`vary_sd`) |
-| `vary_median`, `vary_sd` | text | for `truncated_normal` | same unit rule as `vary_low`/`vary_high`. `vary_median` is the *truncated* distribution's median (the exact base case), strictly between the bounds; `vary_sd` the scale before clipping. Any one of `vary_median`/`vary_sd`/`vary_low`/`vary_high` may be inferred from the others when blank -- `vary_median` defaults to the midpoint of `vary_low`/`vary_high`; `vary_sd` to the distance from `vary_median` to whichever of `vary_low`/`vary_high` is given, divided by 3 (default shape only); a still-missing `vary_low`/`vary_high` to 3 standard-normal-score points out. `truncated_normal` is therefore never actually unbounded (`resolve_truncated_normal_bounds`, ADR-006 §3). Formerly `vary_mean` (#31), now rejected with a rename error |
+| `vary_median`, `vary_sd` | text | for `truncated_normal` | same unit rule as `vary_low`/`vary_high`. `vary_median` is the *truncated* distribution's median (the exact base case), strictly between the bounds; `vary_sd` the scale before clipping (the SD for the default shape; a scale factor with `vary_skew`/`vary_tailweight` set). Any one of `vary_median`/`vary_sd`/`vary_low`/`vary_high` may be inferred from the others when blank -- `vary_median` defaults to the midpoint of `vary_low`/`vary_high`; `vary_sd` to the distance from `vary_median` to whichever of `vary_low`/`vary_high` is given, divided by 3 (default shape only); a still-missing `vary_low`/`vary_high` to 3 standard-normal-score points out. `truncated_normal` is therefore never actually unbounded (`resolve_truncated_normal_bounds`, ADR-006 §3). Formerly `vary_mean` (#31), now rejected with a rename error |
 | `vary_skew`, `vary_tailweight` | number | optional, `truncated_normal` only | sinh-arcsinh shape (#31): skew 0 symmetric, > 0 longer high tail; tail weight 1 normal, < 1 heavier tails. Either one requires `vary_sd` |
 | `vary_mode` | text | optional, `triangular` only | the most likely value, in the target's unit; defaults to the midpoint of the bounds |
 | `vary_ramp_months` | int | optional, `vary_target='amount'` on a `kind='set_rate'` row only | see §3.1's ramp note |
@@ -756,10 +744,9 @@ When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule 
 | `rmd` | 500 |
 | `on_death` | 900 |
 
-A kind not listed falls back to 500. (`fixed_amount` was originally specified as
-200/300/500 split by `tax_character` and `cadence`; that was never implemented —
-it is a flat 200, and an author who wants an expense to settle after income sets
-`priority` explicitly.)
+A kind not listed falls back to 500. `fixed_amount` is a flat 200 whatever its
+direction; an author who wants an expense to settle after income sets `priority`
+explicitly.
 
 Authors can override by setting `priority` explicitly.
 
@@ -807,7 +794,7 @@ inherited along the parent chain.
 - The full vocabulary of the simulator is in one file. A new reader can enumerate every kind of rule and every kind of event in a single pass; the loader's CHECKs guarantee the code agrees.
 - **One-rule-per-event invariant** makes `explain`, `compare`, and audit trivial: a `transfer_event` always has exactly one `scheduled_transaction` as its origin; group-by `reason_id` is the canonical aggregation. Calendar events route through synthesized rules, so the calendar never short-circuits the rule audit trail.
 - Multi-leg rules are an explicit, named concept (currently only `mortgage_payment`). The "rule emits a list" interface generalizes cleanly when refinancing or escrow accounts are added later.
-- Subkind vocabulary is locked but extensible — adding a new subkind is one row in this ADR plus a code change in the loader's validator, no schema migration.
+- Subkind vocabulary is locked but extensible — adding a new subkind is one row in this ADR plus a code change in the loader's validator, no schema change.
 - The `life_transition` kinds operationalize the "scenario as checklist" principle; `--check life-transitions` becomes an actual lint.
 
 ### Negative / accepted
@@ -815,7 +802,7 @@ inherited along the parent chain.
 - Free-text `kind`/`subkind` in the DDL with loader-side validation means a hand-written SQL `INSERT` could bypass the registry. The loader is the only sanctioned writer; ad-hoc edits to `state/intent/*.sqlite3` are out of scope (and would be overwritten on next reload anyway).
 - The `life_transition` expansion code is per-transition. Adding a new transition is a code change, not a data change. That's deliberate — these transitions are rare and high-impact enough to want a code review, not a CSV edit.
 - `sell_asset` requires the author to supply `cost_basis_override` whenever `account_state.cost_basis` is NULL (basis was never tracked). The `--check basis` validator surfaces these cases before a run fails.
-- `priors.csv` is intentionally narrow (tax activity only). Account-level state facts that used to live in a union `prior_account_fact` table now live as columns on `account_model_member` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`). This keeps the "what's in the accounts at scenario start" story in one file (`account_values.csv`, §4.3) and lets `priors.csv` stay a thin tax-activity feed. (Superseded: `priors.csv`/`prior_tax_activity` were later folded into `year_to_date.csv` — see §4.10.)
+- Account-level state at the scenario start lives as columns on `account_model_member` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`), so "what's in the accounts at scenario start" is one file (`account_values.csv`, §4.3), and prior tax-year activity is a thin feed in `year_to_date.csv` (§4.10).
 
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 
@@ -829,61 +816,6 @@ These amendments to [ADR-002](ADR-002-storage-schema.md) fall out of the §2 inv
 6. Added `interest_expense` to the expense subkind vocabulary (in the §1 table and the `account` CHECK).
 7. Dropped the `prior_account_fact` table entirely; added `prior_year_end_balance INTEGER` (nullable) to `account_model_member` to carry the one fact `prior_account_fact` actually drove (partial-first-year RMD's `dec31_prev_year_balance`).
 8. Added `role TEXT` (nullable) to `person`, unifying the former standalone `users.toml` operator list with the persons table. `$ANALYSIS_USER` is now validated against `persons.csv`; `users.toml` is removed from the data-repo layout.
-
-## Later amendments to this ADR
-
-Applied after the original acceptance, as the implementation diverged from the
-draft. Section numbers are never reused, so cross-references from code comments
-and older notes stay valid.
-
-1. **`waterfall_fill` (§2.4) and `refill_transfer` (§2.8) removed**, superseded by
-   liquidity chains (§4.7) and per-lot refill/overflow (§4.3). The rule
-   registry is seven kinds, not nine. Both sections are retained as tombstones
-   carrying the rationale and a migration note.
-2. **`accounts.csv` (§4.2) and `account_values.csv` (§4.3) are per-scenario, not
-   shared.** They live in `scenarios/<name>/`, are required in a root scenario,
-   and overlay the parent's rows by `name` / `account_name` in a derived one
-   (§4.5). The `data_repo/account_models/<name>.csv` layout the draft described
-   never shipped.
-3. **§4.3's money columns are dollars, not cents**, like every other CSV money
-   column — the loader converts to integer cents (§4.1).
-4. **§5's `fixed_amount` default priority is a flat 200**; the drafted
-   income/expense/one-off split and the `analysis sim check --priorities` band
-   check were never implemented.
-5. **`CHAIN_KINDS` is `{asset, income}`** (§4.7), not `asset` alone.
-6. **Corresponding [ADR-002](ADR-002-storage-schema.md) amendments:** `scheduled_transaction_source` and
-   `waterfall_sources.csv` dropped; `chain` / `chain_steps` added;
-   `transfer_event.from_account`/`to_account` now reference `chain(id)`; the
-   file-layout tree updated to the per-scenario shape above.
-7. **`chains/<kind>__<name>.csv` (§4.7) dropped `threshold`, renamed `amount`
-   to `maximum`, and made `percent` always-on (default 100%) rather than
-   mutually exclusive with `maximum`.** The original `threshold`/`amount`
-   design was never actually read for draws -- the engine only ever
-   implemented allocation (`amount`/`percent`) for the *sweep* direction
-   (overflow/income chains); a withdrawal chain always fully drained each
-   step before moving to the next, silently ignoring any `amount`/`percent`
-   a scenario author set on it (real symptom: a chain step authored at 1%
-   applied at 100%). The fix unifies both directions on one allocation rule
-   (§4.7's rewritten table) and removes the per-step reserve entirely --
-   "exhausted" is now the step's account being at or below its own
-   `minimum_balance` (§4.2) *after* that account's own `refill_chain` has
-   been drawn, which is what `threshold` was really trying to express one
-   step at a time.
-8. **A chain draw/sweep leg from a `taxable` non-cash lot (e.g. in a
-   `brokerage_taxable` account) splits into `return_of_capital` + gain legs**
-   (`engine._post_withdrawal`), rather than raising. Basis is tracked **per
-   lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md); [ADR-001](ADR-001-overall-architecture.md)'s earlier account-level running basis is now the
-   sum over lots, the `account_state` view). The split is pro-rata to the
-   fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount
-   // balance`), mutates that lot's basis, and reduces its `quantity` when
-   tracked. The gain leg is `stcg` if the lot was acquired a year or less
-   before the sale, else `ltcg`. Money moved into a basis-tracked lot adds
-   to its basis (and shares), except built-in growth, which is total return
-   and leaves basis alone. A realized loss (basis exceeds proceeds) is a
-   negative gain leg, same convention as a `year_to_date.csv` loss
-   carryforward. Still requires `opening_cost_basis` on the lot (a zero
-   balance starts at basis 0); an untracked basis (`NULL`) raises, telling
-   the author to add it to `account_values.csv`.
 
 ## Open questions deferred
 

@@ -15,7 +15,7 @@ The schema must:
 - Be queryable ad-hoc by both humans and LLMs (long-narrow tables, descriptive names, stable shape).
 - Support `GROUP BY`-driven reporting at any grain: account, subkind, owner, year, reason.
 - Make money operations exact (`INTEGER` cents, no floats).
-- Reserve affordances for features deferred to later phases (forking) without future migration. Holdings and lots were reserved here and are now built, differently: see [ADR-005](ADR-005-lots-and-per-lot-state.md).
+- Reserve affordances for features deferred to later phases (forking) in the run-file layout. Lots are designed in [ADR-005](ADR-005-lots-and-per-lot-state.md).
 - Carry enough provenance on every run file to regenerate any chart.
 - Support cross-run comparison via `ATTACH DATABASE` rather than by sharing a database.
 
@@ -612,7 +612,7 @@ CREATE INDEX idx_inflation_state_series ON inflation_index_state(series, step_id
 
 ### Holdings and lots
 
-This ADR originally reserved `holding` and `lot` tables and `transfer_event.from_holding_id` / `to_holding_id`. They were never used and are gone. A lot is a row of `account_model_member` (above), the engine's state is `lot_state`, and `transfer_event` records the lots a transfer moves between; [ADR-005](ADR-005-lots-and-per-lot-state.md) has the design.
+A lot is a row of `account_model_member` (above), the engine's state is `lot_state`, and `transfer_event` records the lots a transfer moves between; [ADR-005](ADR-005-lots-and-per-lot-state.md) has the design.
 
 ### Schema priming (both file kinds)
 
@@ -771,18 +771,9 @@ Enforced at run end (assertions; failures mark the run `failed`):
 
 Indexes are deliberately conservative — chosen for the queries the views generate plus the common ad-hoc patterns ("balance of X over time", "all events from account X", "all events caused by rule Y"). Adding indexes later in response to slow queries is cheap; this avoids index bloat now.
 
-### Migrations
+### Schema changes
 
-*Status: not implemented.* Databases are recreated from the CSVs rather than migrated (the schema is applied whole by `apply_intent_schema` / `apply_run_schema`, and `SCHEMA_VERSION` in `schema.py` is bumped on each change); the migration files and `schema_overview` below are the original plan.
-
-v1 ships two SQL files in `src/analysis/sim/migrations/`:
-
-- `001_init_intent.sql` — schema for intent files.
-- `001_init_run.sql` — schema for run files (intent tables + ledger tables + views).
-
-Both seed their respective `schema_overview` rows. A `_schema_version` table tracks the highest applied migration per file. Future migrations are paired (`002_*_intent.sql`, `002_*_run.sql`) when they affect both file kinds; single-sided migrations are common too.
-
-**Lazy migration on open.** Run files are read-mostly. When the engine opens an older run file (e.g. for `compare` or `query`), it applies any forward-compatible additive migrations (adding columns, adding views) and bumps `_schema_version`. Destructive migrations (renames, drops) print a warning and refuse to modify the file — the user can re-run the scenario instead.
+There are no migrations: the database files are always generated, never upgraded. The schema is applied whole (`apply_intent_schema` / `apply_run_schema`), and `SCHEMA_VERSION` in `schema.py` is bumped on each change. An intent file is rebuilt from the CSVs on every `sim load`, so it always matches the current code. A run file isn't upgraded: to compare runs across a schema change, re-run the older scenario. Generating from the CSVs every time is simpler and more reliable than maintaining migrations, and the CSVs are the source of truth anyway.
 
 ## Consequences
 
@@ -799,12 +790,12 @@ Both seed their respective `schema_overview` rows. A `_schema_version` table tra
 ### Negative / accepted
 
 - **Snapshot duplication in run files.** Each run file carries a copy of the intent that produced it — a few KB per run. Trivial against the ledger size, and the price of self-containment.
-- **Cross-file `ATTACH` schema skew.** Comparing runs from different schema versions can fail on views that reference dropped/renamed columns. Mitigation: lazy additive migration on open; comparisons across major schema versions are best-effort with a header warning, as already planned in Q12.
+- **Cross-file `ATTACH` schema skew.** Comparing runs from different schema versions can fail on views that reference dropped/renamed columns. Mitigation: re-run the older scenario under the current schema (§Schema changes); comparing run files across schema versions is best-effort.
 - **JSON columns not strongly queryable.** SQLite's `json_extract` is available but ergonomically weak. The variable-shape pieces genuinely vary; `kind` columns let queries filter before extracting JSON.
 - **No row-level CHECK on `payload_json` shape matching `kind`.** Validation lives in `loaders.py` and `expansions.py`. If shape drift becomes a problem, JSON-Schema validation at load time is the response.
 - **`lot_state` writes O(lots × months) rows per run.** For ~75 lots × 15 years × 12 months that's ~13k rows — trivially small.
 - **The `flow_by_account` view double-counts an account's own internal flows if `from_account = to_account`**, which the engine never emits. Documenting rather than guarding.
-- **Reserved columns are dead weight in v1.** `parent_run_path`, `fork_month`, `seed`. Worth it to avoid future migrations of the ledger tables, which dominate file size.
+- **Reserved columns are dead weight in v1.** `parent_run_path`, `fork_month`, `seed`. Kept so forking can be added without changing the shape of the ledger tables, which dominate file size.
 
 ## Open questions deferred to later ADRs
 

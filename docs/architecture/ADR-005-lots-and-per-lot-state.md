@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09-23
-- **Supersedes:** the reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` ([ADR-002](ADR-002-storage-schema.md) §Reserved schema); the "account-level running cost basis" limitation noted in [ADR-003](ADR-003-registries-and-csv-schemas.md) §Later amendments #8.
+- **Supersedes:** the reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` ([ADR-002](ADR-002-storage-schema.md) §Reserved schema); the account-level running cost basis that [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7 (withdrawing from a taxable lot) now describes per lot.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (domain objects, `AccountState`), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries, CSV layouts, chains §4.7, `rmd` §2.3, `sell_asset` §3.7).
 
 ## Context
@@ -123,7 +123,7 @@ On an account with several lots a single-lot source is a load error, as is a cha
 Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage-schema.md) and [ADR-003](ADR-003-registries-and-csv-schemas.md) (Phase 6).
 
 - [ADR-002](ADR-002-storage-schema.md): replace the `holding`/`lot` reserved schema and `schema_overview` rows with the §1–§2 DDL; `account_model_member` and `transfer_event` changes; `account_state` view; `SCHEMA_VERSION` 17 → 18.
-- [ADR-003](ADR-003-registries-and-csv-schemas.md): §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §Later amendments #8 revised.
+- [ADR-003](ADR-003-registries-and-csv-schemas.md): §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §4.7 taxable-lot withdrawals made per lot.
 - [ADR-001](ADR-001-overall-architecture.md): `AccountState` row in the domain-object table becomes a view over per-lot state.
 - [ADR-003](ADR-003-registries-and-csv-schemas.md): the `tax_character` registry gains `stcg`; §4.4 gains the `ltcg_brackets` aux kind; the `tax_accumulator` rule (§2.6) taxes long-term gains at those rates when present.
 
