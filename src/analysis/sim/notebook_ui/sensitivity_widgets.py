@@ -134,10 +134,16 @@ def _quantile_color(q: float, quantiles: list[float]) -> str | tuple[float, ...]
 
 
 def _share_cells(data: np.ndarray) -> tuple[dict, str, list[list[str]], np.ndarray]:
-    """Sequential 0-100% styling: (imshow kwargs, colorbar label, cell text, dark cells)."""
+    """Sequential styling from 0 to 100%, or to the largest share when a latent
+    factor's exceeds 100% (#39: a factor's share is over the ordinary rows'
+    total, so it isn't capped), so such cells stay distinguishable rather
+    than clipping to one color: (imshow kwargs, colorbar label, cell text,
+    dark cells)."""
+    finite = data[np.isfinite(data)]
+    top = max(1.0, float(finite.max())) if finite.size else 1.0
     text = [[f"{v:.0%}" if v >= 0.005 else "" for v in r] for r in data]
-    return ({"cmap": _SHARE_CMAP, "vmin": 0, "vmax": 1}, "share of the year's total impact",
-            text, data > 0.55)
+    return ({"cmap": _SHARE_CMAP, "vmin": 0, "vmax": top}, "share of the year's total impact",
+            text, data > 0.55 * top)
 
 
 def _swing_cells(data: np.ndarray, scale: DeltaScale) -> tuple[dict, str, list[list[str]], np.ndarray]:

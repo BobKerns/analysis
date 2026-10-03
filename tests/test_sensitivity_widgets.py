@@ -100,6 +100,18 @@ def test_heatmap_and_tornado_mark_latent_factors() -> None:
     plt.close("all")
 
 
+def test_share_heatmap_scales_to_a_factor_share_above_one() -> None:
+    """PR #53 review: a factor's share can exceed 100% (it's over the
+    ordinary rows' total); the scale must reach it rather than clip."""
+    deltas = _deltas()
+    deltas.loc[deltas["row"] == "a", "target"] = sensitivity.FACTOR_TARGET
+    grid = sensitivity.rank_by_year(deltas)
+    assert grid.loc["a"].max() > 1
+    ax = sw.heatmap_view(grid, HeatmapValue.SHARE, DeltaScale.ABSOLUTE)
+    assert ax.images[0].norm.vmax == pytest.approx(grid.to_numpy(dtype=float).max())
+    plt.close("all")
+
+
 def test_tornado_view_puts_largest_swing_on_top() -> None:
     ax = sw.tornado_view(sensitivity.oat_table(_deltas(), 2031), DeltaScale.ABSOLUTE)
     by_height = sorted(zip(ax.get_yticks(), (t.get_text() for t in ax.get_yticklabels()), strict=True))
