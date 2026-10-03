@@ -13,7 +13,7 @@ import re
 import socket
 import sqlite3
 import tempfile
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -460,6 +460,18 @@ def _check_duplicate_calendar_names(rows: list[dict[str, str]], issues: list[str
             seen[name] = i
 
 
+def calendar_row_key(row: Mapping[str, str]) -> tuple[str, ...]:
+    """The key ``_merge_calendar_rows`` gives a calendar.csv row as authored:
+    its key columns trimmed and its dates canonical, as the load sees them.
+    So ``2030-12`` and ``2030-12-31`` are the same date here, as they are
+    there. For checking, before a write, that two rows would not merge."""
+    canonical = {column: (value or "").strip() for column, value in row.items()}
+    _normalize_month_columns([canonical], "calendar.csv", [])
+    if canonical.get("kind") == registries.LATENT_FACTOR_KIND:
+        return (registries.LATENT_FACTOR_KIND, canonical.get("name", ""))
+    return tuple(canonical.get(column, "") for column in registries.CALENDAR_KEY_COLUMNS)
+
+
 def _merge_calendar_rows(
     parent_rows: list[dict[str, str]],
     child_rows: list[dict[str, str]],
@@ -630,6 +642,30 @@ def _read_scenario_inputs(
             ytd_rows, read_overlay("year_to_date.csv"), ("name",),
         )
     scenario_row["name"] = scenario_name
+    accounts = _merge_scenario_rows(
+        parent_accounts, read_overlay("accounts.csv", required=True), ("name",)
+    )
+    model_rows = _merge_scenario_rows(
+        parent_models, _default_lots(
+            read_overlay("account_values.csv", required=True), issues,
+            {a["name"] for a in accounts if a.get("subkind") in INVESTMENT_ASSET_SUBKINDS},
+        ),
+        ("account_name", "lot"),
+    )
+    scheduled_rows = _merge_scenario_rows(
+        parent_scheduled, read_overlay("scheduled.csv", required=True), ("name",)
+    )
+    calendar_rows_raw = read_overlay("calendar.csv")
+    _check_duplicate_calendar_names(calendar_rows_raw, issues)
+    calendar_rows = _merge_calendar_rows(
+        parent_calendar, calendar_rows_raw, registries.CALENDAR_KEY_COLUMNS, issues,
+    )
+    lifespan_rows = _merge_scenario_rows(
+        parent_lifespan, read_overlay("lifespan.csv"), ("person",),
+    )
+    ytd_rows = _merge_scenario_rows(
+        parent_ytd, read_overlay("year_to_date.csv"), ("name",),
+    )
     return (
         scenario_row, accounts, model_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,

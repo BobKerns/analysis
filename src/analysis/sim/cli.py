@@ -64,6 +64,7 @@ from analysis.sim.loader import (
     LoadResult,
     ScenarioRef,
     batch_mode,
+    calendar_row_key,
     list_scenario_names,
     load_scenario,
     open_intent_db,
@@ -1599,8 +1600,9 @@ _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
 
 
 def _append_csv_row(path: Path, header: tuple[str, ...],
-                    row: dict[str, str]) -> None:
-    """Append a row to a CSV, aligning columns by name via pandas.
+                    row: dict[str, str], *, replace: int | None = None) -> None:
+    """Append a row to a CSV, aligning columns by name via pandas. With
+    ``replace``, overwrite that data row (0-based) instead.
 
     If the file exists, its header must contain every column of ``header``
     except the backfillable ones (currently just calendar.csv's ADR-006
@@ -1626,8 +1628,11 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
         cols = list(df.columns)
     else:
         df = pd.DataFrame(columns=cols)
-    new_row = pd.DataFrame([{c: row.get(c, "") for c in cols}], columns=cols)
-    df = pd.concat([df, new_row], ignore_index=True)
+    if replace is not None:
+        df.loc[replace, cols] = [row.get(c, "") for c in cols]
+    else:
+        new_row = pd.DataFrame([{c: row.get(c, "") for c in cols}], columns=cols)
+        df = pd.concat([df, new_row], ignore_index=True)
     df.to_csv(path, index=False)
 
 
@@ -1691,6 +1696,102 @@ def _append_and_validate(
     """
     with _scenario_edit(data_dir, scenario_name) as edit:
         _append_csv_row(edit.path(path), header, row)
+
+
+# click context ``meta`` key: ``(index, row)`` for the data row (0-based) of
+# the scenario's own calendar.csv that a calendar command's row replaces
+# instead of being appended, and that row as it was when chosen. Set by ``sim
+# calendar edit`` around the kind's own command, so that command builds and
+# validates the row exactly as it does for ``add``.
+_CALENDAR_REPLACE_ROW = "analysis.sim.calendar.replace_row"
+
+# params_json keys each kind's command writes itself. Any other key in a row
+# being replaced was put there by hand and is kept -- including one of these
+# names on a kind whose command does not write it.
+_CALENDAR_OWN_PARAM_KEYS: dict[str, frozenset[str]] = {
+    "set_rate": frozenset({"aux_kind"}),
+    "one_off_transfer": frozenset({"description"}),
+}
+
+
+def _read_calendar_rows(path: Path) -> list[dict[str, str]]:
+    """A scenario's own calendar.csv rows, every CALENDAR_HEADER column present."""
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    return [
+        {column: row.get(column, "") for column in registries.CALENDAR_HEADER}
+        for row in df.to_dict("records")
+    ]
+
+
+def _calendar_row_label(row: dict[str, str]) -> str:
+    """One row, as a line a person can recognize it by."""
+    kind = row.get("kind", "")
+    if row.get("account_1") or row.get("account_2"):
+        what = f"{row.get('account_1', '')} -> {row.get('account_2', '')}"
+    else:
+        what = row.get("scheduled_name") or row.get("series") or ""
+    amount = ""
+    if row.get("amount"):
+        try:
+            amount = registries.format_calendar_amount(kind, float(row["amount"]))
+        except ValueError:
+            amount = row["amount"]
+    name = f"[{row['name']}]" if row.get("name") else ""
+    parts = [f"{row.get('date', ''):<10}", f"{kind:<16}", what, amount, name]
+    return "  ".join(part for part in parts if part.strip())
+
+
+def _write_calendar_row(
+    path: Path, row: dict[str, str], *, data_dir: Path, scenario_name: str,
+) -> str:
+    """Append ``row`` to the scenario's calendar.csv -- or, under ``sim
+    calendar edit``, replace the row being edited -- if the scenario still
+    loads with it. Returns "appended" or "updated".
+
+    An edited row may not end up alike in every key column to another row of
+    the same file: the loader would treat the two as one event, so the edit
+    would quietly merge them. (Appending such a row stays allowed: it is how
+    an existing row is given a name and a variation, ADR-006.)
+    """
+    context = click.get_current_context(silent=True)
+    replacing = context.meta.get(_CALENDAR_REPLACE_ROW) if context is not None else None
+    with _scenario_edit(data_dir, scenario_name) as edit:
+        staged = edit.path(path)
+        if replacing is None:
+            _append_csv_row(staged, registries.CALENDAR_HEADER, row)
+            return "appended"
+        index, chosen = replacing
+        # Read inside the staged edit: the prompts may have taken a while, and
+        # the index is only good if the file still has the chosen row there.
+        existing = _read_calendar_rows(staged)
+        if index >= len(existing) or existing[index] != chosen:
+            raise click.ClickException(
+                f"{path} changed while this row was being edited, so row {index + 1} "
+                "is no longer the row that was chosen. Nothing was written; start again."
+            )
+        for other_index, other in enumerate(existing):
+            if other_index != index and calendar_row_key(other) == calendar_row_key(row):
+                raise click.ClickException(
+                    f"this would duplicate row {other_index + 1} of {path.name} "
+                    f"({_calendar_row_label(other)}); change one of them. Nothing was written."
+                )
+        row = dict(row)
+        # Keep what the kind's command has no way to express.
+        if "tags" not in row or (row["kind"] == "one_off_transfer" and not row["tags"]):
+            row["tags"] = chosen["tags"]
+        old_params = json.loads(chosen["params_json"]) if chosen["params_json"] else {}
+        new_params = json.loads(row["params_json"]) if row.get("params_json") else {}
+        own = _CALENDAR_OWN_PARAM_KEYS.get(row["kind"], frozenset())
+        # A transfer's command copies its description into params_json; a row
+        # that kept it only in the description column goes on doing so.
+        if "description" in own and "description" not in old_params:
+            new_params.pop("description", None)
+        params = {**{k: v for k, v in old_params.items() if k not in own}, **new_params}
+        row["params_json"] = json.dumps(params, separators=(",", ":")) if params else ""
+        _append_csv_row(staged, registries.CALENDAR_HEADER, row, replace=index)
+    return "updated"
 
 
 def _account_with_lot(name: str | None, subkind: str | None, lot: str | None) -> str:
@@ -2067,10 +2168,9 @@ def _do_add_transfer(
         **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
-    _append_and_validate(path, registries.CALENDAR_HEADER, row,
-                        data_dir=data_dir_p, scenario_name=scenario_name)
+    verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
-        f"appended one_off_transfer {from_account} -> {to_account} "
+        f"{verb} one_off_transfer {from_account} -> {to_account} "
         f"{_fmt_cents(cents).strip()} on {date} to {path}"
     )
 
@@ -2136,13 +2236,103 @@ def transfer_add(
 
 @sim_group_command.group(name="calendar")
 def calendar_group_command() -> None:
-    """Append calendar.csv rows of any kind, including ensemble variation (ADR-006)."""
+    """Append or change calendar.csv rows of any kind, including ensemble
+    variation (ADR-006)."""
 
 
-def _guide_context(data_dir: Path, scenario: str | None) -> calendar_guide.GuideContext:
-    """The scenario's names, as completions for the guided prompts (#32)."""
+_CALENDAR_COMMAND_OF_KIND = {
+    "set_rate": "set-rate",
+    "set_amount": "set-amount",
+    "retire_scheduled": "retire-scheduled",
+    "one_off_transfer": "transfer",
+    registries.LATENT_FACTOR_KIND: "latent-factor",
+}
+
+
+def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec, dict[str, str]] | None:
+    """A calendar.csv row as the guide's answers for its kind -- the inverse
+    of what the kind's command writes -- or None for a kind with no command."""
+    command = _CALENDAR_COMMAND_OF_KIND.get(row.get("kind", ""))
+    if command is None:
+        return None
+    spec = calendar_guide.kind_named(command)
+    try:
+        params = json.loads(row["params_json"]) if row.get("params_json") else {}
+    except ValueError:
+        params = {}
+
+    def amount(raw: str) -> str:
+        """Storage units (micros or cents) back to what is typed (percent or dollars)."""
+        if not raw:
+            return ""
+        try:
+            value = Decimal(raw)
+        except InvalidOperation:
+            return raw
+        if spec.amount_unit == "percent":
+            return format((value / 10_000).normalize(), "f")
+        return f"{value / 100:.2f}"
+
+    varying = bool(row.get("vary_distribution"))
+    drawn = (lambda raw: raw) if row.get("vary_target") == "date" else amount
+    correlated = bool(row.get("vary_correlate_with"))
+    values = {
+        "date": row["date"],
+        "aux_kind": str(params.get("aux_kind", "rate")),
+        "series": row["series"],
+        "rate_percent": amount(row["amount"]),
+        "scheduled_name": row["scheduled_name"],
+        "amount": amount(row["amount"]),
+        "param_date": row["param_date"],
+        "from_account": row["account_1"], "from_lot": row["lot_1"],
+        "to_account": row["account_2"], "to_lot": row["lot_2"],
+        "tax_character": row["tax_character"] or "none",
+        "description": row["description"] or (
+            # Only a transfer's command keeps a copy of it in params_json.
+            str(params.get("description", "")) if command == "transfer" else ""
+        ),
+        "tags": row["tags"],
+        "name": row["name"],
+        "row_name": row["name"],
+        "_vary": "y" if varying else "n",
+        "vary_target": row["vary_target"],
+        "vary_distribution": row["vary_distribution"],
+        "vary_low": drawn(row["vary_low"]), "vary_high": drawn(row["vary_high"]),
+        "vary_median": drawn(row["vary_median"]), "vary_sd": drawn(row["vary_sd"]),
+        "vary_mode": drawn(row["vary_mode"]),
+        "vary_skew": row["vary_skew"], "vary_tailweight": row["vary_tailweight"],
+        "vary_ramp_months": row["vary_ramp_months"],
+        "_correlate": "y" if correlated else "n",
+        "vary_correlate_with": row["vary_correlate_with"],
+        "vary_correlation": row["vary_correlation"],
+    }
+    return spec, {f.param: values[f.param] for f in spec.fields}
+
+
+def _guide_context(
+    data_dir: Path, scenario: str | None,
+    *, rows: list[dict[str, str]] | None = None, editing: int | None = None,
+) -> calendar_guide.GuideContext:
+    """The scenario's names, as completions for the guided prompts (#32).
+
+    ``rows`` are the scenario's own calendar.csv rows, whose names a new or
+    edited row may not reuse. With ``editing`` (a row's index), the others
+    are also what the edited row may not duplicate, and its own name is not
+    offered to correlate with.
+    """
     def column(con: sqlite3.Connection, sql: str, *args: str) -> list[str]:
         return sorted({r[0] for r in con.execute(sql, args) if r[0]})
+
+    # Names are compared trimmed, as the loader trims every cell before it
+    # checks them.
+    others = [row for index, row in enumerate(rows or []) if index != editing]
+    own_name = rows[editing]["name"].strip() if rows and editing is not None else ""
+    other_rows: dict[str, list[dict[str, str]]] = {}
+    if editing is not None:
+        for row in others:
+            converted = _calendar_row_answers(row)
+            if converted is not None:
+                other_rows.setdefault(converted[0].command, []).append(converted[1])
 
     with _intent_db(data_dir, scenario) as (con, _name):
         aux = "SELECT series FROM aux_table WHERE kind = ?"
@@ -2160,8 +2350,20 @@ def _guide_context(data_dir: Path, scenario: str | None) -> calendar_guide.Guide
                     *column(con, "SELECT series FROM scheduled_transaction"),
                 } - {"fixed"}),
             },
-            row_names=column(con, "SELECT name FROM calendar_event"),
+            row_names=[
+                name for name in column(con, "SELECT name FROM calendar_event")
+                if name != own_name
+            ],
+            other_rows=other_rows,
+            taken_names=frozenset(row["name"].strip() for row in others if row["name"].strip()),
         )
+
+
+def _canonical_calendar_date(spec: calendar_guide.KindSpec, typed: str) -> str:
+    """A row's date as the loader will read it, for comparing rows: a bare
+    month and that month's last day are the same date (#34)."""
+    kind = next(k for k, command in _CALENDAR_COMMAND_OF_KIND.items() if command == spec.command)
+    return calendar_row_key({"kind": kind, "date": typed})[0]
 
 
 def _calendar_guide() -> calendar_guide.Guide:
@@ -2177,6 +2379,7 @@ def _calendar_guide() -> calendar_guide.Guide:
             "integer": int,
             "tags": registries.parse_tags,
         },
+        canonical_date=_canonical_calendar_date,
     )
 
 
@@ -2218,7 +2421,11 @@ def calendar_add_group_command(
                 f"sim calendar add {ctx.invoked_subcommand} ... --scenario NAME"
             )
         return
-    context = _guide_context(_resolve_data_dir(data_dir), scenario)
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "calendar.csv"
+    _echo_calendar_scenario(scenario_name, path, defaulted=scenario is None)
+    context = _guide_context(data_dir_p, scenario_name, rows=_read_calendar_rows(path))
     guide = _calendar_guide()
     click.echo("What kind of calendar row?")
     for spec in calendar_guide.KINDS:
@@ -2230,15 +2437,115 @@ def calendar_add_group_command(
     answers = guide.complete(spec, context, {})
 
     def submit(params: dict[str, object]) -> None:
+        # The scenario announced above, by name: a defaulted scenario is not
+        # resolved again, in case the default changed during the prompts.
         ctx.invoke(
             calendar_add_group_command.commands[kind],
-            scenario=scenario, data_dir=data_dir, **params,
+            scenario=scenario_name, data_dir=data_dir_p, **params,
         )
 
     if not guide.review(
         spec, context, answers, submit,
         scenario=scenario, data_dir=str(data_dir) if data_dir is not None else None,
     ):
+        ctx.exit(1)
+
+
+def _echo_calendar_scenario(name: str, path: Path, *, defaulted: bool) -> None:
+    """Say which scenario's calendar a guided command is about to change,
+    before it asks anything: a defaulted scenario may not be the one meant."""
+    how = " (the default; use --scenario for another)" if defaulted else ""
+    click.echo(f"Scenario: {name}{how}")
+    click.echo(f"  {path}")
+
+
+def _select_calendar_row(rows: list[dict[str, str]], wanted: str | None) -> int:
+    """Narrow ``rows`` to one, by its number, its name, or text it contains;
+    asks (again) while that leaves more or fewer than one."""
+    labels = [_calendar_row_label(row) for row in rows]
+    candidates = list(range(len(rows)))
+    while True:
+        if wanted is None:
+            for index in candidates:
+                click.echo(f"  {index + 1:>3}  {labels[index]}")
+            names = [rows[index]["name"] for index in candidates if rows[index]["name"]]
+            wanted = _prompt_with_completion(
+                "row (its number or name, or text to narrow the list)",
+                choices=[*names, *(str(index + 1) for index in candidates)],
+            )
+        text, wanted = wanted.strip(), None
+        if text.isdigit() and 1 <= int(text) <= len(rows):
+            return int(text) - 1
+        named = [index for index, row in enumerate(rows) if text and row["name"] == text]
+        if len(named) == 1:
+            return named[0]
+        matches = [index for index in candidates if text.lower() in labels[index].lower()]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            candidates = matches
+        else:
+            click.echo(f"  no row matches {text!r}")
+
+
+@calendar_group_command.command("edit")
+@click.argument("row", required=False)
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.pass_context
+def calendar_edit(
+    ctx: click.Context, row: str | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Change one row of the scenario's own calendar.csv.
+
+    ROW is the row's number, its name, or text that picks it out; without it,
+    or if it matches several rows, the rows are listed to choose from. The
+    row's fields are then shown: name one to change it, as often as needed,
+    and write when done. The row keeps its kind and its place in the file.
+
+    A change that would make the row a copy of another row, or reuse another
+    row's name, is refused. Rows inherited from a parent scenario are edited
+    in that scenario.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "calendar.csv"
+    _echo_calendar_scenario(scenario_name, path, defaulted=scenario is None)
+    rows = _read_calendar_rows(path)
+    if not rows:
+        raise click.ClickException(
+            f"scenario {scenario_name!r} has no calendar rows of its own to edit "
+            "(rows it inherits are edited in the parent scenario)"
+        )
+    index = _select_calendar_row(rows, row)
+    converted = _calendar_row_answers(rows[index])
+    if converted is None:
+        raise click.ClickException(
+            f"row {index + 1} is a {rows[index]['kind']!r} row, which this command "
+            f"cannot edit; change it in {path}"
+        )
+    spec, answers = converted
+    click.echo(f"Editing row {index + 1}: {_calendar_row_label(rows[index])}")
+    context = _guide_context(data_dir_p, scenario_name, rows=rows, editing=index)
+    guide = _calendar_guide()
+    guide.complete(spec, context, answers)
+
+    def submit(params: dict[str, object]) -> None:
+        ctx.meta[_CALENDAR_REPLACE_ROW] = (index, rows[index])
+        try:
+            # The scenario announced above, by name: a defaulted scenario is
+            # not resolved again, in case the default changed meanwhile.
+            ctx.invoke(
+                calendar_add_group_command.commands[spec.command],
+                scenario=scenario_name, data_dir=data_dir_p, **params,
+            )
+        finally:
+            del ctx.meta[_CALENDAR_REPLACE_ROW]
+
+    if not guide.review(spec, context, answers, submit, show_command=False):
         ctx.exit(1)
 
 
@@ -2310,10 +2617,9 @@ def calendar_add_set_rate(
         "description": description, "tags": tags, **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
-    _append_and_validate(path, registries.CALENDAR_HEADER, row,
-                        data_dir=data_dir_p, scenario_name=scenario_name)
+    verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
-        f"appended set_rate {series!r} -> {rate_percent}% on {date} "
+        f"{verb} set_rate {series!r} -> {rate_percent}% on {date} "
         f"(aux_kind={aux_kind!r}) to {path}"
     )
 
@@ -2381,10 +2687,9 @@ def calendar_add_set_amount(
         "description": description, "tags": tags, **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
-    _append_and_validate(path, registries.CALENDAR_HEADER, row,
-                        data_dir=data_dir_p, scenario_name=scenario_name)
+    verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
-        f"appended set_amount {scheduled_name!r} -> {_fmt_cents(cents).strip()} "
+        f"{verb} set_amount {scheduled_name!r} -> {_fmt_cents(cents).strip()} "
         f"on {date} to {path}"
     )
 
@@ -2447,9 +2752,8 @@ def calendar_add_retire_scheduled(
         "description": description, "tags": tags, **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
-    _append_and_validate(path, registries.CALENDAR_HEADER, row,
-                        data_dir=data_dir_p, scenario_name=scenario_name)
-    click.echo(f"appended retire_scheduled {scheduled_name!r} on {date} to {path}")
+    verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
+    click.echo(f"{verb} retire_scheduled {scheduled_name!r} on {date} to {path}")
 
 
 @calendar_add_group_command.command("latent-factor")
@@ -2483,9 +2787,8 @@ def calendar_add_latent_factor(
         **_correlation_fields(vary_correlate_with, vary_correlation),
     }
     path = scenario_dir / "calendar.csv"
-    _append_and_validate(path, registries.CALENDAR_HEADER, row,
-                         data_dir=data_dir_p, scenario_name=scenario_name)
-    click.echo(f"appended latent_factor {name!r} to {path}")
+    verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
+    click.echo(f"{verb} latent_factor {name!r} to {path}")
 
 
 @calendar_add_group_command.command("transfer")

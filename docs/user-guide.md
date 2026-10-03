@@ -417,6 +417,8 @@ sim run inflation_1
 
 Run `sim calendar add` with no kind to be asked for each of these a question
 at a time instead; see [the guided mode](guides/ensembles.md#guided-mode).
+`sim calendar edit` changes a row you have already written; see
+[changing a row](guides/ensembles.md#changing-a-row).
 
 See [docs/guides/ensembles.md](guides/ensembles.md) for the full
 how-to, including how many members is reasonable for your case (it depends

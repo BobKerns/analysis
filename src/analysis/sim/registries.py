@@ -295,6 +295,15 @@ CALENDAR_HEADER: tuple[str, ...] = (
     "vary_correlate_with", "vary_correlation",
 )
 
+# The columns that identify a calendar.csv row when a scenario's rows are
+# merged over its parent's: rows alike in all of them are one event. `name`
+# is deliberately not among them (ADR-006); a latent factor (ADR-008) is
+# keyed by its name alone.
+CALENDAR_KEY_COLUMNS: tuple[str, ...] = (
+    "date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
+    "series", "amount",
+)
+
 # ADR-006: which of a varying calendar_event row's own columns is drawn.
 VARY_TARGETS: set[str] = {"amount", "date"}
 

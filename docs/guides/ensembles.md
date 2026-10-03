@@ -78,6 +78,33 @@ A kind given without its arguments asks for just those, so `sim calendar
 add set-amount` prompts for the date, the rule, and the amount, and nothing
 else.
 
+### Changing a row
+
+To change a row you have already written, such as widening a range or moving
+a date:
+
+```sh
+sim calendar edit --scenario inflation_1
+```
+
+It lists the scenario's own calendar rows and asks which one. Answer with
+the row's number or its name, or type any text to narrow the list (`retire`,
+`2029`, an account) until one row is left. You can also name the row on the
+command line: `sim calendar edit fund_vary`.
+
+You then see the row's fields, as in the review at the end of the guided
+mode. Type a field's name to change it, as often as you like, and press
+Enter to write. The row keeps its kind and its place in the file; to turn a
+row into a different kind, add a new one and delete the old.
+
+Two rows that agree on date, kind, rule, accounts, lots, series and amount
+are the same event to the simulator, so an edit that would make this row a
+copy of another is refused, and the choice that would cause it is left out
+of the completions. So is giving the row a name another row already has.
+
+A row the scenario inherits from its parent is not listed: edit it in the
+parent, or add a row here that overrides it.
+
 **Choosing a distribution.** Three are available:
 
 - **`uniform`** (`--vary-low`, `--vary-high`): anything in the range is

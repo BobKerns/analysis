@@ -243,3 +243,20 @@ def test_guide_asks_again_for_an_answer_a_later_change_rules_out(
     row = calendar_rows().query("name == 'raise_vary'").iloc[0]
     assert (row["vary_target"], row["vary_distribution"]) == ("date", "uniform")
     assert (row["vary_low"], row["vary_high"]) == ("2028-01", "2028-06")
+
+
+def test_guide_says_which_scenario_before_asking_anything(
+    calendar_add: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    named = calendar_add(answers=["latent-factor", "economy", "", "n", "cancel"])
+
+    assert named.output.startswith("Scenario: retire_alice\n")
+
+    defaulted = CliRunner().invoke(
+        main, ["sim", "calendar", "add", "--data-dir", str(test_data_dir)],
+        input="latent-factor\neconomy\n\nn\ncancel\n",
+    )
+
+    assert defaulted.output.startswith(
+        "Scenario: retire_alice (the default; use --scenario for another)\n"
+    )
