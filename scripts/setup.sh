@@ -1,5 +1,6 @@
 #!/bin/sh
-# One-time repo setup: uv, pinned Python, git hooks, deps, notebook filter.
+# One-time repo setup: uv, pinned Python, git hooks, deps, notebook filter,
+# lint tools.
 # Safe to re-run; every step is idempotent.
 set -eu
 
@@ -40,5 +41,15 @@ echo "Installing nbstripout notebook filter..."
 uv run nbstripout --install
 # shellcheck disable=SC2016  # single-quoted: git expands $(...) later, not this script
 git config filter.nbstripout.clean '"$(git rev-parse --show-toplevel)/.venv/bin/python" -m nbstripout --extra-keys "metadata.kernelspec.display_name metadata.language_info.version"'
+
+if command -v npm >/dev/null 2>&1; then
+    echo "Installing pinned lint tools (cspell, markdownlint)..."
+    npm ci --no-audit --no-fund
+else
+    # Not fatal: running the simulator and notebooks needs no Node. Only the
+    # spelling and markdown gates do.
+    echo "npm not found; skipping cspell/markdownlint. Install Node.js and re-run" >&2
+    echo "this script before using 'npm run spell' / 'npm run markdownlint'." >&2
+fi
 
 echo "Setup complete."

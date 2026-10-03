@@ -87,17 +87,21 @@ if the venv isn't on `PATH`.
 
 ## Verifying a change
 
-Five gates, all of which should pass before reporting a change done:
+Four gates should pass before reporting any change done, plus a fifth for
+changes to the simulator or its loader:
 
 ```sh
 .venv/bin/python -m pytest -q                     # tests
 .venv/bin/python -m ruff check src tests          # lint
-cspell --no-progress .                            # spelling
-markdownlint .                                    # markdown
-for s in "$ANALYSIS_DATA_DIR"/scenarios/*/; do    # real scenarios still load
+npm run spell                                     # spelling (cspell)
+npm run markdownlint                              # markdown (markdownlint)
+for s in "$ANALYSIS_DATA_DIR"/scenarios/*/; do    # simulator changes: real scenarios still load
   .venv/bin/analysis sim check "$(basename "$s")"
 done
 ```
+
+`cspell` and `markdownlint` are pinned in `package.json` and installed by
+`scripts/setup.sh` (`npm ci`); see [`docs/SETUP.md`](../docs/SETUP.md).
 
 Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_name -q`
 (or `-k pattern` to match by substring).

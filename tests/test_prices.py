@@ -1,7 +1,5 @@
 """Fetching security prices into aux files (ADR-005 §6)."""
 
-# cspell:ignore Brok
-
 from __future__ import annotations
 
 import json
@@ -112,8 +110,8 @@ def test_yahoo_provider_turns_bad_responses_into_price_errors(payload: bytes) ->
 
 def test_prices_in_use_lists_symbols_with_a_quantity_and_the_earliest_start(tmp_path: Path) -> None:
     for name, start, rows in [
-        ("base", "2026-05-31", "Brok,a,AAA,,10,,,,\nBrok,b,BBB,,,,100.00,,\nCash,,CASH,,5,,,,\n"),
-        ("child", "", "Brok,c,CCC,,3,,,,\n"),
+        ("base", "2026-05-31", "Brokerage,a,AAA,,10,,,,\nBrokerage,b,BBB,,,,100.00,,\nCash,,CASH,,5,,,,\n"),
+        ("child", "", "Brokerage,c,CCC,,3,,,,\n"),
     ]:
         folder = tmp_path / name
         folder.mkdir()

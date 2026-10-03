@@ -1,0 +1,13 @@
+{
+  "name": "analysis-lint-tools",
+  "private": true,
+  "description": "Pinned spelling and markdown linters for the verification gates; the project itself is Python (see pyproject.toml).",
+  "scripts": {
+    "spell": "cspell --no-progress .",
+    "markdownlint": "markdownlint ."
+  },
+  "devDependencies": {
+    "cspell": "10.3.6",
+    "markdownlint-cli": "0.49.1"
+  }
+}

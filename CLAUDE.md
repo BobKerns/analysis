@@ -26,10 +26,11 @@ git fetch origin
 git -c filter.nbstripout.clean=cat -c filter.nbstripout.smudge=cat \
     -c filter.nbstripout.required=false \
     worktree add --no-track -b <branch> ../analysis-worktrees/<flattened-branch> origin/main
-cd ../analysis-worktrees/<flattened-branch> && env -u VIRTUAL_ENV uv sync
+cd ../analysis-worktrees/<flattened-branch> && env -u VIRTUAL_ENV uv sync && npm ci
 ```
 
-After `uv sync` the filter works normally. Run commands there with
+After `uv sync` the filter works normally; `npm ci` installs the pinned
+`cspell`/`markdownlint` for the spelling and markdown gates. Run commands there with
 `env -u VIRTUAL_ENV uv run ...`, since an editor terminal's `VIRTUAL_ENV` may
 point at the main checkout's `.venv`.
 

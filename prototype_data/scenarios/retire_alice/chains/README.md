@@ -36,10 +36,7 @@ An income chain distributes incoming funds to one or more target assets. An exam
 
 ## Chains defined in this scenario
 
-* `asset__Bob_HSA`—Policy for paying Bob's medical expenses
-* `asset__Hiromi_HSA`—Policy for paying Hiromi's medical expenses
-* `asset__Family_Cash`—Policy for most payments
-* `asset__Hiromi_Cash`—Policy for Hiromi initially drawing from `Hiromi FECU`.
-* `asset__Family_Refill`—Policy for refilling the `Family WF PMA` account.
-* `income__SS_Bob`—Splits raw Social Security income between Part B, Part D, and bank.
-* `income__SS_Hiromi`—Splits raw Social Security income between Part B and bank.
+* `asset__asset_checking_liquidity.csv` (`asset_checking_liquidity`):
+  the `refill_chain` for `Asset_Checking`, which has a `minimum_balance` of
+  $2,000. It draws from `Asset_Savings` first, then from the `default` lot of
+  `Asset_TraditionalIRA_Alice`.
