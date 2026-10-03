@@ -73,6 +73,18 @@ class Uniform:
         """``quantile`` rounded to a day ordinal, for a date target."""
         return round(self.quantile(q))
 
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
+    def value_at_int(self, u: float) -> int:
+        """A date as a correlated draw resolves it: each whole day in
+        ``[round(low), round(high)]`` equally likely, matching ``draw_int``
+        (not ``quantile_int``'s rounding, which gives the end days half
+        weight)."""
+        low, high = round(self.low), round(self.high)
+        return min(high, low + int(_clamp_unit(u) * (high - low + 1)))
+
 
 def _shape(z: float, skew: float, tailweight: float) -> float:
     """Sinh-arcsinh transform of a standard normal score (Jones & Pewsey
@@ -300,6 +312,10 @@ class TruncatedNormal:
             raise DistributionError("truncated_normal: the bounds hold no probability")
         return value
 
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
 
 @dataclass(frozen=True)
 class Triangular:
@@ -335,6 +351,14 @@ class Triangular:
 
     def draw_int(self, rng: random.Random) -> int:
         return round(self.draw(rng))
+
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
+    def value_at_int(self, u: float) -> int:
+        """A date as a correlated draw resolves it, rounded like ``draw_int``."""
+        return round(self.value_at(u))
 
     def central(self) -> float:
         """The median (ADR-006 §9's base case), not the mode."""
@@ -391,6 +415,11 @@ def moments(
     skewness = math.fsum(c**3 for c in centered) / count / sd**3
     kurtosis = math.fsum(c**4 for c in centered) / count / variance**2 - 3.0
     return Moments(mean, sd, skewness, kurtosis)
+
+
+def _clamp_unit(u: float) -> float:
+    """A copula probability, kept inside [0, 1] against float round-off."""
+    return min(1.0, max(0.0, u))
 
 
 def _check_quantile(q: float) -> None:

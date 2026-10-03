@@ -4,6 +4,8 @@ columns, their validation across scenario inheritance, and load warnings."""
 from __future__ import annotations
 
 import json
+import math
+import random
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -14,6 +16,18 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim import scenario
+from analysis.sim.correlation import (
+    CorrelationError,
+    Link,
+    expected_rank_correlation,
+    implied_correlation,
+    probability,
+    resolve_scores,
+    standard_normal,
+    topological_order,
+    tree_members,
+)
+from analysis.sim.distributions import Triangular, TruncatedNormal, Uniform
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import LoadError, LoadResult, load_scenario
 from analysis.sim.registries import CALENDAR_HEADER
@@ -233,3 +247,127 @@ def test_cli_prints_a_warning_once(
     ])
     assert load.exit_code == 0, load.output
     assert load.output.count("WARN:") == 1
+
+
+# --- Phase 1: the copula math (pure) -----------------------------------------------
+
+MEMBERS = 5_000
+
+# economy -> inflation -> {rate_a, rate_b}; economy -> stocks (anti-correlated)
+TREE = {
+    "inflation": Link("economy", 0.8),
+    "rate_a": Link("inflation", 0.9),
+    "rate_b": Link("inflation", 0.6),
+    "stocks": Link("economy", -0.5),
+}
+
+
+def _spearman(a: pd.Series, b: pd.Series) -> float:
+    """Spearman's rho as Pearson on ranks (pandas' method="spearman" needs scipy)."""
+    return a.rank().corr(b.rank())
+
+
+def _simulate(links: dict[str, Link], members: int = MEMBERS, seed: int = 11) -> pd.DataFrame:
+    """Scores per member, one independent noise draw per node per member."""
+    rng = random.Random(seed)
+    nodes = tree_members(links)
+    rows = [resolve_scores(links, {n: standard_normal(rng) for n in nodes})
+            for _ in range(members)]
+    return pd.DataFrame(rows)
+
+
+def test_topological_order_puts_parents_first() -> None:
+    order = topological_order(TREE)
+    assert order[0] == "economy"
+    for child, link in TREE.items():
+        assert order.index(link.parent) < order.index(child)
+    assert tree_members(TREE) == {"economy", "inflation", "rate_a", "rate_b", "stocks"}
+
+
+def test_topological_order_rejects_a_cycle() -> None:
+    with pytest.raises(CorrelationError, match="cycle"):
+        topological_order({"a": Link("b", 0.5), "b": Link("a", 0.5)})
+
+
+def test_implied_correlation_multiplies_along_the_path() -> None:
+    assert implied_correlation(TREE, "rate_a", "inflation") == pytest.approx(0.9)
+    assert implied_correlation(TREE, "rate_a", "rate_b") == pytest.approx(0.9 * 0.6)
+    assert implied_correlation(TREE, "rate_a", "economy") == pytest.approx(0.9 * 0.8)
+    assert implied_correlation(TREE, "rate_a", "stocks") == pytest.approx(0.9 * 0.8 * -0.5)
+    assert implied_correlation(TREE, "rate_a", "rate_a") == 1.0
+    assert implied_correlation({**TREE, "other": Link("elsewhere", 0.5)}, "rate_a", "other") == 0.0
+
+
+def test_scores_are_standard_normal_and_correlate_as_implied() -> None:
+    scores = _simulate(TREE)
+    for node in scores.columns:  # each score is standard normal on its own
+        assert abs(scores[node].mean()) < 0.05 and abs(scores[node].std() - 1) < 0.05
+    for a, b in [("rate_a", "inflation"), ("rate_a", "rate_b"), ("rate_b", "stocks"),
+                 ("inflation", "economy")]:
+        assert scores[a].corr(scores[b]) == pytest.approx(implied_correlation(TREE, a, b), abs=0.03)
+
+
+@pytest.mark.parametrize("dist", [
+    Uniform(40_000, 50_000),
+    TruncatedNormal(median=45_000, sd=5_000, clip_low=38_000, clip_high=70_000, skew=0.6),
+    Triangular(40_000, 42_000, 60_000),
+])
+def test_each_rows_authored_distribution_is_preserved(dist) -> None:  # type: ignore[no-untyped-def]
+    """A correlated child's values follow its own distribution exactly: its
+    empirical quantiles match dist.quantile, and it never leaves its bounds."""
+    scores = _simulate(TREE)
+    values = scores["rate_a"].map(lambda z: dist.value_at(probability(z)))
+    for q in (0.1, 0.25, 0.5, 0.75, 0.9):
+        assert (values <= dist.quantile(q)).mean() == pytest.approx(q, abs=0.02)
+    assert values.min() >= dist.quantile(0) and values.max() <= dist.quantile(1)
+
+
+def test_continuous_values_rank_correlate_as_expected() -> None:
+    """For continuous values the Spearman correlation of the *values* is
+    (6/pi)·asin(rho/2), whatever the two distributions (ADR-008 §1)."""
+    scores = _simulate(TREE)
+    skewed = TruncatedNormal(median=6, sd=2, clip_low=0, clip_high=20, skew=0.8)
+    flat = Uniform(0, 1)
+    a = scores["rate_a"].map(lambda z: skewed.value_at(probability(z)))
+    b = scores["rate_b"].map(lambda z: flat.value_at(probability(z)))
+    expected = expected_rank_correlation(implied_correlation(TREE, "rate_a", "rate_b"))
+    assert _spearman(a, b) == pytest.approx(expected, abs=0.03)
+
+
+@pytest.mark.parametrize("rho", [1.0, -1.0, 0.0])
+def test_extreme_and_zero_correlations(rho: float) -> None:
+    scores = _simulate({"child": Link("parent", rho)})
+    observed = _spearman(scores["child"], scores["parent"])
+    if rho:
+        assert observed == pytest.approx(rho)  # the child is a monotone function of the parent
+    else:
+        assert abs(observed) < 0.05
+
+
+def test_expected_rank_correlation_stays_near_rho() -> None:
+    assert max(abs(r / 100 - expected_rank_correlation(r / 100)) for r in range(-100, 101)) < 0.02
+    assert expected_rank_correlation(0.6) == pytest.approx(0.582, abs=1e-3)
+
+
+def test_uniform_date_value_at_int_weights_every_day_equally() -> None:
+    """A correlated uniform date matches draw_int: each whole day equally
+    likely (not quantile_int's half-weight end days)."""
+    dist = Uniform(738_000, 738_002)  # three days
+    counts = pd.Series([dist.value_at_int(i / 30_000 + 1 / 60_000) for i in range(30_000)]).value_counts()
+    assert sorted(counts.index) == [738_000, 738_001, 738_002]
+    assert counts.min() / counts.max() > 0.99
+    assert dist.value_at_int(1.0) == 738_002 and dist.value_at_int(0.0) == 738_000
+
+
+def test_triangular_date_value_at_int_rounds_like_draw_int() -> None:
+    dist = Triangular(738_000, 738_030, 738_300)
+    assert dist.value_at_int(0.5) == round(dist.quantile(0.5))
+    assert isinstance(dist.value_at_int(0.3), int)
+
+
+def test_standard_normal_is_standard() -> None:
+    rng = random.Random(3)
+    draws = [standard_normal(rng) for _ in range(MEMBERS)]
+    mean = sum(draws) / MEMBERS
+    sd = math.sqrt(sum((d - mean) ** 2 for d in draws) / MEMBERS)
+    assert abs(mean) < 0.05 and abs(sd - 1) < 0.05
