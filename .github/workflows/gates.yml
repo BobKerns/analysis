@@ -39,12 +39,12 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.event.after }}
         run: |
-          # A new branch or a force push leaves no usable base: check the
-          # head commit alone.
+          # A force push (or the first push) leaves no usable base, and the
+          # pushed range is unknown: fail closed by checking the whole history.
           if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
               range="$BASE..$HEAD"
           else
-              range="-1 $HEAD"
+              range="$HEAD"
           fi
           status=0
           for sha in $(git rev-list $range); do
