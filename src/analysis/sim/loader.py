@@ -871,20 +871,46 @@ def _normalize_month_columns(
     rows: list[dict[str, str]], filename: str, issues: list[str],
 ) -> None:
     """Rewrite ``filename``'s month columns (``_MONTH_COLUMNS``) in place to
-    their canonical month-end ISO date, reporting and blanking any that
-    don't parse."""
+    their canonical month-end ISO date -- or, where the engine counts days
+    (``_keeps_exact_day``), a full date's own day -- reporting and blanking
+    any that don't parse."""
     for i, row in enumerate(rows, start=2):
         for col in _MONTH_COLUMNS.get(filename, ()):
             raw = row.get(col) or ""
             if not raw:
                 continue
+            exact = _keeps_exact_day(filename, col, row)
             try:
-                row[col] = month_end_iso(raw)
+                if exact and len(raw) > len("YYYY-MM"):
+                    row[col] = parse_day(raw).isoformat()
+                elif exact == "required":
+                    issues.append(
+                        f"{filename} row {i}: {col} '{raw}' needs a full YYYY-MM-DD: "
+                        "a biweekly rule's start is its first payday, the 14-day anchor"
+                    )
+                    row[col] = ""
+                else:
+                    row[col] = month_end_iso(raw)
             except ValueError:
                 issues.append(f"{filename} row {i}: {col} '{raw}' is not {MONTH_FORMAT_HINT}")
                 # Blank (NULL) from here on: later stages read these columns
                 # before ``issues`` is raised, and must not trip on the raw text.
                 row[col] = ""
+
+
+def _keeps_exact_day(filename: str, col: str, row: dict[str, str]) -> str | None:
+    """Whether a month column's full date keeps its day, because the engine
+    counts days there: ``'required'`` (a bare month is an error), ``'kept'``
+    (a bare month is still the month's end), or ``None`` (always month-end).
+
+    A biweekly rule's ``start`` anchors its 14-day stride and its ``end``
+    clips it; a ``retire_scheduled`` event's date becomes its rule's ``end``
+    (ADR-006 §2: the day matters within its month)."""
+    if filename == "scheduled.csv" and (row.get("cadence") or "") == "biweekly":
+        return {"start": "required", "end": "kept"}.get(col)
+    if filename == "calendar.csv" and col == "date" and row.get("kind") == "retire_scheduled":
+        return "kept"
+    return None
 
 
 def _normalize_vary_dates(rows: list[dict[str, str]]) -> None:
@@ -2074,7 +2100,7 @@ def _parse_vary_params(
             if col in _VARY_SHAPE_COLUMNS:
                 shape[col] = float(raw)
             else:
-                parsed[col] = date.fromisoformat(raw).toordinal() if target == "date" else int(raw)
+                parsed[col] = parse_day(raw).toordinal() if target == "date" else int(raw)
         except ValueError:
             unit = "number" if col in _VARY_SHAPE_COLUMNS else (
                 MONTH_FORMAT_HINT if target == "date" else "integer"

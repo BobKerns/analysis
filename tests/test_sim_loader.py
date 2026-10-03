@@ -1676,3 +1676,70 @@ def test_malformed_month_is_a_load_error_not_a_crash(
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any("start 'soon' is not YYYY-MM or YYYY-MM-DD" in issue for issue in ei.value.issues)
+
+
+def _set_scheduled(retire_alice_csv: Callable[[str], Path], name: str, **cells: str) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    for col, value in cells.items():
+        df.loc[df["name"] == name, col] = value
+    df.to_csv(path, index=False)
+
+
+def test_biweekly_dates_keep_their_day(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A biweekly rule's start is its 14-day anchor and its end clips it, so
+    a full date keeps its day; a bare-month end is still the month's end."""
+    _set_scheduled(retire_alice_csv, "salary_alice",
+                   cadence="biweekly", start="2026-05-15", end="2030-06")
+    _set_scheduled(retire_alice_csv, "salary_bob",
+                   cadence="biweekly", start="2026-05-08", end="2030-06-12")
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    assert dict(
+        (name, (start, end)) for name, start, end in con.execute(
+            'SELECT name, start, "end" FROM scheduled_transaction '
+            "WHERE name IN ('salary_alice', 'salary_bob')"
+        )
+    ) == {
+        "salary_alice": ("2026-05-15", "2030-06-30"),
+        "salary_bob": ("2026-05-08", "2030-06-12"),
+    }
+
+
+def test_biweekly_start_needs_a_full_date(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    _set_scheduled(retire_alice_csv, "salary_alice", cadence="biweekly", start="2026-05")
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("start '2026-05' needs a full YYYY-MM-DD" in issue for issue in ei.value.issues)
+
+
+def test_retire_scheduled_date_keeps_its_day(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """It becomes the rule's end, where the day matters (ADR-006 §2)."""
+    append_calendar_row(date="2029-03-12", kind="retire_scheduled", scheduled_name="salary_bob")
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    assert ("2029-03-12",) in con.execute(
+        "SELECT date FROM calendar_event WHERE kind = 'retire_scheduled'"
+    ).fetchall()
+
+
+def test_vary_date_bound_rejects_iso_week_date(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="uniform",
+        vary_low="2029-W01-1", vary_high="2029-12-31",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_low '2029-W01-1' is not a valid" in issue for issue in ei.value.issues)
