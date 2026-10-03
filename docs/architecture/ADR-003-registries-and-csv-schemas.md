@@ -821,11 +821,15 @@ create`, `ensemble create`) goes through one staged edit
    scenario that already failed before the edit is reported as a warning,
    not blamed on it.
 4. **Commit.** Only then are the changed files copied back, each by an
-   atomic rename.
+   atomic rename. If a file the edit would write changed on disk since it was
+   staged (another edit got there first), the edit is refused rather than
+   overwrite it. If a rename fails or is interrupted, the ones already done
+   are rolled back from backups.
 
 A rejected edit, a crash midway through a multi-file edit (`account rename`,
 `account delete`), or an interrupt at a prompt therefore leaves the data
-repo exactly as it was. `account delete` also removes `calendar.csv`
+repo exactly as it was. Only a hard kill during the final renames can leave
+some files new and some old. `account delete` also removes `calendar.csv`
 `set_rate` rows for the account's own growth series when nothing else reads
 that series, since the loader would otherwise reject them as dead.
 

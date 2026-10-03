@@ -3,9 +3,11 @@
 Every CLI command that edits scenario CSVs makes its changes in a staged copy
 of the data dir's ``scenarios/`` tree, never in place. Only once every
 scenario the edit could affect still loads are the changed files copied back,
-each by an atomic ``os.replace``. A rejected edit, a crash partway through a
-multi-file edit, or a Ctrl-C at a prompt therefore leaves the data repo
-exactly as it was.
+each by an atomic ``os.replace``, with the earlier swaps rolled back if a
+later one fails. A rejected edit, a crash partway through a multi-file edit,
+or a Ctrl-C at a prompt therefore leaves the data repo exactly as it was. A
+file that changed on disk while the edit was staged is never overwritten:
+the edit is refused instead.
 
 The edited scenario is also loaded *before* the edit (the preflight). A
 scenario that already fails to load is reported as such, up front, instead of
@@ -14,7 +16,7 @@ the failure being pinned on whatever row the current command was adding.
 
 from __future__ import annotations
 
-import filecmp
+import hashlib
 import os
 import shutil
 import sqlite3
@@ -111,26 +113,47 @@ def _stage(real: Path, stage: Path) -> None:
             target.symlink_to(entry, target_is_directory=entry.is_dir())
 
 
-def _files(root: Path) -> set[Path]:
-    return {p.relative_to(root) for p in root.rglob("*") if p.is_file()}
+def _staged_files(root: Path) -> set[Path]:
+    """Files under ``root`` that a staged edit copies: ``scenarios/**`` and
+    top-level regular files (not the symlinked top-level folders)."""
+    files = {p.relative_to(root) for p in (root / SCENARIOS).rglob("*") if p.is_file()} \
+        if (root / SCENARIOS).is_dir() else set()
+    files.update(Path(p.name) for p in root.iterdir() if p.is_file() and not p.is_symlink())
+    return files
 
 
-def _diff(real: Path, stage: Path) -> tuple[list[Path], list[Path]]:
-    """Relative paths that are new or changed in the stage, and those removed."""
-    real_files = _files(real / SCENARIOS) if (real / SCENARIOS).is_dir() else set()
-    stage_files = _files(stage / SCENARIOS)
-    changed = [
-        Path(SCENARIOS) / rel for rel in sorted(stage_files)
-        if rel not in real_files
-        or not filecmp.cmp(real / SCENARIOS / rel, stage / SCENARIOS / rel, shallow=False)
-    ]
-    removed = [Path(SCENARIOS) / rel for rel in sorted(real_files - stage_files)]
-    for entry in stage.iterdir():
-        if entry.is_file() and not entry.is_symlink():
-            other = real / entry.name
-            if not other.is_file() or not filecmp.cmp(other, entry, shallow=False):
-                changed.append(Path(entry.name))
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _manifest(root: Path) -> dict[Path, str]:
+    return {rel: _digest(root / rel) for rel in _staged_files(root)}
+
+
+def _diff(baseline: dict[Path, str], stage: Path) -> tuple[list[Path], list[Path]]:
+    """Relative paths the edit created or changed, and those it removed --
+    measured against the real files as they were staged, not as they are now,
+    so a concurrent change to some other file is never mistaken for ours."""
+    staged = _manifest(stage)
+    changed = sorted(rel for rel, digest in staged.items() if baseline.get(rel) != digest)
+    removed = sorted(set(baseline) - set(staged))
     return changed, removed
+
+
+class ConcurrentEdit(RuntimeError):
+    """A file this edit would write changed on disk after it was staged."""
+
+
+def _check_unchanged(real: Path, baseline: dict[Path, str], paths: list[Path]) -> None:
+    moved = [
+        rel for rel in paths
+        if ((real / rel).is_file() and _digest(real / rel)) != baseline.get(rel, False)
+    ]
+    if moved:
+        raise ConcurrentEdit(
+            "changed on disk while this edit was in progress; nothing was written: "
+            + ", ".join(str(real / rel) for rel in moved)
+        )
 
 
 def _affected_scenarios(stage: Path, touched: set[str]) -> list[str]:
@@ -143,25 +166,65 @@ def _affected_scenarios(stage: Path, touched: set[str]) -> list[str]:
 
 
 def _commit(real: Path, stage: Path, changed: list[Path], removed: list[Path]) -> list[Path]:
-    # Copy every change next to its target first, then swap them all in: the
-    # window where some files are new and others old is just the renames.
-    pending: list[tuple[Path, Path]] = []
+    """Copy the edit into ``real``: every new file is written beside its
+    target first, then the targets are swapped in by ``os.replace``. If any
+    step fails or is interrupted, the files already swapped are put back from
+    backups, so the scenario ends up wholly old or wholly new. (Only a hard
+    kill mid-swap can leave a mix; the swap is just renames, so the window is
+    small.)"""
+    created_dirs: list[Path] = []
+    pending: list[tuple[Path, Path]] = []   # (new temp, target)
+    backups: list[tuple[Path, Path]] = []   # (backup, target): target's old bytes
+    done: list[tuple[Path | None, Path]] = []  # (backup or None if new, target)
+
+    def scratch(dest: Path, kind: str) -> Path:
+        fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=f".{kind}")
+        os.close(fd)
+        return Path(tmp)
+
     try:
         for rel in changed:
             dest = real / rel
+            missing = [p for p in (dest.parent, *dest.parent.parents) if not p.exists()]
             dest.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".tmp")
-            os.close(fd)
+            created_dirs.extend(reversed(missing))
+            tmp = scratch(dest, "tmp")
+            pending.append((tmp, dest))
             shutil.copy2(stage / rel, tmp)
-            pending.append((Path(tmp), dest))
+        for rel in removed:
+            dest = real / rel
+            backup = scratch(dest, "bak")
+            backups.append((backup, dest))
+            shutil.copy2(dest, backup)
+        for tmp, dest in pending:
+            backup = None
+            if dest.exists():
+                backup = scratch(dest, "bak")
+                backups.append((backup, dest))
+                shutil.copy2(dest, backup)
+            os.replace(tmp, dest)
+            done.append((backup, dest))
+        for backup, dest in backups:
+            if any(target == dest for _, target in done):
+                continue
+            dest.unlink()
+            done.append((backup, dest))
     except BaseException:
+        for backup, dest in reversed(done):
+            if backup is None:
+                dest.unlink(missing_ok=True)
+            else:
+                os.replace(backup, dest)
         for tmp, _ in pending:
             tmp.unlink(missing_ok=True)
+        for backup, _ in backups:
+            backup.unlink(missing_ok=True)
+        for directory in reversed(created_dirs):
+            if directory.is_dir() and not any(directory.iterdir()):
+                directory.rmdir()
         raise
-    for tmp, dest in pending:
-        os.replace(tmp, dest)
-    for rel in removed:
-        (real / rel).unlink(missing_ok=True)
+    for backup, _ in backups:
+        backup.unlink(missing_ok=True)
     for rel in removed:
         parent = (real / rel).parent
         while parent != real / SCENARIOS and parent.is_dir() and not any(parent.iterdir()):
@@ -180,8 +243,10 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Iterator[StagedEd
     maps a real path to its staged copy). On a clean exit, every scenario
     whose folder changed, and every scenario inheriting from one, is loaded
     from the stage. Any that fails -- unless it already failed before the
-    edit -- raises :class:`EditRejected` with nothing written; otherwise the
-    changed files are copied back. If the body raises, nothing is written.
+    edit -- raises :class:`EditRejected` with nothing written. If a file the
+    edit would write changed on disk meanwhile, :class:`ConcurrentEdit` is
+    raised, also with nothing written; otherwise the changed files are copied
+    back. If the body raises, nothing is written.
     """
     real = Path(data_dir).resolve()
     name = resolve_scenario_name(real, scenario).name
@@ -194,6 +259,10 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Iterator[StagedEd
             )
         except LoadError as exc:
             raise ScenarioAlreadyBroken(name, list(exc.issues)) from None
+        except Exception as exc:  # noqa: BLE001 -- a crash is a failed load too
+            raise ScenarioAlreadyBroken(
+                name, [f"loader failed: {type(exc).__name__}: {exc}"]
+            ) from exc
         con = sqlite3.connect(pre.intent_path)
         con.row_factory = sqlite3.Row
         stack.callback(con.close)
@@ -201,10 +270,11 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Iterator[StagedEd
         stage = Path(stack.enter_context(tempfile.TemporaryDirectory())) / real.name
         stage.mkdir()
         _stage(real, stage)
+        baseline = _manifest(stage)
         edit = StagedEdit(real_data_dir=real, data_dir=stage, name=name, _con=con)
         yield edit
 
-        changed, removed = _diff(real, stage)
+        changed, removed = _diff(baseline, stage)
         if not changed and not removed:
             return
         touched = {
@@ -232,4 +302,5 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Iterator[StagedEd
             )
         if issues:
             raise EditRejected(issues)
+        _check_unchanged(real, baseline, [*changed, *removed])
         edit.written = _commit(real, stage, changed, removed)

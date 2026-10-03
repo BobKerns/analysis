@@ -74,7 +74,13 @@ from analysis.sim.quicken import (
     parse_net_worth_export,
 )
 import analysis.sim.scenario as sc
-from analysis.sim.staging import EditRejected, ScenarioAlreadyBroken, StagedEdit, staged_edit
+from analysis.sim.staging import (
+    ConcurrentEdit,
+    EditRejected,
+    ScenarioAlreadyBroken,
+    StagedEdit,
+    staged_edit,
+)
 from analysis.sim.dates import MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode
 
@@ -1583,6 +1589,8 @@ def _scenario_edit(data_dir: Path, scenario: str | None) -> Iterator[StagedEdit]
         raise click.ClickException(
             f"this change would leave {len(exc.issues)} issue(s); nothing was written"
         ) from None
+    except ConcurrentEdit as exc:
+        raise click.ClickException(str(exc)) from None
     except LoadError as exc:  # e.g. an unknown scenario, before anything was staged
         raise click.ClickException("; ".join(exc.issues)) from None
     for warning in edit.warnings:
@@ -2967,13 +2975,18 @@ def _own_growth_series(con: sqlite3.Connection, name: str, series: str) -> str |
         return None
     # The loader turns an account's growth series into a scheduled row into
     # that account; rows touching the account are deleted along with it.
+    # Compare the chains' accounts, not their names: an investment account's
+    # leaf chain is named '<account>:<lot>'.
     shared = con.execute(
+        "WITH gone AS (SELECT id FROM account WHERE name = :name) "
         "SELECT 1 FROM scheduled_transaction st "
         "JOIN chain cf ON cf.id = st.from_account JOIN chain ct ON ct.id = st.to_account "
-        "WHERE st.series = ? AND cf.name != ? AND ct.name != ? "
-        "UNION ALL SELECT 1 FROM account_model_member m JOIN account a ON a.id = m.account_id "
-        "WHERE m.series = ? AND a.name != ?",
-        (series, name, name, series, name),
+        "WHERE st.series = :series "
+        "AND coalesce(cf.account_id, -1) NOT IN (SELECT id FROM gone) "
+        "AND coalesce(ct.account_id, -1) NOT IN (SELECT id FROM gone) "
+        "UNION ALL SELECT 1 FROM account_model_member m "
+        "WHERE m.series = :series AND m.account_id NOT IN (SELECT id FROM gone)",
+        {"name": name, "series": series},
     ).fetchone()
     return None if shared else series
 

@@ -12,7 +12,8 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
-from analysis.sim import staging
+from analysis.sim import registries, staging
+from analysis.sim.cli import _append_csv_row
 
 
 def _snapshot(data_dir: Path) -> dict[Path, bytes]:
@@ -181,3 +182,96 @@ def test_scenario_create_from_broken_parent_creates_nothing(
     assert result.exit_code != 0
     assert "already fails to load" in result.output
     assert not (test_data_dir / "scenarios" / "child").exists()
+
+
+def test_preflight_loader_crash_is_a_clean_error(
+    test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def crash(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(staging, "load_scenario", crash)
+    before = _snapshot(test_data_dir)
+
+    result = _sim("calendar", "add", "set-rate", "2027-03-31", "Asset_Checking", "4",
+                  "--scenario", "retire_alice", data_dir=test_data_dir)
+
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert "loader failed: RuntimeError: boom" in result.output
+    assert "already fails to load" in result.output
+    assert _snapshot(test_data_dir) == before
+
+
+def _add_rate_row(calendar: Path) -> None:
+    _append_csv_row(calendar, registries.CALENDAR_HEADER,
+                    {"date": "2027-03-31", "kind": "set_rate", "series": "Asset_Checking",
+                     "amount": "40000"})
+
+
+def test_concurrent_change_to_a_file_being_written_refuses_the_edit(test_data_dir: Path) -> None:
+    calendar = test_data_dir / "scenarios" / "retire_alice" / "calendar.csv"
+
+    with pytest.raises(staging.ConcurrentEdit, match="calendar.csv"):
+        with staging.staged_edit(test_data_dir, "retire_alice") as edit:
+            _add_rate_row(edit.path(calendar))
+            calendar.write_text(calendar.read_text() + "\n")  # another edit lands first
+
+    assert "2027-03-31,set_rate" not in calendar.read_text()
+
+
+def test_concurrent_change_to_another_file_is_kept(test_data_dir: Path) -> None:
+    """Only files this edit wrote go back; the stale staged copy of a file
+    someone else changed meanwhile must not overwrite theirs."""
+    scenario_dir = test_data_dir / "scenarios" / "retire_alice"
+    result_text = "# concurrently changed\n"
+
+    with staging.staged_edit(test_data_dir, "retire_alice") as edit:
+        _add_rate_row(edit.path(scenario_dir / "calendar.csv"))
+        readme = scenario_dir / "README.md"
+        readme.write_text(result_text)
+
+    assert readme.read_text() == result_text
+    assert "2027-03-31,set_rate" in (scenario_dir / "calendar.csv").read_text()
+
+
+def test_failed_commit_rolls_back_files_already_swapped(
+    test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = _snapshot(test_data_dir)
+    real_replace = staging.os.replace
+    swaps = []
+
+    def failing_replace(src, dst):
+        if str(src).endswith(".tmp"):
+            swaps.append(dst)
+            if len(swaps) == 2:
+                raise OSError("disk full")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(staging.os, "replace", failing_replace)
+    result = _sim("account", "rename", "Asset_Checking", "Asset_Checking_2",
+                  "--scenario", "retire_alice", data_dir=test_data_dir)
+
+    assert result.exit_code != 0
+    assert len(swaps) == 2
+    assert _snapshot(test_data_dir) == before
+    scenario_dir = test_data_dir / "scenarios" / "retire_alice"
+    assert not [p for p in scenario_dir.rglob(".*") if p.suffix in {".tmp", ".bak"}]
+
+
+def test_delete_investment_account_drops_its_growth_rate_rows(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+) -> None:
+    """An investment account's leaf chain is '<account>:<lot>', so its own
+    growth rule must be recognized by account, not by chain name."""
+    append_calendar_row(date="2027-01-31", kind="set_rate", series="brokerage_growth",
+                        amount="60000")
+
+    result = _sim("account", "delete", "Asset_Brokerage_Joint", "--scenario", "retire_alice",
+                  data_dir=test_data_dir, input="y\n")
+
+    assert result.exit_code == 0, result.output
+    assert "series (its growth rate)" in result.output
+    calendar = pd.read_csv(test_data_dir / "scenarios" / "retire_alice" / "calendar.csv",
+                           dtype=str, keep_default_na=False)
+    assert "brokerage_growth" not in set(calendar["series"])
