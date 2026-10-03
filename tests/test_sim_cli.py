@@ -2224,3 +2224,22 @@ def test_scheduled_add_biweekly_start_needs_a_full_date(
     assert (result.exit_code == 0) == ok, result.output
     if not ok:
         assert "biweekly start needs a full YYYY-MM-DD" in result.output
+
+
+@pytest.mark.uses_real_cpu_count
+@pytest.mark.parametrize(("available", "expected"), [(6, 6), (None, 1)])
+def test_sim_run_jobs_defaults_to_available_cpus(
+    monkeypatch, available: int | None, expected: int,
+) -> None:
+    """#42: with no --jobs, members run one per CPU available to the process
+    (1 if that can't be determined)."""
+    import analysis.sim.cli as sim_cli
+
+    jobs_param = next(p for p in sim_cli.run.params if p.name == "jobs")
+    assert jobs_param.default == 0
+    monkeypatch.setattr(sim_cli.os, "process_cpu_count", lambda: available)
+    *_, jobs = sim_cli._batch_options(
+        sensitivity=False, ensemble_size=3, only=None, quantiles_text=None,
+        jobs=jobs_param.default,
+    )
+    assert jobs == expected
