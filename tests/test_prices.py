@@ -203,3 +203,86 @@ def test_a_symbol_that_stopped_trading_says_when_it_last_did() -> None:
     }], "error": None}}).encode()
     with pytest.raises(PriceError, match=r"no prices since 2026-04-01 \(last traded 2024-12-07"):
         YahooProvider(lambda url: payload).closes("OLD", date(2026, 4, 1), date(2026, 9, 24))
+
+
+def test_http_get_verifies_with_the_system_trust_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#40: python.org's macOS Python has no root certificate store of its
+    own, so fetching failed with CERTIFICATE_VERIFY_FAILED. _http_get must
+    verify through the OS trust store (truststore: the macOS keychain, the
+    Windows store, the Linux system bundle), which also honors locally
+    trusted roots. (Every other test injects a fake http_get, which is why
+    this went unnoticed.)"""
+    import urllib.request
+
+    import truststore
+
+    from analysis.sim import prices
+
+    seen: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def fake_urlopen(request, *, timeout, context):  # type: ignore[no-untyped-def]
+        seen.update(url=request.full_url, context=context)
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert prices._http_get("https://example.invalid/x") == b"{}"
+    assert isinstance(seen["context"], truststore.SSLContext)
+
+
+@pytest.mark.parametrize(("code", "message", "expected"), [
+    # OpenSSL's untrusted-chain codes: reworded, since "local issuer" misleads.
+    (20, "unable to get local issuer certificate",
+     "its chain doesn't lead to a root certificate this system trusts"),
+    (19, "self-signed certificate in certificate chain",
+     "its chain doesn't lead to a root certificate this system trusts"),
+    # Anything else keeps its own reason (PR #43 review): not every
+    # verification failure is an untrusted root.
+    (10, "certificate has expired", "certificate has expired"),
+    (62, "Hostname mismatch, certificate is not valid for 'x'", "Hostname mismatch"),
+    # truststore on macOS reports Security framework codes and reasons.
+    (-67818, "“*.example” certificate is expired", "certificate is expired"),
+])
+def test_a_certificate_failure_says_what_actually_failed(
+    code: int, message: str, expected: str,
+) -> None:
+    import ssl
+    import urllib.error
+
+    error = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    error.verify_code = code
+    error.verify_message = message
+
+    def get(url: str) -> bytes:
+        raise urllib.error.URLError(error)
+
+    with pytest.raises(PriceError) as raised:
+        YahooProvider(get).closes("X", date(2026, 5, 1), date(2026, 6, 1))
+    text = str(raised.value)
+    assert text.startswith("could not verify Yahoo's HTTPS certificate: ")
+    assert expected in text and "local issuer" not in text
+
+
+def test_other_connection_failures_still_say_unreachable() -> None:
+    import urllib.error
+
+    def get(url: str) -> bytes:
+        raise urllib.error.URLError("nodename nor servname provided")
+
+    with pytest.raises(PriceError, match="could not reach Yahoo"):
+        YahooProvider(get).closes("X", date(2026, 5, 1), date(2026, 6, 1))
+
+
+def test_the_default_yahoo_provider_uses_the_real_http_get() -> None:
+    from analysis.sim import prices
+
+    assert prices.YahooProvider()._get is prices._http_get

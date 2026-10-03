@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import json
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import pandas as pd
+import truststore
 
 from analysis.sim.dates import parse_month
 
@@ -50,10 +52,44 @@ class PriceProvider(Protocol):
         """Unadjusted daily closes for ``symbol`` from ``start`` to ``end``, oldest first."""
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """An SSL context that verifies certificates with the operating system's
+    own trust store (#40): the macOS keychain, the Windows certificate store,
+    or the system bundle on Linux, via ``truststore``.
+
+    So a root you've trusted locally (a corporate proxy, a home CA) is
+    honored, the root list follows OS updates, and it doesn't matter that
+    the python.org build of Python on macOS ships with no root store of its
+    own (which made fetching fail with CERTIFICATE_VERIFY_FAILED)."""
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
 def _http_get(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (analysis sim)"})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=30, context=_ssl_context()) as response:
         return response.read()
+
+
+_UNTRUSTED_CHAIN_CODES = frozenset({2, 18, 19, 20})
+"""OpenSSL verify codes that all mean "no trusted root for this chain":
+unable to get issuer certificate (2), self-signed certificate (18),
+self-signed certificate in chain (19), and unable to get *local* issuer
+certificate (20) -- whose wording misleadingly suggests a missing local
+certificate rather than a missing trusted root."""
+
+
+def _verify_reason(error: ssl.SSLCertVerificationError) -> str:
+    """Why verification failed, in words that match the actual failure (#40).
+
+    A verification error isn't always an untrusted root: it can be an expired
+    or not-yet-valid certificate, a hostname mismatch, and more. The OS trust
+    store's own reasons (truststore on macOS: "... certificate is expired",
+    "... is not trusted") are already accurate and pass through. Only
+    OpenSSL's untrusted-chain codes are reworded, since its "unable to get
+    local issuer certificate" names the wrong problem."""
+    if error.verify_code in _UNTRUSTED_CHAIN_CODES:
+        return "its chain doesn't lead to a root certificate this system trusts"
+    return str(error.verify_message or error.reason or error)
 
 
 class YahooProvider:
@@ -75,7 +111,13 @@ class YahooProvider:
             raise PriceError(
                 "not found at Yahoo" if exc.code == 404 else f"Yahoo returned HTTP {exc.code}"
             ) from None
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                raise PriceError(
+                    f"could not verify Yahoo's HTTPS certificate: {_verify_reason(exc.reason)}"
+                ) from None
+            raise PriceError(f"could not reach Yahoo ({exc.reason})") from None
+        except (TimeoutError, json.JSONDecodeError) as exc:
             raise PriceError(f"could not reach Yahoo ({exc})") from None
         chart = payload.get("chart", {})
         if chart.get("error"):

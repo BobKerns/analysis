@@ -15,6 +15,7 @@ dependencies = [
   "jupyterlab>=4.6.4",
   "numpy>=2.5.3",
   "scipy>=1.18.1",
+  "truststore>=0.10.4",
 ]
 
 [project.scripts]
