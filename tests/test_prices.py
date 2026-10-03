@@ -239,20 +239,37 @@ def test_http_get_verifies_with_the_system_trust_store(monkeypatch: pytest.Monke
     assert isinstance(seen["context"], truststore.SSLContext)
 
 
-def test_a_certificate_failure_says_what_is_missing() -> None:
-    """OpenSSL's "unable to get local issuer certificate" is misleading: the
-    message says the chain doesn't lead to a trusted root."""
+@pytest.mark.parametrize(("code", "message", "expected"), [
+    # OpenSSL's untrusted-chain codes: reworded, since "local issuer" misleads.
+    (20, "unable to get local issuer certificate",
+     "its chain doesn't lead to a root certificate this system trusts"),
+    (19, "self-signed certificate in certificate chain",
+     "its chain doesn't lead to a root certificate this system trusts"),
+    # Anything else keeps its own reason (PR #43 review): not every
+    # verification failure is an untrusted root.
+    (10, "certificate has expired", "certificate has expired"),
+    (62, "Hostname mismatch, certificate is not valid for 'x'", "Hostname mismatch"),
+    # truststore on macOS reports Security framework codes and reasons.
+    (-67818, "“*.example” certificate is expired", "certificate is expired"),
+])
+def test_a_certificate_failure_says_what_actually_failed(
+    code: int, message: str, expected: str,
+) -> None:
     import ssl
     import urllib.error
 
     error = ssl.SSLCertVerificationError(1, "certificate verify failed")
-    error.verify_message = "unable to get local issuer certificate"
+    error.verify_code = code
+    error.verify_message = message
 
     def get(url: str) -> bytes:
         raise urllib.error.URLError(error)
 
-    with pytest.raises(PriceError, match="doesn't lead to a root certificate this system trusts"):
+    with pytest.raises(PriceError) as raised:
         YahooProvider(get).closes("X", date(2026, 5, 1), date(2026, 6, 1))
+    text = str(raised.value)
+    assert text.startswith("could not verify Yahoo's HTTPS certificate: ")
+    assert expected in text and "local issuer" not in text
 
 
 def test_other_connection_failures_still_say_unreachable() -> None:

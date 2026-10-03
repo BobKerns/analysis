@@ -68,6 +68,28 @@ def _http_get(url: str) -> bytes:
         return response.read()
 
 
+_UNTRUSTED_CHAIN_CODES = frozenset({2, 18, 19, 20})
+"""OpenSSL verify codes that all mean "no trusted root for this chain":
+unable to get issuer certificate (2), self-signed certificate (18),
+self-signed certificate in chain (19), and unable to get *local* issuer
+certificate (20) -- whose wording misleadingly suggests a missing local
+certificate rather than a missing trusted root."""
+
+
+def _verify_reason(error: ssl.SSLCertVerificationError) -> str:
+    """Why verification failed, in words that match the actual failure (#40).
+
+    A verification error isn't always an untrusted root: it can be an expired
+    or not-yet-valid certificate, a hostname mismatch, and more. The OS trust
+    store's own reasons (truststore on macOS: "... certificate is expired",
+    "... is not trusted") are already accurate and pass through. Only
+    OpenSSL's untrusted-chain codes are reworded, since its "unable to get
+    local issuer certificate" names the wrong problem."""
+    if error.verify_code in _UNTRUSTED_CHAIN_CODES:
+        return "its chain doesn't lead to a root certificate this system trusts"
+    return str(error.verify_message or error.reason or error)
+
+
 class YahooProvider:
     """Daily closes from Yahoo Finance's public chart endpoint (no account or key)."""
 
@@ -89,13 +111,8 @@ class YahooProvider:
             ) from None
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, ssl.SSLCertVerificationError):
-                # OpenSSL's own wording ("unable to get local issuer
-                # certificate") is misleading: what's missing is a trusted
-                # *root* for Yahoo's certificate chain.
-                detail = exc.reason.verify_message or exc.reason.reason or exc.reason
                 raise PriceError(
-                    "could not verify Yahoo's HTTPS certificate: its chain doesn't lead to a "
-                    f"root certificate this system trusts ({detail})"
+                    f"could not verify Yahoo's HTTPS certificate: {_verify_reason(exc.reason)}"
                 ) from None
             raise PriceError(f"could not reach Yahoo ({exc.reason})") from None
         except (TimeoutError, json.JSONDecodeError) as exc:
