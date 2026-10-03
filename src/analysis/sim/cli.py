@@ -1473,6 +1473,18 @@ def _complete_account(ctx, param, incomplete):  # noqa: ARG001
     return [n for n in names if n.lower().startswith(incomplete.lower())]
 
 
+def _line_completions(line: str, word_start: int, choices: list[str]) -> list[str]:
+    """What readline should offer for the word at ``line[word_start:]``.
+
+    Readline completes a *word*, and breaks words at hyphens, spaces and other
+    punctuation that names here contain. So the whole line is matched against
+    ``choices``, and each match is returned without the part before
+    ``word_start``, which readline leaves in place.
+    """
+    typed = line.lower()
+    return [c[word_start:] for c in choices if c.lower().startswith(typed)]
+
+
 def _prompt_with_completion(text: str, choices: list[str] | None = None,
                             default: str | None = None) -> str:
     """Prompt with readline tab-completion over ``choices``."""
@@ -1482,12 +1494,18 @@ def _prompt_with_completion(text: str, choices: list[str] | None = None,
         return click.prompt(text, default=default, show_default=bool(default))
     completer_choices = list(choices or [])
 
-    def completer(prefix: str, state: int) -> str | None:
-        opts = [c for c in completer_choices if c.lower().startswith(prefix.lower())]
+    def completer(prefix: str, state: int) -> str | None:  # noqa: ARG001
+        line = readline.get_line_buffer()[:readline.get_endidx()]
+        opts = _line_completions(line, readline.get_begidx(), completer_choices)
         return opts[state] if state < len(opts) else None
 
     old = readline.get_completer()
+    old_delims = readline.get_completer_delims()
     readline.set_completer(completer)
+    # No word breaks: the whole answer is one word, so the list of matches
+    # shows full names and a completion replaces what was typed, case included.
+    # _line_completions still copes if the library keeps breaking words.
+    readline.set_completer_delims("")
     if "libedit" in (readline.__doc__ or ""):
         readline.parse_and_bind("bind ^I rl_complete")
     else:
@@ -1496,6 +1514,7 @@ def _prompt_with_completion(text: str, choices: list[str] | None = None,
         return click.prompt(text, default=default, show_default=bool(default))
     finally:
         readline.set_completer(old)
+        readline.set_completer_delims(old_delims)
 
 
 def _parse_amount_cents(s: str) -> int:
