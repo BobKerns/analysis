@@ -15,6 +15,7 @@ axisbelow
 axvline
 axvspan
 backfillable
+begidx
 birthdates
 blockifying
 blockquotes
@@ -42,6 +43,7 @@ dflt
 ecolor
 edgecolor
 elinewidth
+endidx
 errorbar
 esac
 executemany

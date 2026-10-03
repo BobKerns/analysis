@@ -53,6 +53,31 @@ a bad combination — wrong series name, a range that doesn't make sense —
 is caught immediately rather than at `sim run` time. See ADR-006 §2 for
 every `vary_*` column and what each distribution needs.
 
+### Guided mode
+
+You don't have to remember the options. Run the command with no kind:
+
+```sh
+sim calendar add --scenario inflation_1
+```
+
+It asks which kind of row you want, then for each value in turn, and asks
+only what your answers so far make relevant: choosing `uniform` asks for a
+low and a high, and never mentions a median or a skew. Press Tab to complete
+scenario names such as accounts, scheduled rules, series, and lots. An answer
+that can't be right (a malformed date, an unknown rule) is asked again.
+
+Before anything is written it shows every answer and the equivalent
+one-line command, which you can copy into a script. From there you can write
+the row, cancel, or type a field's name to change it. Changing an answer
+asks any questions that it newly makes relevant. If the scenario would not
+load with the new row, the reason is shown and you are back at the same
+review with your answers intact.
+
+A kind given without its arguments asks for just those, so `sim calendar
+add set-amount` prompts for the date, the rule, and the amount, and nothing
+else.
+
 **Choosing a distribution.** Three are available:
 
 - **`uniform`** (`--vary-low`, `--vary-high`): anything in the range is
