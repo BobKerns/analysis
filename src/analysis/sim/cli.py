@@ -2376,10 +2376,10 @@ def calendar_add_group_command(
             )
         return
     data_dir_p = _resolve_data_dir(data_dir)
-    scenario_dir, _scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    context = _guide_context(
-        data_dir_p, scenario, rows=_read_calendar_rows(scenario_dir / "calendar.csv"),
-    )
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "calendar.csv"
+    _echo_calendar_scenario(scenario_name, path, defaulted=scenario is None)
+    context = _guide_context(data_dir_p, scenario, rows=_read_calendar_rows(path))
     guide = _calendar_guide()
     click.echo("What kind of calendar row?")
     for spec in calendar_guide.KINDS:
@@ -2401,6 +2401,14 @@ def calendar_add_group_command(
         scenario=scenario, data_dir=str(data_dir) if data_dir is not None else None,
     ):
         ctx.exit(1)
+
+
+def _echo_calendar_scenario(name: str, path: Path, *, defaulted: bool) -> None:
+    """Say which scenario's calendar a guided command is about to change,
+    before it asks anything: a defaulted scenario may not be the one meant."""
+    how = " (the default; use --scenario for another)" if defaulted else ""
+    click.echo(f"Scenario: {name}{how}")
+    click.echo(f"  {path}")
 
 
 def _select_calendar_row(rows: list[dict[str, str]], wanted: str | None) -> int:
@@ -2457,6 +2465,7 @@ def calendar_edit(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
+    _echo_calendar_scenario(scenario_name, path, defaulted=scenario is None)
     rows = _read_calendar_rows(path)
     if not rows:
         raise click.ClickException(

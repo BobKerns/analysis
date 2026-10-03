@@ -255,3 +255,21 @@ def test_edit_refuses_to_write_when_the_file_changed_under_it(
             )
 
     assert path.read_text() == changed
+
+
+def test_edit_says_which_scenario_before_asking_anything(
+    calendar_edit: Callable[..., Result], test_data_dir: Path,
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    named = calendar_edit(answers=["3", "cancel"])
+
+    assert named.output.startswith(f"Scenario: retire_alice\n  {retire_alice_csv('calendar.csv')}\n")
+
+    # With no --scenario, it is whichever scenario is the default: say that too.
+    defaulted = CliRunner().invoke(
+        main, ["sim", "calendar", "edit", "--data-dir", str(test_data_dir)], input="3\ncancel\n",
+    )
+
+    assert defaulted.output.startswith(
+        "Scenario: retire_alice (the default; use --scenario for another)\n"
+    )
