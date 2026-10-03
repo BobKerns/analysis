@@ -1258,7 +1258,7 @@ def test_sim_calendar_add_rejects_non_zero_padded_vary_date(
         ],
     )
     assert result.exit_code != 0
-    assert "date must be YYYY-MM-DD" in result.output
+    assert "date must be YYYY-MM or YYYY-MM-DD" in result.output
 
 
 def test_sim_run_ensemble_reports_member_failures_without_stopping(
@@ -2186,3 +2186,25 @@ def test_sim_calendar_add_rejects_skew_without_sd(test_data_dir: Path) -> None:
     ])
     assert result.exit_code != 0
     assert "vary_sd is required" in result.output
+
+
+def test_sim_calendar_add_accepts_year_month(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """#34: a bare YYYY-MM is written as typed and loads as the month's end."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "sim", "calendar", "add", "set-rate", "2027-02", "Asset_Checking", "4.5",
+            "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    df = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    assert df[df["series"] == "Asset_Checking"].iloc[-1]["date"] == "2027-02"
+    loaded = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
+    con = sqlite3.connect(loaded.intent_path)
+    assert ("2027-02-28",) in con.execute(
+        "SELECT date FROM calendar_event WHERE kind = 'set_rate' AND amount = 45000"
+    ).fetchall()

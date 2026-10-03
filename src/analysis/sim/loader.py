@@ -22,6 +22,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from analysis.sim import registries
+from analysis.sim.dates import (
+    MONTH_FORMAT_HINT, VaryBoundRole, month_end_iso, vary_date_iso,
+)
 from analysis.sim.distributions import (
     DistributionError,
     Triangular,
@@ -551,6 +554,7 @@ def _read_scenario_inputs(
         raise LoadError([f"scenario folder not found: {scenario_dir}"])
 
     scenario_rows = _read_csv(scenario_dir / "scenario.csv", issues)
+    _normalize_month_columns(scenario_rows, "scenario.csv", issues)
     if len(scenario_rows) != 1:
         issues.append(
             f"scenario.csv must have exactly one data row (got {len(scenario_rows)})"
@@ -574,11 +578,13 @@ def _read_scenario_inputs(
         parent_ytd = []
 
     def read_overlay(filename: str, *, required: bool = False) -> list[dict[str, str]]:
-        return _read_csv(
+        rows = _read_csv(
             scenario_dir / filename,
             issues,
             optional=bool(parent_name) or not required,
         )
+        _normalize_month_columns(rows, filename, issues)
+        return rows
 
     scenario_row = dict(parent_scenario)
     scenario_row.update({k: v for k, v in child_scenario.items() if v != ""})
@@ -690,6 +696,7 @@ def load_scenario(
     securities = _read_csv(data_dir / "securities.csv", issues, optional=True)
     _validate_securities(securities, issues)
     allocations = _read_csv(data_dir / "allocations.csv", issues, optional=True)
+    _normalize_month_columns(allocations, "allocations.csv", issues)
     _validate_allocations(allocations, issues)
     (
         scenario_row, accounts, model_rows, scheduled_rows,
@@ -698,6 +705,7 @@ def load_scenario(
                               scenario_name,
                               issues,
                               scenarios_dir=scenarios_dir)
+    _normalize_vary_dates(calendar_rows)
     # A scenario folder's own README.md, if there is one, is the scenario's
     # real description -- scenario.csv's own description column is only the
     # fallback for a scenario that doesn't have one (ADR-003 §4.1e). Baked
@@ -841,6 +849,56 @@ def _read_csv(
         ]
 
 
+_MONTH_COLUMNS: dict[str, tuple[str, ...]] = {
+    "scenario.csv": ("start", "end"),
+    "accounts.csv": ("opened", "closed"),
+    "scheduled.csv": ("start", "end", "base_date"),
+    "calendar.csv": ("date", "param_date"),
+    "lifespan.csv": ("final_month",),
+    "allocations.csv": ("as_of",),
+}
+"""Per-file columns that name a month (#34): ``YYYY-MM`` or ``YYYY-MM-DD``,
+stored as that month's last day. Day-precise columns (``birthdate``, a lot's
+``acquired``, a price's ``effective_date``) aren't listed and stay exact."""
+
+_VARY_DATE_ROLES: dict[str, VaryBoundRole] = {
+    "vary_low": "low", "vary_high": "high", "vary_median": "point", "vary_mode": "point",
+}
+"""Where a bare ``YYYY-MM`` lands in each `vary_target='date'` bound (#34)."""
+
+
+def _normalize_month_columns(
+    rows: list[dict[str, str]], filename: str, issues: list[str],
+) -> None:
+    """Rewrite ``filename``'s month columns (``_MONTH_COLUMNS``) in place to
+    their canonical month-end ISO date, reporting any that don't parse."""
+    for i, row in enumerate(rows, start=2):
+        for col in _MONTH_COLUMNS.get(filename, ()):
+            raw = row.get(col) or ""
+            if not raw:
+                continue
+            try:
+                row[col] = month_end_iso(raw)
+            except ValueError:
+                issues.append(f"{filename} row {i}: {col} '{raw}' is not {MONTH_FORMAT_HINT}")
+
+
+def _normalize_vary_dates(rows: list[dict[str, str]]) -> None:
+    """Rewrite a `vary_target='date'` row's bounds in place to exact ISO dates
+    (``_VARY_DATE_ROLES``). Left as-is when unparseable, for
+    ``_parse_vary_params`` to report in the row's own context."""
+    for row in rows:
+        if (row.get("vary_target") or "").strip() != "date":
+            continue
+        for col, role in _VARY_DATE_ROLES.items():
+            raw = (row.get(col) or "").strip()
+            if raw:
+                try:
+                    row[col] = vary_date_iso(raw, role)
+                except ValueError:
+                    pass
+
+
 def _find_override_file(
     data_dir: Path, scenario_dirs: list[Path], subfolder: str, filename: str,
 ) -> Path | None:
@@ -947,8 +1005,20 @@ def _read_aux_files(
                         payload[c] = None
                 else:
                     payload[c] = _coerce(raw)
+            effective = row["effective_date"]
+            if kind != "security_price":
+                # Prices are dated by their actual close; every other aux
+                # and series row takes effect for a whole month (#34).
+                try:
+                    effective = month_end_iso(effective)
+                except ValueError:
+                    issues.append(
+                        f"aux/{csv_path.name} row {i}: effective_date "
+                        f"'{effective}' is not {MONTH_FORMAT_HINT}"
+                    )
+                    row_ok = False
             if row_ok:
-                out.append((kind, series, payload, row["effective_date"]))
+                out.append((kind, series, payload, effective))
     return out
 
 
@@ -1261,8 +1331,7 @@ def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None
             try:
                 date.fromisoformat(as_of)
             except ValueError:
-                issues.append(f"{where}: as_of '{as_of}' is not an ISO date")
-                continue
+                continue  # already reported by _normalize_month_columns
         if asset_class not in registries.ASSET_CLASSES:
             issues.append(
                 f"{where}: unknown asset_class '{asset_class}'; "
@@ -2001,7 +2070,7 @@ def _parse_vary_params(
                 parsed[col] = date.fromisoformat(raw).toordinal() if target == "date" else int(raw)
         except ValueError:
             unit = "number" if col in _VARY_SHAPE_COLUMNS else (
-                "ISO date" if target == "date" else "integer"
+                MONTH_FORMAT_HINT if target == "date" else "integer"
             )
             prefix = "is not a" if unit == "number" else "is not a valid"
             issues.append(f"{where}: {col} '{raw}' {prefix} {unit}")

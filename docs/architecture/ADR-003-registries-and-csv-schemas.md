@@ -300,7 +300,7 @@ A shared influence that varying rows correlate with but that isn't itself a mode
 
 See `docs/user-guide.md` for a task-based walkthrough of common edits; this section is the exact column-by-column reference.
 
-All files: UTF-8, comma-delimited, one header row. Empty string means NULL. Boolean columns use `0`/`1`. Date columns use `YYYY-MM` (month-grain, pinned to month-end at load) or `YYYY-MM-DD` where specified. Money columns are decimal dollars (e.g. `1234.56`); the loader converts them to integer cents.
+All files: UTF-8, comma-delimited, one header row. Empty string means NULL. Boolean columns use `0`/`1`. A `YYYY-MM` date column names a month: it accepts `YYYY-MM` or `YYYY-MM-DD` and the loader pins either to that month's last day (a day within the month is ignored, #34), so a rule's `end` of `2030-06-15` still pays in June. Columns marked `YYYY-MM-DD` (`birthdate`, a lot's `acquired`, a `security_price`'s `effective_date`) are day-precise and keep the exact day. A `vary_target='date'` row's bounds are the one mixed case; see `vary_low`/`vary_high`. Money columns are decimal dollars (e.g. `1234.56`); the loader converts them to integer cents.
 
 JSON-typed columns hold a single JSON value as a string; the loader parses and revalidates against the rule/event kind. Multi-line JSON in CSV is supported via standard CSV quoting.
 
@@ -430,7 +430,7 @@ What each symbol is made of, by asset class, for the portfolio overview (`sim al
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `symbol` | text | ✓ | matches a lot's `symbol` |
-| `as_of` | YYYY-MM-DD | | the date the weights describe; blank holds at every date. A fund's composition drifts (a target-date fund glides), so give several dated sets to follow it |
+| `as_of` | YYYY-MM | | the date the weights describe; blank holds at every date. A fund's composition drifts (a target-date fund glides), so give several dated sets to follow it |
 | `asset_class` | enum | ✓ | `stock_us`, `stock_intl`, `stock` (stock whose US/international split is unknown: a placeholder to refine, distinct from bonds), `bond`, `cd` (certificates of deposit), `cash`, `real_estate`, `other` (`registries.ASSET_CLASSES`) |
 | `weight` | percent | ✓ | 0 to 100; the weights of one (`symbol`, `as_of`) set must add up to 100 |
 
@@ -695,10 +695,10 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `tags` | text | | see §6 |
 | `vary_target` | enum (`amount`, `date`) | with `vary_distribution` | which of *this row's own* columns is drawn instead of literal; exactly one target per row ([ADR-006](ADR-006-ensemble-scenarios.md) §2) |
 | `vary_distribution` | enum (`uniform`, `truncated_normal`, `triangular`) | to mark this row as varying | blank means an ordinary literal row, unaffected by any of the columns below |
-| `vary_low`, `vary_high` | text | see notes | `uniform`'s and `triangular`'s own bounds (required), in the target column's own unit (an ISO date for `date`; the row's own `amount` unit above for `amount`). Also `truncated_normal`'s own optional clip bounds (`amount`/rate only) -- for that distribution either may be left blank and inferred (see `vary_median`/`vary_sd`) |
+| `vary_low`, `vary_high` | text | see notes | `uniform`'s and `triangular`'s own bounds (required), in the target column's own unit (a date for `date`; the row's own `amount` unit above for `amount`). A date bound is a draw's exact day: a full `YYYY-MM-DD` is kept as given, and a bare `YYYY-MM` covers the whole month -- its first day as `vary_low`, its last as `vary_high` (#34), so a cutoff known to fall mid-month doesn't over-sample that month. Also `truncated_normal`'s own optional clip bounds (`amount`/rate only) -- for that distribution either may be left blank and inferred (see `vary_median`/`vary_sd`) |
 | `vary_median`, `vary_sd` | text | for `truncated_normal` | same unit rule as `vary_low`/`vary_high`. `vary_median` is the *truncated* distribution's median (the exact base case), strictly between the bounds; `vary_sd` the scale before clipping (the SD for the default shape; a scale factor with `vary_skew`/`vary_tailweight` set). Any one of `vary_median`/`vary_sd`/`vary_low`/`vary_high` may be inferred from the others when blank -- `vary_median` defaults to the midpoint of `vary_low`/`vary_high`; `vary_sd` to the distance from `vary_median` to whichever of `vary_low`/`vary_high` is given, divided by 3 (default shape only); a still-missing `vary_low`/`vary_high` to 3 standard-normal-score points out. `truncated_normal` is therefore never actually unbounded (`resolve_truncated_normal_bounds`, ADR-006 §3). Formerly `vary_mean` (#31), now rejected with a rename error |
 | `vary_skew`, `vary_tailweight` | number | optional, `truncated_normal` only | sinh-arcsinh shape (#31): skew 0 symmetric, > 0 longer high tail; tail weight 1 normal, < 1 heavier tails. Either one requires `vary_sd` |
-| `vary_mode` | text | optional, `triangular` only | the most likely value, in the target's unit; defaults to the midpoint of the bounds |
+| `vary_mode` | text | optional, `triangular` only | the most likely value, in the target's unit (a bare `YYYY-MM` date is that month's 15th); defaults to the midpoint of the bounds |
 | `vary_ramp_months` | int | optional, `vary_target='amount'` on a `kind='set_rate'` row only | see §3.1's ramp note |
 | `vary_correlate_with` | text | optional, on a varying row or a `latent_factor` | this row's parent in a correlation tree: another varying row's or a `latent_factor`'s `name` ([ADR-008](ADR-008-correlated-parameters.md)). The parent must exist (after inheritance), and the chain of parents can't loop |
 | `vary_correlation` | number | with `vary_correlate_with` | ρ in [-1, 1] between this row's and its parent's normal scores. Siblings under one parent correlate at the product of their ρ |
@@ -710,7 +710,7 @@ Lets a scenario play with a person's lifespan without touching the shared `perso
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `person` | text | ✓ | `person.id`; at most one row per person |
-| `final_month` | YYYY-MM-DD | ✓ | last month this person is alive; month-end date |
+| `final_month` | YYYY-MM | ✓ | last month this person is alive |
 
 Writes directly into `person_lifespan` (PK `(scenario_id, person)`). At `date > final_month`, the engine stops firing every `scheduled_transaction` **associated with that person** — the row's explicit `person` column (`ss_benefit`, `rmd`), or a row whose `from_account`/`to_account` owner is that person (`salary`, per-person expenses, etc.). Jointly-owned accounts (`owner` blank) are unaffected, so shared expenses and joint-account interest continue for a surviving spouse. **`percent_of_balance` rows are exempt from this gating entirely, solely-owned included** — per §2.2, an asset's growth is a property of the account, not a personal service tied to the living owner, so a solely-owned IRA/checking balance keeps earning interest/appreciating after its owner's death. This is a lighter-weight alternative to a `life_transition: predecease` calendar event — it stops the deceased person's own transfers and, for the `tax_accumulator`, switches a `MFJ`/`MFS` filing status to `Single` from the tax year after `final_month` (the survivor may still file jointly for the year of death; only `role = 'primary'` persons count, or everyone if none is marked). `filing_status.csv` needs no row for that. It does **not** merge accounts or adjust survivor SS benefits; use `life_transition` when those effects matter.
 

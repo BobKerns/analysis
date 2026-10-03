@@ -1351,7 +1351,7 @@ def test_vary_date_target_bounds_must_be_iso_dates(
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
-    assert any("not a valid ISO date" in issue for issue in ei.value.issues)
+    assert any("not a valid YYYY-MM or YYYY-MM-DD" in issue for issue in ei.value.issues)
 
 
 def test_vary_columns_present_without_distribution_rejected(
@@ -1601,3 +1601,64 @@ def test_vary_triangular_rejects_bad_parameters(
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any(message in issue for issue in ei.value.issues), ei.value.issues
+
+
+def test_month_columns_accept_year_month_and_land_on_month_end(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    append_calendar_row: Callable[..., None], write_aux, intent_dir: Path,
+) -> None:
+    """#34: YYYY-MM works wherever a date names a month, and a full date
+    there is snapped to its month's end."""
+    def edit(name: str, **cells: str) -> None:
+        path = retire_alice_csv(name)
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        for col, value in cells.items():
+            df.loc[0, col] = value
+        df.to_csv(path, index=False)
+
+    edit("scenario.csv", start="2026-05", end="2040-12")
+    edit("scheduled.csv", start="2026-05", base_date="2026-05-15")
+    append_calendar_row(date="2029-03", kind="retire_scheduled", scheduled_name="salary_bob")
+    write_aux("inflation__cpi.csv", "effective_date,annual_rate_micros\n2021-01,14000\n")
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    assert con.execute('SELECT start, "end" FROM scenario').fetchone() == ("2026-05-31", "2040-12-31")
+    assert con.execute(
+        "SELECT start, base_date FROM scheduled_transaction WHERE name = 'salary_alice'"
+    ).fetchone() == ("2026-05-31", "2026-05-31")
+    assert ("2029-03-31",) in con.execute(
+        "SELECT date FROM calendar_event WHERE scheduled_name = 'salary_bob'"
+    ).fetchall()
+    assert con.execute(
+        "SELECT effective_date FROM aux_table WHERE kind = 'inflation'"
+    ).fetchall() == [("2021-01-31",)]
+
+
+def test_month_column_that_is_not_a_month_is_reported(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(date="2029-3", kind="retire_scheduled", scheduled_name="salary_bob")
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("date '2029-3' is not YYYY-MM or YYYY-MM-DD" in issue for issue in ei.value.issues)
+
+
+def test_vary_date_bounds_bare_month_spans_the_month_full_date_is_exact(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """#34: a bare month as a lower bound is its first day, as an upper
+    bound its last, as a mode mid-month; a full date stays exact."""
+    append_calendar_row(
+        date="2029-06", kind="retire_scheduled", name="retire_bob_vary",
+        scheduled_name="salary_bob",
+        vary_target="date", vary_distribution="triangular",
+        vary_low="2029-01", vary_mode="2029-06", vary_high="2029-12-10",
+    )
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    assert con.execute(
+        "SELECT date, vary_low, vary_mode, vary_high FROM calendar_event "
+        "WHERE name = 'retire_bob_vary'"
+    ).fetchone() == ("2029-06-30", "2029-01-01", "2029-06-15", "2029-12-10")
