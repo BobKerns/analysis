@@ -270,13 +270,17 @@ def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[s
     return links, factors
 
 
-def _score_at(q: float) -> float:
+def _score_at(name: str, q: float) -> float:
     """``Phi^-1(q)``, exact at the ends: q = 0 or 1 (valid quantiles) is an
     infinite score, so a factor's family reaches its conditional endpoint
-    -- each descendant at its own bound -- rather than just short of it."""
-    if q <= 0.0:
+    -- each descendant at its own bound -- rather than just short of it.
+    A quantile outside [0, 1] raises, as ``Distribution.quantile`` does for
+    a row: a factor has no distribution to reject it later."""
+    if not 0.0 <= q <= 1.0:
+        raise EnsembleError(f"{name!r}: quantile must be in [0, 1] (got {q})")
+    if q == 0.0:
         return -math.inf
-    if q >= 1.0:
+    if q == 1.0:
         return math.inf
     return NormalDist().inv_cdf(q)
 
@@ -310,7 +314,7 @@ def _member_scores(
         moved: set[str] = set()
         for name, q in (overrides or {}).items():
             if name in scores:
-                scores[name] = _score_at(q)
+                scores[name] = _score_at(name, q)
                 if name in factors:
                     family = conditional_scores(links, name, scores[name])
                     scores.update(family)

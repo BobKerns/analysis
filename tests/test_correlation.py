@@ -977,3 +977,18 @@ def test_factor_share_survives_a_zero_ordinary_total() -> None:
     table = sensitivity.oat_table(pd.DataFrame(records), 2030)
     assert table.loc["f", "share"] == pytest.approx(1.0)
     assert table.loc["r", "share"] == 0.0
+
+
+@pytest.mark.parametrize("q", [-0.1, 1.1, math.nan])
+def test_oat_rejects_an_out_of_range_factor_quantile(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path, q: float,
+) -> None:
+    """PR #53 review: a factor has no distribution to reject a bad quantile,
+    so resolve_member must, rather than treat it as an endpoint."""
+    from analysis.sim.ensemble import EnsembleError
+
+    _correlated_recipe(append_calendar_row)
+    with pytest.raises(EnsembleError, match="quantile must be in"):
+        _resolve(load_test_copy().intent_path, tmp_path, 1, seed=None,
+                 overrides={"economy": q}, mode="sensitivity")
