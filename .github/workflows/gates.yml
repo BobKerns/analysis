@@ -33,6 +33,8 @@ jobs:
         run: scripts/check-blocked-keywords.sh --all
 
       - name: Commit messages
+        # Run every check even after a hit, so one run reports them all.
+        if: ${{ !cancelled() }}
         env:
           # Only these SHAs come from the event; never interpolate its text
           # into the script.
@@ -57,7 +59,7 @@ jobs:
           exit $status
 
       - name: Pull request title and body
-        if: github.event_name == 'pull_request'
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
           TITLE: ${{ github.event.pull_request.title }}
           BODY: ${{ github.event.pull_request.body }}
