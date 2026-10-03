@@ -178,3 +178,31 @@ def test_no_derivation_when_no_lot_of_the_account_states_a_prior_year_end_balanc
     finally:
         con.close()
     assert values == [None, None]
+
+
+@pytest.mark.parametrize("bad", ["0000", "2026-04", "2026-W17-1"])
+def test_price_date_must_be_a_full_day(
+    bad: str,
+    write_aux: Callable[[str, str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """#34: price dates stay day-precise (not snapped to month end), so a bare
+    month or any other form is reported rather than stored."""
+    write_aux("security_price__AAA.csv", f"effective_date,price\n{bad},10\n")
+    with pytest.raises(LoadError, match=f"effective_date '{bad}' is not YYYY-MM-DD"):
+        load_test_copy()
+
+
+def test_mid_month_price_date_keeps_its_day(
+    write_aux: Callable[[str, str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_aux("security_price__AAA.csv", "effective_date,price\n2026-04-17,10\n")
+    con = sqlite3.connect(load_test_copy().intent_path)
+    try:
+        rows = con.execute(
+            "SELECT effective_date FROM aux_table WHERE kind = 'security_price'"
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("2026-04-17",)]

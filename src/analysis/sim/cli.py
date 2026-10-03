@@ -74,6 +74,7 @@ from analysis.sim.quicken import (
     parse_net_worth_export,
 )
 import analysis.sim.scenario as sc
+from analysis.sim.dates import MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode
 
 
@@ -1294,8 +1295,8 @@ def explain(runfile: Path) -> None:
 @click.option("--account", required=True, help="Account name in the selected run.")
 @click.option("--lot", default=None,
               help="Only events touching this lot of the account (default: every lot).")
-@click.option("--start", required=True, help="First month (YYYY-MM-DD).")
-@click.option("--end", default=None, help="Last month (YYYY-MM-DD); overrides --months.")
+@click.option("--start", required=True, help="First month (YYYY-MM or YYYY-MM-DD).")
+@click.option("--end", default=None, help="Last month (YYYY-MM or YYYY-MM-DD); overrides --months.")
 @click.option("--months", default=1, show_default=True, type=click.IntRange(min=1),
               help="Number of months to include when --end is omitted.")
 @click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -1318,9 +1319,9 @@ def items(
     runs_dir: Path | None,
 ) -> None:
     """Show ledger events for one account with their originating rules."""
-    start = _validate_iso_date(start)
+    start = month_end_iso(_validate_month_date(start))
     if end is not None:
-        end = _validate_iso_date(end)
+        end = month_end_iso(_validate_month_date(end))
         if end < start:
             raise click.ClickException("--end must be on or after --start")
     else:
@@ -1507,16 +1508,17 @@ def _parse_amount_cents(s: str) -> int:
     return int(cents)
 
 
-def _validate_iso_date(s: str) -> str:
-    # date.fromisoformat, not strptime: strptime accepts non-zero-padded
-    # values like '2029-1-1' that the loader's own date.fromisoformat (used
-    # to parse vary_low/vary_high at load time) rejects -- this must accept
-    # exactly what the loader will later accept, not a superset.
-    try:
-        date.fromisoformat(s)
-    except ValueError as e:
-        raise click.ClickException(f"date must be YYYY-MM-DD: {s!r}") from e
-    return s
+def _validate_month_date(s: str) -> str:
+    """``s`` as typed, once it's a ``YYYY-MM`` or ``YYYY-MM-DD`` (#34).
+
+    Written to the CSV unchanged -- a bare month is the honest form -- and
+    the loader puts it on the right day for its column. Shares the loader's
+    own parser, so it accepts exactly what the loader will later accept
+    (e.g. not a non-zero-padded '2029-1-1'), not a superset.
+    """
+    if not is_month_or_date(s):
+        raise click.ClickException(f"date must be {MONTH_FORMAT_HINT}: {s!r}")
+    return s.strip()
 
 
 # calendar.csv columns a file may legitimately lack (ADR-006): optional,
@@ -1676,7 +1678,8 @@ def _vary_row_options(f):
     f = click.option(
         "--vary-mode", default=None,
         help="triangular's peak, the most likely value (same unit as the value above, "
-             "or YYYY-MM-DD for --vary-target date). Defaults to midway between "
+             "or YYYY-MM[-DD] for --vary-target date; a bare month is mid-month). "
+             "Defaults to midway between "
              "vary_low and vary_high.",
     )(f)
     f = click.option(
@@ -1706,16 +1709,16 @@ def _vary_row_options(f):
     f = click.option(
         "--vary-high", default=None,
         help="uniform's or triangular's upper bound, or truncated_normal's upper clip "
-             "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
-             "date). For truncated_normal, omitting it places it at the underlying "
-             "distribution's 3-standard-normal-score point (3 x vary_sd for the "
-             "default shape) instead of leaving that side unbounded.",
+             "bound (same unit as the value above, or YYYY-MM[-DD] for --vary-target "
+             "date; a bare month is its last day). For truncated_normal, omitting it "
+             "places it at the underlying distribution's 3-standard-normal-score point "
+             "(3 x vary_sd for the default shape) instead of leaving that side unbounded.",
     )(f)
     f = click.option(
         "--vary-low", default=None,
         help="uniform's or triangular's lower bound, or truncated_normal's lower clip "
-             "bound (same unit as the value above, or YYYY-MM-DD for --vary-target "
-             "date). For truncated_normal, omitting it places it at the underlying "
+             "bound (same unit as the value above, or YYYY-MM[-DD] for --vary-target "
+             "date; a bare month is its first day). For truncated_normal, omitting it places it at the underlying "
              "distribution's 3-standard-normal-score point (3 x vary_sd for the "
              "default shape) instead of leaving that side unbounded.",
     )(f)
@@ -1773,10 +1776,10 @@ def _vary_row_fields(
 
     A bound value (``--vary-low`` etc.) is given in the same human unit as the
     row's own literal value (percent for set-rate, dollars for set-amount/
-    transfer) for an ``amount`` target, or ``YYYY-MM-DD`` for a ``date``
-    target; ``amount_parser`` converts the former to the row's own raw
-    storage unit (micros/cents), matching how the row's own literal value is
-    converted.
+    transfer) for an ``amount`` target, or ``YYYY-MM`` / ``YYYY-MM-DD`` for a
+    ``date`` target (a bare month is resolved per bound by the loader, #34);
+    ``amount_parser`` converts the former to the row's own raw storage unit
+    (micros/cents), matching how the row's own literal value is converted.
     """
     if not vary_distribution:
         if any([
@@ -1820,7 +1823,7 @@ def _vary_row_fields(
         if raw is None:
             return ""
         if vary_target == "date":
-            return _validate_iso_date(raw)
+            return _validate_month_date(raw)
         return str(amount_parser(raw))
 
     shape: dict[str, float] = {}
@@ -1907,8 +1910,8 @@ def _do_add_transfer(
         lot_info = _lot_info(con)
 
     if not date:
-        date = _prompt_with_completion("date (YYYY-MM-DD)")
-    date = _validate_iso_date(date)
+        date = _prompt_with_completion("date (YYYY-MM or YYYY-MM-DD)")
+    date = _validate_month_date(date)
 
     if not from_account:
         click.echo(f"accounts: {', '.join(accounts)}")
@@ -2087,7 +2090,7 @@ def calendar_add_set_rate(
         registries.parse_tags(tags)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
-    date = _validate_iso_date(date)
+    date = _validate_month_date(date)
     micros = _percent_to_rate_micros(rate_percent)
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
@@ -2121,7 +2124,7 @@ def calendar_add_set_rate(
 @click.argument("scheduled_name")
 @click.argument("amount")
 @click.option("--param-date", default="",
-              help="New base date for the rule (YYYY-MM-DD), optional.")
+              help="New base date for the rule (YYYY-MM or YYYY-MM-DD), optional.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -2155,9 +2158,9 @@ def calendar_add_set_amount(
     if scheduled_name not in names:
         raise click.ClickException(f"unknown scheduled_name: {scheduled_name!r}")
 
-    date = _validate_iso_date(date)
+    date = _validate_month_date(date)
     if param_date:
-        param_date = _validate_iso_date(param_date)
+        param_date = _validate_month_date(param_date)
     cents = _parse_amount_cents(amount)
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
@@ -2220,7 +2223,7 @@ def calendar_add_retire_scheduled(
     if scheduled_name not in names:
         raise click.ClickException(f"unknown scheduled_name: {scheduled_name!r}")
 
-    date = _validate_iso_date(date)
+    date = _validate_month_date(date)
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
@@ -2356,7 +2359,7 @@ def scheduled_group_command() -> None:
 @click.option("--month-of-year", type=click.IntRange(1, 12), default=None,
               help="Required for annual cadence; defaults to start month.")
 @click.option("--end", "end_date", default="",
-              help="Optional end date (YYYY-MM-DD).")
+              help="Optional end date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--tax-character", default="none", show_default=True)
 @click.option("--series", default="fixed", show_default=True,
               help="'fixed' for no inflation, else an inflation series (e.g. cpi).")
@@ -2398,10 +2401,14 @@ def scheduled_add(
         }
 
     if not date:
-        date = _prompt_with_completion("start date (YYYY-MM-DD)")
-    date = _validate_iso_date(date)
+        date = _prompt_with_completion("start date (YYYY-MM or YYYY-MM-DD)")
+    date = _validate_month_date(date)
+    if cadence == "biweekly" and not is_full_date(date):
+        raise click.ClickException(
+            f"a biweekly start needs a full YYYY-MM-DD, its first payday: {date!r}"
+        )
     if end_date:
-        end_date = _validate_iso_date(end_date)
+        end_date = _validate_month_date(end_date)
 
     if not from_account:
         click.echo(f"accounts: {', '.join(accounts)}")
@@ -2495,7 +2502,7 @@ def scheduled_add(
 @click.option("--from-lot", default="",
               help="Lot of --from-account (required for investment accounts).")
 @click.option("--start", default=None,
-              help="First scheduled month YYYY-MM-DD (default: scenario start).")
+              help="First scheduled month YYYY-MM or YYYY-MM-DD (default: scenario start).")
 @click.option("--series", default="cpi", show_default=True,
               help="Inflation series applied to generated rows ('fixed' for none).")
 @click.option("--dry-run", is_flag=True, default=False,
@@ -2534,7 +2541,7 @@ def scheduled_import_baseline(
         scenario_path = scenario_dir / "scenario.csv"
         with scenario_path.open(newline="", encoding="utf-8-sig") as handle:
             start = next(_csv.DictReader(handle))["start"]
-    start = _validate_iso_date(start)
+    start = _validate_month_date(start)
 
     merges, exclusions = load_category_map(category_map_path)
     baseline = build_expense_baseline(
@@ -2718,9 +2725,9 @@ def account_group_command() -> None:
               type=click.Choice(["", *sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)]),
               help="Character of the growth flow; required with --series.")
 @click.option("--opened", "opened", default="",
-              help="Open date (YYYY-MM-DD).")
+              help="Open date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--closed", "closed", default="",
-              help="Close date (YYYY-MM-DD), if any.")
+              help="Close date (YYYY-MM or YYYY-MM-DD), if any.")
 @click.option("--opening-balance", default=None,
               help="Initial balance in dollars; appended to the scenario's "
                    "account_model file.")
@@ -2801,9 +2808,9 @@ def add_account(
         )
 
     if opened:
-        opened = _validate_iso_date(opened)
+        opened = _validate_month_date(opened)
     if closed:
-        closed = _validate_iso_date(closed)
+        closed = _validate_month_date(closed)
 
     if series and not tax_character:
         raise click.ClickException(
@@ -3034,8 +3041,8 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
 @click.option("--subkind", default=None, help="New account subkind.")
 @click.option("--owner", default=None, help="New owner (person id or 'joint').")
 @click.option("--tax-treatment", default=None, help="New tax treatment.")
-@click.option("--opened", default=None, help="Open date (YYYY-MM-DD).")
-@click.option("--closed", default=None, help="Close date (YYYY-MM-DD).")
+@click.option("--opened", default=None, help="Open date (YYYY-MM or YYYY-MM-DD).")
+@click.option("--closed", default=None, help="Close date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--meta-json", default=None, help="JSON payload for the account metadata.")
 @click.option("--tags", default=None, help="Space-separated '<role>:<name>' tokens.")
 @click.option("--scenario", default=None,
@@ -3121,10 +3128,10 @@ def edit_account(
         )
         opened = click.prompt("opened", default=current.get("opened", ""), show_default=True)
         if opened:
-            opened = _validate_iso_date(opened)
+            opened = _validate_month_date(opened)
         closed = click.prompt("closed", default=current.get("closed", ""), show_default=True)
         if closed:
-            closed = _validate_iso_date(closed)
+            closed = _validate_month_date(closed)
         meta_json = click.prompt("meta_json", default=current.get("meta_json", "{}"), show_default=True)
         if meta_json:
             try:
@@ -3150,9 +3157,9 @@ def edit_account(
             f"unknown tax_treatment: {tax_treatment!r}; allowed: {sorted(registries.TAX_TREATMENTS)}"
         )
     if opened:
-        opened = _validate_iso_date(opened)
+        opened = _validate_month_date(opened)
     if closed:
-        closed = _validate_iso_date(closed)
+        closed = _validate_month_date(closed)
     if meta_json:
         try:
             json.loads(meta_json)
@@ -3229,7 +3236,7 @@ def _default_tax_treatment(kind: str, subkind: str) -> str:
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 @click.option("--as-of", default=None,
-              help="Resolve rates effective on or before this date (YYYY-MM-DD).")
+              help="Resolve rates effective on or before this date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--kind", default=None,
               help="Filter to accounts of this kind (e.g. asset, liability).")
 @click.option("--owner", default=None,
@@ -3246,7 +3253,7 @@ def list_accounts(
 
     data_dir_p = _resolve_data_dir(data_dir)
     if as_of:
-        _validate_iso_date(as_of)
+        as_of = month_end_iso(_validate_month_date(as_of))
     with open_scenario(data_dir_p, scenario) as sc:
         rows = load_accounts_view(sc, as_of=as_of)
     if kind is not None:

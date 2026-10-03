@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Protocol
 
 import pandas as pd
 
+from analysis.sim.dates import parse_month
+
 if TYPE_CHECKING:
     from analysis.sim.connection import ScenarioConnection
 
@@ -178,7 +180,7 @@ def prices_in_use(scenarios_dir: Path, scenario: str | None = None) -> PriceUse:
             with meta.open(newline="", encoding="utf-8") as fh:
                 for row in csv.DictReader(fh):
                     if (row.get("start") or "").strip():
-                        starts.append(date.fromisoformat(row["start"].strip()))
+                        starts.append(parse_month(row["start"]))
     return PriceUse(sorted(symbols), min(starts) if starts else None)
 
 

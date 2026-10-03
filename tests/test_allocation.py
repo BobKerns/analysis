@@ -89,7 +89,7 @@ def test_totals_and_percentages_add_up_and_can_be_split(
     ("AAA,,gold,100\n", "unknown asset_class 'gold'"),
     ("AAA,,gold,60\nAAA,,bond,40\n", "unknown asset_class 'gold'"),
     ("AAA,,bond,100\nAAA,,bond,0\n", "duplicate bond"),
-    ("AAA,soon,bond,100\n", "as_of 'soon' is not an ISO date"),
+    ("AAA,soon,bond,100\n", "as_of 'soon' is not YYYY-MM or YYYY-MM-DD"),
     (",,bond,100\n", "missing symbol"),
     ("AAA,,bond,many\n", "weight"),
 ])

@@ -270,7 +270,7 @@ def _spearman(a: pd.Series, b: pd.Series) -> float:
 def _simulate(links: dict[str, Link], members: int = MEMBERS, seed: int = 11) -> pd.DataFrame:
     """Scores per member, one independent noise draw per node per member."""
     rng = random.Random(seed)
-    nodes = tree_members(links)
+    nodes = sorted(tree_members(links))  # set order varies with PYTHONHASHSEED
     rows = [resolve_scores(links, {n: standard_normal(rng) for n in nodes})
             for _ in range(members)]
     return pd.DataFrame(rows)
