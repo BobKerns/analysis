@@ -7,10 +7,12 @@ is the fallback when there's no ``README.md``.
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
@@ -168,7 +170,30 @@ def description_view(conn: Connection, *,
     baked in under one data_dir still links correctly when later viewed
     against another.
     """
-    description = conn.items("scenario").iloc[0].get("description") or ""
+    row = conn.items("scenario").iloc[0]
+    description = row.get("description") or ""
     if data_dir is not None:
         description = _regenerate_more_link(description, Path(data_dir))
-    return Markdown(relevel_heading(description, heading_level))
+    parts = [relevel_heading(description, heading_level), lineage_markdown(row)]
+    return Markdown("\n\n".join(part for part in parts if part))
+
+
+def lineage_markdown(scenario_row: Mapping[str, Any]) -> str:
+    """What a scenario inherits from (ADR-003 §4.5), from its intent/run
+    file's ``scenario`` row: its direct parents -- the main parent, then any
+    mix-ins -- and, when it has any, the whole load order the loader overlaid,
+    root first. "" for a file written before schema 31, which didn't record
+    it."""
+    parents_json = scenario_row.get("parents_json")
+    if parents_json is None:
+        return ""
+    parents = json.loads(parents_json)
+    if not parents:
+        return "**Inherits from:** nothing (a root scenario)"
+    main, *mixins = parents
+    lines = [f"**Parent:** `{main}`"]
+    if mixins:
+        lines[0] += "; **mix-ins:** " + ", ".join(f"`{m}`" for m in mixins)
+    order = json.loads(scenario_row.get("load_order_json") or "[]")
+    lines.append("**Load order:** " + " → ".join(f"`{n}`" for n in order))
+    return "  \n".join(lines)

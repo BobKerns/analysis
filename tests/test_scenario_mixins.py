@@ -14,9 +14,11 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.sim.connection import open_scenario
 from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents
 from analysis.sim.loader import LoadError, load_scenario
 from analysis.sim.provenance import data_stamps
+from analysis.sim.readme import description_view, lineage_markdown
 from analysis.sim.staging import _affected_scenarios
 
 ROOT = "retire_alice"
@@ -151,6 +153,48 @@ def test_a_missing_mixin_fails_the_load(
     derive_scenario("combo", f"{ROOT}:nowhere")
     with pytest.raises(LoadError, match="scenario folder not found"):
         load_scenario(test_data_dir, "combo", intent_dir=tmp_path, allow_dirty_data=True)
+
+
+# -- what a scenario says it inherits ----------------------------------------
+
+
+def test_the_intent_records_parents_and_load_order(
+    derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
+) -> None:
+    derive_scenario("main", ROOT)
+    derive_scenario("mix", ROOT)
+    derive_scenario("combo", "main:mix")
+    with sqlite3.connect(load_test_scenario("combo")) as con:
+        parents, order = con.execute(
+            "SELECT parents_json, load_order_json FROM scenario"
+        ).fetchone()
+    assert json.loads(parents) == ["main", "mix"]
+    assert json.loads(order) == [ROOT, "main", "mix", "combo"]
+
+
+def test_description_view_shows_parents_mixins_and_load_order(
+    derive_scenario: Callable[..., Path], test_data_dir: Path,
+) -> None:
+    derive_scenario("main", ROOT)
+    derive_scenario("mix", ROOT)
+    derive_scenario("combo", "main:mix")
+    with open_scenario(test_data_dir, "combo") as scenario:
+        md = description_view(scenario).data
+    assert md.endswith(
+        "**Parent:** `main`; **mix-ins:** `mix`  \n"
+        f"**Load order:** `{ROOT}` → `main` → `mix` → `combo`"
+    )
+
+
+def test_a_single_parent_shows_no_mixins() -> None:
+    row = {"parents_json": '["base"]', "load_order_json": '["base", "child"]'}
+    assert lineage_markdown(row) == (
+        "**Parent:** `base`  \n**Load order:** `base` → `child`"
+    )
+
+
+def test_a_file_from_before_lineage_was_recorded_shows_none() -> None:
+    assert lineage_markdown({"description": "old"}) == ""
 
 
 # -- provenance and staging -------------------------------------------------

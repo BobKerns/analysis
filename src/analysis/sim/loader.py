@@ -31,7 +31,7 @@ from analysis.sim.distributions import (
     TruncatedNormal,
     resolve_truncated_normal_bounds,
 )
-from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents
+from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents, read_parents
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -716,6 +716,8 @@ def load_scenario(
                               issues,
                               scenarios_dir=scenarios_dir)
     _normalize_vary_dates(calendar_rows)
+    parents = read_parents(scenarios_dir / scenario_name)
+    load_order_names = _strict_load_order(scenarios_dir, scenario_name)
     # A scenario folder's own README.md, if there is one, is the scenario's
     # real description -- scenario.csv's own description column is only the
     # fallback for a scenario that doesn't have one (ADR-003 §4.1e). Baked
@@ -797,6 +799,8 @@ def load_scenario(
             account_model_rows=model_rows,
             aux_rows=aux_rows,
             scenario_row=scenario_row,
+            parents=parents,
+            lineage_order=load_order_names,
             scheduled_rows=scheduled_rows,
             chains=chains,
             calendar_rows=calendar_rows,
@@ -2502,6 +2506,8 @@ def _write_intent(
     account_model_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     scenario_row: dict[str, str],
+    parents: list[str],
+    lineage_order: list[str],
     scheduled_rows: list[dict[str, str]],
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     calendar_rows: list[dict[str, str]],
@@ -2772,13 +2778,14 @@ def _write_intent(
     cur = con.execute(
         "INSERT INTO scenario("
         "name, description, account_model_id, calendar_id, start, \"end\", "
-        "seed, parent_id, created_at, created_by, meta_json"
-        ") VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "seed, parents_json, load_order_json, created_at, created_by, meta_json"
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             scenario_row["name"], scenario_row.get("description") or None,
             model_id, calendar_id,
             scenario_row["start"], scenario_row["end"],
-            int(scenario_row["seed"]) if scenario_row.get("seed") else None, None,
+            int(scenario_row["seed"]) if scenario_row.get("seed") else None,
+            json.dumps(parents), json.dumps(lineage_order),
             now, scenario_row.get("created_by") or "unknown",
             scenario_row.get("meta_json") or "{}",
         ),
