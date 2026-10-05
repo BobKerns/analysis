@@ -53,21 +53,24 @@ outcomes far too wide. Match the window to how long the row holds.
   windows share most of their years, so a period of 40 years holds only
   four independent decades; treat the SD as a rough guide, not a
   measurement.
-- **`vary_low`/`vary_high`:** these clip the draw, and default to 3 SDs out.
-  The historical min and max are a check on that range, not good clip
-  bounds: clipping at them rules out anything worse than what happened.
+- **`vary_low`/`vary_high`:** for a truncated normal these clip the draw,
+  and default to 3 SDs out; for uniform and triangular they are the
+  distribution's required bounds. The historical min and max are a check
+  on that range, not good bounds: stopping at them rules out anything worse
+  than what happened.
 - **`vary_skew`:** when Max sits much further above the median than Min
   sits below it, as for energy and for CPI-U across the postwar period,
   the high side needs a longer tail.
 - **`vary_correlation`:** ρ (from τ), from a table with the same window.
   The simulator's correlations are copula correlations, and ρ from τ is
-  their direct estimate. Pearson is pulled around by a few extreme years,
-  and with 10-year windows the ρ is higher than with single years because
-  noise averages out of both series.
+  their direct estimate. Pearson is pulled around by a few extreme years.
+  The ρ for 10-year windows can be higher or lower than for single years
+  (since 1984, energy's and apparel's fall), so take it from the horizon the row
+  holds for.
 - **A later row correlated with an earlier one:** Persistence, the
-  correlation of one year's rate with the next, is an upper bound for rows
-  a year apart. Rows several years apart are less correlated than that,
-  and the script doesn't measure it directly.
+  correlation of one year's rate with the next, is the estimate for rows a
+  year apart. The script doesn't measure longer gaps, and the correlation
+  across them needn't shrink steadily, so don't read it off persistence.
 
 ## A long-run rate with episodes on top
 
