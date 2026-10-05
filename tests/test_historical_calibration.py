@@ -295,6 +295,18 @@ def test_weekly_rates_average_to_monthly_then_annual(hc):
     assert hc.annual_rates(s).to_dict() == {2020: pytest.approx(3.0), 2021: pytest.approx(5.0)}
 
 
+def test_rate_override_applies_before_reducing_to_monthly(hc):
+    text = "observation_date,DGS10\n2020-01-02,1.0\n2020-01-31,3.0\n2020-02-03,2.0\n"
+    s = hc.load_csv_like("fred:DGS10", text, "y", "y", "rate")
+    assert s.kind == "rate" and s.values.tolist() == [2.0, 2.0]
+
+
+def test_quarterly_data_is_refused(hc):
+    text = "date,rate\n" + "".join(f"{y}-{m:02d}-01,2.0\n" for y in (2020, 2021) for m in (1, 4, 7, 10))
+    with pytest.raises(hc.DataError, match="less frequent than monthly"):
+        hc.load_csv_like("csv:q", text, "q", "q")
+
+
 def test_weekly_levels_take_each_months_last_value(hc):
     text = "date,value\n2020-12-03,100\n2020-12-31,101\n2021-12-02,103\n2021-12-30,104.03\n"
     s = hc.load_csv_like("csv:w", text, "w", "w")

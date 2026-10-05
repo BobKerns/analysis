@@ -288,12 +288,14 @@ for a core-inflation factor.
 
 ```sh
 uv run scripts/historical_calibration.py --reference Core=CUUR0000SA0L1E \
-  --period "Since 1984=1984-" --period "Postwar=1948-" [--window 10] \
+  --period "Since 1984=1984-" --period "Postwar=1948-" \
   CPI-U=CUUR0000SA0 Core=CUUR0000SA0L1E Food=CUUR0000SAF1 Energy=CUUR0000SA0E \
   Shelter=CUUR0000SAH1 Medical=CUUR0000SAM Medical-services=CUUR0000SAM2 \
   Apparel=CUUR0000SAA Tuition=CUUR0000SEEB \
   T-bill=damodaran:tbill T-bond=damodaran:tbond Stocks=damodaran:sp500
 ```
+
+The 10-year tables come from the same command with `--window 10` added.
 
 Which period to use is a judgment. Since 1984 is one regime: low, stable
 inflation, plus 2021–2022. The postwar period includes the Great Inflation,
@@ -483,7 +485,7 @@ Verified and retrieved on 2026-10-05:
 | [Federal Reserve H.15](https://www.federalreserve.gov/releases/h15/) | Interest rates and Treasury yields, with daily, weekly, monthly and annual averages through the Data Download Program | Daily to annual | `csv:FILE` (reduce to `date,rate`) |
 | [CMS National Health Expenditure data](https://www.cms.gov/data-research/statistics-trends-and-reports/national-health-expenditure-data/historical) | Health spending since 1960 | Annual | `csv:FILE` |
 | [Freddie Mac PMMS](https://www.freddiemac.com/pmms) | Average 30-year fixed mortgage rate (and others), with a historical weekly spreadsheet | Weekly | `csv:FILE` (reduce to `date,rate`) |
-| [Philadelphia Fed, Survey of Professional Forecasters](https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/survey-of-professional-forecasters) | Forecasts of inflation, rates and output, since 1968 | Quarterly | `csv:FILE` |
+| [Philadelphia Fed, Survey of Professional Forecasters](https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/survey-of-professional-forecasters) | Forecasts of inflation, rates and output, since 1968 | Quarterly | `csv:FILE` (reduce to one row per year) |
 | [Cleveland Fed, inflation expectations](https://www.clevelandfed.org/indicators-and-data/inflation-expectations) | Model expectations of inflation for horizons of 1 to 30 years, back to 1982 | Monthly | `csv:FILE` |
 | [Shiller's long-run data](https://shillerdata.com/) | Monthly stock prices, dividends, earnings, interest rates and CPI, from January 1871 (`ie_data.xls`, an Excel file to save as CSV) | Monthly | `csv:FILE` |
 | [FRED](https://fred.stlouisfed.org/) | Most of the series above under one interface, by FRED id (e.g. `PCEPI`, `CPIAUCSL`); its PCE matches the BEA download | Varies by series | `fred:ID` |

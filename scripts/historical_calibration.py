@@ -439,14 +439,21 @@ def to_monthly(kind: str, values: pd.Series) -> tuple[pd.Series, bool]:
     and whether they're monthly."""
     if len(values) < 2 or not pd.Series(values.index.year).duplicated().any():
         return values, False
+    # Quarterly data would leave most months empty, and annual_rates() would
+    # then drop every year as incomplete; refuse it rather than print nothing.
+    if values.index.to_series().diff().median() > pd.Timedelta(days=45):
+        raise DataError("data is less frequent than monthly (quarterly?); reduce it to one row per year")
     by_month = values.groupby(values.index.to_period("M"))
     monthly = by_month.mean() if kind == "rate" else by_month.last()
     monthly.index = monthly.index.to_timestamp()
     return monthly, True
 
 
-def load_csv_like(spec: str, text: str, label: str, title: str) -> Series:
-    kind, values = parse_two_column_csv(text)
+def load_csv_like(spec: str, text: str, label: str, title: str, kind: str | None = None) -> Series:
+    """``kind`` overrides the header's before resampling, since a rate and a
+    level reduce to monthly differently."""
+    header_kind, values = parse_two_column_csv(text)
+    kind = kind or header_kind
     values, monthly = to_monthly(kind, values)
     return Series(label=label, spec=spec, kind=kind, values=values, monthly=monthly, title=title)
 
@@ -484,13 +491,14 @@ def load_series(fetcher: Fetcher, args: list[str]) -> list[Series]:
             s = load_damodaran(fetcher, ident)
         elif source == "fred":
             url = FRED_URL.format(ident)
-            s = load_csv_like(f"fred:{ident}", fetcher.get(url, f"fred/{ident}.csv").decode(), ident, f"FRED {ident}")
+            text = fetcher.get(url, f"fred/{ident}.csv").decode()
+            s = load_csv_like(f"fred:{ident}", text, ident, f"FRED {ident}", kind)
         else:
             try:
                 text = Path(ident).read_text()
             except OSError as exc:
                 raise DataError(f"couldn't read {ident}: {exc}") from exc
-            s = load_csv_like(f"csv:{ident}", text, Path(ident).stem, ident)
+            s = load_csv_like(f"csv:{ident}", text, Path(ident).stem, ident, kind)
         # A copy, since a BLS or BEA series used twice (say, also as the
         # reference) is one shared object.
         out.append(dataclasses.replace(s, label=label, kind=kind or s.kind))
