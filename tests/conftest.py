@@ -614,6 +614,36 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
 
 
 @pytest.fixture(scope="function")
+def write_series(retire_alice_csv: Callable[[str], Path]) -> Callable[[str, str], Path]:
+    """Write a rate series into the private retire_alice copy's ``series/``, as
+    ``(series name, "effective_date,annual_rate_micros" rows)``."""
+    def _write(series: str, rows: str) -> Path:
+        path = retire_alice_csv("series") / f"rate__{series}.csv"
+        path.write_text(f"effective_date,annual_rate_micros\n{rows}\n")
+        return path
+    return _write
+
+
+@pytest.fixture(scope="function")
+def blended_fund(test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+                 write_series: Callable[[str, str], Path]) -> None:
+    """Make the private retire_alice copy's brokerage one lot ``fund`` of symbol
+    FND, $300,000, allocated 60% ``stock_us`` / 40% ``bond``, with class rate
+    series at 8% and 4% (#78): it grows at their blend, 6.4%."""
+    set_brokerage_lots([
+        {"lot": "fund", "symbol": "FND", "opening_balance": "300000.00",
+         "opening_cost_basis": "200000.00"},
+    ])
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nFND,,stock_us,60\nFND,,bond,40\n")
+    calendar = test_data_dir / "scenarios" / "retire_alice" / "calendar.csv"
+    calendar.write_text(calendar.read_text().replace(
+        ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,fund,"))
+    write_series("stock_us", "2026-01-31,80000")
+    write_series("bond", "2026-01-31,40000")
+
+
+@pytest.fixture(scope="function")
 def append_calendar_row(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Append a row to the private copy's calendar.csv, by column name
     (ADR-006 ``vary_*``/``name`` columns included)."""

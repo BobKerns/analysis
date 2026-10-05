@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-23
 - **Supersedes:** the reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` ([ADR-002](ADR-002-storage-schema.md) §Reserved schema); the account-level running cost basis that [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7 (withdrawing from a taxable lot) now describes per lot.
+- **Amended by:** [#78](https://github.com/BobKerns/analysis/issues/78): a fund lot can grow at the blend of its allocation slices' rate series (§5).
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (domain objects, `AccountState`), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries, CSV layouts, chains §4.7, `rmd` §2.3, `sell_asset` §3.7).
 
 ## Context
@@ -93,7 +94,17 @@ The rule depends only on subkind, never on the current lot count, so adding a lo
 
 ### 5. Growth is per lot
 
-`_expand_account_growth` already turns an account's `series` into a `percent_of_balance` rule. It now emits one rule per lot, named `growth_` plus the account and lot with each word trimmed to four letters (`growth_bill_roth_roll_sett`), widening the trimming only if that name is already taken (`loader.growth_rule_name`), into that lot's leaf chain. Rate series for a lot resolve in order: the lot's `series`, then a rate series named for the lot's `symbol`, then the account's `series`. The income counterparty and `tax_character` remain account-level. Accrual is an ordinary transfer from an income account into the lot, so growth moves the balance and not the basis, and the ledger stays event-sourced and zero-sum. The engine never marks positions to market.
+`_expand_account_growth` already turns an account's `series` into a `percent_of_balance` rule. It now emits one rule per lot, named `growth_` plus the account and lot with each word trimmed to four letters (`growth_bill_roth_roll_sett`), widening the trimming only if that name is already taken (`loader.growth_rule_name`), into that lot's leaf chain. Rate series for a lot resolve in order: the lot's `series`, then a rate series named for the lot's `symbol`, then the blend of its symbol's allocation (below), then the account's `series`.
+
+**A fund grows at the blend of its allocation** ([#78](https://github.com/BobKerns/analysis/issues/78)). A fund holding stocks and bonds depends on more than one rate, but a row in a correlation tree has one parent ([ADR-008](ADR-008-correlated-parameters.md) §2). Splitting the fund by allocation lets each slice follow one rate instead. When a lot's symbol has `allocations.csv` rows ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.1b), each asset class it holds reads the rate series `<symbol>.<class>` (`rate__BAL.stock_us.csv`), else the class's own series (`rate__stock_us.csv`, `rate__bond.csv`). The lot then grows each month at
+
+```text
+annual rate = Σ weight(class) × rate(slice series)
+```
+
+with the weights of the allocation set in force that month (its latest `as_of` on or before the month, else its earliest), so a target-date fund's glide path moves its growth. Fixed weights with blended returns is a fund rebalancing to its target. The blend lives in the growth rule's `params_json` (`{"blend": [[as_of, [[series, weight_micros], ...]], ...]}`, the rule's `series` blank), and the engine reads each slice's rate monthly, never a precomputed series, since a `set_rate` event (varied or not) can move any slice mid-run. A slice series is an ordinary rate series, so it varies and correlates through ordinary `set_rate` rows.
+
+The blend applies only when every class the symbol holds resolves to a series. When none does, the lot grows at its account's series as before. When only some do, the load warns and also falls back: a series that happens to share a class's name (a cash account's `cash` rate) mustn't stop a scenario that never meant to blend from loading. The income counterparty and `tax_character` remain account-level. Accrual is an ordinary transfer from an income account into the lot, so growth moves the balance and not the basis, and the ledger stays event-sourced and zero-sum. The engine never marks positions to market.
 
 ### 6. Prices
 

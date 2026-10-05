@@ -1043,11 +1043,38 @@ def _amount_percent_of_balance(
     month_s: str, tid: int,
 ) -> int:
     rate_kind = params.get("rate_kind", "rate")
-    rate_series = params.get("series")
     basis = params.get("rate_basis", "opening")
     base = (opening_balances if basis == "opening" else current_balances).get(to_id, 0)
     if base <= 0:
         return 0
+    if blend := params.get("blend"):
+        # A fund's allocation blend (#78): sum weight x each slice's rate, read
+        # now rather than at load, since a set_rate event can move any slice.
+        # Kept in micros-squared so the blend itself never rounds.
+        weighted = sum(
+            weight * _annual_rate_micros(aux, rate_kind, slice_series, month_s, tid)
+            for slice_series, weight in _blend_slices_at(blend, month_s)
+        )
+        return (base * weighted) // (12 * 1_000_000 * 1_000_000)
+    annual_micros = _annual_rate_micros(aux, rate_kind, params.get("series"), month_s, tid)
+    # monthly_rate = annual_micros / 12 / 1_000_000; amount = base * monthly_rate
+    return (base * annual_micros) // (12 * 1_000_000)
+
+
+def _blend_slices_at(blend: list[list[Any]], month_s: str) -> list[list[Any]]:
+    """The ``[[series, weight_micros], ...]`` of the blend's latest set on or before
+    ``month_s``, else its earliest: the portfolio overview's rule (ADR-003 §4.1b)."""
+    chosen = blend[0][1]
+    for as_of, slices in blend:
+        if as_of <= month_s:
+            chosen = slices
+    return chosen
+
+
+def _annual_rate_micros(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    rate_kind: str, rate_series: str | None, month_s: str, tid: int,
+) -> int:
     payload = _lookup_aux(aux, rate_kind, rate_series, month_s)
     if payload is None:
         raise EngineError(
@@ -1059,8 +1086,7 @@ def _amount_percent_of_balance(
         raise EngineError(
             f"percent_of_balance id={tid}: aux payload missing annual_rate_micros"
         )
-    # monthly_rate = annual_micros / 12 / 1_000_000; amount = base * monthly_rate
-    return (base * int(annual_micros)) // (12 * 1_000_000)
+    return int(annual_micros)
 
 
 def _apply_mortgage_payment(
