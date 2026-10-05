@@ -12,8 +12,8 @@ see `prices/README.md`. Growth-rate and inflation series are different: they are
 per-scenario projections, so each scenario has its own `series/` folder (no
 shared default here) — see "Per-scenario overrides" below. The prototype's root
 scenario, `retire_alice`, ships a default for each inflation series and fund
-asset class in its own `series/`, which every scenario derived from it inherits;
-see "The prototype's defaults" in `docs/guides/historical-calibration.md`.
+asset class in its own `series/`, which every scenario derived from it inherits
+(CPI stays here, in `aux/inflation__cpi.csv`); see "The prototype's defaults" in `docs/guides/historical-calibration.md`.
 
 ## How a row is used
 

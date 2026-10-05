@@ -339,7 +339,9 @@ and a factor for each one, so a child scenario or mix-in can vary any of
 them with one row. It has no varying rows: every future runs at these
 rates until a scenario says otherwise. They're starting points, meant to
 be overridden; replace a file in the scenario's own `series/`, or add a
-`set-rate` row.
+`set-rate` row. CPI is the exception: `inflation__cpi.csv` stays in the
+shared `aux/`, so a scenario replaces it with its own
+`aux/inflation__cpi.csv`, not a `series/` file.
 
 The rates are 10-year compound medians from the tables above, leaning
 toward the recent period where it differs, rounded to half a point or so:

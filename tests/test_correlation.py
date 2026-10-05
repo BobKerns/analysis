@@ -257,6 +257,7 @@ def test_engine_treats_a_factor_as_inert(
     assert "latent_factor" not in json.loads(run_args or "{}").get("skipped_calendar_kinds", {})
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_cli_prints_a_warning_once(
     append_calendar_row: Callable[..., None], test_data_dir: Path,
     intent_dir: Path, runs_dir: Path,
