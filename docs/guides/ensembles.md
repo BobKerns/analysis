@@ -358,9 +358,13 @@ choices you have for its structure, then shocks and persistence.
 Every command in this section runs against the prototype scenario. The
 prototype ships default inflation series and a factor for each
 ([The prototype's defaults](historical-calibration.md#the-prototypes-defaults)),
-but this recipe builds its own from scratch, to show each step. The first
-step gives it four inflation series of its own and a monthly expense that
-reads each one:
+and the recipe inherits them all. It writes its own anyway, to show each
+step: its series files replace the defaults of the same name, and its
+factors replace the same-named default factors. The trees drawn below show
+only what the recipe adds; the defaults' other factors still load beside
+them, which is why `sim check` warns that they affect nothing. The first
+step gives the recipe four inflation series of its own and a monthly
+expense that reads each one:
 
 ```sh
 sim ensemble create inflation_drivers retire_alice
