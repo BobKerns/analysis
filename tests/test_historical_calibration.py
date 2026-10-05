@@ -85,6 +85,11 @@ def test_parse_period(hc, arg, expected):
     assert hc.parse_period(arg) == expected
 
 
+def test_parse_period_rejects_a_reversed_span(hc):
+    with pytest.raises(hc.DataError, match="ends before it starts"):
+        hc.parse_period("Bad=2025-1984")
+
+
 def test_parse_period_rejects_bad_span(hc):
     with pytest.raises(hc.DataError, match="NAME=FIRST-LAST"):
         hc.parse_period("1984-2007")
@@ -280,6 +285,25 @@ def sent_agents(hc, monkeypatch):
 
     monkeypatch.setattr(hc.urllib.request, "urlopen", fake_urlopen)
     return agents
+
+
+def test_weekly_rates_average_to_monthly_then_annual(hc):
+    days = pd.date_range("2020-01-02", "2021-12-31", freq="7D")
+    text = "date,rate\n" + "".join(f"{d.date()},{3.0 if d.year == 2020 else 5.0}\n" for d in days)
+    s = hc.load_csv_like("csv:w", text, "w", "w")
+    assert s.monthly and len(s.values) == 24
+    assert hc.annual_rates(s).to_dict() == {2020: pytest.approx(3.0), 2021: pytest.approx(5.0)}
+
+
+def test_weekly_levels_take_each_months_last_value(hc):
+    text = "date,value\n2020-12-03,100\n2020-12-31,101\n2021-12-02,103\n2021-12-30,104.03\n"
+    s = hc.load_csv_like("csv:w", text, "w", "w")
+    assert hc.annual_rates(s).to_dict() == {2021: pytest.approx(3.0)}
+
+
+def test_missing_csv_is_a_data_error(hc, calibration_cache_dir, tmp_path):
+    with pytest.raises(hc.DataError, match="couldn't read"):
+        hc.load_series(hc.Fetcher(calibration_cache_dir, None), [f"csv:{tmp_path / 'nope.csv'}"])
 
 
 def test_download_from_bls_needs_a_contact(hc, calibration_cache_dir, sent_agents):

@@ -428,15 +428,25 @@ def parse_two_column_csv(text: str) -> tuple[str, pd.Series]:
     return kind, s.sort_index()
 
 
-def _is_monthly(s: pd.Series) -> bool:
-    return len(s) > 1 and pd.Series(s.index.year).duplicated().any()
+def to_monthly(kind: str, values: pd.Series) -> tuple[pd.Series, bool]:
+    """Annual data as is; anything more frequent becomes one value per month.
+
+    Weekly or daily data (a mortgage-rate survey, daily yields) is reduced to
+    monthly first: a rate to its monthly mean, a level to the month's last
+    value, the way BLS and BEA monthly series already are. Returns the values
+    and whether they're monthly."""
+    if len(values) < 2 or not pd.Series(values.index.year).duplicated().any():
+        return values, False
+    by_month = values.groupby(values.index.to_period("M"))
+    monthly = by_month.mean() if kind == "rate" else by_month.last()
+    monthly.index = monthly.index.to_timestamp()
+    return monthly, True
 
 
 def load_csv_like(spec: str, text: str, label: str, title: str) -> Series:
     kind, values = parse_two_column_csv(text)
-    if _is_monthly(values):
-        values.index = values.index.to_period("M").to_timestamp()
-    return Series(label=label, spec=spec, kind=kind, values=values, monthly=_is_monthly(values), title=title)
+    values, monthly = to_monthly(kind, values)
+    return Series(label=label, spec=spec, kind=kind, values=values, monthly=monthly, title=title)
 
 
 # ------------------------------------------------------------------ specs
@@ -474,7 +484,11 @@ def load_series(fetcher: Fetcher, args: list[str]) -> list[Series]:
             url = FRED_URL.format(ident)
             s = load_csv_like(f"fred:{ident}", fetcher.get(url, f"fred/{ident}.csv").decode(), ident, f"FRED {ident}")
         else:
-            s = load_csv_like(f"csv:{ident}", Path(ident).read_text(), Path(ident).stem, ident)
+            try:
+                text = Path(ident).read_text()
+            except OSError as exc:
+                raise DataError(f"couldn't read {ident}: {exc}") from exc
+            s = load_csv_like(f"csv:{ident}", text, Path(ident).stem, ident)
         # A copy, since a BLS or BEA series used twice (say, also as the
         # reference) is one shared object.
         out.append(dataclasses.replace(s, label=label, kind=kind or s.kind))
@@ -670,6 +684,8 @@ def parse_period(arg: str) -> tuple[str, int | None, int | None]:
     if not sep or not m:
         raise DataError(f"period {arg!r} isn't NAME=FIRST-LAST (e.g. 'Calm=1984-2007', 'Recent=2021-')")
     first, last = (int(g) if g else None for g in m.groups())
+    if first is not None and last is not None and first > last:
+        raise DataError(f"period {arg!r} ends before it starts")
     return name.strip(), first, last
 
 

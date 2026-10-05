@@ -485,15 +485,15 @@ Verified and retrieved on 2026-10-05:
 | [Freddie Mac PMMS](https://www.freddiemac.com/pmms) | Average 30-year fixed mortgage rate (and others), with a historical weekly spreadsheet | Weekly | `csv:FILE` (reduce to `date,rate`) |
 | [Philadelphia Fed, Survey of Professional Forecasters](https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/survey-of-professional-forecasters) | Forecasts of inflation, rates and output, since 1968 | Quarterly | `csv:FILE` |
 | [Cleveland Fed, inflation expectations](https://www.clevelandfed.org/indicators-and-data/inflation-expectations) | Model expectations of inflation for horizons of 1 to 30 years, back to 1982 | Monthly | `csv:FILE` |
+| [Shiller's long-run data](https://shillerdata.com/) | Monthly stock prices, dividends, earnings, interest rates and CPI, from January 1871 (`ie_data.xls`, an Excel file to save as CSV) | Monthly | `csv:FILE` |
 
 Not verified, because they were unreachable from where this guide was
 written:
 
 - [FRED](https://fred.stlouisfed.org/) carries most of the series above
-  under one interface (`fred:ID`; the script's FRED support is tested only
-  against a stubbed download).
-- [Shiller's long-run data](https://shillerdata.com/): stock prices,
-  dividends, earnings, CPI and long rates since 1871.
+  under one interface (`fred:ID`). Its data downloads refused the
+  connection, so the script's FRED support is tested only against a stubbed
+  download.
 - [SSA COLA history](https://www.ssa.gov/oact/cola/colaseries.html), and
   the Medicare Part B premium history from CMS's annual premium
   announcements.
