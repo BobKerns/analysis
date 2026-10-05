@@ -236,6 +236,14 @@ low ρ, or under a factor of its own. The R-CPI-E medical index tracks the
 CPI-U one closely; the older basket's extra medical weight shows up in
 R-CPI-E's all-items index, not in a different medical rate.
 
+The Medicare Part B standard premium grew 5.5% a year from 1990 to 2025
+(5.8% since 2000), against 2.6% for CPI-U and 3.7% for medical care. The
+premium is set to cover about a quarter of Part B's cost per enrollee, so
+it follows how much care is used as well as its price, and it moves in
+jumps: it fell in 2012 and 2023 and rose 16% in 2016 and 15% in 2022. A
+Part B premium row wants a rate of its own, about three points above
+CPI-U, rather than medical CPI.
+
 C-CPI-U runs about 0.3 points a year below CPI-U, and PCE about 0.4 below.
 Tax brackets indexed to C-CPI-U creep down against expenses that follow
 CPI-U.
@@ -510,9 +518,7 @@ Verified and retrieved on 2026-10-05:
 | [Shiller's long-run data](https://shillerdata.com/) | Monthly stock prices, dividends, earnings, interest rates and CPI, from January 1871 (`ie_data.xls`, an Excel file to save as CSV) | Monthly | `csv:FILE` |
 | [FRED](https://fred.stlouisfed.org/) | Most of the series above under one interface, by FRED id (e.g. `PCEPI`, `CPIAUCSL`); its PCE matches the BEA download | Varies by series | `fred:ID` |
 | [SSA COLA history](https://www.ssa.gov/oact/cola/colaseries.html) | Social Security cost-of-living adjustments, 1975–2025. Since 1984 each is the rise in CPI-W's third-quarter average over the previous year's, rounded to 0.1 and never negative; after a zero COLA the base stays at the last COLA's quarter (so 2011 and 2016 are measured over two years). The site refuses scripted downloads, so save the page from a browser | Annual | `csv:FILE` (reduce to `date,rate`) |
-
-Not verified: the Medicare Part B premium history, which comes from CMS's
-annual premium announcements rather than one table.
+| [Medicare Trustees Report, Table III.C2](https://www.cms.gov/oact/tr/2025) and the [2026 premium fact sheet](https://www.cms.gov/newsroom/fact-sheets/2026-medicare-parts-b-premiums-deductibles) | Standard Part B monthly premium, 1966–2025 (every year from 1990), and $202.90 for 2026. Hold-harmless years (2010, 2011, 2016, 2017) left most enrollees paying less than the standard premium | Annual | `csv:FILE` (`date,value`) |
 
 Any source without its own `SOURCE:` prefix can be fed to the script as a
 two-column CSV: `date,value` for an index level, or `date,rate` for a rate
