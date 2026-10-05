@@ -1,6 +1,6 @@
 # Historical calibration: what numbers to put in
 
-<!-- cspell:ignore CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize -->
+<!-- cspell:ignore PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize -->
 
 The [ensembles guide](ensembles.md) explains how a varying rate, a
 correlation and tail dependence work. This guide is about the numbers:
@@ -482,9 +482,12 @@ Verified and retrieved on 2026-10-05:
 | [Damodaran, historical returns](https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histretSP.html) | Annual returns on the S&P 500, small caps, 3-month T-bills (average yield over the year), 10-year T-bonds, Baa corporate bonds, real estate and gold, 1928–2025 (updated January 5, 2026) | Annual | `damodaran:COLUMN` (`sp500`, `small_cap`, `tbill`, `tbond`, `baa_corp`, `real_estate`, `gold`) |
 | [Federal Reserve H.15](https://www.federalreserve.gov/releases/h15/) | Interest rates and Treasury yields, with daily, weekly, monthly and annual averages through the Data Download Program | Daily to annual | `csv:FILE` (reduce to `date,rate`) |
 | [CMS National Health Expenditure data](https://www.cms.gov/data-research/statistics-trends-and-reports/national-health-expenditure-data/historical) | Health spending since 1960 | Annual | `csv:FILE` |
+| [Freddie Mac PMMS](https://www.freddiemac.com/pmms) | Average 30-year fixed mortgage rate (and others), with a historical weekly spreadsheet | Weekly | `csv:FILE` (reduce to `date,rate`) |
+| [Philadelphia Fed, Survey of Professional Forecasters](https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/survey-of-professional-forecasters) | Forecasts of inflation, rates and output, since 1968 | Quarterly | `csv:FILE` |
+| [Cleveland Fed, inflation expectations](https://www.clevelandfed.org/indicators-and-data/inflation-expectations) | Model expectations of inflation for horizons of 1 to 30 years, back to 1982 | Monthly | `csv:FILE` |
 
-Not verified, because their hosts were unreachable from where this guide
-was written:
+Not verified, because they were unreachable from where this guide was
+written:
 
 - [FRED](https://fred.stlouisfed.org/) carries most of the series above
   under one interface (`fred:ID`; the script's FRED support is tested only
@@ -494,11 +497,6 @@ was written:
 - [SSA COLA history](https://www.ssa.gov/oact/cola/colaseries.html), and
   the Medicare Part B premium history from CMS's annual premium
   announcements.
-- [Freddie Mac's mortgage rate survey](https://www.freddiemac.com/pmms).
-- Expectations: the [Philadelphia Fed's Survey of Professional
-  Forecasters](https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/survey-of-professional-forecasters)
-  and the [Cleveland Fed's inflation
-  expectations](https://www.clevelandfed.org/indicators-and-data/inflation-expectations).
 
 Any of these can be fed to the script as a two-column CSV: `date,value` for
 an index level, or `date,rate` for a rate already in percent.
