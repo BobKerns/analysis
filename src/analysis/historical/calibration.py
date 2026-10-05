@@ -72,8 +72,9 @@ from scipy import stats
 
 from analysis.tls import ssl_context, verify_reason
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CACHE = REPO_ROOT / "historical_data"
+# The committed data beside the source tree; an editable install (uv sync)
+# finds it, while a wheel installed elsewhere has none and needs --cache.
+DEFAULT_CACHE = Path(__file__).resolve().parents[3] / "historical_data"
 
 BLS_BASE = "https://download.bls.gov/pub/time.series"
 RCPIE_URL = "https://www.bls.gov/cpi/research-series/r-cpi-e-data.xlsx"
@@ -730,6 +731,10 @@ def run(series_args: Sequence[str], *, reference_arg: str | None = None, period_
         contact: str | None = None) -> None:
     """Print the summary tables for ``analysis historical``; raises
     :class:`DataError` when a period or a source is bad."""
+    if cache == DEFAULT_CACHE and not cache.is_dir():
+        # Don't quietly start a cache inside site-packages.
+        raise DataError(f"the committed data isn't at {cache} (is analysis installed from a checkout?); "
+                        "pass --cache DIR")
     periods = [parse_period(p) for p in period_args] or [(k, *v) for k, v in DEFAULT_PERIODS.items()]
     fetcher = Fetcher(cache, contact, refresh)
     loaded = load_series(fetcher, list(series_args) + ([reference_arg] if reference_arg else []))

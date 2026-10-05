@@ -24,7 +24,10 @@ two CSVs noted below.
 | `cms/` | 2025 Medicare Trustees Report (PDF) and the 2026 Part B premium fact sheet | [Trustees Report](https://www.cms.gov/oact/tr/2025), [fact sheet](https://www.cms.gov/newsroom/fact-sheets/2026-medicare-parts-b-premiums-deductibles) |
 | `ssa/` | Social Security COLAs, 1975–2025 | [SSA](https://www.ssa.gov/oact/cola/colaseries.html) |
 
-Two files are extracted rather than downloaded, for `csv:FILE`:
+Two files are extracted rather than downloaded, and are read as
+`csv:historical_data/cms/part-b-premium.csv` and
+`csv:historical_data/ssa/cola.csv`. `--refresh` doesn't update them;
+re-extract them by hand before committing a new vintage:
 
 - `cms/part-b-premium.csv` is the standard Part B monthly premium
   (`date,value`) from the Trustees Report's Table III.C2, plus 2026 from the

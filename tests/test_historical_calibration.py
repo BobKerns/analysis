@@ -511,3 +511,10 @@ def test_main_reports_source_errors_without_a_traceback(calibration_cache_dir):
 def test_historical_is_an_analysis_subcommand():
     from analysis.cli import main
     assert main.get_command(None, "historical") is historical_command
+
+
+def test_a_missing_committed_cache_asks_for_one(hc, calibration_rate_csv, tmp_path, monkeypatch):
+    monkeypatch.setattr(hc, "DEFAULT_CACHE", tmp_path / "site-packages" / "historical_data")
+    with pytest.raises(hc.DataError, match="pass --cache"):
+        hc.run([f"csv:{calibration_rate_csv}"], cache=hc.DEFAULT_CACHE)
+    assert not hc.DEFAULT_CACHE.exists()
