@@ -91,6 +91,12 @@ CALENDAR_EVENT_KINDS: set[str] = {
 # ensemble's correlated draws read it.
 LATENT_FACTOR_KIND = "latent_factor"
 
+MIN_TAIL_DEPENDENCE = 1.0
+"""The smallest ``vary_tail_dependence`` (nu) accepted (#68). nu = 1 is the
+Cauchy copula, already far more tail dependence than any data supports;
+below it the chi-square draw behind the shared scale underflows to 0 for
+ordinary draws (its median is about 1e-6 at nu = 0.1, 0 at nu = 0.01)."""
+
 CADENCES: set[str] = {"monthly", "biweekly", "quarterly", "annual", "one_off"}
 
 TAX_CHARACTERS: set[str] = {

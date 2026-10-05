@@ -59,9 +59,9 @@ Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a
 
 1. `schema.py`: `calendar_event.vary_tail_dependence REAL`; `SCHEMA_VERSION` 31 → 32. ADR-002 DDL and ADR-003 §4.8 to match; the column in the calendar header.
 2. `correlation.py`: `tail_scale(ν, rng)` (`sqrt(ν/W)`, `W` by inverse χ² CDF from one `rng.random()`), `probability(z, ν)` and `score_at(q, ν)` (the t CDF and its inverse, or Φ when `ν` is blank), `tree_root`, and `expected_kendall_tau` / `rho_from_kendall_tau`. `distributions.py`: `tail_rng(seed, member, root)`, a stream no `member_rng` key can equal.
-3. `loader.py`: `ν` is a finite number > 0, on a varying row or factor, and only on a root (the error names the root); on a root nothing depends on, a warning.
+3. `loader.py`: `ν` is a finite number ≥ 1 (below it the `χ²` draw underflows), on a varying row or factor, and only on a root (the error names the root); on a root nothing depends on, a warning.
 4. `ensemble.py`: a random member multiplies a t tree's scores by its `S`; scores map through `t_ν`; OAT puts an overridden factor at `t_ν⁻¹(q)`. Trees without `ν` keep the Gaussian path untouched.
-5. `sensitivity.py`: the achieved-correlation check reads ρ from the scores' Kendall τ, for every pair, with the interval's standard error estimated from the scores; two rows sharing a t tree make a batch correlated; the parameters table shows `nu`.
+5. `sensitivity.py`: the achieved-correlation check reads ρ from the scores' Kendall τ, for every pair, with the interval's standard error estimated from the scores (an O(n log n) concordance sweep); two rows sharing a t tree make a batch correlated; the parameters table shows `nu`.
 6. CLI and guided entry: `--vary-tail-dependence` on every `add`; the guide asks a root factor for it.
 7. Tests (`tests/test_tail_dependence.py`): marginals stay uniform under any `ν`; joint-tail frequency rises as `ν` falls; Kendall τ follows `(2/π)·asin(ρ)` under t; a t tree's scores are its Gaussian scores times one `S` from the root's tail stream, and rows outside it draw as before; member 0 and OAT; loader and CLI rejections.
 

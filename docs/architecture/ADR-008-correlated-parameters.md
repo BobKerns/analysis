@@ -113,7 +113,7 @@ Three `calendar.csv` columns, valid on a varying row and on a `latent_factor` ro
 | --- | --- |
 | `vary_correlate_with` | the parent: another varying row's or a factor's `name` |
 | `vary_correlation` | ρ, in [-1, 1]; required with `vary_correlate_with` and only with it |
-| `vary_tail_dependence` | `ν` > 0, the Student-t copula's degrees of freedom for the whole tree (§1); only on a tree's root; blank is the Gaussian copula |
+| `vary_tail_dependence` | `ν` ≥ 1, the Student-t copula's degrees of freedom for the whole tree (§1); only on a tree's root; blank is the Gaussian copula |
 
 `vary_tail_dependence` is a separate column from `vary_tailweight` on purpose: `vary_tailweight` shapes one row's own marginal (sinh-arcsinh, ADR-006), a different quantity on a different scale. The two compose: tail weight makes a rate's extremes bigger; `ν` makes extremes coincide.
 
@@ -126,7 +126,7 @@ The loader rejects:
 - a cycle;
 - |ρ| > 1;
 - a `latent_factor` row with `vary_distribution` or any other `vary_*` parameter (the correlation columns aside);
-- `vary_tail_dependence` that isn't a finite number above 0, or that sits on a row with a parent. The error names the tree's root, where `ν` belongs.
+- `vary_tail_dependence` that isn't a finite number of at least 1, or that sits on a row with a parent. The error names the tree's root, where `ν` belongs. `ν = 1` is the Cauchy copula, already far more tail dependence than any data supports; below it the `χ²` draw behind `S` underflows to 0 for ordinary draws (its median is about 10⁻⁶ at `ν = 0.1`).
 
 **A factor with no dependents is a warning, not an error.** It may be work in progress, or defined in a parent scenario for its child scenarios to use, in which case it has no dependents in the parent itself. The loader gains a warnings channel for this: a `warnings` list on `LoadResult`, printed as `WARN:` lines (ADR-004 §6's format) by `sim check`, `sim load`, `sim run` and `sim calendar add`'s validating load. A warning doesn't stop the load or change the exit status. `sim load`, which by default goes on to `sim run` (and so loads again), prints each warning once. An unused factor resolves to its own draw and affects nothing. `vary_tail_dependence` on a varying row nothing depends on is the same kind of warning.
 

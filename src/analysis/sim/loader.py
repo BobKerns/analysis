@@ -2039,7 +2039,7 @@ def _validate_calendar_correlation(
     columns come as a pair, on a varying row or a factor, with rho in
     [-1, 1]; every parent exists; there are no cycles. A factor nothing
     depends on is a warning: work in progress, or meant for child scenarios.
-    ``vary_tail_dependence`` (#68) is a number > 0 on a tree's root only; on a
+    ``vary_tail_dependence`` (#68) is a number >= 1 on a tree's root only; on a
     root nothing depends on it is a warning, for the same reasons."""
     nodes: dict[str, int] = {}
     parents: dict[str, str] = {}
@@ -2075,9 +2075,10 @@ def _validate_calendar_correlation(
                 except ValueError:
                     issues.append(f"{where}: vary_tail_dependence '{raw_nu}' is not a number")
                 else:
-                    if not 0.0 < nu < math.inf:  # also rejects NaN
+                    if not registries.MIN_TAIL_DEPENDENCE <= nu < math.inf:  # also rejects NaN
                         issues.append(
-                            f"{where}: vary_tail_dependence must be a number above 0 (got {raw_nu}); "
+                            f"{where}: vary_tail_dependence must be a number from "
+                            f"{registries.MIN_TAIL_DEPENDENCE:g} up (got {raw_nu}); "
                             "leave it blank for the Gaussian copula"
                         )
                     elif name:

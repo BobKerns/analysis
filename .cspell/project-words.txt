@@ -53,6 +53,7 @@ executemany
 executescript
 execv
 extrasaction
+Fenwick
 fignums
 figsize
 fontsize

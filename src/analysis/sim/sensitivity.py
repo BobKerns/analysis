@@ -513,9 +513,6 @@ interactions or transitions no per-parameter number captures."""
 _Z95 = 1.959963984540054
 _SPEARMAN_VARIANCE = 1.06
 """Fisher-z variance correction for Spearman's rho: ``1.06 / (n - 3)``."""
-_KENDALL_CHUNK = 512
-"""Rows of the pairwise sign matrix ``_kendall_tau`` builds at a time, so a
-large batch's memory stays at ``_KENDALL_CHUNK * n``."""
 
 
 def _member_draws(
@@ -836,14 +833,30 @@ def _kendall_tau(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     ``c_i`` with the others, and the U-statistic variance is
     ``4 * var(c) / n``. Unlike a fixed formula (e.g. ``0.437 / (n - 4)``,
     which assumes a Gaussian copula), this keeps its coverage under the t
-    copula, whose turbulent members make tau noisier (#68)."""
+    copula, whose turbulent members make tau noisier (#68).
+
+    Each ``c_i`` counts the members below-left and above-right of member
+    ``i`` with a Fenwick tree over y-ranks, sweeping in x order: O(n log n),
+    so a large batch's report stays fast. Scores don't tie; a tie would be
+    broken by position rather than counted as neither."""
     n = len(x)
-    concordance = np.empty(n)
-    for start in range(0, n, _KENDALL_CHUNK):
-        stop = min(start + _KENDALL_CHUNK, n)
-        signs = (np.sign(x[start:stop, None] - x[None, :])
-                 * np.sign(y[start:stop, None] - y[None, :]))
-        concordance[start:stop] = signs.sum(axis=1) / (n - 1)  # the diagonal is 0
+    rank_x = np.argsort(np.argsort(x, kind="stable"), kind="stable")
+    rank_y = np.argsort(np.argsort(y, kind="stable"), kind="stable")
+    tree = [0] * (n + 1)
+    below_left = np.empty(n)
+    for i in np.argsort(rank_x).tolist():  # members in increasing x
+        r = int(rank_y[i])
+        k, count = r, 0
+        while k > 0:  # members already swept (lower x) with a lower y
+            count += tree[k]
+            k -= k & -k
+        below_left[i] = count
+        k = r + 1
+        while k <= n:
+            tree[k] += 1
+            k += k & -k
+    above_right = (n - 1) - rank_x - rank_y + below_left
+    concordance = (2 * (below_left + above_right) - (n - 1)) / (n - 1)
     tau = float(concordance.mean())
     spread = float(((concordance - tau) ** 2).sum() / (n - 1))
     return tau, float(np.sqrt(4 * spread / n))

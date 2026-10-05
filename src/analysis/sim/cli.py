@@ -1967,8 +1967,11 @@ def _correlation_fields(
             raise click.ClickException(
                 f"--vary-tail-dependence must be a number (got {tail_dependence!r})"
             ) from None
-        if not 0.0 < nu < math.inf:
-            raise click.ClickException(f"--vary-tail-dependence must be above 0 (got {tail_dependence})")
+        if not registries.MIN_TAIL_DEPENDENCE <= nu < math.inf:
+            raise click.ClickException(
+                f"--vary-tail-dependence must be at least {registries.MIN_TAIL_DEPENDENCE:g} "
+                f"(got {tail_dependence})"
+            )
     if (correlate_with is None) != (correlation is None):
         raise click.ClickException("--vary-correlate-with and --vary-correlation go together")
     if correlation is not None:

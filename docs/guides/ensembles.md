@@ -311,7 +311,8 @@ sim calendar add latent-factor economy --scenario inflation_1 \
 - **Each row still keeps exactly its own distribution.** Only how often
   the rows' extremes coincide changes.
 - **Lower ν means more tail dependence.** About 3 (strong) to 30 (barely
-  different from none) is a sensible range. Blank means none, as before.
+  different from none) is a sensible range, and 1 is the lowest allowed.
+  Blank means none, as before.
 - **It composes over the tree.** ρ multiplies along paths as before, and
   the tree's one ν applies to the resulting correlation. The chance that
   one row is in its top few percent given that the other is, in the limit,

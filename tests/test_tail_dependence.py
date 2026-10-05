@@ -165,9 +165,10 @@ def test_nu_below_the_root_is_rejected_naming_the_root(
 
 
 @pytest.mark.parametrize(("value", "message"), [
-    ("0", "must be a number above 0"),
-    ("-3", "must be a number above 0"),
-    ("inf", "must be a number above 0"),
+    ("0", "must be a number from 1 up"),
+    ("0.001", "must be a number from 1 up"),  # its chi-square draws underflow
+    ("-3", "must be a number from 1 up"),
+    ("inf", "must be a number from 1 up"),
     ("heavy", "is not a number"),
 ])
 def test_bad_nu_is_rejected(
@@ -287,8 +288,8 @@ def test_cli_writes_nu_on_a_factor(test_data_dir: Path) -> None:
 @pytest.mark.parametrize(("extra", "message"), [
     (["--vary-correlate-with", "economy", "--vary-correlation", "0.5",
       "--vary-tail-dependence", "4"], "goes on the root of a correlation tree"),
-    (["--vary-tail-dependence", "0"], "must be above 0"),
-    (["--vary-tail-dependence", str(math.nan)], "must be above 0"),
+    (["--vary-tail-dependence", "0.5"], "must be at least 1"),
+    (["--vary-tail-dependence", str(math.nan)], "must be at least 1"),
 ])
 def test_cli_rejects_bad_tail_dependence(
     test_data_dir: Path, extra: list[str], message: str,
@@ -351,3 +352,32 @@ def test_rows_sharing_a_t_tree_are_dependent(
     rho, so the Monte Carlo report must rank them by SRRC; Gaussian zero-rho
     rows and rows in different trees stay independent."""
     assert sensitivity._any_dependent(links, ["a", "b"], t_roots) is dependent
+
+
+def test_the_smallest_nu_draws_a_finite_scale_even_at_the_extreme() -> None:
+    """At nu = 1, the floor, even the smallest uniform draw gives a positive
+    chi-square and a finite scale, so no member's scores overflow."""
+    from analysis.sim.registries import MIN_TAIL_DEPENDENCE
+
+    class Smallest(random.Random):
+        def random(self) -> float:
+            return 2.0 ** -53
+
+    scale = tail_scale(MIN_TAIL_DEPENDENCE, Smallest())
+    assert math.isfinite(scale) and scale > 1e10
+    assert 0.0 < probability(1.0 * scale, MIN_TAIL_DEPENDENCE) <= 1.0
+
+
+def test_kendall_concordance_matches_the_pairwise_definition() -> None:
+    """The O(n log n) sweep gives exactly what the pairwise sign sum does."""
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal(200)
+    y = 0.5 * x + rng.standard_normal(200)
+    signs = np.sign(x[:, None] - x[None, :]) * np.sign(y[:, None] - y[None, :])
+    concordance = signs.sum(axis=1) / 199
+    tau, se = sensitivity._kendall_tau(x, y)
+    assert tau == pytest.approx(concordance.mean(), abs=1e-12)
+    assert tau == pytest.approx(kendalltau(x, y).statistic, abs=1e-12)
+    assert se == pytest.approx(np.sqrt(4 * concordance.var(ddof=1) / 200), abs=1e-12)
