@@ -422,11 +422,14 @@ def parse_two_column_csv(text: str) -> tuple[str, pd.Series]:
     """``date,value`` or ``date,rate`` (FRED's ``observation_date,ID`` reads
     as a level). Returns the kind and the series; FRED's ``.`` for a missing
     observation is dropped."""
-    frame = pd.read_csv(io.StringIO(text), na_values=["."])
-    if frame.shape[1] != 2:
-        raise DataError(f"expected two columns, got {list(frame.columns)}")
-    kind = "rate" if frame.columns[1].strip().lower() == "rate" else "index"
-    s = pd.Series(frame.iloc[:, 1].to_numpy(dtype=float), index=pd.to_datetime(frame.iloc[:, 0])).dropna()
+    try:
+        frame = pd.read_csv(io.StringIO(text), na_values=["."])
+        if frame.shape[1] != 2:
+            raise DataError(f"expected two columns, got {list(frame.columns)}")
+        kind = "rate" if frame.columns[1].strip().lower() == "rate" else "index"
+        s = pd.Series(frame.iloc[:, 1].to_numpy(dtype=float), index=pd.to_datetime(frame.iloc[:, 0])).dropna()
+    except (ValueError, pd.errors.ParserError) as exc:
+        raise DataError(f"malformed CSV: {exc}") from exc
     return kind, s.sort_index()
 
 
@@ -674,7 +677,14 @@ def summary_cells(s: Summary) -> list[str]:
             _fmt(s.high), _fmt(s.persistence, 2), _fmt(s.rho_tau, 2), _fmt(s.pearson, 2), _fmt(s.gap, 2)]
 
 
+def _md_cell(text: str) -> str:
+    return " ".join(text.split()).replace("|", "\\|")
+
+
 def markdown_table(header: list[str], rows: list[list[str]]) -> str:
+    # Labels are free-form, and a bare | would split a cell.
+    header = [_md_cell(c) for c in header]
+    rows = [[_md_cell(c) for c in r] for r in rows]
     widths = [max(3, len(header[i]), *(len(r[i]) for r in rows)) for i in range(len(header))]
     numeric = [i > 0 and all(re.fullmatch(r"[-\d.—]+", r[i]) for r in rows) for i in range(len(header))]
 

@@ -295,6 +295,17 @@ def test_weekly_rates_average_to_monthly_then_annual(hc):
     assert hc.annual_rates(s).to_dict() == {2020: pytest.approx(3.0), 2021: pytest.approx(5.0)}
 
 
+@pytest.mark.parametrize("text", ["date,rate\n2020-01-01,abc\n", "date,rate\nnot-a-date,1.0\n"])
+def test_malformed_csv_is_a_data_error(hc, text):
+    with pytest.raises(hc.DataError, match="malformed CSV"):
+        hc.load_csv_like("csv:x", text, "x", "x")
+
+
+def test_markdown_table_escapes_pipes_in_labels(hc):
+    table = hc.markdown_table(["Series", "N"], [["Food|Energy", "3"]])
+    assert table.splitlines()[2] == "| Food\\|Energy |   3 |"
+
+
 def test_rate_override_applies_before_reducing_to_monthly(hc):
     text = "observation_date,DGS10\n2020-01-02,1.0\n2020-01-31,3.0\n2020-02-03,2.0\n"
     s = hc.load_csv_like("fred:DGS10", text, "y", "y", "rate")

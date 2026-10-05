@@ -30,8 +30,9 @@ to December 1966.
 | Pearson | Ordinary correlation with the reference, for comparison. |
 | Gap vs ref | Compound rate minus the reference's, over the years both have. |
 
-Correlations and persistence are left blank for fewer than eight years,
-where they're noise.
+Correlations are left blank for fewer than eight years in common, and
+persistence for fewer than eight pairs of consecutive years, where they're
+noise.
 
 ## Turning history into `vary_*` settings
 
