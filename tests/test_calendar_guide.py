@@ -139,7 +139,7 @@ def test_guide_cancel_writes_nothing(
     before = len(calendar_rows())
 
     result = calendar_add(answers=[
-        "latent-factor", "economy", "the inflation regime", "n", "cancel",
+        "latent-factor", "economy", "the inflation regime", "n", "", "cancel",
     ])
 
     assert result.exit_code == 1
@@ -248,13 +248,13 @@ def test_guide_asks_again_for_an_answer_a_later_change_rules_out(
 def test_guide_says_which_scenario_before_asking_anything(
     calendar_add: Callable[..., Result], test_data_dir: Path,
 ) -> None:
-    named = calendar_add(answers=["latent-factor", "economy", "", "n", "cancel"])
+    named = calendar_add(answers=["latent-factor", "economy", "", "n", "", "cancel"])
 
     assert named.output.startswith("Scenario: retire_alice\n")
 
     defaulted = CliRunner().invoke(
         main, ["sim", "calendar", "add", "--data-dir", str(test_data_dir)],
-        input="latent-factor\neconomy\n\nn\ncancel\n",
+        input="latent-factor\neconomy\n\nn\n\ncancel\n",
     )
 
     assert defaulted.output.startswith(

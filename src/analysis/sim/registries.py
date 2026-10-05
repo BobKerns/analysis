@@ -91,6 +91,12 @@ CALENDAR_EVENT_KINDS: set[str] = {
 # ensemble's correlated draws read it.
 LATENT_FACTOR_KIND = "latent_factor"
 
+MIN_TAIL_DEPENDENCE = 1.0
+"""The smallest ``vary_tail_dependence`` (nu) accepted (#68). nu = 1 is the
+Cauchy copula, already far more tail dependence than any data supports;
+below it the chi-square draw behind the shared scale underflows to 0 for
+ordinary draws (its median is about 1e-6 at nu = 0.1, 0 at nu = 0.01)."""
+
 CADENCES: set[str] = {"monthly", "biweekly", "quarterly", "annual", "one_off"}
 
 TAX_CHARACTERS: set[str] = {
@@ -291,8 +297,9 @@ CALENDAR_HEADER: tuple[str, ...] = (
     "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_median",
     "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
     # ADR-008: this row's (or latent factor's) parent in a correlation tree,
-    # and the correlation rho between their normal scores.
-    "vary_correlate_with", "vary_correlation",
+    # and the correlation rho between their normal scores; on a tree's root,
+    # the Student-t copula's degrees of freedom for the whole tree (#68).
+    "vary_correlate_with", "vary_correlation", "vary_tail_dependence",
 )
 
 # The columns that identify a calendar.csv row when a scenario's rows are

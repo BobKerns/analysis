@@ -1,5 +1,5 @@
-"""ADR-008: correlated parameters -- the Gaussian-copula tree math, pure
-functions with no I/O.
+"""ADR-008: correlated parameters -- the copula tree math, pure functions
+with no I/O.
 
 A correlation structure is a forest: each node (a varying row or a latent
 factor) names at most one parent, with a correlation ``rho`` between their
@@ -11,6 +11,12 @@ Every node's ``z`` is standard normal on its own, so mapping it through
 ``Phi`` gives a uniform probability ``u``, and a row's value is its own
 distribution's ``value_at(u)``: the authored distribution is preserved
 exactly, and only the joint behavior changes (ADR-008 §1).
+
+A tree whose root sets ``nu`` (``vary_tail_dependence``) uses a Student-t
+copula instead: each member multiplies every score in the tree by one shared
+scale ``S = sqrt(nu / W)``, ``W ~ chi2(nu)``, and maps scores through the t
+CDF with ``nu`` degrees of freedom. Marginals are still exact; extremes in
+the tree now tend to coincide (ADR-008 §1).
 """
 
 from __future__ import annotations
@@ -21,10 +27,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from statistics import NormalDist
 
+from scipy.stats import chi2
+from scipy.stats import t as student_t
+
 __all__ = [
     "CorrelationError", "Link", "tree_members", "topological_order", "resolve_scores",
     "standard_normal", "probability", "expected_rank_correlation", "implied_correlation",
-    "conditional_scores",
+    "conditional_scores", "tree_root", "tail_scale", "score_at", "expected_kendall_tau",
+    "rho_from_kendall_tau",
 ]
 
 _STANDARD = NormalDist()
@@ -114,9 +124,38 @@ def standard_normal(rng: random.Random) -> float:
     return _STANDARD.inv_cdf(u)
 
 
-def probability(z: float) -> float:
-    """``Phi(z)``: the uniform probability a score maps a row's value through."""
-    return _STANDARD.cdf(z)
+def probability(z: float, nu: float | None = None) -> float:
+    """The uniform probability a score maps a row's value through: ``Phi(z)``,
+    or the t CDF with ``nu`` degrees of freedom in a t-copula tree."""
+    if nu is None:
+        return _STANDARD.cdf(z)
+    return float(student_t.cdf(z, nu))
+
+
+def score_at(q: float, nu: float | None = None) -> float:
+    """The score at probability ``q`` in (0, 1): ``probability``'s inverse."""
+    if nu is None:
+        return _STANDARD.inv_cdf(q)
+    return float(student_t.ppf(q, nu))
+
+
+def tree_root(links: Mapping[str, Link], node: str) -> str:
+    """The root of ``node``'s correlation tree (``node`` itself for a root).
+    Assumes no cycle: the loader rejects those."""
+    while node in links:
+        node = links[node].parent
+    return node
+
+
+def tail_scale(nu: float, rng: random.Random) -> float:
+    """One member's turbulence scale for a t-copula tree, ``sqrt(nu / W)``
+    with ``W ~ chi2(nu)`` drawn by inverse CDF from one ``rng.random()``, so
+    it is a single call on its own keyed stream, like ``standard_normal``.
+    Usually near 1; large when the draw lands in chi2's low tail."""
+    u = rng.random()
+    while u == 0.0:  # W = 0 would make S infinite
+        u = rng.random()
+    return math.sqrt(nu / float(chi2.ppf(u, nu)))
 
 
 def expected_rank_correlation(rho: float) -> float:
@@ -126,6 +165,20 @@ def expected_rank_correlation(rho: float) -> float:
     Tied values (a short date range) correlate less; compare scores there
     (ADR-008 §1)."""
     return 6 / math.pi * math.asin(rho / 2)
+
+
+def expected_kendall_tau(rho: float) -> float:
+    """Kendall's tau between two scores at copula correlation ``rho``:
+    ``(2/pi) * asin(rho)``, exactly, under the Gaussian and the t copula
+    alike (it holds for every elliptical copula), and between the rows'
+    values too when they don't tie."""
+    return 2 / math.pi * math.asin(rho)
+
+
+def rho_from_kendall_tau(tau: float) -> float:
+    """``expected_kendall_tau``'s inverse, ``sin(pi * tau / 2)``: the copula
+    rho a sample's Kendall tau estimates."""
+    return math.sin(math.pi * tau / 2)
 
 
 def implied_correlation(links: Mapping[str, Link], a: str, b: str) -> float:

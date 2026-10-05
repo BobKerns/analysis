@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 import re
 import socket
@@ -2037,9 +2038,12 @@ def _validate_calendar_correlation(
     nothing but a description and correlation columns; the correlation
     columns come as a pair, on a varying row or a factor, with rho in
     [-1, 1]; every parent exists; there are no cycles. A factor nothing
-    depends on is a warning: work in progress, or meant for child scenarios."""
+    depends on is a warning: work in progress, or meant for child scenarios.
+    ``vary_tail_dependence`` (#68) is a number >= 1 on a tree's root only; on a
+    root nothing depends on it is a warning, for the same reasons."""
     nodes: dict[str, int] = {}
     parents: dict[str, str] = {}
+    tails: dict[str, int] = {}
     for i, row in enumerate(rows, start=2):
         kind = row.get("kind", "")
         name = (row.get("name") or "").strip()
@@ -2053,10 +2057,32 @@ def _validate_calendar_correlation(
             if stray:
                 issues.append(
                     f"{where}: a latent_factor row has no {', '.join(stray)} -- only a name, "
-                    "a description, and optionally vary_correlate_with/vary_correlation"
+                    "a description, and optionally vary_correlate_with/vary_correlation "
+                    "or vary_tail_dependence"
                 )
         if (is_factor or varying) and name:
             nodes[name] = i
+        raw_nu = (row.get("vary_tail_dependence") or "").strip()
+        if raw_nu:
+            if not (is_factor or varying):
+                issues.append(
+                    f"{where}: vary_tail_dependence is only valid on a varying row "
+                    "(vary_distribution set) or a latent_factor row"
+                )
+            else:
+                try:
+                    nu = float(raw_nu)
+                except ValueError:
+                    issues.append(f"{where}: vary_tail_dependence '{raw_nu}' is not a number")
+                else:
+                    if not registries.MIN_TAIL_DEPENDENCE <= nu < math.inf:  # also rejects NaN
+                        issues.append(
+                            f"{where}: vary_tail_dependence must be a number from "
+                            f"{registries.MIN_TAIL_DEPENDENCE:g} up (got {raw_nu}); "
+                            "leave it blank for the Gaussian copula"
+                        )
+                    elif name:
+                        tails[name] = i
         parent = (row.get("vary_correlate_with") or "").strip()
         raw_rho = (row.get("vary_correlation") or "").strip()
         if not parent and not raw_rho:
@@ -2104,6 +2130,23 @@ def _validate_calendar_correlation(
                     "and the chain of parents must end)"
                 )
     used = set(parents.values())
+    for name, i in tails.items():
+        if name in parents:
+            root, seen = name, {name}
+            while root in parents and parents[root] not in seen:
+                root = parents[root]
+                seen.add(root)
+            issues.append(
+                f"calendar.csv row {i} ({name}): vary_tail_dependence goes on the root of a "
+                f"correlation tree ('{root}' here), not on a row with a parent: it scales every "
+                "row in the tree together, so it only has an effect where the whole tree shares it"
+            )
+        elif name not in used and rows[i - 2].get("kind") != registries.LATENT_FACTOR_KIND:
+            # (An unused factor gets its own warning below.)
+            warnings.append(
+                f"calendar.csv row {i} ({name}): vary_tail_dependence on a row nothing correlates "
+                "with affects nothing yet (it acts only on the rows of the tree below it)"
+            )
     for name, i in nodes.items():
         row_kind = rows[i - 2].get("kind")
         if row_kind == registries.LATENT_FACTOR_KIND and name not in used:
@@ -2703,8 +2746,8 @@ def _write_intent(
             "param_date, tax_character, payload_json, description, "
             "vary_target, vary_distribution, vary_low, vary_high, vary_median, "
             "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months, "
-            "vary_correlate_with, vary_correlation) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_correlate_with, vary_correlation, vary_tail_dependence) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -2728,6 +2771,7 @@ def _write_intent(
                 _opt_int(ce.get("vary_ramp_months")),
                 ce.get("vary_correlate_with") or None,
                 _opt_float(ce.get("vary_correlation")),
+                _opt_float(ce.get("vary_tail_dependence")),
             ),
         )
         _insert_tags(con, cur.lastrowid, ce.get("tags", ""),

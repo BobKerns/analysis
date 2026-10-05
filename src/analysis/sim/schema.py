@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -197,7 +197,10 @@ CREATE TABLE calendar_event (
     -- ADR-008: this row's parent in a correlation tree (another varying
     -- row's or a latent_factor's name), and rho between their normal scores.
     vary_correlate_with TEXT,
-    vary_correlation    REAL
+    vary_correlation    REAL,
+    -- #68: on a correlation tree's root only, the Student-t copula's degrees
+    -- of freedom nu for the whole tree; NULL is the Gaussian copula.
+    vary_tail_dependence REAL
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
