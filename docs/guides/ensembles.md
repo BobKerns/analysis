@@ -518,11 +518,16 @@ the correlations decide which futures its extremes fall in.
   down. Fuel can follow the shock, but a fuel spike can't then push the
   core up a second time; any such knock-on has to be built into the ρ
   values.
-- **Joint extremes are rarer than in reality.** Under the Gaussian copula,
-  a future where every rate is at its own 99th percentile at once is much
-  rarer than strong correlations suggest, so a 1970s-style stretch is
-  under-represented. A Student-t copula that thickens the joint tails is
-  [#68](https://github.com/BobKerns/analysis/issues/68).
+- **Joint extremes need tail dependence.** By default, even strongly
+  linked rates rarely all reach their extremes in the same future, so a
+  1970s-style stretch where every rate runs hot at once is
+  under-represented. To make it as common as it should be, give the tree
+  tail dependence: set `vary_tail_dependence` (ν) on its root, which is
+  `core_inflation` in the base recipe and `supply_shock` in the shock
+  scenario. It goes on the root because it scales every row in the tree at
+  once (see "Joint extremes (tail dependence)" above). It composes with the
+  skew on `fuel_vary`: skew makes fuel's own extremes bigger, and ν makes
+  them land in the same futures as the other rates'.
 
 ## How many members?
 
