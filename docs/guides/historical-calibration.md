@@ -1,6 +1,6 @@
 # Historical calibration: what numbers to put in
 
-<!-- cspell:ignore PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize -->
+<!-- cspell:ignore CPIAUCSL PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize -->
 
 The [ensembles guide](ensembles.md) explains how a varying rate, a
 correlation and tail dependence work. This guide is about the numbers:
@@ -486,14 +486,11 @@ Verified and retrieved on 2026-10-05:
 | [Philadelphia Fed, Survey of Professional Forecasters](https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/survey-of-professional-forecasters) | Forecasts of inflation, rates and output, since 1968 | Quarterly | `csv:FILE` |
 | [Cleveland Fed, inflation expectations](https://www.clevelandfed.org/indicators-and-data/inflation-expectations) | Model expectations of inflation for horizons of 1 to 30 years, back to 1982 | Monthly | `csv:FILE` |
 | [Shiller's long-run data](https://shillerdata.com/) | Monthly stock prices, dividends, earnings, interest rates and CPI, from January 1871 (`ie_data.xls`, an Excel file to save as CSV) | Monthly | `csv:FILE` |
+| [FRED](https://fred.stlouisfed.org/) | Most of the series above under one interface, by FRED id (e.g. `PCEPI`, `CPIAUCSL`); its PCE matches the BEA download | Varies by series | `fred:ID` |
 
 Not verified, because they were unreachable from where this guide was
 written:
 
-- [FRED](https://fred.stlouisfed.org/) carries most of the series above
-  under one interface (`fred:ID`). Its data downloads refused the
-  connection, so the script's FRED support is tested only against a stubbed
-  download.
 - [SSA COLA history](https://www.ssa.gov/oact/cola/colaseries.html), and
   the Medicare Part B premium history from CMS's annual premium
   announcements.

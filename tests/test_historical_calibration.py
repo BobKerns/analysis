@@ -312,12 +312,12 @@ def test_download_from_bls_needs_a_contact(hc, calibration_cache_dir, sent_agent
     assert sent_agents == {}
 
 
-def test_only_bls_is_sent_the_contact(hc, calibration_cache_dir, sent_agents):
+def test_only_bls_is_sent_a_custom_agent(hc, calibration_cache_dir, sent_agents):
     fetcher = hc.Fetcher(calibration_cache_dir, "x@example.com")
     fetcher.get("https://download.bls.gov/pub/a", "a")
-    fetcher.get("https://apps.bea.gov/b", "b")
+    fetcher.get("https://fred.stlouisfed.org/b", "b")
     assert "x@example.com" in sent_agents["https://download.bls.gov/pub/a"]
-    assert "@" not in sent_agents["https://apps.bea.gov/b"]
+    assert sent_agents["https://fred.stlouisfed.org/b"] is None  # urllib's default
 
 
 # ------------------------------------------------------------------ rates

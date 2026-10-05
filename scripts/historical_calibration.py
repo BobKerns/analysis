@@ -157,16 +157,18 @@ class Fetcher:
         return places
 
     def _download(self, url: str) -> bytes:
-        agent = "analysis historical_calibration"
-        # Only BLS needs the contact address, so no other host is sent it.
+        # Only BLS gets a custom User-Agent: it refuses requests without a
+        # contact address, while FRED's bot filter silently drops unfamiliar
+        # agents and accepts urllib's default one.
+        headers = {}
         if (urllib.parse.urlparse(url).hostname or "").endswith("bls.gov"):
             if not self.contact:
                 raise DataError(
                     "no contact email for the User-Agent (BLS refuses requests without one): "
                     "pass --contact, set $HISTORICAL_CALIBRATION_CONTACT, or set git's user.email"
                 )
-            agent += f" (contact: {self.contact})"
-        request = urllib.request.Request(url, headers={"User-Agent": agent})
+            headers["User-Agent"] = f"analysis historical_calibration (contact: {self.contact})"
+        request = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 return response.read()
