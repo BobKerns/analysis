@@ -284,6 +284,15 @@ sim calendar add set-rate 2027-01-31 housing 3.5 --aux-kind inflation \
   --vary-correlate-with core_inflation --vary-correlation 0.9
 ```
 
+That gives this tree. Rounded boxes are latent factors, square boxes are
+varying rows, and each arrow carries the ρ written on the child:
+
+```mermaid
+flowchart TB
+    core(["core_inflation"]) -->|0.6| medical["medical_vary"]
+    core -->|0.9| housing["housing_vary"]
+```
+
 ### What a latent factor is, and isn't
 
 - **A factor has no units.** `core_inflation` isn't a rate, and it has no
@@ -322,6 +331,16 @@ sim calendar add set-rate 2027-01-31 housing 3.5 --aux-kind inflation \
   hot year for the factor is a hot year for each rate *by that rate's own
   standard*.
 
+Here is the worked number as a chain, for the most likely case. Medical's
+own wobble then spreads the result around that 78th percentile:
+
+```mermaid
+flowchart LR
+    f(["core_inflation\nat its 90th percentile\nz = +1.28"]) -->|"× 0.6"| z["medical's score\nz = +0.77"]
+    z --> p["medical's own\n78th percentile"]
+    p --> v["a value from\nmedical's range"]
+```
+
 ### Choosing a structure
 
 Start with the structure that assumes least, and add only what you believe
@@ -349,6 +368,12 @@ and can roughly justify. In order:
    that `cpi` *is* the driver, with no wobble of its own. That's a
    stronger claim than a factor makes, so prefer a factor unless you
    believe it.
+
+   ```mermaid
+   flowchart TB
+       cpi["cpi_vary"] -->|0.6| medical["medical_vary"]
+       cpi -->|0.9| housing["housing_vary"]
+   ```
 4. **A hierarchy of factors.** When a cluster of rates moves together
    beyond what the core explains (care and schooling both being labor-heavy
    services, say), give the cluster a sub-factor under the core:
@@ -369,6 +394,14 @@ and can roughly justify. In order:
    change its `vary_correlate_with` to `services_inflation`. Correlations
    multiply along paths, so education follows the core at 0.9 × 0.6 =
    0.54, and follows housing at 0.54 × 0.9, about 0.49.
+
+   ```mermaid
+   flowchart TB
+       core(["core_inflation"]) -->|0.6| services(["services_inflation"])
+       core -->|0.9| housing["housing_vary"]
+       services -->|0.6| medical["medical_vary"]
+       services -->|0.9| education["education_vary"]
+   ```
 5. **Several independent drivers per rate** (fuel following both general
    inflation and an energy factor, each separately) **isn't supported**.
    Each row has at most one parent, which is what guarantees every recipe
@@ -428,6 +461,16 @@ sim calendar add set-rate 2027-01-31 fuel 3.0 --aux-kind inflation \
   --vary-correlate-with supply_shock --vary-correlation 0.9
 ```
 
+```mermaid
+flowchart TB
+    shock(["supply_shock"]) -->|0.6| core(["core_inflation"])
+    shock -->|0.9| fuel["fuel_vary"]
+    core -->|0.6| medical["medical_vary"]
+    core -->|0.9| housing["housing_vary"]
+    core -->|0.6| services(["services_inflation"])
+    services -->|0.9| education["education_vary"]
+```
+
 A factor is replaced by name, so the child's `core_inflation` (now under
 the shock) replaces the parent's. This is one damped round of
 shock → core → rates: fuel feels the shock almost fully, the core at 0.6,
@@ -452,6 +495,12 @@ sim calendar add set-rate 2032-01-31 medical 5.0 --aux-kind inflation \
   --vary-target amount --vary-distribution truncated_normal \
   --vary-median 5.0 --vary-sd 1.5 \
   --vary-correlate-with medical_vary --vary-correlation 0.6
+```
+
+```mermaid
+flowchart LR
+    core(["core_inflation"]) -->|0.6| m27["medical_vary\nfrom 2027"]
+    m27 -->|0.6| m32["medical_2032_vary\nfrom 2032"]
 ```
 
 The later row's only parent is the earlier row, so it follows the core
