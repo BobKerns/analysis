@@ -11,7 +11,9 @@ deviation, percentile bands) instead of a single figure.
 This is a practical how-to. For the full design and column reference, see
 [ADR-006](../architecture/ADR-006-ensemble-scenarios.md). New to Monte
 Carlo simulation? [How the simulator draws random futures](simulation-basics.md)
-explains seeds, per-row random streams and copulas first.
+explains seeds, per-row random streams, copulas and the statistics behind
+them first. Any unfamiliar word is in the
+[glossary](../user-guide.md#2-glossary).
 
 ## Setting one up
 

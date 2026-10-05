@@ -104,6 +104,7 @@ nonpositive
 nunique
 OBBBA
 oneoff
+OpenStax
 overfit
 pathoplexus
 pcon

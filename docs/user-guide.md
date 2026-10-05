@@ -75,10 +75,11 @@ or editing a derived scenario's own files.
 
 ## 2. Glossary
 
-Two lists follow: words this project uses in its own specific way, and
-general finance/tax words this project relies on but does not change the
-meaning of. Where a project word could be confused with a general word, that
-is pointed out.
+This is the place to look up any word the guides use. The lists cover the
+words this project uses in its own specific way, the simulation and
+statistics words the ensemble features rely on, and the general finance/tax
+words this project relies on but does not change the meaning of. Where a
+project word could be confused with a general word, that is pointed out.
 
 ### Words this simulator uses in its own way
 
@@ -100,22 +101,64 @@ is pointed out.
 | **Refill / overflow** | A lot's own rule for keeping its balance in a range. If a payment would drop it below `minimum_balance`, money is drawn from `refill_chain` first. If it goes above `maximum_balance`, the extra is swept into `overflow_chain` at the end of the month. Each lot can have its own setting. |
 | **RMD subject account** | The IRA or 401(k) account a Required Minimum Distribution is calculated from. If that account has more than one lot, you must name the account in `params_json`, and `from_account` must be a chain that lists only that account's lots. |
 
-### Simulation and statistics words used by ensembles
+### Simulation words used by ensembles
 
 These come up in [Ensembles](guides/ensembles.md); [How the simulator draws
 random futures](guides/simulation-basics.md) explains them from the
 beginning.
 
-| Word | What it means here |
-| --- | --- |
-| **Ensemble** | Many copies (**members**) of one scenario, each with its uncertain inputs drawn differently, run to show the spread of outcomes. The scenario that defines the ranges is the **recipe**. |
-| **Member 0** | The member with every uncertain input at its median: the ensemble's one deterministic base case. |
-| **Seed** | The number a recipe's random draws all start from. The same seed reproduces the same members exactly. |
-| **RNG stream** | The separate random-number sequence each uncertain row gets, keyed by the seed, the member and the row's name. Adding or changing one row never shifts another row's draws, so comparisons between scenarios show the change, not fresh noise. |
-| **Latent factor** | A named shared influence ("core inflation") that rows correlate with, but that isn't itself a value in the model. It has no units: in each future it says only how high or low things run, as a percentile. |
-| **Correlation tree** | Rows and factors linked by `vary_correlate_with`, each with one parent and a correlation ρ to it. The top of a tree is its **root**. |
-| **Copula** | The rule that ties correlated rows' random draws together without changing any one row's own range or shape. The default **Gaussian copula** makes linked rows move together; the **Student-t copula** also makes their extremes coincide. |
-| **Tail dependence (ν)** | How strongly extremes coincide in a tree using the Student-t copula. Set as `vary_tail_dependence` on the tree's root; lower ν means stronger. |
+| Word | What it means here | Learn more |
+| --- | --- | --- |
+| <a id="g-monte-carlo"></a>**Monte Carlo** | Answering a question about uncertainty by drawing many random cases, working each one out, and looking at the spread of results. Named after the casino. | [Wikipedia](https://en.wikipedia.org/wiki/Monte_Carlo_method) |
+| <a id="g-ensemble"></a>**Ensemble** | Many copies (**members**) of one scenario, each with its uncertain inputs drawn differently, run to show the spread of outcomes. The scenario that defines the ranges is the **recipe**. | [Ensembles](guides/ensembles.md) |
+| <a id="g-member-0"></a>**Member 0** | The member with every uncertain input at its median: the ensemble's one deterministic base case. | [Ensembles](guides/ensembles.md#member-0-is-always-a-deterministic-base-case) |
+| <a id="g-sensitivity-run"></a>**Sensitivity run** | A batch that moves one uncertain row (or factor) at a time to chosen percentiles while every other row stays at its median, to see what that one input does. | [Ensembles](guides/ensembles.md#which-varying-rows-matter-and-when-sensitivity) |
+| <a id="g-prng"></a>**Pseudo-random number generator** | A deterministic algorithm whose output behaves like random draws. Started from the same seed, it produces the same sequence every time. | [Wikipedia](https://en.wikipedia.org/wiki/Pseudorandom_number_generator) |
+| <a id="g-seed"></a>**Seed** | The number a recipe's random draws all start from. The same seed reproduces the same members exactly. | [Random numbers come from a seed](guides/simulation-basics.md#random-numbers-come-from-a-seed) |
+| <a id="g-rng-stream"></a>**RNG stream** | The separate random-number sequence each uncertain row gets, keyed by the seed, the member and the row's name. Adding or changing one row never shifts another row's draws, so comparisons between scenarios show the change, not fresh noise. | [Why every row gets its own stream](guides/simulation-basics.md#why-every-row-gets-its-own-stream) |
+| <a id="g-common-random-numbers"></a>**Common random numbers** | Giving two scenarios being compared the same random draws, so the difference between them is the change you made rather than luck. Streams and a shared seed provide it. | [Why every row gets its own stream](guides/simulation-basics.md#why-every-row-gets-its-own-stream) |
+| <a id="g-latent-factor"></a>**Latent factor** | A named shared influence ("core inflation") that rows correlate with, but that isn't itself a value in the model. It has no units: in each future it says only how high or low things run, as a percentile. | [Ensembles](guides/ensembles.md#correlated-parameters) |
+| <a id="g-correlation-tree"></a>**Correlation tree** | Rows and factors linked by `vary_correlate_with`, each with one parent and a correlation ρ to it. The top of a tree is its **root**. | [Ensembles](guides/ensembles.md#correlated-parameters) |
+| <a id="g-copula"></a>**Copula** | The rule that ties correlated rows' random draws together without changing any one row's own range or shape. The default **Gaussian copula** makes linked rows move together; the **Student-t copula** also makes their extremes coincide. | [A visual introduction](https://twiecki.io/blog/2018/05/03/copulas/) |
+| <a id="g-tail-dependence"></a>**Tail dependence (ν)** | How strongly extremes coincide in a tree using the Student-t copula. Set as `vary_tail_dependence` on the tree's root; lower ν means stronger. | [Ensembles](guides/ensembles.md#joint-extremes-tail-dependence) |
+
+### Statistics words used by ensembles
+
+Mean, median and standard deviation are here too, for completeness. Most
+entries link to a section of one of OpenStax's free online statistics
+textbooks, which explain each idea with worked examples; [*Introductory
+Statistics*](https://openstax.org/books/introductory-statistics-2e/pages/1-introduction)
+is the place to start.
+Asking an AI assistant is another quick way in: "explain Kendall's tau to
+someone new to statistics" works well, and pasting the paragraph where you
+met a word gets an answer about how it's used here.
+
+| Word | What it means here | Learn more |
+| --- | --- | --- |
+| <a id="g-distribution"></a>**Distribution** | The full description of an uncertain quantity: which values can happen, and how likely each is. Every varying row has one, chosen with `vary_distribution`. | [OpenStax ch. 5](https://openstax.org/books/introductory-statistics-2e/pages/5-introduction) |
+| <a id="g-density"></a>**Probability density** | The curve drawn over a distribution's range: high where values are common, low where they're rare. The chance of landing between two values is the area under the curve between them, so the total area is always exactly 1 (something has to happen). A wider curve must therefore be a lower one. | [OpenStax §5.1](https://openstax.org/books/introductory-business-statistics-2e/pages/5-1-properties-of-continuous-probability-density-functions) |
+| <a id="g-cdf"></a>**Cumulative probability (CDF)** | For a value x, the chance of landing at or below x: the area under the density to the left of x. It climbs from 0 at the bottom of the range to 1 at the top. | [OpenStax §5.1](https://openstax.org/books/introductory-business-statistics-2e/pages/5-1-properties-of-continuous-probability-density-functions) |
+| <a id="g-percentile"></a>**Percentile, quantile** | The value with a given share of outcomes below it: 90% of outcomes fall below the 90th percentile. A quantile is the same thing written as a fraction (0.9). Finding a quantile is the CDF run backwards, and it's how the simulator turns a random fraction into a value. | [OpenStax §2.3](https://openstax.org/books/introductory-statistics-2e/pages/2-3-measures-of-the-location-of-the-data) |
+| <a id="g-median"></a>**Median** | The 50th percentile: half the outcomes fall below it and half above. | [OpenStax §2.3](https://openstax.org/books/introductory-statistics-2e/pages/2-3-measures-of-the-location-of-the-data) |
+| <a id="g-mean"></a>**Mean** | The average. For a lopsided (skewed) distribution it sits away from the median, toward the long tail. | [OpenStax ch. 2](https://openstax.org/books/introductory-statistics-2e/pages/2-introduction) |
+| <a id="g-sd"></a>**Standard deviation (SD), variance** | The typical distance of values from their mean. Variance is the SD squared; the variances of independent pieces add up, which is why shares of variation are written as squares (ρ², R²). | [OpenStax §2.7](https://openstax.org/books/statistics/pages/2-7-measures-of-the-spread-of-the-data) |
+| <a id="g-uniform"></a>**Uniform distribution** | Every value in a range equally likely: a flat density. The raw random fraction each stream supplies is uniform between 0 and 1. | [OpenStax ch. 5](https://openstax.org/books/introductory-statistics-2e/pages/5-introduction) |
+| <a id="g-triangular"></a>**Triangular distribution** | A density shaped like a triangle: zero at the low and high ends, peaking at the most likely value (the **mode**). | [Ensembles](guides/ensembles.md#setting-one-up) |
+| <a id="g-binomial"></a>**Binomial distribution** | The number of successes in a fixed number of independent yes-or-no tries, such as heads in 100 coin flips. | [OpenStax §4.2](https://openstax.org/books/introductory-business-statistics-2e/pages/4-2-binomial-distribution) |
+| <a id="g-normal"></a>**Normal (Gaussian) distribution** | The bell curve. It appears whenever many small independent effects add up: count the heads in 100 coin flips, repeat many times, and the counts pile into a bell shape (a [Galton board](https://en.wikipedia.org/wiki/Galton_board) shows this with falling beads). About 68% of values lie within 1 SD of the center, 95% within 2 and 99.7% within 3. Its tails thin out very fast: beyond 4 SD is about 1 in 16,000. | [OpenStax ch. 6](https://openstax.org/books/introductory-statistics-2e/pages/6-introduction), [binomial to normal](https://openstax.org/books/introductory-business-statistics-2e/pages/6-3-estimating-the-binomial-with-the-normal-distribution) |
+| <a id="g-clt"></a>**Central limit theorem** | Sums and averages of many independent pieces come out close to normal, whatever shape the pieces have. It's why the bell curve is everywhere. | [OpenStax ch. 7](https://openstax.org/books/introductory-statistics-2e/pages/7-introduction) |
+| <a id="g-truncated-normal"></a>**Truncated normal** | A normal cut off at a low and a high bound, with the curve raised so its area is still 1. | [Ensembles](guides/ensembles.md#setting-one-up) |
+| <a id="g-score"></a>**Score (z)** | A position measured in standard deviations of the standard normal: z = 0 is the median, z = +1.28 the 90th percentile. The simulator links rows by working on their scores, then turns each score back into a value from that row's own range. | [OpenStax ch. 6](https://openstax.org/books/introductory-statistics-2e/pages/6-introduction) |
+| <a id="g-skew"></a>**Skew** | Lopsidedness: one tail longer than the other. Positive skew means a longer high tail. | [Ensembles](guides/ensembles.md#setting-one-up) |
+| <a id="g-tails"></a>**Tails, heavy tails** | A distribution's far ends, where the extremes live. A heavy-tailed distribution makes extremes more likely than a normal does. | [Ensembles](guides/ensembles.md#setting-one-up) |
+| <a id="g-student-t"></a>**Student-t distribution, degrees of freedom (ν)** | A bell curve with heavier tails: what you get from a normal whose spread is itself uncertain, scaled up or down at random. ν sets how heavy the tails are: ν = 1 very heavy, ν = 5 noticeably heavier than normal, above about 30 nearly normal. (Textbooks meet it for small samples; the simulator uses the same curve for joint extremes.) | [OpenStax §8.2](https://openstax.org/books/introductory-statistics-2e/pages/8-2-a-single-population-mean-using-the-student-t-distribution) |
+| <a id="g-correlation"></a>**Correlation (ρ)** | A number from −1 to 1 for how strongly two quantities move together: 1 in lockstep, 0 no tendency, −1 opposite. ρ² is roughly the share of one's variation the other accounts for. | [OpenStax §13.1](https://openstax.org/books/introductory-business-statistics-2e/pages/13-1-the-correlation-coefficient-r) |
+| <a id="g-rank-correlation"></a>**Rank correlation** | Correlation computed on the values' order rather than the values themselves, so it's unchanged by stretching or reshaping either quantity's range. | [Kendall's τ](https://www.socscistatistics.com/tutorials/kendall-tau/) |
+| <a id="g-kendall-tau"></a>**Kendall's τ** | A rank correlation. Take every pair of members: the pair agrees if both rows put the two members in the same order, and disagrees otherwise. τ is the share that agree minus the share that disagree. For the simulator's copulas τ = (2/π)·asin(ρ), so the correlation check reads ρ back from τ. | [Tutorial](https://www.socscistatistics.com/tutorials/kendall-tau/) |
+| <a id="g-r2"></a>**R²** | The share of the outcome's variation that a regression on the inputs explains, from 0 to 1. | [OpenStax §12.3](https://openstax.org/books/introductory-statistics-2e/pages/12-3-the-regression-equation) |
+| <a id="g-srrc"></a>**SRRC, PRCC** | Two measures of one input's effect on an outcome with the other inputs held fixed, both on ranks. SRRC (standardized rank regression coefficient) is the input's regression weight; PRCC (partial rank correlation) is its correlation with the outcome after removing what the other inputs explain. | [Ensembles](guides/ensembles.md#which-varying-rows-can-i-drop-monte-carlo-correlation) |
+| <a id="g-standard-error"></a>**Sampling error, standard error** | A result computed from a limited number of members wobbles from batch to batch. The standard error is the typical size of that wobble. It shrinks with the square root of the count: four times the members halves it. | [OpenStax ch. 7](https://openstax.org/books/introductory-statistics-2e/pages/7-introduction) |
+| <a id="g-confidence-interval"></a>**Confidence interval** | A range around a result, built so that across many batches, 95% of such ranges (for a 95% interval) contain the true value. | [OpenStax ch. 8](https://openstax.org/books/introductory-business-statistics-2e/pages/8-introduction) |
 
 ### General finance/tax words this tool uses
 

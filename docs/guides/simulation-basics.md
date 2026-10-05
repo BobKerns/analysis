@@ -6,6 +6,71 @@ who knows deterministic simulation (stepping equations forward in time) but
 hasn't worked with statistical, or Monte Carlo, simulation. The how-to is
 in [Ensembles](ensembles.md).
 
+## The statistics this relies on
+
+If mean, median and standard deviation are familiar, this section covers
+the rest of what the guides assume. Each linked word goes to its entry in
+the [glossary](../user-guide.md#2-glossary), and each entry links to a
+fuller but still gentle explanation.
+
+**A distribution describes an uncertain quantity.** A
+[distribution](../user-guide.md#g-distribution) says which values can happen and how likely
+each is. Drawn as a curve, its [probability density](../user-guide.md#g-density) is high
+where values are common and low where they're rare, and the chance of
+landing between two values is the area under the curve between them. The
+value has to land somewhere, so the total area is always exactly 1. That
+one rule explains a lot: a distribution can't get wider without getting
+lower, and making extremes likelier has to take probability away from the
+middle.
+
+**Percentiles measure position.** The [cumulative
+probability](../user-guide.md#g-cdf) at a value is the area to its left: the chance of
+landing at or below it. Run backwards, it gives the
+[percentile](../user-guide.md#g-percentile), or quantile: the value with a given share of
+outcomes below it. The median is the 50th percentile. Percentiles let the
+simulator compare rows with completely different units: a
+90th-percentile inflation rate and a 90th-percentile sale date are equally
+surprising.
+
+**The bell curve comes from adding up small effects.** Flip 100 coins and
+count the heads. The count follows a [binomial
+distribution](../user-guide.md#g-binomial): usually near 50, rarely below 40 or above 60.
+Repeat that many times and plot the counts, and they pile up into a bell
+shape. That shape is the [normal (Gaussian) distribution](../user-guide.md#g-normal), and
+it turns up whenever many small independent effects add together (the
+[central limit theorem](../user-guide.md#g-clt)), which is why it's everywhere. About 68%
+of its values lie within 1 standard deviation of the center, 95% within 2
+and 99.7% within 3. Its tails thin out very fast: a value beyond 4
+standard deviations is about a 1-in-16,000 event. A position on the
+standard normal, counted in standard deviations, is a [score](../user-guide.md#g-score):
+0 is the median and +1.28 the 90th percentile.
+
+**Heavy tails make extremes likelier.** Real surprises (a market crash, an
+inflation spike) come more often than a normal curve allows. The
+[Student-t distribution](../user-guide.md#g-student-t) is a bell curve with heavier
+[tails](../user-guide.md#g-tails). One way to picture it: a normal whose spread is itself
+uncertain, drawn wider in some cases and narrower in others. Its degrees of
+freedom, ν, set how heavy the tails are: ν = 1 is very heavy, and by ν = 30
+it's nearly normal.
+
+**Correlation measures moving together.** A [correlation](../user-guide.md#g-correlation)
+ρ runs from −1 (opposite) through 0 (no tendency) to 1 (lockstep). ρ² is
+roughly the share of one quantity's variation that the other accounts for:
+81% at ρ = 0.9, but only 25% at ρ = 0.5. A [rank
+correlation](../user-guide.md#g-rank-correlation) looks only at the order of values, not
+their size. [Kendall's τ](../user-guide.md#g-kendall-tau) is one: for every pair of
+members, do both rows put the two in the same order? The simulator checks
+the correlations it achieved this way, because the shape of each row's
+range can't throw it off.
+
+**Results from a limited sample wobble.** An ensemble of 100 members
+estimates everything from 100 draws, and a different seed would give
+slightly different numbers. That wobble is [sampling error](../user-guide.md#g-standard-error),
+and its typical size, the standard error, shrinks with the square root of
+the count: four times the members halves it. A 95% [confidence
+interval](../user-guide.md#g-confidence-interval) is a range built so that, across many
+batches, 95% of such ranges contain the true value.
+
 ## One scenario is deterministic; an ensemble is many of them
 
 The engine steps a scenario forward one month at a time. Nothing in it is
@@ -105,7 +170,7 @@ Two kinds of member use no randomness at all:
 
 Drawn independently, two rows' `u` values have nothing to do with each
 other. Real uncertainties are often linked: inflation rates tend to run hot
-together. A **copula** is a way to link the `u` values of several rows
+together. A [**copula**](../user-guide.md#g-copula) is a way to link the `u` values of several rows
 without changing any one row's own distribution. Each row still lands
 anywhere in its own range as often as before; the copula only decides which
 futures its highs and lows fall in, relative to the other rows.
@@ -124,6 +189,20 @@ extremes (tail dependence)".
 
 ## How many members?
 
-More members narrow the uncertainty in the results themselves, roughly as
-one over the square root of the count. "How many members?" in
+More members narrow the uncertainty in the results themselves (the
+[standard error](../user-guide.md#g-standard-error)), roughly as one over the square root of
+the count. "How many members?" in
 [Ensembles](ensembles.md) has the practical guidance.
+
+## Learning more
+
+- The [glossary](../user-guide.md#2-glossary) defines every word these
+  guides use, each with a link to a fuller explanation.
+- OpenStax's free [*Introductory
+  Statistics*](https://openstax.org/books/introductory-statistics-2e/pages/1-introduction)
+  is a complete first course, with worked examples.
+- [Seeing Theory](https://seeing-theory.brown.edu/) shows the same ideas as
+  interactive pictures.
+- An AI assistant is a quick, patient way in. Say what you already know
+  ("I've done physics simulation but not statistics") and ask it to explain
+  a word, or paste a paragraph from these guides and ask what it means.
