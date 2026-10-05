@@ -335,6 +335,299 @@ sim calendar add latent-factor economy --scenario inflation_1 \
   rate's own extremes bigger; ν makes extremes in a tree coincide. They
   combine.
 
+## Modeling a shared driver
+
+The section above explains the mechanics. This one is about using them for
+a real situation: several specific inflation rates (medical, housing,
+education, fuel) that each have their own range but tend to follow an
+underlying inflation trend. It works through building that recipe, then the
+choices you have for its structure, then shocks and persistence.
+
+### The example recipe
+
+Every command in this section runs against the prototype scenario. The
+prototype has only a `cpi` series, so the first step gives the recipe four
+inflation series of its own and a monthly expense that reads each one:
+
+```sh
+sim ensemble create inflation_drivers retire_alice
+mkdir -p "$ANALYSIS_DATA_DIR/scenarios/inflation_drivers/series"
+for s in medical housing education fuel; do
+  printf 'effective_date,annual_rate_micros\n2026-01-31,30000\n' \
+    > "$ANALYSIS_DATA_DIR/scenarios/inflation_drivers/series/inflation__$s.csv"
+done
+sim scheduled add 2026-05-31 Asset_Checking Expense_Healthcare 400 \
+  --scenario inflation_drivers --name medical_care --series medical
+sim scheduled add 2026-05-31 Asset_Checking Expense_Housing 300 \
+  --scenario inflation_drivers --name home_upkeep --series housing
+sim scheduled add 2026-05-31 Asset_Checking Expense_Living 500 \
+  --scenario inflation_drivers --name tuition --series education
+sim scheduled add 2026-05-31 Asset_Checking Expense_Living 250 \
+  --scenario inflation_drivers --name fuel_costs --series fuel
+```
+
+Then the driver, and two rates that follow it:
+
+```sh
+sim calendar add latent-factor core_inflation --scenario inflation_drivers \
+  --description "how hot prices run generally"
+sim calendar add set-rate 2027-01-31 medical 5.0 --aux-kind inflation \
+  --scenario inflation_drivers --name medical_vary \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 5.0 --vary-sd 1.5 \
+  --vary-correlate-with core_inflation --vary-correlation 0.6
+sim calendar add set-rate 2027-01-31 housing 3.5 --aux-kind inflation \
+  --scenario inflation_drivers --name housing_vary \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 3.5 --vary-sd 1.0 \
+  --vary-correlate-with core_inflation --vary-correlation 0.9
+```
+
+That gives this tree, drawn the same way as above:
+
+```mermaid
+flowchart TB
+    core(["core_inflation"]) -->|0.6| medical["medical_vary"]
+    core -->|0.9| housing["housing_vary"]
+```
+
+### What a latent factor is, and isn't
+
+- **A factor has no units.** `core_inflation` isn't a rate, and it has no
+  range of its own. In each future it says only how hot things run
+  generally, as a percentile: "this is a 90th-percentile year for
+  inflation". Each rate under it turns that percentile into its own value,
+  from its own range. There's no "core rate is 2–4%" to write anywhere.
+  It can't have a unit, because no unit would mean the same thing for
+  every row under it: a point of fuel inflation isn't the same surprise as
+  a point of medical inflation, and a factor's dependents needn't even be
+  the same kind of value. One factor can drive a rate, a dollar amount and
+  a date at once. The factor feeds a unitless calculation, and each row
+  turns the result back into its own units.
+- **The correlation goes on the child.** `--vary-correlation 0.6` on
+  `medical_vary` describes medical's link up to `core_inflation`. A root
+  factor carries no correlation, because it has nothing above it.
+- **A rate's range is its total range.** `medical_vary`'s distribution
+  (median 5%, SD 1.5%, so 0.5% to 9.5% at its default bounds) is where
+  medical inflation lands over all futures, including the part the factor
+  drives. It isn't extra spread added on top of a factor value. A
+  correlated draw never leaves the range, so a stronger link doesn't widen
+  anything; it only makes medical land high in the same futures where the
+  other rates do.
+- **ρ² is roughly the share of a rate's movement that comes from the
+  driver.** At ρ = 0.9 (housing) about 80% of where it lands is set by the
+  factor and 20% is its own. At ρ = 0.6 (medical) it's about 35% factor and
+  65% its own. Two rates under one factor correlate with each other at the
+  product, ρ₁·ρ₂: housing and medical at about 0.54.
+- **A worked number.** In a future where the factor is at its 90th
+  percentile, a ρ = 0.6 rate most likely lands at about its own 78th
+  percentile, and a ρ = 0.9 rate at about its 87th. The weaker link pulls
+  less of the way. This is what a sensitivity sweep of the factor shows.
+- **Coupling is by percentile, not by percentage points.** "Medical is
+  core plus 1.5%" can't be written. To say medical usually runs higher than
+  inflation in general, give it a higher median (5% here against housing's
+  3.5%), and to say it tracks the trend, give it a link to the factor. A
+  hot year for the factor is a hot year for each rate *by that rate's own
+  standard*.
+
+Here is the worked number as a chain, for the most likely case. Medical's
+own wobble then spreads the result around that 78th percentile:
+
+```mermaid
+flowchart LR
+    f(["core_inflation\nat its 90th percentile\nz = +1.28"]) -->|"× 0.6"| z["medical's score\nz = +0.77"]
+    z --> p["medical's own\n78th percentile"]
+    p --> v["a value from\nmedical's range"]
+```
+
+### Choosing a structure
+
+Start with the structure that assumes least, and add only what you believe
+and can roughly justify. In order:
+
+1. **Independent rates.** No parents at all. Use this when you have no view
+   on how the rates move together. It understates the spread of outcomes
+   if they really do move together, since highs and lows tend to cancel
+   across independent rates.
+2. **One factor, every rate a child.** The recipe above. This is the
+   default when data is thin: one shared trend plus each rate's own
+   wobble, and one number per rate to choose.
+3. **A real rate as the parent.** Instead of a factor, make one of the
+   rates the root and correlate the others with it:
+
+   ```sh
+   sim calendar add set-rate 2027-01-31 cpi 2.5 --aux-kind inflation \
+     --scenario inflation_drivers --name cpi_vary \
+     --vary-target amount --vary-distribution truncated_normal \
+     --vary-median 2.5 --vary-sd 1.0
+   ```
+
+   and name `cpi_vary` in the other rates' `--vary-correlate-with`. This is
+   the same model as option 2 with `cpi` under the factor at ρ = 1: it claims
+   that `cpi` *is* the driver, with no wobble of its own. That's a
+   stronger claim than a factor makes, so prefer a factor unless you
+   believe it.
+
+   ```mermaid
+   flowchart TB
+       cpi["cpi_vary"] -->|0.6| medical["medical_vary"]
+       cpi -->|0.9| housing["housing_vary"]
+   ```
+4. **A hierarchy of factors.** When a cluster of rates moves together
+   beyond what the core explains (care and schooling both being labor-heavy
+   services, say), give the cluster a sub-factor under the core:
+
+   ```sh
+   sim calendar add latent-factor services_inflation \
+     --scenario inflation_drivers \
+     --description "services beyond the core: care, schooling" \
+     --vary-correlate-with core_inflation --vary-correlation 0.6
+   sim calendar add set-rate 2027-01-31 education 4.5 --aux-kind inflation \
+     --scenario inflation_drivers --name education_vary \
+     --vary-target amount --vary-distribution truncated_normal \
+     --vary-median 4.5 --vary-sd 1.5 \
+     --vary-correlate-with services_inflation --vary-correlation 0.9
+   ```
+
+   To move medical into the cluster, `sim calendar edit medical_vary` and
+   change its `vary_correlate_with` to `services_inflation`. Correlations
+   multiply along paths, so education follows the core at 0.9 × 0.6 =
+   0.54, and follows housing at 0.54 × 0.9, about 0.49.
+
+   ```mermaid
+   flowchart TB
+       core(["core_inflation"]) -->|0.6| services(["services_inflation"])
+       core -->|0.9| housing["housing_vary"]
+       services -->|0.6| medical["medical_vary"]
+       services -->|0.9| education["education_vary"]
+   ```
+5. **Several independent drivers per rate** (fuel following both general
+   inflation and an energy factor, each separately) **isn't supported**.
+   Each row has at most one parent, which is what guarantees every recipe
+   describes a valid joint distribution; a full correlation matrix is
+   deferred ([ADR-008 §2](../architecture/ADR-008-correlated-parameters.md)).
+   The usual way around it is to put one driver under the other, as the
+   shock factor below does.
+
+Whatever the structure, coarse values (±0.3, ±0.6, ±0.9) are about as
+precise as the data allows. Rates that look tightly linked over one decade
+can drift apart in the next.
+
+### Shocks and regimes
+
+**A deliberate what-if** (tariffs, a fuel spike) is a child scenario that
+overrides only the affected rates, compared side by side with the base:
+
+```sh
+sim calendar add set-rate 2027-01-31 fuel 3.0 --aux-kind inflation \
+  --scenario inflation_drivers --name fuel_vary \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 3.0 --vary-sd 2.0 --vary-skew 0.6 \
+  --vary-correlate-with core_inflation --vary-correlation 0.3
+sim scenario create inflation_tariffs inflation_drivers
+sim calendar add set-rate 2027-01-31 fuel 3.0 --aux-kind inflation \
+  --scenario inflation_tariffs --name fuel_vary \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 6.0 --vary-sd 2.0 --vary-skew 0.6 \
+  --vary-correlate-with core_inflation --vary-correlation 0.3
+sim run inflation_drivers
+sim run inflation_tariffs --ensemble-size 30
+```
+
+The child's row keeps the parent row's date, series and amount, which is
+what makes it replace that row rather than add a second one; only its
+`vary_*` settings change. The child inherits the recipe's seed, so member
+N of each ensemble draws the same future for every other row, and the
+difference between the two runs is the fuel change alone. It doesn't
+inherit the recipe's member count, though, so give it the same count with
+`--ensemble-size` (30 is the recipe's default).
+
+**A shock factor** makes the shock part of the uncertainty instead of a
+separate case. Put it at the root, above the core factor, with fuel
+directly under the shock at a high ρ:
+
+```sh
+sim scenario create inflation_shock inflation_drivers
+sim calendar add latent-factor supply_shock --scenario inflation_shock \
+  --description "an energy or supply shock"
+sim calendar add latent-factor core_inflation --scenario inflation_shock \
+  --description "how hot prices run generally" \
+  --vary-correlate-with supply_shock --vary-correlation 0.6
+sim calendar add set-rate 2027-01-31 fuel 3.0 --aux-kind inflation \
+  --scenario inflation_shock --name fuel_vary \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 3.0 --vary-sd 2.0 --vary-skew 0.6 \
+  --vary-correlate-with supply_shock --vary-correlation 0.9
+```
+
+```mermaid
+flowchart TB
+    shock(["supply_shock"]) -->|0.6| core(["core_inflation"])
+    shock -->|0.9| fuel["fuel_vary"]
+    core -->|0.6| medical["medical_vary"]
+    core -->|0.9| housing["housing_vary"]
+    core -->|0.6| services(["services_inflation"])
+    services -->|0.9| education["education_vary"]
+```
+
+A factor is replaced by name, so the child's `core_inflation` (now under
+the shock) replaces the parent's. This is one damped round of
+shock → core → rates: fuel feels the shock almost fully, the core at 0.6,
+and medical only at 0.6 × 0.6 = 0.36. To ask "what if the shock lands at
+its 90th percentile?", sweep it:
+
+```sh
+sim run inflation_shock --sensitivity --only supply_shock
+sim ensemble sensitivity inflation_shock
+```
+
+At the shock's 90th percentile (`z=+1.28`), fuel most likely lands near
+its 87th percentile, the core near its 78th, and medical near its 68th.
+
+**Persistence over time.** A rate set once applies from that date on. To
+let it change later while a hot start tends to stay hot, add a later row
+for the same series, correlated with the earlier one:
+
+```sh
+sim calendar add set-rate 2032-01-31 medical 5.0 --aux-kind inflation \
+  --scenario inflation_drivers --name medical_2032_vary \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 5.0 --vary-sd 1.5 \
+  --vary-correlate-with medical_vary --vary-correlation 0.6
+```
+
+```mermaid
+flowchart LR
+    core(["core_inflation"]) -->|0.6| m27["medical_vary\nfrom 2027"]
+    m27 -->|0.6| m32["medical_2032_vary\nfrom 2032"]
+```
+
+The later row's only parent is the earlier row, so it follows the core
+through it, at 0.6 × 0.6 = 0.36.
+
+**A high end that can run much higher.** Inflation surprises are lopsided:
+a year far above the usual is likelier than one far below. Give such a
+rate a right skew (`--vary-skew`, as on `fuel_vary` above) or heavier
+tails (`--vary-tailweight` below 1). That shapes each rate's own range;
+the correlations decide which futures its extremes fall in.
+
+### Limits
+
+- **No feedback loops.** Each future is drawn in one pass, from the root
+  down. Fuel can follow the shock, but a fuel spike can't then push the
+  core up a second time; any such knock-on has to be built into the ρ
+  values.
+- **Joint extremes need tail dependence.** By default, even strongly
+  linked rates rarely all reach their extremes in the same future, so a
+  1970s-style stretch where every rate runs hot at once is
+  under-represented. To make it as common as it should be, give the tree
+  tail dependence: set `vary_tail_dependence` (ν) on its root, which is
+  `core_inflation` in the base recipe and `supply_shock` in the shock
+  scenario. It goes on the root because it scales every row in the tree at
+  once (see "Joint extremes (tail dependence)" above). It composes with the
+  skew on `fuel_vary`: skew makes fuel's own extremes bigger, and ν makes
+  them land in the same futures as the other rates'.
+
 ## How many members?
 
 There's no single right answer — it depends on what you're trying to learn
