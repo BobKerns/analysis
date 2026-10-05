@@ -5,6 +5,7 @@ aggfunc
 AMOLED
 arcsinh
 arctanh
+autocorr
 autofetch
 autofmt
 autopct
@@ -37,6 +38,7 @@ conftest
 corrcoef
 counterclock
 cpus
+Damodaran
 dataviz
 dateutil
 ddof
@@ -75,6 +77,7 @@ jupyterhub
 kendalltau
 kernelspec
 kstest
+LABSTAT
 lastrowid
 liab
 libedit
@@ -120,6 +123,7 @@ pyeb
 pypi
 pytestmark
 rcond
+rcpie
 recategorize
 recomputable
 reconstructable
@@ -131,6 +135,7 @@ repoints
 reprompts
 rerunnable
 retarget
+reweighted
 ripwire
 rmds
 rollup
@@ -147,6 +152,7 @@ setopt
 setp
 sharex
 shellcheck
+Shiller
 sidefx
 Sobol
 sourceable
@@ -163,6 +169,8 @@ subkinds
 tailnet
 tailweight
 taxchar
+tbill
+tbond
 tctronics
 testpaths
 textcoords

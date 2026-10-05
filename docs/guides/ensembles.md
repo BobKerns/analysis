@@ -248,6 +248,11 @@ What to expect:
   than it happens. Give a tree tail dependence to change that (see "Joint
   extremes" below).
 
+For what ρ to use, [Historical calibration](historical-calibration.md)
+tabulates the correlations, medians and spreads of inflation categories and
+returns over the past century and in named episodes, and has a script to
+compute them for other series and years.
+
 A factor nothing depends on yet loads with a `WARN:` line rather than an
 error. That's fine for work in progress, or for a factor defined in a
 parent scenario for its child scenarios to use.
@@ -334,6 +339,11 @@ sim calendar add latent-factor economy --scenario inflation_1 \
 - **Tail weight is a different thing.** `--vary-tailweight` makes one
   rate's own extremes bigger; ν makes extremes in a tree coincide. They
   combine.
+
+How strongly the categories moved together in a real stretch of joint
+extremes, the Great Inflation of 1966–1982, is in [Historical
+calibration](historical-calibration.md#historical-episodes), along with how
+to model such a stretch as an episode on top of a long-run rate.
 
 ## Modeling a shared driver
 
