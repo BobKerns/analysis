@@ -137,8 +137,9 @@ sim calendar add set-rate 2035-01-31 medical 4.2 --aux-kind inflation \
   Inflation; the return rate, 4.2%, is its long-run rate since 1984.
 - The two date ranges are the same length, five years apart, and
   correlated at 1.0. Both draws then land at the same point in their
-  ranges, so the episode lasts exactly five years in every member and only
-  its start varies.
+  ranges, so the episode lasts the same 1,827 days in every member and only
+  its start varies. That is five years to within a day: depending on leap
+  years, the return falls on the fifth anniversary or the day after.
 - The return lands on the long-run median, not on the rate that member drew
   for `medical_vary`: it reverts toward the middle, as history did. A row
   varies either its date or its amount, so the episode's rate and the
@@ -270,6 +271,21 @@ for a core-inflation factor.
 | T-bill           | 1984–2025 |  33 |        3.4 |      2.7 | 1.9 |   0.3 |   6.5 |           — |       0.89 |    0.77 |       0.59 |
 | T-bond           | 1984–2025 |  33 |        6.0 |      6.1 | 3.0 |   0.1 |  12.6 |           — |       0.65 |    0.52 |       3.17 |
 | Stocks           | 1984–2025 |  33 |       11.7 |     11.9 | 5.3 |  -1.4 |  19.0 |           — |       0.69 |    0.62 |       8.85 |
+
+| Series           | Years     |   N | Compound % | Median % |   SD | Min % | Max % | Persistence | ρ (from τ) | Pearson | Gap vs ref |
+| ---------------- | --------- | --: | ---------: | -------: | ---: | ----: | ----: | ----------: | ---------: | ------: | ---------: |
+| CPI-U            | 1948–2025 |  78 |        3.4 |      2.9 |  2.8 |  -2.1 |  13.3 |        0.67 |       0.90 |    0.94 |       0.02 |
+| Core             | 1958–2025 |  68 |        3.6 |      2.7 |  2.5 |   0.8 |  12.2 |        0.81 |       1.00 |    1.00 |       0.00 |
+| Food             | 1948–2025 |  78 |        3.4 |      2.8 |  3.6 |  -3.9 |  20.3 |        0.45 |       0.61 |    0.63 |       0.08 |
+| Energy           | 1958–2025 |  68 |        3.8 |      2.4 |  9.9 | -21.3 |  37.5 |        0.06 |       0.31 |    0.47 |       0.18 |
+| Shelter          | 1953–2025 |  73 |        4.1 |      3.2 |  3.1 |   0.3 |  17.5 |        0.76 |       0.90 |    0.94 |       0.66 |
+| Medical          | 1948–2025 |  78 |        4.9 |      4.2 |  2.7 |   0.5 |  12.6 |        0.78 |       0.79 |    0.80 |       1.47 |
+| Medical-services | 1948–2025 |  78 |        5.3 |      4.6 |  2.7 |  -0.5 |  13.2 |        0.75 |       0.78 |    0.79 |       1.83 |
+| Apparel          | 1948–2025 |  78 |        1.5 |      1.1 |  2.8 |  -7.4 |   8.7 |        0.31 |       0.73 |    0.74 |      -2.07 |
+| Tuition          | 1978–2025 |  48 |        5.9 |      5.6 |  2.8 |   1.4 |  12.7 |        0.94 |       0.64 |    0.63 |       2.37 |
+| T-bill           | 1948–2025 |  78 |        4.0 |      3.8 |  3.0 |   0.0 |  14.0 |        0.90 |       0.78 |    0.72 |       0.73 |
+| T-bond           | 1948–2025 |  78 |        4.9 |      3.3 |  8.7 | -17.8 |  32.8 |       -0.04 |       0.02 |   -0.07 |       1.71 |
+| Stocks           | 1948–2025 |  78 |       11.6 |     15.8 | 16.8 | -36.5 |  52.6 |       -0.08 |      -0.08 |   -0.10 |       7.31 |
 
 | Series           | Years     |   N | Compound % | Median % |  SD | Min % | Max % | Persistence | ρ (from τ) | Pearson | Gap vs ref |
 | ---------------- | --------- | --: | ---------: | -------: | --: | ----: | ----: | ----------: | ---------: | ------: | ---------: |
