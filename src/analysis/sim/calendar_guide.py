@@ -117,6 +117,24 @@ def _yes(param: str) -> Callable[[GuideContext, Answers], bool]:
     return lambda ctx, answers: answers.get(param) == "y"  # noqa: ARG005
 
 
+def _no(param: str) -> Callable[[GuideContext, Answers], bool]:
+    return lambda ctx, answers: answers.get(param) == "n"  # noqa: ARG005
+
+
+_TAIL_DEPENDENCE_HELP = (
+    "Only on a correlation tree's root: rows under it tend to hit extremes together. "
+    "Lower is stronger, about 3 to 30; blank keeps the Gaussian copula."
+)
+
+
+def _tail_dependence_field(applies: Callable[[GuideContext, Answers], bool]) -> Field:
+    return Field(
+        "vary_tail_dependence", "tail dependence (degrees of freedom)", type="number",
+        option="--vary-tail-dependence", required=False, applies=applies,
+        help=_TAIL_DEPENDENCE_HELP,
+    )
+
+
 def _uses(column: str) -> Callable[[GuideContext, Answers], bool]:
     """Applies when the chosen distribution reads ``column``."""
     def applies(ctx: GuideContext, answers: Answers) -> bool:  # noqa: ARG001
@@ -237,6 +255,15 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
         Field(
             "vary_correlation", "correlation (-1 to 1)", type="number",
             option="--vary-correlation", applies=_yes("_correlate"),
+        ),
+        # Asked of a factor (the usual root), but of a varying row only when
+        # it already has one: most varying rows without a parent are lone
+        # rows, where nu does nothing. --vary-tail-dependence sets it anyway.
+        _tail_dependence_field(
+            lambda ctx, answers: (
+                varying(ctx, answers) and _no("_correlate")(ctx, answers)
+                and bool(answers.get("vary_tail_dependence"))
+            ),
         ),
     ]
     return tuple(fields)
@@ -359,6 +386,7 @@ KINDS: tuple[KindSpec, ...] = (
                 "vary_correlation", "correlation (-1 to 1)", type="number",
                 option="--vary-correlation", applies=_yes("_correlate"),
             ),
+            _tail_dependence_field(_no("_correlate")),
         ),
     ),
 )

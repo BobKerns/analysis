@@ -210,7 +210,9 @@ What to expect:
   this value is in here", and a correlated draw never leaves it.
 - **ρ is roughly the rank correlation you'll see** between the two rows'
   values (within 0.02), for any pair of distributions. A date range of only
-  a few days is the exception, because tied dates correlate less.
+  a few days is the exception, because tied dates correlate less. With tail
+  dependence (below) the rank correlation shifts a little, but ρ still
+  sets how often two rows land on the same side of each other's medians.
 - **Siblings correlate at the product.** Two rows under one factor at 0.8
   and 0.6 correlate with each other at about 0.48. To make two siblings
   correlate at 0.6, give each about 0.77.
@@ -228,13 +230,79 @@ What to expect:
   effects, so the report ranks and pins rows by their regression weight
   instead, and checks the correlations the batch achieved (see "Which
   varying rows can I drop?" below).
-- **Joint extremes are a little rarer than in reality.** The method used
-  (a Gaussian copula) doesn't make crashes cluster the way markets do. This
-  could be added later if it matters for your scenarios.
+- **Joint extremes are rarer than in reality, unless you ask for them.** By
+  default (a Gaussian copula) extremes in correlated rows rarely coincide,
+  so a stretch where every inflation rate runs hot at once comes out rarer
+  than it happens. Give a tree tail dependence to change that (see "Joint
+  extremes" below).
 
 A factor nothing depends on yet loads with a `WARN:` line rather than an
 error. That's fine for work in progress, or for a factor defined in a
 parent scenario for its child scenarios to use.
+
+### Joint extremes (tail dependence)
+
+It helps to think of a correlation tree as a set of independent
+**dimensions** of noise. Every node, factor or rate, adds one, and a rate's
+score is a weighted sum of the dimensions on its path up to the root. Take a
+rate under an `inflation` sub-factor (ρ = 0.9) under an `economy` root
+factor (ρ = 0.8):
+
+```text
+rate = 0.9 · inflation              + 0.44 · own noise
+     = 0.9 · (0.8 · economy + 0.6 · inflation's noise) + 0.44 · own noise
+     = 0.72 · economy + 0.54 · inflation's noise + 0.44 · own noise
+```
+
+Squaring the weights splits the rate's variance between the three: about
+52% from `economy`, 29% from what `inflation` adds, and 19% of its own.
+
+Those dimensions are added, and added normal noise rarely puts everything
+at an extreme at once. **Tail dependence** adds one more dimension per
+tree, a **turbulence scale**, which multiplies all the others instead of
+adding to them. In each future it's usually near 1, sometimes large; when
+it's large, every row in the tree is far from center at once. That's a
+1970s-style stretch where every inflation rate runs hot together.
+
+Set it on the tree's **root**, with `--vary-tail-dependence` (the
+`vary_tail_dependence` column), a number called ν:
+
+```sh
+sim calendar add latent-factor economy --scenario inflation_1 \
+  --description "the broad economy: high inflation, high rates" \
+  --vary-tail-dependence 5
+```
+
+- **It applies to every row in the tree.** All of them share the one
+  turbulence scale, so the tree's depth and shape don't change it.
+- **It has to sit at the root**, because it multiplies everything below
+  it. On a row with a parent it's a load error naming the tree's root. On a
+  final rate with no parent and nothing under it, it would only stretch
+  that one rate's score, which is mapped straight back to the rate's own
+  range, so it does nothing (and loads with a `WARN:` line).
+- **Each row still keeps exactly its own distribution.** Only how often
+  the rows' extremes coincide changes.
+- **Lower ν means more tail dependence.** About 3 (strong) to 30 (barely
+  different from none) is a sensible range. Blank means none, as before.
+- **It composes over the tree.** ρ multiplies along paths as before, and
+  the tree's one ν applies to the resulting correlation. The chance that
+  one row is in its top few percent given that the other is, in the limit,
+  for two rows correlated at ρ:
+
+  | ν | ρ = 0 | 0.3 | 0.6 | 0.9 |
+  | --- | --- | --- | --- | --- |
+  | 3 | 0.12 | 0.22 | 0.37 | 0.67 |
+  | 5 | 0.05 | 0.12 | 0.27 | 0.59 |
+  | 10 | 0.01 | 0.03 | 0.13 | 0.46 |
+  | 30 | 0.00 | 0.00 | 0.01 | 0.21 |
+
+  Without tail dependence every entry is 0. So it fades more slowly with
+  distance in the tree than ρ does, and even rows with ρ = 0 between them
+  share some extremes, as long as they're in the same tree. Rows in
+  different trees stay independent.
+- **Tail weight is a different thing.** `--vary-tailweight` makes one
+  rate's own extremes bigger; ν makes extremes in a tree coincide. They
+  combine.
 
 ## How many members?
 

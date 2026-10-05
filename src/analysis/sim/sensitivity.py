@@ -23,10 +23,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from scipy.stats import kendalltau
 from scipy.stats import t as student_t
 
 from analysis.sim.connection import RunConnection, year_end_values
-from analysis.sim.correlation import Link, implied_correlation
+from analysis.sim.correlation import Link, implied_correlation, rho_from_kendall_tau
 from analysis.sim.distributions import Distribution, Triangular, TruncatedNormal, moments
 from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
 from analysis.sim.registries import format_calendar_amount
@@ -513,6 +514,9 @@ interactions or transitions no per-parameter number captures."""
 _Z95 = 1.959963984540054
 _SPEARMAN_VARIANCE = 1.06
 """Fisher-z variance correction for Spearman's rho: ``1.06 / (n - 3)``."""
+_KENDALL_VARIANCE = 0.437
+"""Fisher-z variance for Kendall's tau: ``0.437 / (n - 4)`` (Fieller,
+Hartley and Pearson, 1957)."""
 
 
 def _member_draws(
@@ -810,17 +814,34 @@ def has_correlated_rows(batch_dir: Path) -> bool:
     return _any_dependent(links, modeled)
 
 
+def _kendall_rho_interval(tau: float, n: int) -> tuple[float, float]:
+    """95% interval on the copula rho a Kendall ``tau`` estimates: a Fisher-z
+    interval on tau (``0.437 / (n - 4)``), mapped through
+    ``rho_from_kendall_tau``, which is increasing, so the bounds map too."""
+    if n <= 4 or pd.isna(tau):
+        return (float("nan"), float("nan"))
+    z = np.arctanh(np.clip(tau, -0.999999, 0.999999))
+    half = _Z95 * np.sqrt(_KENDALL_VARIANCE / (n - 4))
+    low, high = min(float(np.tanh(z - half)), tau), max(float(np.tanh(z + half)), tau)
+    return (rho_from_kendall_tau(low), rho_from_kendall_tau(high))
+
+
 def score_correlations(
     scores: pd.DataFrame, links: dict[str, Link], nodes: list[str],
 ) -> pd.DataFrame:
     """ADR-007 §6.2, ADR-008 §6: per pair of ``nodes`` with a nonzero implied
-    correlation, the correlation the batch achieved between their recorded
-    normal scores (Pearson; scores never tie, unlike values) with its 95%
-    Fisher interval, against the ``expected`` one: the pair's own rho when one
-    is the other's parent (``kind`` "link"), else the product along the path
-    joining them ("implied"). ``outside`` marks an expected rho outside the
-    achieved interval -- a sign the batch is too small to reproduce the
-    structure, or something is wrong with it."""
+    correlation, the copula rho the batch achieved between their recorded
+    scores with its 95% interval, against the ``expected`` one: the pair's
+    own rho when one is the other's parent (``kind`` "link"), else the
+    product along the path joining them ("implied"). ``outside`` marks an
+    expected rho outside the achieved interval -- a sign the batch is too
+    small to reproduce the structure, or something is wrong with it.
+
+    The achieved rho is estimated from the scores' Kendall tau as
+    ``sin(pi * tau / 2)``, which holds exactly for the Gaussian and the
+    Student-t copula alike (#68), where a Pearson correlation of t scores
+    would be dominated by a few turbulent members (and is undefined at
+    ``nu <= 2``). Scores never tie, unlike values (ADR-008 §1)."""
     records = []
     for i, a in enumerate(nodes):
         for b in nodes[i + 1:]:
@@ -829,8 +850,9 @@ def score_correlations(
                 continue
             pair = scores[[a, b]].dropna()
             n = len(pair)
-            achieved = float(pair[a].corr(pair[b])) if n > 1 else float("nan")
-            low, high = _fisher_interval(achieved, n, 1.0)
+            tau = float(kendalltau(pair[a], pair[b]).statistic) if n > 1 else float("nan")
+            achieved = rho_from_kendall_tau(tau) if not pd.isna(tau) else float("nan")
+            low, high = _kendall_rho_interval(tau, n)
             direct = (a in links and links[a].parent == b) or (b in links and links[b].parent == a)
             records.append({
                 "a": a, "b": b, "kind": "link" if direct else "implied", "expected": expected,
@@ -968,7 +990,9 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
     the median), its ``shape`` (a ``truncated_normal``'s sd and any skew or
     tail weight; a ``triangular``'s mode), the implied ``moments`` (mean, sd,
     skewness, excess kurtosis -- what the shape parameters mean in
-    practice, #31), ``ramp_months`` and the author's ``description``. A sensitivity batch adds the resolved value at
+    practice, #31), ``ramp_months``, the author's ``description``, and its
+    correlation: ``correlate_with``, ``rho``, and on a t-copula tree's root
+    its ``nu`` (ADR-008). A sensitivity batch adds the resolved value at
     each perturbed quantile (``value@q``); a Monte Carlo batch adds the range
     actually ``drawn`` across its members.
 
@@ -1003,6 +1027,10 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
                 "description": row["description"] or "",
                 "correlate_with": row["vary_correlate_with"] or "",
                 "rho": "" if row["vary_correlation"] is None else f"{row['vary_correlation']:+g}",
+                # On a t-copula tree's root (#68); files before schema 32 have none.
+                "nu": f"{row['vary_tail_dependence']:g}"
+                if "vary_tail_dependence" in row.keys() and row["vary_tail_dependence"] is not None
+                else "",
             }
             dist = _row_distribution(row, target) if row["distribution"] else None
             if dist is not None:

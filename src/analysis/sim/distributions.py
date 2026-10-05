@@ -16,7 +16,7 @@ from statistics import NormalDist
 
 __all__ = [
     "DistributionError", "Uniform", "TruncatedNormal", "Triangular", "Distribution",
-    "Moments", "moments", "member_rng",
+    "Moments", "moments", "member_rng", "tail_rng",
     "DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD", "resolve_truncated_normal_bounds",
     "parse_quantiles",
 ]
@@ -537,4 +537,13 @@ def member_rng(seed: int, member_index: int, row_name: str) -> random.Random:
     draws for any member (ADR-006 §3).
     """
     digest = hashlib.sha256(f"{seed}:{member_index}:{row_name}".encode()).digest()
+    return random.Random(int.from_bytes(digest, "big"))
+
+
+def tail_rng(seed: int, member_index: int, root: str) -> random.Random:
+    """The stream for a t-copula tree's shared scale (ADR-008 §5), keyed by
+    the tree's root. The root's own name already keys its noise, so this
+    hashes a different string: one starting ``tail:``, which no
+    ``member_rng`` key can equal, since those start with the integer seed."""
+    digest = hashlib.sha256(f"tail:{seed}:{member_index}:{root}".encode()).digest()
     return random.Random(int.from_bytes(digest, "big"))

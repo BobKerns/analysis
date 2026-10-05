@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv as _csv
 import json
+import math
 import secrets
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -1033,7 +1034,7 @@ def _report_correlation(
             f"that needs about {needed} -- expect 'inconclusive'"
         )
     if not report.scores.empty:
-        click.echo("\n  correlations achieved (normal scores) vs expected:")
+        click.echo("\n  correlations achieved (rho from the scores' Kendall tau) vs expected:")
         for _, pair in report.scores.iterrows():
             flag = "  -- outside the interval" if pair["outside"] else ""
             click.echo(
@@ -1595,7 +1596,7 @@ def _validate_month_date(s: str) -> str:
 _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
     "name", "vary_target", "vary_distribution", "vary_low", "vary_high",
     "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
-    "vary_correlate_with", "vary_correlation",
+    "vary_correlate_with", "vary_correlation", "vary_tail_dependence",
 })
 
 
@@ -1850,6 +1851,13 @@ def _percent_to_rate_micros(s: str) -> int:
     return int(value)
 
 
+_TAIL_DEPENDENCE_HELP = (
+    "On the root of a correlation tree only: the Student-t copula's degrees of freedom nu "
+    "for every row in the tree (#68), so their extremes tend to coincide. Lower is stronger; "
+    "about 3 to 30. Blank keeps the Gaussian copula."
+)
+
+
 def _vary_row_options(f):
     """Shared ``--vary-*`` options for a calendar.csv ``add`` command (ADR-006).
 
@@ -1861,6 +1869,10 @@ def _vary_row_options(f):
         "--vary-ramp-months", type=int, default=None,
         help="Ramp to the drawn target over this many months "
              "(set-rate, --vary-target amount, only).",
+    )(f)
+    f = click.option(
+        "--vary-tail-dependence", default=None,
+        help=_TAIL_DEPENDENCE_HELP,
     )(f)
     f = click.option(
         "--vary-correlation", default=None,
@@ -1936,10 +1948,27 @@ def _vary_row_options(f):
     return f
 
 
-def _correlation_fields(correlate_with: str | None, correlation: str | None) -> dict[str, str]:
-    """``vary_correlate_with``/``vary_correlation`` cells (ADR-008), checked
-    as far as the row alone allows; the parent's existence and cycles are
-    the validating load's job, over the whole merged calendar."""
+def _correlation_fields(
+    correlate_with: str | None, correlation: str | None, tail_dependence: str | None = None,
+) -> dict[str, str]:
+    """``vary_correlate_with``/``vary_correlation``/``vary_tail_dependence``
+    cells (ADR-008, #68), checked as far as the row alone allows; the
+    parent's existence, cycles, and whether a ``nu`` row is its tree's root
+    are the validating load's job, over the whole merged calendar."""
+    if correlate_with is not None and tail_dependence is not None:
+        raise click.ClickException(
+            "--vary-tail-dependence goes on the root of a correlation tree, so not with "
+            "--vary-correlate-with: it applies to every row in the tree below the root"
+        )
+    if tail_dependence is not None:
+        try:
+            nu = float(tail_dependence)
+        except ValueError:
+            raise click.ClickException(
+                f"--vary-tail-dependence must be a number (got {tail_dependence!r})"
+            ) from None
+        if not 0.0 < nu < math.inf:
+            raise click.ClickException(f"--vary-tail-dependence must be above 0 (got {tail_dependence})")
     if (correlate_with is None) != (correlation is None):
         raise click.ClickException("--vary-correlate-with and --vary-correlation go together")
     if correlation is not None:
@@ -1949,7 +1978,10 @@ def _correlation_fields(correlate_with: str | None, correlation: str | None) -> 
             raise click.ClickException(f"--vary-correlation must be a number (got {correlation!r})") from None
         if not -1.0 <= rho <= 1.0:
             raise click.ClickException(f"--vary-correlation must be between -1 and 1 (got {correlation})")
-    return {"vary_correlate_with": correlate_with or "", "vary_correlation": correlation or ""}
+    return {
+        "vary_correlate_with": correlate_with or "", "vary_correlation": correlation or "",
+        "vary_tail_dependence": tail_dependence or "",
+    }
 
 
 def _vary_row_fields(
@@ -1966,6 +1998,7 @@ def _vary_row_fields(
     vary_mode: str | None,
     vary_correlate_with: str | None,
     vary_correlation: str | None,
+    vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
     amount_parser: Callable[[str], int] | None,
 ) -> dict[str, str]:
@@ -1982,7 +2015,7 @@ def _vary_row_fields(
         if any([
             vary_target, vary_low, vary_high, vary_median, vary_sd,
             vary_skew, vary_tailweight, vary_mode, vary_ramp_months is not None,
-            vary_correlate_with, vary_correlation,
+            vary_correlate_with, vary_correlation, vary_tail_dependence,
         ]):
             raise click.ClickException("--vary-* options require --vary-distribution")
         return {"name": row_name or ""}
@@ -2062,7 +2095,7 @@ def _vary_row_fields(
         "vary_skew": vary_skew if vary_skew is not None else "",
         "vary_tailweight": vary_tailweight if vary_tailweight is not None else "",
         "vary_mode": convert(vary_mode),
-        **_correlation_fields(vary_correlate_with, vary_correlation),
+        **_correlation_fields(vary_correlate_with, vary_correlation, vary_tail_dependence),
         "vary_ramp_months": str(vary_ramp_months) if vary_ramp_months is not None else "",
     }
 
@@ -2097,6 +2130,7 @@ def _do_add_transfer(
     vary_mode: str | None,
     vary_correlate_with: str | None,
     vary_correlation: str | None,
+    vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Shared body of ``sim transfer add`` / ``sim calendar add transfer``."""
@@ -2140,6 +2174,7 @@ def _do_add_transfer(
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
+        vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
     )
 
@@ -2216,6 +2251,7 @@ def transfer_add(
     vary_mode: str | None,
     vary_correlate_with: str | None,
     vary_correlation: str | None,
+    vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a one-time transfer to <scenario>/calendar.csv."""
@@ -2227,6 +2263,7 @@ def transfer_add(
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
+        vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months,
     )
 
@@ -2305,6 +2342,7 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
         "_correlate": "y" if correlated else "n",
         "vary_correlate_with": row["vary_correlate_with"],
         "vary_correlation": row["vary_correlation"],
+        "vary_tail_dependence": row["vary_tail_dependence"],
     }
     return spec, {f.param: values[f.param] for f in spec.fields}
 
@@ -2580,6 +2618,7 @@ def calendar_add_set_rate(
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
     vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
     vary_correlate_with: str | None, vary_correlation: str | None,
+    vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a set_rate event: SERIES starts earning RATE_PERCENT (e.g. 4.5) from DATE.
@@ -2603,6 +2642,7 @@ def calendar_add_set_rate(
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
+        vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_parser=_percent_to_rate_micros,
     )
 
@@ -2646,6 +2686,7 @@ def calendar_add_set_amount(
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
     vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
     vary_correlate_with: str | None, vary_correlation: str | None,
+    vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a set_amount event: SCHEDULED_NAME's amount changes to AMOUNT
@@ -2678,6 +2719,7 @@ def calendar_add_set_amount(
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
+        vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
     )
 
@@ -2713,6 +2755,7 @@ def calendar_add_retire_scheduled(
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
     vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
     vary_correlate_with: str | None, vary_correlation: str | None,
+    vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a retire_scheduled event: SCHEDULED_NAME stops firing from DATE.
@@ -2744,6 +2787,7 @@ def calendar_add_retire_scheduled(
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
+        vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_parser=None,
     )
 
@@ -2768,9 +2812,11 @@ def calendar_add_retire_scheduled(
               help="Another factor (or varying row) this factor depends on, for a hierarchy.")
 @click.option("--vary-correlation", default=None,
               help="rho with --vary-correlate-with, between -1 and 1.")
+@click.option("--vary-tail-dependence", default=None, help=_TAIL_DEPENDENCE_HELP)
 def calendar_add_latent_factor(
     name: str | None, scenario: str | None, data_dir: Path | None, description: str,
     vary_correlate_with: str | None, vary_correlation: str | None,
+    vary_tail_dependence: str | None,
 ) -> None:
     """Append a latent factor NAME (ADR-008): a shared influence ("the
     inflation regime") that varying rows correlate with through
@@ -2784,7 +2830,7 @@ def calendar_add_latent_factor(
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     row = {
         "kind": registries.LATENT_FACTOR_KIND, "name": name, "description": description,
-        **_correlation_fields(vary_correlate_with, vary_correlation),
+        **_correlation_fields(vary_correlate_with, vary_correlation, vary_tail_dependence),
     }
     path = scenario_dir / "calendar.csv"
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
@@ -2832,6 +2878,7 @@ def calendar_add_transfer(
     vary_mode: str | None,
     vary_correlate_with: str | None,
     vary_correlation: str | None,
+    vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
 ) -> None:
     """Append a one-time transfer (same as ``sim transfer add``)."""
@@ -2843,6 +2890,7 @@ def calendar_add_transfer(
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
+        vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months,
     )
 

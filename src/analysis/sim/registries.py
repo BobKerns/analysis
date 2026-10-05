@@ -291,8 +291,9 @@ CALENDAR_HEADER: tuple[str, ...] = (
     "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_median",
     "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
     # ADR-008: this row's (or latent factor's) parent in a correlation tree,
-    # and the correlation rho between their normal scores.
-    "vary_correlate_with", "vary_correlation",
+    # and the correlation rho between their normal scores; on a tree's root,
+    # the Student-t copula's degrees of freedom for the whole tree (#68).
+    "vary_correlate_with", "vary_correlation", "vary_tail_dependence",
 )
 
 # The columns that identify a calendar.csv row when a scenario's rows are

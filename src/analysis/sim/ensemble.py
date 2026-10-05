@@ -23,7 +23,6 @@ from calendar import monthrange
 from datetime import UTC, date, datetime
 from collections.abc import Mapping
 from pathlib import Path
-from statistics import NormalDist
 from typing import Any
 
 import pandas as pd
@@ -37,6 +36,7 @@ from analysis.sim.distributions import (
     Uniform,
     member_rng,
     resolve_truncated_normal_bounds,
+    tail_rng,
 )
 from analysis.sim.correlation import (
     CorrelationError,
@@ -44,8 +44,11 @@ from analysis.sim.correlation import (
     conditional_scores,
     probability,
     resolve_scores,
+    score_at,
     standard_normal,
+    tail_scale,
     tree_members,
+    tree_root,
 )
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
 from analysis.sim.registries import ENSEMBLE_MODES, LATENT_FACTOR_KIND
@@ -217,7 +220,7 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
 def _resolve_value(
     row: sqlite3.Row, dist: Distribution, *, as_int: bool,
     overrides: dict[str, float] | None, seed: int | None, member_index: int,
-    score: float | None = None, conditional: bool = False,
+    score: float | None = None, conditional: bool = False, nu: float | None = None,
 ) -> tuple[float, float | None]:
     """One varying row's value on one member, and the OAT quantile it was
     resolved at (``None`` unless ``overrides`` names this row):
@@ -233,6 +236,8 @@ def _resolve_value(
       exactly as before correlation existed.
 
     ``as_int`` selects the discrete (day-ordinal) form, for a date target.
+    In a t-copula tree, ``nu`` is its degrees of freedom and the t CDF
+    stands in for ``Phi`` throughout.
     """
     if overrides is not None and row["name"] in overrides:
         q = overrides[row["name"]]
@@ -241,12 +246,12 @@ def _resolve_value(
         except DistributionError as e:
             raise EnsembleError(f"row {row['name']!r}: {e}") from e
     if conditional and score is not None:
-        u = probability(score)
+        u = probability(score, nu)
         return (dist.value_at_int(u) if as_int else dist.value_at(u)), None
     if overrides is not None or member_index == 0:
         return (dist.central_int() if as_int else dist.central()), None
     if score is not None:
-        u = probability(score)
+        u = probability(score, nu)
         return (dist.value_at_int(u) if as_int else dist.value_at(u)), None
     if seed is None:
         raise EnsembleError(f"row {row['name']!r}: a random draw needs the ensemble's seed")
@@ -270,10 +275,33 @@ def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[s
     return links, factors
 
 
-def _score_at(name: str, q: float) -> float:
-    """``Phi^-1(q)``, exact at the ends: q = 0 or 1 (valid quantiles) is an
-    infinite score, so a factor's family reaches its conditional endpoint
-    -- each descendant at its own bound -- rather than just short of it.
+def _tail_dependence(con: sqlite3.Connection) -> dict[str, float]:
+    """Each t-copula tree's ``nu``, by its root's name (ADR-008 §1). The
+    loader allows ``vary_tail_dependence`` only on a root."""
+    columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
+    if "vary_tail_dependence" not in columns:  # files written before #68
+        return {}
+    return dict(con.execute(
+        "SELECT name, vary_tail_dependence FROM calendar_event "
+        "WHERE vary_tail_dependence IS NOT NULL AND name IS NOT NULL"
+    ).fetchall())
+
+
+def _node_tails(
+    links: dict[str, Link], members: set[str], tails: dict[str, float],
+) -> dict[str, float]:
+    """Each tree member's ``nu``, for the members whose tree's root sets one."""
+    if not tails:
+        return {}
+    roots = {name: tree_root(links, name) for name in members}
+    return {name: tails[root] for name, root in roots.items() if root in tails}
+
+
+def _score_at(name: str, q: float, nu: float | None = None) -> float:
+    """``Phi^-1(q)``, or the t inverse CDF with ``nu`` in a t-copula tree,
+    exact at the ends: q = 0 or 1 (valid quantiles) is an infinite score,
+    so a factor's family reaches its conditional endpoint -- each
+    descendant at its own bound -- rather than just short of it.
     A quantile outside [0, 1] raises, as ``Distribution.quantile`` does for
     a row: a factor has no distribution to reject it later."""
     if not 0.0 <= q <= 1.0:
@@ -282,14 +310,14 @@ def _score_at(name: str, q: float) -> float:
         return -math.inf
     if q == 1.0:
         return math.inf
-    return NormalDist().inv_cdf(q)
+    return score_at(q, nu)
 
 
 def _member_scores(
     links: dict[str, Link], factors: list[str], *, overrides: dict[str, float] | None,
-    seed: int | None, member_index: int,
+    seed: int | None, member_index: int, node_tails: dict[str, float] | None = None,
 ) -> tuple[dict[str, float], set[str]]:
-    """Every tree member's standard normal score on this member (ADR-008 §5),
+    """Every tree member's score on this member (ADR-008 §5),
     and the rows an OAT member moves to a conditional median:
 
     - a random member: each node's noise from its own keyed stream
@@ -302,10 +330,17 @@ def _member_scores(
       the path times the factor's score (ADR-007 §2). Those descendants are
       the second element.
 
+    In a t-copula tree (``node_tails``, ADR-008 §1) a random member's
+    scores are all multiplied by the tree's one scale ``S``, drawn on its own
+    stream (``tail_rng``); an OAT member's overridden node sits at the t
+    quantile instead, and its family follows by the same rho products. Trees
+    without ``nu`` take exactly the Gaussian path.
+
     Every latent factor gets a score, even one nothing depends on yet (an
     unused factor still resolves to its own draw, ADR-008 §4, and is
     recorded). Rows outside every tree get no score and resolve exactly as
     before."""
+    node_tails = node_tails or {}
     members = tree_members(links) | set(factors)
     if not members:
         return {}, set()
@@ -314,7 +349,7 @@ def _member_scores(
         moved: set[str] = set()
         for name, q in (overrides or {}).items():
             if name in scores:
-                scores[name] = _score_at(name, q)
+                scores[name] = _score_at(name, q, node_tails.get(name))
                 if name in factors:
                     family = conditional_scores(links, name, scores[name])
                     scores.update(family)
@@ -330,9 +365,17 @@ def _member_scores(
         scores = resolve_scores(links, noise)
         # An isolated factor (no parent, no dependents) is its own root.
         scores.update({name: noise[name] for name in members if name not in scores})
-        return scores, set()
     except CorrelationError as e:  # the loader rejects these first
         raise EnsembleError(str(e)) from e
+    if node_tails:
+        roots = {tree_root(links, name) for name in node_tails}
+        scale = {
+            root: tail_scale(node_tails[root], tail_rng(seed, member_index, root))
+            for root in sorted(roots)
+        }
+        for name in node_tails:
+            scores[name] *= scale[tree_root(links, name)]
+    return scores, set()
 
 
 def resolve_member(
@@ -377,6 +420,7 @@ def resolve_member(
             "SELECT * FROM calendar_event WHERE vary_distribution IS NOT NULL"
         ).fetchall()
         links, factors = _correlation_links(con)
+        node_tails = _node_tails(links, tree_members(links) | set(factors), _tail_dependence(con))
         if overrides is not None:
             unknown = set(overrides) - {r["name"] for r in rows} - set(factors)
             if unknown:
@@ -385,6 +429,7 @@ def resolve_member(
                 )
         scores, moved = _member_scores(
             links, factors, overrides=overrides, seed=seed, member_index=member_index,
+            node_tails=node_tails,
         )
 
         draws: list[tuple[str, str, str, float | None, str | None, float | None]] = []
@@ -402,6 +447,7 @@ def resolve_member(
             drawn_ordinal, quantile = _resolve_value(
                 row, dist, as_int=True, overrides=overrides, seed=seed, member_index=member_index,
                 score=scores.get(row["name"]), conditional=row["name"] in moved,
+                nu=node_tails.get(row["name"]),
             )
             drawn = date.fromordinal(int(drawn_ordinal))
             con.execute(
@@ -416,6 +462,7 @@ def resolve_member(
             value, quantile = _resolve_value(
                 row, dist, as_int=False, overrides=overrides, seed=seed, member_index=member_index,
                 score=scores.get(row["name"]), conditional=row["name"] in moved,
+                nu=node_tails.get(row["name"]),
             )
             target = round(value)
             if row["kind"] == "one_off_transfer" and target <= 0:
