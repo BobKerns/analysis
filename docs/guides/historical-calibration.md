@@ -541,5 +541,8 @@ uv run scripts/historical_calibration.py [--reference SERIES] [--period NAME=FIR
   date beside it; `--refresh` downloads again. BLS refuses requests without
   a contact email in the User-Agent, so the script sends `--contact`,
   `$HISTORICAL_CALIBRATION_CONTACT` or `git config user.email`.
+- The downloads behind this guide are committed under
+  [`historical_data/`](../../historical_data/README.md);
+  `--cache historical_data` recomputes its tables from them offline.
 - `--runs-above` lists stretches over every year a series has, whatever
   `--period` says.

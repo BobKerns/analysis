@@ -1,3 +1,5 @@
 *.ipynb filter=nbstripout
 *.zpln filter=nbstripout
 *.ipynb diff=ipynb
+historical_data/** -diff linguist-vendored
+historical_data/README.md diff -linguist-vendored
