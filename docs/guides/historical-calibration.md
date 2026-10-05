@@ -506,16 +506,14 @@ Verified and retrieved on 2026-10-05:
 | [Cleveland Fed, inflation expectations](https://www.clevelandfed.org/indicators-and-data/inflation-expectations) | Model expectations of inflation for horizons of 1 to 30 years, back to 1982 | Monthly | `csv:FILE` |
 | [Shiller's long-run data](https://shillerdata.com/) | Monthly stock prices, dividends, earnings, interest rates and CPI, from January 1871 (`ie_data.xls`, an Excel file to save as CSV) | Monthly | `csv:FILE` |
 | [FRED](https://fred.stlouisfed.org/) | Most of the series above under one interface, by FRED id (e.g. `PCEPI`, `CPIAUCSL`); its PCE matches the BEA download | Varies by series | `fred:ID` |
+| [SSA COLA history](https://www.ssa.gov/oact/cola/colaseries.html) | Social Security cost-of-living adjustments, 1975–2025. Since 1984 each is the rise in CPI-W's third-quarter average over the previous year's, rounded to 0.1 and never negative; after a zero COLA the base stays at the last COLA's quarter (so 2011 and 2016 are measured over two years). The site refuses scripted downloads, so save the page from a browser | Annual | `csv:FILE` (reduce to `date,rate`) |
 
-Not verified, because they were unreachable from where this guide was
-written:
+Not verified: the Medicare Part B premium history, which comes from CMS's
+annual premium announcements rather than one table.
 
-- [SSA COLA history](https://www.ssa.gov/oact/cola/colaseries.html), and
-  the Medicare Part B premium history from CMS's annual premium
-  announcements.
-
-Any of these can be fed to the script as a two-column CSV: `date,value` for
-an index level, or `date,rate` for a rate already in percent.
+Any source without its own `SOURCE:` prefix can be fed to the script as a
+two-column CSV: `date,value` for an index level, or `date,rate` for a rate
+already in percent.
 
 ## Running the script
 
