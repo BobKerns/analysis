@@ -23,11 +23,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from scipy.stats import kendalltau
 from scipy.stats import t as student_t
 
 from analysis.sim.connection import RunConnection, year_end_values
-from analysis.sim.correlation import Link, implied_correlation, rho_from_kendall_tau
+from analysis.sim.correlation import Link, implied_correlation, rho_from_kendall_tau, tree_root
 from analysis.sim.distributions import Distribution, Triangular, TruncatedNormal, moments
 from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
 from analysis.sim.registries import format_calendar_amount
@@ -514,9 +513,9 @@ interactions or transitions no per-parameter number captures."""
 _Z95 = 1.959963984540054
 _SPEARMAN_VARIANCE = 1.06
 """Fisher-z variance correction for Spearman's rho: ``1.06 / (n - 3)``."""
-_KENDALL_VARIANCE = 0.437
-"""Fisher-z variance for Kendall's tau: ``0.437 / (n - 4)`` (Fieller,
-Hartley and Pearson, 1957)."""
+_KENDALL_CHUNK = 512
+"""Rows of the pairwise sign matrix ``_kendall_tau`` builds at a time, so a
+large batch's memory stays at ``_KENDALL_CHUNK * n``."""
 
 
 def _member_draws(
@@ -770,9 +769,9 @@ def classify(
     return pd.Series(result, name="status", dtype=object)
 
 
-def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str]]:
-    """A member run file's correlation links (ADR-008) and its modeled
-    (non-factor) varying rows."""
+def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str], set[str]]:
+    """A member run file's correlation links (ADR-008), its modeled
+    (non-factor) varying rows, and the roots of its t-copula trees (#68)."""
     con = sqlite3.connect(run_path)
     try:
         columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
@@ -782,46 +781,85 @@ def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str]]:
                 "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
             )
         }
+        t_roots = set() if "vary_tail_dependence" not in columns else {
+            name for (name,) in con.execute(
+                "SELECT name FROM calendar_event "
+                "WHERE vary_tail_dependence IS NOT NULL AND name IS NOT NULL"
+            )
+        }
         modeled = sorted(name for (name,) in con.execute(
             "SELECT calendar_event_name FROM ensemble_draw WHERE vary_target != ?",
             (FACTOR_TARGET,),
         ))
     finally:
         con.close()
-    return links, modeled
+    return links, modeled, t_roots
 
 
-def _any_dependent(links: dict[str, Link], modeled: list[str]) -> bool:
-    return any(
-        implied_correlation(links, a, b) != 0
-        for i, a in enumerate(modeled) for b in modeled[i + 1:]
-    )
+def _any_dependent(links: dict[str, Link], modeled: list[str], t_roots: set[str]) -> bool:
+    """Whether any two modeled rows are dependent: a nonzero implied
+    correlation, or one t-copula tree (#68), whose shared scale ties even
+    rows at zero implied rho together in their extremes."""
+    def t_tree(name: str) -> str | None:
+        root = tree_root(links, name)
+        return root if root in t_roots else None
+
+    for i, a in enumerate(modeled):
+        for b in modeled[i + 1:]:
+            if implied_correlation(links, a, b) != 0:
+                return True
+            if (root := t_tree(a)) is not None and root == t_tree(b):
+                return True
+    return False
 
 
 def has_correlated_rows(batch_dir: Path) -> bool:
     """Whether any two of a batch's modeled (non-factor) rows are dependent
     (ADR-008): some pair has a nonzero implied correlation through the
     correlation links stored in the batch. A row merely being in a tree isn't
-    enough -- a lone row under a factor, or a zero-rho link, leaves the
-    report's inputs independent. The Monte Carlo report ranks and pins by
+    enough -- a lone row under a factor, or a zero-rho link in a Gaussian
+    tree, leaves the report's inputs independent. Two rows in one t-copula
+    tree (#68) are dependent whatever their rho. The Monte Carlo report ranks and pins by
     marginal rho for independent inputs, and by SRRC when they aren't."""
     connections = load_ensemble(batch_dir)
     try:
-        links, modeled = _links_and_rows(next(iter(connections.values())).run_path)
+        links, modeled, t_roots = _links_and_rows(next(iter(connections.values())).run_path)
     finally:
         for rc in connections.values():
             rc.close()
-    return _any_dependent(links, modeled)
+    return _any_dependent(links, modeled, t_roots)
 
 
-def _kendall_rho_interval(tau: float, n: int) -> tuple[float, float]:
+def _kendall_tau(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Kendall's tau between two untied samples, and its standard error from
+    the samples themselves: tau is the mean of each member's concordance
+    ``c_i`` with the others, and the U-statistic variance is
+    ``4 * var(c) / n``. Unlike a fixed formula (e.g. ``0.437 / (n - 4)``,
+    which assumes a Gaussian copula), this keeps its coverage under the t
+    copula, whose turbulent members make tau noisier (#68)."""
+    n = len(x)
+    concordance = np.empty(n)
+    for start in range(0, n, _KENDALL_CHUNK):
+        stop = min(start + _KENDALL_CHUNK, n)
+        signs = (np.sign(x[start:stop, None] - x[None, :])
+                 * np.sign(y[start:stop, None] - y[None, :]))
+        concordance[start:stop] = signs.sum(axis=1) / (n - 1)  # the diagonal is 0
+    tau = float(concordance.mean())
+    spread = float(((concordance - tau) ** 2).sum() / (n - 1))
+    return tau, float(np.sqrt(4 * spread / n))
+
+
+def _kendall_rho_interval(tau: float, se: float, n: int) -> tuple[float, float]:
     """95% interval on the copula rho a Kendall ``tau`` estimates: a Fisher-z
-    interval on tau (``0.437 / (n - 4)``), mapped through
-    ``rho_from_kendall_tau``, which is increasing, so the bounds map too."""
-    if n <= 4 or pd.isna(tau):
+    interval on tau, with ``se`` carried through the transform, mapped
+    through ``rho_from_kendall_tau``, which is increasing, so the bounds map
+    too. Simulated coverage is about 95% for the Gaussian copula and for t
+    down to nu = 3, from 40 members up."""
+    if n <= 3 or pd.isna(tau):
         return (float("nan"), float("nan"))
-    z = np.arctanh(np.clip(tau, -0.999999, 0.999999))
-    half = _Z95 * np.sqrt(_KENDALL_VARIANCE / (n - 4))
+    clipped = float(np.clip(tau, -0.999999, 0.999999))
+    z = np.arctanh(clipped)
+    half = _Z95 * se / (1 - clipped * clipped)
     low, high = min(float(np.tanh(z - half)), tau), max(float(np.tanh(z + half)), tau)
     return (rho_from_kendall_tau(low), rho_from_kendall_tau(high))
 
@@ -850,9 +888,10 @@ def score_correlations(
                 continue
             pair = scores[[a, b]].dropna()
             n = len(pair)
-            tau = float(kendalltau(pair[a], pair[b]).statistic) if n > 1 else float("nan")
+            tau, se = (_kendall_tau(pair[a].to_numpy(), pair[b].to_numpy()) if n > 1
+                       else (float("nan"), float("nan")))
             achieved = rho_from_kendall_tau(tau) if not pd.isna(tau) else float("nan")
-            low, high = _kendall_rho_interval(tau, n)
+            low, high = _kendall_rho_interval(tau, se, n)
             direct = (a in links and links[a].parent == b) or (b in links and links[b].parent == a)
             records.append({
                 "a": a, "b": b, "kind": "link" if direct else "implied", "expected": expected,
@@ -895,7 +934,7 @@ def mc_report(
         if draws.empty:
             raise EnsembleError(f"{batch_dir}: no drawn members (member 0 is never a draw)")
         outcomes = outcomes_frame(connections, list(draws.index), measure=measure, dollars=dollars)
-        links, modeled = _links_and_rows(next(iter(connections.values())).run_path)
+        links, modeled, t_roots = _links_and_rows(next(iter(connections.values())).run_path)
     finally:
         for rc in connections.values():
             rc.close()
@@ -907,7 +946,7 @@ def mc_report(
     )
     table = correlation_table(draws, outcomes, scores[reaching] if reaching else None)
     nodes = [*modeled, *reaching]
-    return McReport(table, score_correlations(scores, links, nodes), _any_dependent(links, modeled))
+    return McReport(table, score_correlations(scores, links, nodes), _any_dependent(links, modeled, t_roots))
 
 
 def mc_correlation(

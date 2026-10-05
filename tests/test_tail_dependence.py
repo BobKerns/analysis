@@ -312,3 +312,42 @@ def test_guide_asks_a_root_factor_for_nu(test_data_dir: Path) -> None:
     rows = pd.read_csv(test_data_dir / "scenarios" / "retire_alice" / "calendar.csv",
                        dtype=str, keep_default_na=False).set_index("name")
     assert rows.loc["economy", "vary_tail_dependence"] == "4"
+
+
+@pytest.mark.parametrize("nu", [None, 3.0])
+def test_score_correlation_intervals_keep_their_coverage(nu: float | None) -> None:
+    """Over many correctly generated 150-member batches, the expected rho
+    falls inside the 95% interval about 95% of the time, under the t copula
+    as under the Gaussian: the interval's error comes from the scores, not
+    from a Gaussian-only formula, which covers only about 90% at nu = 3."""
+    import numpy as np
+    from scipy.stats import chi2
+
+    rng = np.random.default_rng(7)
+    links = {"b": Link("a", 0.6)}
+    batches, inside = 400, 0
+    for _ in range(batches):
+        noise = rng.standard_normal((150, 2))
+        a = noise[:, 0]
+        b = 0.6 * a + 0.8 * noise[:, 1]
+        if nu is not None:
+            scale = np.sqrt(nu / chi2.rvs(nu, size=150, random_state=rng))
+            a, b = a * scale, b * scale
+        pairs = sensitivity.score_correlations(pd.DataFrame({"a": a, "b": b}), links, ["a", "b"])
+        inside += not pairs["outside"].iloc[0]
+    assert 0.92 <= inside / batches <= 0.98, inside / batches
+
+
+@pytest.mark.parametrize(("links", "t_roots", "dependent"), [
+    ({"a": Link("f", 0.0), "b": Link("f", 0.0)}, {"f"}, True),   # one t tree, zero rho
+    ({"a": Link("f", 0.0), "b": Link("f", 0.0)}, set(), False),  # the same tree, Gaussian
+    ({"a": Link("f", 0.0), "b": Link("g", 0.0)}, {"f", "g"}, False),  # separate t trees
+    ({"b": Link("a", 0.0)}, {"a"}, True),  # a t root and its zero-rho child
+])
+def test_rows_sharing_a_t_tree_are_dependent(
+    links: dict[str, Link], t_roots: set[str], dependent: bool,
+) -> None:
+    """The shared scale ties a t tree's rows together even at zero implied
+    rho, so the Monte Carlo report must rank them by SRRC; Gaussian zero-rho
+    rows and rows in different trees stay independent."""
+    assert sensitivity._any_dependent(links, ["a", "b"], t_roots) is dependent
