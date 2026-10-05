@@ -291,6 +291,12 @@ sim calendar add set-rate 2027-01-31 housing 3.5 --aux-kind inflation \
   generally, as a percentile: "this is a 90th-percentile year for
   inflation". Each rate under it turns that percentile into its own value,
   from its own range. There's no "core rate is 2–4%" to write anywhere.
+  It can't have a unit, because no unit would mean the same thing for
+  every row under it: a point of fuel inflation isn't the same surprise as
+  a point of medical inflation, and a factor's dependents needn't even be
+  the same kind of value. One factor can drive a rate, a dollar amount and
+  a date at once. The factor feeds a unitless calculation, and each row
+  turns the result back into its own units.
 - **The correlation goes on the child.** `--vary-correlation 0.6` on
   `medical_vary` describes medical's link up to `core_inflation`. A root
   factor carries no correlation, because it has nothing above it.
