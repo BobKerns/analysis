@@ -260,7 +260,13 @@ def load_bls(fetcher: Fetcher, ids: list[str]) -> dict[str, Series]:
             if sid not in rows:
                 raise DataError(f"BLS series {sid} wasn't in any {survey}.data file")
             monthly = {date(y, int(p[1:]), 1): v for y, p, v in rows[sid] if p.startswith("M") and p != "M13"}
-            annual = {date(y, 1, 1): v for y, p, v in rows[sid] if p == "M13"}
+            # M13 is a monthly series' annual average; A01 is an annual-only
+            # series' value.
+            annual = {date(y, 1, 1): v for y, p, v in rows[sid] if p in ("M13", "A01")}
+            if not monthly and not annual:
+                periods = sorted({p for _, p, _ in rows[sid]})
+                raise DataError(f"BLS series {sid} has only {', '.join(periods)} periods; "
+                                "only monthly and annual series are supported")
             result[sid] = Series(
                 label=sid, spec=f"bls:{sid}", kind="index", monthly=bool(monthly),
                 values=_series(monthly or annual), title=titles[sid],

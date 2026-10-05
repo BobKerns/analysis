@@ -137,6 +137,35 @@ def test_load_bls_stops_downloading_once_every_series_is_found(hc, downloads, ca
     assert hc.annual_rates(s).to_dict() == {2025: pytest.approx(3.0)}
 
 
+@pytest.fixture
+def serve_bls_rows(hc, downloads, calibration_cache_dir):
+    """Serve one BLS cu series with the given (year, period, value) rows."""
+    served, _ = downloads
+    base = hc.BLS_BASE + "/cu"
+    served[f"{base}/"] = b'"cu.data.1.AllItems"'
+    served[f"{base}/cu.series"] = b"series_id\tseries_title\nCUUR0000SX\tX\n"
+
+    def serve(rows):
+        served[f"{base}/cu.data.1.AllItems"] = (
+            "series_id\tyear\tperiod\tvalue\tfootnote_codes\n"
+            + "".join(f"CUUR0000SX\t{y}\t{p}\t{v}\t\n" for y, p, v in rows)
+        ).encode()
+        return hc.load_bls(hc.Fetcher(calibration_cache_dir, "x@example.com"), ["CUUR0000SX"])["CUUR0000SX"]
+
+    return serve
+
+
+def test_load_bls_reads_an_annual_only_series(hc, serve_bls_rows):
+    s = serve_bls_rows([(2020, "A01", 100.0), (2021, "A01", 104.0)])
+    assert not s.monthly
+    assert hc.annual_rates(s).to_dict() == {2021: pytest.approx(4.0)}
+
+
+def test_load_bls_refuses_semiannual_series(hc, serve_bls_rows):
+    with pytest.raises(hc.DataError, match="only S01, S02 periods"):
+        serve_bls_rows([(2020, "S01", 100.0), (2020, "S02", 101.0)])
+
+
 def test_load_bls_rejects_unknown_series(hc, downloads, calibration_cache_dir):
     served, _ = downloads
     base = hc.BLS_BASE + "/cu"
