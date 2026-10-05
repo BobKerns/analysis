@@ -628,6 +628,67 @@ the correlations decide which futures its extremes fall in.
   skew on `fuel_vary`: skew makes fuel's own extremes bigger, and ν makes
   them land in the same futures as the other rates'.
 
+## Funds that hold several asset classes
+
+A balanced fund holds stocks and bonds, so its growth depends on both a
+stock rate and a bond rate. A row in a correlation tree has only one
+parent, so don't try to vary the fund's rate directly. Split it by its
+allocation, and each slice follows one rate.
+
+A fund whose symbol has rows in `allocations.csv` grows at the blend of
+its slices' rates, weighted by that file. A 60/40 fund with stocks at 8%
+and bonds at 4% grows at 0.6 × 8% + 0.4 × 4% = 6.4%. Each slice reads a
+rate series in the scenario's `series/` folder:
+
+- **the class's own series**, `rate__stock_us.csv`, `rate__bond.csv` and
+  so on, shared by every fund that holds that class; or
+- **the fund's own slice series**, `rate__<symbol>.<class>.csv`, for a
+  fund that doesn't track its class closely (an active or sector fund).
+
+A fund with its own `rate__<symbol>.csv`, or a lot with its own `series`,
+keeps using that. The blend applies only when every class the fund holds
+has a series; when some do and some don't, `sim check` warns and the fund
+grows at its account's series, as before. A target-date fund's dated
+allocation sets move its blend along its glide path.
+
+With the class series in place, vary them as any other rate, under a
+factor for the market as a whole. Every fund's stock slice then moves with
+`stock_us_vary`, and a balanced fund's link to stocks comes from its
+weights, with no ρ of its own:
+
+```sh
+sim calendar add latent-factor market --scenario fund_recipe \
+  --description "how well markets do generally"
+sim calendar add set-rate 2027-01-31 stock_us 7.0 --scenario fund_recipe \
+  --name stock_us_vary --vary-target amount \
+  --vary-distribution truncated_normal --vary-median 7.0 --vary-sd 2.0 \
+  --vary-correlate-with market --vary-correlation 0.9
+sim calendar add set-rate 2027-01-31 bond 4.0 --scenario fund_recipe \
+  --name bond_vary --vary-target amount \
+  --vary-distribution truncated_normal --vary-median 4.0 --vary-sd 1.0 \
+  --vary-correlate-with market --vary-correlation -0.2
+```
+
+A loosely tracking fund's own slice is a child of its class's row, with its
+own range:
+
+```sh
+sim calendar add set-rate 2027-01-31 ACT.stock_us 7.5 --scenario fund_recipe \
+  --name act_stock_vary --vary-target amount \
+  --vary-distribution truncated_normal --vary-median 7.5 --vary-sd 3.0 \
+  --vary-correlate-with stock_us_vary --vary-correlation 0.95
+```
+
+```mermaid
+flowchart TB
+    market(["market"]) -->|0.9| stock_us["stock_us_vary"]
+    market -->|-0.2| bond["bond_vary"]
+    stock_us -->|0.95| act["act_stock_vary"]
+```
+
+Expense ratios aren't modeled separately: give a fund with a noticeable fee
+its own slice series, a little lower than its class.
+
 ## How many members?
 
 There's no single right answer — it depends on what you're trying to learn

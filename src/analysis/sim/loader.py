@@ -14,7 +14,7 @@ import re
 import socket
 import sqlite3
 import tempfile
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -755,6 +755,7 @@ def load_scenario(
     _derive_opening_balances(model_rows, aux_rows, scenario_row, issues)
     _expand_account_growth(
         accounts, model_rows, scheduled_rows, scenario_row, aux_rows, issues,
+        allocations=allocations, warnings=warnings,
     )
 
     leaves = _leaf_index(accounts, model_rows)
@@ -1265,11 +1266,16 @@ def _expand_account_growth(
     scenario_row: dict[str, str],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     issues: list[str],
+    *,
+    allocations: Iterable[dict[str, str]] = (),
+    warnings: list[str] | None = None,
 ) -> None:
     """Turn each lot's growth series into a ``percent_of_balance`` rule.
 
     A lot's series is its own ``series``, else a rate series named for its
-    ``symbol``, else its account's ``series`` (ADR-005 §5). The income side is
+    ``symbol``, else the blend of its symbol's allocation slices
+    (:func:`_allocation_blend`), else its account's ``series`` (ADR-005 §5).
+    The income side is
     the built-in account for the account's ``tax_character`` (ADR-003 §2.2),
     created here on first use so scenarios never wire it up by hand. Rules are
     named by :func:`growth_rule_name`.
@@ -1277,6 +1283,7 @@ def _expand_account_growth(
     account_names = {row.get("name", "") for row in accounts}
     rule_names = {row.get("name", "") for row in scheduled_rows}
     rate_series = {series for kind, series, *_ in aux_rows if kind == "rate"}
+    weight_sets = _allocation_weight_sets(allocations)
     lots_by_account: dict[str, list[dict[str, str]]] = {}
     for m in model_rows:
         lots_by_account.setdefault(m.get("account_name", ""), []).append(m)
@@ -1285,15 +1292,20 @@ def _expand_account_growth(
         name = row.get("name", "")
         account_series = row.get("series", "")
         character = row.get("tax_character", "")
-        lot_series: list[tuple[str, str]] = []
+        # (lot, series, blend): a blend replaces the series when it is set.
+        lot_series: list[tuple[str, str, AllocationBlend | None]] = []
         for m in lots_by_account.get(name) or [{}]:
             symbol = m.get("symbol") or ""
-            lot_series.append((
-                m.get("lot") or registries.DEFAULT_LOT,
-                m.get("series") or (symbol if symbol in rate_series else "")
-                or account_series,
-            ))
-        if not any(series for _, series in lot_series):
+            lot = m.get("lot") or registries.DEFAULT_LOT
+            series = m.get("series") or (symbol if symbol in rate_series else "")
+            blend = None
+            if not series and symbol in weight_sets:
+                blend = _allocation_blend(
+                    symbol, weight_sets[symbol], rate_series,
+                    f"account_values.csv ({name} / {lot})", warnings,
+                )
+            lot_series.append((lot, series or ("" if blend else account_series), blend))
+        if not any(series or blend for _, series, blend in lot_series):
             if character:
                 issues.append(
                     f"accounts.csv row {i} ({name}): tax_character without series "
@@ -1328,8 +1340,8 @@ def _expand_account_growth(
             model_rows.append({
                 "account_name": counterparty.name, "opening_balance": "0.00",
             })
-        for lot, series in lot_series:
-            if not series:
+        for lot, series, blend in lot_series:
+            if not series and not blend:
                 continue
             rule_name = growth_rule_name(name, lot, rule_names)
             if rule_name in rule_names:
@@ -1347,14 +1359,85 @@ def _expand_account_growth(
                 "cadence": "monthly",
                 "amount_rule_kind": "percent_of_balance",
                 "series": series,
+                "params_json": (
+                    json.dumps({"blend": blend}, separators=(",", ":")) if blend else ""
+                ),
                 "tax_character": counterparty.tax_character,
                 "start": start,
                 "description": (
                     f"Growth on {name}"
                     + (f" / {lot}" if lot != registries.DEFAULT_LOT else "")
-                    + f" ({series})"
+                    + f" ({_describe_blend(blend) if blend else series})"
                 ),
             })
+
+
+type AllocationBlend = list[list[Any]]
+"""A lot's growth blend (#78): ``[[as_of, [[series, weight_micros], ...]], ...]``,
+oldest set first, read by ``engine._amount_percent_of_balance``."""
+
+
+def _allocation_weight_sets(
+    allocations: Iterable[dict[str, str]],
+) -> dict[str, list[tuple[str, dict[str, int]]]]:
+    """Symbol to its allocation sets, oldest first: ``(as_of, {asset_class: weight
+    micros})``. Rows ``_validate_allocations`` rejects are left to its issues."""
+    sets: dict[str, dict[str, dict[str, int]]] = {}
+    for row in allocations:
+        symbol, asset_class = row.get("symbol", ""), row.get("asset_class", "")
+        if not symbol or asset_class not in registries.ASSET_CLASSES:
+            continue
+        try:
+            weight = _percent_to_micros(row.get("weight", ""))
+        except ValueError:
+            continue
+        sets.setdefault(symbol, {}).setdefault(row.get("as_of", ""), {})[asset_class] = weight
+    return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
+
+
+def _allocation_blend(
+    symbol: str,
+    weight_sets: list[tuple[str, dict[str, int]]],
+    rate_series: Collection[str],
+    where: str,
+    warnings: list[str] | None,
+) -> AllocationBlend | None:
+    """The rate blend a lot holding ``symbol`` grows at (#78, ADR-005 §5), or None.
+
+    Each asset class the symbol holds reads the rate series ``<symbol>.<class>``,
+    else the class's own series (``stock_us``, ``bond``, ...). Only when every class
+    resolves is there a blend; when none does the lot falls back to its account's
+    series as before. Some but not all is a warning, and also falls back: a series
+    that happens to share a class's name (a cash account's ``cash`` rate, say)
+    mustn't stop a scenario that never meant to blend from loading.
+    """
+    classes = sorted({c for _, weights in weight_sets for c in weights})
+    slice_series = {
+        c: next((s for s in (f"{symbol}.{c}", c) if s in rate_series), None)
+        for c in classes
+    }
+    missing = [c for c, s in slice_series.items() if s is None]
+    if missing:
+        if len(missing) < len(classes) and warnings is not None:
+            warnings.append(
+                f"{where}: {symbol} has a rate series for "
+                + ", ".join(c for c in classes if c not in missing)
+                + " but not for " + ", ".join(missing)
+                + f" (rate__{missing[0]}.csv or rate__{symbol}.{missing[0]}.csv),"
+                " so it grows at its account's series instead of its allocation's blend"
+            )
+        return None
+    return [
+        [as_of, [[slice_series[c], w] for c, w in sorted(weights.items()) if w]]
+        for as_of, weights in weight_sets
+    ]
+
+
+def _describe_blend(blend: AllocationBlend) -> str:
+    """``60% stock_us + 40% bond``, of the latest set (a glide path notes it has more)."""
+    _, latest = blend[-1]
+    text = " + ".join(f"{w / 10_000:g}% {s}" for s, w in latest)
+    return text + (f", {len(blend)} dated sets" if len(blend) > 1 else "")
 
 
 def _validate_birthdates(rows: list[dict[str, str]], issues: list[str]) -> None:
@@ -2301,6 +2384,13 @@ def _validate_series_references(
     for i, row in enumerate(scheduled_rows, start=2):
         kind = row.get("amount_rule_kind", "")
         series = row.get("series", "")
+        if kind == "percent_of_balance" and not series:
+            # A fund's allocation blend (#78) reads each slice's series; they
+            # were checked to exist when the blend was built.
+            params = _safe_json(row.get("params_json")) or {}
+            for _, slices in params.get("blend") or ():
+                demanded.update(("rate", slice_series) for slice_series, _ in slices)
+            continue
         if not series or kind not in registries.SERIES_RULE_KINDS:
             continue
         if kind == "fixed_amount" and series == "fixed":
