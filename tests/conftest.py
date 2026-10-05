@@ -532,11 +532,17 @@ def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
     """Create a scenario in the private data copy deriving from ``parents``
     (a ``parent_scenario`` value: one name, or colon-separated mix-ins after
     it). It overrides nothing beyond ``files``, a {relative path: text} map
-    written into its folder."""
-    def _derive(name: str, parents: str, files: dict[str, str] | None = None) -> Path:
+    written into its folder, and ``fields``, its own scenario.csv values."""
+    def _derive(
+        name: str, parents: str, files: dict[str, str] | None = None,
+        **fields: str,
+    ) -> Path:
+        unknown = set(fields) - set(SCENARIO_HEADER)
+        assert not unknown, f"unknown scenario.csv columns: {sorted(unknown)}"
         folder = test_scenarios_dir / name
         folder.mkdir()
-        row = {**dict.fromkeys(SCENARIO_HEADER, ""), "name": name, "parent_scenario": parents}
+        row = {**dict.fromkeys(SCENARIO_HEADER, ""), **fields,
+               "name": name, "parent_scenario": parents}
         pd.DataFrame([row], columns=list(SCENARIO_HEADER)).to_csv(
             folder / "scenario.csv", index=False,
         )
