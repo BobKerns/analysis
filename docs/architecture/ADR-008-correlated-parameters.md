@@ -42,6 +42,22 @@ S = sqrt(ν / W),   W ~ χ²(ν)
 value = dist.value_at(t_ν(S · z))
 ```
 
+With `ν` on the root of §2's example tree, one `S` per member multiplies every score in it:
+
+```mermaid
+flowchart TB
+    S{{"S = sqrt(ν / W), one per member"}}
+    economy(["economy<br/>ν = 5"]) -->|0.8| inflation(["inflation"])
+    economy -->|-0.5| stocks["stocks"]
+    inflation -->|0.9| rate_a["rate_a"]
+    inflation -->|0.6| rate_b["rate_b"]
+    S -. "×" .-> economy
+    S -. "×" .-> inflation
+    S -. "×" .-> stocks
+    S -. "×" .-> rate_a
+    S -. "×" .-> rate_b
+```
+
 `t_ν` is the Student-t CDF with `ν` degrees of freedom (`scipy.stats.t`). `S · z` is t-distributed with `ν` degrees of freedom, so `u` is still uniform and **each row's authored distribution is still exact**; only the joint tails thicken. `S` is how turbulent that member's future is: usually near 1, sometimes large, and when it's large every row in the tree is far from center at once. `ν` sets how tightly `S` stays near 1 (statistically, as if a future's volatility were estimated from `ν` independent normal draws). Lower `ν` means more tail dependence; about 3 to 30 is a sensible range, and a blank `ν` is the Gaussian copula.
 
 Because `S` scales the whole tree, the tree's depth and shape don't change it, and ρ keeps its meaning along every link: paths multiply ρ as before (§2), and the tree's one `ν` applies to the resulting implied ρ. The upper (and lower) tail dependence of two rows at implied ρ is `λ = 2·t_{ν+1}(−sqrt((ν+1)(1−ρ)/(1+ρ)))`; the Gaussian copula's is 0:
@@ -65,7 +81,17 @@ Each row (or factor, §3) may name **at most one** parent, with a correlation ρ
 z_child = ρ · z_parent + √(1 − ρ²) · ε_child
 ```
 
-`ε_child` is the child's own standard normal noise. The result is a forest of trees, which:
+`ε_child` is the child's own standard normal noise. For example, a factor `economy` over a sub-factor `inflation` with two rates, and a stock return anti-correlated with the economy (rounded boxes are latent factors, square boxes varying rows, and each arrow carries the child's ρ):
+
+```mermaid
+flowchart TB
+    economy(["economy"]) -->|0.8| inflation(["inflation"])
+    economy -->|-0.5| stocks["stocks"]
+    inflation -->|0.9| rate_a["rate_a"]
+    inflation -->|0.6| rate_b["rate_b"]
+```
+
+`rate_a` and `rate_b` correlate at 0.9 · 0.6 = 0.54, and `rate_a` with `stocks` at 0.9 · 0.8 · −0.5 = −0.36. The result is a forest of trees, which:
 - **can't specify an impossible correlation matrix.** Every tree gives a valid joint distribution, so authors never meet a "not positive semi-definite" error;
 - **multiplies correlations along paths.** Two children of one parent, at ρ₁ and ρ₂, correlate at ρ₁·ρ₂. To make two siblings correlate at 0.6, give each about 0.77;
 - **handles anti-correlation** with negative ρ;

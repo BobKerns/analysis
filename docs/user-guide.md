@@ -100,6 +100,23 @@ is pointed out.
 | **Refill / overflow** | A lot's own rule for keeping its balance in a range. If a payment would drop it below `minimum_balance`, money is drawn from `refill_chain` first. If it goes above `maximum_balance`, the extra is swept into `overflow_chain` at the end of the month. Each lot can have its own setting. |
 | **RMD subject account** | The IRA or 401(k) account a Required Minimum Distribution is calculated from. If that account has more than one lot, you must name the account in `params_json`, and `from_account` must be a chain that lists only that account's lots. |
 
+### Simulation and statistics words used by ensembles
+
+These come up in [Ensembles](guides/ensembles.md); [How the simulator draws
+random futures](guides/simulation-basics.md) explains them from the
+beginning.
+
+| Word | What it means here |
+| --- | --- |
+| **Ensemble** | Many copies (**members**) of one scenario, each with its uncertain inputs drawn differently, run to show the spread of outcomes. The scenario that defines the ranges is the **recipe**. |
+| **Member 0** | The member with every uncertain input at its median: the ensemble's one deterministic base case. |
+| **Seed** | The number a recipe's random draws all start from. The same seed reproduces the same members exactly. |
+| **RNG stream** | The separate random-number sequence each uncertain row gets, keyed by the seed, the member and the row's name. Adding or changing one row never shifts another row's draws, so comparisons between scenarios show the change, not fresh noise. |
+| **Latent factor** | A named shared influence ("core inflation") that rows correlate with, but that isn't itself a value in the model. It has no units: in each future it says only how high or low things run, as a percentile. |
+| **Correlation tree** | Rows and factors linked by `vary_correlate_with`, each with one parent and a correlation ρ to it. The top of a tree is its **root**. |
+| **Copula** | The rule that ties correlated rows' random draws together without changing any one row's own range or shape. The default **Gaussian copula** makes linked rows move together; the **Student-t copula** also makes their extremes coincide. |
+| **Tail dependence (ν)** | How strongly extremes coincide in a tree using the Student-t copula. Set as `vary_tail_dependence` on the tree's root; lower ν means stronger. |
+
 ### General finance/tax words this tool uses
 
 | Word | What it means, and how this tool uses it |

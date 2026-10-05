@@ -9,7 +9,9 @@ distribution, runs all of them, and shows the range (mean, median, standard
 deviation, percentile bands) instead of a single figure.
 
 This is a practical how-to. For the full design and column reference, see
-[ADR-006](../architecture/ADR-006-ensemble-scenarios.md).
+[ADR-006](../architecture/ADR-006-ensemble-scenarios.md). New to Monte
+Carlo simulation? [How the simulator draws random futures](simulation-basics.md)
+explains seeds, per-row random streams and copulas first.
 
 ## Setting one up
 
@@ -198,6 +200,14 @@ sim calendar add set-rate 2027-01-31 cpi 3.0 --aux-kind inflation \
   --vary-correlate-with economy --vary-correlation 0.8
 ```
 
+That makes a two-node tree. Rounded boxes are latent factors, square boxes
+are varying rows, and each arrow carries the ρ written on the child:
+
+```mermaid
+flowchart TB
+    economy(["economy"]) -->|0.8| cpi["cpi_vary"]
+```
+
 A parent is another varying row, or a **latent factor**: a named shared
 influence that isn't itself a modeled value. Factors can depend on other
 factors too. Each row has at most one parent, and the chain of parents
@@ -248,6 +258,12 @@ score is a weighted sum of the dimensions on its path up to the root. Take a
 rate under an `inflation` sub-factor (ρ = 0.9) under an `economy` root
 factor (ρ = 0.8):
 
+```mermaid
+flowchart TB
+    economy(["economy"]) -->|0.8| inflation(["inflation"])
+    inflation -->|0.9| rate["rate"]
+```
+
 ```text
 rate = 0.9 · inflation              + 0.44 · own noise
      = 0.9 · (0.8 · economy + 0.6 · inflation's noise) + 0.44 · own noise
@@ -263,6 +279,18 @@ tree, a **turbulence scale**, which multiplies all the others instead of
 adding to them. In each future it's usually near 1, sometimes large; when
 it's large, every row in the tree is far from center at once. That's a
 1970s-style stretch where every inflation rate runs hot together.
+
+```mermaid
+flowchart TB
+    S{{"turbulence scale:<br/>one draw per future"}}
+    economy(["economy<br/>ν = 5"]) -->|0.8| inflation(["inflation"])
+    inflation -->|0.9| rate["rate"]
+    economy -->|0.6| housing["housing"]
+    S -. "×" .-> economy
+    S -. "×" .-> inflation
+    S -. "×" .-> rate
+    S -. "×" .-> housing
+```
 
 Set it on the tree's **root**, with `--vary-tail-dependence` (the
 `vary_tail_dependence` column), a number called ν:
