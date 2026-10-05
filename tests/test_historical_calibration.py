@@ -5,6 +5,7 @@ from __future__ import annotations
 
 # cspell:ignore CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize
 
+import csv
 import importlib.util
 import io
 import math
@@ -42,18 +43,6 @@ def downloads(hc, monkeypatch):
 
     monkeypatch.setattr(hc.Fetcher, "_download", fake)
     return served, asked
-
-
-@pytest.fixture
-def cache_dir(tmp_path):
-    return tmp_path / "cache"
-
-
-@pytest.fixture
-def rate_csv(tmp_path):
-    path = tmp_path / "premiums.csv"
-    path.write_text("date,rate\n2020-01-01,3.0\n2021-01-01,5.0\n2022-01-01,4.0\n")
-    return path
 
 
 def monthly_index(hc, levels_by_year: dict[int, list[float]], kind="index"):
@@ -128,7 +117,7 @@ def test_bls_data_files_skips_current_and_searches_regional_last(hc):
     ]
 
 
-def test_load_bls_stops_downloading_once_every_series_is_found(hc, downloads, cache_dir):
+def test_load_bls_stops_downloading_once_every_series_is_found(hc, downloads, calibration_cache_dir):
     served, asked = downloads
     base = hc.BLS_BASE + "/cu"
     served[f"{base}/"] = b'"cu.data.1.AllItems" "cu.data.2.Summaries"'
@@ -136,20 +125,20 @@ def test_load_bls_stops_downloading_once_every_series_is_found(hc, downloads, ca
         b"series_id\tarea_code\tseries_title\nCUUR0000SA0\t0000\tAll items\n"
     )
     served[f"{base}/cu.data.1.AllItems"] = BLS_DATA.encode()
-    got = hc.load_bls(hc.Fetcher(cache_dir, "x@example.com"), ["CUUR0000SA0"])
+    got = hc.load_bls(hc.Fetcher(calibration_cache_dir, "x@example.com"), ["CUUR0000SA0"])
     assert f"{base}/cu.data.2.Summaries" not in asked
     s = got["CUUR0000SA0"]
     assert (s.title, s.kind, s.monthly) == ("All items", "index", True)
     assert hc.annual_rates(s).to_dict() == {2025: pytest.approx(3.0)}
 
 
-def test_load_bls_rejects_unknown_series(hc, downloads, cache_dir):
+def test_load_bls_rejects_unknown_series(hc, downloads, calibration_cache_dir):
     served, _ = downloads
     base = hc.BLS_BASE + "/cu"
     served[f"{base}/"] = b""
     served[f"{base}/cu.series"] = b"series_id\tseries_title\nCUUR0000SA0\tAll items\n"
     with pytest.raises(hc.DataError, match="no series CUUR0000XXX"):
-        hc.load_bls(hc.Fetcher(cache_dir, "x@example.com"), ["CUUR0000XXX"])
+        hc.load_bls(hc.Fetcher(calibration_cache_dir, "x@example.com"), ["CUUR0000XXX"])
 
 
 # -------------------------------------------------------------------- BEA
@@ -162,20 +151,20 @@ BEA_REGISTER = (
 BEA_DATA = '%SeriesCode,Period,Value\nA015RC,2024M12,"9,288"\nDPCERG,2024M12,"1,000.0"\nDPCERG,2025M12,"1,025.0"\n'
 
 
-def test_load_bea_reads_a_monthly_level(hc, downloads, cache_dir):
+def test_load_bea_reads_a_monthly_level(hc, downloads, calibration_cache_dir):
     served, _ = downloads
     served[f"{hc.BEA_BASE}/SeriesRegister.txt"] = BEA_REGISTER.encode()
     served[f"{hc.BEA_BASE}/NipaDataM.txt"] = BEA_DATA.encode()
-    (s,) = hc.load_series(hc.Fetcher(cache_dir, "x@example.com"), ["PCE=bea:DPCERG"])
+    (s,) = hc.load_series(hc.Fetcher(calibration_cache_dir, "x@example.com"), ["PCE=bea:DPCERG"])
     assert s.title == "BEA Personal consumption expenditures, Fisher Price Index"
     assert hc.annual_rates(s).to_dict() == {2025: pytest.approx(2.5)}
 
 
-def test_load_bea_refuses_a_percent_change_series(hc, downloads, cache_dir):
+def test_load_bea_refuses_a_percent_change_series(hc, downloads, calibration_cache_dir):
     served, _ = downloads
     served[f"{hc.BEA_BASE}/SeriesRegister.txt"] = BEA_REGISTER.encode()
     with pytest.raises(hc.DataError, match="use its Level series"):
-        hc.load_bea(hc.Fetcher(cache_dir, "x@example.com"), ["DPCERGM"])
+        hc.load_bea(hc.Fetcher(calibration_cache_dir, "x@example.com"), ["DPCERGM"])
 
 
 # ---------------------------------------------------------------- R-CPI-E
@@ -261,28 +250,50 @@ def test_two_column_csv_kind_comes_from_its_header(hc):
     assert kind == "rate"
 
 
-def test_fred_series_load_through_the_cache(hc, downloads, cache_dir):
+def test_fred_series_load_through_the_cache(hc, downloads, calibration_cache_dir):
     served, asked = downloads
     url = hc.FRED_URL.format("PCEPI")
     served[url] = b"observation_date,PCEPI\n" + b"".join(
         f"{y}-12-01,{v}\n".encode() for y, v in [(2023, 100.0), (2024, 102.0)])
-    fetcher = hc.Fetcher(cache_dir, "x@example.com")
+    fetcher = hc.Fetcher(calibration_cache_dir, "x@example.com")
     for _ in range(2):
         (s,) = hc.load_series(fetcher, ["PCE=fred:PCEPI"])
     assert asked == [url]  # second load came from the cache
     assert s.label == "PCE" and not s.monthly
     assert hc.annual_rates(s).to_dict() == {2024: pytest.approx(2.0)}
-    assert (cache_dir / "fred" / "PCEPI.csv.retrieved").exists()
+    assert (calibration_cache_dir / "fred" / "PCEPI.csv.retrieved").exists()
 
 
-def test_csv_rate_series_is_used_as_is(hc, rate_csv, cache_dir):
-    (s,) = hc.load_series(hc.Fetcher(cache_dir, None), [f"Part B=csv:{rate_csv}"])
+def test_csv_rate_series_is_used_as_is(hc, calibration_rate_csv, calibration_cache_dir):
+    (s,) = hc.load_series(hc.Fetcher(calibration_cache_dir, None), [f"Part B=csv:{calibration_rate_csv}"])
     assert hc.annual_rates(s).to_dict() == {2020: 3.0, 2021: 5.0, 2022: 4.0}
 
 
-def test_download_needs_a_contact(hc, cache_dir):
+@pytest.fixture
+def sent_agents(hc, monkeypatch):
+    """Stub urlopen, recording the User-Agent of each request."""
+    agents: dict[str, str] = {}
+
+    def fake_urlopen(request, timeout):
+        agents[request.full_url] = request.get_header("User-agent")
+        return io.BytesIO(b"data")
+
+    monkeypatch.setattr(hc.urllib.request, "urlopen", fake_urlopen)
+    return agents
+
+
+def test_download_from_bls_needs_a_contact(hc, calibration_cache_dir, sent_agents):
     with pytest.raises(hc.DataError, match="no contact email"):
-        hc.Fetcher(cache_dir, None).get("https://example.com/x", "x")
+        hc.Fetcher(calibration_cache_dir, None).get("https://download.bls.gov/x", "x")
+    assert sent_agents == {}
+
+
+def test_only_bls_is_sent_the_contact(hc, calibration_cache_dir, sent_agents):
+    fetcher = hc.Fetcher(calibration_cache_dir, "x@example.com")
+    fetcher.get("https://download.bls.gov/pub/a", "a")
+    fetcher.get("https://apps.bea.gov/b", "b")
+    assert "x@example.com" in sent_agents["https://download.bls.gov/pub/a"]
+    assert "@" not in sent_agents["https://apps.bea.gov/b"]
 
 
 # ------------------------------------------------------------------ rates
@@ -335,6 +346,19 @@ def test_summarize_leaves_correlations_blank_for_short_samples(hc):
     assert short.median == pytest.approx(float(rates.iloc[:-1].median()))
 
 
+def test_persistence_pairs_calendar_years_across_a_gap(hc):
+    # Alternating years have persistence -1; a gap must not pair 2010 with 2012.
+    rates = pd.Series({y: (1.0 if y % 2 else 3.0) for y in [*range(2001, 2011), *range(2012, 2022)]})
+    assert hc.summarize("x", rates, None).persistence == pytest.approx(-1.0)
+
+
+def test_summarize_keeps_compound_rate_when_window_exceeds_the_period(hc):
+    annual = pd.Series({2000: 2.0, 2001: 4.0})
+    s = hc.summarize("x", annual, None, window=5)
+    assert s.n == 0 and s.years == "2000–2001"
+    assert s.compound == pytest.approx(hc.compound_rate(annual))
+
+
 def test_summarize_with_a_window_spreads_rolling_rates_but_compounds_every_year(hc):
     annual = pd.Series({2000 + i: r for i, r in enumerate([1.0, 9.0, 1.0, 9.0, 1.0])})
     s = hc.summarize("x", annual, None, window=2)
@@ -354,15 +378,37 @@ def test_runs_above_finds_consecutive_stretches(hc):
 # ------------------------------------------------------------------- main
 
 
-def test_main_prints_a_table_per_period(hc, rate_csv, cache_dir, capsys):
-    code = hc.main([f"Premium=csv:{rate_csv}", "--period", "Early=2020-2021", "--period", "All=-",
-                    "--cache", str(cache_dir), "--contact", "x@example.com"])
+def test_main_prints_a_table_per_period(hc, calibration_rate_csv, calibration_cache_dir, capsys):
+    code = hc.main([f"Premium=csv:{calibration_rate_csv}", "--period", "Early=2020-2021", "--period", "All=-",
+                    "--cache", str(calibration_cache_dir), "--contact", "x@example.com"])
     out = capsys.readouterr().out
     assert code == 0
     assert "### Early (2020–2021)" in out and "### All (start–latest)" in out
     assert "| Premium | 2020–2021 |   2 |" in out
 
 
-def test_main_reports_source_errors_without_a_traceback(hc, cache_dir, capsys):
-    assert hc.main(["yahoo:SPY", "--cache", str(cache_dir)]) == 1
+def test_series_used_twice_keep_their_own_labels(hc, downloads, calibration_cache_dir):
+    served, _ = downloads
+    served[f"{hc.BEA_BASE}/SeriesRegister.txt"] = BEA_REGISTER.encode()
+    served[f"{hc.BEA_BASE}/NipaDataM.txt"] = BEA_DATA.encode()
+    a, b = hc.load_series(hc.Fetcher(calibration_cache_dir, None), ["PCE=bea:DPCERG", "Ref=bea:DPCERG@rate"])
+    assert (a.label, a.kind, b.label, b.kind) == ("PCE", "index", "Ref", "rate")
+
+
+def test_main_writes_standard_csv(hc, calibration_rate_csv, calibration_cache_dir, capsys):
+    code = hc.main([f'Premium "B", monthly=csv:{calibration_rate_csv}', "--period", "All=-",
+                    "--format", "csv", "--cache", str(calibration_cache_dir)])
+    rows = list(csv.reader(io.StringIO(capsys.readouterr().out)))
+    assert code == 0
+    assert rows[1][:3] == ["All", 'Premium "B", monthly', "2020–2022"]
+
+
+@pytest.mark.parametrize("extra", [["--window", "0"], ["--runs-above", "5", "--format", "csv"]])
+def test_main_rejects_bad_arguments(hc, calibration_rate_csv, extra):
+    with pytest.raises(SystemExit):
+        hc.main([f"csv:{calibration_rate_csv}", *extra])
+
+
+def test_main_reports_source_errors_without_a_traceback(hc, calibration_cache_dir, capsys):
+    assert hc.main(["yahoo:SPY", "--cache", str(calibration_cache_dir)]) == 1
     assert "unknown source" in capsys.readouterr().err

@@ -47,6 +47,8 @@ from __future__ import annotations
 # cspell:ignore CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize
 
 import argparse
+import csv
+import dataclasses
 import html
 import io
 import math
@@ -54,6 +56,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -154,12 +157,15 @@ class Fetcher:
         return places
 
     def _download(self, url: str) -> bytes:
-        if not self.contact:
-            raise DataError(
-                "no contact email for the User-Agent (BLS refuses requests without one): "
-                "pass --contact, set $HISTORICAL_CALIBRATION_CONTACT, or set git's user.email"
-            )
-        agent = f"analysis historical_calibration (contact: {self.contact})"
+        agent = "analysis historical_calibration"
+        # Only BLS needs the contact address, so no other host is sent it.
+        if (urllib.parse.urlparse(url).hostname or "").endswith("bls.gov"):
+            if not self.contact:
+                raise DataError(
+                    "no contact email for the User-Agent (BLS refuses requests without one): "
+                    "pass --contact, set $HISTORICAL_CALIBRATION_CONTACT, or set git's user.email"
+                )
+            agent += f" (contact: {self.contact})"
         request = urllib.request.Request(url, headers={"User-Agent": agent})
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
@@ -469,9 +475,9 @@ def load_series(fetcher: Fetcher, args: list[str]) -> list[Series]:
             s = load_csv_like(f"fred:{ident}", fetcher.get(url, f"fred/{ident}.csv").decode(), ident, f"FRED {ident}")
         else:
             s = load_csv_like(f"csv:{ident}", Path(ident).read_text(), Path(ident).stem, ident)
-        s.label = label
-        s.kind = kind or s.kind
-        out.append(s)
+        # A copy, since a BLS or BEA series used twice (say, also as the
+        # reference) is one shared object.
+        out.append(dataclasses.replace(s, label=label, kind=kind or s.kind))
     return out
 
 
@@ -582,8 +588,14 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
         ref_values = rolling_compound(reference, window) if window > 1 else reference
     n = len(values)
     sd = float(values.std(ddof=1)) if n > 1 else math.nan
-    persistence = (float(values.autocorr(1))
-                   if window == 1 and n >= MIN_YEARS_FOR_CORRELATION else math.nan)
+    persistence = math.nan
+    if window == 1:
+        # Pair each year with the calendar year before it, so a gap in the
+        # data isn't counted as one year's persistence.
+        prior = pd.Series(values.to_numpy(), index=values.index + 1)
+        pairs = pd.concat([values, prior], axis=1, join="inner").dropna()
+        if len(pairs) >= MIN_YEARS_FOR_CORRELATION:
+            persistence = float(pairs.iloc[:, 0].corr(pairs.iloc[:, 1]))
     rho_tau = pearson = gap = math.nan
     if ref_values is not None:
         both = pd.concat([values, ref_values], axis=1, join="inner").dropna()
@@ -595,8 +607,10 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
         common = pd.concat([annual, reference], axis=1, join="inner").dropna()
         if len(common):
             gap = compound_rate(common.iloc[:, 0]) - compound_rate(common.iloc[:, 1])
-    years = f"{annual.index.min()}–{annual.index.max()}" if n else "—"
-    return Summary(label, years, n, compound_rate(annual) if n else math.nan,
+    # The year span and compound rate cover every year, even when a window
+    # longer than the period leaves no rolling values.
+    years = f"{annual.index.min()}–{annual.index.max()}" if len(annual) else "—"
+    return Summary(label, years, n, compound_rate(annual),
                    float(values.median()) if n else math.nan, sd,
                    float(values.min()) if n else math.nan, float(values.max()) if n else math.nan,
                    persistence, rho_tau, pearson, gap)
@@ -659,6 +673,13 @@ def parse_period(arg: str) -> tuple[str, int | None, int | None]:
     return name.strip(), first, last
 
 
+def _positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive number of years, not {value}")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -670,7 +691,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--period", action="append", default=[], metavar="NAME=FIRST-LAST",
                         help="a period to summarize, by the years the annual rates end in; "
                         "repeatable (default: the doc's episodes and the full history)")
-    parser.add_argument("--window", type=int, default=1,
+    parser.add_argument("--window", type=_positive_int, default=1,
                         help="summarize rolling N-year compound rates instead of single years")
     parser.add_argument("--basis", choices=["dec", "average"], default="dec",
                         help="annual rate of a monthly level: December over December (default) "
@@ -683,6 +704,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--contact", default=default_contact(),
                         help="email for the User-Agent (BLS requires one)")
     args = parser.parse_args(argv)
+    if args.runs_above is not None and args.format == "csv":
+        parser.error("--runs-above prints a Markdown table; it can't be combined with --format csv")
 
     try:
         periods = [parse_period(p) for p in args.period] or [(k, *v) for k, v in DEFAULT_PERIODS.items()]
@@ -710,10 +733,10 @@ def main(argv: list[str] | None = None) -> int:
         print(markdown_table(SUMMARY_COLUMNS, [summary_cells(s) for s in summaries]))
         print()
     if args.format == "csv":
-        print(",".join(["Period", *SUMMARY_COLUMNS]))
-        for row in csv_rows:
-            print(",".join(f'"{c}"' if "," in c else c for c in row))
-    if args.runs_above is not None and args.format == "markdown":
+        writer = csv.writer(sys.stdout, lineterminator="\n")
+        writer.writerow(["Period", *SUMMARY_COLUMNS])
+        writer.writerows(csv_rows)
+    if args.runs_above is not None:
         print(f"### Years above {args.runs_above:g}%\n")
         rows = [[s.label, f"{a}–{b}" if a != b else str(a), str(b - a + 1), _fmt(rate)]
                 for s in series for a, b, rate in runs_above(annual_rates(s, args.basis), args.runs_above)]

@@ -171,8 +171,8 @@ legally tied to.
   weights rest on a small sample and that it prices the same outlets and
   items as CPI-U, so treat conclusions from it as tentative.
 - **C-CPI-U (chained CPI):** accounts for substitution between items, from
-  December 1999. It has indexed federal tax brackets since 2017, so it's
-  what bracket thresholds grow with.
+  December 1999. It has indexed federal tax brackets since tax year 2018,
+  so it's what bracket thresholds grow with.
 - **PCE price index:** BEA's measure, with broader coverage than CPI,
   including spending made on households' behalf, such as by employers and
   Medicare. From 1959; core PCE excludes food and energy.
