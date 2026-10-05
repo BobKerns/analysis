@@ -309,9 +309,10 @@ flowchart TB
 - **The correlation goes on the child.** `--vary-correlation 0.6` on
   `medical_vary` describes medical's link up to `core_inflation`. A root
   factor carries no correlation, because it has nothing above it.
-- **A rate's range is its total range.** `medical_vary`'s 5% ± 1.5% is
-  where medical inflation lands over all futures, including the part the
-  factor drives. It isn't extra spread added on top of a factor value. A
+- **A rate's range is its total range.** `medical_vary`'s distribution
+  (median 5%, SD 1.5%, so 0.5% to 9.5% at its default bounds) is where
+  medical inflation lands over all futures, including the part the factor
+  drives. It isn't extra spread added on top of a factor value. A
   correlated draw never leaves the range, so a stronger link doesn't widen
   anything; it only makes medical land high in the same futures where the
   other rates do.
