@@ -880,14 +880,14 @@ def inflation_batch(
 @pytest.fixture(scope="function")
 def calibration_cache_dir(tmp_path: Path) -> Path:
     """A private, initially empty download cache for
-    ``scripts/historical_calibration.py``."""
+    ``analysis historical``."""
     return tmp_path / "calibration_cache"
 
 
 @pytest.fixture(scope="function")
 def calibration_rate_csv(tmp_path: Path) -> Path:
     """A ``date,rate`` CSV of three annual rates (3%, 5%, 4% for 2020-2022),
-    the script's input format for a series already in percent."""
+    ``analysis historical``'s input format for a series already in percent."""
     path = tmp_path / "premiums.csv"
     path.write_text("date,rate\n2020-01-01,3.0\n2021-01-01,5.0\n2022-01-01,4.0\n")
     return path

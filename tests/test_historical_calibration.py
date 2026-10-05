@@ -1,4 +1,4 @@
-"""scripts/historical_calibration.py: parsing each source and the statistics,
+"""analysis.historical (``analysis historical``): parsing each source and the statistics,
 all offline (downloads are stubbed)."""
 
 from __future__ import annotations
@@ -6,27 +6,27 @@ from __future__ import annotations
 # cspell:ignore CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize
 
 import csv
-import importlib.util
 import io
 import math
-import sys
+import ssl
+import urllib.error
 import zipfile
-from pathlib import Path
 
 import pandas as pd
 import pytest
+import truststore
+from click.testing import CliRunner
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "historical_calibration.py"
+import analysis.historical.calibration as calibration
+from analysis.historical.cli import historical_command
 
-
-@pytest.fixture(scope="module")
+@pytest.fixture
 def hc():
-    spec = importlib.util.spec_from_file_location("historical_calibration", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module  # dataclasses look their module up here
-    spec.loader.exec_module(module)
-    yield module
-    del sys.modules[spec.name]
+    return calibration
+
+
+def invoke(*args: str):
+    return CliRunner().invoke(historical_command, list(args))
 
 
 @pytest.fixture
@@ -305,11 +305,12 @@ def test_csv_rate_series_is_used_as_is(hc, calibration_rate_csv, calibration_cac
 
 @pytest.fixture
 def sent_agents(hc, monkeypatch):
-    """Stub urlopen, recording the User-Agent of each request."""
+    """Stub urlopen, recording the User-Agent and SSL context of each request."""
     agents: dict[str, str] = {}
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, timeout, context):
         agents[request.full_url] = request.get_header("User-agent")
+        agents.setdefault("contexts", []).append(context)
         return io.BytesIO(b"data")
 
     monkeypatch.setattr(hc.urllib.request, "urlopen", fake_urlopen)
@@ -370,6 +371,23 @@ def test_only_bls_is_sent_a_custom_agent(hc, calibration_cache_dir, sent_agents)
     fetcher.get("https://fred.stlouisfed.org/b", "b")
     assert "x@example.com" in sent_agents["https://download.bls.gov/pub/a"]
     assert sent_agents["https://fred.stlouisfed.org/b"] is None  # urllib's default
+
+
+def test_downloads_verify_against_the_system_trust_store(hc, calibration_cache_dir, sent_agents):
+    hc.Fetcher(calibration_cache_dir, None).get("https://fred.stlouisfed.org/b", "b")
+    assert isinstance(sent_agents["contexts"][0], truststore.SSLContext)
+
+
+def test_an_untrusted_certificate_says_why(hc, calibration_cache_dir, monkeypatch):
+    error = ssl.SSLCertVerificationError("certificate verify failed")
+    error.verify_code = 20
+
+    def fake_urlopen(request, timeout, context):
+        raise urllib.error.URLError(error)
+
+    monkeypatch.setattr(hc.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(hc.DataError, match="couldn't verify the HTTPS certificate"):
+        hc.Fetcher(calibration_cache_dir, None).get("https://fred.stlouisfed.org/b", "b")
 
 
 # ------------------------------------------------------------------ rates
@@ -454,11 +472,11 @@ def test_runs_above_finds_consecutive_stretches(hc):
 # ------------------------------------------------------------------- main
 
 
-def test_main_prints_a_table_per_period(hc, calibration_rate_csv, calibration_cache_dir, capsys):
-    code = hc.main([f"Premium=csv:{calibration_rate_csv}", "--period", "Early=2020-2021", "--period", "All=-",
-                    "--cache", str(calibration_cache_dir), "--contact", "x@example.com"])
-    out = capsys.readouterr().out
-    assert code == 0
+def test_main_prints_a_table_per_period(calibration_rate_csv, calibration_cache_dir):
+    result = invoke(f"Premium=csv:{calibration_rate_csv}", "--period", "Early=2020-2021", "--period", "All=-",
+                    "--cache", str(calibration_cache_dir), "--contact", "x@example.com")
+    out = result.stdout
+    assert result.exit_code == 0, result.output
     assert "### Early (2020–2021)" in out and "### All (start–latest)" in out
     assert "| Premium | 2020–2021 |   2 |" in out
 
@@ -471,20 +489,25 @@ def test_series_used_twice_keep_their_own_labels(hc, downloads, calibration_cach
     assert (a.label, a.kind, b.label, b.kind) == ("PCE", "index", "Ref", "rate")
 
 
-def test_main_writes_standard_csv(hc, calibration_rate_csv, calibration_cache_dir, capsys):
-    code = hc.main([f'Premium "B", monthly=csv:{calibration_rate_csv}', "--period", "All=-",
-                    "--format", "csv", "--cache", str(calibration_cache_dir)])
-    rows = list(csv.reader(io.StringIO(capsys.readouterr().out)))
-    assert code == 0
+def test_main_writes_standard_csv(calibration_rate_csv, calibration_cache_dir):
+    result = invoke(f'Premium "B", monthly=csv:{calibration_rate_csv}', "--period", "All=-",
+                    "--format", "csv", "--cache", str(calibration_cache_dir))
+    rows = list(csv.reader(io.StringIO(result.stdout)))
+    assert result.exit_code == 0, result.output
     assert rows[1][:3] == ["All", 'Premium "B", monthly', "2020–2022"]
 
 
 @pytest.mark.parametrize("extra", [["--window", "0"], ["--runs-above", "5", "--format", "csv"]])
-def test_main_rejects_bad_arguments(hc, calibration_rate_csv, extra):
-    with pytest.raises(SystemExit):
-        hc.main([f"csv:{calibration_rate_csv}", *extra])
+def test_main_rejects_bad_arguments(calibration_rate_csv, extra):
+    assert invoke(f"csv:{calibration_rate_csv}", *extra).exit_code == 2
 
 
-def test_main_reports_source_errors_without_a_traceback(hc, calibration_cache_dir, capsys):
-    assert hc.main(["yahoo:SPY", "--cache", str(calibration_cache_dir)]) == 1
-    assert "unknown source" in capsys.readouterr().err
+def test_main_reports_source_errors_without_a_traceback(calibration_cache_dir):
+    result = invoke("yahoo:SPY", "--cache", str(calibration_cache_dir))
+    assert result.exit_code == 1
+    assert "unknown source" in result.stderr
+
+
+def test_historical_is_an_analysis_subcommand():
+    from analysis.cli import main
+    assert main.get_command(None, "historical") is historical_command

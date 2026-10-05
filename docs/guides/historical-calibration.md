@@ -7,9 +7,9 @@ correlation and tail dependence work. This guide is about the numbers:
 what history says a rate's median, spread and correlation should be, and
 where to get the data to check or redo it.
 
-All of it comes from public statistics, through
-[`scripts/historical_calibration.py`](../../scripts/historical_calibration.py),
-which downloads the series and computes every table below. The command
+All of it comes from public statistics, through `analysis historical`
+([source](../../src/analysis/historical/calibration.py)), which downloads
+the series and computes every table below. The command
 that produced each table is printed under it, so you can run the same thing
 on other series or years.
 
@@ -108,7 +108,7 @@ stretch since 1914 of consecutive years above 5%:
 | Shelter | 2022–2023 |      2 |        6.8 |
 
 ```sh
-uv run scripts/historical_calibration.py --period "Postwar=1948-" --runs-above 5 \
+uv run analysis historical --period "Postwar=1948-" --runs-above 5 \
   CPI-U=CUUR0000SA0 Core=CUUR0000SA0L1E Medical=CUUR0000SAM Shelter=CUUR0000SAH1
 ```
 
@@ -214,7 +214,7 @@ Against CPI-U, since R-CPI-E began and since C-CPI-U began:
 | R-CPI-E-medical     | 2000–2025 |  26 |        3.2 |      3.3 | 1.1 |   1.2 |   5.0 |        0.27 |       0.35 |    0.15 |       0.63 |
 
 ```sh
-uv run scripts/historical_calibration.py --reference CPI-U=CUUR0000SA0 \
+uv run analysis historical --reference CPI-U=CUUR0000SA0 \
   --period "Since 1983=1983-" --period "Since 2000=2000-" \
   CPI-U=CUUR0000SA0 CPI-W=CWUR0000SA0 "R-CPI-E=rcpie:All items" \
   C-CPI-U=SUUR0000SA0 PCE=bea:DPCERG Core=CUUR0000SA0L1E Core-PCE=bea:DPCCRG \
@@ -315,7 +315,7 @@ for a core-inflation factor.
 | Stocks           | 1948–2025 |  69 |       11.6 |     11.9 | 5.1 |  -1.4 |  20.1 |           — |       0.21 |    0.08 |       7.31 |
 
 ```sh
-uv run scripts/historical_calibration.py --reference Core=CUUR0000SA0L1E \
+uv run analysis historical --reference Core=CUUR0000SA0L1E \
   --period "Since 1984=1984-" --period "Postwar=1948-" \
   CPI-U=CUUR0000SA0 Core=CUUR0000SA0L1E Food=CUUR0000SAF1 Energy=CUUR0000SA0E \
   Shelter=CUUR0000SAH1 Medical=CUUR0000SAM Medical-services=CUUR0000SAM2 \
@@ -464,18 +464,18 @@ and ranges as the levels an episode row runs at.
 At the level of these broad categories the tariff years were unremarkable:
 CPI-U was 2.1% a year in 2018–2019 and 2.7% in 2025. Tariffs land on
 particular imported goods, which these aggregates average away, and 2025 is
-a single year. For a supply-shock row, run the script on the specific BLS
+a single year. For a supply-shock row, run `analysis historical` on the specific BLS
 series that match the goods a plan buys.
 
 ```sh
-uv run scripts/historical_calibration.py --reference Core=CUUR0000SA0L1E \
+uv run analysis historical --reference Core=CUUR0000SA0L1E \
   CPI-U=CUUR0000SA0 Core=CUUR0000SA0L1E Food=CUUR0000SAF1 Energy=CUUR0000SA0E \
   Shelter=CUUR0000SAH1 Medical=CUUR0000SAM Medical-services=CUUR0000SAM2 \
   Apparel=CUUR0000SAA Tuition=CUUR0000SEEB \
   T-bill=damodaran:tbill T-bond=damodaran:tbond Stocks=damodaran:sp500
 ```
 
-With no `--period`, the script prints the episodes above and the full
+With no `--period`, `analysis historical` prints the episodes above and the full
 history.
 
 ## Where history is a weak guide
@@ -520,14 +520,14 @@ Verified and retrieved on 2026-10-05:
 | [SSA COLA history](https://www.ssa.gov/oact/cola/colaseries.html) | Social Security cost-of-living adjustments, 1975–2025. Since 1984 each is the rise in CPI-W's third-quarter average over the previous year's, rounded to 0.1 and never negative; after a zero COLA the base stays at the last COLA's quarter (so 2011 and 2016 are measured over two years). The site refuses scripted downloads, so save the page from a browser | Annual | `csv:FILE` (reduce to `date,rate`) |
 | [Medicare Trustees Report, Table III.C2](https://www.cms.gov/oact/tr/2025) and the [2026 premium fact sheet](https://www.cms.gov/newsroom/fact-sheets/2026-medicare-parts-b-premiums-deductibles) | Standard Part B monthly premium, 1966–2025 (every year from 1990), and $202.90 for 2026. Hold-harmless years (2010, 2011, 2016, 2017) left most enrollees paying less than the standard premium | Annual | `csv:FILE` (`date,value`) |
 
-Any source without its own `SOURCE:` prefix can be fed to the script as a
+Any source without its own `SOURCE:` prefix can be read as a
 two-column CSV: `date,value` for an index level, or `date,rate` for a rate
 already in percent.
 
-## Running the script
+## Running `analysis historical`
 
 ```sh
-uv run scripts/historical_calibration.py [--reference SERIES] [--period NAME=FIRST-LAST ...] \
+uv run analysis historical [--reference SERIES] [--period NAME=FIRST-LAST ...] \
   [--window N] [--basis dec|average] [--runs-above PCT] [--format markdown|csv] \
   SERIES ...
 ```
@@ -536,13 +536,16 @@ uv run scripts/historical_calibration.py [--reference SERIES] [--period NAME=FIR
   `damodaran`, `fred` and `csv`; a bare id is a BLS series. Add `@rate` or
   `@index` to override whether values are rates or levels.
 - A period's years may be open-ended (`Recent=2021-`). Without `--period`
-  the script uses the episodes in this guide and the full history.
-- Downloads are cached under `out/historical/`, with each file's retrieval
-  date beside it; `--refresh` downloads again. BLS refuses requests without
-  a contact email in the User-Agent, so the script sends `--contact`,
+  it uses the episodes in this guide and the full history.
+- Downloads are cached under the repository's
+  [`historical_data/`](../../historical_data/README.md), which holds the
+  committed downloads behind this guide, so its tables recompute offline.
+  Each file's retrieval date is beside it; `--refresh` downloads again, and
+  `--cache DIR` uses another directory. BLS refuses requests without a
+  contact email in the User-Agent, so it sends `--contact`,
   `$HISTORICAL_CALIBRATION_CONTACT` or `git config user.email`.
-- The downloads behind this guide are committed under
-  [`historical_data/`](../../historical_data/README.md);
-  `--cache historical_data` recomputes its tables from them offline.
+- HTTPS certificates are checked against the operating system's trust
+  store, as `sim prices fetch` does, so a corporate or proxy root CA installed
+  there is trusted.
 - `--runs-above` lists stretches over every year a series has, whatever
   `--period` says.

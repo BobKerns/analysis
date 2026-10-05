@@ -1,0 +1,51 @@
+"""``analysis historical``: summarize public price and return series for
+calibrating an ensemble's varying rates."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import click
+
+from analysis.historical.calibration import DEFAULT_CACHE, DataError, default_contact, run
+
+
+@click.command(name="historical", epilog=(
+    "Series sources: bls:ID (or a bare BLS id), bea:CODE, rcpie:COLUMN, damodaran:COLUMN, "
+    "fred:ID, csv:PATH; see docs/guides/historical-calibration.md."))
+@click.argument("series", nargs=-1, required=True)
+@click.option("--reference", help="Series to correlate with and measure the gap against (default: none).")
+@click.option("--period", "periods", multiple=True, metavar="NAME=FIRST-LAST",
+              help="A period to summarize, by the years the annual rates end in; repeatable "
+                   "(default: the guide's episodes and the full history).")
+@click.option("--window", type=click.IntRange(min=1), default=1, show_default=True,
+              help="Summarize rolling N-year compound rates instead of single years.")
+@click.option("--basis", type=click.Choice(["dec", "average"]), default="dec", show_default=True,
+              help="Annual rate of a monthly level: December over December, "
+                   "or annual average over annual average.")
+@click.option("--runs-above", type=float, metavar="PCT",
+              help="Also list stretches of consecutive years above PCT percent.")
+@click.option("--format", "fmt", type=click.Choice(["markdown", "csv"]), default="markdown",
+              show_default=True)
+@click.option("--cache", type=click.Path(file_okay=False, path_type=Path), default=DEFAULT_CACHE,
+              show_default=True, help="Download cache; the repository's committed copies by default.")
+@click.option("--refresh", is_flag=True, help="Download again even if cached.")
+@click.option("--contact", default=default_contact, show_default="git config user.email",
+              help="Email for the User-Agent (BLS requires one); "
+                   "$HISTORICAL_CALIBRATION_CONTACT overrides git's.")
+def historical_command(series: tuple[str, ...], reference: str | None, periods: tuple[str, ...],
+                       window: int, basis: str, runs_above: float | None, fmt: str, cache: Path,
+                       refresh: bool, contact: str | None) -> None:
+    """Summarize public price and return series for calibrating rates.
+
+    SERIES are [LABEL=]SOURCE:ID[@rate|@index]. For each one and each period
+    this prints the compound mean rate, median, SD, range, persistence, and the
+    correlation and gap against --reference.
+    """
+    if runs_above is not None and fmt == "csv":
+        raise click.UsageError("--runs-above prints a Markdown table; it can't be combined with --format csv")
+    try:
+        run(series, reference_arg=reference, period_args=periods, window=window, basis=basis,
+            runs_above_pct=runs_above, fmt=fmt, cache=cache, refresh=refresh, contact=contact)
+    except DataError as exc:
+        raise click.ClickException(str(exc)) from exc

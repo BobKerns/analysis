@@ -5,16 +5,13 @@
 The public data behind
 [the historical calibration guide](../docs/guides/historical-calibration.md),
 as retrieved on 2026-10-05. Each file has a `.retrieved` stamp beside it
-giving its retrieval date. The layout is the cache of
-`scripts/historical_calibration.py`, so the guide's tables can be recomputed
-from these files without downloading anything:
+giving its retrieval date. This is the default download cache of
+`analysis historical`, so the guide's tables are recomputed from these files
+without downloading anything, and a series not here yet is downloaded into
+it.
 
-```sh
-uv run scripts/historical_calibration.py --cache historical_data ...
-```
-
-Running with `--cache historical_data --refresh` downloads every file it
-uses again and overwrites the copy here; commit the result to record the
+Running with `--refresh` downloads every file it uses again and overwrites
+the copy here; commit the result to record the
 new vintage. The files are kept as published, tabs and all, apart from the
 two CSVs noted below.
 
