@@ -98,6 +98,18 @@ def test_an_uncovered_fund_keeps_its_account_series_quietly(
 
 
 @pytest.mark.usefixtures("blended_fund")
+def test_a_zero_weight_class_needs_no_series(
+    test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
+) -> None:
+    with (test_data_dir / "allocations.csv").open("a") as f:
+        f.write("FND,,cash,0\n")
+    result = load_test_copy()
+    _, params, _ = _growth_rule(result.intent_path)
+    assert params["blend"] == [["", [["bond", 400_000], ["stock_us", 600_000]]]]
+    assert not result.warnings
+
+
+@pytest.mark.usefixtures("blended_fund")
 def test_a_set_rate_on_a_slice_series_moves_the_fund(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     runs_dir: Path,

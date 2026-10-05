@@ -1411,7 +1411,8 @@ def _allocation_blend(
     that happens to share a class's name (a cash account's ``cash`` rate, say)
     mustn't stop a scenario that never meant to blend from loading.
     """
-    classes = sorted({c for _, weights in weight_sets for c in weights})
+    # A class at 0% in every set is never read, so it needs no series.
+    classes = sorted({c for _, weights in weight_sets for c, w in weights.items() if w})
     slice_series = {
         c: next((s for s in (f"{symbol}.{c}", c) if s in rate_series), None)
         for c in classes
