@@ -26,7 +26,7 @@ import pandas as pd
 from scipy.stats import t as student_t
 
 from analysis.sim.connection import RunConnection, year_end_values
-from analysis.sim.correlation import Link, implied_correlation
+from analysis.sim.correlation import Link, implied_correlation, rho_from_kendall_tau, tree_root
 from analysis.sim.distributions import Distribution, Triangular, TruncatedNormal, moments
 from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
 from analysis.sim.registries import format_calendar_amount
@@ -766,9 +766,9 @@ def classify(
     return pd.Series(result, name="status", dtype=object)
 
 
-def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str]]:
-    """A member run file's correlation links (ADR-008) and its modeled
-    (non-factor) varying rows."""
+def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str], set[str]]:
+    """A member run file's correlation links (ADR-008), its modeled
+    (non-factor) varying rows, and the roots of its t-copula trees (#68)."""
     con = sqlite3.connect(run_path)
     try:
         columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
@@ -778,49 +778,121 @@ def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str]]:
                 "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
             )
         }
+        t_roots = set() if "vary_tail_dependence" not in columns else {
+            name for (name,) in con.execute(
+                "SELECT name FROM calendar_event "
+                "WHERE vary_tail_dependence IS NOT NULL AND name IS NOT NULL"
+            )
+        }
         modeled = sorted(name for (name,) in con.execute(
             "SELECT calendar_event_name FROM ensemble_draw WHERE vary_target != ?",
             (FACTOR_TARGET,),
         ))
     finally:
         con.close()
-    return links, modeled
+    return links, modeled, t_roots
 
 
-def _any_dependent(links: dict[str, Link], modeled: list[str]) -> bool:
-    return any(
-        implied_correlation(links, a, b) != 0
-        for i, a in enumerate(modeled) for b in modeled[i + 1:]
-    )
+def _any_dependent(links: dict[str, Link], modeled: list[str], t_roots: set[str]) -> bool:
+    """Whether any two modeled rows are dependent: a nonzero implied
+    correlation, or one t-copula tree (#68), whose shared scale ties even
+    rows at zero implied rho together in their extremes."""
+    def t_tree(name: str) -> str | None:
+        root = tree_root(links, name)
+        return root if root in t_roots else None
+
+    for i, a in enumerate(modeled):
+        for b in modeled[i + 1:]:
+            if implied_correlation(links, a, b) != 0:
+                return True
+            if (root := t_tree(a)) is not None and root == t_tree(b):
+                return True
+    return False
 
 
 def has_correlated_rows(batch_dir: Path) -> bool:
     """Whether any two of a batch's modeled (non-factor) rows are dependent
     (ADR-008): some pair has a nonzero implied correlation through the
     correlation links stored in the batch. A row merely being in a tree isn't
-    enough -- a lone row under a factor, or a zero-rho link, leaves the
-    report's inputs independent. The Monte Carlo report ranks and pins by
+    enough -- a lone row under a factor, or a zero-rho link in a Gaussian
+    tree, leaves the report's inputs independent. Two rows in one t-copula
+    tree (#68) are dependent whatever their rho. The Monte Carlo report ranks and pins by
     marginal rho for independent inputs, and by SRRC when they aren't."""
     connections = load_ensemble(batch_dir)
     try:
-        links, modeled = _links_and_rows(next(iter(connections.values())).run_path)
+        links, modeled, t_roots = _links_and_rows(next(iter(connections.values())).run_path)
     finally:
         for rc in connections.values():
             rc.close()
-    return _any_dependent(links, modeled)
+    return _any_dependent(links, modeled, t_roots)
+
+
+def _kendall_tau(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Kendall's tau between two untied samples, and its standard error from
+    the samples themselves: tau is the mean of each member's concordance
+    ``c_i`` with the others, and the U-statistic variance is
+    ``4 * var(c) / n``. Unlike a fixed formula (e.g. ``0.437 / (n - 4)``,
+    which assumes a Gaussian copula), this keeps its coverage under the t
+    copula, whose turbulent members make tau noisier (#68).
+
+    Each ``c_i`` counts the members below-left and above-right of member
+    ``i`` with a Fenwick tree over y-ranks, sweeping in x order: O(n log n),
+    so a large batch's report stays fast. Scores don't tie; a tie would be
+    broken by position rather than counted as neither."""
+    n = len(x)
+    rank_x = np.argsort(np.argsort(x, kind="stable"), kind="stable")
+    rank_y = np.argsort(np.argsort(y, kind="stable"), kind="stable")
+    tree = [0] * (n + 1)
+    below_left = np.empty(n)
+    for i in np.argsort(rank_x).tolist():  # members in increasing x
+        r = int(rank_y[i])
+        k, count = r, 0
+        while k > 0:  # members already swept (lower x) with a lower y
+            count += tree[k]
+            k -= k & -k
+        below_left[i] = count
+        k = r + 1
+        while k <= n:
+            tree[k] += 1
+            k += k & -k
+    above_right = (n - 1) - rank_x - rank_y + below_left
+    concordance = (2 * (below_left + above_right) - (n - 1)) / (n - 1)
+    tau = float(concordance.mean())
+    spread = float(((concordance - tau) ** 2).sum() / (n - 1))
+    return tau, float(np.sqrt(4 * spread / n))
+
+
+def _kendall_rho_interval(tau: float, se: float, n: int) -> tuple[float, float]:
+    """95% interval on the copula rho a Kendall ``tau`` estimates: a Fisher-z
+    interval on tau, with ``se`` carried through the transform, mapped
+    through ``rho_from_kendall_tau``, which is increasing, so the bounds map
+    too. Simulated coverage is about 95% for the Gaussian copula and for t
+    down to nu = 3, from 40 members up."""
+    if n <= 3 or pd.isna(tau):
+        return (float("nan"), float("nan"))
+    clipped = float(np.clip(tau, -0.999999, 0.999999))
+    z = np.arctanh(clipped)
+    half = _Z95 * se / (1 - clipped * clipped)
+    low, high = min(float(np.tanh(z - half)), tau), max(float(np.tanh(z + half)), tau)
+    return (rho_from_kendall_tau(low), rho_from_kendall_tau(high))
 
 
 def score_correlations(
     scores: pd.DataFrame, links: dict[str, Link], nodes: list[str],
 ) -> pd.DataFrame:
     """ADR-007 §6.2, ADR-008 §6: per pair of ``nodes`` with a nonzero implied
-    correlation, the correlation the batch achieved between their recorded
-    normal scores (Pearson; scores never tie, unlike values) with its 95%
-    Fisher interval, against the ``expected`` one: the pair's own rho when one
-    is the other's parent (``kind`` "link"), else the product along the path
-    joining them ("implied"). ``outside`` marks an expected rho outside the
-    achieved interval -- a sign the batch is too small to reproduce the
-    structure, or something is wrong with it."""
+    correlation, the copula rho the batch achieved between their recorded
+    scores with its 95% interval, against the ``expected`` one: the pair's
+    own rho when one is the other's parent (``kind`` "link"), else the
+    product along the path joining them ("implied"). ``outside`` marks an
+    expected rho outside the achieved interval -- a sign the batch is too
+    small to reproduce the structure, or something is wrong with it.
+
+    The achieved rho is estimated from the scores' Kendall tau as
+    ``sin(pi * tau / 2)``, which holds exactly for the Gaussian and the
+    Student-t copula alike (#68), where a Pearson correlation of t scores
+    would be dominated by a few turbulent members (and is undefined at
+    ``nu <= 2``). Scores never tie, unlike values (ADR-008 §1)."""
     records = []
     for i, a in enumerate(nodes):
         for b in nodes[i + 1:]:
@@ -829,8 +901,10 @@ def score_correlations(
                 continue
             pair = scores[[a, b]].dropna()
             n = len(pair)
-            achieved = float(pair[a].corr(pair[b])) if n > 1 else float("nan")
-            low, high = _fisher_interval(achieved, n, 1.0)
+            tau, se = (_kendall_tau(pair[a].to_numpy(), pair[b].to_numpy()) if n > 1
+                       else (float("nan"), float("nan")))
+            achieved = rho_from_kendall_tau(tau) if not pd.isna(tau) else float("nan")
+            low, high = _kendall_rho_interval(tau, se, n)
             direct = (a in links and links[a].parent == b) or (b in links and links[b].parent == a)
             records.append({
                 "a": a, "b": b, "kind": "link" if direct else "implied", "expected": expected,
@@ -873,7 +947,7 @@ def mc_report(
         if draws.empty:
             raise EnsembleError(f"{batch_dir}: no drawn members (member 0 is never a draw)")
         outcomes = outcomes_frame(connections, list(draws.index), measure=measure, dollars=dollars)
-        links, modeled = _links_and_rows(next(iter(connections.values())).run_path)
+        links, modeled, t_roots = _links_and_rows(next(iter(connections.values())).run_path)
     finally:
         for rc in connections.values():
             rc.close()
@@ -885,7 +959,7 @@ def mc_report(
     )
     table = correlation_table(draws, outcomes, scores[reaching] if reaching else None)
     nodes = [*modeled, *reaching]
-    return McReport(table, score_correlations(scores, links, nodes), _any_dependent(links, modeled))
+    return McReport(table, score_correlations(scores, links, nodes), _any_dependent(links, modeled, t_roots))
 
 
 def mc_correlation(
@@ -968,7 +1042,9 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
     the median), its ``shape`` (a ``truncated_normal``'s sd and any skew or
     tail weight; a ``triangular``'s mode), the implied ``moments`` (mean, sd,
     skewness, excess kurtosis -- what the shape parameters mean in
-    practice, #31), ``ramp_months`` and the author's ``description``. A sensitivity batch adds the resolved value at
+    practice, #31), ``ramp_months``, the author's ``description``, and its
+    correlation: ``correlate_with``, ``rho``, and on a t-copula tree's root
+    its ``nu`` (ADR-008). A sensitivity batch adds the resolved value at
     each perturbed quantile (``value@q``); a Monte Carlo batch adds the range
     actually ``drawn`` across its members.
 
@@ -1003,6 +1079,10 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
                 "description": row["description"] or "",
                 "correlate_with": row["vary_correlate_with"] or "",
                 "rho": "" if row["vary_correlation"] is None else f"{row['vary_correlation']:+g}",
+                # On a t-copula tree's root (#68); files before schema 32 have none.
+                "nu": f"{row['vary_tail_dependence']:g}"
+                if "vary_tail_dependence" in row.keys() and row["vary_tail_dependence"] is not None
+                else "",
             }
             dist = _row_distribution(row, target) if row["distribution"] else None
             if dist is not None:

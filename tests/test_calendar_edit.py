@@ -351,7 +351,7 @@ def test_a_defaulted_scenario_is_resolved_once_and_then_named(
     monkeypatch.setattr(cli_module, "_resolve_scenario", recording)
     answers = {
         "edit": ["3", "amount", "1500.00", ""],
-        "add": ["latent-factor", "economy", "", "n", ""],
+        "add": ["latent-factor", "economy", "", "n", "", ""],  # no tail dependence
     }[command]
 
     result = CliRunner().invoke(

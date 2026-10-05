@@ -653,6 +653,7 @@ def test_parameters_show_parents_rho_and_factors(correlated_mc_batch: Path) -> N
     assert table.loc["free_rate", ["correlate_with", "rho"]].tolist() == ["", ""]
     assert table.loc["economy", "kind"] == "latent_factor"
     assert table.loc["economy", "target"] == "factor"
+    assert table.loc["economy", "nu"] == ""  # a Gaussian tree
 
 
 def test_monte_carlo_report_ranks_by_srrc_and_shows_factors_and_scores(
@@ -679,7 +680,7 @@ def test_monte_carlo_report_ranks_by_srrc_and_shows_factors_and_scores(
     assert "ranked and pinned by SRRC" in result.output
     assert "status (srrc^2 vs 5%, every year):" in result.output
     assert "economy (factor)" in result.output
-    assert "correlations achieved (normal scores) vs expected:" in result.output
+    assert "correlations achieved (rho from the scores' Kendall tau) vs expected:" in result.output
     assert "tied_rate ~ economy" in result.output or "economy ~ tied_rate" in result.output
     report = sensitivity.mc_report(correlated_mc_batch)
     assert report.correlated and report.by == "srrc"

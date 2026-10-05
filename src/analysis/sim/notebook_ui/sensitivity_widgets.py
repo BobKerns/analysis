@@ -576,9 +576,10 @@ def sensitivity_widget(*,
             display(status.to_frame())
             if not report.scores.empty:
                 display(StyledMarkdown(
-                    "**Did the batch reproduce its correlations?** The achieved correlation of "
-                    "each correlated pair's normal scores, with its 95% interval, against the "
-                    "expected one (**link**: the pair's own rho; **implied**: the product along "
+                    "**Did the batch reproduce its correlations?** The correlation each "
+                    "correlated pair achieved, estimated from its scores' rank agreement "
+                    "(Kendall's tau), with its 95% interval, against the expected one "
+                    "(**link**: the pair's own rho; **implied**: the product along "
                     "the path joining them). **outside** means the batch didn't reproduce it."
                 ))
                 display(report.scores.round(3))
