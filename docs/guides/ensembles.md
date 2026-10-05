@@ -531,16 +531,14 @@ sim calendar add set-rate 2027-01-31 fuel 3.0 --aux-kind inflation \
   --vary-median 6.0 --vary-sd 2.0 --vary-skew 0.6 \
   --vary-correlate-with core_inflation --vary-correlation 0.3
 sim run inflation_drivers
-sim run inflation_tariffs --ensemble-size 30
+sim run inflation_tariffs
 ```
 
 The child's row keeps the parent row's date, series and amount, which is
 what makes it replace that row rather than add a second one; only its
-`vary_*` settings change. The child inherits the recipe's seed, so member
-N of each ensemble draws the same future for every other row, and the
-difference between the two runs is the fuel change alone. It doesn't
-inherit the recipe's member count, though, so give it the same count with
-`--ensemble-size` (30 is the recipe's default).
+`vary_*` settings change. The child inherits the recipe's seed and member
+count, so member N of each ensemble draws the same future for every other
+row, and the difference between the two runs is the fuel change alone.
 
 **A shock factor** makes the shock part of the uncertainty instead of a
 separate case. Put it at the root, above the core factor, with fuel

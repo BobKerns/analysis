@@ -582,6 +582,7 @@ def _read_scenario_inputs(
     calendar_rows: list[dict[str, str]] = []
     lifespan_rows: list[dict[str, str]] = []
     ytd_rows: list[dict[str, str]] = []
+    meta: dict[str, Any] = {}
     for name in _strict_load_order(scenarios_dir, scenario_name):
         scenario_dir = scenarios_dir / name
         if not scenario_dir.is_dir():
@@ -614,7 +615,24 @@ def _read_scenario_inputs(
             _normalize_month_columns(rows, filename, issues)
             return rows
 
+        own_meta = own_scenario.pop("meta_json", "")
         scenario_row.update({k: v for k, v in own_scenario.items() if v != ""})
+        # meta_json merges key by key rather than whole, so a child's own
+        # `{}` (what `sim scenario create` writes) or its own unrelated key
+        # doesn't hide a recipe's `ensemble_size` (#74).
+        if own_meta.strip():
+            try:
+                parsed = json.loads(own_meta)
+            except json.JSONDecodeError as exc:
+                issues.append(f"{name}: scenario.csv meta_json is not valid JSON: {exc}")
+            else:
+                if isinstance(parsed, dict):
+                    meta.update(parsed)
+                else:
+                    issues.append(
+                        f"{name}: scenario.csv meta_json must be a JSON object "
+                        f"(got {own_meta!r})"
+                    )
         accounts = _merge_scenario_rows(
             accounts, read_overlay("accounts.csv", required=True), ("name",)
         )
@@ -640,6 +658,7 @@ def _read_scenario_inputs(
             ytd_rows, read_overlay("year_to_date.csv"), ("name",),
         )
     scenario_row["name"] = scenario_name
+    scenario_row["meta_json"] = json.dumps(meta, separators=(",", ":"))
     return (
         scenario_row, accounts, model_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
