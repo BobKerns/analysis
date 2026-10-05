@@ -172,6 +172,7 @@ def test_a_subcommand_asks_for_the_arguments_it_was_not_given(
     assert (row["scheduled_name"], row["amount"]) == ("salary_bill", "10000")
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_a_subcommand_given_all_its_arguments_asks_nothing(
     calendar_add: Callable[..., Result],
 ) -> None:

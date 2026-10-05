@@ -51,6 +51,7 @@ def _issues(load: Callable[[], LoadResult]) -> list[str]:
     return ei.value.issues
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_two_level_tree_loads_and_is_stored(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
@@ -86,6 +87,7 @@ def test_two_level_tree_loads_and_is_stored(
     assert rows["rate_b"][2:] == ("economy", -0.4)
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_two_factors_in_one_scenario_both_survive_the_merge(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
@@ -109,6 +111,7 @@ def test_two_factors_in_one_scenario_both_survive_the_merge(
     assert factors == ["f1", "f2"]
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_child_scenario_overrides_and_uses_a_parent_factor(
     append_calendar_row: Callable[..., None], test_data_dir: Path,
     test_scenarios_dir: Path, intent_dir: Path,
@@ -196,6 +199,29 @@ def test_latent_factor_carries_nothing_but_a_name(
     assert any(message in i for i in _issues(load_test_copy))
 
 
+def test_the_prototypes_default_factors_load_with_one_warning(
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """#80: retire_alice defines a factor structure with no varying rows.
+    Its idle factors are one warning line, not one each."""
+    result = load_test_copy()
+    assert len(result.warnings) == 1
+    warning = result.warnings[0]
+    assert "latent_factors have no dependents yet" in warning
+    assert "stock_us_factor" in warning and "fuel_factor" in warning
+    assert "medical_factor" not in warning  # the Part B premium's factor depends on it
+    con = sqlite3.connect(result.intent_path)
+    try:
+        links = dict(con.execute(
+            "SELECT name, vary_correlate_with FROM calendar_event WHERE kind = 'latent_factor'"
+        ).fetchall())
+    finally:
+        con.close()
+    assert links["medical_factor"] == "services_inflation"
+    assert links["services_inflation"] == "core_inflation"
+    assert links["core_inflation"] is None and links["market"] is None
+
+
 def test_latent_factor_needs_a_name(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
@@ -203,6 +229,7 @@ def test_latent_factor_needs_a_name(
     assert any("needs a name" in i for i in _issues(load_test_copy))
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_unused_factor_is_a_warning_not_an_error(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
@@ -567,6 +594,7 @@ def test_correlated_ramp_lands_on_its_drawn_target(
 # --- Phase 3: authoring and reporting --------------------------------------------
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_cli_adds_a_factor_and_a_correlated_row(test_data_dir: Path) -> None:
     runner = CliRunner()
     factor = runner.invoke(main, [
@@ -824,6 +852,7 @@ def _quantiles(member: Path) -> dict[str, float | None]:
         con.close()
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_oat_factor_moves_its_family_to_conditional_medians(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,
@@ -873,6 +902,7 @@ def test_oat_plan_sweeps_factors_that_move_something(tmp_path: Path) -> None:
         oat_plan(["r1"], (0.1, 0.9), ["econmy"], {"economy": 2})  # cspell:ignore econmy
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_factor_reach_counts_varying_descendants(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:

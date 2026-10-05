@@ -1631,7 +1631,7 @@ def test_month_columns_accept_year_month_and_land_on_month_end(
         "SELECT date FROM calendar_event WHERE scheduled_name = 'salary_bill'"
     ).fetchall()
     assert con.execute(
-        "SELECT effective_date FROM aux_table WHERE kind = 'inflation'"
+        "SELECT effective_date FROM aux_table WHERE kind = 'inflation' AND series = 'cpi'"
     ).fetchall() == [("2021-01-31",)]
 
 

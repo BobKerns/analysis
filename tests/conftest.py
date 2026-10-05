@@ -73,7 +73,9 @@ from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
-from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER, CALENDAR_HEADER, SCENARIO_HEADER
+from analysis.sim.registries import (
+    ACCOUNT_VALUES_CSV_HEADER, ASSET_CLASSES, CALENDAR_HEADER, SCENARIO_HEADER,
+)
 
 _ANALYSIS_ENV_VARS = (
     "ANALYSIS_DATA_DIR",
@@ -611,6 +613,22 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
         path.write_text(text)
         return path
     return _write
+
+
+@pytest.fixture(scope="function")
+def without_prototype_defaults(test_data_dir: Path) -> None:
+    """Strip the prototype's default factor structure and default series
+    (#80) from the private retire_alice copy: its ``latent_factor`` rows, and
+    the class rate and inflation series in its ``series/`` that no account
+    reads. For a test whose subject is a tree or series it builds itself, and
+    which asserts on the whole set (no warnings, every factor, a fund with no
+    class series)."""
+    scenario = test_data_dir / "scenarios" / "retire_alice"
+    df = pd.read_csv(scenario / "calendar.csv", dtype=str, keep_default_na=False)
+    df[df["kind"] != "latent_factor"].to_csv(scenario / "calendar.csv", index=False)
+    for path in (scenario / "series").glob("*.csv"):
+        if path.stem.startswith("inflation__") or path.stem.removeprefix("rate__") in ASSET_CLASSES:
+            path.unlink()
 
 
 @pytest.fixture(scope="function")

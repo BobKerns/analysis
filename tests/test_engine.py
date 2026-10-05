@@ -105,10 +105,14 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
             assert steps[i]["previous_step_id"] == steps[i - 1]["id"]
 
         # Inflation indexes are persisted monthly for each inflation series.
-        n_inflation = con.execute(
-            "SELECT COUNT(*) FROM inflation_index_state"
+        n_inflation, n_series = con.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT series) FROM inflation_index_state"
+        ).fetchone()
+        n_supplied = con.execute(
+            "SELECT COUNT(DISTINCT series) FROM aux_table WHERE kind = 'inflation'"
         ).fetchone()[0]
-        assert n_inflation == len(steps)
+        assert n_series == n_supplied
+        assert n_inflation == n_series * len(steps)
         first_cpi = con.execute(
             "SELECT cumulative_index_micros FROM inflation_index "
             "WHERE month = ? AND series = 'cpi'",
