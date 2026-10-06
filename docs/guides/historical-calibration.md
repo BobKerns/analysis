@@ -331,6 +331,125 @@ so its 10-year SD (2.0 points for CPI-U) is more than three times the
 recent one (0.6). A long-run row calibrated to the recent period, with the
 1970s added as an episode, keeps the two apart.
 
+## The prototype's defaults
+
+The prototype's root scenario, `retire_alice`, ships a long-run rate for
+every inflation series this guide compares and every fund asset class,
+and a factor for each one, so a child scenario or mix-in can vary any of
+them with one row. It has no varying rows: every future runs at these
+rates until a scenario says otherwise. They're starting points, meant to
+be overridden; replace a file in the scenario's own `series/`, or add a
+`set-rate` row. CPI is the exception: `inflation__cpi.csv` stays in the
+shared `aux/`, so a scenario replaces it with its own
+`aux/inflation__cpi.csv`, not a `series/` file.
+
+The rates are 10-year compound medians from the tables above, leaning
+toward the recent period where it differs, rounded to half a point or so:
+
+| Series | Rate % | Basis |
+| --- | --: | --- |
+| `inflation__cpi` | 2.5 | CPI-U, 10-year median since 1984 (in shared `aux/`, as before) |
+| `inflation__cpi_w` | 2.5 | CPI-W, 0.06 below CPI-U since 1983: Social Security COLAs |
+| `inflation__cpi_e` | 2.7 | R-CPI-E, 0.16 above CPI-U since 1983: a retiree's basket |
+| `inflation__chained_cpi` | 2.2 | C-CPI-U, 0.27 below CPI-U since 2000: tax brackets |
+| `inflation__medical` | 3.5 | Medical care: 4.2 since 1984, 3.3 since 2000, 2.8 since 2010 |
+| `inflation__medicare_part_b` | 5.5 | The Part B premium, 1990–2025 |
+| `inflation__housing` | 3.2 | Shelter, 10-year median since 1984 |
+| `inflation__education` | 4.0 | Tuition: 5.2 since 1984, 3.0 since 2010 |
+| `inflation__food` | 2.8 | Food, between the 10-year median and the compound rate |
+| `inflation__fuel` | 2.5 | Energy: 1.9 to 2.4 since 1984, with a 10-point single-year SD |
+| `inflation__apparel` | 0.5 | Apparel, 0.6 since 1984 |
+| `rate__stock_us` | 7.0 | Well below the S&P 500's 11.7 since 1984; see below |
+| `rate__stock_intl` | 7.0 | The same as US: no history here supports a different number |
+| `rate__stock` | 7.0 | Stock with an unknown US/international split |
+| `rate__bond` | 4.0 | Below the 10-year Treasury's 6.0 since 1984, a falling-rate era |
+| `rate__cash` | 3.0 | T-bills: 3.4 since 1984, 4.0 postwar; money market follows them |
+
+```sh
+uv run scripts/historical_calibration.py --reference CPI-U=CUUR0000SA0 \
+  --period "Since 2010=2010-" CPI-U=CUUR0000SA0 Tuition=CUUR0000SEEB Medical=CUUR0000SAM
+```
+
+The investment rates are deliberately below their history. Since 1984
+stocks and bonds both rode falling interest rates and rising valuations,
+which can't repeat from today's starting point, and a plan that comes out
+fine at lower returns is the safer one to act on. A scenario that wants
+history can set `rate__stock_us` to 10 or 11.
+
+Each series has a factor of its own, `<series>_factor`, linked into a tree
+by the 10-year ρ (from τ) against core CPI, rounded to the coarse values
+the ensembles guide recommends. Factors are drawn rounded, with each
+child's ρ on its arrow:
+
+```mermaid
+flowchart TB
+    core(["core_inflation"]) -->|0.9| cpi(["cpi_factor"])
+    cpi -->|0.95| cpi_w(["cpi_w_factor"])
+    cpi -->|0.95| cpi_e(["cpi_e_factor"])
+    cpi -->|0.95| chained(["chained_cpi_factor"])
+    core -->|0.9| housing(["housing_factor"])
+    core -->|0.6| food(["food_factor"])
+    core -->|0.6| apparel(["apparel_factor"])
+    core -->|0.3| fuel(["fuel_factor"])
+    core -->|0.6| services(["services_inflation"])
+    services -->|0.9| medical(["medical_factor"])
+    services -->|0.9| education(["education_factor"])
+    medical -->|0.6| part_b(["medicare_part_b_factor"])
+    core -->|0.9| rates(["interest_rates"])
+    rates -->|0.95| cash(["cash_factor"])
+    rates -->|0.6| bond(["bond_factor"])
+    market(["market"]) -->|0.95| stock_us(["stock_us_factor"])
+    market -->|0.8| stock_intl(["stock_intl_factor"])
+    market -->|0.95| stock(["stock_factor"])
+```
+
+- **Inflation:** CPI-U follows core at 0.93, shelter at 0.95, food at 0.71
+  and apparel at 0.45 (0.83 postwar). Energy's link is the weakest and
+  least stable (−0.23 since 1984, 0.48 postwar), hence 0.3. CPI-W, R-CPI-E
+  and chained CPI track CPI-U at 0.97 to 0.99.
+- **Services:** medical care and tuition follow core at about 0.6 over a
+  decade, and share labor-heavy costs, so they sit under the ensembles
+  guide's `services_inflation` sub-factor: 0.6 × 0.9 = 0.54 to core. The
+  Part B premium follows medical prices and also how much care is used;
+  its 0.6 is a judgment, not a measurement.
+- **Interest rates:** T-bill returns follow core at 0.89 over a decade
+  (0.94 postwar), and the 10-year Treasury follows T-bills at 0.91 (0.68
+  postwar), so both hang off an `interest_rates` factor under core.
+- **Stocks:** a separate root. Stocks' 10-year returns barely follow core
+  (0.21 postwar) or bonds (0.06 postwar, 0.21 since 1984). The US and
+  international ρ values are judgments: this guide's sources have no
+  international series.
+
+```sh
+uv run scripts/historical_calibration.py --reference T-bill=damodaran:tbill --window 10 \
+  --period "Since 1984=1984-" --period "Postwar=1948-" \
+  T-bill=damodaran:tbill T-bond=damodaran:tbond Core=CUUR0000SA0L1E
+uv run scripts/historical_calibration.py --reference Stocks=damodaran:sp500 --window 10 \
+  --period "Since 1984=1984-" --period "Postwar=1948-" \
+  Stocks=damodaran:sp500 T-bond=damodaran:tbond T-bill=damodaran:tbill
+```
+
+To vary a series, hang its row off the series' factor at ρ = 1.0. The row
+then follows the tree exactly as drawn, with its own range from the tables
+above:
+
+```sh
+sim calendar add set-rate 2027-01-31 medical 3.5 --aux-kind inflation \
+  --scenario my_mixin --name medical_vary \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 3.5 --vary-sd 1.3 \
+  --vary-correlate-with medical_factor --vary-correlation 1.0
+```
+
+A ρ below 1.0 adds wobble of the row's own on top of the series'. To
+change a link rather than a rate, redefine the factor in the mix-in: a
+factor is replaced by name, so `sim calendar add latent-factor
+medical_factor --vary-correlate-with core_inflation --vary-correlation
+0.6` moves medical out of the services cluster.
+
+Until a scenario varies something, `sim check` warns once that the
+factors no row depends on yet affect nothing.
+
 ## Historical episodes
 
 The same series in each episode, against core CPI. Short episodes (two or

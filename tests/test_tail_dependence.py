@@ -130,6 +130,7 @@ def _issues(load: Callable[[], LoadResult]) -> list[str]:
     return ei.value.issues
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_a_root_factor_carries_nu_into_the_intent(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     test_data_dir: Path,
@@ -189,6 +190,7 @@ def test_nu_on_a_literal_row_is_rejected(
     assert any("only valid on a varying row" in issue for issue in _issues(load_test_copy))
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_nu_on_a_lone_row_is_a_warning(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:

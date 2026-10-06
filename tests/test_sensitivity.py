@@ -666,7 +666,8 @@ def test_cli_attribute_relative_and_measure(oat_batch: Path, runs_dir: Path) -> 
 
 def test_parameters_describes_an_oat_batch(oat_batch: Path) -> None:
     table = sensitivity.parameters(oat_batch)
-    assert list(table.index) == ["gift", "retire_bill_vary"]
+    rows = table[table["kind"] != "latent_factor"]  # the prototype's idle default factors (#80)
+    assert list(rows.index) == ["gift", "retire_bill_vary"]
     gift = table.loc["gift"]
     assert gift["kind"] == "one_off_transfer"
     assert gift["affects"].startswith("Income_Inheritance → Asset_Brokerage_Joint")

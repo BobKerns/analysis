@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -41,7 +42,7 @@ def _first_growth(run_file: Path) -> int:
         con.close()
 
 
-@pytest.mark.usefixtures("blended_fund")
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund")
 def test_fund_grows_at_its_slices_blend(load_test_copy: Callable[[], LoadResult],
                                          runs_dir: Path) -> None:
     result = load_test_copy()
@@ -54,6 +55,26 @@ def test_fund_grows_at_its_slices_blend(load_test_copy: Callable[[], LoadResult]
                        allow_dirty_data=True, allow_dirty_code=True)
     # $300,000 x (0.6 x 8% + 0.4 x 4%) / 12 = $1,600.00
     assert _first_growth(run) == 160_000
+
+
+@pytest.mark.usefixtures("blended_fund")
+def test_a_fund_blends_the_prototypes_default_class_series(
+    prototype_data: Path, retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """#80: retire_alice ships rate__stock_us (7%) and rate__bond (4%), so a
+    fund held in it, or in any scenario derived from it, blends with no
+    series of its own. (``blended_fund`` replaced them; put them back.)"""
+    for name in ("stock_us", "bond"):
+        shutil.copy(prototype_data / "scenarios" / "retire_alice" / "series" / f"rate__{name}.csv",
+                    retire_alice_csv("series"))
+    result = load_test_copy()
+    _, params, _ = _growth_rule(result.intent_path)
+    assert params["blend"] == [["", [["bond", 400_000], ["stock_us", 600_000]]]]
+    run = run_scenario(result.intent_path, runs_dir / "fund.sqlite3", run_by="TEST",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    # $300,000 x (0.6 x 7% + 0.4 x 4%) / 12 = $1,450.00
+    assert _first_growth(run) == 145_000
 
 
 @pytest.mark.usefixtures("blended_fund")
@@ -74,7 +95,7 @@ def test_a_symbols_own_series_beats_its_blend(
     assert series == "FND" and "blend" not in params
 
 
-@pytest.mark.usefixtures("blended_fund")
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund")
 def test_a_partly_covered_fund_warns_and_keeps_its_account_series(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:
@@ -85,7 +106,7 @@ def test_a_partly_covered_fund_warns_and_keeps_its_account_series(
     assert any("FND" in w and "not for bond" in w for w in result.warnings)
 
 
-@pytest.mark.usefixtures("blended_fund")
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund")
 def test_an_uncovered_fund_keeps_its_account_series_quietly(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:
@@ -97,7 +118,7 @@ def test_an_uncovered_fund_keeps_its_account_series_quietly(
     assert not result.warnings
 
 
-@pytest.mark.usefixtures("blended_fund")
+@pytest.mark.usefixtures("without_prototype_defaults", "blended_fund")
 def test_a_zero_weight_class_needs_no_series(
     test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
 ) -> None:

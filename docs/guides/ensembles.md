@@ -356,8 +356,15 @@ choices you have for its structure, then shocks and persistence.
 ### The example recipe
 
 Every command in this section runs against the prototype scenario. The
-prototype has only a `cpi` series, so the first step gives the recipe four
-inflation series of its own and a monthly expense that reads each one:
+prototype ships default inflation series and a factor for each
+([The prototype's defaults](historical-calibration.md#the-prototypes-defaults)),
+and the recipe inherits them all. It writes its own anyway, to show each
+step: its series files replace the defaults of the same name, and its
+factors replace the same-named default factors. The trees drawn below show
+only what the recipe adds; the defaults' other factors still load beside
+them, which is why `sim check` warns that they affect nothing. The first
+step gives the recipe four inflation series of its own and a monthly
+expense that reads each one:
 
 ```sh
 sim ensemble create inflation_drivers retire_alice
@@ -652,6 +659,10 @@ rate series in the scenario's `series/` folder:
   so on, shared by every fund that holds that class; or
 - **the fund's own slice series**, `rate__<symbol>.<class>.csv`, for a
   fund that doesn't track its class closely (an active or sector fund).
+
+The prototype's root scenario ships a default series for every class, and
+a factor for each to hang a varying row off
+([The prototype's defaults](historical-calibration.md#the-prototypes-defaults)).
 
 A fund with its own `rate__<symbol>.csv`, or a lot with its own `series`,
 keeps using that. The blend applies only when every class the fund holds

@@ -128,6 +128,7 @@ def test_edit_refuses_a_change_that_would_copy_another_row(
     pd.testing.assert_frame_equal(calendar_rows(), before)
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_edit_refuses_another_rows_name_and_does_not_offer_its_own_to_correlate_with(
     calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
     append_calendar_row: Callable[..., None],
@@ -154,6 +155,7 @@ def test_edit_refuses_another_rows_name_and_does_not_offer_its_own_to_correlate_
     )
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_edit_keeps_what_the_guide_has_no_field_for(
     calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
     append_calendar_row: Callable[..., None],
@@ -173,6 +175,7 @@ def test_edit_keeps_what_the_guide_has_no_field_for(
     assert json.loads(row["params_json"])["note"] == "hand-authored"
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_edit_keeps_a_hand_authored_key_another_kinds_command_would_own(
     calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
     append_calendar_row: Callable[..., None],
@@ -227,6 +230,7 @@ def test_edit_returns_to_the_review_when_the_scenario_would_not_load(
     pd.testing.assert_frame_equal(calendar_rows(), before)
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_edit_says_so_when_a_row_is_of_a_kind_it_cannot_edit(
     calendar_edit: Callable[..., Result], append_calendar_row: Callable[..., None],
 ) -> None:
@@ -257,6 +261,7 @@ def test_a_row_key_reads_dates_and_spacing_as_the_loader_does() -> None:
     assert calendar_row_key({**row, "date": "2030-11"}) != calendar_row_key(row)
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_edit_ignores_a_lot_the_changed_account_no_longer_has(
     calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
     append_calendar_row: Callable[..., None],
@@ -364,6 +369,7 @@ def test_a_defaulted_scenario_is_resolved_once_and_then_named(
     assert set(asked_for[1:]) == {"retire_alice"}
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_edit_refuses_to_clear_a_field_when_that_would_copy_another_row(
     calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
     append_calendar_row: Callable[..., None],

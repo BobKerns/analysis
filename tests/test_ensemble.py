@@ -559,6 +559,7 @@ def _calendar_and_draws(member: Path) -> tuple[list[tuple], list[tuple], str]:
     return calendar, draws, mode
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_resolve_member_override_lands_on_quantile_others_central(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,

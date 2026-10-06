@@ -2250,13 +2250,24 @@ def _validate_calendar_correlation(
                 f"calendar.csv row {i} ({name}): vary_tail_dependence on a row nothing correlates "
                 "with affects nothing yet (it acts only on the rows of the tree below it)"
             )
-    for name, i in nodes.items():
-        row_kind = rows[i - 2].get("kind")
-        if row_kind == registries.LATENT_FACTOR_KIND and name not in used:
-            warnings.append(
-                f"calendar.csv row {i} ({name}): latent_factor has no dependents yet, so it "
-                "affects nothing (fine for work in progress, or a factor for child scenarios)"
-            )
+    unused = [
+        (name, i) for name, i in nodes.items()
+        if rows[i - 2].get("kind") == registries.LATENT_FACTOR_KIND and name not in used
+    ]
+    if len(unused) == 1:
+        name, i = unused[0]
+        warnings.append(
+            f"calendar.csv row {i} ({name}): latent_factor has no dependents yet, so it "
+            "affects nothing (fine for work in progress, or a factor for child scenarios)"
+        )
+    elif unused:
+        # One line, not one per factor: a scenario that defines a factor
+        # structure for its children (#80) has many, and they'd bury the rest.
+        warnings.append(
+            f"calendar.csv: {len(unused)} latent_factors have no dependents yet, so they "
+            "affect nothing (fine for work in progress, or factors for child scenarios): "
+            + ", ".join(name for name, _ in unused)
+        )
 
 
 def _parse_vary_params(

@@ -585,7 +585,7 @@ def test_sim_account_delete_lists_references_and_removes_them(test_data_dir: Pat
     calendar_path = data / "scenarios" / "retire_alice" / "calendar.csv"
     calendar = pd.read_csv(calendar_path, dtype=str, keep_default_na=False)
     assert "Asset_Checking" not in set(calendar["series"])
-    assert len(calendar) == 4
+    assert len(calendar[calendar["kind"] != "latent_factor"]) == 4
 
     check = runner.invoke(
         main, ["sim", "check", "retire_alice", "--data-dir", str(data)]
