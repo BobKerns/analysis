@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
 """Download public price and return series and summarize them for calibrating
 an ensemble's varying rates (docs/guides/historical-calibration.md).
 
-For each series and each period, the script reports the statistics a varying
+For each series and each period, ``analysis historical`` reports the statistics a varying
 `set-rate` row needs: the compound (geometric) mean rate, median, SD, range,
 year-to-year persistence, and the correlation with a reference series, both
 Pearson and the copula rho implied by Kendall's tau. ``--window N`` summarizes
@@ -28,8 +27,9 @@ Series are named by source:
 
 ``LABEL=SOURCE`` names a series in the output; a ``@rate`` or ``@index``
 suffix overrides whether its values are levels (rates are computed from
-them) or rates in percent. Downloads are cached under ``out/historical/``
-with their retrieval date.
+them) or rates in percent. Downloads are cached under the repository's
+``historical_data/`` with their retrieval date, so the committed copies are
+used offline and a new series is captured there.
 
 BLS refuses requests without contact details, so the User-Agent carries an
 email address: ``--contact``, ``$HISTORICAL_CALIBRATION_CONTACT``, or
@@ -37,7 +37,7 @@ email address: ``--contact``, ``$HISTORICAL_CALIBRATION_CONTACT``, or
 
 Example::
 
-    uv run scripts/historical_calibration.py --reference bls:CUUR0000SA0L1E \\
+    uv run analysis historical --reference bls:CUUR0000SA0L1E \\
         --period "Great Inflation=1966-1982" \\
         CPI-U=bls:CUUR0000SA0 Medical=bls:CUUR0000SAM Shelter=bls:CUUR0000SAH1
 """
@@ -46,7 +46,6 @@ from __future__ import annotations
 
 # cspell:ignore CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize
 
-import argparse
 import csv
 import dataclasses
 import html
@@ -54,11 +53,14 @@ import io
 import math
 import os
 import re
+import ssl
 import subprocess
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -68,8 +70,11 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CACHE = REPO_ROOT / "out" / "historical"
+from analysis.tls import ssl_context, verify_reason
+
+# The committed data beside the source tree; an editable install (uv sync)
+# finds it, while a wheel installed elsewhere has none and needs --cache.
+DEFAULT_CACHE = Path(__file__).resolve().parents[3] / "historical_data"
 
 BLS_BASE = "https://download.bls.gov/pub/time.series"
 RCPIE_URL = "https://www.bls.gov/cpi/research-series/r-cpi-e-data.xlsx"
@@ -167,11 +172,16 @@ class Fetcher:
                     "no contact email for the User-Agent (BLS refuses requests without one): "
                     "pass --contact, set $HISTORICAL_CALIBRATION_CONTACT, or set git's user.email"
                 )
-            headers["User-Agent"] = f"analysis historical_calibration (contact: {self.contact})"
+            headers["User-Agent"] = f"analysis historical (contact: {self.contact})"
         request = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=120, context=ssl_context()) as response:
                 return response.read()
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                raise DataError(f"couldn't verify the HTTPS certificate for {url}: "
+                                f"{verify_reason(exc.reason)}") from exc
+            raise DataError(f"couldn't download {url}: {exc}") from exc
         except OSError as exc:
             raise DataError(f"couldn't download {url}: {exc}") from exc
 
@@ -288,7 +298,7 @@ _XLSX_NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 def read_xlsx_rows(data: bytes, sheet: int = 1) -> list[dict[str, str]]:
     """A worksheet's cells by column letter, read with the standard library
-    so the script needs no Excel package."""
+    so reading it needs no Excel package."""
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         shared = []
         if "xl/sharedStrings.xml" in z.namelist():
@@ -715,85 +725,51 @@ def parse_period(arg: str) -> tuple[str, int | None, int | None]:
     return name.strip(), first, last
 
 
-def _positive_int(text: str) -> int:
-    value = int(text)
-    if value < 1:
-        raise argparse.ArgumentTypeError(f"must be a positive number of years, not {value}")
-    return value
+def run(series_args: Sequence[str], *, reference_arg: str | None = None, period_args: Sequence[str] = (),
+        window: int = 1, basis: str = "dec", runs_above_pct: float | None = None,
+        fmt: str = "markdown", cache: Path = DEFAULT_CACHE, refresh: bool = False,
+        contact: str | None = None) -> None:
+    """Print the summary tables for ``analysis historical``; raises
+    :class:`DataError` when a period or a source is bad."""
+    if cache == DEFAULT_CACHE and not cache.is_dir():
+        # Don't quietly start a cache inside site-packages.
+        raise DataError(f"the committed data isn't at {cache} (is analysis installed from a checkout?); "
+                        "pass --cache DIR")
+    periods = [parse_period(p) for p in period_args] or [(k, *v) for k, v in DEFAULT_PERIODS.items()]
+    fetcher = Fetcher(cache, contact, refresh)
+    loaded = load_series(fetcher, list(series_args) + ([reference_arg] if reference_arg else []))
+    series = loaded[: len(series_args)]
+    reference = loaded[-1] if reference_arg else None
 
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Series sources: bls:ID, bea:CODE, rcpie:COLUMN, damodaran:COLUMN, fred:ID, csv:PATH "
-               "(see the module docstring).")
-    parser.add_argument("series", nargs="+", help="series as [LABEL=]SOURCE:ID[@rate|@index]")
-    parser.add_argument("--reference", help="series to correlate with and measure the gap against "
-                        "(default: none)")
-    parser.add_argument("--period", action="append", default=[], metavar="NAME=FIRST-LAST",
-                        help="a period to summarize, by the years the annual rates end in; "
-                        "repeatable (default: the doc's episodes and the full history)")
-    parser.add_argument("--window", type=_positive_int, default=1,
-                        help="summarize rolling N-year compound rates instead of single years")
-    parser.add_argument("--basis", choices=["dec", "average"], default="dec",
-                        help="annual rate of a monthly level: December over December (default) "
-                        "or annual average over annual average")
-    parser.add_argument("--runs-above", type=float, metavar="PCT",
-                        help="also list stretches of consecutive years above PCT percent")
-    parser.add_argument("--format", choices=["markdown", "csv"], default="markdown")
-    parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE, help=f"default: {DEFAULT_CACHE}")
-    parser.add_argument("--refresh", action="store_true", help="download again even if cached")
-    parser.add_argument("--contact", default=default_contact(),
-                        help="email for the User-Agent (BLS requires one)")
-    args = parser.parse_args(argv)
-    if args.runs_above is not None and args.format == "csv":
-        parser.error("--runs-above prints a Markdown table; it can't be combined with --format csv")
-
-    try:
-        periods = [parse_period(p) for p in args.period] or [(k, *v) for k, v in DEFAULT_PERIODS.items()]
-        fetcher = Fetcher(args.cache, args.contact, args.refresh)
-        specs = args.series + ([args.reference] if args.reference else [])
-        loaded = load_series(fetcher, specs)
-    except DataError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    series = loaded[: len(args.series)]
-    reference = loaded[-1] if args.reference else None
-
-    ref_rates = annual_rates(reference, args.basis) if reference else None
+    ref_rates = annual_rates(reference, basis) if reference else None
     csv_rows = []
     for name, first, last in periods:
         ref = in_period(ref_rates, first, last) if ref_rates is not None else None
-        summaries = [summarize(s.label, in_period(annual_rates(s, args.basis), first, last), ref, args.window)
+        summaries = [summarize(s.label, in_period(annual_rates(s, basis), first, last), ref, window)
                      for s in series]
-        if args.format == "csv":
+        if fmt == "csv":
             csv_rows += [[name, *summary_cells(s)] for s in summaries]
             continue
         span = f"{first or 'start'}–{last or 'latest'}"
-        unit = f", rolling {args.window}-year compound rates" if args.window > 1 else ""
+        unit = f", rolling {window}-year compound rates" if window > 1 else ""
         print(f"### {name} ({span}{unit})\n")
         print(markdown_table(SUMMARY_COLUMNS, [summary_cells(s) for s in summaries]))
         print()
-    if args.format == "csv":
+    if fmt == "csv":
         writer = csv.writer(sys.stdout, lineterminator="\n")
         writer.writerow(["Period", *SUMMARY_COLUMNS])
         writer.writerows(csv_rows)
-    if args.runs_above is not None:
-        print(f"### Years above {args.runs_above:g}%\n")
+    if runs_above_pct is not None:
+        print(f"### Years above {runs_above_pct:g}%\n")
         rows = [[s.label, f"{a}–{b}" if a != b else str(a), str(b - a + 1), _fmt(rate)]
-                for s in series for a, b, rate in runs_above(annual_rates(s, args.basis), args.runs_above)]
+                for s in series for a, b, rate in runs_above(annual_rates(s, basis), runs_above_pct)]
         print(markdown_table(["Series", "Years", "Length", "Compound %"], rows) if rows else "None.")
         print()
-    if args.format == "markdown":
+    if fmt == "markdown":
         print("Sources:\n")
         for spec, s in {s.spec: s for s in loaded}.items():
             print(f"- {s.label}: {s.title or spec}")
         for place, day in fetcher.retrieved_by_place().items():
             print(f"- {place} (retrieved {day})")
         print(f"\nReference: {reference.label if reference else 'none'}. "
-              f"Annual basis: {'December over December' if args.basis == 'dec' else 'annual average'}.")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+              f"Annual basis: {'December over December' if basis == 'dec' else 'annual average'}.")
