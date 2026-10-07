@@ -257,7 +257,7 @@ def test_items_cache_invalidated_on_write(retire_alice_scenario: ScenarioConnect
 def test_items_unknown_type(retire_alice_scenario: ScenarioConnection) -> None:
     sc = retire_alice_scenario
     with pytest.raises(ValueError):
-        sc.items("bogus")  # ty: ignore[invalid-argument-type]
+        sc.items("bogus")  # ty: ignore[invalid-argument-type]  # deliberately not an ItemType
 
 
 def test_net_worth_frame_has_nominal_and_cpi_constant(retire_alice_run: RunConnection) -> None:
