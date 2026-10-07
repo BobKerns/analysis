@@ -41,6 +41,8 @@ echo "Installing nbstripout notebook filter..."
 uv run nbstripout --install
 # shellcheck disable=SC2016  # single-quoted: git expands $(...) later, not this script
 git config filter.nbstripout.clean '"$(git rev-parse --show-toplevel)/.venv/bin/python" -m nbstripout --extra-keys "metadata.kernelspec.display_name metadata.language_info.version"'
+# shellcheck disable=SC2016  # single-quoted: git expands $(...) later, not this script
+git config diff.ipynb.textconv '"$(git rev-parse --show-toplevel)/.venv/bin/python" -m nbstripout -t --extra-keys "metadata.kernelspec.display_name metadata.language_info.version"'
 
 # The pinned lint tools need a recent Node. Keep this test in step with
 # "engines" in package.json, the strictest range among the locked packages.
