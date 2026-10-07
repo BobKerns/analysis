@@ -1961,6 +1961,9 @@ def _chain_sweep(
             amount_available if cap is None
             else max(0, cap - max(0, balances.get(account_id, 0)))
         )
+        if account_kinds[account_id] == "liability":
+            # Room in a liability is what's still owed (see _chain_draw).
+            room = min(room, max(0, balances.get(account_id, 0)))
         put = min(amount_available, room)
         if put <= 0:
             return 0

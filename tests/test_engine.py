@@ -785,6 +785,32 @@ def test_chain_draw_into_a_liability_counts_only_what_it_owed(
     ).fetchall() == [(1_000_00, 3_000_00, 2_000_00)]
 
 
+def test_chain_sweep_into_a_liability_spills_past_what_it_owed(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    """A sweep whose first destination is a liability owing less than the
+    excess pays it off and passes the rest to the next destination, rather
+    than counting the whole excess as swept."""
+    from analysis.sim.engine import ChainGraph, _chain_sweep
+
+    # 1=checking sweeping $3k, 2=loan with $1k owed, 3=savings.
+    balances = {1: 5_000_00, 2: 1_000_00, 3: 0}
+    account_kinds = {1: "asset", 2: "liability", 3: "asset"}
+    graph = ChainGraph(
+        members={30: [(20, None, 1_000_000, None, None), (21, None, 1_000_000, None, None)]},
+        leaf_lot={20: 2, 21: 3}, minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    swept = _chain_sweep(
+        ledger_con, balances, account_kinds, {1: "taxable"}, {1: "cash"},
+        {1: "Checking", 2: "Loan", 3: "Savings"}, step_id=1, month_s="2026-05-31",
+        graph=graph, chain_id=30, amount_available=3_000_00, source_account_id=1,
+    )
+    assert swept == 3_000_00
+    assert balances == {1: 2_000_00, 2: 0, 3: 2_000_00}
+
+
 def test_apply_home_sale_splits_basis_excluded_and_taxable_gain(ledger_con: sqlite3.Connection) -> None:
     """Sale price above basis + exclusion cap produces all three legs:
     return_of_capital (the basis), excluded_gain (gain up to the §121 cap,
