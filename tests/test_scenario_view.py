@@ -40,7 +40,7 @@ def test_description_view_relevels_the_readme_heading(test_data_dir: Path) -> No
         md = description_view(scenario)
     assert md.data == (
         "### Retirement baseline\n\nAlice and Bill's main plan.\n\n"
-        "**Inherits from:** nothing (a root scenario)"
+        "**Parent:** `base`  \n**Load order:** `base` → `retire_alice`"
     )
 
 
@@ -59,7 +59,7 @@ def test_description_view_regenerates_the_more_link_against_data_dir(
     assert md.data == (
         "### Retirement baseline\n\nAlice and Bill's main plan.\n\n"
         f"_See [scenarios/retire_alice/README.md]({expected_readme}) for more._\n\n"
-        "**Inherits from:** nothing (a root scenario)"
+        "**Parent:** `base`  \n**Load order:** `base` → `retire_alice`"
     )
 
 

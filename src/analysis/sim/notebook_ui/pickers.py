@@ -583,10 +583,10 @@ def multi_scenario_picker(
     )
     variant_picker = widgets.SelectMultiple(
         options=[name for name in available if name != default_baseline],
-        value=tuple(default_variants
-                    or (*[name
-                          for name in available
-                          if name != default_baseline][:max_variants],)),
+        # Only None picks defaults: an explicit [] means no variants yet.
+        value=tuple(default_variants if default_variants is not None
+                    else [name for name in available
+                          if name != default_baseline][:max_variants]),
         description="Variants:",
         rows=min(len(available), 8),
     )

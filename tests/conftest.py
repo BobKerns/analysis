@@ -618,12 +618,12 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
 @pytest.fixture(scope="function")
 def without_prototype_defaults(test_data_dir: Path) -> None:
     """Strip the prototype's default factor structure and default series
-    (#80) from the private retire_alice copy: its ``latent_factor`` rows, and
-    the class rate and inflation series in its ``series/`` that no account
-    reads. For a test whose subject is a tree or series it builds itself, and
-    which asserts on the whole set (no warnings, every factor, a fund with no
-    class series)."""
-    scenario = test_data_dir / "scenarios" / "retire_alice"
+    (#80) from the private copy's ``base`` scenario, which retire_alice
+    inherits them from (#91): its ``latent_factor`` rows, and its class rate
+    and inflation series. For a test whose subject is a tree or series it
+    builds itself, and which asserts on the whole set (no warnings, every
+    factor, a fund with no class series)."""
+    scenario = test_data_dir / "scenarios" / "base"
     df = pd.read_csv(scenario / "calendar.csv", dtype=str, keep_default_na=False)
     df[df["kind"] != "latent_factor"].to_csv(scenario / "calendar.csv", index=False)
     for path in (scenario / "series").glob("*.csv"):
