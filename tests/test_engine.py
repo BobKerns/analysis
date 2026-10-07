@@ -673,6 +673,144 @@ def test_post_withdrawal_realizes_loss_as_negative_ltcg_leg(ledger_con: sqlite3.
     assert balances[4] == 3_000_00  # to_id still nets the full amount requested
 
 
+@pytest.mark.parametrize("refill_funds", [0, 50_000_00], ids=["refill-empty", "refill-funded"])
+def test_chain_draw_at_a_loss_checks_the_net_amount_not_each_leg(
+    ledger_con: sqlite3.Connection, refill_funds: int,
+) -> None:
+    """Issue #101: drawing a lot underwater vs. its basis posts a
+    return_of_capital leg larger than the draw plus a negative ltcg leg.
+    Refill, share tracking and the negative-balance warning see the net
+    draw, so the lot neither pulls a phantom refill for the overshoot nor
+    warns (an error under this suite) about a negative it never reaches."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _chain_draw
+
+    # 1=target, 2=brokerage worth $10k on a $20k basis, 3=its refill source.
+    balances = {1: 0, 2: 10_000_00, 3: refill_funds}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = {1: "cash", 2: "brokerage_taxable", 3: "cash"}
+    account_name = {1: "Target", 2: "Brokerage", 3: "Refill"}
+    graph = ChainGraph(
+        members={},
+        leaf_lot={10: 2, 20: 3},
+        minimum_of={2: 0}, refill_chain_of={2: 20},
+        refill_target_of={2: None}, refill_amount_of={2: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
+        account_subkind=account_subkind, account_name=account_name,
+        cost_bases={2: 20_000_00}, quantities={2: 1_000},
+    )
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=10, amount_needed=6_000_00, target_account_id=1,
+        refill_ctx=refill_ctx,
+    )
+    assert taken == 6_000_00
+    assert balances == {1: 6_000_00, 2: 4_000_00, 3: refill_funds}  # no refill at all
+    assert refill_ctx.negative_events == []
+    assert refill_ctx.quantities[2] == 400  # 60% of the value, 60% of the shares
+    legs = ledger_con.execute(
+        "SELECT amount, tax_character FROM transfer_event ORDER BY id"
+    ).fetchall()
+    assert legs == [(12_000_00, "return_of_capital"), (-6_000_00, "ltcg")]
+
+
+def test_loss_withdrawal_into_a_liability_is_capped_before_the_split(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    """A loss-position withdrawal paying down a liability with less owed than
+    the draw: the net amount is capped to what's owed first, then split, so
+    the legs, the shares and the basis all follow what the liability took."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _post_withdrawal
+
+    # 1=mortgage with $1k owed, 2=brokerage worth $10k on a $20k basis.
+    balances = {1: 1_000_00, 2: 10_000_00}
+    account_kinds = {1: "liability", 2: "asset"}
+    cost_bases: dict[int, int | None] = {2: 20_000_00}
+    graph = ChainGraph(
+        members={}, leaf_lot={}, minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment={2: "taxable"},
+        account_subkind={2: "brokerage_taxable"}, account_name={1: "Mortgage", 2: "Brokerage"},
+        cost_bases=cost_bases, quantities={2: 1_000},
+    )
+    _post_withdrawal(
+        ledger_con, balances, account_kinds, {2: "taxable"},
+        {2: "brokerage_taxable"}, {1: "Mortgage", 2: "Brokerage"}, cost_bases,
+        step_id=1, month_s="2026-05-31", from_id=2, to_id=1, amount=6_000_00,
+        reason_id=99, refill_ctx=refill_ctx,
+    )
+    legs = ledger_con.execute(
+        "SELECT amount, tax_character FROM transfer_event ORDER BY id"
+    ).fetchall()
+    assert legs == [(2_000_00, "return_of_capital"), (-1_000_00, "ltcg")]
+    assert balances == {1: 0, 2: 9_000_00}
+    assert cost_bases[2] == 18_000_00
+    assert refill_ctx.quantities[2] == 900
+
+
+def test_chain_draw_into_a_liability_counts_only_what_it_owed(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    """A chain paying a liability that owes less than the ask reports, and
+    records as fulfilled, only what was owed: the rest stays outstanding in
+    remainder_cents instead of being counted as paid."""
+    from analysis.sim.engine import ChainGraph, _chain_draw
+
+    # 1=loan with $1k owed, 2=checking with $5k.
+    balances = {1: 1_000_00, 2: 5_000_00}
+    account_kinds = {1: "liability", 2: "asset"}
+    graph = ChainGraph(
+        members={}, leaf_lot={10: 2}, minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, {2: "taxable"}, {2: "cash"},
+        {1: "Loan", 2: "Checking"}, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=10, amount_needed=3_000_00, target_account_id=1,
+    )
+    assert taken == 1_000_00
+    assert balances == {1: 0, 2: 4_000_00}
+    assert ledger_con.execute(
+        "SELECT amount, requested_cents, remainder_cents FROM transfer_event"
+    ).fetchall() == [(1_000_00, 3_000_00, 2_000_00)]
+
+
+def test_chain_sweep_into_a_liability_spills_past_what_it_owed(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    """A sweep whose first destination is a liability owing less than the
+    excess pays it off and passes the rest to the next destination, rather
+    than counting the whole excess as swept."""
+    from analysis.sim.engine import ChainGraph, _chain_sweep
+
+    # 1=checking sweeping $3k, 2=loan with $1k owed, 3=savings.
+    balances = {1: 5_000_00, 2: 1_000_00, 3: 0}
+    account_kinds = {1: "asset", 2: "liability", 3: "asset"}
+    graph = ChainGraph(
+        members={30: [(20, None, 1_000_000, None, None), (21, None, 1_000_000, None, None)]},
+        leaf_lot={20: 2, 21: 3}, minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    swept = _chain_sweep(
+        ledger_con, balances, account_kinds, {1: "taxable"}, {1: "cash"},
+        {1: "Checking", 2: "Loan", 3: "Savings"}, step_id=1, month_s="2026-05-31",
+        graph=graph, chain_id=30, amount_available=3_000_00, source_account_id=1,
+    )
+    assert swept == 3_000_00
+    assert balances == {1: 2_000_00, 2: 0, 3: 2_000_00}
+
+
 def test_apply_home_sale_splits_basis_excluded_and_taxable_gain(ledger_con: sqlite3.Connection) -> None:
     """Sale price above basis + exclusion cap produces all three legs:
     return_of_capital (the basis), excluded_gain (gain up to the §121 cap,
