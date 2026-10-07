@@ -359,11 +359,15 @@ choices you have for its structure, then shocks and persistence.
 
 ### The example recipe
 
-Every command in this section runs against the prototype scenario. The
-prototype ships default inflation series and a factor for each
-([The prototype's defaults](historical-calibration.md#the-prototypes-defaults)),
-and the recipe inherits them all. It writes its own anyway, to show each
-step: its series files replace the defaults of the same name, and its
+Every command in this section runs against the prototype data. Its root
+scenario, `base`, holds only generic defaults: an inflation series and a
+factor for each
+([The prototype's defaults](historical-calibration.md#the-prototypes-defaults)).
+The household (accounts, salaries, expenses) is in `retire_alice`, which
+derives from `base`, so the recipe derives from `retire_alice` and inherits
+both; with your own data, derive from your main scenario. The recipe
+inherits the default series, but writes its own anyway, to show each step:
+its series files replace the defaults of the same name, and its
 factors replace the same-named default factors. The trees drawn below show
 only what the recipe adds; the defaults' other factors still load beside
 them, which is why `sim check` warns that they affect nothing. The first
@@ -372,7 +376,6 @@ expense that reads each one:
 
 ```sh
 sim ensemble create inflation_drivers retire_alice
-mkdir -p "$ANALYSIS_DATA_DIR/scenarios/inflation_drivers/series"
 for s in medical housing education fuel; do
   printf 'effective_date,annual_rate_micros\n2026-01-31,30000\n' \
     > "$ANALYSIS_DATA_DIR/scenarios/inflation_drivers/series/inflation__$s.csv"
