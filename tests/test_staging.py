@@ -28,8 +28,8 @@ def _sim(*args: str, data_dir: Path, input: str | None = None):
 
 
 def _break_retire_alice(append_calendar_row: Callable[..., None]) -> None:
-    # Well-formed, but nothing reads the series: the loader rejects it.
-    append_calendar_row(date="2028-01-31", kind="set_rate", series="no_such_series",
+    # Only the loader rejects a series name with a space in it.
+    append_calendar_row(date="2028-01-31", kind="set_rate", series="no such series",
                         amount="3000000")
 
 
@@ -43,7 +43,7 @@ def test_good_edit_to_already_broken_scenario_blames_the_scenario(
                   "--scenario", "retire_alice", data_dir=test_data_dir)
 
     assert result.exit_code != 0
-    assert "no_such_series" in result.output
+    assert "no such series" in result.output
     assert "already fails to load" in result.output
     assert "Traceback" not in result.output
     assert _snapshot(test_data_dir) == before

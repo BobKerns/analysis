@@ -788,7 +788,9 @@ def load_scenario(
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
     _validate_calendar(calendar_rows, leaves, issues)
     _validate_calendar_correlation(calendar_rows, issues, warnings)
-    _validate_series_references(scheduled_rows, calendar_rows, aux_rows, chains, issues)
+    _validate_series_references(
+        scheduled_rows, calendar_rows, aux_rows, chains, issues, warnings,
+    )
     _validate_chains(chains, model_rows, leaves, issues, money_resolver=money_resolver)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
     _validate_lifespan(lifespan_rows, persons, issues)
@@ -2359,6 +2361,7 @@ def _validate_series_references(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     issues: list[str],
+    warnings: list[str],
 ) -> None:
     """Cross-check every `(aux_kind, series)` pair a scheduled.csv rule or a
     chains/*.csv step reads against every pair something actually supplies,
@@ -2374,7 +2377,10 @@ def _validate_series_references(
     scheduled row or chain step reads is a silent no-op: its drawn or
     literal value lands in `aux_table` but nothing ever looks it up, so it
     never affects a run (this is what varying the wrong `series`/`aux_kind`
-    pair under ADR-006 looks like -- every member ends up bit-identical). A
+    pair under ADR-006 looks like -- every member ends up bit-identical).
+    That direction is only a warning (#92): a mix-in or base scenario can
+    set a series that only the scenarios inheriting from it read, and each
+    scenario is validated on its own. A
     chain step's own `series` (inflating its `maximum` cap over time --
     `engine._chain_step_allocation`) always reads `aux_kind='inflation'`,
     same as `fixed_amount`/`ss_benefit`, and only actually gets read when
@@ -2453,11 +2459,12 @@ def _validate_series_references(
             continue
         aux_kind = params.get("aux_kind", "rate")
         if (aux_kind, series) not in demanded:
-            issues.append(
+            warnings.append(
                 f"calendar.csv row {i}: set_rate series '{series}' under "
                 f"aux_kind '{aux_kind}' is never read by any scheduled.csv "
                 "row (percent_of_balance/fixed_amount/ss_benefit) or "
-                "account growth series -- this value would have no effect"
+                "account growth series -- this value has no effect here, "
+                "unless a scenario inheriting from this one reads it"
             )
 
 
