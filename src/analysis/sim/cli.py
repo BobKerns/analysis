@@ -2296,8 +2296,10 @@ def _do_add_transfer(
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
-@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
-@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
+@click.option("--from-lot", default=None,
+              help="Lot of the from account; asked for when a blank one would not say which.")
+@click.option("--to-lot", default=None,
+              help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -2924,8 +2926,10 @@ def calendar_add_latent_factor(
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
-@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
-@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
+@click.option("--from-lot", default=None,
+              help="Lot of the from account; asked for when a blank one would not say which.")
+@click.option("--to-lot", default=None,
+              help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -2990,8 +2994,10 @@ def scheduled_group_command() -> None:
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
-@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
-@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
+@click.option("--from-lot", default=None,
+              help="Lot of the from account; asked for when a blank one would not say which.")
+@click.option("--to-lot", default=None,
+              help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",

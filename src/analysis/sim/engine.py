@@ -749,7 +749,7 @@ def _post_fixed_amount(
             aux=ctx.aux, chain_base_date=ctx.chain_base_date,
             inflation_factor_cache=ctx.inflation_factor_cache,
             source_tax_character=tax_char, source_tax_year=tax_year,
-            refill_ctx=ctx,
+            refill_ctx=ctx, reason_kind="rule", reason_id=tid,
         )
     elif to_lot is not None:
         _chain_draw(
@@ -1889,9 +1889,13 @@ def _chain_sweep(
     source_tax_character: str | None = None,
     source_tax_year: int | None = None,
     refill_ctx: RefillContext | None = None,
+    reason_kind: str = "overflow", reason_id: int | None = None,
     _progress: _ChainProgress | None = None,
 ) -> int:
     """Recursively sweep up to ``amount_available`` out of ``source_account_id``.
+
+    Each leg is an ``overflow`` traced to the source lot, unless a rule's
+    sweep passes its own ``reason_kind='rule'`` and ``reason_id``.
 
     Mirrors ``_chain_draw``, including ``_progress`` tracking so every leg
     reports the original ``amount_available`` as ``requested``: each
@@ -1917,8 +1921,9 @@ def _chain_sweep(
         _post_withdrawal(
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, refill_ctx.cost_bases if refill_ctx is not None else None,
-            step_id, month_s, source_account_id, account_id, put, source_account_id,
-            parent_event_id=None, reason_kind="overflow",
+            step_id, month_s, source_account_id, account_id, put,
+            source_account_id if reason_id is None else reason_id,
+            parent_event_id=None, reason_kind=reason_kind,
             tax_year=source_tax_year, refill_ctx=refill_ctx,
             requested=_progress.requested, remainder=_progress.record(put),
             tax_character=source_tax_character,
@@ -1943,6 +1948,7 @@ def _chain_sweep(
             inflation_factor_cache=inflation_factor_cache,
             source_tax_character=source_tax_character,
             source_tax_year=source_tax_year, refill_ctx=refill_ctx,
+            reason_kind=reason_kind, reason_id=reason_id,
             _progress=_progress,
         )
     return total

@@ -174,12 +174,20 @@ def test_the_loader_refuses_a_transfer_between_two_chains(
     assert any("may not both be chains" in issue for issue in error.value.issues)
 
 
-def test_a_one_off_transfer_from_a_chain_draws_through_it(
+@pytest.mark.parametrize(("source", "destination", "leg"), [
+    # Out of a chain is a draw down its steps, Asset_Savings first.
+    (CHAIN, "Asset_Checking", ("Asset_Savings", "Asset_Checking")),
+    # Into a chain is a sweep into its steps.
+    ("Asset_Checking", CHAIN, ("Asset_Checking", "Asset_Savings")),
+])
+def test_a_one_off_transfer_through_a_chain_is_traced_to_its_rule(
+    source: str, destination: str, leg: tuple[str, str],
     sim: Callable[..., Result], load_test_copy: Callable[[], LoadResult], runs_dir: Path,
 ) -> None:
     """Calendar transfers take chains now (#98), and run like a fixed_amount
-    rule's: out of a chain is a draw down its steps (Asset_Savings first)."""
-    added = sim("calendar", "add", "transfer", "2027-03", CHAIN, "Asset_Checking", "1234.00")
+    rule's, every leg traced to the synthesized rule (a sweep's legs too, not
+    left as month-end overflow)."""
+    added = sim("calendar", "add", "transfer", "2027-03", source, destination, "1234.00")
     assert added.exit_code == 0, added.output
 
     run = run_scenario(load_test_copy().intent_path, runs_dir / "chain.sqlite3", run_by="TEST",
@@ -192,7 +200,7 @@ def test_a_one_off_transfer_from_a_chain_draws_through_it(
             "JOIN account ta ON ta.id = te.to_account "
             "WHERE s.created_by_event_id IS NOT NULL AND s.start LIKE '2027-03%'"
         ).fetchall()
-    assert legs == [("Asset_Savings", "Asset_Checking", 123400)]
+    assert legs == [(*leg, 123400)]
 
 
 def test_guide_offers_chains_and_asks_no_lot_for_one(
