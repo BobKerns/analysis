@@ -1874,6 +1874,12 @@ def _chain_draw(
     if account_id is not None:
         if account_id == target_account_id:
             return 0
+        # A liability accepts only what's owed; capping here, before the
+        # refill and the progress record, keeps both to what actually moves.
+        if account_kinds[target_account_id] == "liability":
+            amount_needed = min(amount_needed, max(0, balances.get(target_account_id, 0)))
+            if amount_needed <= 0:
+                return 0
         if refill_ctx is not None:
             _ensure_min_balance(
                 con, balances, account_kinds, step_id, month_s, refill_ctx,

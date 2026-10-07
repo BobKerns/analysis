@@ -757,6 +757,34 @@ def test_loss_withdrawal_into_a_liability_is_capped_before_the_split(
     assert refill_ctx.quantities[2] == 900
 
 
+def test_chain_draw_into_a_liability_counts_only_what_it_owed(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    """A chain paying a liability that owes less than the ask reports, and
+    records as fulfilled, only what was owed: the rest stays outstanding in
+    remainder_cents instead of being counted as paid."""
+    from analysis.sim.engine import ChainGraph, _chain_draw
+
+    # 1=loan with $1k owed, 2=checking with $5k.
+    balances = {1: 1_000_00, 2: 5_000_00}
+    account_kinds = {1: "liability", 2: "asset"}
+    graph = ChainGraph(
+        members={}, leaf_lot={10: 2}, minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, {2: "taxable"}, {2: "cash"},
+        {1: "Loan", 2: "Checking"}, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=10, amount_needed=3_000_00, target_account_id=1,
+    )
+    assert taken == 1_000_00
+    assert balances == {1: 0, 2: 4_000_00}
+    assert ledger_con.execute(
+        "SELECT amount, requested_cents, remainder_cents FROM transfer_event"
+    ).fetchall() == [(1_000_00, 3_000_00, 2_000_00)]
+
+
 def test_apply_home_sale_splits_basis_excluded_and_taxable_gain(ledger_con: sqlite3.Connection) -> None:
     """Sale price above basis + exclusion cap produces all three legs:
     return_of_capital (the basis), excluded_gain (gain up to the §121 cap,
