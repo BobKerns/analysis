@@ -477,6 +477,11 @@ CREATE TABLE transfer_event (
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
                         ('rule','initial','ytd','ytd_rule','refill','overflow')),
     reason_id       INTEGER,
+    -- The event this leg derives from: a multi-leg rule's primary leg, a
+    -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
+    -- leg, the debit whose look-ahead refill drew it (a nested refill points
+    -- at the refill leg that triggered it). The refill posts first, so its
+    -- parent has the higher id.
     parent_event_id INTEGER REFERENCES transfer_event(id),
     from_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
     to_lot_id       INTEGER NOT NULL REFERENCES account_model_member(id),

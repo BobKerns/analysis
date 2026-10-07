@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-008](ADR-008-correlated-parameters.md) (correlation columns, `ensemble_draw.z`; schema 30). [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed. [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar_event` gains `name` and the `vary_*` columns; new tables `ensemble_manifest`, `ensemble_draw`. [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity analysis): `ensemble_manifest.mode`, `ensemble_draw.quantile`. [#59](https://github.com/BobKerns/analysis/issues/59): `scenario_tree_id` covers mix-in scenarios' folders too, and `scenario` records `parents_json` and `load_order_json` in place of the never-populated `parent_id` (schema 31). [#68](https://github.com/BobKerns/analysis/issues/68): `calendar_event.vary_tail_dependence` (schema 32).
+- **Amended by:** [ADR-008](ADR-008-correlated-parameters.md) (correlation columns, `ensemble_draw.z`; schema 30). [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed. [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar_event` gains `name` and the `vary_*` columns; new tables `ensemble_manifest`, `ensemble_draw`. [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity analysis): `ensemble_manifest.mode`, `ensemble_draw.quantile`. [#59](https://github.com/BobKerns/analysis/issues/59): `scenario_tree_id` covers mix-in scenarios' folders too, and `scenario` records `parents_json` and `load_order_json` in place of the never-populated `parent_id` (schema 31). [#68](https://github.com/BobKerns/analysis/issues/68): `calendar_event.vary_tail_dependence` (schema 32). [#104](https://github.com/BobKerns/analysis/issues/104): a refill leg's `transfer_event.parent_event_id` points at the debit that triggered it.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-003](ADR-003-registries-and-csv-schemas.md) (rule and event-kind registries — referenced by `amount_rule_kind` and `calendar_event.kind` values used below), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility stamps on the run manifest).
 
 ## Context
@@ -589,6 +589,11 @@ CREATE TABLE transfer_event (
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
                         ('rule','initial','ytd','ytd_rule','refill','overflow')),
     reason_id       INTEGER,
+    -- The event this leg derives from: a multi-leg rule's primary leg, a
+    -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
+    -- leg, the debit whose look-ahead refill drew it (a nested refill points
+    -- at the refill leg that triggered it). The refill posts first, so its
+    -- parent has the higher id.
     parent_event_id INTEGER REFERENCES transfer_event(id),
     from_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
     to_lot_id       INTEGER NOT NULL REFERENCES account_model_member(id),

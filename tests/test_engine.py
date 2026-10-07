@@ -604,6 +604,54 @@ def test_chain_draw_refills_source_before_checking_availability(ledger_con: sqli
     assert balances[1] == 50_000
     assert balances[2] == 0
     assert balances[3] == 1_000_000 - 49_500  # refilled just enough to cover the draw
+    refill_parent, draw_id = ledger_con.execute(
+        "SELECT r.parent_event_id, d.id FROM transfer_event r, transfer_event d "
+        "WHERE r.from_account = 3 AND d.from_account = 2"
+    ).fetchone()
+    assert refill_parent == draw_id  # the refill is linked to the chain leg it fed
+
+
+def test_refill_legs_point_at_the_debit_that_triggered_them(ledger_con: sqlite3.Connection) -> None:
+    """A refill posts before its debit, then is linked to it through
+    parent_event_id (#104). A nested refill (the refill source needing its
+    own refill) points at the refill leg that set it off, so the legs form a
+    cause tree rooted at the debit."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _post_transfer
+
+    # 1=payee, 2=checking (refills from 3), 3=savings (refills from 4), 4=brokerage.
+    balances = {1: 0, 2: 10_000, 3: 1_000, 4: 1_000_000}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = dict.fromkeys(balances, "cash")
+    account_name = {1: "Payee", 2: "Checking", 3: "Savings", 4: "Brokerage"}
+    graph = ChainGraph(
+        members={},
+        leaf_lot={30: 3, 40: 4},
+        minimum_of={2: 5_000, 3: 0}, refill_chain_of={2: 30, 3: 40},
+        refill_target_of={2: None, 3: None}, refill_amount_of={2: None, 3: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
+        account_subkind=account_subkind, account_name=account_name, cost_bases={},
+    )
+    debit = _post_transfer(
+        ledger_con, balances, account_kinds, step_id=1, month_s="2026-05-31",
+        from_id=2, to_id=1, amount=20_000, tax_char="none", reason_id=99,
+        refill_ctx=refill_ctx,
+    )
+    legs = {
+        (src, dst): (event_id, parent)
+        for event_id, src, dst, parent in ledger_con.execute(
+            "SELECT id, from_account, to_account, parent_event_id FROM transfer_event"
+        )
+    }
+    savings_leg, savings_parent = legs[(3, 2)]
+    _, brokerage_parent = legs[(4, 3)]
+    assert legs[(2, 1)] == (debit, None)
+    assert savings_parent == debit
+    assert brokerage_parent == savings_leg
 
 
 def test_post_withdrawal_rejects_untracked_taxable_non_cash_account(ledger_con: sqlite3.Connection) -> None:
