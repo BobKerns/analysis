@@ -682,16 +682,17 @@ def _post_transfer(
     cap below, ``remainder = requested - amount`` after it); chain draws/
     sweeps pass both explicitly, tracked across their whole call tree.
 
-    ``net_effects=False`` posts the leg alone, skipping the refill look-ahead,
-    the lot-tracking updates and the negative-balance warning: a caller that
-    splits one movement into several legs (``_post_withdrawal``) applies those
-    once, to the net amount, since one leg on its own can overshoot it.
+    ``net_effects=False`` posts the leg alone, skipping the liability cap, the
+    refill look-ahead, the lot-tracking updates and the negative-balance
+    warning: a caller that splits one movement into several legs
+    (``_post_withdrawal``) applies those once, to the net amount, since one
+    leg on its own can overshoot it.
     """
     if amount == 0:
         return None
     if requested is None:
         requested = amount
-    if account_kinds[to_id] == "liability":
+    if net_effects and account_kinds[to_id] == "liability":
         amount = min(amount, max(0, balances.get(to_id, 0)))
         if amount == 0:
             return None
@@ -1746,6 +1747,10 @@ def _post_withdrawal(
             "tracking (taxable, non-cash) but opening_cost_basis was never set -- "
             "add it to account_values.csv"
         )
+    if account_kinds[to_id] == "liability":
+        amount = min(amount, max(0, balances.get(to_id, 0)))
+        if amount == 0:
+            return
     if refill_ctx is not None and amount > 0:
         _ensure_min_balance(
             con, balances, account_kinds, step_id, month_s, refill_ctx,

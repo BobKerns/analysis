@@ -719,6 +719,44 @@ def test_chain_draw_at_a_loss_checks_the_net_amount_not_each_leg(
     assert legs == [(12_000_00, "return_of_capital"), (-6_000_00, "ltcg")]
 
 
+def test_loss_withdrawal_into_a_liability_is_capped_before_the_split(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    """A loss-position withdrawal paying down a liability with less owed than
+    the draw: the net amount is capped to what's owed first, then split, so
+    the legs, the shares and the basis all follow what the liability took."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _post_withdrawal
+
+    # 1=mortgage with $1k owed, 2=brokerage worth $10k on a $20k basis.
+    balances = {1: 1_000_00, 2: 10_000_00}
+    account_kinds = {1: "liability", 2: "asset"}
+    cost_bases: dict[int, int | None] = {2: 20_000_00}
+    graph = ChainGraph(
+        members={}, leaf_lot={}, minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment={2: "taxable"},
+        account_subkind={2: "brokerage_taxable"}, account_name={1: "Mortgage", 2: "Brokerage"},
+        cost_bases=cost_bases, quantities={2: 1_000},
+    )
+    _post_withdrawal(
+        ledger_con, balances, account_kinds, {2: "taxable"},
+        {2: "brokerage_taxable"}, {1: "Mortgage", 2: "Brokerage"}, cost_bases,
+        step_id=1, month_s="2026-05-31", from_id=2, to_id=1, amount=6_000_00,
+        reason_id=99, refill_ctx=refill_ctx,
+    )
+    legs = ledger_con.execute(
+        "SELECT amount, tax_character FROM transfer_event ORDER BY id"
+    ).fetchall()
+    assert legs == [(2_000_00, "return_of_capital"), (-1_000_00, "ltcg")]
+    assert balances == {1: 0, 2: 9_000_00}
+    assert cost_bases[2] == 18_000_00
+    assert refill_ctx.quantities[2] == 900
+
+
 def test_apply_home_sale_splits_basis_excluded_and_taxable_gain(ledger_con: sqlite3.Connection) -> None:
     """Sale price above basis + exclusion cap produces all three legs:
     return_of_capital (the basis), excluded_gain (gain up to the §121 cap,
