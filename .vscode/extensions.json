@@ -1,0 +1,35 @@
+{
+    "recommendations": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "ms-toolsai.jupyter-renderers",
+        "astral-sh.ty",
+        "charliermarsh.ruff",
+        "streetsidesoftware.code-spell-checker",
+        "bazz.uv-manage",
+        "dotenv.dotenv-vscode",
+        "janisdd.vscode-edit-csv",
+        "usernamehw.errorlens",
+        "jackiotyu.git-worktree-manager",
+        "yy0931.gitconfig-lsp",
+        "yy0931.vscode-sqlite3-editor",        
+        "github.vscode-github-actions",
+        "github.vscode-pull-request-github",
+        "davidanson.vscode-markdownlint",
+        "takumii.markdowntable",
+        "bierner.markdown-preview-github-styles",
+        "bierner.markdown-footnotes",
+        "bierner.markdown-emoji",
+        "bierner.markdown-checkbox",
+        "redhat.vscode-yaml"
+        
+        
+        
+        
+        
+        
+        
+        
+        
+    ]
+}

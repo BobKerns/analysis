@@ -1,5 +1,9 @@
 # How the simulator draws random futures
 
+> To read a formatted `.md` file:
+> - In Jupyter: right-click on it and select `Open With / Markdown Preview`
+> - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
+
 This is background for the ensemble features: what the randomness is, where
 it comes from, and why it's arranged the way it is. It's written for someone
 who knows deterministic simulation (stepping equations forward in time) but

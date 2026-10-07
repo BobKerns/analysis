@@ -18,7 +18,7 @@
         "explorer.fileNesting.patterns": {
             "AGENTS.MD": "CLAUDE.MD,CONVENTIONS.MD,.mcp.json",
             "README.md": "LICENSE,LICENSE.md,CONTRIBUTORS.md",
-            "pyproject.toml": "uv.lock,.python-version,.markdownlint.json,cspell.json,*.code-workspace,.coverage",
+            "pyproject.toml": "uv.lock,.python-version,.markdownlint.json,cspell.json,*.code-workspace,.coverage,.env.default,.markdownlintignore,.npmrc",
             ".gitignore": ".gitattributes"
         },
         "files.exclude": {

@@ -1,5 +1,9 @@
 # Notebooks
 
+> To read a formatted `.md` file:
+> - In Jupyter: right-click on it and select `Open With / Markdown Preview`
+> - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
+
 Exploratory notebooks live here.
 
 Notes:
@@ -7,7 +11,7 @@ Notes:
 - Read inputs from `../data/` and write generated artifacts to `../out/`.
 - Treat `../state/` as persistent runtime state used by CLI and notebooks.
 
-## A table is clipped, or a notebook is slow
+## A table is clipped or a notebook is slow
 
 VS Code's notebook renderer clips a table that is wider than the window instead of
 scrolling it, and VS Code plus a Python kernel needs a fair amount of memory. If a
