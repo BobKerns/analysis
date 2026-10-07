@@ -120,7 +120,7 @@ def test_guide_returns_to_the_review_when_the_row_is_rejected(
     before = len(calendar_rows())
 
     result = calendar_add(answers=[
-        "set-rate", "2028-01", "", "no_such_series", "3.5", "", "", "n",
+        "set-rate", "2028-01", "", "no such series", "3.5", "", "", "n",
         "",                                   # write: rejected by the validating load
         "series", "Asset_Checking",           # fix it
         "",                                   # write again

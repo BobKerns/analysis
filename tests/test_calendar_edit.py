@@ -224,7 +224,7 @@ def test_edit_returns_to_the_review_when_the_scenario_would_not_load(
 ) -> None:
     before = calendar_rows()
 
-    result = calendar_edit("1", answers=["series", "no_such_series", "", "cancel"])
+    result = calendar_edit("1", answers=["series", "no such series", "", "cancel"])
 
     assert result.exit_code == 1
     assert "Not written:" in result.output

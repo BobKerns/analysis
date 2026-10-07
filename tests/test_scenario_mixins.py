@@ -198,6 +198,33 @@ def test_a_file_from_before_lineage_was_recorded_shows_none() -> None:
     assert lineage_markdown({"description": "old"}) == ""
 
 
+def test_a_mixins_set_rate_warns_alone_and_is_read_by_its_child(
+    prototype_data: Path, derive_scenario: Callable[..., Path],
+    test_data_dir: Path, intent_dir: Path,
+) -> None:
+    """A mix-in can set a series only its children read (#92): loaded on its
+    own the row has no reader, which is a warning, not a load error."""
+    calendar = pd.read_csv(prototype_data / "scenarios" / ROOT / "calendar.csv",
+                           dtype=str, keep_default_na=False).iloc[:0]
+    calendar.loc[0] = {**dict.fromkeys(calendar.columns, ""),
+                       "date": "2027-01-31", "kind": "set_rate", "series": "housing",
+                       "amount": "35000", "params_json": '{"aux_kind": "inflation"}',
+                       "name": "housing_rate"}
+    scheduled = pd.read_csv(prototype_data / "scenarios" / ROOT / "scheduled.csv",
+                            dtype=str, keep_default_na=False)
+    living = scheduled[scheduled["name"] == "living"].assign(series="housing")
+    derive_scenario("mix_housing", ROOT, {"calendar.csv": calendar.to_csv(index=False)})
+    derive_scenario("combo", f"{ROOT}:mix_housing",
+                    {"scheduled.csv": living.to_csv(index=False)})
+
+    def _warnings(name: str) -> list[str]:
+        return load_scenario(test_data_dir, name, intent_dir=intent_dir / name,
+                             allow_dirty_data=True).warnings
+
+    assert any("'housing'" in w and "is never read" in w for w in _warnings("mix_housing"))
+    assert not any("'housing'" in w for w in _warnings("combo"))
+
+
 # -- provenance and staging -------------------------------------------------
 
 
