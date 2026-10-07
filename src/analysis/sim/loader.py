@@ -813,7 +813,6 @@ def load_scenario(
         cs = EMPTY_CODE_STAMPS
 
     intent_dir.mkdir(parents=True, exist_ok=True)
-    intent_path = intent_dir / f"{scenario_name}.sqlite3"
     if intent_path.exists():
         intent_path.unlink()
 
