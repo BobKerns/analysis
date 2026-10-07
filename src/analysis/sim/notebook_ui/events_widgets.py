@@ -63,6 +63,8 @@ def events_view(
     total = frame["amount"].sum() / 100
     heading = f"**{len(frame):,} event(s)**, ${total:,.2f} total ({rc.label})"
     shown = frame[[c for c in _DISPLAY_COLUMNS if c in frame.columns]].rename(columns=_RENAME)
+    # transfer_event.amount is integer cents; the table, like the heading, shows dollars.
+    shown["amount"] = shown["amount"] / 100
     return heading, shown
 
 

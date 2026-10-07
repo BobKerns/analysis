@@ -19,6 +19,13 @@ def test_no_filters_returns_everything_sorted_by_date(two_lot_run: RunConnection
     assert f"{len(everything):,} event(s)" in heading
 
 
+def test_amounts_are_dollars_and_add_up_to_the_heading_total(two_lot_run: RunConnection) -> None:
+    everything = two_lot_run.items("transfer_event").sort_values(["date", "id"])
+    heading, table = events_view(two_lot_run)
+    assert list(table["amount"]) == list(everything["amount"] / 100)
+    assert f"${table['amount'].sum():,.2f} total" in heading
+
+
 def test_filtering_by_account_matches_either_end(two_lot_run: RunConnection) -> None:
     _heading, table = events_view(two_lot_run, accounts=("Asset_Checking",))
     assert len(table) > 0
