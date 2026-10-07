@@ -85,5 +85,9 @@
             "sideBar.background": "#24251e"
         },
         "window.title": "🌸 ${rootName} ▸ ${activeRepositoryBranchName}${separator}${activeEditorShort}",
+        "files.associations": {
+            ".env.*": "dotenv",
+            ".env": "dotenv"
+        },
     }
 }

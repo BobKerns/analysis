@@ -55,9 +55,11 @@ simulator and notebooks don't need it, only those two verification gates do.
     ```sh
     uv run nbstripout --install
     git config filter.nbstripout.clean '"$(git rev-parse --show-toplevel)/.venv/bin/python" -m nbstripout --extra-keys "metadata.kernelspec.display_name metadata.language_info.version"'
+    git config diff.ipynb.textconv '"$(git rev-parse --show-toplevel)/.venv/bin/python" -m nbstripout -t --extra-keys "metadata.kernelspec.display_name metadata.language_info.version"'
     ```
     (`--install --extra-keys` in one call does *not* persist the extra keys in
-    this nbstripout version — the second command is required.)
+    this nbstripout version — the additional commands are required. The second
+    `git config` enables it for `git diff`)
 6. Install the pinned lint tools (needs [Node.js](https://nodejs.org) 22.22.2+,
    24.15+, or 26+; `.npmrc` sets `engine-strict`, so `npm ci` refuses an
    unsupported version):

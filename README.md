@@ -8,11 +8,13 @@ To read a formatted `.md` file:
 
 ## Directory Structure
 - `src/analysis/` — Core package code
-- `tests/` — Unit tests
 - `notebooks/` — Jupyter notebooks for exploratory analysis
 - `data/` — User input data (ignored in git)
+- `docs/` — Documentation, including `architecture/` and `guides/`
+- `historical_data/` — Downloaded and captured economic data used to derive historical rates
 - `out/` — Output data (ignored in git)
 - `state/` — Persistent state (ignored in git)
+- `tests/` — Unit tests run to verify any changes.
 
 This repository is a single top-level Python project. There are no nested repos or subprojects.
 
