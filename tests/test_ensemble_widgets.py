@@ -161,7 +161,9 @@ def test_ensemble_widget_dropdown_lists_the_recipe(small_ensemble_runs_dir: Path
 
 
 def test_ensemble_widget_matches_cli_summary_numbers(small_ensemble_runs_dir: Path) -> None:
-    connections = load_ensemble(latest_ensemble_batch(small_ensemble_runs_dir / "retire_alice"))
+    batch = latest_ensemble_batch(small_ensemble_runs_dir / "retire_alice")
+    assert batch is not None
+    connections = load_ensemble(batch)
     try:
         monthly_summary = ensemble_summary(members_net_worth_by_month(connections))
         _heading, yearly = ensemble_summary_view(monthly_summary, len(connections))

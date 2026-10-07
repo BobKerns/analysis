@@ -101,6 +101,14 @@ def _bound(raw: str | None, target: str) -> float | None:
     return float(raw)
 
 
+def _required_bound(row: Mapping[str, Any], column: str, target: str) -> float:
+    """``_bound`` of a column the row's distribution can't do without."""
+    value = _bound(row[column], target)
+    if value is None:
+        raise DistributionError(f"{row['vary_distribution']} requires {column}")
+    return value
+
+
 def build_distribution(row: Mapping[str, Any], target: str) -> Distribution:
     """The distribution a varying row's ``vary_*`` columns describe, in the
     target column's own unit (a day ordinal for a date target). The loader
@@ -109,9 +117,11 @@ def build_distribution(row: Mapping[str, Any], target: str) -> Distribution:
     kind = row["vary_distribution"]
     try:
         if kind == "uniform":
-            return Uniform(low=_bound(row["vary_low"], target), high=_bound(row["vary_high"], target))
+            return Uniform(low=_required_bound(row, "vary_low", target),
+                           high=_required_bound(row, "vary_high", target))
         if kind == "triangular":
-            low, high = _bound(row["vary_low"], target), _bound(row["vary_high"], target)
+            low = _required_bound(row, "vary_low", target)
+            high = _required_bound(row, "vary_high", target)
             mode = _bound(row["vary_mode"], target)
             return Triangular(low, (low + high) / 2 if mode is None else mode, high)
         if kind == "truncated_normal":
@@ -217,6 +227,14 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
         )
 
 
+def _discrete(dist: Distribution, row: sqlite3.Row) -> Uniform | Triangular:
+    """``dist`` for a date target, which needs its whole-day (``*_int``) forms;
+    the loader rejects truncated_normal there, which has none."""
+    if isinstance(dist, TruncatedNormal):
+        raise EnsembleError(f"row {row['name']!r}: truncated_normal can't vary a date")
+    return dist
+
+
 def _resolve_value(
     row: sqlite3.Row, dist: Distribution, *, as_int: bool,
     overrides: dict[str, float] | None, seed: int | None, member_index: int,
@@ -242,21 +260,21 @@ def _resolve_value(
     if overrides is not None and row["name"] in overrides:
         q = overrides[row["name"]]
         try:
-            return (dist.quantile_int(q) if as_int else dist.quantile(q)), q
+            return (_discrete(dist, row).quantile_int(q) if as_int else dist.quantile(q)), q
         except DistributionError as e:
             raise EnsembleError(f"row {row['name']!r}: {e}") from e
     if conditional and score is not None:
         u = probability(score, nu)
-        return (dist.value_at_int(u) if as_int else dist.value_at(u)), None
+        return (_discrete(dist, row).value_at_int(u) if as_int else dist.value_at(u)), None
     if overrides is not None or member_index == 0:
-        return (dist.central_int() if as_int else dist.central()), None
+        return (_discrete(dist, row).central_int() if as_int else dist.central()), None
     if score is not None:
         u = probability(score, nu)
-        return (dist.value_at_int(u) if as_int else dist.value_at(u)), None
+        return (_discrete(dist, row).value_at_int(u) if as_int else dist.value_at(u)), None
     if seed is None:
         raise EnsembleError(f"row {row['name']!r}: a random draw needs the ensemble's seed")
     rng = member_rng(seed, member_index, row["name"])
-    return (dist.draw_int(rng) if as_int else dist.draw(rng)), None
+    return (_discrete(dist, row).draw_int(rng) if as_int else dist.draw(rng)), None
 
 
 def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[str]]:
@@ -504,7 +522,7 @@ def resolve_member(
             "recipe_tree_id, generated_at, mode) VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ensemble_name, member_index, member_count,
-                None if mode == "sensitivity" else _member_seed(seed, member_index),
+                None if mode == "sensitivity" or seed is None else _member_seed(seed, member_index),
                 recipe_tree_id, _now_iso(), mode,
             ),
         )

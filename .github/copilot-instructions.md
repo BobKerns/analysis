@@ -102,12 +102,13 @@ if the venv isn't on `PATH`.
 
 ## Verifying a change
 
-Four gates should pass before reporting any change done, plus a fifth for
+Five gates should pass before reporting any change done, plus a sixth for
 changes to the simulator or its loader:
 
 ```sh
 .venv/bin/python -m pytest -q                     # tests
 .venv/bin/python -m ruff check src tests          # lint
+.venv/bin/ty check                                # types (ty; src and tests, per pyproject.toml)
 npm run spell                                     # spelling (cspell)
 npm run markdownlint                              # markdown (markdownlint)
 for s in "$ANALYSIS_DATA_DIR"/scenarios/*/; do    # simulator changes: real scenarios still load
@@ -118,7 +119,7 @@ done
 `cspell` and `markdownlint` are pinned in `package.json` and installed by
 `scripts/setup.sh` (`npm ci`); see [`docs/SETUP.md`](../docs/SETUP.md).
 
-[`.github/workflows/gates.yml`](workflows/gates.yml) runs the first four gates
+[`.github/workflows/gates.yml`](workflows/gates.yml) runs the first five gates
 and the blocked-keyword check on every pull request and push to `main`. It is
 a backstop, not a substitute: run the gates locally before pushing, since every
 push to a pull request also triggers a Copilot review.
@@ -128,7 +129,12 @@ Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_na
 
 `ruff check` is clean on `main`; keep it that way.
 
-`mypy` is not installed; there is no type-check gate.
+`ty check` is clean on `main` too. Fix a type error rather than silencing it.
+Where a library hides types from ty, use the existing helper: `named_rows()`
+for `DataFrame.itertuples()` and `index_years()`/`index_months()` for a
+`DatetimeIndex`'s date fields (both in `src/analysis/frames.py`), or
+`_trait()` for a traitlets class attribute (`notebook_ui/pickers.py`). A
+narrow `# ty: ignore[<rule>]` with a reason is the last resort.
 
 ## Conventions
 

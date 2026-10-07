@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from analysis.frames import index_years
 from analysis.sim.connection import RunConnection, ScenarioConnection, find_latest_run, open_run, open_scenario
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import ScenarioRef, load_scenario
@@ -256,7 +257,7 @@ def test_items_cache_invalidated_on_write(retire_alice_scenario: ScenarioConnect
 def test_items_unknown_type(retire_alice_scenario: ScenarioConnection) -> None:
     sc = retire_alice_scenario
     with pytest.raises(ValueError):
-        sc.items("bogus")  # type: ignore[arg-type]
+        sc.items("bogus")  # ty: ignore[invalid-argument-type]  # deliberately not an ItemType
 
 
 def test_net_worth_frame_has_nominal_and_cpi_constant(retire_alice_run: RunConnection) -> None:
@@ -357,11 +358,11 @@ def test_year_end_values_and_yearly_totals(retire_alice_run: RunConnection) -> N
     nw = rc.net_worth_frame()
     year_end = year_end_values(nw[["nominal"]])
     assert (year_end.index == sorted(year_end.index)).all()
-    assert set(nw.index.year) >= set(year_end.index)
+    assert set(index_years(nw)) >= set(year_end.index)
 
     income_yearly = yearly_totals(rc.income_by_category())
     assert income_yearly.index.name == "year"
-    assert set(income_yearly.index) == set(rc.income_by_category().index.year)
+    assert set(income_yearly.index) == set(index_years(rc.income_by_category()))
 
 
 def test_a_query_from_a_different_thread_falls_back_to_a_temporary_connection(

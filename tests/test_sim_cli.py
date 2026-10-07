@@ -1306,6 +1306,7 @@ def test_sim_run_ensemble_reports_member_failures_without_stopping(
     # records that it was expected and why it failed.
     from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
     manifest = read_batch_manifest(runs_batch)
+    assert manifest is not None
     assert manifest["member_count"] == 2
     assert manifest["failures"] == [
         {"index": 1, "intent_path": str(intent_batch / "member_0001.sqlite3"), "error": "boom"},
@@ -1902,6 +1903,7 @@ def test_sim_run_sensitivity_generates_oat_batch(
     member_runs = sorted((runs_dir / "retire_alice").glob("*/member_*.sqlite3"))
     assert len(member_runs) == 5
     manifest = read_batch_manifest(member_runs[0].parent)
+    assert manifest is not None
     assert manifest["mode"] == "sensitivity"
     assert manifest["quantiles"] == [0.1, 0.9]
     assert manifest["rows"] == ["checking_rate_vary", "retire_bill_vary"]
@@ -2235,10 +2237,11 @@ def test_sim_run_jobs_defaults_to_available_cpus(
     import analysis.sim.cli as sim_cli
 
     jobs_param = next(p for p in sim_cli.run.params if p.name == "jobs")
-    assert jobs_param.default == 0
+    default = jobs_param.default
+    assert isinstance(default, int) and default == 0
     monkeypatch.setattr(sim_cli.os, "process_cpu_count", lambda: available)
     *_, jobs = sim_cli._batch_options(
         sensitivity=False, ensemble_size=3, only=None, quantiles_text=None,
-        jobs=jobs_param.default,
+        jobs=default,
     )
     assert jobs == expected

@@ -515,6 +515,7 @@ def test_read_batch_manifest_round_trips(tmp_path: Path) -> None:
         (2, tmp_path / "member_0002.sqlite3", "went negative"),
     ])
     manifest = read_batch_manifest(tmp_path)
+    assert manifest is not None
     assert manifest["member_count"] == 5
     assert manifest["failures"] == [
         {"index": 2, "intent_path": str(tmp_path / "member_0002.sqlite3"), "error": "went negative"},
@@ -737,6 +738,7 @@ def test_sensitivity_batch_manifest_round_trips(tmp_path: Path) -> None:
         quantiles=(0.1, 0.9), rows=["a", "b"],
     )
     manifest = read_batch_manifest(tmp_path)
+    assert manifest is not None
     assert manifest["mode"] == "sensitivity"
     assert manifest["quantiles"] == [0.1, 0.9]
     assert manifest["rows"] == ["a", "b"]
@@ -744,7 +746,9 @@ def test_sensitivity_batch_manifest_round_trips(tmp_path: Path) -> None:
 
 def test_read_batch_manifest_defaults_old_batches_to_monte_carlo(tmp_path: Path) -> None:
     (tmp_path / "batch_manifest.json").write_text('{"member_count": 3, "failures": []}')
-    assert read_batch_manifest(tmp_path)["mode"] == "monte_carlo"
+    manifest = read_batch_manifest(tmp_path)
+    assert manifest is not None
+    assert manifest["mode"] == "monte_carlo"
 
 
 def test_latest_ensemble_batch_filters_by_mode(tmp_path: Path) -> None:

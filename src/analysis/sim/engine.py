@@ -25,13 +25,14 @@ from __future__ import annotations
 import calendar
 import json
 import warnings
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from analysis.sim import registries
 from analysis.sim.runs import finalize_run, open_run_file
+from analysis.sim.schema import inserted_id
 
 __all__ = ["run_scenario", "EngineError"]
 
@@ -212,7 +213,7 @@ def run_scenario(
                 "VALUES (?, ?, ?)",
                 (step_index, month_s, previous_step_id),
             )
-            step_id = cur.lastrowid
+            step_id = inserted_id(cur)
             _advance_inflation_indexes(
                 con, step_id, month_s, aux, inflation_indexes,
             )
@@ -378,6 +379,12 @@ def run_scenario(
                                 "supported together"
                             )
                     case "percent_of_balance":
+                        assert to is not None  # only fixed_amount may target an interior chain
+                        if from_account is None:
+                            raise EngineError(
+                                f"scheduled_transaction id={tid} ({_name!r}): percent_of_balance "
+                                "needs an account or lot source, not an interior chain"
+                            )
                         amount = _amount_percent_of_balance(
                             params, opening_balances, balances, to, aux,
                             month_s, tid,
@@ -397,6 +404,7 @@ def run_scenario(
                                 refill_ctx=refill_ctx,
                             )
                     case "mortgage_payment":
+                        assert to is not None  # only fixed_amount may target an interior chain
                         _apply_mortgage_payment(
                             con, balances, account_kinds, step_id, month_s,
                             params, p_amount_cents, from_account, to, account_id_by_name,
@@ -424,6 +432,7 @@ def run_scenario(
                                 f"rmd id={tid}: subject_account {subject!r} is not an account "
                                 "(a chain source needs it in params_json)"
                             )
+                        assert to is not None  # only fixed_amount may target an interior chain
                         _apply_rmd(
                             con, balances, account_kinds, step_id, month_s, month,
                             params, from_account, to,
@@ -455,6 +464,7 @@ def run_scenario(
                             raise EngineError(
                                 f"tax_accumulator id={tid}: cadence must be 'annual'"
                             )
+                        assert to is not None  # only fixed_amount may target an interior chain
                         _apply_tax_accumulator(
                             con, balances, account_kinds, step_id, month_s, month,
                             params, from_id=from_account, to_id=to, aux=aux,
@@ -581,7 +591,7 @@ class RefillContext:
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
         inflation_factor_cache: dict,
-        account_tax_treatment: dict[int, str | None],
+        account_tax_treatment: Mapping[int, str | None],
         account_subkind: dict[int, str], account_name: dict[int, str],
         cost_bases: dict[int, int | None],
         quantities: dict[int, int | None] | None = None,
@@ -733,7 +743,7 @@ def _post_transfer(
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
     if refill_ctx is not None:
         _warn_if_negative(refill_ctx, account_kinds, from_id, balances, month_s)
-    return cur.lastrowid
+    return inserted_id(cur)
 
 
 def _record_purchase(
@@ -819,7 +829,7 @@ def _post_ytd_transfer(
         (step_id, date_s, from_id, to_id, from_id, to_id, amount, amount, 0,
          tax_char, reason_kind, reason_id, parent_event_id),
     )
-    return cur.lastrowid
+    return inserted_id(cur)
 
 
 def _first_chain_leaf_lot(graph: ChainGraph, chain_id: int) -> int | None:
@@ -991,7 +1001,7 @@ def _past_person_lifespan(
     month_s: str,
     p_person: str | None,
     from_id: int,
-    to_id: int,
+    to_id: int | None,
     account_owner: dict[int, str | None],
     person_lifespan: dict[str, str],
 ) -> bool:
@@ -1093,7 +1103,7 @@ def _apply_mortgage_payment(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str,
     params: dict[str, Any], amount_cents: int | None,
-    from_id: int, liab_id: int,
+    from_id: int | None, liab_id: int,
     account_id_by_name: dict[str, int],
     tax_char: str, tid: int, *, graph=None, source_chain_id=None,
     account_tax_treatment=None, account_subkind=None, account_name=None,
@@ -1145,6 +1155,9 @@ def _apply_mortgage_payment(
         return
     if source_chain_id is None:
         raise EngineError(f"mortgage_payment id={tid}: missing source chain")
+    # The engine passes these with every chain source.
+    assert graph is not None and account_tax_treatment is not None
+    assert account_subkind is not None and account_name is not None
     _chain_draw(
         con, balances, account_kinds, account_tax_treatment, account_subkind,
         account_name, step_id, month_s, graph, source_chain_id,
@@ -1177,7 +1190,7 @@ def _claim_multiplier_micros(claim_age: int, fra: int = SS_FRA) -> int:
 def _apply_ss_benefit(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str, month: date,
-    params: dict[str, Any], from_id: int, to_id: int,
+    params: dict[str, Any], from_id: int | None, to_id: int | None,
     person_birthdates: dict[str, date],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     tax_char: str, tid: int, *, chain_graph=None, to_chain_id=None,
@@ -1213,12 +1226,17 @@ def _apply_ss_benefit(
         factor_micros = factor_micros * (1_000_000 + rate) // 1_000_000
     amount = int(pia) * mult_micros * factor_micros // (10 ** 12)
     if amount > 0:
+        if from_id is None:
+            raise EngineError(f"ss_benefit id={tid}: the source must be an account, not an interior chain")
         if to_id is not None:
             _post_transfer(
                 con, balances, account_kinds, step_id, month_s,
                 from_id, to_id, amount, tax_char, tid, refill_ctx=refill_ctx,
             )
         elif to_chain_id is not None:
+            # The engine passes these with every chain destination.
+            assert chain_graph is not None and account_tax_treatment is not None
+            assert account_subkind is not None and account_name is not None
             _chain_sweep(
                 con, balances, account_kinds, account_tax_treatment,
                 account_subkind, account_name, step_id, month_s,
@@ -1241,7 +1259,7 @@ def _apply_rmd(
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     tax_char: str, tid: int, *, subject_lots: Sequence[int],
     graph: ChainGraph | None = None, source_chain_id: int | None = None,
-    account_tax_treatment: dict[int, str | None] | None = None,
+    account_tax_treatment: Mapping[int, str | None] | None = None,
     account_subkind: dict[int, str] | None = None,
     account_name: dict[int, str] | None = None,
     chain_context: dict[str, Any] | None = None,
@@ -1515,6 +1533,10 @@ def _apply_home_sale(
     cost_bases[from_id] = basis - basis_out
 
 
+type ChainStep = tuple[int, int | None, int, str | None, str | None]
+"""One ``chain_steps`` row: ``(draw_from_chain_id, maximum, percent, series, cadence)``."""
+
+
 class ChainGraph:
     """Resolved ``chain``/``chain_steps`` reference graph (ADR-003 §4.7).
 
@@ -1532,7 +1554,7 @@ class ChainGraph:
 
     def __init__(
         self,
-        members: dict[int, list[tuple[int, ...]]],
+        members: Mapping[int, Sequence[tuple[Any, ...]]],
         leaf_lot: dict[int, int],
         minimum_of: dict[int, int],
         refill_chain_of: dict[int, int | None],
@@ -1541,7 +1563,7 @@ class ChainGraph:
         maximum_of: dict[int, int | None],
         overflow_chain_of: dict[int, int | None],
     ) -> None:
-        self.members = {
+        self.members: dict[int, list[ChainStep]] = {
             chain_id: [(*step, *self._STEP_DEFAULTS[len(step) - 1:]) for step in steps]
             for chain_id, steps in members.items()
         }
@@ -1555,7 +1577,7 @@ class ChainGraph:
 
 
 def _load_chain_graph(con) -> ChainGraph:
-    members: dict[int, list[tuple[int, ...]]] = {}
+    members: dict[int, list[ChainStep]] = {}
     for chain_id, draw_from_id, maximum, percent, series, cadence in con.execute(
         "SELECT chain_id, draw_from_chain_id, "
         "       maximum_cents, percent_micros, series, cadence "
@@ -1642,7 +1664,7 @@ def _settle_order(graph: ChainGraph) -> list[int]:
 
 def _post_withdrawal(
     con, balances: dict[int, int], account_kinds: dict[int, str],
-    account_tax_treatment: dict[int, str | None], account_subkind: dict[int, str],
+    account_tax_treatment: Mapping[int, str | None], account_subkind: dict[int, str],
     account_name: dict[int, str], cost_bases: dict[int, int | None] | None,
     step_id: int, month_s: str, from_id: int, to_id: int, amount: int,
     reason_id: int, *, parent_event_id: int | None = None,
@@ -1675,7 +1697,7 @@ def _post_withdrawal(
         )
         return
     basis = None if cost_bases is None else cost_bases.get(from_id)
-    if basis is None:
+    if cost_bases is None or basis is None:
         raise EngineError(
             f"account {account_name.get(from_id)!r}: withdrawal needs cost-basis "
             "tracking (taxable, non-cash) but opening_cost_basis was never set -- "
@@ -1752,7 +1774,7 @@ class _ChainProgress:
 
 def _chain_draw(
     con, balances: dict[int, int], account_kinds: dict[int, str],
-    account_tax_treatment: dict[int, str | None], account_subkind: dict[int, str],
+    account_tax_treatment: Mapping[int, str | None], account_subkind: dict[int, str],
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph,
     chain_id: int, amount_needed: int, target_account_id: int,
@@ -1839,7 +1861,7 @@ def _chain_draw(
 
 def _chain_sweep(
     con, balances: dict[int, int], account_kinds: dict[int, str],
-    account_tax_treatment: dict[int, str | None], account_subkind: dict[int, str],
+    account_tax_treatment: Mapping[int, str | None], account_subkind: dict[int, str],
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph,
     chain_id: int, amount_available: int, source_account_id: int,
@@ -1909,7 +1931,7 @@ def _chain_sweep(
 
 def _settle_accounts(
     con, balances: dict[int, int], account_kinds: dict[int, str],
-    account_subkind: dict[int, str], account_tax_treatment: dict[int, str | None],
+    account_subkind: dict[int, str], account_tax_treatment: Mapping[int, str | None],
     account_name: dict[int, str],
     step_id: int, month_s: str, graph: ChainGraph, settle_order: list[int],
     *, aux, chain_base_date: date, inflation_factor_cache: dict,
@@ -1946,12 +1968,12 @@ def _apply_tax_accumulator(
     con,
     balances: dict[int, int],
     account_kinds: dict[int, str],
-    step_id: int,
+    step_id: int | None,
     month_s: str,
     month: date,
     params: dict[str, Any],
     *,
-    from_id: int,
+    from_id: int | None,
     to_id: int,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     tax_char: str,
@@ -2119,6 +2141,7 @@ def _apply_tax_accumulator(
     tax_overpaid = max(0, already_paid - tax_liability)
 
     if post_transfer and tax_due > 0:
+        assert step_id is not None  # only the post-end tail runs without a step, and it never posts
         if from_id is not None:
             _post_transfer(
                 con, balances, account_kinds, step_id, month_s,
@@ -2126,6 +2149,9 @@ def _apply_tax_accumulator(
                 refill_ctx=refill_ctx,
             )
         else:
+            # The engine passes these with every chain source.
+            assert graph is not None and source_chain_id is not None and account_tax_treatment is not None
+            assert account_subkind is not None and account_name is not None
             _chain_draw(
                 con, balances, account_kinds, account_tax_treatment,
                 account_subkind, account_name, step_id, month_s, graph,
@@ -2393,7 +2419,9 @@ def _parse_scheduled_date(
 ) -> date:
     """Parse a scheduled date with enough context to fix its CSV row."""
     try:
-        return _parse_date(value)  # type: ignore[arg-type]
+        if value is None:
+            raise TypeError("no date")
+        return _parse_date(value)
     except (TypeError, ValueError) as exc:
         raise EngineError(
             f"scheduled_transaction id={transaction_id} ({name!r}): invalid "
@@ -2572,7 +2600,7 @@ def _apply_calendar_event(
                  int(amount), tax_char, ev_date, ev_date, ev_id,
                  payload.get("description")),
             )
-            new_tid = cur.lastrowid
+            new_tid = inserted_id(cur)
             _post_transfer(
                 con, balances, account_kinds, step_id, month_s,
                 from_id, to_id, int(amount), tax_char, new_tid,

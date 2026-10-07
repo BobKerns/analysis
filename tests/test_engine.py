@@ -631,7 +631,7 @@ def test_post_withdrawal_splits_return_of_capital_and_ltcg_pro_rata(ledger_con: 
     from analysis.sim.engine import _post_withdrawal
 
     balances = {3: 10_000_00, 4: 0}
-    cost_bases = {3: 4_000_00}
+    cost_bases: dict[int, int | None] = {3: 4_000_00}
     _post_withdrawal(
         ledger_con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
         {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
@@ -658,7 +658,7 @@ def test_post_withdrawal_realizes_loss_as_negative_ltcg_leg(ledger_con: sqlite3.
     from analysis.sim.engine import _post_withdrawal
 
     balances = {3: 9_000_00, 4: 0}
-    cost_bases = {3: 20_000_00}  # bought high, now worth less than basis
+    cost_bases: dict[int, int | None] = {3: 20_000_00}  # bought high, now worth less than basis
     _post_withdrawal(
         ledger_con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
         {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
@@ -680,7 +680,7 @@ def test_apply_home_sale_splits_basis_excluded_and_taxable_gain(ledger_con: sqli
     from analysis.sim.engine import _apply_home_sale
 
     balances = {5: 900_000_00, 6: 0}
-    cost_bases = {5: 200_000_00}
+    cost_bases: dict[int, int | None] = {5: 200_000_00}
     _apply_home_sale(
         ledger_con, balances, {5: "asset", 6: "asset"}, cost_bases,
         step_id=1, month_s="2026-06-30",
@@ -708,7 +708,7 @@ def test_apply_home_sale_excludes_entire_gain_when_under_cap(ledger_con: sqlite3
     from analysis.sim.engine import _apply_home_sale
 
     balances = {5: 600_000_00, 6: 0}
-    cost_bases = {5: 200_000_00}
+    cost_bases: dict[int, int | None] = {5: 200_000_00}
     _apply_home_sale(
         ledger_con, balances, {5: "asset", 6: "asset"}, cost_bases,
         step_id=1, month_s="2026-06-30",
@@ -733,7 +733,7 @@ def test_apply_home_sale_looks_up_exclusion_from_aux_table_by_filing_status(ledg
     from analysis.sim.engine import _apply_home_sale
 
     balances = {5: 900_000_00, 6: 0}
-    cost_bases = {5: 200_000_00}
+    cost_bases: dict[int, int | None] = {5: 200_000_00}
     aux = {
         ("home_sale_exclusion", None): [
             ("1997-05-07", {"filing_status": "Single", "amount": 250_000_00}),

@@ -129,6 +129,10 @@ def ensemble_widget(*,
         if not dropdown.value:
             return
         batch_dir = latest_ensemble_batch(runs_dir / dropdown.value, mode="monte_carlo")
+        if batch_dir is None:
+            with out:
+                display(StyledMarkdown(f"**No Monte Carlo batch for {dropdown.value}.**"))
+            return
         statuses = member_run_statuses(batch_dir)
         failed_count = sum(1 for status in statuses.values() if status != "succeeded")
         connections = load_ensemble(batch_dir)

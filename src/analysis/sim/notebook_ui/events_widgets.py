@@ -4,6 +4,7 @@ filterable by reason kind, tax character, account and date range."""
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 import pandas as pd
 from IPython.display import display
@@ -45,7 +46,7 @@ def events_view(
     on that axis. ``accounts`` matches a row where the account is *either*
     end of the transfer (its lot is shown alongside it when the account has
     more than one)."""
-    filters: dict[str, list[str]] = {}
+    filters: dict[str, Any] = {}
     if reason_kinds:
         filters["reason_kind"] = list(reason_kinds)
     if tax_characters:

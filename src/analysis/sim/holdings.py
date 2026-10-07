@@ -7,10 +7,16 @@ a :class:`ScenarioConnection` they are the opening values.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pandas as pd
 
 from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.frames import named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+
+if TYPE_CHECKING:
+    from rich.text import JustifyMethod
 
 __all__ = [
     "account_holdings", "holding_accounts", "holding_months", "holding_symbols",
@@ -156,7 +162,7 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _table(title: str, columns: list[tuple[str, str]]):
+def _table(title: str | None, columns: list[tuple[str, JustifyMethod]]):
     from rich.table import Table
 
     table = Table(title=title, header_style="bold", show_lines=False)
@@ -172,7 +178,7 @@ def render_holdings_table(frame: pd.DataFrame, title: str | None = None):
         ("Quantity", "right"), ("Price", "right"), ("Balance", "right"),
         ("Basis", "right"), ("Unrealized", "right"),
     ])
-    for row in frame.itertuples():
+    for row in named_rows(frame):
         table.add_row(
             row.lot, _text(row.symbol), _text(row.name), _text(row.acquired),
             _shares(row.quantity),
@@ -193,7 +199,7 @@ def render_holders_table(frame: pd.DataFrame, title: str | None = None):
         ("Account", "left"), ("Lot", "left"), ("Tax", "left"), ("Quantity", "right"),
         ("Price", "right"), ("Balance", "right"), ("Basis", "right"), ("Unrealized", "right"),
     ])
-    for row in frame.itertuples():
+    for row in named_rows(frame):
         table.add_row(
             row.account, row.lot, _text(row.tax_treatment), _shares(row.quantity),
             _money(row.price, 4), _money(row.balance), _money(row.cost_basis),

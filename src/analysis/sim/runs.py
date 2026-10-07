@@ -83,7 +83,8 @@ def open_run_file(
         data_dirty=data_dirty,
         run_args=run_args,
         engine_options=engine_options,
-        code_repo_path=code.repo_path,
+        # NOT NULL: blank when the code isn't running from a git checkout.
+        code_repo_path=code.repo_path or "",
         code_dirty=code.dirty,
     )
     con.commit()

@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -154,8 +155,10 @@ def test_a_glide_path_uses_the_set_in_force() -> None:
 
 
 def test_blended_amount_rounds_once() -> None:
-    aux = {("rate", "a"): [("2026-01-31", {"annual_rate_micros": 70_001})],
-           ("rate", "b"): [("2026-01-31", {"annual_rate_micros": 30_001})]}
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]] = {
+        ("rate", "a"): [("2026-01-31", {"annual_rate_micros": 70_001})],
+        ("rate", "b"): [("2026-01-31", {"annual_rate_micros": 30_001})],
+    }
     params = {"blend": [["", [["a", 333_333], ["b", 666_667]]]]}
     amount = _amount_percent_of_balance(params, {1: 12_000_000_00}, {}, 1, aux, "2026-05-31", 1)
     weighted = 333_333 * 70_001 + 666_667 * 30_001

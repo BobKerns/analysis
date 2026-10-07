@@ -7,6 +7,7 @@ instead of pre-built pandas structures.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
 from IPython.display import clear_output, display
 from ipywidgets import widgets
@@ -32,12 +33,12 @@ _CUMULATIVE_CAVEAT = "_Note that expense and income flows are cumulative totals.
 
 
 def account_balance_history_widget(
-    balance_pivot_by_kind: Callable[[str], pd.DataFrame],
+    balance_pivot_by_kind: Callable[[AccountKind], pd.DataFrame],
     account_kinds: pd.Series,
     title: str,
     kind: AccountKind,
     initial_count: int = 1,
-    cpi_balance_pivot_by_kind: Callable[[str], pd.DataFrame] | None = None,
+    cpi_balance_pivot_by_kind: Callable[[AccountKind], pd.DataFrame] | None = None,
     scenario_picker: widgets.Dropdown | None = None,
     dollar_mode: DollarModePicker | None = None,
     value_mode: ValuePlotModePicker | None = None,
@@ -55,6 +56,10 @@ def account_balance_history_widget(
     """
 
     kind_picker = AccountKindPicker(kind)
+
+    def _kind() -> AccountKind:
+        # No "Any" option here, so the picker always holds a single kind.
+        return cast(AccountKind, kind_picker.value)
     picker = widgets.SelectMultiple(
         description="Accounts:", layout=widgets.Layout(width="50%"),
     )
@@ -66,7 +71,7 @@ def account_balance_history_widget(
 
     def _sync_accounts_options(*_):
         plottable = plottable_accounts(
-            balance_pivot_by_kind(kind_picker.value), account_kinds, kind_picker.value,
+            balance_pivot_by_kind(_kind()), account_kinds, _kind(),
         )
         picker.rows = min(15, max(5, len(plottable)))
         picker.options = plottable
@@ -75,7 +80,7 @@ def account_balance_history_widget(
     def _redraw_caveat(*_):
         with caveat_out:
             clear_output(wait=True)
-            if kind_picker.value in _CUMULATIVE_KINDS:
+            if _kind() in _CUMULATIVE_KINDS:
                 display(StyledMarkdown(_CUMULATIVE_CAVEAT))
 
     def _redraw(*_):
@@ -84,15 +89,15 @@ def account_balance_history_widget(
         zero_anchor = y_axis_mode.value
         values = value_mode.value
         pivot = (
-            cpi_balance_pivot_by_kind(kind_picker.value)
+            cpi_balance_pivot_by_kind(_kind())
             if mode == DollarMode.CPI_CONSTANT and cpi_balance_pivot_by_kind is not None
-            else balance_pivot_by_kind(kind_picker.value)
+            else balance_pivot_by_kind(_kind())
         )
         with out:
             clear_output(wait=True)
             mode_title = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
             values_title = "monthly change" if values == ValuePlotMode.MONTHLY else "total"
-            kind_title = KIND_LABELS[kind_picker.value]
+            kind_title = KIND_LABELS[_kind()]
             fig = render_balance_history_figure(
                 pivot, selected, f"{title} ({kind_title}) [{mode_title}, {values_title}]",
                 zero_anchor=zero_anchor, value_mode=values,
@@ -129,7 +134,7 @@ def account_balance_history_widget(
 
 
 def account_history_widget(
-    rc: RunConnection, kind: str, title: str, initial_count: int = 1,
+    rc: RunConnection, kind: AccountKind, title: str, initial_count: int = 1,
     scenario_picker: widgets.Dropdown | None = None,
     dollar_mode: DollarModePicker | None = None,
     value_mode: ValuePlotModePicker | None = None,

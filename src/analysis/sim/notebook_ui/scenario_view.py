@@ -70,7 +70,7 @@ def _chain_targets(sc: ScenarioConnection) -> Callable[[object], tuple[str, str]
         row = by_name.loc[chain_name]
         account = row["account_name"]
         if pd.isna(account):
-            return chain_name, "-"
+            return str(chain_name), "-"
         return account, row["lot"] if lot_counts.get(account, 0) > 1 else "-"
 
     return resolve

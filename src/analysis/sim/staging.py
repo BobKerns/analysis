@@ -21,7 +21,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -235,7 +235,7 @@ def _commit(real: Path, stage: Path, changed: list[Path], removed: list[Path]) -
 
 
 @contextmanager
-def staged_edit(data_dir: Path | str, scenario: str | None) -> Iterator[StagedEdit]:
+def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedEdit]:
     """Stage an edit to the data dir's scenario CSVs; write it only if it loads.
 
     ``scenario`` (or the current scenario) is preflighted: if it does not load

@@ -86,7 +86,7 @@ def scheduled_styler(view: pd.DataFrame, hidden: Collection[str] = ()):
         "amount": "${:,.2f}", "start": truncate(7), "end": truncate(7),
         **{column: _breakable for column in _SCHEDULED_TEXT_COLUMNS if column in shown.columns},
     }
-    styled = shown.style.format(formats, na_rep="-").hide(axis="index")
+    styled = shown.style.hide(axis="index").format(formats, na_rep="-")
     styled = _fit_to_width(styled, nowrap=_SCHEDULED_NOWRAP_COLUMNS)
     dates = [c for c in ("start", "end") if c in shown.columns]
     return styled.set_properties(subset=dates, **{"width": "7ch"}) if dates else styled
@@ -133,7 +133,7 @@ def show_calendar_view(sc):
         **{c: _breakable for c in ("kind", "target", "account_1", "lot_1",
                                    "account_2", "lot_2", "description")},
     }
-    styled = view.style.format(formats, na_rep="-").hide(axis="index")
+    styled = view.style.hide(axis="index").format(formats, na_rep="-")
     styled = _fit_to_width(styled, nowrap=["date", "amount"])
     styled = styled.set_properties(subset=["date"], **{"width": "7ch"})
     # Amounts are display text now (a rate or dollars, by kind): keep them

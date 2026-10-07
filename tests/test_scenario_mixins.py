@@ -180,6 +180,7 @@ def test_description_view_shows_parents_mixins_and_load_order(
     derive_scenario("combo", "main:mix")
     with open_scenario(test_data_dir, "combo") as scenario:
         md = description_view(scenario).data
+    assert isinstance(md, str)
     assert md.endswith(
         "**Parent:** `main`; **mix-ins:** `mix`  \n"
         f"**Load order:** `{ROOT}` → `main` → `mix` → `combo`"

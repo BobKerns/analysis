@@ -6,7 +6,7 @@ import csv as _csv
 import json
 import math
 import secrets
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
 import os
 import sqlite3
@@ -30,7 +30,9 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import allocation, calendar_guide, prices, registries, sensitivity
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
-from analysis.sim.connection import open_run, open_scenario, year_end_values
+from analysis.sim.connection import (
+    RunConnection, ScenarioConnection, open_run, open_scenario, year_end_values,
+)
 from analysis.sim.holdings import (
     account_holdings,
     render_holders_table,
@@ -87,7 +89,8 @@ from analysis.sim.staging import (
     staged_edit,
 )
 from analysis.sim.dates import MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso
-from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode
+from analysis.frames import named_rows
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
 
 
 def _resolve_state_dir(
@@ -1110,7 +1113,7 @@ def _report_oat(
         value_cols = [c for c in table.columns if c.startswith("value@")]
         delta_cols = [c for c in table.columns if c.startswith("delta@")]
         for name, row in table.iterrows():
-            label = sensitivity.row_label(name, factors)
+            label = sensitivity.row_label(str(name), factors)
             values = " ".join(f"{c[6:]}={row[c]}" for c in value_cols)
             deltas_text = " ".join(f"{_fmt_delta(row[c], relative):>12}" for c in delta_cols)
             click.echo(
@@ -1124,7 +1127,7 @@ def _report_oat(
     click.echo("\n  rank by year:")
     click.echo("    " + " " * 24 + " ".join(f"{str(y)[-2:]:>3}" for y in grid.columns))
     for name, ranks in grid.iterrows():
-        label = sensitivity.row_label(name, factors)
+        label = sensitivity.row_label(str(name), factors)
         click.echo(f"    {label:<24}" + " ".join(f"{'-' if pd.isna(r) else r:>3}" for r in ranks))
 
     pins = sensitivity.pin_candidates(deltas, negligible, measure=measure)
@@ -1376,7 +1379,8 @@ def items(
         if end < start:
             raise click.ClickException("--end must be on or after --start")
     else:
-        end = str((pd.Period(start, freq="M") + months - 1).end_time.date())
+        # start is a month end, so MonthEnd(n) lands n month ends later.
+        end = str((pd.Timestamp(start) + pd.offsets.MonthEnd(months - 1)).date())
 
     if runfile is None:
         data_dir_p = _resolve_data_dir(data_dir)
@@ -1638,7 +1642,7 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
 
 
 @contextmanager
-def _scenario_edit(data_dir: Path, scenario: str | None) -> Iterator[StagedEdit]:
+def _scenario_edit(data_dir: Path, scenario: str | None) -> Generator[StagedEdit]:
     """``staged_edit`` for a CLI command: edits land only if every affected
     scenario still loads (issue #44). Issues go to stderr as ``error:`` lines,
     like ``sim check``, and the command fails with nothing written."""
@@ -1668,7 +1672,7 @@ def _scenario_edit(data_dir: Path, scenario: str | None) -> Iterator[StagedEdit]
 
 
 @contextmanager
-def _intent_db(data_dir: Path, scenario: str | None) -> Iterator[tuple[sqlite3.Connection, str]]:
+def _intent_db(data_dir: Path, scenario: str | None) -> Generator[tuple[sqlite3.Connection, str]]:
     """``open_intent_db`` for an edit command's up-front checks: a scenario
     that doesn't load says so plainly, rather than as a traceback or as if the
     row being added were at fault."""
@@ -2057,6 +2061,7 @@ def _vary_row_fields(
             return ""
         if vary_target == "date":
             return _validate_month_date(raw)
+        assert amount_parser is not None  # an amount target without one was rejected above
         return str(amount_parser(raw))
 
     shape: dict[str, float] = {}
@@ -2073,6 +2078,7 @@ def _vary_row_fields(
         # is "required" -- but *some* combination must be enough to resolve
         # every one, which is worth catching now rather than only at the
         # separate 'sim load' step.
+        assert amount_parser is not None  # rejected above for an amount target
         skew = shape.get("vary_skew", 0.0)
         tailweight = shape.get("vary_tailweight", 1.0)
         try:
@@ -3229,7 +3235,7 @@ def scheduled_list(scenario: str | None, data_dir: Path | None) -> None:
         ("End", "left"),
     ):
         table.add_column(column, justify=justify)
-    for row in rows.itertuples():
+    for row in named_rows(rows):
         if row.amount_rule_kind == "fixed_amount" and pd.notna(row.amount):
             amt = _fmt_cents(round(row.amount * 100)).strip()
         elif row.amount_rule_kind == "percent_of_balance":
@@ -3564,7 +3570,7 @@ def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = 
         chain_fields = [
             field for field in _LOT_CHAIN_FIELDS if field in values.columns
         ]
-        for idx, row in values.iterrows():
+        for idx, (_, row) in enumerate(values.iterrows()):
             if row.get("account_name") == name:
                 continue
             matched_fields = [field for field in chain_fields if row[field] == name]
@@ -3586,7 +3592,7 @@ def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = 
             continue
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
         available_fields = tuple(field for field in fields if field in df.columns)
-        for idx, row in df.iterrows():
+        for idx, (_, row) in enumerate(df.iterrows()):
             matched_fields = [field for field in available_fields if row[field] == name]
             if path.name == "calendar.csv" and _is_growth_rate_row(row, series):
                 matched_fields.append("series (its growth rate)")
@@ -3944,7 +3950,7 @@ def _holdings_options(fn):
 def _holdings_source(
     scenario: str | None, data_dir: Path | None, month: str | None,
     opening: bool, runfile: Path | None,
-) -> Iterator[tuple[object, str]]:
+) -> Generator[tuple[RunConnection | ScenarioConnection, str]]:
     """The connection holdings are read from, and a description of it: the run
     (latest, or ``--runfile``) when there is one, else the opening values."""
     data_dir_p = _resolve_data_dir(data_dir)
@@ -4460,7 +4466,7 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
 def _scenario_write(
     data_dir: Path | None,
     scenario: str | None,
-    item_type: str,
+    item_type: ItemType,
     item_name: str,
     tag_tokens: tuple[str, ...],
     op: str,  # 'add' | 'rm'
@@ -4474,7 +4480,7 @@ def _scenario_write(
         try:
             with open_scenario(edit.data_dir, edit.name) as sc:
                 method = sc.add_tags if op == "add" else sc.remove_tags
-                new_val = method(item_type, item_name, tag_tokens)  # type: ignore[arg-type]
+                new_val = method(item_type, item_name, tag_tokens)
         except (FileNotFoundError, KeyError, ValueError) as e:
             raise click.ClickException(str(e)) from None
     click.echo(f"{item_type} '{item_name}' tags: {new_val or '(none)'}")
@@ -4536,6 +4542,7 @@ def prices_fetch_command(
             failed += 1
             click.echo(f"{r.symbol}: {r.error}", err=True)
             continue
+        assert r.latest is not None  # set whenever there is no error
         day, price = r.latest
         change = f"{r.added} added" + (f", {r.changed} changed" if r.changed else "")
         click.echo(f"{r.symbol}: {change} (latest {prices.format_price(price)} on {day})")
@@ -4578,12 +4585,12 @@ def prices_check_command(scenario: str | None, data_dir: Path | None, tolerance:
         return "" if pd.isna(v) else f"{v:,.4f} ({when})"
 
     table = Table(title=f"stated balance vs quantity x price ({ref.name})", header_style="bold")
-    for name, justify in [("Account / lot", "left"), ("Symbol", "left"), ("Quantity", "right"),
+    for name, justify in (("Account / lot", "left"), ("Symbol", "left"), ("Quantity", "right"),
                           ("Balance", "right"), ("Start price", "right"), ("Value", "right"),
                           ("Diff", "right"), ("Latest price", "right"), ("Latest value", "right"),
-                          ("", "left")]:
+                          ("", "left")):
         table.add_column(name, justify=justify, no_wrap=True)
-    for r in frame.itertuples():
+    for r in named_rows(frame):
         diff = "" if pd.isna(r.difference) else f"{r.difference * 100:+.1f}%"
         flag = r.flag if isinstance(r.flag, str) else ""
         table.add_row(
@@ -4683,7 +4690,7 @@ def tags_group_command(
         click.echo("(no tags)")
         return
     click.echo(f"{'tag':<40}  {'accts':>5}  {'sched':>5}  {'cal':>4}")
-    for r in df.itertuples(index=False):
+    for r in named_rows(df, index=False):
         tok = f"{r.role}:{r.name}"
         click.echo(
             f"{tok:<40}  {r.n_account:>5}  {r.n_scheduled:>5}  {r.n_calendar_event:>4}"
@@ -4724,7 +4731,7 @@ def tags_items(
                 continue
             found = True
             label_col = "date" if it == "calendar_event" else "name"
-            for row in df.itertuples(index=False):
+            for row in named_rows(df, index=False):
                 click.echo(f"{it:<14}  {getattr(row, label_col)}")
         if not found:
             click.echo(f"(tag {tag_token} not present)")

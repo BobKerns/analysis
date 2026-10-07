@@ -16,7 +16,8 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Collection, Mapping
+from typing import Any
+from collections.abc import Callable, Collection, Mapping
 import calendar
 import datetime
 from dateutil import relativedelta
@@ -33,7 +34,6 @@ from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.readme import description_view
-from analysis.sim.registries import AssetClass
 from analysis.sim.types import (
     AccountKind, AccountKindAny, DollarMode, LogLinearMode, ValuePlotMode,
     AccountName, ScenarioName, AttributionAxis, DeltaScale, HeatmapValue,
@@ -79,6 +79,14 @@ def display_warning(message: str) -> None:
     display(HTML(warning_html(message)))
 
 
+def _trait(descriptor: traitlets.TraitType) -> Any:
+    """``descriptor``, typed as the value it holds on an instance.
+
+    A trait's class attribute is annotated with that value's type, but a type
+    checker sees the descriptor object assigned to it and rejects the pair."""
+    return descriptor
+
+
 class Connections(traitlets.HasTraits):
     """
     Holds the currently open scenario and run connections.
@@ -89,11 +97,11 @@ class Connections(traitlets.HasTraits):
     """
 
     @abstractmethod
-    def _invoke(self, fn: callable, *args, **kwargs):
+    def _invoke(self, fn: Callable, *args, **kwargs):
         """Invoke the given function with the current connections context."""
         raise NotImplementedError()
 
-    def show(self, fn: callable, *args, **kwargs) -> widgets.Output:
+    def show(self, fn: Callable, *args, **kwargs) -> widgets.Output:
         """
         Return an output widget that displays the result of calling `fn`
         with the current run connection.
@@ -122,7 +130,28 @@ class Connections(traitlets.HasTraits):
         _redraw()
         return out
 
-    def show_scenario(self, fn: callable, *args, **kwargs) -> widgets.Output:
+# ---------- single-scenario picker ----------
+
+
+@dataclass
+class SingleScenarioConnections(Connections):
+    """Currently selected scenario, with its open connections.
+
+    ``run`` is ``None`` only when the picker was built with
+    ``require_run=False`` and the scenario has no run yet.
+    """
+
+    value: ScenarioName = _trait(traitlets.Any())
+    scenario_ref: ScenarioRef = _trait(traitlets.Any())
+    scenario: ScenarioConnection = _trait(traitlets.Any())
+    run: RunConnection | None = _trait(traitlets.Any())
+
+    def close(self) -> None:
+        self.scenario.close()
+        if self.run is not None:
+            self.run.close()
+
+    def show_scenario(self, fn: Callable, *args, **kwargs) -> widgets.Output:
         """
         Return an output widget that displays the result of calling `fn`
         with the current scenario connection.
@@ -137,28 +166,7 @@ class Connections(traitlets.HasTraits):
         """
         return self.show(lambda _, *args, **kwargs: fn(self.scenario, *args, **kwargs), *args, **kwargs)
 
-# ---------- single-scenario picker ----------
-
-
-@dataclass
-class SingleScenarioConnections(Connections):
-    """Currently selected scenario, with its open connections.
-
-    ``run`` is ``None`` only when the picker was built with
-    ``require_run=False`` and the scenario has no run yet.
-    """
-
-    value: ScenarioName = traitlets.Any()
-    scenario_ref: ScenarioRef = traitlets.Any()
-    scenario: ScenarioConnection = traitlets.Any()
-    run: RunConnection | None = traitlets.Any()
-
-    def close(self) -> None:
-        self.scenario.close()
-        if self.run is not None:
-            self.run.close()
-
-    def _invoke(self, fn: callable, *args, **kwargs):
+    def _invoke(self, fn: Callable, *args, **kwargs):
         """Invoke the given function with the current connections context."""
         if self.run is None:
             raise RuntimeError("No run connection available")
@@ -250,7 +258,7 @@ def find_state_dir(*,
 
 def find_runs_dir(data_dir: Path | str | None = None,
                   state_dir: Path | None = None,
-                  runs_dir: Path | None = None) -> Path:
+                  runs_dir: Path | str | None = None) -> Path:
     """
     Find the runs directory for the analysis repository. Works from notebook files
     and scripts within the repository.
@@ -262,7 +270,7 @@ def find_runs_dir(data_dir: Path | str | None = None,
         the current repo's data/shared/sim or the value of the
         $ANALYSIS_DATA_DIR environment variable.
     state_dir : Path | None, optional
-    runs_dir : Path | None, optional
+    runs_dir : Path | str | None, optional
         The default runs directory to use if the environment variable is not set.
 
     Returns
@@ -367,6 +375,7 @@ def scenario_picker(
             return
         ref = container.scenario_ref
         batch = latest_ensemble_batch(ref.runs_dir / ref.name)
+        assert batch is not None  # the member dropdown lists only an existing batch's members
         old_run = container.run
         container.run = RunConnection(batch / f"{change['new']}.sqlite3", container.scenario)
         if old_run is not None:
@@ -444,7 +453,7 @@ class MultiScenarioConnections(Connections):
     variants: list[ScenarioName]
     colors: dict[str, str]
     warnings: list[str] = field(default_factory=list)
-    value: object = traitlets.Any()
+    value: object = _trait(traitlets.Any())
 
     @property
     def scenarios(self) -> list[ScenarioName]:
@@ -454,7 +463,7 @@ class MultiScenarioConnections(Connections):
     def ok(self) -> bool:
         return bool(self.baseline)
 
-    def _invoke(self, fn: callable, **kwargs) -> widgets.Widget:
+    def _invoke(self, fn: Callable, **kwargs) -> widgets.Widget:
         baseline_rc = self.connections[self.baseline] if self.baseline in self.connections else None
         variant_rcs = {
             variant: self.connections[variant]
@@ -634,8 +643,8 @@ def multi_scenario_picker(
 
 class DollarModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting nominal vs. CPI-constant dollars."""
-    value: DollarMode = traitlets.UseEnum(DollarMode)
-    label: str = traitlets.Unicode("Nominal")
+    value: DollarMode = _trait(traitlets.UseEnum(DollarMode))
+    label: str = _trait(traitlets.Unicode("Nominal"))
     def __init__(self, dollar_mode: DollarMode = DollarMode.NOMINAL):
         """
         Initialize the dollar mode picker.
@@ -661,8 +670,8 @@ class DollarModePicker(widgets.ToggleButtons):
 
 class ValuePlotModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting total vs. monthly values."""
-    value: ValuePlotMode = traitlets.UseEnum(ValuePlotMode)
-    label: str = traitlets.Unicode("Total")
+    value: ValuePlotMode = _trait(traitlets.UseEnum(ValuePlotMode))
+    label: str = _trait(traitlets.Unicode("Total"))
     def __init__(self, value_mode: ValuePlotMode = ValuePlotMode.TOTAL):
         """
         Initialize the value plot mode picker.
@@ -687,8 +696,8 @@ class ValuePlotModePicker(widgets.ToggleButtons):
 
 class YAxisPlotModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting zero-anchored vs. auto-scaled Y-axis."""
-    value: bool = traitlets.Bool(True)
-    label: str = traitlets.Unicode("Zero-anchored")
+    value: bool = _trait(traitlets.Bool(True))
+    label: str = _trait(traitlets.Unicode("Zero-anchored"))
     def __init__(self, y_axis_mode: bool = True):
         """
         Initialize the Y-axis plot mode picker.
@@ -711,8 +720,8 @@ class YAxisPlotModePicker(widgets.ToggleButtons):
 
 class LogLinearModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting log vs. linear scale."""
-    value: LogLinearMode = traitlets.UseEnum(LogLinearMode)
-    label: str = traitlets.Unicode("Linear")
+    value: LogLinearMode = _trait(traitlets.UseEnum(LogLinearMode))
+    label: str = _trait(traitlets.Unicode("Linear"))
     def __init__(self, log_linear_mode: LogLinearMode = LogLinearMode.LINEAR):
         """
         Initialize the log-linear mode picker.
@@ -743,7 +752,7 @@ class DeltaScalePicker(widgets.ToggleButtons):
     """Sensitivity deltas in dollars or as % of the base (ADR-007 §4).
     Composes with ``DollarModePicker``: the two together give all four of
     nominal/CPI-constant x absolute/relative."""
-    value: DeltaScale = traitlets.UseEnum(DeltaScale)
+    value: DeltaScale = _trait(traitlets.UseEnum(DeltaScale))
 
     def __init__(self, delta_scale: DeltaScale = DeltaScale.ABSOLUTE):
         super().__init__(
@@ -759,7 +768,7 @@ class HeatmapValuePicker(widgets.ToggleButtons):
     impact (the importance measure, which counts the base, so a row moving
     the outcome the same way at both ends still registers), or its signed
     swing, for direction (ADR-007 §6.1, §9)."""
-    value: HeatmapValue = traitlets.UseEnum(HeatmapValue)
+    value: HeatmapValue = _trait(traitlets.UseEnum(HeatmapValue))
 
     def __init__(self, heatmap_value: HeatmapValue = HeatmapValue.SHARE):
         super().__init__(
@@ -773,7 +782,7 @@ class HeatmapValuePicker(widgets.ToggleButtons):
 class AttributionPicker(widgets.ToggleButtons):
     """How a sensitivity delta is decomposed (ADR-007 §6.1): by income/
     expense category, by income/expense account, or by holding account."""
-    value: AttributionAxis = traitlets.UseEnum(AttributionAxis)
+    value: AttributionAxis = _trait(traitlets.UseEnum(AttributionAxis))
 
     def __init__(self, axis: AttributionAxis = AttributionAxis.CATEGORY):
         super().__init__(
@@ -827,7 +836,7 @@ class ReportYearPicker(widgets.SelectionSlider):
 
 class AccountKindPicker(widgets.Dropdown):
     """A dropdown widget for selecting account kind."""
-    value: AccountKindAny = traitlets.Unicode("asset")
+    value: AccountKindAny = _trait(traitlets.Unicode("asset"))
     def __init__(self, kind: AccountKindAny = "asset", *,
                  allow_kind: Collection[AccountKind] | None = None,
                  allow_any: bool = False):
@@ -847,7 +856,7 @@ class AccountKindPicker(widgets.Dropdown):
             allow_any = True
         if allow_kind is not None and kind not in allow_kind:
             kind = next(iter(allow_kind))
-        options = [
+        options: list[tuple[str, AccountKindAny]] = [
             (label, k)
             for k, label in KIND_LABELS.items()
             if allow_kind is None or k in allow_kind
@@ -874,13 +883,13 @@ class AccountPicker(widgets.HBox):
     """
     A widget for selecting account kind and specific accounts.
     """
-    rc: RunConnection = traitlets.Instance(RunConnection)
-    kind: AccountKind = traitlets.Any("asset")
-    accounts: list[AccountName] = traitlets.List()
+    rc: RunConnection = _trait(traitlets.Instance(RunConnection))
+    kind: AccountKind = _trait(traitlets.Any("asset"))
+    accounts: list[AccountName] = _trait(traitlets.List())
     kind_picker: AccountKindPicker
     def __init__(self, rc: RunConnection,
-                 accounts: list[AccountName] | None = None,
-                 kind: str = "asset",
+                 accounts: Collection[AccountName] | None = None,
+                 kind: AccountKindAny = "asset",
                  allow_kind: Collection[AccountKind] | None = None,
                  allow_any: bool = False,
                  accounts_by_kind: Mapping[AccountKind, Collection[AccountName]] | None = None,
@@ -890,7 +899,7 @@ class AccountPicker(widgets.HBox):
         ----------
         rc : RunConnection
             The run connection to fetch account data from.
-        accounts : list[AccountName] | None, optional
+        accounts : Collection[AccountName] | None, optional
             The initially selected accounts. If None, no accounts are selected initially.
         kind : str, default "asset"
             The initially selected account kind.
@@ -949,16 +958,16 @@ class AccountPicker(widgets.HBox):
 
 class AssetClassPicker(widgets.HBox):
     """Widget to pick asset classes, with checkboxes for each class."""
-    value: dict[AssetClass, bool] = traitlets.Dict()
+    value: dict[str, bool] = _trait(traitlets.Dict())
     def __init__(self,
-                 asset_classes: list[AssetClass],
-                 exclude: tuple[AssetClass, ...] = ()):
+                 asset_classes: list[str],
+                 exclude: tuple[str, ...] = ()):
         """
         Parameters
         ----------
-        asset_classes : list[AssetClass]
+        asset_classes : list[str]
             The list of all available asset classes.
-        exclude : tuple[AssetClass, ...], optional
+        exclude : tuple[str, ...], optional
             Asset classes to exclude from the initial selection, by default ().
         """
         include = {
@@ -978,7 +987,7 @@ class AssetClassPicker(widgets.HBox):
 
 class GroupingPicker(widgets.Dropdown):
     """Dropdown to pick a grouping for portfolio allocation."""
-    value: Grouping | None = traitlets.Enum(values=GROUPINGS + (_NO_SPLIT,))
+    value: Grouping | None = _trait(traitlets.Enum(values=GROUPINGS + (_NO_SPLIT,)))
 
     def __init__(self, value: Grouping | None = None):
         """

@@ -9,15 +9,15 @@ see :func:`analysis.sim.notebook_ui.pickers.multi_scenario_picker`).
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
-from typing import Any
+from weakref import WeakKeyDictionary
 
 import ipywidgets as widgets
 import pandas as pd
 from IPython.display import clear_output, display
 
-from analysis.sim.connection import RunConnection, ScenarioConnection, year_end_values
+from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.notebook_ui.pickers import (
     AccountPicker,
     DollarModePicker,
@@ -27,7 +27,7 @@ from analysis.sim.notebook_ui.pickers import (
     to_markdown,
 )
 from analysis.sim.plotting import FRAME_ALPHA, include_zero
-from analysis.sim.types import DollarMode, ValuePlotMode
+from analysis.sim.types import AccountKind, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 # ---------- data helpers (pure; unchanged math from the old scenario_compare.py) ----------
@@ -109,14 +109,17 @@ def comparison_frame(nw: pd.DataFrame, comparisons: dict) -> pd.DataFrame:
     return result
 
 
-def _observe_dollar_mode(dollar_mode: DollarModePicker, key: str, redraw) -> None:
+# Each shared plot-mode toggle's compare-widget observers, by widget key.
+_compare_plot_redraws: WeakKeyDictionary[DollarModePicker, dict[str, Callable]] = WeakKeyDictionary()
+
+
+def _observe_dollar_mode(dollar_mode: DollarModePicker, key: str, redraw: Callable) -> None:
     """Keep one observer per compare widget on the shared plot-mode toggle."""
-    observers = getattr(dollar_mode, "_compare_plot_redraws", {})
+    observers = _compare_plot_redraws.setdefault(dollar_mode, {})
     previous = observers.get(key)
     if previous is not None:
         dollar_mode.unobserve(previous, names="value")
     observers[key] = redraw
-    dollar_mode._compare_plot_redraws = observers
     dollar_mode.observe(redraw, names="value")
 
 
@@ -220,20 +223,20 @@ _META_COLS = [
 
 
 def comparability_widget(container: MultiScenarioConnections,
-                         connections: dict[str, ScenarioConnection] | None = None,
+                         connections: dict[str, RunConnection] | None = None,
                          variants: Sequence[str] | None = None,
                          **_
                          ) -> None:
     """Whether the loaded runs share code/data version -- a comparison is only
     meaningful if a difference isn't just an unrelated code/data change."""
 
-    connections = connections or container.connections
-    variants = variants or list(connections.keys())
+    runs = connections or container.connections
+    variants = variants or list(runs.keys())
 
     def _redraw():
         meta = pd.concat(
             [
-                connections[name].items("simulation_run")[_META_COLS]
+                runs[name].items("simulation_run")[_META_COLS]
                 for name in variants
             ],
             ignore_index=True,
@@ -267,7 +270,7 @@ _RULE_COMPARE_COLS = ["amount_cents", "start", "end", "series", "cadence", "tax_
 
 
 def rules_and_events_widget(container: MultiScenarioConnections,
-                            connections: MultiScenarioConnections,
+                            connections: Mapping[str, RunConnection],
                             scenarios: Sequence[str],
                             variants: Sequence[str],
                             baseline: str = "current",
@@ -515,7 +518,7 @@ def tax_impact_widget(container: MultiScenarioConnections) -> None:
         _redraw()
 
 
-def group_account_balances(base: RunConnection) -> dict[str, float]:
+def group_account_balances(base: RunConnection) -> pd.DataFrame:
     """
     Get the account balances grouped by account.
 
@@ -526,8 +529,8 @@ def group_account_balances(base: RunConnection) -> dict[str, float]:
 
     Returns
     -------
-    dict[str, float]
-        A dictionary mapping account names to their monthly balances.
+    pd.DataFrame
+        Monthly balances, one column per account.
     """
     balances = base.items("account_balance").copy()
     balances['month'] = pd.to_datetime(balances['month']).dt.strftime("%Y-%m")
@@ -537,9 +540,12 @@ def group_account_balances(base: RunConnection) -> dict[str, float]:
 
 def compare_account_balances(_,
                     baseline_rc: RunConnection,
-                    variant_rcs: Sequence[RunConnection],
+                    variant_rcs: Mapping[str, RunConnection],
                     **kwargs
-            ) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str,Any], dict[str, Any]]:
+            ) -> tuple[
+                dict[str, set[str]], dict[str, set[str]],
+                dict[str, dict[str, tuple[pd.Series, pd.Series]]], pd.DataFrame,
+            ]:
     """
     Compare the account balances across multiple scenario connections.
 
@@ -549,8 +555,8 @@ def compare_account_balances(_,
         Placeholder for the first argument.
     baseline_rc : RunConnection
         The run connection for the baseline scenario.
-    variants_rcs : Sequence[RunConnection]
-        The run connections for the variant scenarios.
+    variant_rcs : Mapping[str, RunConnection]
+        The run connections for the variant scenarios, by name.
     **kwargs : dict
         Additional keyword arguments.
 
@@ -585,7 +591,7 @@ def compare_account_balances(_,
 
 def account_balance_diffs(baseline: str,
                           baseline_rc: RunConnection,
-                          variant_rcs: Sequence[RunConnection],
+                          variant_rcs: Mapping[str, RunConnection],
                           **kwargs) -> tuple[str, str, dict[str, pd.DataFrame]]:
     added, deleted, diff, bg = compare_account_balances(None, baseline_rc, variant_rcs)
     diff_accounts = {
@@ -676,11 +682,11 @@ def _show_account_balance_diffs(
     diffs: dict[str, pd.DataFrame],
     rc: RunConnection,
     accounts: Sequence[str],
-    accounts_by_kind: Mapping[str, Sequence[str]],
+    accounts_by_kind: Mapping[AccountKind, Sequence[str]],
     variant_rcs: Mapping[str, RunConnection],
     dollar_mode: DollarModePicker,
     value_mode: ValuePlotModePicker,
-    account_kinds: Mapping[str, str],
+    account_kinds: Mapping[str, AccountKind],
     scenario_picker: widgets.Widget | None = None,
 ) -> widgets.VBox:
     mode_controls = widgets.HBox([dollar_mode, value_mode])
@@ -778,10 +784,11 @@ def show_account_balance_diffs(
     account_rows = pd.concat(
         [connection.items("account").set_index("name") for connection in all_connections]
     ).loc[lambda frame: ~frame.index.duplicated(keep="first")]
-    account_kinds = {name: account_rows.loc[name, "kind"] for name in accounts}
+    account_kinds: dict[str, AccountKind] = {name: account_rows.loc[name, "kind"] for name in accounts}
+    kinds: tuple[AccountKind, ...] = ("asset", "liability", "income", "expense")
     accounts_by_kind = {
         kind: [name for name in accounts if account_rows.loc[name, "kind"] == kind]
-        for kind in ("asset", "liability", "income", "expense")
+        for kind in kinds
         if any(account_rows.loc[name, "kind"] == kind for name in accounts)
     }
     return _show_account_balance_diffs(

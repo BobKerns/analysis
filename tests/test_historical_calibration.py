@@ -11,7 +11,10 @@ import math
 import ssl
 import urllib.error
 import zipfile
+from collections.abc import Mapping, Sequence
+from typing import Any
 
+import click
 import pandas as pd
 import pytest
 import truststore
@@ -204,7 +207,7 @@ def test_load_bea_refuses_a_percent_change_series(hc, downloads, calibration_cac
 # ---------------------------------------------------------------- R-CPI-E
 
 
-def xlsx(rows: list[dict[str, str | float]]) -> bytes:
+def xlsx(rows: Sequence[Mapping[str, str | float]]) -> bytes:
     """A one-sheet workbook with inline numbers and shared strings."""
     strings: list[str] = []
     cells_xml = []
@@ -306,7 +309,7 @@ def test_csv_rate_series_is_used_as_is(hc, calibration_rate_csv, calibration_cac
 @pytest.fixture
 def sent_agents(hc, monkeypatch):
     """Stub urlopen, recording the User-Agent and SSL context of each request."""
-    agents: dict[str, str] = {}
+    agents: dict[str, Any] = {}
 
     def fake_urlopen(request, timeout, context):
         agents[request.full_url] = request.get_header("User-agent")
@@ -510,7 +513,7 @@ def test_main_reports_source_errors_without_a_traceback(calibration_cache_dir):
 
 def test_historical_is_an_analysis_subcommand():
     from analysis.cli import main
-    assert main.get_command(None, "historical") is historical_command
+    assert main.get_command(click.Context(main), "historical") is historical_command
 
 
 def test_a_missing_committed_cache_asks_for_one(hc, calibration_rate_csv, tmp_path, monkeypatch):

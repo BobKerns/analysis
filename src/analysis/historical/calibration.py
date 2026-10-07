@@ -70,6 +70,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from analysis.frames import datetime_index, index_months, index_years
 from analysis.tls import ssl_context, verify_reason
 
 # The committed data beside the source tree; an editable install (uv sync)
@@ -312,7 +313,10 @@ def read_xlsx_rows(data: bytes, sheet: int = 1) -> list[dict[str, str]]:
             v = c.find("m:v", _XLSX_NS)
             if v is None or v.text is None:
                 continue
-            column = re.match(r"[A-Z]+", c.get("r", "")).group(0)
+            ref = re.match(r"[A-Z]+", c.get("r", ""))
+            if ref is None:
+                raise DataError(f"spreadsheet cell without a cell reference: {c.attrib}")
+            column = ref.group(0)
             cells[column] = shared[int(v.text)] if c.get("t") == "s" else v.text
         rows.append(cells)
     return rows
@@ -456,15 +460,15 @@ def to_monthly(kind: str, values: pd.Series) -> tuple[pd.Series, bool]:
     monthly first: a rate to its monthly mean, a level to the month's last
     value, the way BLS and BEA monthly series already are. Returns the values
     and whether they're monthly."""
-    if len(values) < 2 or not pd.Series(values.index.year).duplicated().any():
+    if len(values) < 2 or not pd.Series(index_years(values)).duplicated().any():
         return values, False
     # Quarterly data would leave most months empty, and annual_rates() would
     # then drop every year as incomplete; refuse it rather than print nothing.
     if values.index.to_series().diff().median() > pd.Timedelta(days=45):
         raise DataError("data is less frequent than monthly (quarterly?); reduce it to one row per year")
-    by_month = values.groupby(values.index.to_period("M"))
+    by_month = values.groupby(datetime_index(values).to_period("M"))
     monthly = by_month.mean() if kind == "rate" else by_month.last()
-    monthly.index = monthly.index.to_timestamp()
+    monthly.index = pd.PeriodIndex(monthly.index).to_timestamp()
     return monthly, True
 
 
@@ -536,23 +540,24 @@ def annual_rates(s: Series, basis: str = "dec") -> pd.Series:
     rate is used as is. A year missing a needed month is dropped, not
     guessed."""
     v = s.values
+    years = index_years(v)
     if s.kind == "rate":
         if not s.monthly:
-            return pd.Series(v.to_numpy(), index=v.index.year, dtype=float)
-        by_year = v.groupby(v.index.year)
+            return pd.Series(v.to_numpy(), index=years, dtype=float)
+        by_year = v.groupby(years)
         means = by_year.mean()[by_year.count() == 12]
         return means.astype(float)
     if not s.monthly:
-        levels = pd.Series(v.to_numpy(), index=v.index.year)
+        levels = pd.Series(v.to_numpy(), index=years)
     elif basis == "dec":
-        dec = v[v.index.month == 12]
-        levels = pd.Series(dec.to_numpy(), index=dec.index.year)
+        dec = v[index_months(v) == 12]
+        levels = pd.Series(dec.to_numpy(), index=index_years(dec))
     else:
-        by_year = v.groupby(v.index.year)
+        by_year = v.groupby(years)
         levels = by_year.mean()[by_year.count() == 12]
         if s.annual_average is not None:
             published = s.annual_average
-            levels = pd.Series(published.to_numpy(), index=published.index.year).combine_first(levels)
+            levels = pd.Series(published.to_numpy(), index=index_years(published)).combine_first(levels)
     levels = levels.sort_index()
     prev = levels.shift(1)
     consecutive = pd.Series(levels.index, index=levels.index).diff() == 1
@@ -626,9 +631,6 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
     are nearly equal by construction. Correlations and the gap use only the
     years both series have."""
     values = rolling_compound(annual, window) if window > 1 else annual
-    ref_values = None
-    if reference is not None:
-        ref_values = rolling_compound(reference, window) if window > 1 else reference
     n = len(values)
     sd = float(values.std(ddof=1)) if n > 1 else math.nan
     persistence = math.nan
@@ -640,7 +642,8 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
         if len(pairs) >= MIN_YEARS_FOR_CORRELATION:
             persistence = float(pairs.iloc[:, 0].corr(pairs.iloc[:, 1]))
     rho_tau = pearson = gap = math.nan
-    if ref_values is not None:
+    if reference is not None:
+        ref_values = rolling_compound(reference, window) if window > 1 else reference
         both = pd.concat([values, ref_values], axis=1, join="inner").dropna()
         if (len(both) >= MIN_YEARS_FOR_CORRELATION
                 and both.iloc[:, 0].std() > 0 and both.iloc[:, 1].std() > 0):
@@ -662,8 +665,11 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
 def runs_above(rates: pd.Series, threshold: float) -> list[tuple[int, int, float]]:
     """Maximal stretches of consecutive years above ``threshold`` percent:
     (first year, last year, compound rate over the stretch)."""
-    runs, start, prev = [], None, None
-    for year, rate in rates.sort_index().items():
+    runs: list[tuple[int, int, float]] = []
+    start: int | None = None
+    prev = 0
+    rates = rates.sort_index()
+    for year, rate in zip(rates.index.astype(int), rates, strict=True):
         if rate > threshold and start is not None and year == prev + 1:
             prev = year
             continue

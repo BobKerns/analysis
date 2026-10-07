@@ -44,10 +44,11 @@ def test_uniform_draw_int_gives_each_integer_equal_probability() -> None:
 
 
 def test_truncated_normal_draws_stay_within_clip_bounds() -> None:
-    dist = TruncatedNormal(median=30_000, sd=20_000, clip_low=0, clip_high=60_000)
+    low, high = 0, 60_000
+    dist = TruncatedNormal(median=30_000, sd=20_000, clip_low=low, clip_high=high)
     rng = member_rng(seed=1, member_index=0, row_name="rate_vary")
     draws = [dist.draw(rng) for _ in range(N)]
-    assert all(dist.clip_low <= d <= dist.clip_high for d in draws)
+    assert all(low <= d <= high for d in draws)
 
 
 def test_truncated_normal_one_sided_clip() -> None:

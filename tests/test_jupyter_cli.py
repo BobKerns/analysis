@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -57,7 +58,7 @@ def test_find_repo_root_falls_back_outside_git(tmp_path: Path) -> None:
 
 
 def test_cli_jupyter_generates_config_and_execs_jupyter_lab(tmp_path: Path) -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     def fake_exec(jupyter_bin: str, argv: list[str]) -> None:
         captured["jupyter_bin"] = jupyter_bin

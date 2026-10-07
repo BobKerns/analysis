@@ -25,6 +25,7 @@ import pandas as pd
 
 from scipy.stats import t as student_t
 
+from analysis.frames import index_years
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.correlation import Link, implied_correlation, rho_from_kendall_tau, tree_root
 from analysis.sim.distributions import Distribution, Triangular, TruncatedNormal, moments
@@ -84,6 +85,20 @@ class OatMember:
     target: str | None
     value: str | None
     """The resolved value, formatted for display (``display_value``)."""
+
+
+def _perturbed_quantile(member: OatMember) -> float:
+    if member.quantile is None:
+        raise EnsembleError(f"{member.stem}: a perturbed OAT member records no quantile")
+    return member.quantile
+
+
+def _day_ordinal(raw: str) -> int:
+    """A drawn date's day ordinal."""
+    stamp = pd.Timestamp(raw)
+    if not isinstance(stamp, pd.Timestamp):  # NaT
+        raise EnsembleError(f"drawn date {raw!r} is not a date")
+    return stamp.toordinal()
 
 
 def display_value(kind: str, target: str, raw: str) -> str:
@@ -297,7 +312,7 @@ def pin_candidates(
     latent factor: it has no literal to be pinned to."""
     share = rank_by_year(deltas, measure=measure, value="share")
     factors = factor_rows(deltas)
-    return [row for row, shares in share.iterrows()
+    return [str(row) for row, shares in share.iterrows()
             if row not in factors and (shares < negligible).all()]
 
 
@@ -337,7 +352,8 @@ def months_per_year(batch_dir: Path) -> dict[int, int]:
     finally:
         for rc in connections.values():
             rc.close()
-    return pd.Series(1, index=index).groupby(index.year).sum().to_dict()
+    months = pd.Series(1, index=index)
+    return months.groupby(index_years(months)).sum().to_dict()
 
 
 
@@ -360,7 +376,7 @@ rounding, not a ledger gap (which would be dollars, not cents)."""
 
 
 def _year_end(series: pd.Series) -> pd.Series:
-    return series.groupby(series.index.year).last()
+    return series.groupby(index_years(series)).last()
 
 
 def _cumulative_flows(rc: RunConnection, by: str) -> pd.DataFrame:
@@ -491,12 +507,12 @@ def oat_attribution(
         base = next((m for m in members if m.row is None), None)
         if base is None:
             raise EnsembleError(f"{batch_dir}: no succeeded base member")
-        perturbed = sorted((m for m in members if m.row == row), key=lambda m: m.quantile)
+        perturbed = sorted((m for m in members if m.row == row), key=_perturbed_quantile)
         if not perturbed:
             known = sorted({m.row for m in members if m.row})
             raise EnsembleError(f"{batch_dir}: no succeeded member perturbs {row!r} (have {known})")
         return {
-            m.quantile: attribution(connections[base.stem], connections[m.stem], by=by, dollars=dollars)
+            _perturbed_quantile(m): attribution(connections[base.stem], connections[m.stem], by=by, dollars=dollars)
             for m in perturbed
         }
     finally:
@@ -545,7 +561,7 @@ def _member_draws(
         if index is None or index[0] == 0:
             continue
         records[stem] = {
-            name: float(pd.Timestamp(raw).toordinal()) if target == "date" else float(raw)
+            name: float(_day_ordinal(raw)) if target == "date" else float(raw)
             for name, target, raw, _z in draws if target != FACTOR_TARGET
         }
         scores[stem] = {name: float(score) for name, _t, _r, score in draws if score is not None}
@@ -1007,8 +1023,8 @@ def _row_distribution(row: sqlite3.Row, target: str) -> Distribution | None:
 
 def _describe(dist: Distribution, kind: str, target: str) -> dict[str, str]:
     """``range``, ``center``, ``shape`` and ``moments`` cells for one row."""
-    def show(value: float) -> str:
-        return _display_number(kind, target, value)
+    def show(value: float | None) -> str:
+        return "unbounded" if value is None else _display_number(kind, target, value)
 
     if isinstance(dist, TruncatedNormal):
         low, high = dist.clip_low, dist.clip_high
