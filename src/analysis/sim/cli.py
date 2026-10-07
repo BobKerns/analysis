@@ -4703,6 +4703,9 @@ def scenario_list(data_dir: Path | None, verbose: bool) -> None:
         summaries = sc.scenario_summaries(data_dir_p)
     except LoadError as exc:
         raise click.ClickException("; ".join(exc.issues)) from None
+    if not summaries:
+        click.echo(f"(no scenarios in {data_dir_p / 'scenarios'})")
+        return
 
     from rich.console import Console
     from rich.table import Table

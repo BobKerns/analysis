@@ -34,12 +34,13 @@ def test_plain_list_is_just_the_names_one_per_line(
     assert _list(test_data_dir).splitlines() == ["base", "combo", "retire_alice"]
 
 
-def test_plain_list_of_an_empty_scenarios_folder_prints_nothing(
+def test_an_empty_scenarios_folder_lists_nothing(
     test_data_dir: Path, test_scenarios_dir: Path,
 ) -> None:
     shutil.rmtree(test_scenarios_dir)
     test_scenarios_dir.mkdir()
     assert _list(test_data_dir) == ""
+    assert _list(test_data_dir, "--verbose").startswith("(no scenarios in ")
 
 
 def test_list_without_a_scenarios_folder_fails(
