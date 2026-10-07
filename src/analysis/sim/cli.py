@@ -3524,10 +3524,10 @@ def _own_growth_series(con: sqlite3.Connection, name: str, series: str) -> str |
     else reads it.
 
     calendar.csv set_rate rows for that series (aux_kind 'rate') have no
-    reader once the account is gone, and the loader rejects them as dead, so
-    ``account delete`` removes them with the account. A series another
+    reader once the account is gone, and the loader warns about them as dead,
+    so ``account delete`` removes them with the account. A series another
     account or a scheduled row also uses is left alone: if the rows are still
-    dead without this account, validation says so rather than guessing.
+    dead without this account, validation warns rather than guessing.
     """
     if not series:
         return None

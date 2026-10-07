@@ -1411,23 +1411,25 @@ def test_valid_vary_row_loads_cleanly(
         con.close()
 
 
-def test_calendar_set_rate_series_nothing_reads_rejected(
+def test_calendar_set_rate_series_nothing_reads_warns(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     """A set_rate row's (series, aux_kind) pair that no scheduled.csv rule
     (or account growth series) ever reads is a silent no-op at run time --
-    its drawn/literal value lands in aux_table but nothing looks it up."""
+    its drawn/literal value lands in aux_table but nothing looks it up. It's
+    a warning, not an error (#92): a mix-in may set a series only the
+    scenarios inheriting from it read."""
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="typo_series",
         series="mutual_fund", amount="30000",
         params_json='{"aux_kind": "inflation"}',
     )
-    with pytest.raises(LoadError) as ei:
-        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
     assert any(
         "set_rate series 'mutual_fund' under aux_kind 'inflation' is never read"
-        in issue
-        for issue in ei.value.issues
+        in warning
+        for warning in result.warnings
     )
 
 
