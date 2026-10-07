@@ -61,7 +61,7 @@ def test_no_tracked_file_contains_a_blocked_keyword() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_all_ignores_a_notebooks_outputs_but_not_its_source(scratch_repo: Path) -> None:
+def test_all_ignores_notebook_outputs_but_not_source(scratch_repo: Path) -> None:
     # A run notebook holds outputs that nbstripout keeps out of commits, so
     # --all reads notebooks through the same textconv `nbstripout --install`
     # sets up. Configured here so the test doesn't depend on local config.
@@ -88,6 +88,20 @@ def test_all_ignores_a_notebooks_outputs_but_not_its_source(scratch_repo: Path) 
 
     assert result.returncode == 1
     assert "run.ipynb:" in result.stderr
+
+
+def test_all_fails_when_a_textconv_cannot_run(scratch_repo: Path) -> None:
+    subprocess.run(
+        ["git", "config", "diff.ipynb.textconv", str(scratch_repo / "missing")],
+        cwd=scratch_repo, check=True,
+    )
+    _stage(scratch_repo, ".gitattributes", "*.ipynb diff=ipynb\n")
+    _stage(scratch_repo, "run.ipynb", "{}\n")
+
+    result = _check(scratch_repo, "--all")
+
+    assert result.returncode == 2
+    assert "not all checked" in result.stderr
 
 
 def test_a_staged_file_naming_a_real_account_is_blocked(scratch_repo: Path) -> None:

@@ -43,7 +43,15 @@ case $mode in
             | xargs -0 git grep --cached -n -I -i -E -e "$pattern" -- || true)
         ;;
     --all)
-        hits=$(git grep --textconv -n -I -i -E -e "$pattern" -- . ":!$list" || true)
+        # git grep exits 1 for no match; anything higher is an error, such as
+        # a textconv that can't run (a worktree without .venv), and must not
+        # pass as clean.
+        status=0
+        hits=$(git grep --textconv -n -I -i -E -e "$pattern" -- . ":!$list") || status=$?
+        if [ "$status" -gt 1 ]; then
+            echo "git grep failed (exit $status); files were not all checked." >&2
+            exit 2
+        fi
         ;;
     --message)
         [ $# -eq 2 ] || usage
