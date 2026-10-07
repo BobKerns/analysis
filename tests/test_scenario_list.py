@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -33,13 +34,19 @@ def test_plain_list_is_just_the_names_one_per_line(
     assert _list(test_data_dir).splitlines() == ["base", "combo", "retire_alice"]
 
 
-def test_plain_list_of_an_empty_scenarios_folder_prints_nothing(tmp_path: Path) -> None:
-    (tmp_path / "scenarios").mkdir()
-    assert _list(tmp_path) == ""
+def test_plain_list_of_an_empty_scenarios_folder_prints_nothing(
+    test_data_dir: Path, test_scenarios_dir: Path,
+) -> None:
+    shutil.rmtree(test_scenarios_dir)
+    test_scenarios_dir.mkdir()
+    assert _list(test_data_dir) == ""
 
 
-def test_list_without_a_scenarios_folder_fails(tmp_path: Path) -> None:
-    result = CliRunner().invoke(main, ["sim", "scenario", "list", "--data-dir", str(tmp_path)])
+def test_list_without_a_scenarios_folder_fails(
+    test_data_dir: Path, test_scenarios_dir: Path,
+) -> None:
+    shutil.rmtree(test_scenarios_dir)
+    result = CliRunner().invoke(main, ["sim", "scenario", "list", "--data-dir", str(test_data_dir)])
     assert result.exit_code != 0
     assert "no scenarios/" in result.output
 

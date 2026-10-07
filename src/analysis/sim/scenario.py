@@ -113,6 +113,7 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
 
     return target
 
+
 @dataclass(frozen=True)
 class ScenarioSummary:
     """One scenario folder, as ``sim scenario list --verbose`` shows it."""
