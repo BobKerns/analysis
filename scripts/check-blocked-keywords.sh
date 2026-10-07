@@ -1,7 +1,9 @@
 #!/bin/sh
 # Fail if blocked keywords (.githooks/blocked-keywords.txt) appear in:
 #   --staged        the staged version of every file in the pending commit
-#   --all           every tracked file
+#   --all           every tracked file, as it would be committed: files with
+#                   a diff textconv (notebooks, via nbstripout) are searched
+#                   through it, so a run notebook's outputs don't count
 #   --message FILE  a commit message being written ('#' comment lines
 #                   skipped, as git does)
 #   --text FILE     any other text, every line checked (a stored commit
@@ -41,7 +43,15 @@ case $mode in
             | xargs -0 git grep --cached -n -I -i -E -e "$pattern" -- || true)
         ;;
     --all)
-        hits=$(git grep -n -I -i -E -e "$pattern" -- . ":!$list" || true)
+        # git grep exits 1 for no match; anything higher is an error, such as
+        # a textconv that can't run (a worktree without .venv), and must not
+        # pass as clean.
+        status=0
+        hits=$(git grep --textconv -n -I -i -E -e "$pattern" -- . ":!$list") || status=$?
+        if [ "$status" -gt 1 ]; then
+            echo "git grep failed (exit $status); files were not all checked." >&2
+            exit 2
+        fi
         ;;
     --message)
         [ $# -eq 2 ] || usage
