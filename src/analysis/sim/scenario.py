@@ -5,16 +5,20 @@ This module provides functions to create, load, and manipulate scenarios
 within the simulation framework.
 """
 
+import csv
 import os
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
 from analysis.sim.loader import LoadError
 from analysis.sim import registries
-from analysis.sim.loader import ScenarioRef, resolve_scenario_name
+from analysis.sim.lineage import read_parents
+from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
+from analysis.sim.readme import parse_readme_summary
 from analysis.sim import cli
 
 
@@ -108,3 +112,61 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
         pd.DataFrame(columns=list(header)).to_csv(target / filename, index=False)
 
     return target
+
+@dataclass(frozen=True)
+class ScenarioSummary:
+    """One scenario folder, as ``sim scenario list --verbose`` shows it."""
+
+    name: str
+    parents: list[str]
+    description: str
+
+
+def scenario_summaries(data_dir: Path, scenarios_dir: Path | None = None) -> list[ScenarioSummary]:
+    """Every scenario folder's name, parents and one-line description, sorted.
+
+    Read straight from the folders rather than loaded, so it is quick and
+    still lists a scenario that wouldn't load. The description follows the
+    loader's rule (ADR-003 §4.1e), cut to one line: the README.md title
+    (unless it just restates the name), else its first paragraph, else
+    scenario.csv's own ``description``.
+    """
+    scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
+    return [
+        ScenarioSummary(
+            name=name,
+            parents=read_parents(scenarios / name),
+            description=_one_line_description(scenarios / name),
+        )
+        for name in list_scenario_names(data_dir, scenarios)
+    ]
+
+
+def _one_line_description(scenario_dir: Path) -> str:
+    readme = scenario_dir / "README.md"
+    if readme.is_file():
+        try:
+            summary = parse_readme_summary(readme.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            summary = None
+        if summary is not None:
+            # A title that only restates the folder name ("# Base") says
+            # nothing the name column doesn't; the paragraph does.
+            title = summary.title
+            if title and _name_key(title) == _name_key(scenario_dir.name):
+                title = ""
+            if title or summary.paragraph:
+                return title or summary.paragraph
+    # Tolerant, like read_parents: reporting a malformed scenario.csv is the
+    # loader's job, and a listing shouldn't fail on one.
+    try:
+        with (scenario_dir / "scenario.csv").open(newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                return " ".join((row.get("description") or "").split())
+    except (OSError, UnicodeDecodeError, csv.Error):
+        pass
+    return ""
+
+
+def _name_key(text: str) -> str:
+    return re.sub(r"[\s_-]+", "", text).casefold()

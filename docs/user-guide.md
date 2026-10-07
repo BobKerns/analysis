@@ -75,6 +75,15 @@ run file, so "what was this scenario for again" is answered without going
 back to the data repo. Without a `README.md`, `scenario.csv`'s own
 `description` column is used instead.
 
+To see which scenarios the data repo has:
+
+```sh
+sim scenario list            # names only, one per line, for scripts
+sim scenario list --verbose  # a table with each one's parents and description
+```
+
+The verbose table marks your current scenario with `*`.
+
 Everything below works the same way, whether you are editing `base` directly,
 or editing a derived scenario's own files.
 
