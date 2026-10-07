@@ -510,6 +510,28 @@ def test_policy_chain_leading_back_to_its_own_lot_rejected(
     ), ei.value.issues
 
 
+def test_policy_loop_through_another_lot_loads(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """Only a chain leading back to its own lot is rejected: checking that
+    refills from (and overflows into) savings, while savings refills from
+    checking, is a legitimate loop through another lot's policy."""
+    import pandas as pd
+
+    (retire_alice_csv("chains") / "asset__spill.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"
+    )
+    values_path = retire_alice_csv("account_values.csv")
+    df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+    checking = df["account_name"] == "Asset_Checking"
+    df.loc[checking, "maximum_balance"] = "10000.00"
+    df.loc[checking, "overflow_chain"] = "spill"
+    df.loc[df["account_name"] == "Asset_Savings", "refill_chain"] = "Asset_Checking"
+    df.to_csv(values_path, index=False)
+
+    load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+
+
 # ---- ADR-004 git provenance ----
 
 
