@@ -133,6 +133,9 @@ def run_scenario(
         account_name: dict[int, str] = {
             lot_id: name for name, lot_id in account_id_by_name.items()
         }
+        chain_id_by_name: dict[str, int] = {
+            r[0]: r[1] for r in con.execute("SELECT name, id FROM chain")
+        }
         person_lifespan: dict[str, str] = {
             r[0]: r[1] for r in con.execute(
                 "SELECT person, final_month FROM person_lifespan"
@@ -249,7 +252,7 @@ def run_scenario(
                         _p_sched_name, _p_acct1, _p_acct2, _p_series, _p_amount,
                         _p_param_date, _p_tax_char, ev_payload_json,
                     ),
-                    txns, txn_by_name, aux, account_id_by_name, account_kinds,
+                    txns, txn_by_name, aux, chain_id_by_name, account_kinds,
                     balances, step_id, month_s, model_id, refill_ctx=refill_ctx,
                     vary_distribution=ev_vary_distribution,
                 )
@@ -347,37 +350,11 @@ def run_scenario(
                                 cadence=t_inflation_cadence or "monthly",
                             )
                             amount = amount * factor // 1_000_000
-                        total_amount = amount * fire_count
-                        if from_account is not None and to is not None:
-                            _post_transfer(
-                                con, balances, account_kinds, step_id, month_s,
-                                from_account, to, total_amount, tax_char, tid,
-                                tax_year=tax_year, refill_ctx=refill_ctx,
-                            )
-                        elif from_account is not None:
-                            _chain_sweep(
-                                con, balances, account_kinds, account_tax_treatment,
-                                account_subkind, account_name, step_id, month_s,
-                                chain_graph, to_chain, total_amount, from_account,
-                                aux=aux, chain_base_date=_parse_date(start_s),
-                                inflation_factor_cache=inflation_factor_cache,
-                                source_tax_character=tax_char, source_tax_year=tax_year,
-                                refill_ctx=refill_ctx,
-                            )
-                        elif to is not None:
-                            _chain_draw(
-                                con, balances, account_kinds, account_tax_treatment,
-                                account_subkind, account_name, step_id, month_s,
-                                chain_graph, frm, total_amount, to,
-                                reason_kind="rule", reason_id=tid,
-                                tax_year=tax_year, refill_ctx=refill_ctx,
-                            )
-                        else:
-                            raise EngineError(
-                                f"scheduled_transaction id={tid} ({_name!r}): "
-                                "interior source and destination chains are not "
-                                "supported together"
-                            )
+                        _post_fixed_amount(
+                            con, balances, account_kinds, step_id, month_s, refill_ctx,
+                            frm, to_chain, amount * fire_count, tax_char, tid,
+                            tax_year=tax_year, what=f"scheduled_transaction id={tid} ({_name!r})",
+                        )
                     case "percent_of_balance":
                         assert to is not None  # only fixed_amount may target an interior chain
                         if from_account is None:
@@ -744,6 +721,48 @@ def _post_transfer(
     if refill_ctx is not None:
         _warn_if_negative(refill_ctx, account_kinds, from_id, balances, month_s)
     return inserted_id(cur)
+
+
+def _post_fixed_amount(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str, ctx: RefillContext,
+    from_chain: int, to_chain: int, amount: int, tax_char: str, tid: int,
+    *, tax_year: int | None = None, what: str,
+) -> None:
+    """Move a fixed ``amount`` between two chains (ADR-003 §4.7): lot to lot
+    directly, out of a lot through an interior chain's sweep, or into a lot
+    through an interior chain's draw. Shared by fixed_amount rules and
+    one_off_transfer events, so the two route a chain alike."""
+    graph = ctx.graph
+    from_lot, to_lot = graph.leaf_lot.get(from_chain), graph.leaf_lot.get(to_chain)
+    if from_lot is not None and to_lot is not None:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            from_lot, to_lot, amount, tax_char, tid,
+            tax_year=tax_year, refill_ctx=ctx,
+        )
+    elif from_lot is not None:
+        _chain_sweep(
+            con, balances, account_kinds, ctx.account_tax_treatment,
+            ctx.account_subkind, ctx.account_name, step_id, month_s,
+            graph, to_chain, amount, from_lot,
+            aux=ctx.aux, chain_base_date=ctx.chain_base_date,
+            inflation_factor_cache=ctx.inflation_factor_cache,
+            source_tax_character=tax_char, source_tax_year=tax_year,
+            refill_ctx=ctx,
+        )
+    elif to_lot is not None:
+        _chain_draw(
+            con, balances, account_kinds, ctx.account_tax_treatment,
+            ctx.account_subkind, ctx.account_name, step_id, month_s,
+            graph, from_chain, amount, to_lot,
+            reason_kind="rule", reason_id=tid,
+            tax_year=tax_year, refill_ctx=ctx,
+        )
+    else:
+        raise EngineError(
+            f"{what}: interior source and destination chains are not supported together"
+        )
 
 
 def _record_purchase(
@@ -2503,11 +2522,11 @@ def _apply_calendar_event(
     txns: list[list[Any]],
     txn_by_name: dict[str, list[Any]],
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    account_id_by_name: dict[str, int],
+    chain_id_by_name: dict[str, int],
     account_kinds: dict[int, str],
     balances: dict[int, int],
     step_id: int, month_s: str, model_id: int,
-    *, refill_ctx: RefillContext | None = None, vary_distribution: str | None = None,
+    *, refill_ctx: RefillContext, vary_distribution: str | None = None,
 ) -> None:
     """Expand one calendar_event per ADR-003 \u00a73."""
     if vary_distribution is not None:
@@ -2582,11 +2601,12 @@ def _apply_calendar_event(
                     f"one_off_transfer event id={ev_id}: requires from_account, "
                     "to_account, amount (account_1, account_2, amount)"
                 )
-            from_id = account_id_by_name.get(frm_name)
-            to_id = account_id_by_name.get(to_name)
+            # Either side may be a lot's leaf chain or an interior chain (#98).
+            from_id = chain_id_by_name.get(frm_name)
+            to_id = chain_id_by_name.get(to_name)
             if from_id is None or to_id is None:
                 raise EngineError(
-                    f"one_off_transfer event id={ev_id}: unknown account "
+                    f"one_off_transfer event id={ev_id}: unknown account or chain "
                     f"(account_1={frm_name!r} or account_2={to_name!r})"
                 )
             cur = con.execute(
@@ -2600,11 +2620,10 @@ def _apply_calendar_event(
                  int(amount), tax_char, ev_date, ev_date, ev_id,
                  payload.get("description")),
             )
-            new_tid = inserted_id(cur)
-            _post_transfer(
-                con, balances, account_kinds, step_id, month_s,
-                from_id, to_id, int(amount), tax_char, new_tid,
-                refill_ctx=refill_ctx,
+            _post_fixed_amount(
+                con, balances, account_kinds, step_id, month_s, refill_ctx,
+                from_id, to_id, int(amount), tax_char, inserted_id(cur),
+                what=f"one_off_transfer event id={ev_id}",
             )
         case _:  # pragma: no cover
             raise EngineError(f"supported but unhandled calendar kind: {ev_kind}")
