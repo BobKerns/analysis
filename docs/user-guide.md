@@ -63,7 +63,8 @@ sim scenario create <name> <parent> [<mixin> ...]
 ```
 
 This creates the new scenario's folder, with empty CSV files ready for you to
-add rows to. It checks that the scenario loads, and makes it your current
+add rows to, and a `series/` folder (with a short `README.md`) for any growth
+or inflation series it changes. It checks that the scenario loads, and makes it your current
 scenario. You then add only the rows that need to be different — the rest of
 this guide shows what to put in them.
 

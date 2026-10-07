@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim import registries
 from analysis.sim.loader import load_scenario
+from analysis.sim.scenario import SERIES_README
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -254,9 +255,10 @@ def test_sim_all_loads_and_runs_every_scenario(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
+    assert "=== base ===" in result.output
     assert "=== retire_alice ===" in result.output
-    assert "all 1 scenario(s) succeeded" in result.output
-    assert len(list(runs_dir.glob("*.sqlite3"))) == 1
+    assert "all 2 scenario(s) succeeded" in result.output
+    assert len(list(runs_dir.glob("*.sqlite3"))) == 2
 
 
 def test_sim_all_reports_failures_without_stopping(test_data_dir: Path, tmp_path: Path, monkeypatch) -> None:
@@ -276,9 +278,9 @@ def test_sim_all_reports_failures_without_stopping(test_data_dir: Path, tmp_path
     assert result.exit_code == 0, result.output
     assert "=== broken ===" in result.output
     assert "=== retire_alice ===" in result.output
-    assert "1 of 2 scenario(s) failed:" in result.output
+    assert "1 of 3 scenario(s) failed:" in result.output
     assert "  broken:" in result.output
-    assert len(list((tmp_path / "runs").glob("*.sqlite3"))) == 1
+    assert len(list((tmp_path / "runs").glob("*.sqlite3"))) == 2
 
 
 @pytest.mark.uses_current_scenario_write
@@ -296,6 +298,9 @@ def test_sim_scenario_create_derives_and_activates(test_data_dir: Path, tmp_path
     assert (scenario_dir / "chains" / "_asset__example.csv").read_text() == (
         "account_name,maximum,percent,series,cadence\n"
     )
+    # series/ starts with a README rather than empty, so git keeps it (#91).
+    assert (scenario_dir / "series" / "README.md").read_text() == SERIES_README
+    assert "  series/README.md\n" in result.output
 
     def header_of(name: str) -> list[str]:
         return (scenario_dir / name).read_text(encoding="utf-8").splitlines()
@@ -1226,6 +1231,17 @@ def test_sim_run_ensemble_rejects_negative_metadata_size(
     )
     assert result.exit_code != 0
     assert "scenario.meta_json.ensemble_size must be a positive integer" in result.output
+
+
+def test_sim_ensemble_create_writes_the_series_readme(test_data_dir: Path) -> None:
+    result = CliRunner().invoke(
+        main,
+        ["sim", "ensemble", "create", "my_recipe", "retire_alice",
+         "--data-dir", str(test_data_dir), "--seed", "7"],
+    )
+    assert result.exit_code == 0, result.output
+    readme = test_data_dir / "scenarios" / "my_recipe" / "series" / "README.md"
+    assert readme.read_text() == SERIES_README
 
 
 def test_sim_ensemble_create_rejects_zero_size(test_data_dir: Path) -> None:

@@ -324,6 +324,7 @@ def test_edit_says_which_scenario_before_asking_anything(
     )
 
 
+@pytest.mark.usefixtures("without_prototype_defaults")
 def test_edit_compares_names_without_their_stray_spaces(
     calendar_edit: Callable[..., Result], append_calendar_row: Callable[..., None],
 ) -> None:

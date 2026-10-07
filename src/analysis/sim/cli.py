@@ -4659,6 +4659,8 @@ def scenario_create(
         click.echo("  chains/")
         click.echo("  chains/.gitignore")
         click.echo("  chains/_asset__example.csv")
+        click.echo("  series/")
+        click.echo("  series/README.md")
         click.echo(f"  current scenario: {name}")
     except Exception as exc:
         click.echo(f"error: {exc}", err=True)

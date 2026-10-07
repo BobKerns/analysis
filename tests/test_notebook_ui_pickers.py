@@ -238,6 +238,10 @@ def test_multi_scenario_picker_requires_at_least_one_variant(tmp_path: Path) -> 
     _load_and_run(data, "retire_alice")
 
     widget, container = multi_scenario_picker(data, "retire_alice", [])
+    # An empty default still preselects the other scenarios (here the
+    # prototype's `base`), so clear the selection the way a user would.
+    variant_picker = widget.children[0].children[1]
+    variant_picker.value = ()
 
     assert isinstance(container, MultiScenarioConnections)
     assert not container.ok

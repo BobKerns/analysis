@@ -63,11 +63,12 @@ def test_a_fund_blends_the_prototypes_default_class_series(
     prototype_data: Path, retire_alice_csv: Callable[[str], Path],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
 ) -> None:
-    """#80: retire_alice ships rate__stock_us (7%) and rate__bond (4%), so a
-    fund held in it, or in any scenario derived from it, blends with no
-    series of its own. (``blended_fund`` replaced them; put them back.)"""
+    """#80: the prototype's root scenario ships rate__stock_us (7%) and
+    rate__bond (4%) (in ``base`` since #91), so a fund held in any scenario
+    derived from it blends with no series of its own. (``blended_fund``
+    replaced them in retire_alice; put the defaults back.)"""
     for name in ("stock_us", "bond"):
-        shutil.copy(prototype_data / "scenarios" / "retire_alice" / "series" / f"rate__{name}.csv",
+        shutil.copy(prototype_data / "scenarios" / "base" / "series" / f"rate__{name}.csv",
                     retire_alice_csv("series"))
     result = load_test_copy()
     _, params, _ = _growth_rule(result.intent_path)

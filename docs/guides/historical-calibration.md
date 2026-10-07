@@ -337,7 +337,7 @@ recent one (0.6). A long-run row calibrated to the recent period, with the
 
 ## The prototype's defaults
 
-The prototype's root scenario, `retire_alice`, ships a long-run rate for
+The prototype's root scenario, `base`, ships a long-run rate for
 every inflation series this guide compares and every fund asset class,
 and a factor for each one, so a child scenario or mix-in can vary any of
 them with one row. It has no varying rows: every future runs at these

@@ -1,0 +1,2 @@
+name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json
+base,"Generic defaults every scenario inherits: long-run inflation and return series, and a factor for each.",standard,2026-05-31,2040-12-31,42,,alice,{}
