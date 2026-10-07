@@ -1,5 +1,9 @@
 # Spending Data Guide (Non-SQL)
 
+> To read a formatted `.md` file:
+> - In Jupyter: right-click on it and select `Open With / Markdown Preview`
+> - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
+
 Data is stored in one file:
 
 - `state/state.sqlite3`

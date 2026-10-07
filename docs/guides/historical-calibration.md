@@ -1,5 +1,9 @@
 # Historical calibration: what numbers to put in
 
+> To read a formatted `.md` file:
+> - In Jupyter: right-click on it and select `Open With / Markdown Preview`
+> - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
+
 <!-- cspell:ignore CPIAUCSL PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize -->
 
 The [ensembles guide](ensembles.md) explains how a varying rate, a

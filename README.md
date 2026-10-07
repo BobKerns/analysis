@@ -2,6 +2,10 @@
 
 This project provides tools for personal financial analysis and planning, supporting both CLI and Jupyter notebook workflows. It uses Python 3.14+, uv for package management, and modern Python best practices.
 
+To read a formatted `.md` file:
+- In Jupyter: right-click on it and select `Open With / Markdown Preview`
+- In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
+
 ## Directory Structure
 - `src/analysis/` — Core package code
 - `tests/` — Unit tests

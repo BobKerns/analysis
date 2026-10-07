@@ -1,5 +1,9 @@
 # Ensembles: ranges of outcomes, not one number
 
+> To read a formatted `.md` file:
+> - In Jupyter: right-click on it and select `Open With / Markdown Preview`
+> - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
+
 An ordinary scenario gives you one prediction: this rate, this date, this
 amount, run forward to one result. An **ensemble** asks the question "what
 if I'm not sure about that rate/date/amount — what's the *spread* of
