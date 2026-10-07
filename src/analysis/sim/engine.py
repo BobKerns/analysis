@@ -651,7 +651,8 @@ def _warn_if_negative(
         name = refill_ctx.account_name.get(account_id, str(account_id))
         warnings.warn(
             f"{month_s}: account {name!r} went negative "
-            f"(balance={balances[account_id] / 100:.2f}) after exhausting its refill chain",
+            f"(balance={balances[account_id] / 100:.2f}); its refill chain, if any, "
+            "could not cover the debit",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -666,6 +667,7 @@ def _post_transfer(
     parent_event_id: int | None = None, *, reason_kind: str = "rule",
     tax_year: int | None = None, refill_ctx: RefillContext | None = None,
     requested: int | None = None, remainder: int | None = None,
+    net_effects: bool = True,
 ) -> int | None:
     """Insert one transfer_event and adjust balances. Liability balances
     store debt magnitude; the sign is inverted when posting against them.
@@ -679,6 +681,11 @@ def _post_transfer(
     fully-satisfied transfer (``requested = amount`` before the liability
     cap below, ``remainder = requested - amount`` after it); chain draws/
     sweeps pass both explicitly, tracked across their whole call tree.
+
+    ``net_effects=False`` posts the leg alone, skipping the refill look-ahead,
+    the lot-tracking updates and the negative-balance warning: a caller that
+    splits one movement into several legs (``_post_withdrawal``) applies those
+    once, to the net amount, since one leg on its own can overshoot it.
     """
     if amount == 0:
         return None
@@ -690,9 +697,10 @@ def _post_transfer(
             return None
     if remainder is None:
         remainder = requested - amount
-    if refill_ctx is not None and amount > 0:
+    track = refill_ctx if net_effects else None
+    if track is not None and amount > 0:
         _ensure_min_balance(
-            con, balances, account_kinds, step_id, month_s, refill_ctx,
+            con, balances, account_kinds, step_id, month_s, track,
             from_id, amount,
         )
     cur = con.execute(
@@ -707,20 +715,32 @@ def _post_transfer(
         (step_id, month_s, from_id, to_id, from_id, to_id, amount, requested,
          remainder, tax_char, tax_year, reason_kind, reason_id, parent_event_id),
     )
-    if refill_ctx is not None and amount > 0 and account_kinds[from_id] == "asset":
-        quantity = refill_ctx.quantities.get(from_id)
-        prior_balance = balances.get(from_id, 0)
-        if quantity and prior_balance > 0:
-            refill_ctx.quantities[from_id] = quantity - min(
-                quantity, quantity * amount // prior_balance
-            )
-    if refill_ctx is not None and amount > 0 and account_kinds[to_id] == "asset":
-        _record_purchase(refill_ctx, balances, from_id, to_id, amount)
+    if track is not None:
+        _track_lots(track, account_kinds, balances, from_id, to_id, amount)
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
-    if refill_ctx is not None:
-        _warn_if_negative(refill_ctx, account_kinds, from_id, balances, month_s)
+    if track is not None:
+        _warn_if_negative(track, account_kinds, from_id, balances, month_s)
     return inserted_id(cur)
+
+
+def _track_lots(
+    ctx: RefillContext, account_kinds: dict[int, str], balances: dict[int, int],
+    from_id: int, to_id: int, amount: int,
+) -> None:
+    """Shares leave ``from_id`` in proportion to the value withdrawn, and
+    ``to_id`` records a purchase. Call before ``balances`` moves."""
+    if amount <= 0:
+        return
+    if account_kinds[from_id] == "asset":
+        quantity = ctx.quantities.get(from_id)
+        prior_balance = balances.get(from_id, 0)
+        if quantity and prior_balance > 0:
+            ctx.quantities[from_id] = quantity - min(
+                quantity, quantity * amount // prior_balance
+            )
+    if account_kinds[to_id] == "asset":
+        _record_purchase(ctx, balances, from_id, to_id, amount)
 
 
 def _post_fixed_amount(
@@ -1703,6 +1723,10 @@ def _post_withdrawal(
     ``basis_out = cost_basis * amount // balance``. A realized loss (basis
     exceeds proceeds) falls out naturally as a negative ``ltcg`` leg -- the
     same convention year_to_date.csv already uses for loss carryforwards.
+    Then the ``return_of_capital`` leg alone exceeds ``amount``, so the refill
+    look-ahead, lot tracking and negative-balance check run once on the net
+    ``amount`` rather than per leg (issue #101): per leg, the overshoot drew
+    a phantom refill or warned of a negative balance the pair never reaches.
     """
     tax_char = tax_character or registries.withdrawal_tax_character(
         account_tax_treatment.get(from_id), account_subkind.get(from_id, ""),
@@ -1722,14 +1746,23 @@ def _post_withdrawal(
             "tracking (taxable, non-cash) but opening_cost_basis was never set -- "
             "add it to account_values.csv"
         )
+    if refill_ctx is not None and amount > 0:
+        _ensure_min_balance(
+            con, balances, account_kinds, step_id, month_s, refill_ctx,
+            from_id, amount,
+        )
+        # A refill into the account is a purchase that raised its basis.
+        basis = cost_bases[from_id] or 0
     prior_balance = balances.get(from_id, 0)
     basis_out = 0 if prior_balance <= 0 else min(basis, basis * amount // prior_balance)
     gain = amount - basis_out
+    if refill_ctx is not None:
+        _track_lots(refill_ctx, account_kinds, balances, from_id, to_id, amount)
     basis_leg_id = _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_id, to_id, basis_out,
         "return_of_capital", reason_id, parent_event_id, reason_kind=reason_kind,
         tax_year=tax_year, refill_ctx=refill_ctx,
-        requested=requested, remainder=remainder,
+        requested=requested, remainder=remainder, net_effects=False,
     )
     gain_character = (
         "stcg"
@@ -1741,9 +1774,11 @@ def _post_withdrawal(
         con, balances, account_kinds, step_id, month_s, from_id, to_id, gain,
         gain_character, reason_id, basis_leg_id if basis_leg_id is not None else parent_event_id,
         reason_kind=reason_kind, tax_year=tax_year, refill_ctx=refill_ctx,
-        requested=requested, remainder=remainder,
+        requested=requested, remainder=remainder, net_effects=False,
     )
     cost_bases[from_id] = basis - basis_out
+    if refill_ctx is not None:
+        _warn_if_negative(refill_ctx, account_kinds, from_id, balances, month_s)
 
 
 def _chain_step_allocation(

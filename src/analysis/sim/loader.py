@@ -2564,6 +2564,29 @@ def _reject_cycles(edges: dict[str, set[str]], issues: list[str], *, label: str)
             visit(node, [node])
 
 
+def _path_to(start: str, goal: str, members: dict[str, list[str]]) -> list[str] | None:
+    """The chain path from ``start`` down to the leaf ``goal``, or None.
+
+    Only interior chains are descended; cycles among them are reported
+    separately by ``_reject_cycles``, so ``seen`` just keeps this finite.
+    """
+    seen: set[str] = set()
+
+    def walk(node: str, path: list[str]) -> list[str] | None:
+        if node == goal:
+            return path
+        if node in seen:
+            return None
+        seen.add(node)
+        for member in members.get(node, ()):
+            found = walk(member, [*path, member])
+            if found:
+                return found
+        return None
+
+    return walk(start, [start])
+
+
 def _validate_chains(
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     model_rows: list[dict[str, str]],
@@ -2580,6 +2603,7 @@ def _validate_chains(
         issues.append(f"chains/*.csv: chain name '{name}' may not contain a space")
 
     edges: dict[str, set[str]] = {name: set() for name in chains}
+    members: dict[str, list[str]] = {name: [] for name in chains}
     for name, (kind, rows) in chains.items():
         if kind not in registries.CHAIN_KINDS:
             issues.append(
@@ -2596,8 +2620,10 @@ def _validate_chains(
             problem = _resolve_ref(row, "account_name", "lot", leaves, set(chains))
             if problem:
                 issues.append(f"chains/{kind}__{name}.csv row {i}: {problem}")
-            elif member in chains:
-                edges[name].add(member)
+            else:
+                members[name].append(row["account_name"])
+                if member in chains:
+                    edges[name].add(member)
             maximum = row.get("maximum", "")
             if maximum:
                 try:
@@ -2642,6 +2668,17 @@ def _validate_chains(
                 issues.append(
                     f"account_values.csv row {i} ({row.get('account_name', '')}): "
                     f"{column} {problem}"
+                )
+                continue
+            # The engine skips a step naming the lot it is drawing into (or
+            # sweeping out of), so a self-reference would silently supply
+            # nothing; the cycle check below can't see it, since a leaf step
+            # adds no edge.
+            loop = holder and _path_to(row[column], holder, members)
+            if loop:
+                issues.append(
+                    f"account_values.csv row {i} ({row.get('account_name', '')}): "
+                    f"{column} leads back to the lot itself: {' -> '.join(loop)}"
                 )
             elif row[column] in chains and holder:
                 edges.setdefault(holder, set()).add(row[column])
