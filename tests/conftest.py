@@ -204,6 +204,15 @@ def test_scenarios_dir(test_data_dir: Path) -> Path:
     scenarios_dir.mkdir(parents=True, exist_ok=True)
     return scenarios_dir
 
+
+@pytest.fixture(scope="function")
+def empty_scenarios_dir(test_scenarios_dir: Path) -> Path:
+    """The private data copy's ``scenarios/``, emptied: a data repo with no
+    scenarios yet. Remove the folder itself for one with no ``scenarios/``."""
+    shutil.rmtree(test_scenarios_dir)
+    test_scenarios_dir.mkdir()
+    return test_scenarios_dir
+
 @pytest.fixture(scope="function")
 def state_dir(tmp_path: Path) -> Generator[Path]:
     """Create a temporary state directory within the temporary data directory for tests."""

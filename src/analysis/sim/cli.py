@@ -73,6 +73,7 @@ from analysis.sim.loader import (
     load_scenario,
     open_intent_db,
     find_state_dir,
+    read_current_scenario,
     write_current_scenario,
 )
 from analysis.sim.quicken import (
@@ -4678,7 +4679,49 @@ def prices_check_command(scenario: str | None, data_dir: Path | None, tolerance:
 
 @sim_group_command.group(name="scenario")
 def scenario_group_command() -> None:
-    """Create scenarios."""
+    """Create and list scenarios."""
+
+
+@scenario_group_command.command("list")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+@click.option("-v", "--verbose", is_flag=True, default=False,
+              help="Show a table with each scenario's parents and description.")
+def scenario_list(data_dir: Path | None, verbose: bool) -> None:
+    """List the data repo's scenarios.
+
+    Plain output is just the names, one per line, for scripts. --verbose adds
+    parents and description, and marks the current scenario with *.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    try:
+        if not verbose:
+            for name in list_scenario_names(data_dir_p):
+                click.echo(name)
+            return
+        summaries = sc.scenario_summaries(data_dir_p)
+    except LoadError as exc:
+        raise click.ClickException("; ".join(exc.issues)) from None
+    if not summaries:
+        click.echo(f"(no scenarios in {data_dir_p / 'scenarios'})")
+        return
+
+    from rich.console import Console
+    from rich.table import Table
+
+    current = read_current_scenario(data_dir_p)
+    table = Table(title=f"scenarios ({data_dir_p.name})")
+    table.add_column("", no_wrap=True)
+    table.add_column("scenario", no_wrap=True)
+    table.add_column("parents")
+    table.add_column("description")
+    for s in summaries:
+        table.add_row(
+            "*" if s.name == current else "",
+            s.name, " + ".join(s.parents), s.description,
+        )
+    Console().print(table)
 
 
 @scenario_group_command.command("create")
