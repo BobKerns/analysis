@@ -235,7 +235,7 @@ def runs_dir(state_dir: Path) -> Path:
 def scenario_ref(data_dir: Path,
                  intent_dir: Path,
                  runs_dir: Path,
-                 scenarios_dir: Path) -> Callable[[str], ScenarioRef]:
+                 scenarios_dir: Path) -> Callable[..., ScenarioRef]:
     """Fixture to provide a callable that returns a ScenarioRef for a given scenario name."""   
     def _scenario_ref(scenario: str,
                       data_dir: Path = data_dir,
@@ -337,7 +337,7 @@ def retire_alice_scenario_ref(scenario_ref: Callable[[str], ScenarioRef]) -> Sce
 @pytest.fixture(scope="function")
 def test_retire_alice_scenario_ref(test_data_dir: Path,
                                    test_scenarios_dir: Path,
-                                   scenario_ref: Callable[[str], ScenarioRef]) -> ScenarioRef:
+                                   scenario_ref: Callable[..., ScenarioRef]) -> ScenarioRef:
     """Function fixture to provide the ScenarioRef for the retire_alice scenario."""
     return scenario_ref("retire_alice",
                         data_dir=test_data_dir,

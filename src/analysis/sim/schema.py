@@ -643,3 +643,13 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "ensemble_manifest",
     "ensemble_draw",
 )
+
+
+def inserted_id(cur: sqlite3.Cursor) -> int:
+    """The rowid ``cur``'s INSERT just made.
+
+    ``lastrowid`` is typed ``int | None`` because it is None before any
+    insert; after one it is always set, so None here is a bug."""
+    if cur.lastrowid is None:
+        raise RuntimeError("cursor has not inserted a row")
+    return cur.lastrowid

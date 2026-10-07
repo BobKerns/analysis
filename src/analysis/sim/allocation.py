@@ -17,6 +17,7 @@ import pandas as pd
 
 from analysis.sim import registries
 from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.frames import named_rows
 from analysis.sim.holdings import lots_frame
 
 __all__ = [
@@ -38,7 +39,7 @@ def _weight_sets(source: RunConnection | ScenarioConnection) -> dict[str, list[t
     """Symbol to its weight sets, oldest first: ``(as_of, {asset_class: weight})``."""
     frame = source.items("security_allocation")
     sets: dict[str, dict[str, dict[str, float]]] = {}
-    for row in frame.itertuples():
+    for row in named_rows(frame):
         sets.setdefault(row.symbol, {}).setdefault(row.as_of, {})[row.asset_class] = row.weight_micros / 1_000_000
     return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
 
@@ -58,7 +59,7 @@ def _weights_at(sets: list[tuple[str, dict[str, float]]], date: str) -> dict[str
 
 
 def _default_class(symbol: object, subkind: str) -> str:
-    if symbol in registries.SYMBOL_ASSET_CLASS:
+    if isinstance(symbol, str) and symbol in registries.SYMBOL_ASSET_CLASS:
         return registries.SYMBOL_ASSET_CLASS[symbol]
     return registries.SUBKIND_ASSET_CLASS.get(subkind, UNCLASSIFIED)
 
@@ -74,7 +75,7 @@ def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = 
     lots = lots.assign(owner=lots["account"].map(owners).fillna(_JOINT))
     sets = _weight_sets(source)
     rows = []
-    for lot in lots.itertuples():
+    for lot in named_rows(lots):
         symbol = lot.symbol if isinstance(lot.symbol, str) and lot.symbol else None
         described = sets.get(symbol) if symbol else None
         if described:
@@ -96,7 +97,7 @@ def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = 
 
 def asset_classes_present(source: RunConnection | ScenarioConnection,
                           month: str | None = None,
-                          ) -> list[registries.AssetClass]:
+                          ) -> list[str]:
     """The asset classes some lot has a balance in, in display order (``unclassified`` last)."""
     present = set(lot_classes(source, month)["asset_class"])
     return [c for c in [*registries.ASSET_CLASSES, UNCLASSIFIED] if c in present]
@@ -106,7 +107,7 @@ def portfolio_allocation(
     source: RunConnection | ScenarioConnection,
     month: str | None = None,
     by: str | None = None,
-    exclude: Iterable[registries.AssetClass] = (),
+    exclude: Iterable[str] = (),
 ) -> pd.DataFrame:
     """Balance per asset class (rows, in registry order, ``unclassified`` last, then a
     ``Total`` row). Without ``by`` the columns are ``balance`` and ``percent``; with it

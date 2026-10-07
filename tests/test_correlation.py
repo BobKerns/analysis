@@ -404,7 +404,7 @@ def test_standard_normal_is_standard() -> None:
 # --- Phase 2: resolve_member integration and provenance -----------------------------
 
 
-def _resolve(recipe: Path, out: Path, member_index: int, *, seed: int = 21, **kwargs) -> dict:  # type: ignore[no-untyped-def]
+def _resolve(recipe: Path, out: Path, member_index: int, *, seed: int | None = 21, **kwargs) -> dict:  # type: ignore[no-untyped-def]
     """Resolve one member; ``{name: (vary_target, drawn_value, z)}`` from its
     ensemble_draw, plus its calendar rows by name."""
     from analysis.sim.ensemble import resolve_member

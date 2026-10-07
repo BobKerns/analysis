@@ -14,7 +14,7 @@ import re
 import socket
 import sqlite3
 import tempfile
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
+from collections.abc import Callable, Collection, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -46,7 +46,7 @@ from analysis.sim.provenance import (
 )
 from analysis.sim.readme import readme_description
 from analysis.sim.runs import insert_run_metadata
-from analysis.sim.schema import  SCHEMA_VERSION, apply_run_schema
+from analysis.sim.schema import SCHEMA_VERSION, apply_run_schema, inserted_id
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
@@ -78,7 +78,7 @@ class LoadResult:
 
 
 class LoadError(ValueError):
-    def __init__(self, issues: list[str]) -> None:
+    def __init__(self, issues: list[str] | str) -> None:
         match issues:
             case str():
                 issues = [issues]
@@ -331,11 +331,11 @@ def resolve_scenario_name(
     data_dir: Path | str,
     scenario: str | None = None,
     *,
-    intent_dir: Path | None = None,
-    runs_dir: Path | None = None,
-    run_path: Path | None=None,
-    state_dir: Path | None = None,
-    scenarios_dir: Path | None = None,
+    intent_dir: Path | str | None = None,
+    runs_dir: Path | str | None = None,
+    run_path: Path | str | None = None,
+    state_dir: Path | str | None = None,
+    scenarios_dir: Path | str | None = None,
 ) -> ScenarioRef:
     """Pick a scenario from the data repo and describe where it lives.
 
@@ -348,8 +348,8 @@ def resolve_scenario_name(
                      else data_dir / "scenarios")
     if not scenarios_dir.is_dir():
         raise LoadError([f"no scenarios/ in {data_dir}"])
-    if state_dir is None:
-        state_dir = find_state_dir(data_dir, data_dir.parent / "state")
+    state_dir = (Path(state_dir) if state_dir is not None
+                 else find_state_dir(data_dir, data_dir.parent / "state"))
     if scenario:
         if not (scenarios_dir / scenario).is_dir():
             raise LoadError([f"scenario not found: {scenarios_dir / scenario}"])
@@ -669,7 +669,7 @@ def _read_scenario_inputs(
 def open_intent_db(
     data_dir: Path | str,
     scenario: str | None = None,
-) -> Iterator[tuple[sqlite3.Connection, str]]:
+) -> Generator[tuple[sqlite3.Connection, str]]:
     """Load a scenario into a temporary intent DB and yield ``(connection, name)``.
 
     Single source of truth for read-only inspection: CLI ``list`` commands and
@@ -716,17 +716,16 @@ def load_scenario(
     scenario_dir = scenarios_dir / scenario_name
     if not scenario_dir.is_dir():
         raise LoadError([f"scenario folder not found: {scenario_dir}"])
-    match intent_dir, intent_path:
-        case None, None:
+    if intent_dir is None:
+        if intent_path is None:
             intent_dir = data_dir / "intent"
             intent_path = intent_dir / f"{scenario_name}.sqlite3"
-        case None, _:
+        else:
             intent_dir = intent_path.parent
-        case _, None:
-            intent_path = intent_dir / f"{scenario_name}.sqlite3"
-        case _, _:
-            if intent_path.parent != intent_dir:
-                raise LoadError([f"intent_path {intent_path} is not within intent_dir {intent_dir}"])
+    elif intent_path is None:
+        intent_path = intent_dir / f"{scenario_name}.sqlite3"
+    elif intent_path.parent != intent_dir:
+        raise LoadError([f"intent_path {intent_path} is not within intent_dir {intent_dir}"])
 
     lineage_names = _scenario_lineage_names(scenarios_dir, scenario_name)
     scenario_dirs = [scenarios_dir / name for name in lineage_names]
@@ -863,7 +862,7 @@ def load_scenario(
             allow_dirty_code=False,
             run_by="TEST",
             version=cs.version,
-            data_version=0,
+            data_version="0",
             data_dirty=False,
             run_args={},
             engine_options={},
@@ -1417,7 +1416,7 @@ def _allocation_weight_sets(
 def _allocation_blend(
     symbol: str,
     weight_sets: list[tuple[str, dict[str, int]]],
-    rate_series: Collection[str],
+    rate_series: Collection[str | None],
     where: str,
     warnings: list[str] | None,
 ) -> AllocationBlend | None:
@@ -2306,7 +2305,7 @@ def _parse_vary_params(
 def _check_vary_distribution(
     row: dict[str, str], distribution: str, parsed: dict[str, int], shape: dict[str, float],
     where: str, issues: list[str],
-) -> int | None:
+) -> float | None:
     """Per-family checks on a varying row's parsed parameters; returns the
     effective low bound (given, or resolved), for the transfer-positivity
     rule, or ``None`` when it can't be determined."""
@@ -2736,8 +2735,8 @@ def _write_intent(
                 a.get("meta_json") or "{}",
             ),
         )
-        account_ids[a["name"]] = cur.lastrowid
-        _insert_tags(con, cur.lastrowid, a.get("tags", ""),
+        account_ids[a["name"]] = inserted_id(cur)
+        _insert_tags(con, inserted_id(cur), a.get("tags", ""),
                      "account_tag", "account_id", tag_cache)
     counts["account"] = len(accounts)
 
@@ -2745,7 +2744,7 @@ def _write_intent(
         "INSERT INTO account_model(name, description, created_at) VALUES (?,?,?)",
         (account_model_name, None, now),
     )
-    model_id = cur.lastrowid
+    model_id = inserted_id(cur)
 
     # One account_model_member row per lot (ADR-005). An account with no
     # account_values.csv row gets a single zero-balance default lot. Rows are
@@ -2793,7 +2792,7 @@ def _write_intent(
                 ),
             )
             leaf = registries.leaf_chain_name(a["name"], lot, a["subkind"])
-            lot_ids[leaf] = cur.lastrowid
+            lot_ids[leaf] = inserted_id(cur)
             lot_rows[leaf] = m
             lot_account[leaf] = a["name"]
             member_count += 1
@@ -2809,13 +2808,13 @@ def _write_intent(
             "INSERT INTO chain(name, kind, account_id, lot_id) VALUES (?,?,?,?)",
             (leaf, account["kind"], account_ids[account_name], lot_id),
         )
-        chain_ids[leaf] = cur.lastrowid
+        chain_ids[leaf] = inserted_id(cur)
     for name, (kind, _rows) in chains.items():
         cur = con.execute(
             "INSERT INTO chain(name, kind, account_id, lot_id) VALUES (?,?,NULL,NULL)",
             (name, kind),
         )
-        chain_ids[name] = cur.lastrowid
+        chain_ids[name] = inserted_id(cur)
     counts["chain"] = len(chain_ids)
 
     step_count = 0
@@ -2856,7 +2855,7 @@ def _write_intent(
         "INSERT INTO calendar(name, description, created_at) VALUES (?,?,?)",
         (scenario_row.get("name", ""), None, now),
     )
-    calendar_id = cur.lastrowid
+    calendar_id = inserted_id(cur)
     for ce in calendar_rows:
         vary_target = ce.get("vary_target") or None
         vary_bound = _vary_bound_writer(vary_target)
@@ -2895,7 +2894,7 @@ def _write_intent(
                 _opt_float(ce.get("vary_tail_dependence")),
             ),
         )
-        _insert_tags(con, cur.lastrowid, ce.get("tags", ""),
+        _insert_tags(con, inserted_id(cur), ce.get("tags", ""),
                      "calendar_event_tag", "calendar_event_id", tag_cache)
     counts["calendar_event"] = len(calendar_rows)
 
@@ -2939,8 +2938,8 @@ def _write_intent(
                 s.get("inflation_cadence") or None,
             ),
         )
-        sched_ids[s["name"]] = cur.lastrowid
-        _insert_tags(con, cur.lastrowid, s.get("tags", ""),
+        sched_ids[s["name"]] = inserted_id(cur)
+        _insert_tags(con, inserted_id(cur), s.get("tags", ""),
                      "scheduled_transaction_tag", "scheduled_transaction_id",
                      tag_cache)
     counts["scheduled_transaction"] = len(scheduled_rows)
@@ -2969,7 +2968,7 @@ def _write_intent(
             scenario_row.get("meta_json") or "{}",
         ),
     )
-    scenario_id = cur.lastrowid
+    scenario_id = inserted_id(cur)
     counts["scenario"] = 1
 
     for lf in lifespan_rows:

@@ -125,7 +125,8 @@ def test_the_definitions_widget_shows_both_tables(lot_variant_runs: Runs, capsys
     from analysis.sim.notebook_ui.lot_compare import account_definitions_widget
 
     account_definitions_widget(
-        SimpleNamespace(ok=True), _connections(lot_variant_runs), SCENARIOS, ["variant"],
+        SimpleNamespace(ok=True),  # ty: ignore[invalid-argument-type]  # stands in for the container
+        _connections(lot_variant_runs), SCENARIOS, ["variant"],
         baseline="retire_alice",
     )
     shown = capsys.readouterr().out

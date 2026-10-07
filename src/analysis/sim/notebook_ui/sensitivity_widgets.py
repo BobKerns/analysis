@@ -89,10 +89,10 @@ def list_batches(recipe_dir: Path) -> list[tuple[str, Path]]:
 def parameter_labels(deltas: pd.DataFrame) -> dict[str, str]:
     """Row name -> "target, low to high" from an OAT batch's deltas, in the
     order rows first appear."""
-    labels = {}
+    labels: dict[str, str] = {}
     for row, group in deltas.groupby("row", sort=False):
         by_q = group.drop_duplicates("quantile").sort_values("quantile")
-        labels[row] = (f"{by_q['target'].iloc[0]}, {by_q['value'].iloc[0]} "
+        labels[str(row)] = (f"{by_q['target'].iloc[0]}, {by_q['value'].iloc[0]} "
                        f"to {by_q['value'].iloc[-1]}")
     return labels
 
@@ -283,6 +283,9 @@ def attribution_view(
                 f"net worth in {year} is too close to zero for % of base; switch to $ delta"
             )
         numbers = numbers / abs(base)
+        visible = 0.5 / abs(base)
+    else:
+        visible = 0.5  # half a dollar
     if ax is None:
         _fig, ax = plt.subplots(figsize=(10, 4.5))
     parts = [k for k in numbers.index if k != sensitivity.TOTAL]
@@ -290,7 +293,6 @@ def attribution_view(
     colors["other"] = CATEGORICAL[-1]
     colors[sensitivity.UNATTRIBUTED] = CRITICAL
     x = np.arange(len(numbers.columns))
-    visible = 0.5 / abs(base) if scale == DeltaScale.RELATIVE else 0.5  # half a dollar
     up, down = np.zeros(len(x)), np.zeros(len(x))
     for key in parts:
         values = numbers.loc[key].to_numpy()

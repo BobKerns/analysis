@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 
@@ -135,7 +136,7 @@ def test_balance_history_adds_total_for_multiple_accounts() -> None:
     assert [line.get_label() for line in fig.axes[0].lines] == [
         "Checking", "Savings", "Total",
     ]
-    assert list(fig.axes[0].lines[-1].get_ydata()) == [150, 200]
+    assert np.asarray(fig.axes[0].lines[-1].get_ydata()).tolist() == [150, 200]
 
 
 def test_cpi_constant_expense_balances_preserve_zero_monthly_flow(

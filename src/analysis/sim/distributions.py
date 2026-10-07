@@ -246,8 +246,8 @@ class TruncatedNormal:
             gaps = [gap(x) for x in grid]
             brackets = [
                 (grid[i], grid[i + 1]) for i in range(steps)
-                if gaps[i] is not None and gaps[i + 1] is not None
-                and (gaps[i] == 0 or gaps[i] * gaps[i + 1] < 0)
+                if (g0 := gaps[i]) is not None and (g1 := gaps[i + 1]) is not None
+                and (g0 == 0 or g0 * g1 < 0)
             ]
             if brackets or gaps[0] is None or gaps[-1] is None:
                 break  # found, or the scan already runs past what floats can represent
@@ -284,6 +284,7 @@ class TruncatedNormal:
             )
         lo, hi = min(brackets, key=lambda b: abs((b[0] + b[1]) / 2 - untruncated))
         g_lo = gap(lo)
+        assert g_lo is not None  # lo is a bracket end, where the gap was defined
         if g_lo == 0:
             return lo
         for _ in range(200):

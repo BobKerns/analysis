@@ -301,9 +301,10 @@ def test_sensitivity_widget_attribution_follows_delta_scale(
     _dollar_picker, scale_picker = box.children[1].children
     shown.clear()
     scale_picker.value = DeltaScale.RELATIVE
-    styled = [s for s in shown if hasattr(s, "data") and "q=0.1" in getattr(s, "data", pd.DataFrame()).columns]
-    assert styled, "attribution table redrawn"
-    assert styled[-1].data.abs().max().max() < 1  # fractions of base, not dollars
+    tables = [data for s in shown
+              if isinstance(data := getattr(s, "data", None), pd.DataFrame) and "q=0.1" in data.columns]
+    assert tables, "attribution table redrawn"
+    assert tables[-1].abs().max().max() < 1  # fractions of base, not dollars
 
 
 def test_swing_heatmap_survives_all_undefined_values() -> None:

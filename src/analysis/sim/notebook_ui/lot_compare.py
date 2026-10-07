@@ -19,6 +19,7 @@ import pandas as pd
 from IPython.display import clear_output, display
 
 from analysis.sim.connection import RunConnection
+from analysis.frames import named_rows
 from analysis.sim.notebook_ui.compare_plots import _observe_dollar_mode
 from analysis.sim.notebook_ui.pickers import (
     DollarModePicker,
@@ -101,13 +102,13 @@ def _definition_values(connection: RunConnection, excluded: set[str]) -> pd.Seri
             values[(account, lot, field)] = value
 
     accounts = connection.items("account")
-    for row in accounts.itertuples():
+    for row in named_rows(accounts):
         if row.name in excluded:
             continue
         put(row.name, "", _EXISTS, "yes")
         for field in _ACCOUNT_FIELDS:
             put(row.name, "", field, _text(getattr(row, field)))
-    for row in connection.items("account_model_member").itertuples():
+    for row in named_rows(connection.items("account_model_member")):
         if row.account in excluded:
             continue
         put(row.account, row.lot, _EXISTS, "yes")
@@ -175,7 +176,7 @@ def year_to_date_differences(
     for name in scenarios:
         rows = connections[name].items("year_to_date")
         values: dict[tuple[str, str], str | None] = {}
-        for row in rows.itertuples():
+        for row in named_rows(rows):
             values[(row.name, "from")] = _account_with_lot(row.from_name, row.from_lot)
             values[(row.name, "to")] = _account_with_lot(row.to_name, row.to_lot)
             values[(row.name, "amount")] = _dollars(row.amount)

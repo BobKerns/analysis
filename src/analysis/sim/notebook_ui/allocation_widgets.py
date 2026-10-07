@@ -14,7 +14,6 @@ from analysis.sim.allocation import (
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.notebook_ui.holdings_widgets import _label, _month_dropdown
 from analysis.sim.notebook_ui.pickers import AssetClassPicker, GroupingPicker
-from analysis.sim.registries import AssetClass
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = ["allocation_view", "portfolio_allocation_widget"]
@@ -24,7 +23,7 @@ __all__ = ["allocation_view", "portfolio_allocation_widget"]
 def allocation_view(
     source: RunConnection | ScenarioConnection,
     by: Grouping | None = None, month: str | None = None,
-    exclude: tuple[AssetClass, ...] = (),
+    exclude: tuple[str, ...] = (),
 ) -> tuple[str, pd.DataFrame]:
     """Heading and table (asset classes by row, with a Total row) the widget shows."""
     as_of = lot_classes(source, month)["as_of"]
@@ -57,7 +56,7 @@ def _pie(table: pd.DataFrame) -> None:
 def portfolio_allocation_widget(
     source: RunConnection | ScenarioConnection,
     by: Grouping | None = None,
-    exclude: tuple[AssetClass, ...] = (),
+    exclude: tuple[str, ...] = (),
 ) -> widgets.VBox:
     """The portfolio by asset class, with a split dropdown, a checkbox per asset class
     (unchecked classes are left out, and the total covers the rest) and, for a run, a

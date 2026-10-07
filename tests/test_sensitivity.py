@@ -3,7 +3,7 @@ the report CLI."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pandas as pd
@@ -13,11 +13,12 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim import sensitivity
 from analysis.sim.types import DollarMode
+from analysis.sim.loader import LoadResult
 
 # --- pure functions over synthetic deltas ----------------------------------
 
 
-def _deltas(points: dict[str, dict[float, float]], year: int = 2030, base: float = 1e6) -> pd.DataFrame:
+def _deltas(points: Mapping[str, Mapping[float, float]], year: int = 2030, base: float = 1e6) -> pd.DataFrame:
     """A minimal ``oat_deltas``-shaped frame: row -> {quantile: delta}."""
     records = []
     for row, by_q in points.items():
@@ -569,7 +570,7 @@ def test_classify_reports_unestimable_rows_as_inconclusive() -> None:
 
 
 def test_cumulative_flows_exclude_both_ytd_kinds(
-    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], object],
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,
 ) -> None:
     """ytd and ytd_rule catch-ups are balance-neutral (engine._post_ytd_transfer):
@@ -741,7 +742,9 @@ def test_parameters_describes_shape_and_moments(
     assert run.exit_code == 0, run.output
     from analysis.sim.ensemble import latest_ensemble_batch
 
-    table = sensitivity.parameters(latest_ensemble_batch(runs_dir / "retire_alice"))
+    batch = latest_ensemble_batch(runs_dir / "retire_alice")
+    assert batch is not None
+    table = sensitivity.parameters(batch)
     rate = table.loc["checking_vary"]
     assert rate["center"] == "4.50%" and rate["shape"] == "scale 0.50%, skew 0.7"
     assert "skew +" in rate["moments"]  # a positive skew parameter gives a right-skewed shape

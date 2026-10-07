@@ -21,11 +21,12 @@ import warnings
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Literal, overload
 
 import pandas as pd
 import traitlets
 
+from analysis.frames import index_years
 from analysis.sim import accounts
 from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, ItemType
 
@@ -85,19 +86,23 @@ _TAX_RECONCILIATION_RENAME = {
 }
 
 
+@overload
+def year_end_values(frame: pd.DataFrame) -> pd.DataFrame: ...
+@overload
+def year_end_values(frame: pd.Series) -> pd.Series: ...
 def year_end_values(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
     """Last row of each calendar year from a month-indexed frame/series.
 
     Re-indexed by year (int).
     """
-    year_end = frame.groupby(frame.index.year).tail(1)
-    year_end.index = year_end.index.year
+    year_end = frame.groupby(index_years(frame)).tail(1)
+    year_end.index = index_years(year_end)
     return year_end
 
 
 def yearly_totals(monthly: pd.DataFrame) -> pd.DataFrame:
     """Sum a month-indexed frame (e.g. from ``income_by_category``) by calendar year."""
-    yearly = monthly.groupby(monthly.index.year).sum()
+    yearly = monthly.groupby(index_years(monthly)).sum()
     yearly.index.name = "year"
     return yearly
 
@@ -304,7 +309,7 @@ class _TagReader:
         """``pd.read_sql_query`` against ``self._con``, falling back to a
         temporary same-file connection if called from a different thread."""
         try:
-            return pd.read_sql_query(sql, self._con, params=params)
+            return pd.read_sql_query(sql, self._con, params=list(params))
         except sqlite3.ProgrammingError as exc:
             if "same thread" not in str(exc):
                 raise
@@ -319,7 +324,7 @@ class _TagReader:
             )
             temp = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
             try:
-                return pd.read_sql_query(sql, temp, params=params)
+                return pd.read_sql_query(sql, temp, params=list(params))
             finally:
                 temp.close()
 
@@ -474,7 +479,7 @@ class Connection(_TagReader):
     @property
     def name(self) -> str:
         """The name of the connection."""
-        pass
+        raise NotImplementedError
 
     @property
     @abstractmethod
@@ -530,14 +535,16 @@ class RunConnection(Connection):
     def label(self) -> str:
         return f"{self.name}@{self.date.strftime('%Y-%m-%d %H:%M')}"
 
-    _scenario_owned: bool = False
-    """Whether this run connection owns the scenario connection, and should close it."""
-    _scenario: ScenarioConnection
+    _scenario: ScenarioConnection | None
     @property
     def scenario(self) -> ScenarioConnection:
         if self._scenario is None:
-            self._scenario = next(open_scenario(self._data_dir, self._scenario_name))
-            self._scenario_owned = True
+            # A run file doesn't record its data repo, so there is no
+            # scenario to open here; open_run() supplies one.
+            raise RuntimeError(
+                f"run {self.run_path} was opened without its scenario; use open_run() "
+                "or pass a ScenarioConnection"
+            )
         return self._scenario
 
     _scenario_name: str | None
@@ -570,8 +577,6 @@ class RunConnection(Connection):
 
     def close(self) -> None:
         self._con.close()
-        if self._scenario_owned and self._scenario is not None:
-            self._scenario.close()
 
     def __enter__(self) -> RunConnection:
         return self
@@ -611,7 +616,7 @@ class RunConnection(Connection):
     def to_cpi_constant_annual(self, yearly: pd.DataFrame | pd.Series):
         """Convert a year-indexed dollar series/frame using each year's year-end CPI."""
         cpi = self.cpi_index()
-        year_end_index = cpi.groupby(cpi.index.year).last()
+        year_end_index = cpi.groupby(index_years(cpi)).last()
         return yearly.mul(1_000_000 / year_end_index.reindex(yearly.index), axis=0)
 
     def account_kinds(self) -> pd.Series:
@@ -902,9 +907,9 @@ class RunConnection(Connection):
 
         return self._cached("ss_gross_by_month", _build)
 
-    def metadata(self) -> pd.Series:
+    def metadata(self) -> pd.DataFrame:
         """Return basic metadata about the run, including its name and path."""
-        def _build() -> pd.Series:
+        def _build() -> pd.DataFrame:
             meta = self.items("simulation_run")
             return meta
         return self._cached("metadata", _build)
@@ -913,8 +918,8 @@ class RunConnection(Connection):
 @contextmanager
 def open_run(run_path: Path | str,
              scenario: ScenarioConnection | str | None = None,
-             scenarios_dir: Path | str = None,
-             data_dir: Path | str = None) -> Generator[RunConnection]:
+             scenarios_dir: Path | str | None = None,
+             data_dir: Path | str | None = None) -> Generator[RunConnection]:
     data_dir = Path(data_dir or Path(run_path).parent).resolve()
     if scenarios_dir is None:
         scenarios_dir = data_dir / "scenarios"
@@ -1018,8 +1023,7 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
                  runs_dir: Path | str | None = None,
                  run_path: Path | str | None = None) -> None:
         self._data_dir = Path(data_dir).resolve()
-        scenarios_dir = scenarios_dir or (self.data_dir / "scenarios")  # type: ignore[assignment]
-        self.scenarios_dir = Path(scenarios_dir).resolve()
+        self.scenarios_dir = Path(scenarios_dir or (self.data_dir / "scenarios")).resolve()
         self.ref = resolve_scenario_name(self.data_dir, scenario,
                                          scenarios_dir=self.scenarios_dir,
                                          intent_dir=intent_dir,
@@ -1031,7 +1035,7 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         if intent_dir is None:
             intent_dir = Path(self._tmp.name)
         self._intent_dir = Path(intent_dir).resolve()
-        self._con: sqlite3.Connection | None = None  # type: ignore[assignment]
+        self._con = None  # ty: ignore[invalid-assignment]  # _reload() opens it
         self._dirty = False
         self._reload()
 
@@ -1063,7 +1067,8 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
     def close(self) -> None:
         if self._con is not None:
             self._con.close()
-            self._con = None  # type: ignore[assignment]
+            # Closed: nothing may use the connection now.
+            self._con = None  # ty: ignore[invalid-assignment]
         self._tmp.cleanup()
 
     def __enter__(self) -> ScenarioConnection:

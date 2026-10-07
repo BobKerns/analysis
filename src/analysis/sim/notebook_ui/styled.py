@@ -50,4 +50,4 @@ class StyledMarkdown(Markdown):
     """
 
     def _repr_html_(self) -> str:
-        return styled_html(_renderer().render(self.data))
+        return styled_html(_renderer().render(self.data or ""))

@@ -166,6 +166,7 @@ def test_scenario_picker_shows_a_member_dropdown_for_an_ensemble_recipe(tmp_path
         "member_0000", "member_0001", "member_0002",
     ]
     assert member_dropdown.value == "member_0000"
+    assert container.run is not None
     assert container.run.run_path.stem == "member_0000"
     container.close()
 
@@ -210,6 +211,7 @@ def test_scenario_picker_selecting_a_member_switches_the_run_connection(
 
     member_dropdown.value = "member_0001"
 
+    assert container.run is not None
     assert container.run.run_path.stem == "member_0001"
     assert container.run is not old_run
     container.close()

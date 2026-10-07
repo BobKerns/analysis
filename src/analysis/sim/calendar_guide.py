@@ -430,7 +430,7 @@ def equivalent_command(
         value = answers.get(field_.param, "")
         if field_.is_question_only or value == "":
             continue
-        if field_.is_argument:
+        if field_.option is None:  # a positional argument: question-only fields were skipped
             words.append(value)
         elif value != field_.default:
             options += [field_.option, value]

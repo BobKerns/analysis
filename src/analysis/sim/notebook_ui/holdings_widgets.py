@@ -5,6 +5,9 @@ and only offer investment accounts.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import pandas as pd
 from IPython.display import display
 from ipywidgets import widgets
@@ -32,7 +35,7 @@ def _shares(value: float) -> str:
     return "-" if pd.isna(value) else (f"{value:,.6f}".rstrip("0").rstrip(".") or "0")
 
 
-_FORMATS = {
+_FORMATS: dict[str, str | Callable[..., Any] | None] = {
     "quantity": _shares,
     "price": "${:,.4f}",
     "balance": "${:,.2f}",

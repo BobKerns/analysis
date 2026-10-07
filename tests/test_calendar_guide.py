@@ -197,6 +197,7 @@ def test_every_guide_field_is_a_parameter_of_its_command(spec: calendar_guide.Ki
     """The field definitions are data another front end can reuse, so they
     must not drift from the commands they describe."""
     command = calendar_add_group_command.commands[spec.command]
+    assert command.callback is not None
     callback_params = set(inspect.signature(command.callback).parameters)
     options = {opt for param in command.params for opt in param.opts if opt.startswith("--")}
     arguments = [param.name for param in command.params if param.param_type_name == "argument"]

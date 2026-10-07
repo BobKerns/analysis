@@ -34,7 +34,9 @@ class _FakeRun:
 
 def _fake_container(baseline_values, variant_values) -> MultiScenarioConnections:
     return MultiScenarioConnections(
-        connections={"base": _FakeRun(baseline_values), "variant": _FakeRun(variant_values)},
+        connections={  # ty: ignore[invalid-argument-type]  # net_worth_frame() is all they use
+            "base": _FakeRun(baseline_values), "variant": _FakeRun(variant_values),
+        },
         baseline="base", variants=["variant"], colors={"base": "C0", "variant": "C1"},
     )
 
@@ -164,6 +166,6 @@ def test_compare_widgets_share_dollar_mode_observers(multi_connections: MultiSce
     cp.breakeven_widget(multi_connections, dollar_mode=dollar_mode, baseline="retire_alice")
     cp.year_end_widget(multi_connections, dollar_mode=dollar_mode, baseline="retire_alice")
 
-    assert set(dollar_mode._compare_plot_redraws) == {
+    assert set(cp._compare_plot_redraws[dollar_mode]) == {
         "net_worth", "breakeven", "year_end",
     }

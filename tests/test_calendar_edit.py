@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import click
 import pandas as pd
@@ -349,7 +350,7 @@ def test_a_defaulted_scenario_is_resolved_once_and_then_named(
     asked_for: list[str | None] = []
     resolve = cli_module._resolve_scenario
 
-    def recording(data_dir: Path, scenario: str | None, **kwargs: object) -> object:
+    def recording(data_dir: Path, scenario: str | None, **kwargs: Any) -> Any:
         asked_for.append(scenario)
         return resolve(data_dir, scenario, **kwargs)
 

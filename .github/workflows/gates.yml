@@ -1,7 +1,7 @@
 # The verification gates from .github/copilot-instructions.md, run on GitHub so
 # a commit made without the local hooks (a fresh clone, a web edit,
 # --no-verify) is caught before merge. Mark these jobs as required checks in the
-# ruleset for main; they block merging, not pushing. The fifth gate, loading the
+# ruleset for main; they block merging, not pushing. The sixth gate, loading the
 # real scenarios, needs the private data repo and stays local.
 name: Gates
 
@@ -94,6 +94,11 @@ jobs:
 
       - name: Lint
         run: uv run --no-sync ruff check src tests
+
+      - name: Types
+        # Run even when lint fails, so one run reports both.
+        if: ${{ !cancelled() }}
+        run: uv run --no-sync ty check
 
   docs:
     name: Spelling and markdown

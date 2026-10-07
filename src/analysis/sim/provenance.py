@@ -69,7 +69,7 @@ def code_stamps() -> CodeStamps:
     return CodeStamps(
         version=repo.head.commit.hexsha,
         dirty=repo.is_dirty(untracked_files=True),
-        repo_path=repo.working_tree_dir,
+        repo_path=None if repo.working_tree_dir is None else str(repo.working_tree_dir),
     )
 
 
