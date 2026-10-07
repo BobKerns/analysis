@@ -147,7 +147,7 @@ def test_guide_cancel_writes_nothing(
     assert len(calendar_rows()) == before
 
 
-def test_guide_asks_for_a_lot_only_on_an_investment_account(
+def test_guide_asks_for_a_lot_only_where_a_blank_one_would_not_do(
     calendar_add: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
 ) -> None:
     result = calendar_add(answers=[

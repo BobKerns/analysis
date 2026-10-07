@@ -14,6 +14,7 @@ import tempfile
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import NamedTuple
 
 import click
 import pandas as pd
@@ -1819,25 +1820,106 @@ def _lot_info(con: sqlite3.Connection) -> dict[str, tuple[bool, list[str]]]:
     return info
 
 
-def _pick_lot(
-    info: dict[str, tuple[bool, list[str]]], account: str, lot: str | None, label: str,
-) -> str:
-    """The lot column value for ``account``: an explicit ``lot`` is checked, and
-    investment accounts prompt for one; other accounts leave it blank."""
-    investment, lots = info[account]
+def _interior_chains(con: sqlite3.Connection) -> list[str]:
+    """The chains a transfer may name in place of an account: every chain but
+    the implicit leaf chain of each lot."""
+    return [r[0] for r in con.execute("SELECT name FROM chain WHERE lot_id IS NULL ORDER BY name")]
+
+
+def _echo_endpoints(
+    accounts: list[str], lot_info: dict[str, tuple[bool, list[str]]], chains: list[str],
+) -> None:
+    """List what a transfer can name, with the lots of each account that must
+    name one."""
+    shown = [
+        f"{a} (lots: {', '.join(lot_info[a][1])})"
+        if calendar_guide.lot_needed(lot_info.get(a)) else a
+        for a in accounts
+    ]
+    click.echo(f"accounts: {', '.join(shown)}")
+    if chains:
+        click.echo(f"chains: {', '.join(chains)}")
+
+
+def _pick_endpoint(
+    label: str, name: str | None, lot: str | None, *,
+    accounts: list[str], lot_info: dict[str, tuple[bool, list[str]]], chains: list[str],
+    allow_chain: bool = True,
+) -> tuple[str, str]:
+    """One side of a transfer: an account and its lot, or an interior chain
+    and no lot (#98). A value given on the command line is checked against the
+    same choices as one typed at a prompt, and fails if it doesn't fit; a value
+    left out is asked, again until it fits. The lot is asked whenever
+    ``calendar_guide.lot_needed`` says a blank one wouldn't do, as the guided
+    ``sim calendar add`` does."""
+
+    def endpoint_problem(answer: str) -> str | None:
+        if answer in chains and not allow_chain:
+            return f"{answer!r} is a chain, and a transfer can't run from one chain into another"
+        if answer not in accounts and answer not in chains:
+            return f"unknown {label} account or chain: {answer!r}"
+        return None
+
+    if name is None:
+        choices = [*accounts, *chains] if allow_chain else list(accounts)
+        while (problem := endpoint_problem(
+            name := _prompt_with_completion(f"{label} account or chain", choices=choices).strip()
+        )):
+            click.echo(f"  {problem}")
+    elif problem := endpoint_problem(name):
+        raise click.ClickException(problem)
+
+    if name in chains:
+        if lot:
+            raise click.ClickException(f"{name!r} is a chain, so --{label}-lot must be blank")
+        return name, ""
+    entry = lot_info.get(name, (False, [registries.DEFAULT_LOT]))
+    lots = list(entry[1])
     if lot:
         if lot not in lots:
             raise click.ClickException(
-                f"{account!r} has no lot {lot!r}; its lots: {', '.join(lots)}"
+                f"{name!r} has no lot {lot!r}; its lots: {', '.join(lots)}"
             )
-        return lot
-    if investment:
-        return _prompt_with_completion(f"{label} lot", choices=lots)
-    return ""
+        return name, lot
+    if not calendar_guide.lot_needed(entry):
+        return name, ""
+    click.echo(f"  lots of {name}: {', '.join(lots)}")
+    while (lot := _prompt_with_completion(f"{label} lot", choices=lots).strip()) not in lots:
+        click.echo(f"  not one of: {', '.join(lots)}")
+    return name, lot
 
 
-def _prompt_account(label: str, accounts: list[str]) -> str:
-    return _prompt_with_completion(f"{label} account", choices=accounts)
+class _Endpoints(NamedTuple):
+    """What either side of a transfer may name."""
+    accounts: list[str]
+    lot_info: dict[str, tuple[bool, list[str]]]
+    chains: list[str]
+
+
+def _endpoints(con: sqlite3.Connection) -> _Endpoints:
+    return _Endpoints(
+        [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")],
+        _lot_info(con), _interior_chains(con),
+    )
+
+
+def _pick_endpoints(
+    endpoints: _Endpoints,
+    from_account: str | None, from_lot: str | None,
+    to_account: str | None, to_lot: str | None,
+) -> tuple[str, str, str, str]:
+    """Both sides of a transfer, from then to, each with its lot (#98)."""
+    accounts, lot_info, chains = endpoints
+    if from_account is None or to_account is None:
+        _echo_endpoints(accounts, lot_info, chains)
+    from_account, from_lot = _pick_endpoint(
+        "from", from_account, from_lot, accounts=accounts, lot_info=lot_info, chains=chains,
+    )
+    to_account, to_lot = _pick_endpoint(
+        "to", to_account, to_lot, accounts=accounts, lot_info=lot_info, chains=chains,
+        allow_chain=from_account not in chains,
+    )
+    return from_account, from_lot, to_account, to_lot
 
 
 def _percent_to_rate_micros(s: str) -> int:
@@ -2146,25 +2228,15 @@ def _do_add_transfer(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     with _intent_db(data_dir_p, scenario) as (con, _name):
-        accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
-        lot_info = _lot_info(con)
+        endpoints = _endpoints(con)
 
     if not date:
         date = _prompt_with_completion("date (YYYY-MM or YYYY-MM-DD)")
     date = _validate_month_date(date)
 
-    if not from_account:
-        click.echo(f"accounts: {', '.join(accounts)}")
-        from_account = _prompt_account("from", accounts)
-    if from_account not in accounts:
-        raise click.ClickException(f"unknown from account: {from_account!r}")
-
-    if not to_account:
-        to_account = _prompt_account("to", accounts)
-    if to_account not in accounts:
-        raise click.ClickException(f"unknown to account: {to_account!r}")
-    from_lot = _pick_lot(lot_info, from_account, from_lot, "from")
-    to_lot = _pick_lot(lot_info, to_account, to_lot, "to")
+    from_account, from_lot, to_account, to_lot = _pick_endpoints(
+        endpoints, from_account or None, from_lot, to_account or None, to_lot,
+    )
 
     if amount is None:
         amount = _prompt_with_completion("amount (dollars, e.g. 1234.56)")
@@ -2224,8 +2296,10 @@ def _do_add_transfer(
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
-@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
-@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
+@click.option("--from-lot", default=None,
+              help="Lot of the from account; asked for when a blank one would not say which.")
+@click.option("--to-lot", default=None,
+              help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -2386,6 +2460,7 @@ def _guide_context(
         return calendar_guide.GuideContext(
             accounts=column(con, "SELECT name FROM account"),
             lots=_lot_info(con),
+            chains=_interior_chains(con),
             scheduled_names=column(con, "SELECT name FROM scheduled_transaction"),
             series={
                 "rate": sorted({
@@ -2851,8 +2926,10 @@ def calendar_add_latent_factor(
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
-@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
-@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
+@click.option("--from-lot", default=None,
+              help="Lot of the from account; asked for when a blank one would not say which.")
+@click.option("--to-lot", default=None,
+              help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -2917,8 +2994,10 @@ def scheduled_group_command() -> None:
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
-@click.option("--from-lot", default=None, help="Lot of the from account (required for investment accounts).")
-@click.option("--to-lot", default=None, help="Lot of the to account (required for investment accounts).")
+@click.option("--from-lot", default=None,
+              help="Lot of the from account; asked for when a blank one would not say which.")
+@click.option("--to-lot", default=None,
+              help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir",
@@ -2966,8 +3045,7 @@ def scheduled_add(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     with _intent_db(data_dir_p, scenario) as (con, _name):
-        accounts = [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")]
-        lot_info = _lot_info(con)
+        endpoints = _endpoints(con)
         existing_names = {
             r[0] for r in con.execute("SELECT name FROM scheduled_transaction")
         }
@@ -2982,18 +3060,9 @@ def scheduled_add(
     if end_date:
         end_date = _validate_month_date(end_date)
 
-    if not from_account:
-        click.echo(f"accounts: {', '.join(accounts)}")
-        from_account = _prompt_account("from", accounts)
-    if from_account not in accounts:
-        raise click.ClickException(f"unknown from account: {from_account!r}")
-
-    if not to_account:
-        to_account = _prompt_account("to", accounts)
-    if to_account not in accounts:
-        raise click.ClickException(f"unknown to account: {to_account!r}")
-    from_lot = _pick_lot(lot_info, from_account, from_lot, "from")
-    to_lot = _pick_lot(lot_info, to_account, to_lot, "to")
+    from_account, from_lot, to_account, to_lot = _pick_endpoints(
+        endpoints, from_account or None, from_lot, to_account or None, to_lot,
+    )
 
     if amount is None:
         amount = _prompt_with_completion("amount (dollars, e.g. 1234.56)")
@@ -4411,8 +4480,10 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
             "SELECT ce.date, ce.amount, "
             "       COALESCE(ce.tax_character, '') AS tax_character, "
             "       COALESCE(ce.description, '') AS description, "
-            "       a1.name AS name_1, a1.subkind AS subkind_1, m1.lot AS lot_1, "
-            "       a2.name AS name_2, a2.subkind AS subkind_2, m2.lot AS lot_2 "
+            "       ce.account_1 AS chain_1, a1.name AS name_1, a1.subkind AS subkind_1, "
+            "       m1.lot AS lot_1, "
+            "       ce.account_2 AS chain_2, a2.name AS name_2, a2.subkind AS subkind_2, "
+            "       m2.lot AS lot_2 "
             "FROM calendar_event ce "
             "LEFT JOIN chain c1 ON c1.name = ce.account_1 "
             "LEFT JOIN account_model_member m1 ON m1.id = c1.lot_id "
@@ -4424,8 +4495,8 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
         ):
             rows.append((
                 row["date"], "calendar",
-                _account_with_lot(row["name_1"], row["subkind_1"], row["lot_1"]),
-                _account_with_lot(row["name_2"], row["subkind_2"], row["lot_2"]),
+                _account_with_lot(row["name_1"] or row["chain_1"], row["subkind_1"], row["lot_1"]),
+                _account_with_lot(row["name_2"] or row["chain_2"], row["subkind_2"], row["lot_2"]),
                 _fmt_cents(row["amount"]).strip() if row["amount"] is not None else "",
                 row["tax_character"], row["description"],
             ))
