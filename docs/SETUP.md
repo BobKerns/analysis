@@ -44,6 +44,13 @@ simulator and notebooks don't need it, only those two verification gates do.
     ```
 4. Run `uv sync --group dev` (installing the pinned Python from
    `.python-version` first with `uv python install` only if this fails)
+
+   This also puts `analysis_truststore.pth` in the venv's site-packages. It
+   runs `truststore.inject_into_ssl()` at the start of every Python process
+   there (the JupyterLab server, kernels, the CLI), so HTTPS everywhere is
+   verified with the operating system's trust store and a root you've
+   trusted locally (a corporate proxy, a home CA) is honored, even by
+   libraries that bring certifi's bundle.
 5. Install the notebook-cleaning filter:
     ```sh
     uv run nbstripout --install

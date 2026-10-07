@@ -119,6 +119,7 @@ preflighted
 preflights
 preroll
 prio
+purelib
 pyeb
 pypi
 pytestmark
