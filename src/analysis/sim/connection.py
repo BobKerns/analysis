@@ -1035,15 +1035,16 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         if intent_dir is None:
             intent_dir = Path(self._tmp.name)
         self._intent_dir = Path(intent_dir).resolve()
-        self._con = None  # ty: ignore[invalid-assignment]  # _reload() opens it
         self._dirty = False
         self._reload()
 
     # -- lifecycle --
 
     def _reload(self) -> None:
-        if self._con is not None:
-            self._con.close()
+        # Unset until the first load, and again once closed.
+        old = getattr(self, "_con", None)
+        if old is not None:
+            old.close()
         load_scenario(
             self.data_dir, self._scenario_name,
             intent_dir=self._intent_dir,
@@ -1065,10 +1066,10 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         return self._intent_dir / f"{self._scenario_name}.sqlite3"
 
     def close(self) -> None:
-        if self._con is not None:
-            self._con.close()
-            # Closed: nothing may use the connection now.
-            self._con = None  # ty: ignore[invalid-assignment]
+        con = getattr(self, "_con", None)
+        if con is not None:
+            con.close()
+            del self._con  # closed: any later use is an AttributeError
         self._tmp.cleanup()
 
     def __enter__(self) -> ScenarioConnection:
