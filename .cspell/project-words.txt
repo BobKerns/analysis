@@ -175,6 +175,7 @@ tbond
 tctronics
 testpaths
 textcoords
+textconv
 TLJH
 tolist
 topup

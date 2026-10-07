@@ -7,8 +7,10 @@ contains a keyword itself.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -57,6 +59,35 @@ def test_no_tracked_file_contains_a_blocked_keyword() -> None:
     result = _check(REPO, "--all")
 
     assert result.returncode == 0, result.stderr
+
+
+def test_all_ignores_a_notebooks_outputs_but_not_its_source(scratch_repo: Path) -> None:
+    # A run notebook holds outputs that nbstripout keeps out of commits, so
+    # --all reads notebooks through the same textconv `nbstripout --install`
+    # sets up. Configured here so the test doesn't depend on local config.
+    subprocess.run(
+        ["git", "config", "diff.ipynb.textconv", f"{sys.executable} -m nbstripout -t"],
+        cwd=scratch_repo, check=True,
+    )
+    keyword = _keywords()[0]
+
+    def notebook(source: str, output: str) -> str:
+        cell = {
+            "cell_type": "code", "execution_count": 1, "id": "c1", "metadata": {},
+            "outputs": [{"name": "stdout", "output_type": "stream", "text": [output]}],
+            "source": [source],
+        }
+        return json.dumps({"cells": [cell], "metadata": {}, "nbformat": 4, "nbformat_minor": 5})
+
+    _stage(scratch_repo, ".gitattributes", "*.ipynb diff=ipynb\n")
+    _stage(scratch_repo, "run.ipynb", notebook("print(name)", f"{keyword}\n"))
+    assert _check(scratch_repo, "--all").returncode == 0
+
+    _stage(scratch_repo, "run.ipynb", notebook(f"print('{keyword}')", "plain\n"))
+    result = _check(scratch_repo, "--all")
+
+    assert result.returncode == 1
+    assert "run.ipynb:" in result.stderr
 
 
 def test_a_staged_file_naming_a_real_account_is_blocked(scratch_repo: Path) -> None:
