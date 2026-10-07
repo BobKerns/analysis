@@ -719,6 +719,26 @@ def set_brokerage_lots(retire_alice_csv: Callable[[str], Path]) -> Callable[[lis
 
 
 @pytest.fixture(scope="function")
+def savings_lots(retire_alice_csv: Callable[[str], Path]) -> tuple[str, str]:
+    """Split the private retire_alice copy's Asset_Savings, an ordinary (not
+    investment) account, into lots ``emergency`` and ``travel``, neither
+    named ``default``: a transfer must name one of them. The checking
+    liquidity chain draws on ``emergency``. Returns the lots."""
+    path = retire_alice_csv("account_values.csv")
+    values = pd.read_csv(path, dtype=str, keep_default_na=False)
+    savings = values[values["account_name"] == "Asset_Savings"].iloc[0]
+    lots = ("emergency", "travel")
+    rows = pd.DataFrame([{**savings, "lot": lot, "opening_balance": "10000.00"} for lot in lots])
+    pd.concat([values[values["account_name"] != "Asset_Savings"], rows], ignore_index=True).to_csv(
+        path, index=False)
+    chain_path = retire_alice_csv("chains/asset__asset_checking_liquidity.csv")
+    chain = pd.read_csv(chain_path, dtype=str, keep_default_na=False)
+    chain.loc[chain["account_name"] == "Asset_Savings", "lot"] = lots[0]
+    chain.to_csv(chain_path, index=False)
+    return lots
+
+
+@pytest.fixture(scope="function")
 def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
                      set_brokerage_lots: Callable[[list[dict[str, str]]], None],
                      load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:

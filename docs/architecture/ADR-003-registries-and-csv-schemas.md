@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior. Also amended in place after acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7); and [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8). [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.10), the correlation columns (§4.8), and factors merged by name (§4.5). [#34](https://github.com/BobKerns/analysis/issues/34): month date columns accept `YYYY-MM` or `YYYY-MM-DD`, pinned to month-end; day-precise columns are named, a biweekly rule's dates and a `retire_scheduled` date keep a full date's day, and a date-varying row's bare-month bounds span the month (§4, §4.8). [#44](https://github.com/BobKerns/analysis/issues/44): CLI edits are validated on a staged copy before anything is written (§7). [#56](https://github.com/BobKerns/analysis/issues/56): `calendar edit` replaces a row in place under the same staged edit, after confirming it is still the row that was chosen (§7). [#59](https://github.com/BobKerns/analysis/issues/59): `parent_scenario` may list mix-ins after the main parent, colon-separated, and inheritance follows a load order (§4.1d, §4.5). [#68](https://github.com/BobKerns/analysis/issues/68): `calendar.csv`'s `vary_tail_dependence` column (§4.8). [#74](https://github.com/BobKerns/analysis/issues/74): `scenario.csv`'s `meta_json` merges key by key down the load order (§4.5). [#78](https://github.com/BobKerns/analysis/issues/78): a fund lot grows at the blend of its allocation's slice rates (§2.2, §4.1b). [#92](https://github.com/BobKerns/analysis/issues/92): a `set_rate` row nothing in its scenario reads is a warning, not an error (§3.1). [#91](https://github.com/BobKerns/analysis/issues/91): `scenario create` also writes `series/README.md` (§4.5). Git history has the earlier text.
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3). Amended again (2026-09-27): `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`). See §4.1c/§4.1d. Amended again by [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior. Also amended in place after acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7); and [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8). [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.10), the correlation columns (§4.8), and factors merged by name (§4.5). [#34](https://github.com/BobKerns/analysis/issues/34): month date columns accept `YYYY-MM` or `YYYY-MM-DD`, pinned to month-end; day-precise columns are named, a biweekly rule's dates and a `retire_scheduled` date keep a full date's day, and a date-varying row's bare-month bounds span the month (§4, §4.8). [#44](https://github.com/BobKerns/analysis/issues/44): CLI edits are validated on a staged copy before anything is written (§7). [#56](https://github.com/BobKerns/analysis/issues/56): `calendar edit` replaces a row in place under the same staged edit, after confirming it is still the row that was chosen (§7). [#59](https://github.com/BobKerns/analysis/issues/59): `parent_scenario` may list mix-ins after the main parent, colon-separated, and inheritance follows a load order (§4.1d, §4.5). [#68](https://github.com/BobKerns/analysis/issues/68): `calendar.csv`'s `vary_tail_dependence` column (§4.8). [#74](https://github.com/BobKerns/analysis/issues/74): `scenario.csv`'s `meta_json` merges key by key down the load order (§4.5). [#78](https://github.com/BobKerns/analysis/issues/78): a fund lot grows at the blend of its allocation's slice rates (§2.2, §4.1b). [#92](https://github.com/BobKerns/analysis/issues/92): a `set_rate` row nothing in its scenario reads is a warning, not an error (§3.1). [#91](https://github.com/BobKerns/analysis/issues/91): `scenario create` also writes `series/README.md` (§4.5). [#98](https://github.com/BobKerns/analysis/issues/98): a `one_off_transfer` may name a chain on either side, but no transfer names one on both (§3.5, §4.6, §4.8), and the CLI asks for a lot wherever a blank one would not say which (§7). Git history has the earlier text.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility).
 
 ## Context
@@ -237,8 +237,8 @@ End an active `ScheduledTransaction`.
 
 A single one-shot movement, expressed as a synthesized rule so the §2 invariant holds.
 
-- **Columns:** `account_1` = from account, `account_2` = to account, `amount` = cents, `tax_character` = tax character.
-- **Expansion:** synthesize one `scheduled_transaction` with `amount_rule_kind='fixed_amount'`, `cadence='one_off'`, `start = end = event.date`, `amount` from the payload, fields from payload, `created_by_event_id = calendar_event.id`. The engine fires it on `event.date`, emitting one `transfer_event` traced to that synthesized rule.
+- **Columns:** `account_1` = from account or chain, `account_2` = to account or chain (not both chains), `amount` = cents, `tax_character` = tax character.
+- **Expansion:** synthesize one `scheduled_transaction` with `amount_rule_kind='fixed_amount'`, `cadence='one_off'`, `start = end = event.date`, `amount` from the payload, fields from payload, `created_by_event_id = calendar_event.id`. The engine fires it on `event.date` and routes it as it does any `fixed_amount` rule: lot to lot directly, or through a chain's sweep or draw, each `transfer_event` traced to that synthesized rule.
 - **Use:** windfalls, gifts, one-time settlements that have no recurring structure.
 
 #### 3.6 `swap_aux_table` (primitive)
@@ -637,7 +637,7 @@ A child row with a new key is appended; one whose key matches the parent replace
 | `name` | text | ✓ | unique within scenario |
 | `from_account` | text | ✓ | primary leg from: an account or a chain |
 | `from_lot` | text | | the lot of `from_account`; **required for investment subkinds**, blank (meaning `default`) otherwise, and blank when `from_account` is a chain |
-| `to_account` | text | ✓ | primary leg to: an account or a chain |
+| `to_account` | text | ✓ | primary leg to: an account or a chain; not a chain when `from_account` is one |
 | `to_lot` | text | | the lot of `to_account`, as for `from_lot` |
 | `cadence` | enum | ✓ | `monthly`, `quarterly`, `annual`, `one_off` |
 | `month_of_year` | int 1-12 | | required for `annual`; ignored otherwise |
@@ -694,9 +694,9 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `kind` | enum | ✓ | one of §3 |
 | `name` | text | for a row with `vary_distribution` set; optional otherwise | stable identifier, unique within the scenario ([ADR-006](ADR-006-ensemble-scenarios.md); also what calendar-event tagging keys on) |
 | `scheduled_name` | text | | name of target scheduled transaction; required for `retire_scheduled`, `set_amount` |
-| `account_1` | text | | first event-specific account (e.g. `from_account` for `one_off_transfer`) |
+| `account_1` | text | | first event-specific account (e.g. `from_account` for `one_off_transfer`, which may also name a chain) |
 | `lot_1` | text | | the lot of `account_1`, as for `from_lot` in §4.6 |
-| `account_2` | text | | second event-specific account (e.g. `to_account` for `one_off_transfer`) |
+| `account_2` | text | | second event-specific account (e.g. `to_account` for `one_off_transfer`, which may also name a chain, though not when `account_1` does) |
 | `lot_2` | text | | the lot of `account_2` |
 | `series` | text | | rate series name; required for `set_rate` |
 | `amount` | int | | amount in appropriate units (micros for `set_rate`, cents for `one_off_transfer`, cents for `set_amount`); a placeholder, unused, when this row's own `vary_target='amount'` |
@@ -851,6 +851,16 @@ long time, and stages only when the answer is submitted. So inside the staged
 edit it first confirms the file still has the chosen row at that position,
 and refuses if not: the commit check above cannot see a change made before
 staging began.
+
+The commands that add a transfer (`transfer add`, `calendar add transfer`,
+the guided `calendar add`, `scheduled add`) pick each side the same way,
+whether a value is typed at a prompt or given on the command line: an
+account or a chain, then the account's lot. The lot is asked whenever a
+blank one would not say which lot is meant -- for an investment account, or
+any account with more than one lot or none named `default` -- and a chain
+takes none. A
+value given on the command line that isn't one of the choices fails; one
+typed at a prompt is asked again.
 
 ## Consequences
 

@@ -280,7 +280,7 @@ def test_edit_ignores_a_lot_the_changed_account_no_longer_has(
 
     assert result.exit_code == 1
     assert "that would duplicate another row" in result.output
-    offered = result.output.split("from account [")[0].rsplit("choices", 1)[-1]
+    offered = result.output.split("from account or chain [")[0].rsplit("choices", 1)[-1]
     assert "Asset_Savings" not in offered
     pd.testing.assert_frame_equal(calendar_rows(), before)
 

@@ -786,7 +786,7 @@ def load_scenario(
     )
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
-    _validate_calendar(calendar_rows, leaves, issues)
+    _validate_calendar(calendar_rows, leaves, set(chains), issues)
     _validate_calendar_correlation(calendar_rows, issues, warnings)
     _validate_series_references(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, warnings,
@@ -1240,6 +1240,14 @@ def _resolve_ref(
     return None
 
 
+def _both_chains(
+    row: dict[str, str], from_col: str, to_col: str, chain_names: set[str] | frozenset[str],
+) -> bool:
+    """Whether both sides of a transfer name an interior chain, which the
+    engine can't route: it sweeps out of a lot or draws into one."""
+    return row.get(from_col, "") in chain_names and row.get(to_col, "") in chain_names
+
+
 def _ref_problem(ref: str, leaves: _LeafIndex, chain_names: set[str] | frozenset[str]) -> str | None:
     """Why ``ref`` (a bare account or chain name with no lot column) is not a
     valid reference, or None if it is."""
@@ -1627,6 +1635,11 @@ def _validate_scheduled(
             problem = _resolve_ref(row, col, lot_col, leaves, chain_names)
             if problem:
                 issues.append(f"scheduled.csv row {i} ({name}): {col} {problem}")
+        if _both_chains(row, "from_account", "to_account", chain_names):
+            issues.append(
+                f"scheduled.csv row {i} ({name}): from_account and to_account "
+                "may not both be chains"
+            )
         params_json = row.get("amount_rule_params_json") or "{}"
         try:
             json.loads(params_json)
@@ -2004,7 +2017,8 @@ _VARY_SHAPE_COLUMNS = ("vary_skew", "vary_tailweight")
 
 
 def _validate_calendar(
-    rows: list[dict[str, str]], leaves: _LeafIndex, issues: list[str],
+    rows: list[dict[str, str]], leaves: _LeafIndex, chain_names: set[str],
+    issues: list[str],
 ) -> None:
     seen_names: dict[str, int] = {}
     for i, row in enumerate(rows, start=2):
@@ -2013,9 +2027,13 @@ def _validate_calendar(
             issues.append(f"calendar.csv row {i}: unknown event kind '{kind}'")
         if kind == "one_off_transfer":
             for col, lot_col in (("account_1", "lot_1"), ("account_2", "lot_2")):
-                problem = _resolve_ref(row, col, lot_col, leaves, frozenset())
+                problem = _resolve_ref(row, col, lot_col, leaves, chain_names)
                 if problem:
                     issues.append(f"calendar.csv row {i}: {col} {problem}")
+            if _both_chains(row, "account_1", "account_2", chain_names):
+                issues.append(
+                    f"calendar.csv row {i}: account_1 and account_2 may not both be chains"
+                )
         params_json = row.get("params_json") or "{}"
         try:
             json.loads(params_json)

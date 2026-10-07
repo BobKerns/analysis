@@ -41,6 +41,8 @@ class GuideContext:
     accounts: Sequence[str] = ()
     # account -> (is an investment account, its lot labels)
     lots: Mapping[str, tuple[bool, Sequence[str]]] = field(default_factory=dict)
+    # interior chains, which a transfer may name in place of an account
+    chains: Sequence[str] = ()
     scheduled_names: Sequence[str] = ()
     # aux_kind -> the series names of that kind
     series: Mapping[str, Sequence[str]] = field(default_factory=dict)
@@ -281,9 +283,20 @@ _SCHEDULED_NAME = Field(
 )
 
 
-def _is_investment(account_param: str) -> Callable[[GuideContext, Answers], bool]:
+def lot_needed(lots: tuple[bool, Sequence[str]] | None) -> bool:
+    """Whether a transfer must name the lot of an account with these ``lots``
+    (``None`` for a chain, which takes no lot). Only when ``default`` is an
+    ordinary account's one lot does a blank lot say which lot is meant; an
+    investment account always names it (ADR-005)."""
+    if lots is None:
+        return False
+    investment, labels = lots
+    return investment or list(labels) != [registries.DEFAULT_LOT]
+
+
+def _lot_asked(account_param: str) -> Callable[[GuideContext, Answers], bool]:
     def applies(ctx: GuideContext, answers: Answers) -> bool:
-        return ctx.lots.get(answers.get(account_param, ""), (False, ()))[0]
+        return lot_needed(ctx.lots.get(answers.get(account_param, "")))
     return applies
 
 
@@ -293,8 +306,16 @@ def _lots_of(account_param: str) -> Callable[[GuideContext, Answers], Sequence[s
     return choices
 
 
-def _accounts(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
-    return list(ctx.accounts)
+def _to_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:
+    """Accounts and chains for the to side; no chain when the from side is
+    one, since a transfer can't run from one chain into another."""
+    if answers.get("from_account", "") in ctx.chains:
+        return list(ctx.accounts)
+    return [*ctx.accounts, *ctx.chains]
+
+
+def _from_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
+    return [*ctx.accounts, *ctx.chains]
 
 
 KINDS: tuple[KindSpec, ...] = (
@@ -344,15 +365,15 @@ KINDS: tuple[KindSpec, ...] = (
         key=("date", "from_account", "from_lot", "to_account", "to_lot", "amount", "series"),
         fields=(
             _DATE,
-            Field("from_account", "from account", choices=_accounts, strict=True),
+            Field("from_account", "from account or chain", choices=_from_endpoints, strict=True),
             Field(
                 "from_lot", "from lot", option="--from-lot", strict=True,
-                choices=_lots_of("from_account"), applies=_is_investment("from_account"),
+                choices=_lots_of("from_account"), applies=_lot_asked("from_account"),
             ),
-            Field("to_account", "to account", choices=_accounts, strict=True),
+            Field("to_account", "to account or chain", choices=_to_endpoints, strict=True),
             Field(
                 "to_lot", "to lot", option="--to-lot", strict=True,
-                choices=_lots_of("to_account"), applies=_is_investment("to_account"),
+                choices=_lots_of("to_account"), applies=_lot_asked("to_account"),
             ),
             Field("amount", "amount in dollars", type="dollars"),
             Field(
