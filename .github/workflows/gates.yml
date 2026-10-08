@@ -113,6 +113,14 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
+      # cspell.json loads the data repo's dictionary, which CI doesn't
+      # check out; an empty stub keeps the config loadable. Tracked files
+      # never use the data repo's names, so nothing here needs its words.
+      - name: Stub data-repo dictionary
+        run: |
+          mkdir -p data/shared/.cspell
+          echo '# Stub: the data repo is not checked out in CI' > data/shared/.cspell/data-words.txt
+
       - name: Spelling
         run: npm run spell
 
