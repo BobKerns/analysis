@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism. [#59](https://github.com/BobKerns/analysis/issues/59): the scenario tree id covers mix-in scenarios' folders too.
+- **Amended by:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism. [#59](https://github.com/BobKerns/analysis/issues/59): the scenario tree id covers mix-in scenarios' folders too. [#106](https://github.com/BobKerns/analysis/issues/106): `sim check --all`.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture — summarizes reproducibility & activation), [ADR-002](ADR-002-storage-schema.md) (storage schema — `intent_manifest`, `simulation_run` stamps), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries used by `--check`).
 
 ## Context
@@ -138,6 +138,8 @@ This is the operational definition of "reproducible from stamps."
 - ADR-004 §1: a `--check stamps` mode dry-runs the stamp computation and reports what `scenario_tree_id` would be, so authors can confirm scope before committing.
 
 Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only warnings.
+
+`analysis sim check --all` checks every scenario in the data repo in turn, each under a `Checking <scenario>` line. A failing scenario doesn't stop the rest; the command ends with a summary and exits `1` if any scenario failed. Giving both a scenario name and `--all` is a usage error.
 
 ### 7. Comparison across runs
 

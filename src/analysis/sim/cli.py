@@ -212,14 +212,48 @@ def load(
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     default=None,
 )
-def check(scenario_name: str | None, data_dir: Path | None) -> None:
+@click.option(
+    "--all", "check_all", is_flag=True, default=False,
+    help="Check every scenario in the data repo, continuing past failures.",
+)
+def check(scenario_name: str | None, data_dir: Path | None, check_all: bool) -> None:
     """Validate the scenario's CSVs without producing a persistent intent file."""
+    if check_all and scenario_name is not None:
+        raise click.UsageError("give a scenario name or --all, not both")
     resolved = _resolve_data_dir(data_dir)
-    ref = _resolve_scenario(resolved, scenario_name)
+    if not check_all:
+        ref = _resolve_scenario(resolved, scenario_name)
+        _check_scenario(resolved, ref.name)
+        return
+    try:
+        names = list_scenario_names(resolved)
+    except LoadError as exc:
+        raise click.ClickException("; ".join(exc.issues)) from None
+    if not names:
+        raise click.ClickException(f"no scenarios found under {resolved / 'scenarios'}")
+    failed: list[str] = []
+    for name in names:
+        click.echo(f"Checking {name}")
+        try:
+            _check_scenario(resolved, name)
+        except click.ClickException:
+            failed.append(name)  # its issues are already printed
+    click.echo()
+    if failed:
+        # Non-zero exit so the gate loop this replaces still fails a push.
+        raise click.ClickException(
+            f"{len(failed)} of {len(names)} scenario(s) failed: {', '.join(failed)}"
+        )
+    click.echo(f"all {len(names)} scenario(s) ok")
+
+
+def _check_scenario(data_dir: Path, name: str) -> None:
+    """Load one scenario into a throwaway intent file, printing its issues and
+    warnings; a failed load raises ClickException."""
     with tempfile.TemporaryDirectory() as td:
         try:
             result = load_scenario(
-                resolved, ref.name, intent_dir=Path(td), compute_stamps=False,
+                data_dir, name, intent_dir=Path(td), compute_stamps=False,
             )
         except LoadError as exc:
             for issue in exc.issues:
