@@ -1168,6 +1168,7 @@ __all__ = [
     "ItemType",
     "RunConnection",
     "ScenarioConnection",
+    "Connection",
     "open_run",
     "open_scenario",
 ]

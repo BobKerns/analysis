@@ -135,7 +135,7 @@ def _styled(table: pd.DataFrame):
             .format(subset=["caused_by"], na_rep="-"))
 
 
-def events_widget(rc: RunConnection) -> widgets.VBox:
+def events_widget(rc: RunConnection, **_) -> widgets.VBox:
     """Filter and browse a run's transfer events: reason kind, tax character,
     account, and date range."""
     everything = rc.items("transfer_event")

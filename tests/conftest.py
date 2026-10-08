@@ -826,6 +826,44 @@ def _add_varying_gift_and_retirement(append_calendar_row: Callable[..., None]) -
     )
 
 
+def _sim(*args: str) -> None:
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    result = CliRunner().invoke(main, ["sim", *args])
+    assert result.exit_code == 0, result.output
+
+
+@pytest.fixture(scope="function")
+def retire_alice_test_run(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> Path:
+    """retire_alice from the private data copy, loaded and run into the
+    function's state dir, beside ``test_data_dir``: where a picker opened on
+    ``test_data_dir`` looks. Returns its runs folder."""
+    _sim("load", "retire_alice", "--data-dir", str(test_data_dir),
+         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+         "--allow-dirty-data")
+    return runs_dir / "retire_alice"
+
+
+@pytest.fixture(scope="function")
+def ensemble_recipe(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> str:
+    """``recipe_1``, a three-member ensemble recipe over retire_alice in the
+    private data copy (one varied rate), run into the function's state dir.
+    Returns its name."""
+    name = "recipe_1"
+    _sim("ensemble", "create", name, "retire_alice", "--size", "3",
+         "--data-dir", str(test_data_dir))
+    _sim("calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+         "--scenario", name, "--data-dir", str(test_data_dir),
+         "--name", "checking_rate_vary", "--vary-target", "amount",
+         "--vary-distribution", "uniform", "--vary-low", "4.0", "--vary-high", "5.0")
+    _sim("run", name, "--data-dir", str(test_data_dir),
+         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+         "--allow-dirty-data")
+    return name
+
+
 def _load_and_run_batch(
     test_data_dir: Path, intent_dir: Path, runs_dir: Path, *run_args: str,
 ) -> str:
