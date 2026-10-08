@@ -226,14 +226,13 @@ def test_ensemble_widget_log_linear_mode_sets_the_yscale(
     from analysis.sim.types import LogLinearMode
 
     axes: list = []
-    real_subplots = ensemble_widgets.plt.subplots
+    real_fan_chart = ensemble_widgets.ensemble_fan_chart
 
-    def _spy_subplots(*args, **kwargs):
-        fig, ax = real_subplots(*args, **kwargs)
+    def _spy_fan_chart(monthly_summary, ax=None):
         axes.append(ax)
-        return fig, ax
+        return real_fan_chart(monthly_summary, ax=ax)
 
-    monkeypatch.setattr(ensemble_widgets.plt, "subplots", _spy_subplots)
+    monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
     log_linear_mode = LogLinearModePicker()
     ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
     assert axes[-1].get_yscale() == "linear"
@@ -253,14 +252,13 @@ def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_wort
     from analysis.sim.types import LogLinearMode
 
     axes: list = []
-    real_subplots = ensemble_widgets.plt.subplots
+    real_fan_chart = ensemble_widgets.ensemble_fan_chart
 
-    def _spy_subplots(*args, **kwargs):
-        fig, ax = real_subplots(*args, **kwargs)
+    def _spy_fan_chart(monthly_summary, ax=None):
         axes.append(ax)
-        return fig, ax
+        return real_fan_chart(monthly_summary, ax=ax)
 
-    monkeypatch.setattr(ensemble_widgets.plt, "subplots", _spy_subplots)
+    monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
     negative_summary = pd.DataFrame({
         "mean": [100.0, -10.0], "median": [95.0, -15.0],
         "std": [5.0, 5.0], "min": [50.0, -80.0], "max": [150.0, 50.0],
@@ -277,3 +275,12 @@ def test_ensemble_widget_accepts_extra_arguments(small_ensemble_runs_dir: Path) 
     positional and keyword arguments it doesn't use."""
     box = ensemble_widget("ignored", runs_dir=small_ensemble_runs_dir, member=3)
     assert box.children
+
+
+def test_ensemble_widget_leaves_no_figure_open_in_pyplot(small_ensemble_runs_dir: Path) -> None:
+    """The chart is never registered with pyplot, so matplotlib-inline's
+    flush_figures, run by another widget message on a kernel subshell, can't
+    render it while it's still being drawn (#119)."""
+    plt.close("all")
+    ensemble_widget(runs_dir=small_ensemble_runs_dir)
+    assert plt.get_fignums() == []
