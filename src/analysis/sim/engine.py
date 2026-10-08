@@ -28,7 +28,7 @@ import warnings
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from analysis.sim import registries
 from analysis.sim.runs import finalize_run, open_run_file
@@ -201,6 +201,7 @@ def run_scenario(
             chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
             account_tax_treatment, account_subkind, account_name, cost_bases,
             quantities, growth_sources, acquired,
+            chain_name=dict(con.execute("SELECT id, name FROM chain").fetchall()),
         )
 
         skipped_counts: dict[str, int] = {}
@@ -539,10 +540,7 @@ def run_scenario(
             con.execute(
                 "UPDATE simulation_run SET run_args_json = json_set("
                 "  run_args_json, '$.negative_balance_warnings', json(?)) WHERE id = 1",
-                (json.dumps(
-                    [{"month": m, "account": n, "balance_cents": b}
-                     for m, n, b in refill_ctx.negative_events],
-                ),),
+                (json.dumps(refill_ctx.negative_events),),
             )
 
         finalize_run(con, status="succeeded")
@@ -554,6 +552,26 @@ def run_scenario(
     return Path(run_path)
 
 
+class RefillAttempt(NamedTuple):
+    """What the refill look-ahead did for an account's latest debit (#105),
+    kept so a negative-balance warning can say which chain it tried and how
+    much that chain supplied. ``status`` is one of ``REFILL_STATUSES``;
+    ``needed``/``drawn`` are set only for ``"drawn"``."""
+
+    status: str
+    chain_id: int | None = None
+    needed: int | None = None
+    drawn: int | None = None
+
+
+# "drawn": the chain was drawn (possibly for less than needed);
+# "none_configured": the account has no refill_chain;
+# "cycle": skipped because the account was already being refilled further up;
+# "not_triggered": the debit left it at or above minimum_balance (only
+# possible below zero when that minimum is itself negative).
+REFILL_STATUSES = ("drawn", "none_configured", "cycle", "not_triggered")
+
+
 class RefillContext:
     """Everything ``_post_transfer`` needs to look-ahead refill a debited
     account and to warn once when an asset actually goes negative (ADR-003
@@ -563,7 +581,8 @@ class RefillContext:
     __slots__ = ("graph", "aux", "chain_base_date", "inflation_factor_cache",
                  "account_tax_treatment", "account_subkind", "account_name",
                  "cost_bases", "quantities", "growth_sources", "acquired",
-                 "refilling", "negative_since", "negative_events")
+                 "chain_name", "refilling", "last_refill", "negative_since",
+                 "negative_events")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
@@ -574,6 +593,7 @@ class RefillContext:
         quantities: dict[int, int | None] | None = None,
         growth_sources: frozenset[int] = frozenset(),
         acquired: dict[int, date | None] | None = None,
+        chain_name: dict[int, str] | None = None,
     ) -> None:
         self.graph = graph
         self.aux = aux
@@ -586,9 +606,11 @@ class RefillContext:
         self.quantities = quantities if quantities is not None else {}
         self.growth_sources = growth_sources
         self.acquired = acquired if acquired is not None else {}
+        self.chain_name = chain_name if chain_name is not None else {}
         self.refilling: set[int] = set()  # reentrancy guard against refill cycles
+        self.last_refill: dict[int, RefillAttempt] = {}
         self.negative_since: dict[int, bool] = {}
-        self.negative_events: list[tuple[str, str, int]] = []
+        self.negative_events: list[dict[str, Any]] = []
 
 
 def _ensure_min_balance(
@@ -612,11 +634,16 @@ def _ensure_min_balance(
     """
     graph = refill_ctx.graph
     refill_chain = graph.refill_chain_of.get(account_id)
-    if refill_chain is None or account_id in refill_ctx.refilling:
+    if refill_chain is None:
+        refill_ctx.last_refill[account_id] = RefillAttempt("none_configured")
+        return None
+    if account_id in refill_ctx.refilling:
+        refill_ctx.last_refill[account_id] = RefillAttempt("cycle", refill_chain)
         return None
     minimum = graph.minimum_of.get(account_id, 0)
     projected = balances.get(account_id, 0) - debit_amount
     if projected >= minimum:
+        refill_ctx.last_refill[account_id] = RefillAttempt("not_triggered", refill_chain)
         return None
     mark = con.execute("SELECT COALESCE(MAX(id), 0) FROM transfer_event").fetchone()[0]
     deficit = minimum - projected
@@ -630,7 +657,7 @@ def _ensure_min_balance(
         needed = deficit
     refill_ctx.refilling.add(account_id)
     try:
-        _chain_draw(
+        drawn = _chain_draw(
             con, balances, account_kinds,
             refill_ctx.account_tax_treatment, refill_ctx.account_subkind,
             refill_ctx.account_name, step_id, month_s, graph,
@@ -639,6 +666,7 @@ def _ensure_min_balance(
         )
     finally:
         refill_ctx.refilling.discard(account_id)
+    refill_ctx.last_refill[account_id] = RefillAttempt("drawn", refill_chain, needed, drawn)
     return mark
 
 
@@ -664,6 +692,11 @@ def _warn_if_negative(
     """Warn once per negative transition (ADR-003 §4.7) -- an asset should
     only go negative once its refill chain (if any) is fully exhausted; not
     an error, but worth a one-time flag rather than silence or per-month spam.
+
+    The warning and its ``negative_events`` record say what the refill
+    look-ahead did for this debit (#105): which chain it tried and how much
+    of what it needed that chain supplied. A misdirected refill_chain shows
+    up as one that supplied $0.00, rather than as a bare shortfall.
     """
     if account_kinds.get(account_id) != "asset":
         return
@@ -671,15 +704,45 @@ def _warn_if_negative(
     was_negative = refill_ctx.negative_since.get(account_id, False)
     if is_negative and not was_negative:
         name = refill_ctx.account_name.get(account_id, str(account_id))
+        attempt = refill_ctx.last_refill.get(account_id)
+        if attempt is None:
+            # Every tracked debit runs the look-ahead first, so this is only
+            # a caller that posted around it; describe the configuration.
+            chain = refill_ctx.graph.refill_chain_of.get(account_id)
+            attempt = RefillAttempt("none_configured" if chain is None else "not_triggered", chain)
+        chain_name = (
+            None if attempt.chain_id is None
+            else refill_ctx.chain_name.get(attempt.chain_id, f"chain {attempt.chain_id}")
+        )
         warnings.warn(
             f"{month_s}: account {name!r} went negative "
-            f"(balance={balances[account_id] / 100:.2f}); its refill chain, if any, "
-            "could not cover the debit",
+            f"(balance={balances[account_id] / 100:.2f}); "
+            f"{_describe_refill(attempt, chain_name)}",
             RuntimeWarning,
             stacklevel=2,
         )
-        refill_ctx.negative_events.append((month_s, name, balances[account_id]))
+        refill_ctx.negative_events.append({
+            "month": month_s, "account": name, "balance_cents": balances[account_id],
+            "refill_status": attempt.status, "refill_chain": chain_name,
+            "refill_needed_cents": attempt.needed, "refill_drawn_cents": attempt.drawn,
+        })
     refill_ctx.negative_since[account_id] = is_negative
+
+
+def _describe_refill(attempt: RefillAttempt, chain_name: str | None) -> str:
+    """The negative-balance warning's account of the refill look-ahead (#105)."""
+    match attempt.status:
+        case "drawn":
+            return (f"refill chain {chain_name!r} supplied "
+                    f"${(attempt.drawn or 0) / 100:.2f} of ${(attempt.needed or 0) / 100:.2f}")
+        case "cycle":
+            return (f"refill chain {chain_name!r} was skipped: the account was "
+                    "already being refilled (a refill cycle)")
+        case "not_triggered":
+            return (f"refill chain {chain_name!r} was not drawn: the debit left the "
+                    "account at or above its minimum_balance")
+        case _:
+            return "no refill chain configured"
 
 
 def _post_transfer(
@@ -706,7 +769,10 @@ def _post_transfer(
 
     ``refill_mark`` is a caller's own ``_ensure_min_balance`` result, for a
     refill drawn on ``from_id`` before this call: those legs are linked to
-    this event along with any this call's own look-ahead draws.
+    this event, and the look-ahead isn't run again. A second look-ahead
+    could draw nothing (the caller sized the debit to what the refilled
+    account can spare), but it would replace the caller's ``last_refill``
+    record, so a warning would describe the empty re-check, not the draw.
 
     ``net_effects=False`` posts the leg alone, skipping the liability cap, the
     refill look-ahead, the lot-tracking updates and the negative-balance
@@ -725,13 +791,11 @@ def _post_transfer(
     if remainder is None:
         remainder = requested - amount
     track = refill_ctx if net_effects else None
-    if track is not None and amount > 0:
-        mark = _ensure_min_balance(
+    if track is not None and amount > 0 and refill_mark is None:
+        refill_mark = _ensure_min_balance(
             con, balances, account_kinds, step_id, month_s, track,
             from_id, amount,
         )
-        if refill_mark is None:
-            refill_mark = mark
     cur = con.execute(
         "INSERT INTO transfer_event("
         "  step_id, date, from_account, to_account, from_lot_id, to_lot_id, "
@@ -1782,12 +1846,11 @@ def _post_withdrawal(
         if amount == 0:
             return
     if refill_ctx is not None and amount > 0:
-        mark = _ensure_min_balance(
-            con, balances, account_kinds, step_id, month_s, refill_ctx,
-            from_id, amount,
-        )
-        if refill_mark is None:
-            refill_mark = mark
+        if refill_mark is None:  # see _post_transfer's refill_mark
+            refill_mark = _ensure_min_balance(
+                con, balances, account_kinds, step_id, month_s, refill_ctx,
+                from_id, amount,
+            )
         # A refill into the account is a purchase that raised its basis.
         basis = cost_bases[from_id] or 0
     prior_balance = balances.get(from_id, 0)
