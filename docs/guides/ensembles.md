@@ -162,7 +162,8 @@ sim run inflation_1
 member instead of a single run, under `state/runs/inflation_1/<timestamp>/
 member_NNNN.sqlite3`. Look at the result with `sim ensemble summary
 inflation_1` (a terminal table) or `notebooks/ensemble.ipynb` (the Monte
-Carlo "fan chart" — mean/median with the min–max range shaded behind them).
+Carlo "fan chart" — mean/median over quintile bands, shaded darker toward
+the middle fifth of members and lightest out at the min–max range).
 
 ### Member 0 is always a deterministic base case
 

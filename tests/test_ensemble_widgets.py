@@ -18,6 +18,7 @@ from analysis.sim.ensemble import (
     latest_ensemble_batch,
     load_ensemble,
     members_net_worth_by_month,
+    percentiles,
     resolve_member,
 )
 from analysis.sim.ensemble import summary as ensemble_summary
@@ -54,6 +55,24 @@ def test_ensemble_fan_chart_builds_without_error() -> None:
     ax = ensemble_fan_chart(_monthly_summary())
     assert len(ax.lines) == 3  # mean, median, zero rule
     assert len(ax.collections) == 1  # fill_between range band
+
+
+def test_ensemble_fan_chart_shades_quintile_bands_darker_toward_the_middle() -> None:
+    members = pd.DataFrame(
+        [[float(m * 10 + month) for m in range(11)] for month in range(6)],
+        index=pd.date_range("2026-01-31", periods=6, freq="ME"),
+    )
+    monthly = ensemble_summary(members).join(percentiles(members))
+    ax = ensemble_fan_chart(monthly)
+    assert len(ax.collections) == 5  # min-p20, p20-p40, p40-p60, p60-p80, p80-max
+    _handles, labels = ax.get_legend_handles_labels()
+    assert labels == ["range", "20–80%", "40–60%", "mean", "median"]
+    # Lighter (closer to white) at the edges, darkest in the middle band,
+    # and symmetric about it.
+    lightness = [sum(c.get_facecolor()[0][:3]) for c in ax.collections]
+    assert lightness[0] > lightness[1] > lightness[2]
+    assert lightness[0] == pytest.approx(lightness[4])
+    assert lightness[1] == pytest.approx(lightness[3])
 
 
 def test_ensemble_fan_chart_zero_rule_does_not_distort_a_far_off_range() -> None:
@@ -251,3 +270,10 @@ def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_wort
     log_linear_mode = LogLinearModePicker(log_linear_mode=LogLinearMode.LOG)
     ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
     assert axes[-1].get_yscale() == "linear"
+
+
+def test_ensemble_widget_accepts_extra_arguments(small_ensemble_runs_dir: Path) -> None:
+    """Like every widget `Connections.show()` may be handed, it tolerates
+    positional and keyword arguments it doesn't use."""
+    box = ensemble_widget("ignored", runs_dir=small_ensemble_runs_dir, member=3)
+    assert box.children
