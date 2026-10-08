@@ -7,6 +7,11 @@
       "name": "project-words",
       "path": "./.cspell/project-words.txt",
       "addWords": true
+    },
+    {
+      "name": "data-words",
+      "path": "./data/shared/.cspell/data-words.txt",
+      "addWords": true
     }
   ],
   "ignorePaths": [
@@ -15,6 +20,6 @@
     "state/**",
     "historical_data/*/**"
   ],
-  "dictionaries": ["python", "softwareTerms", "project-words"],
+  "dictionaries": ["python", "softwareTerms", "project-words", "data-words"],
   "files": ["**/*.md", "**/*.rst", "**/*.txt", "**/*.py", "**/.gitignore", "**/*.csv", "**/*.toml", "**/.gitattributes"]
 }
