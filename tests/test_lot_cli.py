@@ -156,7 +156,9 @@ def test_delete_lists_references_and_removes_them_once_confirmed(
     retire_alice_csv: Callable[[str], Path], check: Callable[[str], None],
 ) -> None:
     frame = values()
-    frame.loc[frame["account_name"] == "Asset_Savings", ["refill_chain", "refill_lot"]] = [BROKERAGE, "default"]
+    frame.loc[frame["account_name"] == "Asset_Savings",
+              ["minimum_balance", "refill_chain", "refill_lot", "refill_amount"]] = [
+        "1000.00", BROKERAGE, "default", "500.00"]
     frame.to_csv(retire_alice_csv("account_values.csv"), index=False)
     calendar_before = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
 
@@ -172,7 +174,11 @@ def test_delete_lists_references_and_removes_them_once_confirmed(
     assert "calendar.csv row 5: account_2/lot_2" in result.output
     after = values()
     assert BROKERAGE not in set(after["account_name"])
-    assert _lot_row(after, "Asset_Savings", "")["refill_chain"] == ""
+    savings = _lot_row(after, "Asset_Savings", "")
+    # The refill amount means nothing without its chain, so it goes too; the
+    # minimum stays.
+    assert (savings["refill_chain"], savings["refill_amount"], savings["minimum_balance"]) == (
+        "", "", "1000.00")
     calendar = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
     assert len(calendar) == len(calendar_before) - 1
     assert BROKERAGE not in set(calendar["account_2"])
@@ -259,8 +265,94 @@ def test_list_shows_an_accounts_lots_and_where_each_comes_from(
     assert len(lines) == 4
 
 
-def test_list_refuses_an_account_without_lots(lot: Callable[..., Result]) -> None:
+def test_list_refuses_an_account_that_holds_no_lots(lot: Callable[..., Result]) -> None:
     result = lot("list", "Income_Salary_Alice")
 
     assert result.exit_code != 0
-    assert "has no lots" in result.output
+    assert "no account 'Income_Salary_Alice' that holds lots" in result.output
+
+
+def test_list_shows_every_column_a_lot_uses(
+    lot: Callable[..., Result], set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+) -> None:
+    set_brokerage_lots([{"lot": "default", "series": "stock", "opening_balance": "100.00",
+                         "opening_cost_basis": "90.00", "maximum_balance": "500.00",
+                         "overflow_chain": "Asset_Savings"}])
+
+    result = lot("list", BROKERAGE)
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[0].split() == [
+        "account", "lot", "series", "opening_balance", "opening_cost_basis", "maximum_balance",
+        "overflow_chain", "from"]
+
+
+def test_deleting_an_accounts_last_lot_says_it_loads_with_an_empty_one(
+    lot: Callable[..., Result], check: Callable[[str], None],
+) -> None:
+    result = lot("delete", "Asset_Roth_Bill", "default")
+
+    assert result.exit_code == 0, result.output
+    assert "loads with an empty 'default' lot" in result.output
+    listed = lot("list", "Asset_Roth_Bill")
+    assert listed.exit_code == 0, listed.output
+    assert "loads with an empty 'default' lot" in listed.output
+    check("retire_alice")
+
+
+def test_deleting_a_chains_only_step_is_refused(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    (retire_alice_csv("chains") / "asset__roth_only.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Roth_Bill,default,,,,\n")
+    before = values()
+
+    result = lot("delete", "Asset_Roth_Bill", "default", "--yes")
+
+    assert result.exit_code != 0
+    assert "only step of retire_alice/chains/asset__roth_only.csv" in result.output
+    pd.testing.assert_frame_equal(values(), before)
+
+
+@pytest.mark.usefixtures("test_child_scenario")
+def test_renaming_or_deleting_a_lot_follows_it_into_inheriting_scenarios(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+    test_scenarios_dir: Path, check: Callable[[str], None],
+) -> None:
+    child = test_scenarios_dir / "child"
+    calendar = (test_scenarios_dir / "retire_alice" / "calendar.csv").read_text().splitlines()[0]
+    (child / "calendar.csv").write_text(
+        calendar + "\n2030-01-31,one_off_transfer,,Asset_Checking,,Asset_Brokerage_Joint,default,,"
+        + "100000,,none" + "," * (calendar.count(",") - 10) + "\n")
+    assert lot("edit", BROKERAGE, "default", "--opening-balance", "1", scenario="child").exit_code == 0
+
+    renamed = lot("edit", BROKERAGE, "default", "--new-lot", "core")
+
+    assert renamed.exit_code == 0, renamed.output
+    child_calendar = pd.read_csv(child / "calendar.csv", dtype=str, keep_default_na=False)
+    assert list(child_calendar["lot_2"]) == ["core"]
+    assert list(values("child")["lot"]) == ["core"]
+    check("child")
+
+    deleted = lot("delete", BROKERAGE, "core", "--yes")
+
+    assert deleted.exit_code == 0, deleted.output
+    assert "child: calendar.csv row 2: account_2/lot_2" in deleted.output
+    assert "child: account_values.csv row 2: an override of the lot" in deleted.output
+    assert pd.read_csv(child / "calendar.csv", dtype=str, keep_default_na=False).empty
+    assert values("child").empty
+    check("child")
+
+
+@pytest.mark.usefixtures("test_child_scenario")
+def test_a_zero_opening_override_with_a_basis_is_not_deleted(
+    lot: Callable[..., Result],
+) -> None:
+    edited = lot("edit", BROKERAGE, "default", "--opening-balance", "0", scenario="child")
+    assert edited.exit_code == 0, edited.output
+
+    result = lot("list", BROKERAGE, scenario="child")
+
+    assert "overrides retire_alice" in result.output
+    assert "deleted" not in result.output

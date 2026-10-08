@@ -864,19 +864,28 @@ list` shows an account's lots and where each comes from. Without them,
 `add` asks only what applies to the account (a cost basis for a taxable
 account, a prior Dec 31 balance for a traditional IRA or 401k, balance
 management only if wanted), and `edit` lists the lots to choose from and
-then works field by field as `calendar edit` does. Renaming a lot renames
-its references in the scenario (`from_lot`/`to_lot`, `lot_1`/`lot_2`, chain
-steps, other lots' `refill_lot`/`overflow_lot`), and deleting one deletes
-the rows that move money through it and clears the refill and overflow
-settings that name it, after listing them. A lot the scenario inherits is
-edited by writing an override of the whole row into the scenario's own
-file (§4.5), and its rename is refused. Since an overlay can't remove a row,
-deleting an inherited lot writes an override with a zero balance, shares
-and basis and no balance management. The commands treat that zeroed
-override as the lot deleted: `list` marks it so, `delete` lists the rows across the load order
-that still name it, and `add` may add the lot again in its place. The
-loader does not drop zero lots, since a lot that opens empty and is funded
-later is an ordinary lot.
+then works field by field as `calendar edit` does.
+
+Renaming a lot renames its references (`from_lot`/`to_lot`, `lot_1`/`lot_2`,
+chain steps, other lots' `refill_lot`/`overflow_lot`), and deleting one
+deletes the rows that move money through it and clears the refill and
+overflow settings that name it, with the amounts that need them, after
+listing them. Both reach the scenarios that inherit from this one too,
+including their overrides of the lot, since the staged edit loads them. A
+chain left with no steps is an error, so deleting a chain's only step is
+refused. An account left with no lots loads with an empty `default` lot,
+as an account with no `account_values.csv` row always has.
+
+A lot the scenario inherits is edited by writing an override of the whole
+row into the scenario's own file (§4.5), and its rename is refused. Since an
+overlay can't remove a row, deleting an inherited lot writes an override
+with a zero balance, shares and basis and no balance management. The
+commands treat an inherited lot overridden that way, empty in all of those,
+as deleted: `list` marks it so, `delete` lists the rows across the
+scenario's lineage that still name it, and `add` may add the lot again in
+its place. A lot that only opens at zero, or that the scenario defines
+itself, is an ordinary lot, and the loader drops no lot for being empty,
+since one that opens empty and is funded later is common.
 
 The commands that add a transfer (`transfer add`, `calendar add transfer`,
 the guided `calendar add`, `scheduled add`) pick each side the same way,

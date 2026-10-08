@@ -3687,6 +3687,13 @@ def _rename_account_files(scenario_dir: Path, old_name: str, new_name: str) -> b
 
 _LOT_CHAIN_FIELDS = ("refill_chain", "overflow_chain")
 
+# A lot's chain column, and the columns that mean nothing without it:
+# clearing the chain clears them too, or the loader rejects the row.
+_CHAIN_DEPENDENT_FIELDS: dict[str, tuple[str, ...]] = {
+    "refill_chain": ("refill_lot", "refill_target", "refill_amount"),
+    "overflow_chain": ("overflow_lot",),
+}
+
 _ACCOUNT_REFERENCE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("account_values.csv", ("account_name",)),
     ("scheduled.csv", ("from_account", "to_account", "interest_account")),
@@ -3812,11 +3819,11 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
     if values_path.exists():
         values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
         blanked = False
-        for field, lot_field in (("refill_chain", "refill_lot"), ("overflow_chain", "overflow_lot")):
+        for field, dependents in _CHAIN_DEPENDENT_FIELDS.items():
             if field in values.columns:
                 hit = values[field] == name
                 if hit.any():
-                    values.loc[hit, [field, lot_field]] = ""
+                    values.loc[hit, [field, *(c for c in dependents if c in values.columns)]] = ""
                     blanked = True
         if blanked:
             values.to_csv(values_path, index=False)
@@ -4300,13 +4307,24 @@ class _Lot(NamedTuple):
 
 
 def _zero_lot(row: dict[str, str]) -> bool:
-    """No balance and no shares. A blank balance is derived, not zero."""
-    def zero(text: str) -> bool:
+    """Empty in every way ``lot delete`` empties a lot: no balance, shares or
+    basis, and no balance management. A blank balance is derived, not zero,
+    and a lot that only opens at zero (it has a basis, or refills) is an
+    ordinary lot."""
+    def zero(column: str, *, blank: bool) -> bool:
+        text = row[column].strip().replace(",", "")
+        if not text:
+            return blank
         try:
-            return Decimal(text.strip().replace(",", "")) == 0
+            return Decimal(text) == 0
         except InvalidOperation:
             return False
-    return zero(row["opening_balance"]) and (not row["quantity"].strip() or zero(row["quantity"]))
+    return (
+        zero("opening_balance", blank=False)
+        and all(zero(column, blank=True)
+                for column in ("quantity", "opening_cost_basis", "prior_year_end_balance"))
+        and not any(row[column].strip() for column in registries.CASH_MANAGEMENT_COLUMNS)
+    )
 
 
 def _read_values_rows(path: Path) -> list[dict[str, str]]:
@@ -4408,13 +4426,26 @@ def _lot_reference_files(scenario_dir: Path) -> list[tuple[Path, tuple[tuple[str
     return [(path, pairs) for path, pairs in paths if path.exists() and path.stat().st_size > 0]
 
 
-def _lot_reference_rows(scenario_dir: Path, account: str, lot: str) -> list[str]:
-    """The rows of one scenario folder that name ``account``'s ``lot``, other
-    than the lot's own row, as display lines."""
+def _lot_descendants(scenarios_dir: Path, name: str) -> list[str]:
+    """The scenarios that inherit from ``name``, directly or not."""
+    return [
+        path.name for path in sorted(scenarios_dir.iterdir())
+        if path.is_dir() and path.name != name and name in load_order(scenarios_dir, path.name)
+    ]
+
+
+def _lot_reference_rows(
+    scenario_dir: Path, account: str, lot: str, *, own_row: bool = False,
+) -> list[str]:
+    """The rows of one scenario folder that name ``account``'s ``lot``, as
+    display lines; with ``own_row``, its own account_values.csv row too (an
+    inheriting scenario's override of it)."""
     references: list[str] = []
     values = _read_values_rows(scenario_dir / "account_values.csv")
     for index, row in enumerate(values):
         if _names_lot(row, "account_name", "lot", account, lot):
+            if own_row:
+                references.append(f"  account_values.csv row {index + 2}: an override of the lot")
             continue
         matched = [f"{a}/{b}" for a, b in _LOT_CHAIN_LOT_FIELDS if _names_lot(row, a, b, account, lot)]
         if matched:
@@ -4430,28 +4461,73 @@ def _lot_reference_rows(scenario_dir: Path, account: str, lot: str) -> list[str]
     return references
 
 
-def _rewrite_lot_references(scenario_dir: Path, account: str, lot: str, new_lot: str | None) -> None:
+def _lot_family_references(scenario_dir: Path, name: str, account: str, lot: str) -> list[str]:
+    """``_lot_reference_rows`` for scenario ``name`` and every scenario that
+    inherits from it, whose rows a rename or delete rewrites too; the
+    inheriting scenarios' lines are labelled with their names."""
+    references = _lot_reference_rows(scenario_dir, account, lot)
+    for descendant in _lot_descendants(scenario_dir.parent, name):
+        references += [
+            f"  {descendant}: {line.strip()}"
+            for line in _lot_reference_rows(scenario_dir.parent / descendant, account, lot, own_row=True)
+        ]
+    return references
+
+
+def _emptied_chains(scenario_dir: Path, name: str, account: str, lot: str) -> list[str]:
+    """The chain files, in scenario ``name`` and those inheriting from it,
+    whose every step is ``account``'s ``lot``: deleting the lot would leave
+    them with no steps, which the loader rejects."""
+    emptied: list[str] = []
+    for scenario_name in (name, *_lot_descendants(scenario_dir.parent, name)):
+        chains_dir = scenario_dir.parent / scenario_name / "chains"
+        for path in sorted(chains_dir.glob("*.csv")) if chains_dir.is_dir() else []:
+            if path.stat().st_size == 0:
+                continue
+            frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+            if len(frame) and all(_names_lot(row, "account_name", "lot", account, lot)
+                                  for _, row in frame.iterrows()):
+                emptied.append(f"{scenario_name}/chains/{path.name}")
+    return emptied
+
+
+def _rewrite_lot_references(
+    scenario_dir: Path, account: str, lot: str, new_lot: str | None, *, own_row: bool = False,
+) -> None:
     """Point one scenario folder's references to ``account``'s ``lot`` at
     ``new_lot``, or, with ``None``, delete the rows that move money through
-    it and clear other lots' refill or overflow settings that name it."""
+    it and clear other lots' refill or overflow settings that name it. With
+    ``own_row``, the lot's own row (an inheriting scenario's override of it)
+    is renamed or deleted too."""
     values_path = scenario_dir / "account_values.csv"
     if values_path.exists() and values_path.stat().st_size > 0:
         values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
         changed = False
+        own = pd.Series(
+            [_names_lot(row, "account_name", "lot", account, lot) for _, row in values.iterrows()],
+            index=values.index, dtype=bool,
+        )
         for account_field, lot_field in _LOT_CHAIN_LOT_FIELDS:
             if account_field not in values.columns or lot_field not in values.columns:
                 continue
             hit = pd.Series(
-                [_names_lot(row, account_field, lot_field, account, lot)
-                 and not _names_lot(row, "account_name", "lot", account, lot)
-                 for _, row in values.iterrows()],
+                [_names_lot(row, account_field, lot_field, account, lot) for _, row in values.iterrows()],
                 index=values.index, dtype=bool,
-            )
-            if hit.any():
-                values.loc[hit, [account_field, lot_field] if new_lot is None else [lot_field]] = (
-                    "" if new_lot is None else new_lot
-                )
-                changed = True
+            ) & ~own
+            if not hit.any():
+                continue
+            changed = True
+            if new_lot is None:
+                dependents = _CHAIN_DEPENDENT_FIELDS[account_field]
+                values.loc[hit, [account_field, *(c for c in dependents if c in values.columns)]] = ""
+            else:
+                values.loc[hit, lot_field] = new_lot
+        if own_row and own.any():
+            changed = True
+            if new_lot is None:
+                values = values.loc[~own]
+            else:
+                values.loc[own, "lot"] = new_lot
         if changed:
             values.to_csv(values_path, index=False)
     for path, pairs in _lot_reference_files(scenario_dir):
@@ -4474,6 +4550,17 @@ def _rewrite_lot_references(scenario_dir: Path, account: str, lot: str, new_lot:
                 frame.loc[hit, lot_field] = new_lot
         if changed:
             frame.loc[keep].to_csv(path, index=False)
+
+
+def _rewrite_lot_family(
+    edit: StagedEdit, account: str, lot: str, new_lot: str | None,
+) -> None:
+    """``_rewrite_lot_references`` in the edited scenario and, own rows
+    included, in every scenario that inherits from it: they name the lot
+    too, and the staged edit loads them all."""
+    _rewrite_lot_references(edit.scenario_dir, account, lot, new_lot)
+    for descendant in _lot_descendants(edit.scenario_dir.parent, edit.name):
+        _rewrite_lot_references(edit.scenario_dir.parent / descendant, account, lot, new_lot, own_row=True)
 
 
 def _money_cell(text: str) -> str:
@@ -4641,9 +4728,9 @@ def _write_lot(
         elif row is not None:
             _append_csv_row(staged, registries.ACCOUNT_VALUES_CSV_HEADER, row)
         if rename is not None and row is not None:
-            _rewrite_lot_references(edit.scenario_dir, row["account_name"], *rename)
+            _rewrite_lot_family(edit, row["account_name"], *rename)
         if delete_references is not None:
-            _rewrite_lot_references(edit.scenario_dir, *delete_references, None)
+            _rewrite_lot_family(edit, *delete_references, None)
 
 
 def _lot_value_options[F: Callable[..., object]](f: F) -> F:
@@ -4663,13 +4750,6 @@ def _is_investment(context: calendar_guide.GuideContext, account: str) -> bool:
 @account_group_command.group(name="lot")
 def lot_group_command() -> None:
     """Add, change or delete an account's lots (account_values.csv rows, ADR-005)."""
-
-
-# The columns ``lot list`` shows, beside the lot and where it comes from.
-_LOT_LIST_COLUMNS = (
-    "symbol", "acquired", "quantity", "opening_balance", "opening_cost_basis",
-    "minimum_balance", "refill_chain", "maximum_balance", "overflow_chain",
-)
 
 
 @lot_group_command.command("list")
@@ -4694,7 +4774,21 @@ def lot_list(account: str | None, scenario: str | None, data_dir: Path | None) -
         account = account.strip()
         lots = [one for one in lots if one.account == account]
         if not lots:
-            raise click.ClickException(f"account {account!r} has no lots in scenario {scenario_name!r}")
+            with _intent_db(data_dir_p, scenario_name) as (con, _name):
+                held = con.execute(
+                    "SELECT 1 FROM account WHERE name = ? AND kind IN ('asset', 'liability')", (account,)
+                ).fetchone()
+            if held is None:
+                raise click.ClickException(
+                    f"no account {account!r} that holds lots in scenario {scenario_name!r}"
+                )
+            # The loader gives an account with no account_values.csv rows an
+            # empty default lot; say so rather than list nothing.
+            click.echo(
+                f"{account!r} has no lots in account_values.csv, so it loads with an "
+                f"empty {registries.DEFAULT_LOT!r} lot"
+            )
+            return
 
     def source(one: _Lot) -> str:
         if one.deleted:
@@ -4703,7 +4797,7 @@ def lot_list(account: str | None, scenario: str | None, data_dir: Path | None) -
             return f"inherited from {one.inherited_from}"
         return f"overrides {one.inherited_from}" if one.inherited_from else scenario_name
 
-    columns = [column for column in _LOT_LIST_COLUMNS if any(one.row[column] for one in lots)]
+    columns = [column for column in lot_guide.VALUE_COLUMNS if any(one.row[column] for one in lots)]
     header = ["account", "lot", *columns, "from"]
     table = [[one.account, one.lot, *(one.row[column] for column in columns), source(one)] for one in lots]
     widths = [max(len(cell) for cell in column) for column in zip(header, *table, strict=True)]
@@ -4863,10 +4957,14 @@ def lot_delete(
 ) -> None:
     """Delete one of an account's lots.
 
-    A lot only this scenario has is removed, with this scenario's rows that
-    move money through it (rules, calendar rows, year-to-date rows, chain
-    steps); other lots' refill or overflow settings that name it are cleared.
-    Those rows are listed, and you're asked first.
+    A lot only this scenario has is removed, with the rows that move money
+    through it (rules, calendar rows, year-to-date rows, chain steps) here and
+    in the scenarios that inherit from this one, and their overrides of it;
+    other lots' refill or overflow settings that name it are cleared. Those
+    rows are listed, and you're asked first. A chain whose only step is the
+    lot is not deleted with it: change or delete the chain first. An account
+    left with no lots loads with an empty default lot, as such an account
+    always has.
 
     A lot inherited from a parent scenario can't be removed from here, so it is
     zeroed instead: an override with no balance, shares or basis and no balance
@@ -4881,7 +4979,13 @@ def lot_delete(
     label = f"lot {chosen.lot!r} of {chosen.account!r}"
 
     if chosen.inherited_from is None:
-        references = _lot_reference_rows(scenario_dir, chosen.account, chosen.lot)
+        emptied = _emptied_chains(scenario_dir, scenario_name, chosen.account, chosen.lot)
+        if emptied:
+            raise click.ClickException(
+                f"{label} is the only step of {', '.join(emptied)}, which would be left with "
+                "no steps; change or delete that chain first. Nothing was written."
+            )
+        references = _lot_family_references(scenario_dir, scenario_name, chosen.account, chosen.lot)
         if references:
             click.echo(f"{label} is referenced by:")
             click.echo("\n".join(references))
@@ -4893,6 +4997,12 @@ def lot_delete(
             delete_references=(chosen.account, chosen.lot),
         )
         click.echo(f"deleted {label} from {path}")
+        if not any(one.account == chosen.account
+                   for one in _scenario_lots(scenario_dir, scenario_name)):
+            click.echo(
+                f"{chosen.account!r} has no lots left, so it loads with an empty "
+                f"{registries.DEFAULT_LOT!r} lot, as an account without lots does"
+            )
         return
 
     if chosen.deleted:
@@ -4914,9 +5024,13 @@ def lot_delete(
         f"zeroed {label} in {path}: it comes from scenario {chosen.inherited_from!r}, "
         "so an empty override stands in for deleting it"
     )
+    # Down the whole family: the parents' rows still run, and so do those of
+    # the scenarios inheriting the zeroed lot from this one.
+    family = [*load_order(scenario_dir.parent, scenario_name),
+              *_lot_descendants(scenario_dir.parent, scenario_name)]
     references = [
         f"  {name}: {line.strip()}"
-        for name in load_order(scenario_dir.parent, scenario_name)
+        for name in family
         for line in _lot_reference_rows(scenario_dir.parent / name, chosen.account, chosen.lot)
     ]
     if references:

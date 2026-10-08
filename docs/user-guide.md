@@ -287,8 +287,10 @@ Asset_Brokerage_Joint,inherited_2029,AAA,2029-03-15,500,,,50000.00
   one to change it, and `write` when you are done. `add` prints the
   equivalent command, to reuse in a script.
 - Renaming a lot (`edit --new-lot`, or its `lot` field) also renames it
-  everywhere the scenario names it. Deleting one lists the rows that move
-  money in or out of it, and removes them if you say yes.
+  everywhere the scenario, and any scenario built on it, names it. Deleting
+  one lists the rows that move money in or out of it, and removes them if you
+  say yes. If the lot is a chain's only step, change or delete the chain
+  first.
 - In a scenario that builds on another (Part 1), `edit` on an inherited lot
   writes a copy of the whole lot, changed, into this scenario, and leaves
   the parent alone. A scenario can't remove a row it inherits, so `delete`
