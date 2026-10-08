@@ -24,7 +24,9 @@ from analysis.sim.types import INCOME_CATEGORIES, DollarMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 
-def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:
+def net_worth_widget(rc: RunConnection,
+                    *, member: int = 0,
+                    **_) -> widgets.VBox:
     """Year-end table + monthly chart of net worth (nominal and CPI-constant)."""
 
     nw = rc.net_worth_frame()
@@ -40,7 +42,8 @@ def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:
         if nw["cpi_constant"].notna().any():
             ax.plot(nw.index, nw["cpi_constant"], label="CPI-constant", linestyle="--")
         ax.set_ylim(bottom=0)
-        ax.set_title(f"Net worth ({rc.label})")
+        suffix = "" if member == 0 else f"#{member}"
+        ax.set_title(f"Net worth ({rc.label}{suffix})")
         ax.set_xlabel("month")
         ax.set_ylabel("USD")
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))

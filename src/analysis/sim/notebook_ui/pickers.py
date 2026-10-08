@@ -102,6 +102,10 @@ class Connections(traitlets.HasTraits):
     # has been swapped, not once per attribute.
     revision: int = _trait(traitlets.Int(0))
 
+    # The currently selected ensemble member within the scenario.
+    # 0 if not selecting any but the default member.
+    member: int = _trait(traitlets.Int(0))
+
     def notify_changed(self) -> None:
         """Redraw every show() output; call once a change has fully landed."""
         self.revision += 1
@@ -128,7 +132,10 @@ class Connections(traitlets.HasTraits):
         def _draw():
             with out:
                 clear_output(wait=True)
-                result = self._invoke(fn, *args, **kwargs)
+                result = self._invoke(fn,
+                                                *args,
+                                                member=self.member,
+                                                **kwargs)
                 if result is not None:
                     display(result)
 
@@ -174,7 +181,9 @@ class SingleScenarioConnections(Connections):
             Additional keyword arguments to pass to `fn`.
         
         """
-        return self.show(lambda _, *args, **kwargs: fn(self.scenario, *args, **kwargs), *args, **kwargs)
+        def _invoke_with_scenario(*args, **kwargs):
+            return fn(self.scenario, *args, **kwargs)
+        return self.show(_invoke_with_scenario, *args, **kwargs)
 
     def _invoke(self, fn: Callable, *args, **kwargs):
         """Invoke the given function with the current connections context."""
@@ -382,6 +391,7 @@ def scenario_picker(
             # _sync_member_dropdown clearing member_dropdown.options (no
             # longer an ensemble, or no members at all) propagates to
             # .value here too -- nothing to switch to.
+            container.member = 0
             return
         ref = container.scenario_ref
         batch = latest_ensemble_batch(ref.runs_dir / ref.name)
@@ -389,6 +399,8 @@ def scenario_picker(
         old_run = container.run
         run_path = batch / f"{change['new']}.sqlite3"
         container.run = RunConnection(run_path, container.scenario)
+        member_name = change['new']
+        container.member= int(member_name.split("_", maxsplit=1)[1])
         # The panel and metadata describe the member actually shown, not
         # the member 0 that resolve_scenario_name picked.
         container.scenario_ref = replace(ref, run_path=run_path)
