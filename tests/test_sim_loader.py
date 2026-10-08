@@ -456,6 +456,82 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
     assert any("refill_chain 'missing'" in issue for issue in ei.value.issues)
 
 
+@pytest.mark.parametrize(
+    ("chain_files", "column", "chain", "path"),
+    [
+        ({}, "refill_chain", "Asset_Checking", "Asset_Checking"),
+        (
+            {"asset__asset_checking_liquidity.csv": "Asset_Savings,,,,,\nAsset_Checking,,,,,\n"},
+            "refill_chain", "asset_checking_liquidity",
+            "asset_checking_liquidity -> Asset_Checking",
+        ),
+        (
+            {
+                "asset__asset_checking_liquidity.csv": "Asset_Savings,,,,,\ninner,,,,,\n",
+                "asset__inner.csv": "Asset_Checking,,,,,\n",
+            },
+            "refill_chain", "asset_checking_liquidity",
+            "asset_checking_liquidity -> inner -> Asset_Checking",
+        ),
+        (
+            {"asset__spill.csv": "Asset_Savings,,,,,\nAsset_Checking,,,,,\n"},
+            "overflow_chain", "spill", "spill -> Asset_Checking",
+        ),
+    ],
+    ids=["names-itself", "step", "nested-step", "overflow"],
+)
+def test_policy_chain_leading_back_to_its_own_lot_rejected(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+    chain_files: dict[str, str], column: str, chain: str, path: str,
+) -> None:
+    """Issue #101: the engine skips a chain step naming the lot being refilled
+    (or swept), so a refill chain reaching its own lot silently supplied
+    nothing. The leaf step adds no edge for the cycle check, so it needs
+    its own check, at any depth."""
+    import pandas as pd
+
+    for filename, rows in chain_files.items():
+        (retire_alice_csv("chains") / filename).write_text(
+            "account_name,lot,maximum,percent,series,cadence\n" + rows
+        )
+    values_path = retire_alice_csv("account_values.csv")
+    df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+    checking = df["account_name"] == "Asset_Checking"
+    if column == "overflow_chain":
+        df.loc[checking, "maximum_balance"] = "10000.00"
+    df.loc[checking, column] = chain
+    df.to_csv(values_path, index=False)
+
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        f"(Asset_Checking): {column} leads back to the lot itself: {path}" in issue
+        for issue in ei.value.issues
+    ), ei.value.issues
+
+
+def test_policy_loop_through_another_lot_loads(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """Only a chain leading back to its own lot is rejected: checking that
+    refills from (and overflows into) savings, while savings refills from
+    checking, is a legitimate loop through another lot's policy."""
+    import pandas as pd
+
+    (retire_alice_csv("chains") / "asset__spill.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"
+    )
+    values_path = retire_alice_csv("account_values.csv")
+    df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+    checking = df["account_name"] == "Asset_Checking"
+    df.loc[checking, "maximum_balance"] = "10000.00"
+    df.loc[checking, "overflow_chain"] = "spill"
+    df.loc[df["account_name"] == "Asset_Savings", "refill_chain"] = "Asset_Checking"
+    df.to_csv(values_path, index=False)
+
+    load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+
+
 # ---- ADR-004 git provenance ----
 
 
