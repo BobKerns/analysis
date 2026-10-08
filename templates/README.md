@@ -103,6 +103,7 @@ sim account list                          # tabular view with balances and rates
 sim account add <name> <kind> <subkind> [--opening-balance ...]
 sim account check                         # report missing/duplicate/unknown account_values rows
 sim account sync                          # scaffold missing account_values rows with zero balance
+sim account lot list [<account>]          # an account's lots, and where each comes from
 sim account lot add <account> <lot> [--symbol ...] [--opening-balance ...]
 sim account lot edit <account> <lot>      # change a lot's fields, or rename it
 sim account lot delete <account> <lot>    # with the rows that reference it

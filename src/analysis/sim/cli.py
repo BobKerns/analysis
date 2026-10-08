@@ -4665,6 +4665,52 @@ def lot_group_command() -> None:
     """Add, change or delete an account's lots (account_values.csv rows, ADR-005)."""
 
 
+# The columns ``lot list`` shows, beside the lot and where it comes from.
+_LOT_LIST_COLUMNS = (
+    "symbol", "acquired", "quantity", "opening_balance", "opening_cost_basis",
+    "minimum_balance", "refill_chain", "maximum_balance", "overflow_chain",
+)
+
+
+@lot_group_command.command("list")
+@click.argument("account", required=False, shell_complete=_complete_account)
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def lot_list(account: str | None, scenario: str | None, data_dir: Path | None) -> None:
+    """List an account's lots, as the scenario's load order leaves them, or
+    every account's without ACCOUNT. A column no listed lot uses is left out.
+
+    The last column says where each lot comes from: this scenario, a parent
+    it inherits from, or this scenario's override of a parent's lot, and
+    whether the lot is deleted (zeroed here).
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    lots = _scenario_lots(scenario_dir, scenario_name)
+    if account is not None:
+        account = account.strip()
+        lots = [one for one in lots if one.account == account]
+        if not lots:
+            raise click.ClickException(f"account {account!r} has no lots in scenario {scenario_name!r}")
+
+    def source(one: _Lot) -> str:
+        if one.deleted:
+            return f"deleted (zeroed here; from {one.inherited_from})"
+        if one.index is None:
+            return f"inherited from {one.inherited_from}"
+        return f"overrides {one.inherited_from}" if one.inherited_from else scenario_name
+
+    columns = [column for column in _LOT_LIST_COLUMNS if any(one.row[column] for one in lots)]
+    header = ["account", "lot", *columns, "from"]
+    table = [[one.account, one.lot, *(one.row[column] for column in columns), source(one)] for one in lots]
+    widths = [max(len(cell) for cell in column) for column in zip(header, *table, strict=True)]
+    for line in (header, *table):
+        click.echo("  ".join(cell.ljust(width) for cell, width in zip(line, widths, strict=True)).rstrip())
+
+
 @lot_group_command.command("add")
 @click.argument("account", required=False, shell_complete=_complete_account)
 @click.argument("lot", required=False)

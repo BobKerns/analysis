@@ -859,7 +859,8 @@ and refuses if not: the commit check above cannot see a change made before
 staging began.
 
 `account lot add|edit|delete` work on one lot, one `account_values.csv` row
-(§4.3), named by its account and its label as two arguments. Without them,
+(§4.3), named by its account and its label as two arguments; `account lot
+list` shows an account's lots and where each comes from. Without them,
 `add` asks only what applies to the account (a cost basis for a taxable
 account, a prior Dec 31 balance for a traditional IRA or 401k, balance
 management only if wanted), and `edit` lists the lots to choose from and
@@ -872,7 +873,7 @@ edited by writing an override of the whole row into the scenario's own
 file (§4.5), and its rename is refused. Since an overlay can't remove a row,
 deleting an inherited lot writes an override with a zero balance, shares
 and basis and no balance management. The commands treat that zeroed
-override as the lot deleted: `delete` lists the rows across the load order
+override as the lot deleted: `list` marks it so, `delete` lists the rows across the load order
 that still name it, and `add` may add the lot again in its place. The
 loader does not drop zero lots, since a lot that opens empty and is funded
 later is an ordinary lot.
@@ -947,4 +948,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#104](https://github.com/BobKerns/analysis/issues/104): a refill leg records the debit that triggered it as its `parent_event_id` (§4.7).
 - [#105](https://github.com/BobKerns/analysis/issues/105): a negative-balance warning names the refill chain it tried and what that chain supplied, and `negative_balance_warnings` records the same (§4.7).
 - [#115](https://github.com/BobKerns/analysis/issues/115): `calendar.csv`'s `vary_process`, `vary_persistence` and `vary_innovation_sd` columns (§3.1, §4.8).
-- [#124](https://github.com/BobKerns/analysis/issues/124): `account lot add|edit|delete`, which edit an inherited lot by override and delete one by zeroing it (§7).
+- [#124](https://github.com/BobKerns/analysis/issues/124): `account lot add|edit|delete|list`, which edit an inherited lot by override and delete one by zeroing it (§7).

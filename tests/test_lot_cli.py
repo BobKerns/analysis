@@ -232,3 +232,35 @@ def test_deleting_an_inherited_lot_zeroes_it_and_adding_it_again_replaces_the_ze
     assert len(child) == 1
     assert _lot_row(child, BROKERAGE, "default")["opening_balance"] == "10.00"
     check("child")
+
+
+@pytest.mark.usefixtures("test_child_scenario")
+def test_list_shows_an_accounts_lots_and_where_each_comes_from(
+    lot: Callable[..., Result], set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+) -> None:
+    set_brokerage_lots([
+        {"lot": "default", "opening_balance": "100.00", "opening_cost_basis": "90.00"},
+        {"lot": "b", "opening_balance": "200.00", "opening_cost_basis": "150.00"},
+        {"lot": "c", "opening_balance": "300.00", "opening_cost_basis": "250.00"},
+    ])
+    edited = lot("edit", BROKERAGE, "default", "--opening-balance", "110", scenario="child")
+    assert edited.exit_code == 0, edited.output
+    deleted = lot("delete", BROKERAGE, "b", scenario="child")
+    assert deleted.exit_code == 0, deleted.output
+
+    result = lot("list", BROKERAGE, scenario="child")
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0].split() == ["account", "lot", "opening_balance", "opening_cost_basis", "from"]
+    assert lines[1].split()[1:3] == ["default", "110.00"] and lines[1].endswith("overrides retire_alice")
+    assert lines[2].split()[1:3] == ["b", "0.00"] and "deleted" in lines[2]
+    assert lines[3].split()[1:3] == ["c", "300.00"] and lines[3].endswith("inherited from retire_alice")
+    assert len(lines) == 4
+
+
+def test_list_refuses_an_account_without_lots(lot: Callable[..., Result]) -> None:
+    result = lot("list", "Income_Salary_Alice")
+
+    assert result.exit_code != 0
+    assert "has no lots" in result.output
