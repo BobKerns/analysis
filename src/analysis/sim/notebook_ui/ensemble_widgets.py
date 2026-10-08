@@ -1,5 +1,5 @@
 """Ensemble notebook widgets (ADR-006): pick a generated recipe, see its
-members' net worth as a percentile-band ("fan") chart plus a year-end
+members' net worth as a quintile-shaded ("fan") chart plus a year-end
 mean/median/SD/range table."""
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import ipywidgets as widgets
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import display
@@ -18,6 +19,7 @@ from analysis.sim.ensemble import (
     load_ensemble,
     member_run_statuses,
     members_net_worth_by_month,
+    percentiles,
 )
 from analysis.sim.ensemble import summary as ensemble_summary
 from analysis.sim.notebook_ui.pickers import (
@@ -65,23 +67,57 @@ def ensemble_summary_view(
     return heading, yearly
 
 
+def _band_edges(monthly_summary: pd.DataFrame) -> list[str]:
+    """``min``, any ``pNN`` percentile columns in ascending order, ``max``:
+    the fan chart's band boundaries from the outside in."""
+    inner = sorted(
+        (c for c in monthly_summary.columns if c[:1] == "p" and c[1:].replace(".", "").isdigit()),
+        key=lambda c: float(c[1:]),
+    )
+    return ["min", *inner, "max"]
+
+
+def _band_label(low: str, high: str) -> str:
+    if (low, high) == ("min", "max"):
+        return "range"
+    return f"{low[1:]}–{high[1:]}%"
+
+
 def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
-    """Shade the member range (min-max) behind mean/median lines, month by
-    month -- the same three columns ``sim ensemble summary`` prints."""
+    """Shade the member distribution month by month behind mean/median
+    lines: one band between each pair of adjacent edges (``min``, the
+    ``pNN`` columns ``ensemble.percentiles()`` adds, ``max``), darker toward
+    the middle, so the chart shows where members cluster rather than just
+    how far apart the extremes are. With no ``pNN`` columns it's the single
+    min-max band ``sim ensemble summary`` describes."""
     if ax is None:
         _fig, ax = plt.subplots(figsize=(10, 5))
-    # alpha=0.2 steelblue over white is ~(227,239,245) -- visible in Jupyter's
-    # rendering path but apparently not past whatever VS Code's inline PNG
-    # renderer does to it; a stronger fill plus a drawn edge doesn't depend
-    # on the two matching exactly.
-    ax.fill_between(
-        monthly_summary.index, monthly_summary["min"], monthly_summary["max"],
-        color="steelblue", alpha=0.5, edgecolor="steelblue", linewidth=0.5,
-        label="range",
-    )
-    ax.plot(monthly_summary.index, monthly_summary["mean"], color="steelblue",
+    edges = _band_edges(monthly_summary)
+    bands = list(zip(edges, edges[1:], strict=False))
+    depth_count = (len(bands) + 1) // 2
+    base = mcolors.to_rgb("steelblue")
+    labelled: set[int] = set()
+    for i, (low, high) in enumerate(bands):
+        depth = min(i, len(bands) - 1 - i)  # 0 for the outermost bands
+        # Opaque blends with white rather than alpha: a translucent
+        # steelblue (alpha=0.2) was visible in Jupyter but washed out of VS
+        # Code's inline PNG rendering entirely, and opaque bands also can't
+        # double up where adjacent fills overlap by a pixel.
+        strength = 0.35 + 0.5 * depth / max(depth_count - 1, 1)
+        color = tuple(1 - strength * (1 - c) for c in base)
+        # The band is labelled by the edges it shares a depth with -- the
+        # outer pair is "range", the next "20–80%", and so on -- once each.
+        label = None
+        if depth not in labelled:
+            labelled.add(depth)
+            label = _band_label(edges[depth], edges[len(edges) - 1 - depth])
+        ax.fill_between(
+            monthly_summary.index, monthly_summary[low], monthly_summary[high],
+            color=color, edgecolor=color, linewidth=0.5, label=label,
+        )
+    ax.plot(monthly_summary.index, monthly_summary["mean"], color="midnightblue",
             linewidth=2, label="mean")
-    ax.plot(monthly_summary.index, monthly_summary["median"], color="steelblue",
+    ax.plot(monthly_summary.index, monthly_summary["median"], color="midnightblue",
             linewidth=1, linestyle="--", label="median")
     # No forced bottom=0: a shortfall scenario can carry a real negative net
     # worth, and clipping it would hide the low end of the range (and
@@ -143,9 +179,8 @@ def ensemble_widget(*,
             # the aggregate after the fact: a member's CPI-constant series
             # reflects its own inflation path, which can differ member to
             # member when the varying row is itself inflation/CPI-linked.
-            monthly_summary = ensemble_summary(
-                members_net_worth_by_month(connections, mode=mode)
-            )
+            net_worth = members_net_worth_by_month(connections, mode=mode)
+            monthly_summary = ensemble_summary(net_worth)
             heading, yearly = ensemble_summary_view(monthly_summary, len(connections), failed_count)
             with out:
                 display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
@@ -169,7 +204,9 @@ def ensemble_widget(*,
                     wants_log = False
                 if wants_log:
                     ax.set_yscale("log")
-                ensemble_fan_chart(monthly_summary, ax=ax)
+                # Quintiles shade the chart only; the year-end table stays the
+                # same columns `sim ensemble summary` prints.
+                ensemble_fan_chart(monthly_summary.join(percentiles(net_worth)), ax=ax)
                 ax.set_title(f"Net worth fan chart ({mode_label}) ({dropdown.value})")
                 plt.xticks(rotation=90)
                 plt.show()

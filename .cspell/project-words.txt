@@ -55,6 +55,7 @@ executemany
 executescript
 execv
 extrasaction
+facecolor
 Fenwick
 fignums
 figsize
@@ -89,7 +90,9 @@ lstsq
 ltcg
 markerfacecolor
 markersize
+mcolors
 metas
+midnightblue
 mktree
 modelcontextprotocol
 msecs

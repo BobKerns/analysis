@@ -135,7 +135,7 @@ frames = [rc.items("net_worth").assign(member=i) for i, rc in enumerate(members)
 by_month = pd.concat(frames).groupby("month")["net_worth"].agg(["mean", "median", "std", "min", "max"])
 ```
 
-— the same shape of aggregation `scenario_compare.ipynb` already does across a handful of named variants, just over many random ones. A new `notebooks/ensemble.ipynb` plots the standard Monte Carlo fan (percentile bands over time); `sim ensemble summary <recipe>` is the terminal equivalent from day one, printing the same table plus the failure count from §7, so this doesn't join the CLI-gap backlog in `TODO.md`.
+— the same shape of aggregation `scenario_compare.ipynb` already does across a handful of named variants, just over many random ones. A new `notebooks/ensemble.ipynb` plots the standard Monte Carlo fan (quintile bands over time, from `ensemble.percentiles()`, shaded darker toward the middle and out to the min–max range); `sim ensemble summary <recipe>` is the terminal equivalent from day one, printing the same table plus the failure count from §7, so this doesn't join the CLI-gap backlog in `TODO.md`.
 
 ### 9. Member 0: a deterministic base case
 
