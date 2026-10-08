@@ -4528,7 +4528,8 @@ def _rewrite_lot_references(
             index=values.index, dtype=bool,
         )
         for account_field, lot_field in _LOT_CHAIN_LOT_FIELDS:
-            if account_field not in values.columns or lot_field not in values.columns:
+            # A missing lot column means the default lot, as _names_lot reads it.
+            if account_field not in values.columns:
                 continue
             hit = pd.Series(
                 [_names_lot(row, account_field, lot_field, account, lot) for _, row in values.iterrows()],
@@ -4541,12 +4542,16 @@ def _rewrite_lot_references(
                 dependents = _CHAIN_DEPENDENT_FIELDS[account_field]
                 values.loc[hit, [account_field, *(c for c in dependents if c in values.columns)]] = ""
             else:
+                if lot_field not in values.columns:
+                    values[lot_field] = ""
                 values.loc[hit, lot_field] = new_lot
         if own_row and own.any():
             changed = True
             if new_lot is None:
                 values = values.loc[~own]
             else:
+                if "lot" not in values.columns:
+                    values["lot"] = ""
                 values.loc[own, "lot"] = new_lot
         if changed:
             values.to_csv(values_path, index=False)
@@ -4555,7 +4560,9 @@ def _rewrite_lot_references(
         changed = False
         keep = pd.Series(True, index=frame.index, dtype=bool)
         for account_field, lot_field in pairs:
-            if account_field not in frame.columns or lot_field not in frame.columns:
+            # A chain file may omit its lot column: its steps then name the
+            # default lot, which a rename or delete must reach too.
+            if account_field not in frame.columns:
                 continue
             hit = pd.Series(
                 [_names_lot(row, account_field, lot_field, account, lot) for _, row in frame.iterrows()],
@@ -4567,6 +4574,8 @@ def _rewrite_lot_references(
             if new_lot is None:
                 keep &= ~hit
             else:
+                if lot_field not in frame.columns:
+                    frame[lot_field] = ""
                 frame.loc[hit, lot_field] = new_lot
         if changed:
             frame.loc[keep].to_csv(path, index=False)

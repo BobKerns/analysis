@@ -315,6 +315,29 @@ def test_deleting_a_chains_only_step_is_refused(
     pd.testing.assert_frame_equal(values(), before)
 
 
+@pytest.mark.parametrize("new_lot", ["reserve", None])
+def test_a_chain_without_a_lot_column_names_the_default_lot(
+    lot: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
+    check: Callable[[str], None], new_lot: str | None,
+) -> None:
+    chain = retire_alice_csv("chains") / "asset__cash_only.csv"
+    chain.write_text("account_name,maximum,percent,series,cadence\nAsset_Savings,,,,\nAsset_Checking,,,,\n")
+
+    if new_lot is None:
+        result = lot("delete", "Asset_Savings", "default", "--yes")
+    else:
+        result = lot("edit", "Asset_Savings", "default", "--new-lot", new_lot)
+
+    assert result.exit_code == 0, result.output
+    steps = pd.read_csv(chain, dtype=str, keep_default_na=False)
+    if new_lot is None:
+        assert list(steps["account_name"]) == ["Asset_Checking"]
+    else:
+        assert list(zip(steps["account_name"], steps["lot"], strict=True)) == [
+            ("Asset_Savings", new_lot), ("Asset_Checking", "")]
+    check("retire_alice")
+
+
 @pytest.mark.usefixtures("test_child_scenario")
 def test_renaming_or_deleting_a_lot_follows_it_into_inheriting_scenarios(
     lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
