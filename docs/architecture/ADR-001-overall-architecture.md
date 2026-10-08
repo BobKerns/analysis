@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-17
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots and per-lot state): accounts are split into lots, and the engine's state is per lot. [#105](https://github.com/BobKerns/analysis/issues/105): a negative-balance warning records the refill chain it tried and what that chain supplied (principle 7).
+- **Amended:** see [Amendments](#amendments) at the end.
 - **Scope:** New top-level subsystem `src/analysis/sim/`, sibling to the existing `amazon/` subsystem. Shares utility code (logging, sqlite helpers) but not data.
 
 ## Context
@@ -171,3 +171,10 @@ These mutating commands are convenience wrappers around the same CSV edits an AI
 - [ADR-002](ADR-002-storage-schema.md): Storage schema (full DDL, views, indexes).
 - [ADR-003](ADR-003-registries-and-csv-schemas.md): Amount-rule registry and Calendar-event-kind registry.
 - [ADR-004](ADR-004-reproducibility-and-activation.md): Reproducibility contract and dual-repo gating.
+
+## Amendments
+
+Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
+
+- [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots and per-lot state): accounts are split into lots, and the engine's state is per lot.
+- [#105](https://github.com/BobKerns/analysis/issues/105): a negative-balance warning records the refill chain it tried and what that chain supplied (principle 7).

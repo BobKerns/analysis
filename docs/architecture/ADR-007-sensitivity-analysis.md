@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-01
 - **Supersedes:** —
-- **Amended by:** [#31](https://github.com/BobKerns/analysis/issues/31): `truncated_normal` quantiles follow its new sinh-arcsinh shape, `triangular` added, and the base case is every family's median (§3); the parameters view shows shape and implied moments (§9). [#42](https://github.com/BobKerns/analysis/issues/42): `--jobs` now defaults to one worker per available CPU, not 1 (§8). [#39](https://github.com/BobKerns/analysis/issues/39): an OAT batch also perturbs [ADR-008](ADR-008-correlated-parameters.md) latent factors, each moving its whole family to their conditional medians, and reports them labeled as factors (§2, §5, §6.1, §7, §9). [#38](https://github.com/BobKerns/analysis/issues/38): a Monte Carlo batch with [ADR-008](ADR-008-correlated-parameters.md) correlated rows is ranked and pinned by SRRC with its own interval, reports PRCC, a line per latent factor, and the correlations its normal scores achieved (§6.2, §9). [#68](https://github.com/BobKerns/analysis/issues/68): the achieved correlations are read through Kendall's τ, and rows sharing a Student-t copula tree make a batch correlated (§6.2).
+- **Amended:** see [Amendments](#amendments) at the end.
 - **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios — `vary_*` columns, `resolve_member`, `ensemble_manifest`/`ensemble_draw`, member 0), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-004](ADR-004-reproducibility-and-activation.md) (reproducibility, provenance).
 
 ## Context
@@ -248,3 +248,13 @@ For a `monte_carlo` batch the same notebook shows the ρ-by-year grid with CI wh
 - **Ad-hoc perturbation of literal rows** (`--perturb name=±10%` without marking the row varying): convenient, but it reintroduces the fixed-delta problems in the Context section. Revisit if marking rows varying turns out to be friction in practice.
 - **Trajectory PCA + regression, and PLS:** treat each Monte Carlo member's vector of year-end net worth as one observation. PCA across members finds the dominant *shapes* of variation, typically an overall level (lifetime income − expenses) and an early-versus-late timing component. Regressing each member's component scores on its draws then says which parameters drive the level and which drive the timing. Partial least squares does both steps at once, finding input-weighted axes that best explain the output vector. Both are promising complements to the heatmap; worth judging once real batches exist. PCA or ICA on the *inputs* is not: the inputs are independent draws by construction, or correlated through an ADR-008 tree that's already known, so there's no structure to find, and ICA would at best rediscover the `vary_*` rows already recorded in `ensemble_draw`.
 - **Decision-variable sweeps** (a retirement date at every quarter across a range): a "which choice is best?" question rather than "which uncertainty matters?". A ladder (§3) is already most of the mechanism; what's missing is presenting it as a choice rather than an uncertainty.
+
+## Amendments
+
+Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
+
+- [#31](https://github.com/BobKerns/analysis/issues/31): `truncated_normal` quantiles follow its new sinh-arcsinh shape, `triangular` added, and the base case is every family's median (§3); the parameters view shows shape and implied moments (§9).
+- [#42](https://github.com/BobKerns/analysis/issues/42): `--jobs` now defaults to one worker per available CPU, not 1 (§8).
+- [#39](https://github.com/BobKerns/analysis/issues/39): an OAT batch also perturbs [ADR-008](ADR-008-correlated-parameters.md) latent factors, each moving its whole family to their conditional medians, and reports them labeled as factors (§2, §5, §6.1, §7, §9).
+- [#38](https://github.com/BobKerns/analysis/issues/38): a Monte Carlo batch with [ADR-008](ADR-008-correlated-parameters.md) correlated rows is ranked and pinned by SRRC with its own interval, reports PRCC, a line per latent factor, and the correlations its normal scores achieved (§6.2, §9).
+- [#68](https://github.com/BobKerns/analysis/issues/68): the achieved correlations are read through Kendall's τ, and rows sharing a Student-t copula tree make a batch correlated (§6.2).

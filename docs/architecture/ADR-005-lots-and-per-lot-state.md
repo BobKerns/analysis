@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-23
 - **Supersedes:** the reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` ([ADR-002](ADR-002-storage-schema.md) §Reserved schema); the account-level running cost basis that [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7 (withdrawing from a taxable lot) now describes per lot.
-- **Amended by:** [#78](https://github.com/BobKerns/analysis/issues/78): a fund lot can grow at the blend of its allocation slices' rate series (§5).
+- **Amended:** see [Amendments](#amendments) at the end.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (domain objects, `AccountState`), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries, CSV layouts, chains §4.7, `rmd` §2.3, `sell_asset` §3.7).
 
 ## Context
@@ -150,3 +150,9 @@ Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage
 - `on_death` sweeps and the other account-level rule kinds (`ss_benefit`, `tax_accumulator`, `mortgage_payment`) all need auditing for one-balance-per-account assumptions; the plan's Phase 0 does this.
 - Namespace collision between account names and symbols in `aux_table` rate series (lookup order in §5 covers it, but an account and a ticker with the same name would be ambiguous).
 - Quicken import is per account; multi-lot accounts need a per-security import.
+
+## Amendments
+
+Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
+
+- [#78](https://github.com/BobKerns/analysis/issues/78): a fund lot can grow at the blend of its allocation slices' rate series (§5).

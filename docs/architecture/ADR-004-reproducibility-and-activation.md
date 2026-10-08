@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism. [#59](https://github.com/BobKerns/analysis/issues/59): the scenario tree id covers mix-in scenarios' folders too. [#106](https://github.com/BobKerns/analysis/issues/106): `sim check --all`.
+- **Amended:** see [Amendments](#amendments) at the end.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture — summarizes reproducibility & activation), [ADR-002](ADR-002-storage-schema.md) (storage schema — `intent_manifest`, `simulation_run` stamps), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries used by `--check`).
 
 ## Context
@@ -189,3 +189,11 @@ These amendments to `simulation_run` ([ADR-002](ADR-002-storage-schema.md) §Led
 - Whether `analysis sim verify` should optionally **auto-checkout** the matching `code_version` in a worktree to bridge a `CodeMismatch`. Compelling but adds significant complexity (must trust the runfile, must not touch the user's worktree). Defer to an ADR if the need is concrete.
 - Whether dirty-code runs should also be refused by default under some condition (currently only warned). Will revisit after some real-use experience.
 - Whether to capture `pip freeze` of the venv as part of the stamp set. Strict reproducibility argues yes; cost is a multi-KB JSON blob per run. Defer until a non-stdlib dependency actually affects ledger output (today: only `click`, which is interactive-surface-only).
+
+## Amendments
+
+Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
+
+- [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism.
+- [#59](https://github.com/BobKerns/analysis/issues/59): the scenario tree id covers mix-in scenarios' folders too.
+- [#106](https://github.com/BobKerns/analysis/issues/106): `sim check --all`.

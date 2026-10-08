@@ -47,10 +47,13 @@ ADR-005 through ADR-008 each have a companion `ADR-00N-implementation-plan.md`
 beside them.
 
 An ADR is edited in place to describe the current design, so it stays easy
-to read: rewrite the affected sections and add a brief note (e.g. an "Amended
-by" line in the header naming the issue or PR) that it was amended. The note
-marks a change to the design; an editorial edit (an example's names, a typo, a
-link) needs none. Don't keep
+to read: rewrite the affected sections and add one bullet to the ADR's
+closing `## Amendments` list: the issue (or the ADR) that changed it, a short
+phrase saying what changed, and the sections affected. Add it at the end of the
+list; when two branches both add one, resolving the conflict is keeping both. The
+header's fixed "Amended" line only points to that list, so it never changes. The
+bullet marks a change to the design; an editorial edit (an example's names, a
+typo, a link) needs none. Don't keep
 superseded text as tombstones or ask for it to be kept; git history holds the
 previous decisions and their rationale. If the code and an ADR disagree, fix the drift in the
 same change — the ADRs are load-bearing, not historical.
