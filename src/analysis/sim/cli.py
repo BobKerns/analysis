@@ -4290,6 +4290,9 @@ class _Lot(NamedTuple):
     row: dict[str, str]  # as authored, in the last file of the load order to have it
     index: int | None  # its data row (0-based) in this scenario's own file, if there
     inherited_from: str | None  # the last scenario before this one to have it
+    # The scenario, in the load order, whose zeroed override deletes the lot:
+    # how ``lot delete`` stands in for removing a row it can't remove (#124).
+    deleted_in: str | None = None
 
     @property
     def account(self) -> str:
@@ -4301,9 +4304,11 @@ class _Lot(NamedTuple):
 
     @property
     def deleted(self) -> bool:
-        """An inherited lot this scenario has zeroed: how ``lot delete``
-        stands in for removing a lot it can't remove (#124)."""
-        return self.index is not None and self.inherited_from is not None and _zero_lot(self.row)
+        return self.deleted_in is not None
+
+    @property
+    def deleted_where(self) -> str:
+        return "here" if self.index is not None else f"in {self.deleted_in}"
 
 
 def _zero_lot(row: dict[str, str]) -> bool:
@@ -4344,11 +4349,14 @@ def _scenario_lots(scenario_dir: Path, name: str) -> list[_Lot]:
         rows = _read_values_rows(scenario_dir.parent / scenario_name / "account_values.csv")
         for index, row in enumerate(rows):
             key = (row["account_name"].strip(), row["lot"].strip() or registries.DEFAULT_LOT)
+            prior = lots.get(key)
+            # A zeroed override deletes the lot it overrides, for this
+            # scenario and every one below it, until one overrides it again.
+            deleted_in = scenario_name if prior is not None and _zero_lot(row) else None
             if scenario_name != name:
-                lots[key] = _Lot(row, None, scenario_name)
+                lots[key] = _Lot(row, None, scenario_name, deleted_in)
             else:
-                prior = lots.get(key)
-                lots[key] = _Lot(row, index, prior.inherited_from if prior else None)
+                lots[key] = _Lot(row, index, prior.inherited_from if prior else None, deleted_in)
     return list(lots.values())
 
 
@@ -4362,7 +4370,7 @@ def _lot_label(lot: _Lot) -> str:
     if row["opening_balance"]:
         parts.append(row["opening_balance"])
     if lot.deleted:
-        parts.append(f"[deleted: zeroed here, inherited from {lot.inherited_from}]")
+        parts.append(f"[deleted: zeroed {lot.deleted_where}, inherited from {lot.inherited_from}]")
     elif lot.index is None:
         parts.append(f"[inherited from {lot.inherited_from}]")
     elif lot.inherited_from:
@@ -4592,8 +4600,8 @@ def _check_quantity(text: str) -> Decimal:
         quantity = Decimal(text.strip().replace(",", ""))
     except InvalidOperation:
         raise click.ClickException(f"not a number: {text!r}") from None
-    if quantity < 0:
-        raise click.ClickException(f"quantity may not be negative: {text!r}")
+    if not quantity.is_finite() or quantity < 0:
+        raise click.ClickException(f"quantity must be a number of shares, 0 or more: {text!r}")
     return quantity
 
 
@@ -4792,7 +4800,7 @@ def lot_list(account: str | None, scenario: str | None, data_dir: Path | None) -
 
     def source(one: _Lot) -> str:
         if one.deleted:
-            return f"deleted (zeroed here; from {one.inherited_from})"
+            return f"deleted (zeroed {one.deleted_where}; from {one.inherited_from})"
         if one.index is None:
             return f"inherited from {one.inherited_from}"
         return f"overrides {one.inherited_from}" if one.inherited_from else scenario_name
@@ -4826,8 +4834,8 @@ def lot_add(
     for a taxable account, balance management only if wanted), then shows the
     lot and the equivalent command, and writes it once you confirm.
 
-    A lot a parent scenario has that this one deleted (zeroed) may be added
-    again; it replaces the zeroed one.
+    A lot a parent scenario has that this one, or a scenario between, deleted
+    (zeroed) may be added again; it replaces or overrides the zeroed one.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
@@ -5006,7 +5014,7 @@ def lot_delete(
         return
 
     if chosen.deleted:
-        click.echo(f"{label} is already deleted (zeroed) in {path}; nothing was written")
+        click.echo(f"{label} is already deleted (zeroed {chosen.deleted_where}); nothing was written")
         return
     zeroed = {
         **chosen.row,

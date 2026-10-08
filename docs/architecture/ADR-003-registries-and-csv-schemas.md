@@ -881,7 +881,7 @@ row into the scenario's own file (§4.5), and its rename is refused. Since an
 overlay can't remove a row, deleting an inherited lot writes an override
 with a zero balance, shares and basis and no balance management. The
 commands treat an inherited lot overridden that way, empty in all of those,
-as deleted: `list` marks it so, `delete` lists the rows across the
+as deleted, there and in the scenarios below until one overrides it again: `list` marks it so, `delete` lists the rows across the
 scenario's lineage that still name it, and `add` may add the lot again in
 its place. A lot that only opens at zero, or that the scenario defines
 itself, is an ordinary lot, and the loader drops no lot for being empty,

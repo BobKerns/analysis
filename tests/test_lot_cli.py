@@ -356,3 +356,37 @@ def test_a_zero_opening_override_with_a_basis_is_not_deleted(
 
     assert "overrides retire_alice" in result.output
     assert "deleted" not in result.output
+
+
+@pytest.mark.usefixtures("test_grandchild_scenario")
+def test_a_lot_deleted_in_a_parent_is_deleted_below_it_and_can_be_added_back(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame], check: Callable[[str], None],
+) -> None:
+    assert lot("delete", BROKERAGE, "default", scenario="child").exit_code == 0
+
+    listed = lot("list", BROKERAGE, scenario="grandchild")
+    assert "deleted (zeroed in child" in listed.output
+    again = lot("delete", BROKERAGE, "default", scenario="grandchild")
+    assert "already deleted (zeroed in child)" in again.output
+
+    added = lot("add", BROKERAGE, "default", "--opening-balance", "10", "--opening-cost-basis", "10",
+                scenario="grandchild")
+
+    assert added.exit_code == 0, added.output
+    assert "re-added" in added.output
+    assert _lot_row(values("grandchild"), BROKERAGE, "default")["opening_balance"] == "10.00"
+    check("grandchild")
+
+
+@pytest.mark.parametrize("quantity", ["NaN", "Infinity", "-1"])
+def test_a_quantity_must_be_a_finite_count_of_shares(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame], quantity: str,
+) -> None:
+    before = values()
+
+    result = lot("add", BROKERAGE, "x", "--quantity", quantity, "--opening-balance", "1")
+
+    assert result.exit_code != 0
+    assert "quantity must be a number of shares" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    pd.testing.assert_frame_equal(values(), before)

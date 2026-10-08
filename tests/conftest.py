@@ -432,6 +432,12 @@ def test_child_scenario(test_data_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="function")
+def test_grandchild_scenario(test_child_scenario: Path, test_data_dir: Path) -> Path:
+    """A ``grandchild`` scenario deriving from ``test_child_scenario``."""
+    return scenario.create_scenario(test_data_dir, "grandchild", "child")
+
+
+@pytest.fixture(scope="function")
 def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunConnection]:
     """Connection to the ``two_lot_run_file`` run."""
     with open_scenario(test_data_dir, "retire_alice") as scenario_conn:
