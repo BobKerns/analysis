@@ -202,6 +202,9 @@ the count. "How many members?" in
 
 - The [glossary](../user-guide.md#2-glossary) defines every word these
   guides use, each with a link to a fuller explanation.
+- [A century of rates](century-of-rates.md) shows what a century of US
+  inflation, interest rates and stock returns looks like, and which of them
+  carry over from one year to the next.
 - OpenStax's free [*Introductory
   Statistics*](https://openstax.org/books/introductory-statistics-2e/pages/1-introduction)
   is a complete first course, with worked examples.
