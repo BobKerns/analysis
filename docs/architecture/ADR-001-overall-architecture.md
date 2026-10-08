@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-17
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots and per-lot state): accounts are split into lots, and the engine's state is per lot.
+- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots and per-lot state): accounts are split into lots, and the engine's state is per lot. [#105](https://github.com/BobKerns/analysis/issues/105): a negative-balance warning records the refill chain it tried and what that chain supplied (principle 7).
 - **Scope:** New top-level subsystem `src/analysis/sim/`, sibling to the existing `amazon/` subsystem. Shares utility code (logging, sqlite helpers) but not data.
 
 ## Context
@@ -86,7 +86,7 @@ These are project-wide rules that all subsequent ADRs and code reference:
 4. **Visible approximation beats invisible omission.** Zero-valued accounts for assets we choose not to model (ISOs, potential JPY inheritance); basis-with-sources lists for the home; `data/known_exclusions.md` for things deliberately out of scope.
 5. **The scenario is a checklist.** Every `ScheduledTransaction` should be referenceable by `life_transition` events; a `--check life_transitions` mode flags omissions without erroring.
 6. **Schema is documentation.** Long-narrow tables, descriptive names, a `schema_overview` row per table for LLM priming. See [ADR-002](ADR-002-storage-schema.md).
-7. **Hard errors on impossible states.** Unresolvable references, unknown user, dirty data without override → halt before the run starts, report enough context to fix the scenario. *Amended:* running an account negative is **not** in this category. The draft had insufficient funds halt the run; in practice that made a scenario un-runnable at the first shortfall, which is exactly when you most want to see the projection. A debit that a chain cannot cover posts anyway, drives the balance negative, raises a `RuntimeWarning` once per negative transition, and is recorded under `simulation_run.run_args_json.$.negative_balance_warnings` — visible and queryable, per principle 4, rather than fatal.
+7. **Hard errors on impossible states.** Unresolvable references, unknown user, dirty data without override → halt before the run starts, report enough context to fix the scenario. *Amended:* running an account negative is **not** in this category. The draft had insufficient funds halt the run; in practice that made a scenario un-runnable at the first shortfall, which is exactly when you most want to see the projection. A debit that a chain cannot cover posts anyway, drives the balance negative, raises a `RuntimeWarning` once per negative transition, and is recorded under `simulation_run.run_args_json.$.negative_balance_warnings`, with the refill chain it tried and what that chain supplied — visible and queryable, per principle 4, rather than fatal.
 
 ### Reproducibility and gating contract
 

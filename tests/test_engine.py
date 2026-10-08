@@ -654,6 +654,94 @@ def test_refill_legs_point_at_the_debit_that_triggered_them(ledger_con: sqlite3.
     assert brokerage_parent == savings_leg
 
 
+@pytest.mark.allow_negative_balance
+@pytest.mark.parametrize(
+    ("refill_chain", "minimum", "refilling", "status", "message", "needed", "drawn"),
+    [
+        # #101's shape: the chain points at an account with nothing to give.
+        (30, 5_000, False, "drawn", r"refill chain 'Wrong_Chain' supplied \$0\.00 of \$250\.00$",
+         25_000, 0),
+        (None, 0, False, "none_configured", r"no refill chain configured$", None, None),
+        (30, 5_000, True, "cycle", r"refill chain 'Wrong_Chain' was skipped: .*refill cycle", None, None),
+        (30, -30_000, False, "not_triggered",
+         r"refill chain 'Wrong_Chain' was not drawn: .*minimum_balance$", None, None),
+    ],
+)
+def test_negative_balance_warning_says_what_the_refill_did(
+    ledger_con: sqlite3.Connection, refill_chain: int | None, minimum: int, refilling: bool,
+    status: str, message: str, needed: int | None, drawn: int | None,
+) -> None:
+    """#105: the warning, and its negative_balance_warnings record, name the
+    refill chain tried and how much of what was needed it supplied, so a
+    misdirected refill_chain is visible rather than a bare shortfall."""
+    from analysis.sim.engine import REFILL_STATUSES, ChainGraph, RefillContext, _post_transfer
+
+    # 1=payee, 2=checking (refills from chain 30), 3=an empty account.
+    balances = {1: 0, 2: 0, 3: 0}
+    account_kinds = dict.fromkeys(balances, "asset")
+    graph = ChainGraph(
+        members={}, leaf_lot={30: 3},
+        minimum_of={2: minimum}, refill_chain_of={2: refill_chain},
+        refill_target_of={2: None}, refill_amount_of={2: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31), inflation_factor_cache={},
+        account_tax_treatment=dict.fromkeys(balances, "taxable"),
+        account_subkind=dict.fromkeys(balances, "cash"),
+        account_name={1: "Payee", 2: "Checking", 3: "Empty"}, cost_bases={},
+        chain_name={30: "Wrong_Chain"},
+    )
+    if refilling:
+        refill_ctx.refilling.add(2)
+    with pytest.warns(RuntimeWarning, match=r"2026-05-31: account 'Checking' went negative "
+                      r"\(balance=-200\.00\); " + message):
+        _post_transfer(
+            ledger_con, balances, account_kinds, step_id=1, month_s="2026-05-31",
+            from_id=2, to_id=1, amount=20_000, tax_char="none", reason_id=99,
+            refill_ctx=refill_ctx,
+        )
+    assert status in REFILL_STATUSES
+    assert refill_ctx.negative_events == [{
+        "month": "2026-05-31", "account": "Checking", "balance_cents": -20_000,
+        "refill_status": status, "refill_chain": None if refill_chain is None else "Wrong_Chain",
+        "refill_needed_cents": needed, "refill_drawn_cents": drawn,
+    }]
+
+
+@pytest.mark.allow_negative_balance
+def test_negative_balance_warnings_record_the_refill_in_run_args(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """#105: run_args_json's negative_balance_warnings carry the refill chain
+    and what it supplied, for a notebook to show. A debit far beyond what
+    checking's liquidity chain holds drains the chain and still goes negative."""
+    append_calendar_row(
+        date="2027-03-31", kind="one_off_transfer", name="huge_bill",
+        account_1="Asset_Checking", account_2="Expense_Living",
+        amount="1000000000", tax_character="none",
+    )
+    intent_path = load_scenario(
+        test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    with pytest.warns(RuntimeWarning, match="'Asset_Checking' went negative"):
+        run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+    con = sqlite3.connect(run_path)
+    try:
+        run_args = json.loads(con.execute("SELECT run_args_json FROM simulation_run").fetchone()[0])
+    finally:
+        con.close()
+    first = run_args["negative_balance_warnings"][0]
+    assert first["month"] == "2027-03-31"
+    assert first["account"] == "Asset_Checking"
+    assert first["refill_status"] == "drawn"
+    assert first["refill_chain"] == "asset_checking_liquidity"
+    assert 0 < first["refill_drawn_cents"] < first["refill_needed_cents"]
+    assert first["balance_cents"] < 0
+
+
 def test_refill_before_a_split_withdrawal_points_at_its_basis_leg(ledger_con: sqlite3.Connection) -> None:
     """A basis-tracked withdrawal refills once on its net amount; the refill
     is linked to the first leg posted, the return_of_capital leg."""
