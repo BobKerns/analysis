@@ -102,8 +102,10 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
         # Opaque blends with white rather than alpha: a translucent
         # steelblue (alpha=0.2) was visible in Jupyter but washed out of VS
         # Code's inline PNG rendering entirely, and opaque bands also can't
-        # double up where adjacent fills overlap by a pixel.
-        strength = 0.35 + 0.5 * depth / max(depth_count - 1, 1)
+        # double up where adjacent fills overlap by a pixel. Even the
+        # outermost band starts at half strength: a lighter one (~0.35) still
+        # read as plain white in VS Code while looking fine in JupyterLab.
+        strength = 0.5 + 0.4 * depth / max(depth_count - 1, 1)
         color = tuple(1 - strength * (1 - c) for c in base)
         # The band is labelled by the edges it shares a depth with -- the
         # outer pair is "range", the next "20–80%", and so on -- once each.
@@ -113,7 +115,9 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
             label = _band_label(edges[depth], edges[len(edges) - 1 - depth])
         ax.fill_between(
             monthly_summary.index, monthly_summary[low], monthly_summary[high],
-            color=color, edgecolor=color, linewidth=0.5, label=label,
+            # A full-strength edge outlines every band, so the min/max
+            # envelope stays visible however a renderer treats pale fills.
+            color=color, edgecolor=base, linewidth=0.6, label=label,
         )
     ax.plot(monthly_summary.index, monthly_summary["mean"], color="midnightblue",
             linewidth=2, label="mean")
