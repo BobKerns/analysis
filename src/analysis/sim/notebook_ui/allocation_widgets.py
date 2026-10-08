@@ -11,7 +11,7 @@ from ipywidgets import widgets
 from analysis.sim.allocation import (
     _NO_SPLIT, Grouping, UNCLASSIFIED, asset_classes_present, lot_classes, portfolio_allocation,
 )
-from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.connection import Connection
 from analysis.sim.notebook_ui.holdings_widgets import _label, _month_dropdown
 from analysis.sim.notebook_ui.pickers import AssetClassPicker, GroupingPicker
 from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -21,7 +21,7 @@ __all__ = ["allocation_view", "portfolio_allocation_widget"]
 
 
 def allocation_view(
-    source: RunConnection | ScenarioConnection,
+    source: Connection,
     by: Grouping | None = None, month: str | None = None,
     exclude: tuple[str, ...] = (),
 ) -> tuple[str, pd.DataFrame]:
@@ -54,7 +54,7 @@ def _pie(table: pd.DataFrame) -> None:
 
 
 def portfolio_allocation_widget(
-    source: RunConnection | ScenarioConnection,
+    source: Connection,
     by: Grouping | None = None,
     exclude: tuple[str, ...] = (), **_,
 ) -> widgets.VBox:

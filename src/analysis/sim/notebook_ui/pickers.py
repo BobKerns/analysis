@@ -177,7 +177,7 @@ class SingleScenarioConnections(Connections):
 
         As with :meth:`show`, `fn` must accept arbitrary keyword arguments
         (end its signature with ``**_``): it receives the same context
-        keywords, such as ``member``.
+        keywords, such as ``member``, and ``run``.
 
         Parameters
         ----------
@@ -187,8 +187,8 @@ class SingleScenarioConnections(Connections):
             Additional keyword arguments to pass to `fn`.
         
         """
-        def _invoke_with_scenario(*args, **kwargs):
-            return fn(self.scenario, *args, **kwargs)
+        def _invoke_with_scenario(run: RunConnection, *args, **kwargs):
+            return fn(self.scenario, *args, run=run, **kwargs)
         return self.show(_invoke_with_scenario, *args, **kwargs)
 
     def _invoke(self, fn: Callable, *args, **kwargs):

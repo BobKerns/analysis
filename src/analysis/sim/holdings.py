@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.connection import RunConnection, Connection
 from analysis.frames import named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
@@ -28,7 +28,7 @@ _BALANCE_SHEET_KINDS = ("asset", "liability")
 _OPENING = "opening"
 
 
-def holding_months(source: RunConnection | ScenarioConnection) -> list[str]:
+def holding_months(source: Connection) -> list[str]:
     """Month-end dates a run has lot balances for (empty for a scenario)."""
     if not isinstance(source, RunConnection):
         return []
@@ -49,7 +49,7 @@ def _pick_month(months: list[str], month: str | None) -> str:
 
 
 def lots_frame(
-    source: RunConnection | ScenarioConnection, month: str | None = None,
+    source: Connection, month: str | None = None,
 ) -> pd.DataFrame:
     """One row per balance-sheet lot: account, lot, symbol, name (of the
     security, if securities.csv lists it), acquired, kind, subkind, tax_treatment,
@@ -91,14 +91,14 @@ def lots_frame(
     ]].reset_index(drop=True)
 
 
-def security_names(source: RunConnection | ScenarioConnection) -> dict[str, str]:
+def security_names(source: Connection) -> dict[str, str]:
     """Symbol to security name, from the data repo's securities.csv."""
     securities = source.items("security")
     return dict(zip(securities["symbol"], securities["name"], strict=True))
 
 
 def account_holdings(
-    source: RunConnection | ScenarioConnection, account: str, month: str | None = None,
+    source: Connection, account: str, month: str | None = None,
 ) -> pd.DataFrame:
     """The lots of one account. Raises ``KeyError`` for an unknown account."""
     frame = lots_frame(source, month)
@@ -112,7 +112,7 @@ def account_holdings(
 
 
 def symbol_holders(
-    source: RunConnection | ScenarioConnection, symbol: str, month: str | None = None,
+    source: Connection, symbol: str, month: str | None = None,
 ) -> pd.DataFrame:
     """Every lot holding ``symbol``, across accounts (empty if none does)."""
     frame = lots_frame(source, month)
@@ -125,13 +125,13 @@ def _symbol_holders(frame: pd.DataFrame) -> pd.DataFrame:
     return frame[frame["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | {"cash"})]
 
 
-def holding_accounts(source: RunConnection | ScenarioConnection) -> list[str]:
+def holding_accounts(source: Connection) -> list[str]:
     """Names of the asset and liability accounts, sorted: what the account
     holdings widget offers. Any account can have several lots."""
     return sorted(set(lots_frame(source)["account"]))
 
 
-def holding_symbols(source: RunConnection | ScenarioConnection) -> list[str]:
+def holding_symbols(source: Connection) -> list[str]:
     """Symbols held in investment accounts or cash lots, sorted: what the holders
     widget offers."""
     symbols = _symbol_holders(lots_frame(source))["symbol"]
