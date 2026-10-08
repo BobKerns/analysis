@@ -12,7 +12,7 @@ import pandas as pd
 from IPython.display import display
 from ipywidgets import widgets
 
-from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.connection import RunConnection, Connection
 from analysis.sim.holdings import (
     account_holdings,
     holding_accounts,
@@ -58,19 +58,19 @@ def _with_total(frame: pd.DataFrame, label_column: str, *, quantity: bool) -> pd
     return pd.concat([frame, pd.DataFrame([total])], ignore_index=True)
 
 
-def _month_dropdown(source: RunConnection | ScenarioConnection) -> widgets.Dropdown | None:
+def _month_dropdown(source: Connection) -> widgets.Dropdown | None:
     months = holding_months(source)
     if not months:
         return None
     return widgets.Dropdown(options=months, value=months[-1], description="Month:")
 
 
-def _label(source: RunConnection | ScenarioConnection) -> str:
+def _label(source: Connection) -> str:
     return source.label if isinstance(source, RunConnection) else f"{source.name} (opening values)"
 
 
 def account_holdings_view(
-    source: RunConnection | ScenarioConnection, account: str, month: str | None = None,
+    source: Connection, account: str, month: str | None = None,
 ) -> tuple[str, pd.DataFrame]:
     """Heading and table (lots by row, with a Total row) the account widget shows."""
     frame = account_holdings(source, account, month=month)
@@ -83,7 +83,7 @@ def account_holdings_view(
 
 
 def symbol_holders_view(
-    source: RunConnection | ScenarioConnection, symbol: str, month: str | None = None,
+    source: Connection, symbol: str, month: str | None = None,
 ) -> tuple[str, pd.DataFrame]:
     """Heading and table (lots by account, with a Total row) the symbol widget shows."""
     everything = lots_frame(source, month)
@@ -103,7 +103,7 @@ def symbol_holders_view(
 
 
 def account_holdings_widget(
-    source: RunConnection | ScenarioConnection, account: str | None = None,
+    source: Connection, account: str | None = None, **_,
 ) -> widgets.VBox:
     """The lots in one account (lot, symbol, acquired, quantity, price, balance,
     basis, unrealized gain), with an account dropdown and, for a run, a month."""
@@ -135,7 +135,7 @@ def account_holdings_widget(
 
 
 def symbol_holders_widget(
-    source: RunConnection | ScenarioConnection, symbol: str | None = None,
+    source: Connection, symbol: str | None = None, **_,
 ) -> widgets.VBox:
     """Every lot holding one symbol, across accounts, with a symbol dropdown and,
     for a run, a month."""

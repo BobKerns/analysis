@@ -14,7 +14,7 @@ from abc import abstractmethod
 import html as html_lib
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Collection, Mapping
@@ -96,6 +96,20 @@ class Connections(traitlets.HasTraits):
     This is the base class for SingleScenarioConnections and MultiScenarioConnections.
     """
 
+    # What show() redraws on, rather than the selection itself: a change can
+    # keep the scenario and swap only the run (another ensemble member,
+    # #111), and a scenario change must redraw once, after every connection
+    # has been swapped, not once per attribute.
+    revision: int = _trait(traitlets.Int(0))
+
+    # The currently selected ensemble member within the scenario.
+    # 0 if not selecting any but the default member.
+    member: int = _trait(traitlets.Int(0))
+
+    def notify_changed(self) -> None:
+        """Redraw every show() output; call once a change has fully landed."""
+        self.revision += 1
+
     @abstractmethod
     def _invoke(self, fn: Callable, *args, **kwargs):
         """Invoke the given function with the current connections context."""
@@ -105,6 +119,11 @@ class Connections(traitlets.HasTraits):
         """
         Return an output widget that displays the result of calling `fn`
         with the current run connection.
+
+        `fn` must accept arbitrary keyword arguments (end its signature
+        with ``**_``): besides ``**kwargs``, ``show()`` passes context such as
+        ``member``, the selected ensemble member, and may add more. A widget
+        uses what it needs and ignores the rest.
 
         Parameters
         ----------
@@ -118,7 +137,7 @@ class Connections(traitlets.HasTraits):
         def _draw():
             with out:
                 clear_output(wait=True)
-                result = self._invoke(fn, *args, **kwargs)
+                result = self._invoke(fn, *args, member=self.member, **kwargs)
                 if result is not None:
                     display(result)
 
@@ -126,7 +145,7 @@ class Connections(traitlets.HasTraits):
             # The first draw waits for the end of the cell that called show(), so it
             # happens like any later redraw (see notebook_ui.first_draw).
             when_cell_is_done(_draw)
-        self.observe(_redraw, names="value")
+        self.observe(_redraw, names="revision")
         _redraw()
         return out
 
@@ -156,6 +175,10 @@ class SingleScenarioConnections(Connections):
         Return an output widget that displays the result of calling `fn`
         with the current scenario connection.
 
+        As with :meth:`show`, `fn` must accept arbitrary keyword arguments
+        (end its signature with ``**_``): it receives the same context
+        keywords, such as ``member``, and ``run``.
+
         Parameters
         ----------
         fn : callable
@@ -164,7 +187,9 @@ class SingleScenarioConnections(Connections):
             Additional keyword arguments to pass to `fn`.
         
         """
-        return self.show(lambda _, *args, **kwargs: fn(self.scenario, *args, **kwargs), *args, **kwargs)
+        def _invoke_with_scenario(run: RunConnection, *args, **kwargs):
+            return fn(self.scenario, *args, run=run, **kwargs)
+        return self.show(_invoke_with_scenario, *args, **kwargs)
 
     def _invoke(self, fn: Callable, *args, **kwargs):
         """Invoke the given function with the current connections context."""
@@ -372,15 +397,24 @@ def scenario_picker(
             # _sync_member_dropdown clearing member_dropdown.options (no
             # longer an ensemble, or no members at all) propagates to
             # .value here too -- nothing to switch to.
+            container.member = 0
             return
         ref = container.scenario_ref
         batch = latest_ensemble_batch(ref.runs_dir / ref.name)
         assert batch is not None  # the member dropdown lists only an existing batch's members
         old_run = container.run
-        container.run = RunConnection(batch / f"{change['new']}.sqlite3", container.scenario)
+        run_path = batch / f"{change['new']}.sqlite3"
+        container.run = RunConnection(run_path, container.scenario)
+        member_name = change['new']
+        container.member = int(member_name.split("_", maxsplit=1)[1])
+        # The panel and metadata describe the member actually shown, not
+        # the member 0 that resolve_scenario_name picked.
+        container.scenario_ref = replace(ref, run_path=run_path)
         if old_run is not None:
             old_run.close()
         _redraw()
+        if not changing_scenario:
+            container.notify_changed()
 
     def _sync_member_dropdown() -> None:
         """Show a member picker when the current scenario is an ensemble
@@ -412,7 +446,12 @@ def scenario_picker(
         )
         member_dropdown.layout.display = None
 
+    # _on_change notifies once at its end, so a member switch it causes
+    # (via _sync_member_dropdown) doesn't redraw a half-swapped container.
+    changing_scenario = False
+
     def _on_change(change) -> None:
+        nonlocal changing_scenario
         old_scenario, old_run = container.scenario, container.run
         new = _open_single(data_dir, change["new"],
                            runs_dir=runs_dir,
@@ -424,8 +463,13 @@ def scenario_picker(
         old_scenario.close()
         if old_run is not None:
             old_run.close()
-        _sync_member_dropdown()
+        changing_scenario = True
+        try:
+            _sync_member_dropdown()
+        finally:
+            changing_scenario = False
         _redraw()
+        container.notify_changed()
 
     dropdown.observe(_on_change, names="value")
     member_dropdown.observe(_on_member_change, names="value")
@@ -453,7 +497,6 @@ class MultiScenarioConnections(Connections):
     variants: list[ScenarioName]
     colors: dict[str, str]
     warnings: list[str] = field(default_factory=list)
-    value: object = _trait(traitlets.Any())
 
     @property
     def scenarios(self) -> list[ScenarioName]:
@@ -629,7 +672,7 @@ def multi_scenario_picker(
             if new.connections.get(name) is not rc:
                 rc.close()
         _redraw()
-        container.value = object()
+        container.notify_changed()
 
     baseline_picker.observe(_on_change, names="value")
     variant_picker.observe(_on_change, names="value")
