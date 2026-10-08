@@ -218,13 +218,13 @@ def load(
 )
 def check(scenario_name: str | None, data_dir: Path | None, check_all: bool) -> None:
     """Validate the scenario's CSVs without producing a persistent intent file."""
+    if check_all and scenario_name is not None:
+        raise click.UsageError("give a scenario name or --all, not both")
     resolved = _resolve_data_dir(data_dir)
     if not check_all:
         ref = _resolve_scenario(resolved, scenario_name)
         _check_scenario(resolved, ref.name)
         return
-    if scenario_name is not None:
-        raise click.UsageError("give a scenario name or --all, not both")
     try:
         names = list_scenario_names(resolved)
     except LoadError as exc:

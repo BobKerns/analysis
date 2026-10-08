@@ -368,26 +368,32 @@ def test_sim_check_all_checks_every_scenario(test_data_dir: Path) -> None:
 def test_sim_check_all_keeps_going_past_a_failure_and_exits_nonzero(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
+    # A scenario sorting after retire_alice proves the loop goes on past it.
+    runner = CliRunner()
+    create = runner.invoke(
+        main, ["sim", "scenario", "create", "zz_after", "base",
+               "--data-dir", str(test_data_dir)],
+    )
+    assert create.exit_code == 0, create.output
     with retire_alice_csv("scheduled.csv").open("a", encoding="utf-8") as f:
         f.write(
             "broken,Income_Nowhere,,Asset_Checking,,monthly,,fixed_amount,,,,,,"
             "1.00,2026-05-31,,ordinary,,2026-05-31,,200,,,,{},,\n"
         )
-    result = CliRunner().invoke(
+    result = runner.invoke(
         main, ["sim", "check", "--all", "--data-dir", str(test_data_dir)]
     )
     assert result.exit_code == 1, result.output
-    # base is checked (and passes) even though retire_alice fails
-    assert result.output.count("\nok\n") == 1
     assert "Income_Nowhere" in result.output
-    assert "1 of 2 scenario(s) failed: retire_alice" in result.output
+    # base and zz_after pass, before and after the failing retire_alice
+    assert "Checking zz_after\n" in result.output
+    assert result.output.count("\nok\n") == 2
+    assert "1 of 3 scenario(s) failed: retire_alice" in result.output
 
 
-def test_sim_check_rejects_a_scenario_name_with_all(test_data_dir: Path) -> None:
-    result = CliRunner().invoke(
-        main,
-        ["sim", "check", "retire_alice", "--all", "--data-dir", str(test_data_dir)],
-    )
+def test_sim_check_rejects_a_scenario_name_with_all() -> None:
+    # No data dir at all: the usage error comes before data-dir resolution.
+    result = CliRunner().invoke(main, ["sim", "check", "retire_alice", "--all"])
     assert result.exit_code == 2
     assert "not both" in result.output
 
