@@ -261,6 +261,34 @@ def test_scenario_picker_changing_scenario_redraws_show_outputs_once(
     container.close()
 
 
+def test_show_and_show_scenario_pass_the_context_keywords(tmp_path: Path) -> None:
+    """The keywords show()/show_scenario() pass are a contract with every
+    widget, so they're pinned here even where no widget reads them yet."""
+    data = _copy_prototype(tmp_path)
+    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=2)
+
+    widget, container, _dropdown = scenario_picker(data, "recipe_1")
+    _scenario_dropdown, member_dropdown, _ref_out = widget.children
+    shown: list[tuple] = []
+    container.show(lambda rc, *args, **kwargs: shown.append((rc, args, kwargs)))
+    scenario_shown: list[tuple] = []
+    container.show_scenario(
+        lambda sc, *args, **kwargs: scenario_shown.append((sc, args, kwargs)), "extra",
+    )
+
+    member_dropdown.value = "member_0001"
+
+    assert container.run is not None
+    assert shown[-1] == (container.run, (), {"member": 1})
+    assert scenario_shown[-1] == (
+        container.scenario, ("extra",), {"run": container.run, "member": 1},
+    )
+    first_run = shown[0][0]
+    assert shown[0] == (first_run, (), {"member": 0})
+    assert scenario_shown[0][2] == {"run": first_run, "member": 0}
+    container.close()
+
+
 def _widgets_the_notebooks_show(repo_root: Path) -> dict[str, Callable]:
     """Every function a notebook passes to ``show()``/``show_scenario()``,
     resolved from the notebook_ui modules."""
