@@ -78,6 +78,7 @@ jupyterhub
 kendalltau
 kernelspec
 kstest
+labelrotation
 LABSTAT
 lastrowid
 liab
@@ -170,6 +171,8 @@ steelblue
 subkey
 subkind
 subkinds
+subshell
+subshells
 tailnet
 tailweight
 taxchar

@@ -4,14 +4,16 @@ mean/median/SD/range table."""
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from typing import Any
 
 import ipywidgets as widgets
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import pandas as pd
-from IPython.display import clear_output, display
+from IPython.display import Image, clear_output, display
 
 from analysis.sim.connection import year_end_values
 from analysis.sim.ensemble import (
@@ -147,6 +149,13 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
     return ax
 
 
+def _png(fig: Figure) -> Image:
+    """``fig`` as an inline PNG, cropped like matplotlib-inline's own output."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    return Image(data=buf.getvalue(), format="png")
+
+
 def ensemble_widget(*_,
                     data_dir: Path | str | None = None,
                     state_dir: Path | None = None,
@@ -205,7 +214,17 @@ def ensemble_widget(*_,
             display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
             if description is not None:
                 display(description)
-            _fig, ax = plt.subplots(figsize=(10, 5))
+            # A pyplot-free Figure, rendered to a PNG here: pyplot's
+            # open-figure list is global to the kernel, and under JupyterLab's
+            # kernel subshells another widget message can run
+            # matplotlib-inline's flush_figures on a second thread while this
+            # one is still drawing. That flush rendered the half-built figure
+            # concurrently and the chart came out blank (#119). A figure
+            # pyplot doesn't know about can't be flushed by anyone else, and
+            # rendering it ourselves doesn't depend on the inline backend
+            # having registered a Figure formatter, which only pyplot use does.
+            fig = Figure(figsize=(10, 5))
+            ax = fig.subplots()
             # Scale before drawing: matplotlib's set_yscale resets the
             # major formatter to its own log-scale default, which would
             # otherwise clobber ensemble_fan_chart's dollar formatting.
@@ -226,8 +245,8 @@ def ensemble_widget(*_,
             # same columns `sim ensemble summary` prints.
             ensemble_fan_chart(monthly_summary.join(percentiles(net_worth)), ax=ax)
             ax.set_title(f"Net worth fan chart ({mode_label}) ({recipe})")
-            plt.xticks(rotation=90)
-            plt.show()
+            ax.tick_params(axis="x", labelrotation=90)
+            display(_png(fig))
             display(yearly.style.format({c: "${:,.0f}" for c in yearly.columns}))
         finally:
             for con in connections.values():
