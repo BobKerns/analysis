@@ -1,0 +1,234 @@
+"""``sim account lot add|edit|delete`` (issue #124): a lot is one
+account_values.csv row, added, changed or deleted with the references to it."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from pathlib import Path
+
+import pandas as pd
+import pytest
+from click.testing import CliRunner, Result
+
+from analysis.cli import main
+
+BROKERAGE = "Asset_Brokerage_Joint"
+
+
+@pytest.fixture
+def lot(test_data_dir: Path) -> Callable[..., Result]:
+    """Run ``sim account lot <args>`` on the private data copy, typing ``answers``."""
+    def run(*args: str, scenario: str = "retire_alice", answers: list[str] | None = None) -> Result:
+        return CliRunner().invoke(
+            main,
+            ["sim", "account", "lot", *args,
+             "--data-dir", str(test_data_dir), "--scenario", scenario],
+            input="".join(answer + "\n" for answer in answers or []),
+        )
+    return run
+
+
+@pytest.fixture
+def values(test_scenarios_dir: Path) -> Callable[[str], pd.DataFrame]:
+    """A scenario's own account_values.csv."""
+    def read(scenario: str = "retire_alice") -> pd.DataFrame:
+        path = test_scenarios_dir / scenario / "account_values.csv"
+        return pd.read_csv(path, dtype=str, keep_default_na=False)
+    return read
+
+
+def _lot_row(frame: pd.DataFrame, account: str, lot: str) -> dict[str, str]:
+    rows = frame[(frame["account_name"] == account) & (frame["lot"] == lot)]
+    assert len(rows) == 1, frame
+    return {str(k): str(v) for k, v in rows.iloc[0].items()}
+
+
+@pytest.fixture
+def check(test_data_dir: Path) -> Callable[[str], None]:
+    """Assert a scenario of the private copy still loads."""
+    def run(scenario: str = "retire_alice") -> None:
+        result = CliRunner().invoke(main, ["sim", "check", scenario, "--data-dir", str(test_data_dir)])
+        assert result.exit_code == 0, result.output
+    return run
+
+
+def test_add_writes_the_lot_from_its_options(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame], check: Callable[[str], None],
+) -> None:
+    result = lot("add", BROKERAGE, "growth", "--symbol", "VTI", "--acquired", "2024-02-01",
+                 "--opening-balance", "$1,500", "--opening-cost-basis", "1200")
+
+    assert result.exit_code == 0, result.output
+    row = _lot_row(values(), BROKERAGE, "growth")
+    assert (row["symbol"], row["acquired"], row["opening_balance"], row["opening_cost_basis"]) == (
+        "VTI", "2024-02-01", "1500.00", "1200.00")
+    check("retire_alice")
+
+
+@pytest.mark.parametrize(("account", "label", "message"), [
+    (BROKERAGE, "default", "already has a lot 'default'"),
+    (BROKERAGE, "a:b", "may not contain ':'"),
+    ("Income_Salary_Alice", "x", "unknown account"),
+])
+def test_add_refuses_a_lot_it_cannot_add(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+    account: str, label: str, message: str,
+) -> None:
+    before = values()
+
+    result = lot("add", account, label, "--opening-balance", "1")
+
+    assert result.exit_code != 0
+    assert message in result.output
+    pd.testing.assert_frame_equal(values(), before)
+
+
+def test_guided_add_asks_only_what_applies(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+) -> None:
+    # account, lot, symbol, acquired, quantity, series, balance, manage?, write
+    result = lot("add", answers=["Asset_Roth_Bill", "bonds", "BND", "", "", "", "2500", "n", "write"])
+
+    assert result.exit_code == 0, result.output
+    # A Roth account isn't taxable, so no basis is asked for.
+    assert "cost basis" not in result.output
+    assert "sim account lot add Asset_Roth_Bill bonds --symbol BND --opening-balance 2500" in result.output
+    assert _lot_row(values(), "Asset_Roth_Bill", "bonds")["opening_balance"] == "2500.00"
+
+
+def test_edit_sets_a_field_and_keeps_the_rest_as_authored(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+) -> None:
+    before = values()
+
+    result = lot("edit", BROKERAGE, "default", "--opening-cost-basis", "250000")
+
+    assert result.exit_code == 0, result.output
+    after = values()
+    changed = after.ne(before)
+    assert changed.sum().sum() == 1
+    assert _lot_row(after, BROKERAGE, "default")["opening_cost_basis"] == "250000.00"
+
+
+def test_guided_edit_changes_a_named_field(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+) -> None:
+    # The account has one lot, so it is chosen without asking.
+    result = lot("edit", "Asset_Savings", answers=["opening-balance", "21000", "write"])
+
+    assert result.exit_code == 0, result.output
+    assert _lot_row(values(), "Asset_Savings", "")["opening_balance"] == "21000.00"
+
+
+def test_writing_a_lot_unchanged_writes_nothing(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+) -> None:
+    before = values()
+
+    result = lot("edit", "Asset_Savings", answers=["write"])
+
+    assert result.exit_code == 0, result.output
+    assert "no change" in result.output
+    pd.testing.assert_frame_equal(values(), before)
+
+
+def test_renaming_a_lot_renames_its_references(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+    retire_alice_csv: Callable[[str], Path], check: Callable[[str], None],
+) -> None:
+    frame = values()
+    frame.loc[frame["account_name"] == "Asset_Savings", ["refill_chain", "refill_lot"]] = [BROKERAGE, "default"]
+    frame.to_csv(retire_alice_csv("account_values.csv"), index=False)
+
+    result = lot("edit", BROKERAGE, "default", "--new-lot", "core")
+
+    assert result.exit_code == 0, result.output
+    after = values()
+    assert set(after.loc[after["account_name"] == BROKERAGE, "lot"]) == {"core"}
+    assert _lot_row(after, "Asset_Savings", "")["refill_lot"] == "core"
+    calendar = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    assert set(calendar.loc[calendar["account_2"] == BROKERAGE, "lot_2"]) == {"core"}
+    check("retire_alice")
+
+
+def test_delete_lists_references_and_removes_them_once_confirmed(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+    retire_alice_csv: Callable[[str], Path], check: Callable[[str], None],
+) -> None:
+    frame = values()
+    frame.loc[frame["account_name"] == "Asset_Savings", ["refill_chain", "refill_lot"]] = [BROKERAGE, "default"]
+    frame.to_csv(retire_alice_csv("account_values.csv"), index=False)
+    calendar_before = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+
+    declined = lot("delete", BROKERAGE, "default", answers=["n"])
+    assert declined.exit_code == 0, declined.output
+    assert "aborted" in declined.output
+    pd.testing.assert_frame_equal(values(), frame)
+
+    result = lot("delete", BROKERAGE, "default", answers=["y"])
+
+    assert result.exit_code == 0, result.output
+    assert "account_values.csv row 3: refill_chain/refill_lot" in result.output
+    assert "calendar.csv row 5: account_2/lot_2" in result.output
+    after = values()
+    assert BROKERAGE not in set(after["account_name"])
+    assert _lot_row(after, "Asset_Savings", "")["refill_chain"] == ""
+    calendar = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
+    assert len(calendar) == len(calendar_before) - 1
+    assert BROKERAGE not in set(calendar["account_2"])
+    check("retire_alice")
+
+
+@pytest.mark.usefixtures("test_child_scenario")
+def test_editing_an_inherited_lot_writes_an_override(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame], check: Callable[[str], None],
+) -> None:
+    parent = values("retire_alice")
+
+    result = lot("edit", BROKERAGE, "default", "--opening-balance", "350000", scenario="child")
+
+    assert result.exit_code == 0, result.output
+    assert "wrote an override" in result.output
+    override = _lot_row(values("child"), BROKERAGE, "default")
+    assert override == {**_lot_row(parent, BROKERAGE, "default"), "opening_balance": "350000.00"}
+    pd.testing.assert_frame_equal(values("retire_alice"), parent)
+    check("child")
+
+
+@pytest.mark.usefixtures("test_child_scenario")
+def test_renaming_an_inherited_lot_is_refused(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+) -> None:
+    result = lot("edit", BROKERAGE, "default", "--new-lot", "core", scenario="child")
+
+    assert result.exit_code != 0
+    assert "rename it there" in result.output
+    assert values("child").empty
+
+
+@pytest.mark.usefixtures("test_child_scenario")
+def test_deleting_an_inherited_lot_zeroes_it_and_adding_it_again_replaces_the_zero(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame], check: Callable[[str], None],
+) -> None:
+    result = lot("delete", BROKERAGE, "default", scenario="child")
+
+    assert result.exit_code == 0, result.output
+    assert "zeroed" in result.output
+    # The inheritance's calendar transfer still names the lot; it is listed to check.
+    assert "retire_alice: calendar.csv row 5: account_2/lot_2" in result.output
+    zeroed = _lot_row(values("child"), BROKERAGE, "default")
+    assert (zeroed["opening_balance"], zeroed["opening_cost_basis"]) == ("0.00", "0.00")
+    check("child")
+
+    again = lot("delete", BROKERAGE, "default", scenario="child")
+    assert "already deleted" in again.output
+
+    added_again = lot("add", BROKERAGE, "default", "--opening-balance", "10", "--opening-cost-basis", "10",
+                  scenario="child")
+
+    assert added_again.exit_code == 0, added_again.output
+    assert "re-added" in added_again.output
+    child = values("child")
+    assert len(child) == 1
+    assert _lot_row(child, BROKERAGE, "default")["opening_balance"] == "10.00"
+    check("child")

@@ -103,6 +103,9 @@ sim account list                          # tabular view with balances and rates
 sim account add <name> <kind> <subkind> [--opening-balance ...]
 sim account check                         # report missing/duplicate/unknown account_values rows
 sim account sync                          # scaffold missing account_values rows with zero balance
+sim account lot add <account> <lot> [--symbol ...] [--opening-balance ...]
+sim account lot edit <account> <lot>      # change a lot's fields, or rename it
+sim account lot delete <account> <lot>    # with the rows that reference it
 sim transfer list                         # one-off calendar transfers
 sim transfer add <date> <from> <to> <amount>
 sim scheduled list                        # recurring scheduled transfers
@@ -117,7 +120,7 @@ The CLI is interactive (tab completion on account names, prompts when arguments 
 
 - **Check first**: `sim account check` reports any missing, duplicate, or unknown accounts.
 - **Sync**: `sim account sync` creates missing account_values rows (with `opening_balance = 0.00`).
-- **Edit balances**: After syncing, use your editor or `sim account add` to set opening balances as needed.
+- **Edit balances**: After syncing, use your editor or `sim account lot edit` to set opening balances as needed.
 
 The loader enforces referential integrity (strict join validation), so missing or mismatched account names will raise a clear error before the scenario loads.
 

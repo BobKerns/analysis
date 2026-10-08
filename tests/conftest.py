@@ -425,6 +425,13 @@ def variant_a_scenario_create(data_dir: Path) -> Path:
     return scenario.create_scenario(data_dir, "variant_a", "retire_alice")
 
 @pytest.fixture(scope="function")
+def test_child_scenario(test_data_dir: Path) -> Path:
+    """A ``child`` scenario deriving from the private retire_alice copy, with
+    empty overlays: everything it has, it inherits."""
+    return scenario.create_scenario(test_data_dir, "child", "retire_alice")
+
+
+@pytest.fixture(scope="function")
 def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunConnection]:
     """Connection to the ``two_lot_run_file`` run."""
     with open_scenario(test_data_dir, "retire_alice") as scenario_conn:

@@ -29,7 +29,7 @@ from analysis.expenses.baseline import (
     load_expense_account_map,
     replace_generated_scheduled_rows,
 )
-from analysis.sim import allocation, calendar_guide, prices, registries, sensitivity
+from analysis.sim import allocation, calendar_guide, lot_guide, prices, registries, sensitivity
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
     open_run, open_scenario, year_end_values, Connection,
@@ -90,7 +90,8 @@ from analysis.sim.staging import (
     StagedEdit,
     staged_edit,
 )
-from analysis.sim.dates import MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso
+from analysis.sim.dates import MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day
+from analysis.sim.lineage import load_order
 from analysis.frames import named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
 
@@ -2649,7 +2650,7 @@ def calendar_add_group_command(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
-    _echo_calendar_scenario(scenario_name, path, defaulted=scenario is None)
+    _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
     context = _guide_context(data_dir_p, scenario_name, rows=_read_calendar_rows(path))
     guide = _calendar_guide()
     click.echo("What kind of calendar row?")
@@ -2676,9 +2677,9 @@ def calendar_add_group_command(
         ctx.exit(1)
 
 
-def _echo_calendar_scenario(name: str, path: Path, *, defaulted: bool) -> None:
-    """Say which scenario's calendar a guided command is about to change,
-    before it asks anything: a defaulted scenario may not be the one meant."""
+def _echo_guided_scenario(name: str, path: Path, *, defaulted: bool) -> None:
+    """Say which scenario file a guided command is about to change, before
+    it asks anything: a defaulted scenario may not be the one meant."""
     how = " (the default; use --scenario for another)" if defaulted else ""
     click.echo(f"Scenario: {name}{how}")
     click.echo(f"  {path}")
@@ -2738,7 +2739,7 @@ def calendar_edit(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
-    _echo_calendar_scenario(scenario_name, path, defaulted=scenario is None)
+    _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
     rows = _read_calendar_rows(path)
     if not rows:
         raise click.ClickException(
@@ -4256,6 +4257,625 @@ def account_tag_rm(
 ) -> None:
     """Remove one or more '<role>:<name>' tags from an account."""
     _scenario_write(data_dir, scenario, "account", name, tag_tokens, "rm")
+
+
+# ---------- account lot: one account_values.csv row (#124) ----------
+
+# Per file, the (account, lot) column pairs that name a lot. A blank lot names
+# the account's `default` lot, the only one a blank may name (ADR-003 §7).
+_LOT_REFERENCE_FIELDS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("scheduled.csv", (("from_account", "from_lot"), ("to_account", "to_lot"))),
+    ("calendar.csv", (("account_1", "lot_1"), ("account_2", "lot_2"))),
+    ("year_to_date.csv", (("from_account", "from_lot"), ("to_account", "to_lot"))),
+)
+
+# account_values.csv's own references: another lot's refill or overflow chain.
+_LOT_CHAIN_LOT_FIELDS = (("refill_chain", "refill_lot"), ("overflow_chain", "overflow_lot"))
+
+_LOT_MONEY_COLUMNS = frozenset({
+    "opening_balance", "opening_cost_basis", "prior_year_end_balance",
+    "minimum_balance", "maximum_balance", "refill_target", "refill_amount",
+})
+
+
+class _Lot(NamedTuple):
+    """One lot of a scenario, as its load order leaves it."""
+    row: dict[str, str]  # as authored, in the last file of the load order to have it
+    index: int | None  # its data row (0-based) in this scenario's own file, if there
+    inherited_from: str | None  # the last scenario before this one to have it
+
+    @property
+    def account(self) -> str:
+        return self.row["account_name"].strip()
+
+    @property
+    def lot(self) -> str:
+        return self.row["lot"].strip() or registries.DEFAULT_LOT
+
+    @property
+    def deleted(self) -> bool:
+        """An inherited lot this scenario has zeroed: how ``lot delete``
+        stands in for removing a lot it can't remove (#124)."""
+        return self.index is not None and self.inherited_from is not None and _zero_lot(self.row)
+
+
+def _zero_lot(row: dict[str, str]) -> bool:
+    """No balance and no shares. A blank balance is derived, not zero."""
+    def zero(text: str) -> bool:
+        try:
+            return Decimal(text.strip().replace(",", "")) == 0
+        except InvalidOperation:
+            return False
+    return zero(row["opening_balance"]) and (not row["quantity"].strip() or zero(row["quantity"]))
+
+
+def _read_values_rows(path: Path) -> list[dict[str, str]]:
+    """A scenario's own account_values.csv rows, every column present."""
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame = frame.reindex(columns=registries.ACCOUNT_VALUES_CSV_HEADER, fill_value="")
+    return [{str(k): str(v) for k, v in record.items()} for record in frame.to_dict("records")]
+
+
+def _scenario_lots(scenario_dir: Path, name: str) -> list[_Lot]:
+    """Every lot of scenario ``name``, overlaid down its load order as the
+    loader overlays them, in the order they first appear."""
+    lots: dict[tuple[str, str], _Lot] = {}
+    for scenario_name in load_order(scenario_dir.parent, name):
+        rows = _read_values_rows(scenario_dir.parent / scenario_name / "account_values.csv")
+        for index, row in enumerate(rows):
+            key = (row["account_name"].strip(), row["lot"].strip() or registries.DEFAULT_LOT)
+            if scenario_name != name:
+                lots[key] = _Lot(row, None, scenario_name)
+            else:
+                prior = lots.get(key)
+                lots[key] = _Lot(row, index, prior.inherited_from if prior else None)
+    return list(lots.values())
+
+
+def _lot_label(lot: _Lot) -> str:
+    row = lot.row
+    parts = [f"{lot.account} ({lot.lot})"]
+    if row["symbol"]:
+        parts.append(row["symbol"])
+    if row["quantity"]:
+        parts.append(f"{row['quantity']} sh")
+    if row["opening_balance"]:
+        parts.append(row["opening_balance"])
+    if lot.deleted:
+        parts.append(f"[deleted: zeroed here, inherited from {lot.inherited_from}]")
+    elif lot.index is None:
+        parts.append(f"[inherited from {lot.inherited_from}]")
+    elif lot.inherited_from:
+        parts.append(f"[overrides {lot.inherited_from}]")
+    return "  ".join(parts)
+
+
+def _select_lot(lots: list[_Lot], account: str | None, lot: str | None) -> _Lot:
+    """The lot ``account`` and ``lot`` name. Without them, or with an account
+    that has several, the lots are listed, and one is picked by its number or
+    by text that narrows the list, asked again until one is left."""
+    candidates = list(range(len(lots)))
+    if account is not None:
+        account = account.strip()
+        candidates = [i for i in candidates if lots[i].account == account]
+        if not candidates:
+            raise click.ClickException(f"account {account!r} has no lots in this scenario")
+        if lot is not None:
+            wanted = lot.strip() or registries.DEFAULT_LOT
+            match = [i for i in candidates if lots[i].lot == wanted]
+            if not match:
+                raise click.ClickException(
+                    f"{account!r} has no lot {wanted!r}; its lots: "
+                    f"{', '.join(lots[i].lot for i in candidates)}"
+                )
+            return lots[match[0]]
+        if len(candidates) == 1:
+            return lots[candidates[0]]
+    if not candidates:
+        raise click.ClickException("this scenario has no lots")
+    labels = [_lot_label(one) for one in lots]
+    while True:
+        for i in candidates:
+            click.echo(f"  {i + 1:>3}  {labels[i]}")
+        text = _prompt_with_completion(
+            "lot (its number, or text to narrow the list)",
+            choices=[str(i + 1) for i in candidates],
+        ).strip()
+        if text.isdigit() and int(text) - 1 in candidates:
+            return lots[int(text) - 1]
+        matches = [i for i in candidates if text.lower() in labels[i].lower()]
+        if len(matches) == 1:
+            return lots[matches[0]]
+        if matches:
+            candidates = matches
+        else:
+            click.echo(f"  no lot matches {text!r}")
+
+
+def _names_lot(row: dict[str, str] | pd.Series, account_field: str, lot_field: str,
+               account: str, lot: str) -> bool:
+    return (str(row.get(account_field, "")).strip() == account
+            and (str(row.get(lot_field, "")).strip() or registries.DEFAULT_LOT) == lot)
+
+
+def _lot_reference_files(scenario_dir: Path) -> list[tuple[Path, tuple[tuple[str, str], ...]]]:
+    paths = [(scenario_dir / name, pairs) for name, pairs in _LOT_REFERENCE_FIELDS]
+    chains_dir = scenario_dir / "chains"
+    if chains_dir.is_dir():
+        paths.extend((path, (("account_name", "lot"),)) for path in sorted(chains_dir.glob("*.csv")))
+    return [(path, pairs) for path, pairs in paths if path.exists() and path.stat().st_size > 0]
+
+
+def _lot_reference_rows(scenario_dir: Path, account: str, lot: str) -> list[str]:
+    """The rows of one scenario folder that name ``account``'s ``lot``, other
+    than the lot's own row, as display lines."""
+    references: list[str] = []
+    values = _read_values_rows(scenario_dir / "account_values.csv")
+    for index, row in enumerate(values):
+        if _names_lot(row, "account_name", "lot", account, lot):
+            continue
+        matched = [f"{a}/{b}" for a, b in _LOT_CHAIN_LOT_FIELDS if _names_lot(row, a, b, account, lot)]
+        if matched:
+            references.append(f"  account_values.csv row {index + 2}: {', '.join(matched)}")
+    for path, pairs in _lot_reference_files(scenario_dir):
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        for index, (_, row) in enumerate(frame.iterrows()):
+            matched = [f"{a}/{b}" for a, b in pairs if _names_lot(row, a, b, account, lot)]
+            if matched:
+                references.append(
+                    f"  {path.relative_to(scenario_dir)} row {index + 2}: {', '.join(matched)}"
+                )
+    return references
+
+
+def _rewrite_lot_references(scenario_dir: Path, account: str, lot: str, new_lot: str | None) -> None:
+    """Point one scenario folder's references to ``account``'s ``lot`` at
+    ``new_lot``, or, with ``None``, delete the rows that move money through
+    it and clear other lots' refill or overflow settings that name it."""
+    values_path = scenario_dir / "account_values.csv"
+    if values_path.exists() and values_path.stat().st_size > 0:
+        values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+        changed = False
+        for account_field, lot_field in _LOT_CHAIN_LOT_FIELDS:
+            if account_field not in values.columns or lot_field not in values.columns:
+                continue
+            hit = pd.Series(
+                [_names_lot(row, account_field, lot_field, account, lot)
+                 and not _names_lot(row, "account_name", "lot", account, lot)
+                 for _, row in values.iterrows()],
+                index=values.index, dtype=bool,
+            )
+            if hit.any():
+                values.loc[hit, [account_field, lot_field] if new_lot is None else [lot_field]] = (
+                    "" if new_lot is None else new_lot
+                )
+                changed = True
+        if changed:
+            values.to_csv(values_path, index=False)
+    for path, pairs in _lot_reference_files(scenario_dir):
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        changed = False
+        keep = pd.Series(True, index=frame.index, dtype=bool)
+        for account_field, lot_field in pairs:
+            if account_field not in frame.columns or lot_field not in frame.columns:
+                continue
+            hit = pd.Series(
+                [_names_lot(row, account_field, lot_field, account, lot) for _, row in frame.iterrows()],
+                index=frame.index, dtype=bool,
+            )
+            if not hit.any():
+                continue
+            changed = True
+            if new_lot is None:
+                keep &= ~hit
+            else:
+                frame.loc[hit, lot_field] = new_lot
+        if changed:
+            frame.loc[keep].to_csv(path, index=False)
+
+
+def _money_cell(text: str) -> str:
+    """A money answer as account_values.csv holds it: dollars and cents, or
+    an ``@name`` reference as typed."""
+    text = text.strip()
+    if not text or text.startswith("@"):
+        return text
+    cents = _parse_amount_cents(text)
+    dollars, rem = divmod(abs(cents), 100)
+    return f"{'-' if cents < 0 else ''}{dollars}.{rem:02d}"
+
+
+# The lot checkers return the answer in a form that compares equal however
+# it was typed, as the guide compares key fields with them.
+def _check_money(text: str) -> int | str:
+    return text.strip() if text.strip().startswith("@") else _parse_amount_cents(text)
+
+
+def _check_day(text: str) -> date:
+    try:
+        return parse_day(text.strip())
+    except ValueError:
+        raise click.ClickException(f"date must be YYYY-MM-DD: {text!r}") from None
+
+
+def _check_quantity(text: str) -> Decimal:
+    try:
+        quantity = Decimal(text.strip().replace(",", ""))
+    except InvalidOperation:
+        raise click.ClickException(f"not a number: {text!r}") from None
+    if quantity < 0:
+        raise click.ClickException(f"quantity may not be negative: {text!r}")
+    return quantity
+
+
+def _check_lot_label(text: str) -> str:
+    if ":" in text:
+        raise click.ClickException(f"a lot label may not contain ':': {text!r}")
+    return text.strip()
+
+
+_LOT_CHECKERS: dict[str, Callable[[str], object]] = {
+    "money": _check_money, "day": _check_day, "number": _check_quantity, "lot": _check_lot_label,
+}
+
+
+def _lot_guide() -> calendar_guide.Guide:
+    return calendar_guide.Guide(
+        ask=lambda text, choices, default: _prompt_with_completion(
+            text, choices=choices, default=default,
+        ),
+        checkers=_LOT_CHECKERS,
+    )
+
+
+def _lot_guide_context(
+    data_dir: Path, scenario: str, lots: list[_Lot], *, editing: _Lot | None = None,
+) -> calendar_guide.GuideContext:
+    """The scenario's accounts, chains, symbols and series, as completions
+    for the lot prompts, and the lots a new or renamed lot may not copy. A
+    deleted (zeroed) lot is free to be added again."""
+    with _intent_db(data_dir, scenario) as (con, _name):
+        accounts = con.execute(
+            "SELECT name, subkind, tax_treatment FROM account "
+            "WHERE kind IN ('asset', 'liability') ORDER BY name"
+        ).fetchall()
+        rate_series = sorted({
+            r[0] for r in con.execute(
+                "SELECT series FROM aux_table WHERE kind = 'rate' "
+                "UNION SELECT series FROM account_model_member"
+            ) if r[0]
+        })
+        return calendar_guide.GuideContext(
+            accounts=[name for name, _subkind, _tax in accounts],
+            lots=_lot_info(con),
+            chains=_interior_chains(con),
+            series={"rate": rate_series},
+            other_rows={lot_guide.LOT.command: [
+                {"account": one.account, "lot": one.lot}
+                for one in lots if one is not editing and not one.deleted
+            ]},
+            subkinds={name: subkind for name, subkind, _tax in accounts},
+            tax_treatments={name: tax for name, _subkind, tax in accounts},
+            securities=[r[0] for r in con.execute("SELECT symbol FROM security ORDER BY symbol")],
+        )
+
+
+def _check_lot_params(
+    context: calendar_guide.GuideContext, params: dict[str, object], *, editing: _Lot | None = None,
+) -> None:
+    """What the guide checks as each answer is typed, for answers given as
+    arguments and options instead. The loader judges the rest when the edit
+    is staged."""
+    account = str(params.get("account", "")).strip()
+    lot = str(params.get("lot", "")).strip()
+    if account not in context.accounts:
+        raise click.ClickException(f"unknown account (or one that holds no lots): {account!r}")
+    if not lot:
+        raise click.ClickException("a lot label is required (e.g. default)")
+    if editing is not None and account != editing.account:
+        raise click.ClickException(
+            "a lot can't move to another account; add it there and delete it here"
+        )
+    taken = context.other_rows.get(lot_guide.LOT.command, ())
+    if {"account": account, "lot": lot} in taken:
+        raise click.ClickException(
+            f"{account!r} already has a lot {lot!r}; change it with 'sim account lot edit'"
+        )
+    for field_ in lot_guide.LOT.fields:
+        value = str(params.get(field_.param, ""))
+        checker = _LOT_CHECKERS.get(field_.type)
+        if value and checker is not None:
+            try:
+                checker(value)
+            except click.ClickException as error:
+                raise click.ClickException(f"{field_.name}: {error.format_message()}") from None
+
+
+def _lot_row(params: dict[str, object], original: dict[str, str] | None, *, investment: bool) -> dict[str, str]:
+    """The account_values.csv row for a lot's answers. An unchanged cell is
+    kept as authored, and an ordinary account's ``default`` lot is written
+    blank unless it was spelled out, as ``account add`` writes it."""
+    lot = str(params["lot"]).strip()
+    spelled = original is not None and bool(original["lot"].strip())
+    row = {
+        "account_name": str(params["account"]).strip(),
+        "lot": "" if lot == registries.DEFAULT_LOT and not investment and not spelled else lot,
+    }
+    for column in lot_guide.VALUE_COLUMNS:
+        value = str(params.get(column, "")).strip()
+        if original is not None and value == original[column].strip():
+            row[column] = original[column]
+        else:
+            row[column] = _money_cell(value) if column in _LOT_MONEY_COLUMNS else value
+    return row
+
+
+def _write_lot(
+    data_dir: Path, scenario_name: str, path: Path, row: dict[str, str] | None,
+    *, replace: _Lot | None = None, rename: tuple[str, str] | None = None,
+    delete_references: tuple[str, str] | None = None,
+) -> None:
+    """Write ``row`` into the scenario's own account_values.csv -- appended,
+    or in place of ``replace``'s row; ``None`` removes that row instead --
+    and rewrite the references ``rename`` (old, new lot) or
+    ``delete_references`` (account, lot) asks for, as one staged edit."""
+    with _scenario_edit(data_dir, scenario_name) as edit:
+        staged = edit.path(path)
+        if replace is not None and replace.index is not None:
+            # Read inside the staged edit: the prompts may have taken a while,
+            # and the index is only good if the file still has the lot there.
+            existing = _read_values_rows(staged)
+            if replace.index >= len(existing) or existing[replace.index] != replace.row:
+                raise click.ClickException(
+                    f"{path} changed while this lot was being edited, so row "
+                    f"{replace.index + 2} is no longer the lot that was chosen. "
+                    "Nothing was written; start again."
+                )
+            if row is None:
+                frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
+                frame.drop(index=replace.index).to_csv(staged, index=False)
+            else:
+                _append_csv_row(staged, registries.ACCOUNT_VALUES_CSV_HEADER, row, replace=replace.index)
+        elif row is not None:
+            _append_csv_row(staged, registries.ACCOUNT_VALUES_CSV_HEADER, row)
+        if rename is not None and row is not None:
+            _rewrite_lot_references(edit.scenario_dir, row["account_name"], *rename)
+        if delete_references is not None:
+            _rewrite_lot_references(edit.scenario_dir, *delete_references, None)
+
+
+def _lot_value_options[F: Callable[..., object]](f: F) -> F:
+    """One option per optional lot field, from ``lot_guide.LOT``, so the
+    guided questions and the options can't drift apart. Each defaults to
+    ``None`` (not given); ``""`` clears a field."""
+    for field_ in reversed(lot_guide.LOT.fields):
+        if field_.option is not None:
+            f = click.option(field_.option, default=None, help=field_.help or field_.label)(f)
+    return f
+
+
+def _is_investment(context: calendar_guide.GuideContext, account: str) -> bool:
+    return context.subkinds.get(account) in INVESTMENT_ASSET_SUBKINDS
+
+
+@account_group_command.group(name="lot")
+def lot_group_command() -> None:
+    """Add, change or delete an account's lots (account_values.csv rows, ADR-005)."""
+
+
+@lot_group_command.command("add")
+@click.argument("account", required=False, shell_complete=_complete_account)
+@click.argument("lot", required=False)
+@_lot_value_options
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.pass_context
+def lot_add(
+    ctx: click.Context, account: str | None, lot: str | None,
+    scenario: str | None, data_dir: Path | None, **values: str | None,
+) -> None:
+    """Add a lot to an account: one row of the scenario's account_values.csv.
+
+    With ACCOUNT and LOT, writes the lot from the options. Without them, asks
+    for what applies to the account a question at a time (a cost basis only
+    for a taxable account, balance management only if wanted), then shows the
+    lot and the equivalent command, and writes it once you confirm.
+
+    A lot a parent scenario has that this one deleted (zeroed) may be added
+    again; it replaces the zeroed one.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "account_values.csv"
+    lots = _scenario_lots(scenario_dir, scenario_name)
+    context = _lot_guide_context(data_dir_p, scenario_name, lots)
+
+    def submit(params: dict[str, object]) -> None:
+        _check_lot_params(context, params)
+        key = (str(params["account"]).strip(), str(params["lot"]).strip())
+        zeroed = next((one for one in lots if one.deleted and (one.account, one.lot) == key), None)
+        row = _lot_row(params, None, investment=_is_investment(context, key[0]))
+        # The scenario resolved above, by name: a defaulted scenario is not
+        # resolved again, in case the default changed during the prompts.
+        _write_lot(data_dir_p, scenario_name, path, row, replace=zeroed)
+        click.echo(f"{'re-added' if zeroed else 'added'} lot {key[1]!r} of {key[0]!r} in {path}")
+
+    answers = {param: value for param, value in values.items() if value is not None}
+    if account is not None and lot is not None:
+        submit({"account": account, "lot": lot, **answers})
+        return
+    _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
+    answers |= {param: value for param, value in (("account", account), ("lot", lot)) if value is not None}
+    guide = _lot_guide()
+    guide.complete(lot_guide.LOT, context, answers)
+    if not guide.review(
+        lot_guide.LOT, context, answers, submit,
+        scenario=scenario, data_dir=str(data_dir) if data_dir is not None else None,
+    ):
+        ctx.exit(1)
+
+
+@lot_group_command.command("edit")
+@click.argument("account", required=False, shell_complete=_complete_account)
+@click.argument("lot", required=False)
+@click.option("--new-lot", default=None,
+              help="Rename the lot; this scenario's references to it follow.")
+@_lot_value_options
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.pass_context
+def lot_edit(
+    ctx: click.Context, account: str | None, lot: str | None, new_lot: str | None,
+    scenario: str | None, data_dir: Path | None, **values: str | None,
+) -> None:
+    """Change one of an account's lots.
+
+    ACCOUNT and LOT pick the lot; without them, or with an account that has
+    several, the lots are listed to choose from. Options set those fields and
+    write at once ("" clears one). With none, the lot's fields are shown: name
+    one to change it, as often as needed, and write when done.
+
+    Renaming the lot (--new-lot, or its lot field) also renames this
+    scenario's references to it. A lot inherited from a parent scenario is
+    changed by writing an override of the whole lot into this scenario;
+    renaming one is refused, since the parent's lot would remain.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "account_values.csv"
+    lots = _scenario_lots(scenario_dir, scenario_name)
+    chosen = _select_lot(lots, account, lot)
+    context = _lot_guide_context(data_dir_p, scenario_name, lots, editing=chosen)
+
+    def submit(params: dict[str, object]) -> None:
+        _check_lot_params(context, params, editing=chosen)
+        new = str(params["lot"]).strip()
+        renamed = new != chosen.lot
+        if renamed and chosen.inherited_from:
+            raise click.ClickException(
+                f"lot {chosen.lot!r} of {chosen.account!r} comes from scenario "
+                f"{chosen.inherited_from!r}; rename it there"
+            )
+        row = _lot_row(params, chosen.row, investment=_is_investment(context, chosen.account))
+        if row == chosen.row and chosen.index is not None:
+            click.echo("no change; nothing was written")
+            return
+        _write_lot(
+            data_dir_p, scenario_name, path, row, replace=chosen,
+            rename=(chosen.lot, new) if renamed else None,
+        )
+        if chosen.index is None:
+            click.echo(
+                f"wrote an override of lot {chosen.lot!r} of {chosen.account!r} "
+                f"(inherited from {chosen.inherited_from!r}) to {path}"
+            )
+        else:
+            click.echo(f"updated lot {new!r} of {chosen.account!r} in {path}")
+
+    answers = lot_guide.answers_of(chosen.row)
+    given = {param: value.strip() for param, value in values.items() if value is not None}
+    if given or new_lot is not None:
+        answers |= given
+        if new_lot is not None:
+            answers["lot"] = new_lot.strip()
+        if any(answers.get(column) for column in registries.CASH_MANAGEMENT_COLUMNS):
+            answers[lot_guide.MANAGE] = "y"
+        submit(calendar_guide.command_params(lot_guide.LOT, answers))
+        return
+    _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
+    click.echo(f"Editing lot: {_lot_label(chosen)}")
+    if chosen.index is None:
+        click.echo(
+            f"  It comes from scenario {chosen.inherited_from!r}: writing puts an override "
+            "of the whole lot in this scenario."
+        )
+    guide = _lot_guide()
+    guide.complete(lot_guide.LOT, context, answers)
+    if not guide.review(lot_guide.LOT, context, answers, submit, show_command=False):
+        ctx.exit(1)
+
+
+@lot_group_command.command("delete")
+@click.argument("account", required=False, shell_complete=_complete_account)
+@click.argument("lot", required=False)
+@click.option("--yes", is_flag=True, help="Don't ask before deleting the rows that reference the lot.")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def lot_delete(
+    account: str | None, lot: str | None, yes: bool, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Delete one of an account's lots.
+
+    A lot only this scenario has is removed, with this scenario's rows that
+    move money through it (rules, calendar rows, year-to-date rows, chain
+    steps); other lots' refill or overflow settings that name it are cleared.
+    Those rows are listed, and you're asked first.
+
+    A lot inherited from a parent scenario can't be removed from here, so it is
+    zeroed instead: an override with no balance, shares or basis and no balance
+    management, which these commands treat as deleted. Rows anywhere in the
+    scenario's lineage that still name it are listed, for checking; they go on
+    naming an empty lot.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "account_values.csv"
+    chosen = _select_lot(_scenario_lots(scenario_dir, scenario_name), account, lot)
+    label = f"lot {chosen.lot!r} of {chosen.account!r}"
+
+    if chosen.inherited_from is None:
+        references = _lot_reference_rows(scenario_dir, chosen.account, chosen.lot)
+        if references:
+            click.echo(f"{label} is referenced by:")
+            click.echo("\n".join(references))
+            if not yes and not click.confirm("delete the lot and these rows?", default=False):
+                click.echo("aborted")
+                return
+        _write_lot(
+            data_dir_p, scenario_name, path, None, replace=chosen,
+            delete_references=(chosen.account, chosen.lot),
+        )
+        click.echo(f"deleted {label} from {path}")
+        return
+
+    if chosen.deleted:
+        click.echo(f"{label} is already deleted (zeroed) in {path}; nothing was written")
+        return
+    zeroed = {
+        **chosen.row,
+        **dict.fromkeys(registries.CASH_MANAGEMENT_COLUMNS, ""),
+        "opening_balance": "0.00",
+    }
+    # Kept set where they were set: the loader wants prior_year_end_balance
+    # on every lot of an account or on none.
+    for column, zero in (("quantity", "0"), ("opening_cost_basis", "0.00"),
+                         ("prior_year_end_balance", "0.00")):
+        if zeroed[column].strip():
+            zeroed[column] = zero
+    _write_lot(data_dir_p, scenario_name, path, zeroed, replace=chosen)
+    click.echo(
+        f"zeroed {label} in {path}: it comes from scenario {chosen.inherited_from!r}, "
+        "so an empty override stands in for deleting it"
+    )
+    references = [
+        f"  {name}: {line.strip()}"
+        for name in load_order(scenario_dir.parent, scenario_name)
+        for line in _lot_reference_rows(scenario_dir.parent / name, chosen.account, chosen.lot)
+    ]
+    if references:
+        click.echo("still named by:")
+        click.echo("\n".join(references))
 
 
 @account_group_command.command("check")
