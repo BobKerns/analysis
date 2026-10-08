@@ -111,9 +111,7 @@ changes to the simulator or its loader:
 .venv/bin/ty check                                # types (ty; src and tests, per pyproject.toml)
 npm run spell                                     # spelling (cspell)
 npm run markdownlint                              # markdown (markdownlint)
-for s in "$ANALYSIS_DATA_DIR"/scenarios/*/; do    # simulator changes: real scenarios still load
-  .venv/bin/analysis sim check "$(basename "$s")"
-done
+.venv/bin/analysis sim check --all                # simulator changes: real scenarios still load
 ```
 
 `cspell` and `markdownlint` are pinned in `package.json` and installed by

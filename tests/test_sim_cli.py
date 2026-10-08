@@ -354,6 +354,44 @@ def test_sim_scenario_create_rejects_bad_input(test_data_dir: Path, monkeypatch)
     assert not (test_data_dir / "scenarios" / "Has Spaces").exists()
 
 
+def test_sim_check_all_checks_every_scenario(test_data_dir: Path) -> None:
+    result = CliRunner().invoke(
+        main, ["sim", "check", "--all", "--data-dir", str(test_data_dir)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Checking base\n" in result.output
+    assert "Checking retire_alice\n" in result.output
+    assert result.output.count("\nok\n") == 2
+    assert "all 2 scenario(s) ok" in result.output
+
+
+def test_sim_check_all_keeps_going_past_a_failure_and_exits_nonzero(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    with retire_alice_csv("scheduled.csv").open("a", encoding="utf-8") as f:
+        f.write(
+            "broken,Income_Nowhere,,Asset_Checking,,monthly,,fixed_amount,,,,,,"
+            "1.00,2026-05-31,,ordinary,,2026-05-31,,200,,,,{},,\n"
+        )
+    result = CliRunner().invoke(
+        main, ["sim", "check", "--all", "--data-dir", str(test_data_dir)]
+    )
+    assert result.exit_code == 1, result.output
+    # base is checked (and passes) even though retire_alice fails
+    assert result.output.count("\nok\n") == 1
+    assert "Income_Nowhere" in result.output
+    assert "1 of 2 scenario(s) failed: retire_alice" in result.output
+
+
+def test_sim_check_rejects_a_scenario_name_with_all(test_data_dir: Path) -> None:
+    result = CliRunner().invoke(
+        main,
+        ["sim", "check", "retire_alice", "--all", "--data-dir", str(test_data_dir)],
+    )
+    assert result.exit_code == 2
+    assert "not both" in result.output
+
+
 def test_sim_add_fixed_appends_calendar_row_and_check_passes(test_data_dir: Path) -> None:
     data = test_data_dir
     runner = CliRunner()

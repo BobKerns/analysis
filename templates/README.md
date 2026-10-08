@@ -81,6 +81,7 @@ For annual items, set `month_of_year` (`1`-`12`) so payments land in the intende
 ```sh
 source ./activate-analysis
 sim check <scenario>              # lints; no run
+sim check --all                   # lints every scenario
 sim load <scenario>               # builds the intent cache
 sim run <scenario>                # produces a run file under state/runs/
 ```
