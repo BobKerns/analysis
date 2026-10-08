@@ -11,7 +11,7 @@ import ipywidgets as widgets
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import pandas as pd
-from IPython.display import display
+from IPython.display import clear_output, display
 
 from analysis.sim.connection import year_end_values
 from analysis.sim.ensemble import (
@@ -22,6 +22,7 @@ from analysis.sim.ensemble import (
     percentiles,
 )
 from analysis.sim.ensemble import summary as ensemble_summary
+from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.notebook_ui.pickers import (
     DollarModePicker,
     LogLinearModePicker,
@@ -165,13 +166,22 @@ def ensemble_widget(*,
     out = widgets.Output()
 
     def _redraw(*_: object) -> None:
-        out.clear_output(wait=True)
-        if not dropdown.value:
-            return
-        batch_dir = latest_ensemble_batch(runs_dir / dropdown.value, mode="monte_carlo")
+        # Everything runs inside `out` so a load error shows as a traceback
+        # there instead of vanishing into the kernel log, and the clear is
+        # issued only once the new outputs are ready: clearing first and then
+        # loading (seconds for a large ensemble on a cold disk cache) left VS
+        # Code showing an empty output on the first switch to a big recipe.
+        with out:
+            if not dropdown.value:
+                clear_output()
+                return
+            _draw(dropdown.value)
+
+    def _draw(recipe: str) -> None:
+        batch_dir = latest_ensemble_batch(runs_dir / recipe, mode="monte_carlo")
         if batch_dir is None:
-            with out:
-                display(StyledMarkdown(f"**No Monte Carlo batch for {dropdown.value}.**"))
+            clear_output(wait=True)
+            display(StyledMarkdown(f"**No Monte Carlo batch for {recipe}.**"))
             return
         statuses = member_run_statuses(batch_dir)
         failed_count = sum(1 for status in statuses.values() if status != "succeeded")
@@ -186,35 +196,38 @@ def ensemble_widget(*,
             net_worth = members_net_worth_by_month(connections, mode=mode)
             monthly_summary = ensemble_summary(net_worth)
             heading, yearly = ensemble_summary_view(monthly_summary, len(connections), failed_count)
-            with out:
-                display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
-                if show_description:
-                    conn = next(iter(connections.values()))
-                    display(description_view(conn, data_dir=resolved_data_dir))
-                _fig, ax = plt.subplots(figsize=(10, 5))
-                # Scale before drawing: matplotlib's set_yscale resets the
-                # major formatter to its own log-scale default, which would
-                # otherwise clobber ensemble_fan_chart's dollar formatting.
-                wants_log = log_linear_picker.value == LogLinearMode.LOG
-                if wants_log and (monthly_summary["min"] <= 0).any():
-                    # Log scale can't represent zero or negative net worth --
-                    # silently switching to linear would clip exactly the
-                    # insolvency tail this chart exists to show, rather than
-                    # just rendering it oddly.
-                    display(StyledMarkdown(
-                        "_Log scale can't show net worth that reaches zero "
-                        "or below; showing linear instead._"
-                    ))
-                    wants_log = False
-                if wants_log:
-                    ax.set_yscale("log")
-                # Quintiles shade the chart only; the year-end table stays the
-                # same columns `sim ensemble summary` prints.
-                ensemble_fan_chart(monthly_summary.join(percentiles(net_worth)), ax=ax)
-                ax.set_title(f"Net worth fan chart ({mode_label}) ({dropdown.value})")
-                plt.xticks(rotation=90)
-                plt.show()
-                display(yearly.style.format({c: "${:,.0f}" for c in yearly.columns}))
+            description = (
+                description_view(next(iter(connections.values())), data_dir=resolved_data_dir)
+                if show_description else None
+            )
+            clear_output(wait=True)
+            display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
+            if description is not None:
+                display(description)
+            _fig, ax = plt.subplots(figsize=(10, 5))
+            # Scale before drawing: matplotlib's set_yscale resets the
+            # major formatter to its own log-scale default, which would
+            # otherwise clobber ensemble_fan_chart's dollar formatting.
+            wants_log = log_linear_picker.value == LogLinearMode.LOG
+            if wants_log and (monthly_summary["min"] <= 0).any():
+                # Log scale can't represent zero or negative net worth --
+                # silently switching to linear would clip exactly the
+                # insolvency tail this chart exists to show, rather than
+                # just rendering it oddly.
+                display(StyledMarkdown(
+                    "_Log scale can't show net worth that reaches zero "
+                    "or below; showing linear instead._"
+                ))
+                wants_log = False
+            if wants_log:
+                ax.set_yscale("log")
+            # Quintiles shade the chart only; the year-end table stays the
+            # same columns `sim ensemble summary` prints.
+            ensemble_fan_chart(monthly_summary.join(percentiles(net_worth)), ax=ax)
+            ax.set_title(f"Net worth fan chart ({mode_label}) ({recipe})")
+            plt.xticks(rotation=90)
+            plt.show()
+            display(yearly.style.format({c: "${:,.0f}" for c in yearly.columns}))
         finally:
             for con in connections.values():
                 con.close()
@@ -222,6 +235,6 @@ def ensemble_widget(*,
     dropdown.observe(_redraw, names="value")
     log_linear_picker.observe(_redraw, names="value")
     dollar_picker.observe(_redraw, names="value")
-    _redraw()
+    when_cell_is_done(_redraw)
     pickers = widgets.HBox([log_linear_picker, dollar_picker]) 
     return widgets.VBox([dropdown, pickers, out])
