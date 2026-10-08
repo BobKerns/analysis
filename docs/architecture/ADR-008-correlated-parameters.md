@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-03
 - **Supersedes:** —
-- **Amended by:** [#39](https://github.com/BobKerns/analysis/issues/39): one-at-a-time sensitivity can perturb a latent factor, moving its family to their conditional medians (§5, §6). [#38](https://github.com/BobKerns/analysis/issues/38): the Monte Carlo report handles correlated rows (§6). [#68](https://github.com/BobKerns/analysis/issues/68): an optional Student-t copula per tree for tail dependence (§1, §4–§7); the achieved-correlation check reads ρ through Kendall's τ (§6). [#80](https://github.com/BobKerns/analysis/issues/80): several factors with no dependents are one warning (§4).
+- **Amended by:** [#39](https://github.com/BobKerns/analysis/issues/39): one-at-a-time sensitivity can perturb a latent factor, moving its family to their conditional medians (§5, §6). [#38](https://github.com/BobKerns/analysis/issues/38): the Monte Carlo report handles correlated rows (§6). [#68](https://github.com/BobKerns/analysis/issues/68): an optional Student-t copula per tree for tail dependence (§1, §4–§7); the achieved-correlation check reads ρ through Kendall's τ (§6). [#80](https://github.com/BobKerns/analysis/issues/80): several factors with no dependents are one warning (§4). [#115](https://github.com/BobKerns/analysis/issues/115): a tree holding a process row (ADR-006 §4a) also computes a score per node for each year of the path (§5, §7).
 - **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios: `vary_*` rows, keyed RNG streams, member 0), [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity analysis, which assumes independent draws), [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.8 (`calendar.csv`), issues [#30](https://github.com/BobKerns/analysis/issues/30) (this design; decisions recorded there) and [#31](https://github.com/BobKerns/analysis/issues/31) (`quantile()` on every family, the median as center).
 
 ## Context
@@ -135,9 +135,10 @@ The loader rejects:
 ### 5. Resolution (`resolve_member`)
 
 1. **Scores first.** Compute `z` for every factor and every row in a tree, in topological order (parents first). A root's `z` is its own noise. Each `ε` is drawn on that name's own keyed stream, `member_rng(seed, member, name)` (ADR-006 §3), as `Φ⁻¹(rng.random())`, so a change to one tree never shifts another's draws. A t-copula tree (§1) then multiplies all its scores by its `S`, with `W = χ²_ν⁻¹(rng.random())` on its own stream, `tail_rng(seed, member, root)`. That stream hashes a string beginning `tail:`, which no `member_rng` key (beginning with the integer seed) can equal, so it never reuses the root's own noise and shifts no existing draw.
-2. **Then the existing passes**, dates first and then amounts. A row in a tree takes its value from `value_at(Φ(z))`, or `value_at(t_ν(z))` in a t-copula tree; ramps expand from that value as before.
-3. **Rows outside every tree draw exactly as today** (`draw()` / `draw_int()`), so existing recipes resolve byte-for-byte as before. So do trees without `ν`. (For every family except a `uniform` date, `draw` already equals `value_at(rng.random())`. Keeping the old call for untouched rows makes that exact for uniform dates too.)
-4. **Member 0** sets every score to 0, so `u = 0.5`, the median, which is `central()` (#31), under either copula. It's unchanged.
+2. **Yearly scores, for a tree holding a process row** (ADR-006 §4a, [#115](https://github.com/BobKerns/analysis/issues/115)). For each year `k` of the longest path in the tree, compute a year-`k` score for every node the same way as step 1, from year-`k` noise drawn on `path_rng(seed, member, name, k)` (a string beginning `path:`, which no other key can equal), and, in a t-copula tree, a year-`k` scale `S` on `tail_rng` keyed `root` and `k`. A process row takes its year-`k` score as its shock `εₖ`; every other node's yearly scores only carry correlation down the tree. A process row in no tree draws its shocks from the same `path_rng` streams, independently. Level scores (step 1) don't change, so a recipe without process rows resolves exactly as before.
+3. **Then the existing passes**, dates first and then amounts. A row in a tree takes its value from `value_at(Φ(z))`, or `value_at(t_ν(z))` in a t-copula tree; ramps expand from that value as before.
+4. **Rows outside every tree draw exactly as today** (`draw()` / `draw_int()`), so existing recipes resolve byte-for-byte as before. So do trees without `ν`. (For every family except a `uniform` date, `draw` already equals `value_at(rng.random())`. Keeping the old call for untouched rows makes that exact for uniform dates too.)
+5. **Member 0** sets every score to 0, yearly scores included, so `u = 0.5`, the median, which is `central()` (#31), under either copula. It's unchanged.
 
 `value_at(u)` is the family's quantile, with dates in whole days as drawn. For a `uniform` date that means each day is equally likely, `low + floor(u · days)`, matching `draw_int`. For other families it's `round(quantile(u))`.
 
@@ -163,6 +164,8 @@ Schema 30:
 - `latent_factor` joins `CALENDAR_EVENT_KINDS`.
 
 Schema 32 (#68): `calendar_event` gains `vary_tail_dependence REAL`.
+
+Schema 33 (#115): `calendar_event` gains `vary_process TEXT`, `vary_persistence REAL` and `vary_innovation_sd INTEGER` (ADR-006 §4a). Yearly scores aren't recorded in `ensemble_draw`; the path they produce is, as the member's generated `set_rate` rows.
 
 ## Consequences
 
