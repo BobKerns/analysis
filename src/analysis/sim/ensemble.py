@@ -244,16 +244,19 @@ def _process_params(row: sqlite3.Row) -> tuple[float, int] | None:
 def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list[date]:
     """A process row's step dates (ADR-006 §4a): its own date, then the same
     month each later year, through the scenario's ``end`` and before the next
-    authored ``set_rate`` for the same ``(aux_kind, series)``, which takes
-    over from there. Called after the date pass, so a varying date there has
+    authored ``set_rate`` for the same ``(aux_kind, series)`` (in the
+    engine's ``date, id`` order), which takes over from there. Called after the date pass, so a varying date there has
     its drawn value, and before any ramp or path expands, so every
     ``set_rate`` row seen is an authored one."""
     aux_kind = _row_aux_kind(row)
     cutoff = next(
         (date.fromisoformat(ev_date) for ev_date, ev_payload in con.execute(
+            # The engine applies same-date rows in id order, so a later row
+            # on the process row's own date takes over from it too.
             "SELECT date, payload_json FROM calendar_event "
-            "WHERE kind = 'set_rate' AND series = ? AND date > ? AND id != ? ORDER BY date",
-            (row["series"], row["date"], row["id"]),
+            "WHERE kind = 'set_rate' AND series = ? AND (date > ? OR (date = ? AND id > ?)) "
+            "ORDER BY date, id",
+            (row["series"], row["date"], row["date"], row["id"]),
         ) if json.loads(ev_payload or "{}").get("aux_kind", "rate") == aux_kind),
         None,
     )

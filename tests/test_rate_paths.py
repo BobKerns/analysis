@@ -242,6 +242,19 @@ def test_a_path_stops_before_the_next_authored_rate_for_its_series(
     ]
 
 
+def test_a_later_row_on_the_same_date_takes_over_at_once(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    tmp_path: Path,
+) -> None:
+    """The engine applies same-date rows in id order, so an authored row after
+    the process row on its own date replaces it, and the path never starts."""
+    _process_rate(append_calendar_row, "stock_path")
+    append_calendar_row(date="2027-02-28", kind="set_rate", series="Asset_Checking",
+                        amount="30000", description="same day, later row")
+    member = _member(load_test_copy().intent_path, tmp_path, 2)
+    assert _generated(member, "stock_path") == []
+
+
 def test_generated_rows_keep_the_rows_payload(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,
