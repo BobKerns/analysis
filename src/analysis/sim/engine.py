@@ -595,7 +595,7 @@ def _ensure_min_balance(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str, refill_ctx: RefillContext,
     account_id: int, debit_amount: int,
-) -> None:
+) -> int | None:
     """Look-ahead refill (ADR-003 §4.7): if debiting ``account_id`` by
     ``debit_amount`` would drop it below its minimum_balance, draw from its
     refill_chain BEFORE the debit posts, enough to reach refill_target (a
@@ -604,15 +604,21 @@ def _ensure_min_balance(
 
     Not an error if the chain can't fully cover it -- the debit proceeds
     regardless and may leave the account negative (see ``_warn_if_negative``).
+
+    Returns the highest transfer_event id from before the draw when a refill
+    was attempted, else None. The refill legs post *before* the debit that
+    triggered them, so the debit's id doesn't exist yet; the caller passes
+    this mark to ``_link_refills`` once the debit is in.
     """
     graph = refill_ctx.graph
     refill_chain = graph.refill_chain_of.get(account_id)
     if refill_chain is None or account_id in refill_ctx.refilling:
-        return
+        return None
     minimum = graph.minimum_of.get(account_id, 0)
     projected = balances.get(account_id, 0) - debit_amount
     if projected >= minimum:
-        return
+        return None
+    mark = con.execute("SELECT COALESCE(MAX(id), 0) FROM transfer_event").fetchone()[0]
     deficit = minimum - projected
     target = graph.refill_target_of.get(account_id)
     amount_policy = graph.refill_amount_of.get(account_id)
@@ -633,6 +639,22 @@ def _ensure_min_balance(
         )
     finally:
         refill_ctx.refilling.discard(account_id)
+    return mark
+
+
+def _link_refills(con, mark: int | None, debit_event_id: int | None) -> None:
+    """Point the refill legs posted since ``mark`` at the debit that set them
+    off (#104), via ``parent_event_id``. Only top-level legs are claimed: a
+    nested refill (a refill source that needed its own refill) was already
+    linked to the refill leg that triggered it, and a basis/gain split's
+    gain leg already points at its basis leg."""
+    if mark is None or debit_event_id is None:
+        return
+    con.execute(
+        "UPDATE transfer_event SET parent_event_id = ? "
+        "WHERE id > ? AND id < ? AND reason_kind = 'refill' AND parent_event_id IS NULL",
+        (debit_event_id, mark, debit_event_id),
+    )
 
 
 def _warn_if_negative(
@@ -667,7 +689,7 @@ def _post_transfer(
     parent_event_id: int | None = None, *, reason_kind: str = "rule",
     tax_year: int | None = None, refill_ctx: RefillContext | None = None,
     requested: int | None = None, remainder: int | None = None,
-    net_effects: bool = True,
+    refill_mark: int | None = None, net_effects: bool = True,
 ) -> int | None:
     """Insert one transfer_event and adjust balances. Liability balances
     store debt magnitude; the sign is inverted when posting against them.
@@ -681,6 +703,10 @@ def _post_transfer(
     fully-satisfied transfer (``requested = amount`` before the liability
     cap below, ``remainder = requested - amount`` after it); chain draws/
     sweeps pass both explicitly, tracked across their whole call tree.
+
+    ``refill_mark`` is a caller's own ``_ensure_min_balance`` result, for a
+    refill drawn on ``from_id`` before this call: those legs are linked to
+    this event along with any this call's own look-ahead draws.
 
     ``net_effects=False`` posts the leg alone, skipping the liability cap, the
     refill look-ahead, the lot-tracking updates and the negative-balance
@@ -700,10 +726,12 @@ def _post_transfer(
         remainder = requested - amount
     track = refill_ctx if net_effects else None
     if track is not None and amount > 0:
-        _ensure_min_balance(
+        mark = _ensure_min_balance(
             con, balances, account_kinds, step_id, month_s, track,
             from_id, amount,
         )
+        if refill_mark is None:
+            refill_mark = mark
     cur = con.execute(
         "INSERT INTO transfer_event("
         "  step_id, date, from_account, to_account, from_lot_id, to_lot_id, "
@@ -722,7 +750,9 @@ def _post_transfer(
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
     if track is not None:
         _warn_if_negative(track, account_kinds, from_id, balances, month_s)
-    return inserted_id(cur)
+    event_id = inserted_id(cur)
+    _link_refills(con, refill_mark, event_id)
+    return event_id
 
 
 def _track_lots(
@@ -1711,7 +1741,7 @@ def _post_withdrawal(
     reason_kind: str = "rule", tax_year: int | None = None,
     refill_ctx: RefillContext | None = None,
     requested: int | None = None, remainder: int | None = None,
-    tax_character: str | None = None,
+    tax_character: str | None = None, refill_mark: int | None = None,
 ) -> None:
     """Post one withdrawal leg out of ``from_id``, splitting it into a
     ``return_of_capital`` + ``ltcg`` pair (v1's account-level running
@@ -1737,7 +1767,7 @@ def _post_withdrawal(
             con, balances, account_kinds, step_id, month_s, from_id, to_id, amount,
             tax_char, reason_id, parent_event_id, reason_kind=reason_kind,
             tax_year=tax_year, refill_ctx=refill_ctx,
-            requested=requested, remainder=remainder,
+            requested=requested, remainder=remainder, refill_mark=refill_mark,
         )
         return
     basis = None if cost_bases is None else cost_bases.get(from_id)
@@ -1752,10 +1782,12 @@ def _post_withdrawal(
         if amount == 0:
             return
     if refill_ctx is not None and amount > 0:
-        _ensure_min_balance(
+        mark = _ensure_min_balance(
             con, balances, account_kinds, step_id, month_s, refill_ctx,
             from_id, amount,
         )
+        if refill_mark is None:
+            refill_mark = mark
         # A refill into the account is a purchase that raised its basis.
         basis = cost_bases[from_id] or 0
     prior_balance = balances.get(from_id, 0)
@@ -1768,6 +1800,7 @@ def _post_withdrawal(
         "return_of_capital", reason_id, parent_event_id, reason_kind=reason_kind,
         tax_year=tax_year, refill_ctx=refill_ctx,
         requested=requested, remainder=remainder, net_effects=False,
+        refill_mark=refill_mark,
     )
     gain_character = (
         "stcg"
@@ -1780,6 +1813,7 @@ def _post_withdrawal(
         gain_character, reason_id, basis_leg_id if basis_leg_id is not None else parent_event_id,
         reason_kind=reason_kind, tax_year=tax_year, refill_ctx=refill_ctx,
         requested=requested, remainder=remainder, net_effects=False,
+        refill_mark=refill_mark if basis_leg_id is None else None,
     )
     cost_bases[from_id] = basis - basis_out
     if refill_ctx is not None:
@@ -1880,8 +1914,9 @@ def _chain_draw(
             amount_needed = min(amount_needed, max(0, balances.get(target_account_id, 0)))
             if amount_needed <= 0:
                 return 0
+        refill_mark = None
         if refill_ctx is not None:
-            _ensure_min_balance(
+            refill_mark = _ensure_min_balance(
                 con, balances, account_kinds, step_id, month_s, refill_ctx,
                 account_id, amount_needed,
             )
@@ -1897,7 +1932,7 @@ def _chain_draw(
             reason_id or account_id,
             parent_event_id=None, reason_kind=reason_kind, tax_year=tax_year,
             refill_ctx=refill_ctx, requested=_progress.requested,
-            remainder=_progress.record(take),
+            remainder=_progress.record(take), refill_mark=refill_mark,
         )
         return take
     total = 0

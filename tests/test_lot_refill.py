@@ -56,6 +56,11 @@ def test_a_lot_is_refilled_from_a_sibling_lot(reserve_lot: None,
             "SELECT from_lot_id, to_lot_id, SUM(amount) FROM transfer_event "
             "WHERE reason_kind = 'refill' GROUP BY from_lot_id, to_lot_id"
         ).fetchall()
+        refill_causes = con.execute(
+            "SELECT DISTINCT d.from_lot_id FROM transfer_event r "
+            "LEFT JOIN transfer_event d ON d.id = r.parent_event_id "
+            "WHERE r.reason_kind = 'refill'"
+        ).fetchall()
         lowest = con.execute(
             "SELECT MIN(balance) FROM balance_by_lot WHERE lot_id = ? AND month > '2026-06'",
             (lots["default"],),
@@ -64,6 +69,7 @@ def test_a_lot_is_refilled_from_a_sibling_lot(reserve_lot: None,
         con.close()
     assert refills and all(r[:2] == (lots["reserve"], lots["default"]) for r in refills)
     assert lowest >= 200_000  # the default lot never drops below its $2,000 minimum
+    assert refill_causes == [(lots["default"],)]  # each refill points at a debit of the lot it refilled
 
 
 def test_cash_management_columns_moved_off_accounts_csv(
