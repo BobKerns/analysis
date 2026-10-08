@@ -413,3 +413,17 @@ def test_a_quantity_must_be_a_finite_count_of_shares(
     assert "quantity must be a number of shares" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
     pd.testing.assert_frame_equal(values(), before)
+
+
+@pytest.mark.parametrize("amount", ["NaN", "Infinity", "-Infinity"])
+def test_an_amount_must_be_finite(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame], amount: str,
+) -> None:
+    before = values()
+
+    result = lot("add", BROKERAGE, "x", "--opening-balance", amount)
+
+    assert result.exit_code != 0
+    assert "invalid amount" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    pd.testing.assert_frame_equal(values(), before)

@@ -1611,6 +1611,9 @@ def _parse_amount_cents(s: str) -> int:
         d = Decimal(raw)
     except InvalidOperation as e:
         raise click.ClickException(f"invalid amount: {s!r}") from e
+    # Decimal parses NaN and Infinity, which no amount can be.
+    if not d.is_finite():
+        raise click.ClickException(f"invalid amount: {s!r}")
     cents = d * 100
     if cents != cents.to_integral_value():
         raise click.ClickException(f"amount has sub-cent precision: {s!r}")
