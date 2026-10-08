@@ -147,13 +147,14 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
     return ax
 
 
-def ensemble_widget(*,
+def ensemble_widget(*_,
                     data_dir: Path | str | None = None,
                     state_dir: Path | None = None,
                     runs_dir: Path | str | None = None,
                     log_linear_mode: LogLinearModePicker | None = None,
                     dollar_mode: DollarModePicker | None = None,
                     show_description: bool = False,
+                    **__,
                     ) -> widgets.VBox:
     """Recipe dropdown + fan chart + year-end summary table for an ensemble
     already generated and run via ``sim run <recipe> --ensemble-size N``."""

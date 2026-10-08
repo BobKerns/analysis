@@ -270,3 +270,10 @@ def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_wort
     log_linear_mode = LogLinearModePicker(log_linear_mode=LogLinearMode.LOG)
     ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
     assert axes[-1].get_yscale() == "linear"
+
+
+def test_ensemble_widget_accepts_extra_arguments(small_ensemble_runs_dir: Path) -> None:
+    """Like every widget `Connections.show()` may be handed, it tolerates
+    positional and keyword arguments it doesn't use."""
+    box = ensemble_widget("ignored", runs_dir=small_ensemble_runs_dir, member=3)
+    assert box.children
