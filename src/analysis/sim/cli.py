@@ -32,7 +32,7 @@ from analysis.expenses.baseline import (
 from analysis.sim import allocation, calendar_guide, prices, registries, sensitivity
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
-    RunConnection, ScenarioConnection, open_run, open_scenario, year_end_values,
+    open_run, open_scenario, year_end_values, Connection,
 )
 from analysis.sim.holdings import (
     account_holdings,
@@ -4054,7 +4054,7 @@ def _holdings_options(fn):
 def _holdings_source(
     scenario: str | None, data_dir: Path | None, month: str | None,
     opening: bool, runfile: Path | None,
-) -> Generator[tuple[RunConnection | ScenarioConnection, str]]:
+) -> Generator[tuple[Connection, str]]:
     """The connection holdings are read from, and a description of it: the run
     (latest, or ``--runfile``) when there is one, else the opening values."""
     data_dir_p = _resolve_data_dir(data_dir)

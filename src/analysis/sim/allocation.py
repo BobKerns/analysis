@@ -16,7 +16,7 @@ from typing import Literal
 import pandas as pd
 
 from analysis.sim import registries
-from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.connection import Connection
 from analysis.frames import named_rows
 from analysis.sim.holdings import lots_frame
 
@@ -35,7 +35,7 @@ _NO_SPLIT = "(none)"
 GroupingOrNone = Literal["account", "owner", "subkind", "tax_treatment", "security", "(none)"]
 
 
-def _weight_sets(source: RunConnection | ScenarioConnection) -> dict[str, list[tuple[str, dict[str, float]]]]:
+def _weight_sets(source: Connection) -> dict[str, list[tuple[str, dict[str, float]]]]:
     """Symbol to its weight sets, oldest first: ``(as_of, {asset_class: weight})``."""
     frame = source.items("security_allocation")
     sets: dict[str, dict[str, dict[str, float]]] = {}
@@ -44,7 +44,7 @@ def _weight_sets(source: RunConnection | ScenarioConnection) -> dict[str, list[t
     return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
 
 
-def _reference_date(source: RunConnection | ScenarioConnection, as_of: str) -> str:
+def _reference_date(source: Connection, as_of: str) -> str:
     if as_of != "opening":
         return as_of
     return str(source.items("scenario")["start"].iloc[0])
@@ -64,7 +64,7 @@ def _default_class(symbol: object, subkind: str) -> str:
     return registries.SUBKIND_ASSET_CLASS.get(subkind, UNCLASSIFIED)
 
 
-def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = None) -> pd.DataFrame:
+def lot_classes(source: Connection, month: str | None = None) -> pd.DataFrame:
     """One row per asset lot and asset class: account, lot, symbol, security (the symbol,
     or "(no symbol)"), owner, subkind,
     tax_treatment, asset_class, weight and balance (dollars, the lot's balance times
@@ -95,7 +95,7 @@ def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = 
     return pd.DataFrame(rows, columns=columns)
 
 
-def asset_classes_present(source: RunConnection | ScenarioConnection,
+def asset_classes_present(source: Connection,
                           month: str | None = None,
                           ) -> list[str]:
     """The asset classes some lot has a balance in, in display order (``unclassified`` last)."""
@@ -104,7 +104,7 @@ def asset_classes_present(source: RunConnection | ScenarioConnection,
 
 
 def portfolio_allocation(
-    source: RunConnection | ScenarioConnection,
+    source: Connection,
     month: str | None = None,
     by: str | None = None,
     exclude: Iterable[str] = (),
