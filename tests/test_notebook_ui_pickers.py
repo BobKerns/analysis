@@ -217,6 +217,43 @@ def test_scenario_picker_selecting_a_member_switches_the_run_connection(
     container.close()
 
 
+def test_scenario_picker_selecting_a_member_redraws_show_outputs_with_its_run(
+    tmp_path: Path,
+) -> None:
+    data = _copy_prototype(tmp_path)
+    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=2)
+
+    widget, container, _dropdown = scenario_picker(data, "recipe_1")
+    _scenario_dropdown, member_dropdown, _ref_out = widget.children
+    drawn: list[str] = []
+    container.show(lambda rc: drawn.append(rc.run_path.stem))
+    assert drawn == ["member_0000"]
+
+    member_dropdown.value = "member_0001"
+
+    assert drawn == ["member_0000", "member_0001"]
+    assert container.run is not None
+    assert container.scenario_ref.run_path == container.run.run_path
+    container.close()
+
+
+def test_scenario_picker_changing_scenario_redraws_show_outputs_once(
+    tmp_path: Path,
+) -> None:
+    data = _copy_prototype(tmp_path)
+    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=2)
+    _load_and_run(data, "retire_alice")
+
+    _widget, container, dropdown = scenario_picker(data, "recipe_1")
+    drawn: list[str] = []
+    container.show(lambda _rc: drawn.append(container.scenario_ref.name))
+
+    dropdown.value = "retire_alice"
+
+    assert drawn == ["recipe_1", "retire_alice"]
+    container.close()
+
+
 def test_scenario_picker_switching_away_from_an_ensemble_hides_the_member_dropdown(
     tmp_path: Path,
 ) -> None:
