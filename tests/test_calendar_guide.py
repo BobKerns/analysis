@@ -42,7 +42,7 @@ def test_guide_writes_a_varying_row_and_shows_the_equivalent_command(
 ) -> None:
     result = calendar_add(answers=[
         "set-rate", "2027-02", "", "Asset_Checking", "4.5", "", "",   # aux kind, description, tags blank
-        "y", "checking_vary", "amount", "uniform", "4", "5", "",      # ramp months blank
+        "y", "checking_vary", "amount", "uniform", "4", "5", "", "",  # ramp, process blank
         "n", "",                                                       # no correlation; write
     ])
 
@@ -60,13 +60,32 @@ def test_guide_writes_a_varying_row_and_shows_the_equivalent_command(
 def test_guide_asks_only_what_the_distribution_uses(calendar_add: Callable[..., Result]) -> None:
     result = calendar_add(answers=[
         "set-rate", "2027-02", "", "Asset_Checking", "4.5", "", "",
-        "y", "checking_vary", "amount", "uniform", "4", "5", "", "n", "",
+        "y", "checking_vary", "amount", "uniform", "4", "5", "", "", "n", "",
     ])
 
     assert result.exit_code == 0, result.output
     assert "low:" in result.output and "high:" in result.output
     for unused in ("median", "spread (sd)", "most likely value", "skew", "tail weight"):
         assert f"{unused} (optional)" not in result.output
+
+
+def test_guide_writes_a_process_row(
+    calendar_add: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+) -> None:
+    """ADR-006 §4a: a set-rate amount can move year by year; the shock is
+    typed in percent, like the rate, and stored in micros."""
+    result = calendar_add(answers=[
+        "set-rate", "2027-02", "", "Asset_Checking", "7", "", "",
+        "y", "stock_path", "amount", "uniform", "5", "9", "",   # ramp months blank
+        "ar1", "0.2", "17",                                      # process, persistence, shock
+        "n", "",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "--vary-process ar1 --vary-persistence 0.2 --vary-innovation-sd 17" in result.output
+    row = calendar_rows().query("name == 'stock_path'").iloc[0]
+    assert (row["vary_process"], row["vary_persistence"], row["vary_innovation_sd"]) == (
+        "ar1", "0.2", "170000")
 
 
 def test_guide_asks_again_after_a_bad_answer(

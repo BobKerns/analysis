@@ -628,6 +628,14 @@ flowchart LR
 The later row's only parent is the earlier row, so it follows the core
 through it, at 0.6 × 0.6 = 0.36.
 
+**A rate that moves every year.** A return, unlike an inflation rate, has
+almost no persistence, and holding one draw for decades hides the
+year-to-year swings that matter while money is being withdrawn. A
+`set-rate` row with `--vary-process ar1` keeps its draw as a level and
+moves around it each year; [A rate that moves every
+year](historical-calibration.md#a-rate-that-moves-every-year) shows how to
+set one from history.
+
 **A high end that can run much higher.** Inflation surprises are lopsided:
 a year far above the usual is likelier than one far below. Give such a
 rate a right skew (`--vary-skew`, as on `fuel_vary` above) or heavier

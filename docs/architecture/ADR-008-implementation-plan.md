@@ -65,6 +65,13 @@ Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a
 6. CLI and guided entry: `--vary-tail-dependence` on every `add`; the guide asks a root factor for it.
 7. Tests (`tests/test_tail_dependence.py`): marginals stay uniform under any `ν`; joint-tail frequency rises as `ν` falls; Kendall τ follows `(2/π)·asin(ρ)` under t; a t tree's scores are its Gaussian scores times one `S` from the root's tail stream, and rows outside it draw as before; member 0 and OAT; loader and CLI rejections.
 
+## Follow-up — yearly process shocks ([#115](https://github.com/BobKerns/analysis/issues/115))
+
+1. `distributions.py`: `path_rng(seed, member, name, year)` and `path_tail_rng(seed, member, root, year)`, streams no level stream can equal.
+2. `ensemble.py`: for each tree holding a process row, each calendar year any of its process rows has a step gets a score per node, through the tree from that year's noise, times that year's `S` in a t tree; a lone process row draws its own. Member 0 and OAT members set them all to 0.
+3. `loader.py`: a tree holding a process row needs `ν` above 2.
+4. Tests (`tests/test_rate_paths.py`): two rows at ρ = 1 under one factor, starting in different years, share each calendar year's shock, scaled in a t tree.
+
 ## Risks
 
 - **Choosing ρ:** authors may over-specify precision. The guide recommends coarse values and explains the product rule for siblings.

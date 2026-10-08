@@ -35,6 +35,8 @@ from analysis.sim.distributions import (
     TruncatedNormal,
     Uniform,
     member_rng,
+    path_rng,
+    path_tail_rng,
     resolve_truncated_normal_bounds,
     tail_rng,
 )
@@ -51,7 +53,7 @@ from analysis.sim.correlation import (
     tree_root,
 )
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
-from analysis.sim.registries import ENSEMBLE_MODES, LATENT_FACTOR_KIND
+from analysis.sim.registries import ENSEMBLE_MODES, LATENT_FACTOR_KIND, PROCESS_SHOCK_CLAMP
 from analysis.sim.types import DollarMode
 
 __all__ = [
@@ -59,8 +61,10 @@ __all__ = [
     "latest_ensemble_batch", "members_net_worth_by_month", "summary",
     "QUINTILES", "percentiles",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
-    "factor_reach",
+    "factor_reach", "process_path",
 ]
+
+_MICROS = 1_000_000
 
 
 class EnsembleError(RuntimeError):
@@ -226,6 +230,128 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
                 f"ADR-006 ramp step {k}/{months} for {row['name']}",
             ),
         )
+
+
+def _process_params(row: sqlite3.Row) -> tuple[float, int] | None:
+    """A process row's ``(phi, innovation SD in micros)`` (ADR-006 §4a), or
+    ``None`` for a held draw. Intent files written before #115 have no
+    process columns at all."""
+    if "vary_process" not in row.keys() or not row["vary_process"]:
+        return None
+    return float(row["vary_persistence"]), int(row["vary_innovation_sd"])
+
+
+def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list[date]:
+    """A process row's step dates (ADR-006 §4a): its own date, then the same
+    month each later year, through the scenario's ``end`` and before the next
+    authored ``set_rate`` for the same ``(aux_kind, series)``, which takes
+    over from there. Called after the date pass, so a varying date there has
+    its drawn value, and before any ramp or path expands, so every
+    ``set_rate`` row seen is an authored one."""
+    aux_kind = _row_aux_kind(row)
+    cutoff = next(
+        (date.fromisoformat(ev_date) for ev_date, ev_payload in con.execute(
+            "SELECT date, payload_json FROM calendar_event "
+            "WHERE kind = 'set_rate' AND series = ? AND date > ? AND id != ? ORDER BY date",
+            (row["series"], row["date"], row["id"]),
+        ) if json.loads(ev_payload or "{}").get("aux_kind", "rate") == aux_kind),
+        None,
+    )
+    base = date.fromisoformat(row["date"])
+    steps = [base]
+    while True:
+        step = _add_months_end(base, 12 * len(steps))
+        if (step.year, step.month) > (end.year, end.month) or (cutoff and step >= cutoff):
+            return steps
+        steps.append(step)
+
+
+def process_path(level_micros: int, persistence: float, innovation_sd_micros: int,
+                 shocks: list[float]) -> list[int]:
+    """An AR(1) path's yearly rates in micros (ADR-006 §4a), one per shock:
+    the log departure ``x`` from ``1 + level`` starts at its stationary
+    spread and carries ``persistence`` of itself into each next year, plus
+    that year's shock. All-zero shocks give a flat path at the level."""
+    level = level_micros / _MICROS
+    sigma = innovation_sd_micros / _MICROS
+    rates: list[int] = []
+    x = 0.0
+    for k, eps in enumerate(shocks):
+        x = (eps * sigma / math.sqrt(1 - persistence ** 2) if k == 0
+             else persistence * x + sigma * eps)
+        # Overflow protection only: realistic inputs never come near it.
+        x = max(-PROCESS_SHOCK_CLAMP, min(PROCESS_SHOCK_CLAMP, x))
+        rates.append(round(((1 + level) * math.exp(x) - 1) * _MICROS))
+    return rates
+
+
+def _apply_process(
+    con: sqlite3.Connection, row: sqlite3.Row, rates: list[int], steps: list[date],
+) -> None:
+    """Write a process row's path (ADR-006 §4a): year 0 on the row itself,
+    each later year as an ordinary ``set_rate`` row carrying the row's series
+    and payload, as a ramp's steps do."""
+    con.execute(
+        "UPDATE calendar_event SET amount = ?, vary_distribution = NULL WHERE id = ?",
+        (rates[0], row["id"]),
+    )
+    payload = json.loads(row["payload_json"] or "{}")
+    payload.setdefault("aux_kind", _row_aux_kind(row))
+    for k in range(1, len(rates)):
+        con.execute(
+            "INSERT INTO calendar_event("
+            "calendar_id, date, kind, series, amount, payload_json, description) "
+            "VALUES (?, ?, 'set_rate', ?, ?, ?, ?)",
+            (
+                row["calendar_id"], steps[k].isoformat(), row["series"], rates[k],
+                json.dumps(payload), f"ADR-006 process year {k} for {row['name']}",
+            ),
+        )
+
+
+def _yearly_shocks(
+    links: dict[str, Link], factors: list[str], node_tails: dict[str, float],
+    process_years: dict[str, list[int]], *, seed: int | None, member_index: int,
+    flat: bool,
+) -> dict[str, dict[int, float]]:
+    """Each process row's shock for each calendar year of its path (ADR-006
+    §4a, ADR-008 §5). A row in a tree takes that year's score, computed
+    through the tree from every node's year noise (``path_rng``) and, in a
+    t-copula tree, scaled by that year's ``S`` (``path_tail_rng``); keying by
+    calendar year makes two paths' shocks in one year correlate wherever each
+    starts. A row in no tree draws its own. ``flat`` (member 0, or an OAT
+    member) sets every shock to 0, so every path sits at its level."""
+    if flat:
+        return {name: dict.fromkeys(years, 0.0) for name, years in process_years.items()}
+    if seed is None:
+        raise EnsembleError("a process path needs the ensemble's seed")
+    members = tree_members(links) | set(factors)
+    shocks: dict[str, dict[int, float]] = {
+        name: {y: standard_normal(path_rng(seed, member_index, name, y)) for y in years}
+        for name, years in process_years.items() if name not in members
+    }
+    roots = {name: tree_root(links, name) for name in members}
+    by_root: dict[str, set[int]] = {}
+    for name, years in process_years.items():
+        if name in members:
+            by_root.setdefault(roots[name], set()).update(years)
+            shocks[name] = {}
+    for root, years in sorted(by_root.items()):
+        nodes = sorted(n for n, r in roots.items() if r == root)
+        tree_links = {n: links[n] for n in nodes if n in links}
+        for year in sorted(years):
+            noise = {n: standard_normal(path_rng(seed, member_index, n, year)) for n in nodes}
+            try:
+                scores = resolve_scores(tree_links, noise)
+            except CorrelationError as e:  # the loader rejects these first
+                raise EnsembleError(str(e)) from e
+            scores.update({n: noise[n] for n in nodes if n not in scores})
+            nu = node_tails.get(root)
+            scale = 1.0 if nu is None else tail_scale(nu, path_tail_rng(seed, member_index, root, year))
+            for name in nodes:
+                if name in process_years and year in process_years[name]:
+                    shocks[name][year] = scores[name] * scale
+    return shocks
 
 
 def _discrete(dist: Distribution, row: sqlite3.Row) -> Uniform | Triangular:
@@ -476,6 +602,22 @@ def resolve_member(
             draws.append((row["name"], "date", drawn.isoformat(), quantile,
                           row["vary_distribution"], scores.get(row["name"])))
 
+        # Process paths (ADR-006 §4a) need the drawn dates (a path stops at the
+        # next set_rate for its series), and every yearly shock before the
+        # amount pass expands anything.
+        end = date.fromisoformat(con.execute('SELECT "end" FROM scenario').fetchone()[0])
+        process_rows = {
+            r["name"]: (params, _process_steps(con, r, end))
+            for r in rows if r["vary_target"] == "amount"
+            and (params := _process_params(r)) is not None
+        }
+        shocks = _yearly_shocks(
+            links, factors, node_tails,
+            {name: [s.year for s in steps] for name, (_, steps) in process_rows.items()},
+            seed=seed, member_index=member_index,
+            flat=overrides is not None or member_index == 0,
+        )
+
         for row in [r for r in rows if r["vary_target"] == "amount"]:
             dist = build_distribution(row, "amount")
             value, quantile = _resolve_value(
@@ -498,6 +640,12 @@ def resolve_member(
                 )
             if row["vary_ramp_months"]:
                 _apply_ramp(con, row, target, int(row["vary_ramp_months"]))
+            elif row["name"] in process_rows:
+                (phi, sd), steps = process_rows[row["name"]]
+                yearly = shocks[row["name"]]
+                _apply_process(con, row, process_path(
+                    target, phi, sd, [yearly[s.year] for s in steps],
+                ), steps)
             else:
                 con.execute(
                     "UPDATE calendar_event SET amount = ?, vary_distribution = NULL "

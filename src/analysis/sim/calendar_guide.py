@@ -243,6 +243,31 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
             ),
             help="Reach the drawn rate gradually over this many months.",
         ))
+        amount_varies = lambda ctx, answers: (  # noqa: E731, ARG005
+            answers.get("_vary") == "y" and answers.get("vary_target") == "amount"
+            and not answers.get("vary_ramp_months")
+        )
+        process_set = lambda ctx, answers: bool(answers.get("vary_process"))  # noqa: E731, ARG005
+        fields += [
+            Field(
+                "vary_process", "year-by-year process", option="--vary-process",
+                required=False, applies=amount_varies, strict=True,
+                choices=lambda ctx, answers: sorted(registries.VARY_PROCESSES),  # noqa: ARG005
+                help="ar1: the rate moves year by year around the drawn level, as a return "
+                     "does. Blank holds the drawn rate, as suits an inflation rate or a yield.",
+            ),
+            Field(
+                "vary_persistence", "persistence (0 to below 1)", type="number",
+                option="--vary-persistence", applies=process_set,
+                help="How much of one year's departure from the level carries into the next; "
+                     "0 makes every year independent.",
+            ),
+            Field(
+                "vary_innovation_sd", "yearly shock (sd)", type="value",
+                option="--vary-innovation-sd", applies=process_set,
+                help="The size of one year's shock, in the rate's own unit.",
+            ),
+        ]
     fields += [
         Field(
             "_correlate", "correlate with another varying row or factor?", type="yesno",

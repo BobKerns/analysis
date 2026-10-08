@@ -1637,6 +1637,7 @@ _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
     "name", "vary_target", "vary_distribution", "vary_low", "vary_high",
     "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
     "vary_correlate_with", "vary_correlation", "vary_tail_dependence",
+    "vary_process", "vary_persistence", "vary_innovation_sd",
 })
 
 
@@ -1979,6 +1980,62 @@ _TAIL_DEPENDENCE_HELP = (
 )
 
 
+def _vary_process_options(f):
+    """``--vary-process`` and its parameters (ADR-006 §4a, #115), for
+    ``set-rate`` only: a year-by-year path around the drawn level."""
+    f = click.option(
+        "--vary-innovation-sd", default=None,
+        help="With --vary-process: one year's shock, in percent like the rate (e.g. 17).",
+    )(f)
+    f = click.option(
+        "--vary-persistence", default=None,
+        help="With --vary-process: how much of one year's departure from the level "
+             "carries into the next, at least 0 and below 1 (0: years independent).",
+    )(f)
+    f = click.option(
+        "--vary-process", type=click.Choice(sorted(registries.VARY_PROCESSES)), default=None,
+        help="Move the rate year by year around the drawn level instead of holding it "
+             "(--vary-target amount only).",
+    )(f)
+    return f
+
+
+def _process_fields(
+    vary_process: str | None, vary_persistence: str | None, vary_innovation_sd: str | None,
+    *, vary_target: str, vary_ramp_months: int | None,
+    amount_parser: Callable[[str], int] | None,
+) -> dict[str, str]:
+    """``vary_process``/``vary_persistence``/``vary_innovation_sd`` cells
+    (ADR-006 §4a), checked as far as the row alone allows; the level's
+    bound and a tree's nu are the validating load's job."""
+    if vary_process is None:
+        if vary_persistence is not None or vary_innovation_sd is not None:
+            raise click.ClickException(
+                "--vary-persistence and --vary-innovation-sd go with --vary-process")
+        return {}
+    if vary_target != "amount" or amount_parser is None:
+        raise click.ClickException("--vary-process needs --vary-target amount")
+    if vary_ramp_months is not None:
+        raise click.ClickException("--vary-process and --vary-ramp-months don't combine")
+    if vary_persistence is None or vary_innovation_sd is None:
+        raise click.ClickException(
+            "--vary-process requires --vary-persistence and --vary-innovation-sd")
+    try:
+        phi = float(vary_persistence)
+    except ValueError:
+        raise click.ClickException(
+            f"--vary-persistence must be a number (got {vary_persistence!r})") from None
+    if not 0.0 <= phi < 1.0:
+        raise click.ClickException(
+            f"--vary-persistence must be at least 0 and below 1 (got {vary_persistence})")
+    sd = amount_parser(vary_innovation_sd)
+    if sd <= 0:
+        raise click.ClickException(
+            f"--vary-innovation-sd must be positive (got {vary_innovation_sd})")
+    return {"vary_process": vary_process, "vary_persistence": vary_persistence,
+            "vary_innovation_sd": str(sd)}
+
+
 def _vary_row_options(f):
     """Shared ``--vary-*`` options for a calendar.csv ``add`` command (ADR-006).
 
@@ -2125,6 +2182,9 @@ def _vary_row_fields(
     vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
     amount_parser: Callable[[str], int] | None,
+    vary_process: str | None = None,
+    vary_persistence: str | None = None,
+    vary_innovation_sd: str | None = None,
 ) -> dict[str, str]:
     """ADR-006: the ``vary_*`` CSV cells for one calendar.csv row, from CLI options.
 
@@ -2140,6 +2200,7 @@ def _vary_row_fields(
             vary_target, vary_low, vary_high, vary_median, vary_sd,
             vary_skew, vary_tailweight, vary_mode, vary_ramp_months is not None,
             vary_correlate_with, vary_correlation, vary_tail_dependence,
+            vary_process, vary_persistence, vary_innovation_sd,
         ]):
             raise click.ClickException("--vary-* options require --vary-distribution")
         return {"name": row_name or ""}
@@ -2223,6 +2284,10 @@ def _vary_row_fields(
         "vary_mode": convert(vary_mode),
         **_correlation_fields(vary_correlate_with, vary_correlation, vary_tail_dependence),
         "vary_ramp_months": str(vary_ramp_months) if vary_ramp_months is not None else "",
+        **_process_fields(
+            vary_process, vary_persistence, vary_innovation_sd, vary_target=vary_target,
+            vary_ramp_months=vary_ramp_months, amount_parser=amount_parser,
+        ),
     }
 
 
@@ -2457,6 +2522,9 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
         "vary_mode": drawn(row["vary_mode"]),
         "vary_skew": row["vary_skew"], "vary_tailweight": row["vary_tailweight"],
         "vary_ramp_months": row["vary_ramp_months"],
+        "vary_process": row["vary_process"],
+        "vary_persistence": row["vary_persistence"],
+        "vary_innovation_sd": amount(row["vary_innovation_sd"]),
         "_correlate": "y" if correlated else "n",
         "vary_correlate_with": row["vary_correlate_with"],
         "vary_correlation": row["vary_correlation"],
@@ -2730,6 +2798,7 @@ def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
 @click.option("--tags", default="",
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
 @_vary_row_options
+@_vary_process_options
 def calendar_add_set_rate(
     date: str | None, series: str | None, rate_percent: str | None, aux_kind: str,
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
@@ -2739,6 +2808,7 @@ def calendar_add_set_rate(
     vary_correlate_with: str | None, vary_correlation: str | None,
     vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
+    vary_process: str | None, vary_persistence: str | None, vary_innovation_sd: str | None,
 ) -> None:
     """Append a set_rate event: SERIES starts earning RATE_PERCENT (e.g. 4.5) from DATE.
 
@@ -2763,6 +2833,8 @@ def calendar_add_set_rate(
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_parser=_percent_to_rate_micros,
+        vary_process=vary_process, vary_persistence=vary_persistence,
+        vary_innovation_sd=vary_innovation_sd,
     )
 
     data_dir_p = _resolve_data_dir(data_dir)

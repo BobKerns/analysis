@@ -129,15 +129,16 @@ in steps of about 3 points; the year-over-year line is the reliable one.
 
 ## What this means for the simulator
 
-A varying rate in an ensemble is drawn once per future and then held
-([Turning history into `vary_*`
+By default a varying rate in an ensemble is drawn once per future and then
+held ([Turning history into `vary_*`
 settings](historical-calibration.md#turning-history-into-vary_-settings)).
 That suits yields and, over long spans, inflation. It doesn't capture a stock
 or bond return's year-to-year swings, which matter when money is being
 withdrawn: selling after a bad year locks in the loss, so the order of good
-and bad years changes the outcome even when their average doesn't.
-[#115](https://github.com/BobKerns/analysis/issues/115) proposes year-by-year
-paths for rates like these.
+and bad years changes the outcome even when their average doesn't. For rates
+like these, a row can instead [move year by
+year](historical-calibration.md#a-rate-that-moves-every-year) around its
+drawn level.
 
 ## Drawing the charts
 

@@ -2015,6 +2015,11 @@ _VARY_BOUND_COLUMNS = ("vary_low", "vary_high", "vary_median", "vary_sd", "vary_
 _VARY_SHAPE_COLUMNS = ("vary_skew", "vary_tailweight")
 """Unitless truncated_normal shape parameters (#31)."""
 
+_VARY_PROCESS_COLUMNS = ("vary_process", "vary_persistence", "vary_innovation_sd")
+"""A set_rate row's year-by-year path (ADR-006 §4a, #115)."""
+
+_MINUS_100_PERCENT_MICROS = -1_000_000
+
 
 def _validate_calendar(
     rows: list[dict[str, str]], leaves: _LeafIndex, chain_names: set[str],
@@ -2064,7 +2069,8 @@ def _validate_calendar_vary(
     `VARY_TARGETS`, an amount target only on a kind with a real amount to
     vary, only the columns its distribution actually reads, a fully
     resolvable and valid-ordered set of bounds, and (only for
-    `vary_target='amount'` on a `set_rate` row) an optional `vary_ramp_months`.
+    `vary_target='amount'` on a `set_rate` row) an optional `vary_ramp_months`
+    or an optional process (§4a).
     """
     where = f"calendar.csv row {i} ({name or '?'})"
     for old, new in registries.RENAMED_CALENDAR_COLUMNS.items():
@@ -2079,7 +2085,8 @@ def _validate_calendar_vary(
     ramp_months = (row.get("vary_ramp_months") or "").strip()
     if not distribution:
         if target or ramp_months or any(
-            row.get(c) for c in (*_VARY_BOUND_COLUMNS, *_VARY_SHAPE_COLUMNS)
+            (row.get(c) or "").strip()
+            for c in (*_VARY_BOUND_COLUMNS, *_VARY_SHAPE_COLUMNS, *_VARY_PROCESS_COLUMNS)
         ):
             issues.append(f"{where}: vary_* columns set without vary_distribution")
         return
@@ -2139,12 +2146,74 @@ def _validate_calendar_vary(
             except ValueError:
                 issues.append(f"{where}: vary_ramp_months must be a positive integer")
 
+    _validate_vary_process(row, target, kind, ramp_months, effective_low, where, issues)
+
+
+def _validate_vary_process(
+    row: dict[str, str], target: str, kind: str, ramp_months: str,
+    effective_low: float | None, where: str, issues: list[str],
+) -> None:
+    """ADR-006 §4a: `vary_process` only on a varying set_rate amount row,
+    with both of its parameters and no ramp; phi in [0, 1); a positive shock
+    size; and a level whose lower bound keeps `1 + L` positive, since the
+    path multiplies it."""
+    process = (row.get("vary_process") or "").strip()
+    raw_phi = (row.get("vary_persistence") or "").strip()
+    raw_sd = (row.get("vary_innovation_sd") or "").strip()
+    if not process:
+        if raw_phi or raw_sd:
+            issues.append(
+                f"{where}: vary_persistence/vary_innovation_sd are only read with vary_process"
+            )
+        return
+    if process not in registries.VARY_PROCESSES:
+        issues.append(
+            f"{where}: unknown vary_process '{process}' "
+            f"(one of {sorted(registries.VARY_PROCESSES)}, or blank for one held draw)"
+        )
+        return
+    if not (target == "amount" and kind == "set_rate"):
+        issues.append(
+            f"{where}: vary_process is only valid with vary_target='amount' on a "
+            "kind='set_rate' row"
+        )
+        return
+    if ramp_months:
+        issues.append(
+            f"{where}: vary_process and vary_ramp_months don't combine on one row; a ramp "
+            "row followed by a later process row for the same series expresses both"
+        )
+    if not raw_phi or not raw_sd:
+        issues.append(f"{where}: vary_process requires vary_persistence and vary_innovation_sd")
+        return
+    try:
+        phi = float(raw_phi)
+    except ValueError:
+        issues.append(f"{where}: vary_persistence '{raw_phi}' is not a number")
+    else:
+        if not 0.0 <= phi < 1.0:  # also rejects NaN
+            issues.append(f"{where}: vary_persistence must be at least 0 and below 1 (got {raw_phi})")
+    try:
+        sd = int(raw_sd)
+    except ValueError:
+        issues.append(f"{where}: vary_innovation_sd '{raw_sd}' is not a whole number of micros")
+    else:
+        if sd <= 0:
+            issues.append(f"{where}: vary_innovation_sd must be positive (got {raw_sd})")
+    if effective_low is not None and effective_low <= _MINUS_100_PERCENT_MICROS:
+        issues.append(
+            f"{where}: a process row's level must stay above -100% "
+            f"(its lower bound, given or inferred, is {effective_low:g} micros), "
+            "since its path multiplies 1 + the level"
+        )
+
 
 _FACTOR_FORBIDDEN_COLUMNS = (
     "scheduled_name", "account_1", "lot_1", "account_2", "lot_2", "series", "amount",
     "param_date", "tax_character", "params_json", "tags",
     "vary_target", "vary_distribution", "vary_low", "vary_high",
     "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
+    *_VARY_PROCESS_COLUMNS,
 )
 """Columns a ``latent_factor`` row must leave blank: it has no date, amount
 or series meaning, and its value is a standard normal score, not a draw from
@@ -2165,6 +2234,8 @@ def _validate_calendar_correlation(
     nodes: dict[str, int] = {}
     parents: dict[str, str] = {}
     tails: dict[str, int] = {}
+    tail_nu: dict[str, float] = {}
+    processes: dict[str, int] = {}
     for i, row in enumerate(rows, start=2):
         kind = row.get("kind", "")
         name = (row.get("name") or "").strip()
@@ -2183,6 +2254,8 @@ def _validate_calendar_correlation(
                 )
         if (is_factor or varying) and name:
             nodes[name] = i
+            if varying and (row.get("vary_process") or "").strip():
+                processes[name] = i
         raw_nu = (row.get("vary_tail_dependence") or "").strip()
         if raw_nu:
             if not (is_factor or varying):
@@ -2204,6 +2277,7 @@ def _validate_calendar_correlation(
                         )
                     elif name:
                         tails[name] = i
+                        tail_nu[name] = nu
         parent = (row.get("vary_correlate_with") or "").strip()
         raw_rho = (row.get("vary_correlation") or "").strip()
         if not parent and not raw_rho:
@@ -2267,6 +2341,19 @@ def _validate_calendar_correlation(
             warnings.append(
                 f"calendar.csv row {i} ({name}): vary_tail_dependence on a row nothing correlates "
                 "with affects nothing yet (it acts only on the rows of the tree below it)"
+            )
+    for name, i in processes.items():
+        root, seen = name, {name}
+        while root in parents and parents[root] not in seen:
+            root = parents[root]
+            seen.add(root)
+        nu = tail_nu.get(root)
+        if nu is not None and nu <= registries.MIN_PROCESS_TAIL_DEPENDENCE:
+            issues.append(
+                f"calendar.csv row {i} ({name}): a process row's tree needs vary_tail_dependence "
+                f"above {registries.MIN_PROCESS_TAIL_DEPENDENCE:g} ('{root}' sets {nu:g}): its "
+                "yearly shocks are t with that many degrees of freedom, whose spread is "
+                "infinite at 2 or below"
             )
     unused = [
         (name, i) for name, i in nodes.items()
@@ -2927,8 +3014,9 @@ def _write_intent(
             "param_date, tax_character, payload_json, description, "
             "vary_target, vary_distribution, vary_low, vary_high, vary_median, "
             "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months, "
-            "vary_correlate_with, vary_correlation, vary_tail_dependence) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_correlate_with, vary_correlation, vary_tail_dependence, "
+            "vary_process, vary_persistence, vary_innovation_sd) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -2953,6 +3041,9 @@ def _write_intent(
                 ce.get("vary_correlate_with") or None,
                 _opt_float(ce.get("vary_correlation")),
                 _opt_float(ce.get("vary_tail_dependence")),
+                ce.get("vary_process") or None,
+                _opt_float(ce.get("vary_persistence")),
+                _opt_int(ce.get("vary_innovation_sd")),
             ),
         )
         _insert_tags(con, inserted_id(cur), ce.get("tags", ""),

@@ -3,7 +3,8 @@ an ensemble's varying rates (docs/guides/historical-calibration.md).
 
 For each series and each period, ``analysis historical`` reports the statistics a varying
 `set-rate` row needs: the compound (geometric) mean rate, median, SD, range,
-year-to-year persistence, and the correlation with a reference series, both
+year-to-year persistence and the yearly shock a ``vary_process`` row needs,
+and the correlation with a reference series, both
 Pearson and the copula rho implied by Kendall's tau. ``--window N`` summarizes
 rolling N-year compound rates instead of single years, which is the spread of
 a rate held for N years. ``--runs-above PCT`` lists the stretches of
@@ -611,6 +612,7 @@ class Summary:
     low: float
     high: float
     persistence: float
+    shock_sd: float
     rho_tau: float
     pearson: float
     gap: float
@@ -628,12 +630,16 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
     rolling ``window``-year compound rates instead of single years, while the
     compound rate and gap still cover every year. Persistence is left blank
     then: overlapping windows share most of their years, so consecutive ones
-    are nearly equal by construction. Correlations and the gap use only the
-    years both series have."""
+    are nearly equal by construction. So is the shock SD: the SD of one
+    year's shock to ``log(1 + rate)`` around its persistent part, what a
+    ``vary_process`` row's ``vary_innovation_sd`` means (ADR-006 §4a),
+    ``sd(log(1 + rate)) * sqrt(1 - persistence**2)``, with a negative
+    persistence counted as 0, as a process row can't take one. Correlations
+    and the gap use only the years both series have."""
     values = rolling_compound(annual, window) if window > 1 else annual
     n = len(values)
     sd = float(values.std(ddof=1)) if n > 1 else math.nan
-    persistence = math.nan
+    persistence = shock_sd = math.nan
     if window == 1:
         # Pair each year with the calendar year before it, so a gap in the
         # data isn't counted as one year's persistence.
@@ -641,6 +647,8 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
         pairs = pd.concat([values, prior], axis=1, join="inner").dropna()
         if len(pairs) >= MIN_YEARS_FOR_CORRELATION:
             persistence = float(pairs.iloc[:, 0].corr(pairs.iloc[:, 1]))
+            log_sd = float(np.log1p(values / 100).std(ddof=1)) * 100
+            shock_sd = log_sd * math.sqrt(1 - max(persistence, 0.0) ** 2)
     rho_tau = pearson = gap = math.nan
     if reference is not None:
         ref_values = rolling_compound(reference, window) if window > 1 else reference
@@ -659,7 +667,7 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
     return Summary(label, years, n, compound_rate(annual),
                    float(values.median()) if n else math.nan, sd,
                    float(values.min()) if n else math.nan, float(values.max()) if n else math.nan,
-                   persistence, rho_tau, pearson, gap)
+                   persistence, shock_sd, rho_tau, pearson, gap)
 
 
 def runs_above(rates: pd.Series, threshold: float) -> list[tuple[int, int, float]]:
@@ -691,12 +699,13 @@ def _fmt(x: float, digits: int = 1) -> str:
 
 
 SUMMARY_COLUMNS = ["Series", "Years", "N", "Compound %", "Median %", "SD", "Min %", "Max %",
-                   "Persistence", "ρ (from τ)", "Pearson", "Gap vs ref"]
+                   "Persistence", "Shock SD", "ρ (from τ)", "Pearson", "Gap vs ref"]
 
 
 def summary_cells(s: Summary) -> list[str]:
     return [s.label, s.years, str(s.n), _fmt(s.compound), _fmt(s.median), _fmt(s.sd), _fmt(s.low),
-            _fmt(s.high), _fmt(s.persistence, 2), _fmt(s.rho_tau, 2), _fmt(s.pearson, 2), _fmt(s.gap, 2)]
+            _fmt(s.high), _fmt(s.persistence, 2), _fmt(s.shock_sd), _fmt(s.rho_tau, 2),
+            _fmt(s.pearson, 2), _fmt(s.gap, 2)]
 
 
 def _md_cell(text: str) -> str:

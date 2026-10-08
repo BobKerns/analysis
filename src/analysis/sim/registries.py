@@ -91,6 +91,20 @@ CALENDAR_EVENT_KINDS: set[str] = {
 # ensemble's correlated draws read it.
 LATENT_FACTOR_KIND = "latent_factor"
 
+# ADR-006 §4a (#115): the year-by-year processes a varying set_rate row may
+# carry around its drawn level. Blank is the held draw.
+VARY_PROCESSES: set[str] = {"ar1"}
+
+PROCESS_SHOCK_CLAMP = 5.0
+"""A process path's log departure from its level is clamped to this, either
+side (ADR-006 §4a): overflow protection for a mistyped shock size, never
+reached by realistic inputs (a growth factor between 0.007 and 148)."""
+
+MIN_PROCESS_TAIL_DEPENDENCE = 2.0
+"""A t-copula tree holding a process row needs nu above this (ADR-006 §4a):
+its yearly shocks are t with nu degrees of freedom, whose SD is finite only
+for nu > 2."""
+
 MIN_TAIL_DEPENDENCE = 1.0
 """The smallest ``vary_tail_dependence`` (nu) accepted (#68). nu = 1 is the
 Cauchy copula, already far more tail dependence than any data supports;
@@ -296,6 +310,10 @@ CALENDAR_HEADER: tuple[str, ...] = (
     # shape a truncated_normal; vary_mode is a triangular's peak (#31).
     "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_median",
     "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
+    # ADR-006 §4a (#115): a set_rate row's year-by-year path around its drawn
+    # level -- the process (`ar1`), its persistence phi, and the yearly shock
+    # size in micros.
+    "vary_process", "vary_persistence", "vary_innovation_sd",
     # ADR-008: this row's (or latent factor's) parent in a correlation tree,
     # and the correlation rho between their normal scores; on a tree's root,
     # the Student-t copula's degrees of freedom for the whole tree (#68).

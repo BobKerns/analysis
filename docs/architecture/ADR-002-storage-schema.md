@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 32) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 33) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -310,7 +310,14 @@ CREATE TABLE calendar_event (
     vary_correlation    REAL,
     -- #68: on a correlation tree's root only, the Student-t copula's degrees
     -- of freedom nu for the whole tree; NULL is the Gaussian copula.
-    vary_tail_dependence REAL
+    vary_tail_dependence REAL,
+    -- ADR-006 §4a (#115): on a varying set_rate amount row, a year-by-year
+    -- path around the drawn level: vary_process ('ar1'), its persistence phi
+    -- in [0, 1), and the yearly shock size in micros. Expanded into yearly
+    -- set_rate rows by the vary step, as a ramp is.
+    vary_process        TEXT,
+    vary_persistence    REAL,
+    vary_innovation_sd  INTEGER
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
@@ -834,3 +841,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#59](https://github.com/BobKerns/analysis/issues/59): `scenario_tree_id` covers mix-in scenarios' folders too, and `scenario` records `parents_json` and `load_order_json` in place of the never-populated `parent_id` (schema 31).
 - [#68](https://github.com/BobKerns/analysis/issues/68): `calendar_event.vary_tail_dependence` (schema 32).
 - [#104](https://github.com/BobKerns/analysis/issues/104): a refill leg's `transfer_event.parent_event_id` points at the debit that triggered it.
+- [#115](https://github.com/BobKerns/analysis/issues/115): `calendar_event.vary_process`, `vary_persistence` and `vary_innovation_sd` (schema 33).
