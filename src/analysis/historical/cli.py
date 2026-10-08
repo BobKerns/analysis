@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from analysis.historical.calibration import DEFAULT_CACHE, DataError, default_contact, run
+from analysis.historical.calibration import DEFAULT_CACHE, DataError, Fetcher, default_contact, run
 
 
 @click.command(name="historical", epilog=(
@@ -49,3 +49,24 @@ def historical_command(series: tuple[str, ...], reference: str | None, periods: 
             runs_above_pct=runs_above, fmt=fmt, cache=cache, refresh=refresh, contact=contact)
     except DataError as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@click.command(name="historical-charts")
+@click.argument("out_dir", type=click.Path(file_okay=False, path_type=Path),
+                default="docs/guides/century-of-rates")
+@click.option("--cache", type=click.Path(file_okay=False, path_type=Path), default=DEFAULT_CACHE,
+              show_default=True, help="Download cache; the repository's committed copies by default.")
+def historical_charts_command(out_dir: Path, cache: Path) -> None:
+    """Draw the charts for docs/guides/century-of-rates.md into OUT_DIR.
+
+    They're drawn from the committed historical data, so nothing is
+    downloaded unless a series is missing from --cache.
+    """
+    from analysis.historical.charts import load_history, write_charts
+
+    try:
+        history = load_history(Fetcher(cache, default_contact()))
+    except DataError as exc:
+        raise click.ClickException(str(exc)) from exc
+    for path in write_charts(history, out_dir):
+        click.echo(f"wrote {path}")

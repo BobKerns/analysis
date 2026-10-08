@@ -649,6 +649,10 @@ already in percent.
 
 ## Running `analysis historical`
 
+`analysis historical-charts` draws the charts in [A century of
+rates](century-of-rates.md), which shows what persistence looks like across
+the main series.
+
 ```sh
 uv run analysis historical [--reference SERIES] [--period NAME=FIRST-LAST ...] \
   [--window N] [--basis dec|average] [--runs-above PCT] [--format markdown|csv] \
