@@ -1051,6 +1051,15 @@ def _describe(dist: Distribution, kind: str, target: str) -> dict[str, str]:
     }
 
 
+def _describe_process(row: sqlite3.Row) -> str:
+    """A process row's path (ADR-006 §4a), e.g. ``ar1, persistence 0.5,
+    shock 2.00%``; blank for a held draw, or a file before schema 33."""
+    if "vary_process" not in row.keys() or not row["vary_process"]:
+        return ""
+    shock = _spread(row["kind"], "amount", row["vary_innovation_sd"])
+    return f"{row['vary_process']}, persistence {row['vary_persistence']:g}, shock {shock}"
+
+
 def parameters(batch_dir: Path) -> pd.DataFrame:
     """The batch's varying rows (ADR-007 §9), one per row: what each acts on
     (``kind``, ``affects``), which column varies (``target``), its
@@ -1058,7 +1067,8 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
     the median), its ``shape`` (a ``truncated_normal``'s sd and any skew or
     tail weight; a ``triangular``'s mode), the implied ``moments`` (mean, sd,
     skewness, excess kurtosis -- what the shape parameters mean in
-    practice, #31), ``ramp_months``, the author's ``description``, and its
+    practice, #31), ``ramp_months``, its year-by-year ``process`` (ADR-006
+    §4a: persistence and yearly shock), the author's ``description``, and its
     correlation: ``correlate_with``, ``rho``, and on a t-copula tree's root
     its ``nu`` (ADR-008). A sensitivity batch adds the resolved value at
     each perturbed quantile (``value@q``); a Monte Carlo batch adds the range
@@ -1092,6 +1102,7 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
                 "name": row["name"], "kind": kind, "affects": _affects(row), "target": target,
                 "distribution": row["distribution"] or "", "range": "", "center": "",
                 "shape": "", "moments": "", "ramp_months": row["vary_ramp_months"] or "",
+                "process": _describe_process(row),
                 "description": row["description"] or "",
                 "correlate_with": row["vary_correlate_with"] or "",
                 "rho": "" if row["vary_correlation"] is None else f"{row['vary_correlation']:+g}",

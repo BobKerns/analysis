@@ -56,6 +56,15 @@ Done. Exit: `sim run <recipe>` is the whole user-facing entry point for generati
 
 Done. Exit: mean/median/SD/range are one command or one notebook cell away for any ensemble that's been run.
 
+## Follow-up — year-by-year process paths ([#115](https://github.com/BobKerns/analysis/issues/115))
+
+1. `schema.py`: `calendar_event.vary_process TEXT`, `vary_persistence REAL`, `vary_innovation_sd INTEGER`; `SCHEMA_VERSION` 32 → 33. ADR-002 DDL and ADR-003 §4.8 to match; the columns in the calendar header; `registries.VARY_PROCESSES = {"ar1"}`.
+2. `loader.py`: the §2 checks on a process row, including a level whose lower bound stays above −100%.
+3. `ensemble.py`: after the date pass, each process row's step dates (yearly, to the scenario's end or the next authored `set_rate` for its series); `process_path` turns its level and that year's shocks into yearly rates in growth-factor form; the row takes year 0 and inserts the rest as ordinary `set_rate` rows carrying its payload. `ensemble_draw` records the level.
+4. CLI and guided entry: `--vary-process`, `--vary-persistence`, `--vary-innovation-sd` (in percent) on `set-rate`; `calendar edit` keeps them. The parameters table gains a `process` column.
+5. `analysis historical`: a `Shock SD` column beside Persistence; the calibration guide says how to set a process row from them.
+6. Tests (`tests/test_rate_paths.py`): the path's flat base case, stationary spread, persistence, median compounding to the level and overflow guard; the loader and CLI rejections; step dates and cutoffs; shocks from the keyed streams; the level draw unchanged by adding a process; an end-to-end ensemble.
+
 ## Risks
 
 - **Reject-sampling a `truncated_normal` with implausible bounds** could be slow or exhaust its attempt cap. Mitigated by Phase 1's cap-then-error; worth a `sim check`-time sanity warning if `clip_low`/`clip_high` are within, say, 0.5 SD of `mean`.

@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import click
+import numpy as np
 import pandas as pd
 import pytest
 import truststore
@@ -447,6 +448,25 @@ def test_persistence_pairs_calendar_years_across_a_gap(hc):
     # Alternating years have persistence -1; a gap must not pair 2010 with 2012.
     rates = pd.Series({y: (1.0 if y % 2 else 3.0) for y in [*range(2001, 2011), *range(2012, 2022)]})
     assert hc.summarize("x", rates, None).persistence == pytest.approx(-1.0)
+
+
+def test_shock_sd_is_the_log_spread_net_of_persistence(hc):
+    """ADR-006 §4a: what a process row's vary_innovation_sd means, the SD of
+    log(1 + rate) times sqrt(1 - persistence**2)."""
+    rates = pd.Series({2000 + i: r for i, r in enumerate(
+        [2.0, 3.5, 5.0, 4.0, 2.5, 1.0, 2.0, 4.5, 6.0, 5.5, 3.0, 1.5])})
+    s = hc.summarize("x", rates, None)
+    log_sd = float(np.log1p(rates / 100).std(ddof=1)) * 100
+    assert 0 < s.persistence < 1
+    assert s.shock_sd == pytest.approx(log_sd * math.sqrt(1 - s.persistence ** 2))
+    assert math.isnan(hc.summarize("x", rates, None, window=2).shock_sd)
+
+
+def test_shock_sd_counts_a_negative_persistence_as_zero(hc):
+    rates = pd.Series({y: (1.0 if y % 2 else 3.0) for y in range(2001, 2021)})
+    s = hc.summarize("x", rates, None)
+    assert s.persistence == pytest.approx(-1.0)
+    assert s.shock_sd == pytest.approx(float(np.log1p(rates / 100).std(ddof=1)) * 100)
 
 
 def test_summarize_keeps_compound_rate_when_window_exceeds_the_period(hc):

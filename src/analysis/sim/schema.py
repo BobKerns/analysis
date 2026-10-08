@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -200,7 +200,14 @@ CREATE TABLE calendar_event (
     vary_correlation    REAL,
     -- #68: on a correlation tree's root only, the Student-t copula's degrees
     -- of freedom nu for the whole tree; NULL is the Gaussian copula.
-    vary_tail_dependence REAL
+    vary_tail_dependence REAL,
+    -- ADR-006 §4a (#115): on a varying set_rate amount row, a year-by-year
+    -- path around the drawn level: vary_process ('ar1'), its persistence phi
+    -- in [0, 1), and the yearly shock size in micros. Expanded into yearly
+    -- set_rate rows by the vary step, as a ramp is.
+    vary_process        TEXT,
+    vary_persistence    REAL,
+    vary_innovation_sd  INTEGER
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);

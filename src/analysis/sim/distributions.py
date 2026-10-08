@@ -16,7 +16,7 @@ from statistics import NormalDist
 
 __all__ = [
     "DistributionError", "Uniform", "TruncatedNormal", "Triangular", "Distribution",
-    "Moments", "moments", "member_rng", "tail_rng",
+    "Moments", "moments", "member_rng", "tail_rng", "path_rng", "path_tail_rng",
     "DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD", "resolve_truncated_normal_bounds",
     "parse_quantiles",
 ]
@@ -547,4 +547,22 @@ def tail_rng(seed: int, member_index: int, root: str) -> random.Random:
     hashes a different string: one starting ``tail:``, which no
     ``member_rng`` key can equal, since those start with the integer seed."""
     digest = hashlib.sha256(f"tail:{seed}:{member_index}:{root}".encode()).digest()
+    return random.Random(int.from_bytes(digest, "big"))
+
+
+def path_rng(seed: int, member_index: int, name: str, year: int) -> random.Random:
+    """The stream for one tree node's (or lone process row's) noise in
+    calendar year ``year`` of a process path (ADR-006 §4a, ADR-008 §5). The
+    ``path:`` prefix keeps it apart from every level stream, and the year
+    comes before the name so no name, colons and all, can alias another
+    year's key."""
+    digest = hashlib.sha256(f"path:{seed}:{member_index}:{year}:{name}".encode()).digest()
+    return random.Random(int.from_bytes(digest, "big"))
+
+
+def path_tail_rng(seed: int, member_index: int, root: str, year: int) -> random.Random:
+    """The stream for a t-copula tree's turbulence scale in calendar year
+    ``year`` of its process paths (ADR-008 §5): like ``path_rng``, apart
+    from the tree's per-member scale (``tail_rng``) and every noise stream."""
+    digest = hashlib.sha256(f"path-tail:{seed}:{member_index}:{year}:{root}".encode()).digest()
     return random.Random(int.from_bytes(digest, "big"))
