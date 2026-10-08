@@ -74,16 +74,20 @@ def test_zero_shocks_give_a_flat_path_at_the_level() -> None:
     assert process_path(70_000, 0.5, 170_000, [0.0] * 5) == [70_000] * 5
 
 
+def _yearly_factor(rate_micros: int) -> float:
+    """A year's growth at a rate, as the engine applies it: r/12 a month."""
+    return (1 + rate_micros / 12e6) ** 12
+
+
 def test_path_compounds_to_the_level_in_the_median() -> None:
-    """Growth-factor form: the shocks' sum has median 0, so the compound rate
-    over the path has median L, not L minus half the variance."""
+    """Growth-factor form: the shocks' sum has median 0, so the path's
+    compound growth has median a held row's, not less by half the variance."""
     rng = random.Random(1)
     compounds = []
     for _ in range(4000):
         rates = process_path(70_000, 0.3, 170_000, [standard_normal(rng) for _ in range(20)])
-        growth = math.prod(1 + r / 1e6 for r in rates)
-        compounds.append(growth ** (1 / 20) - 1)
-    assert statistics.median(compounds) == pytest.approx(0.07, abs=0.004)
+        compounds.append(math.prod(_yearly_factor(r) for r in rates) ** (1 / 20))
+    assert statistics.median(compounds) == pytest.approx(_yearly_factor(70_000), abs=0.004)
 
 
 def test_path_has_the_stationary_spread_from_year_zero() -> None:
@@ -95,7 +99,7 @@ def test_path_has_the_stationary_spread_from_year_zero() -> None:
              for _ in range(6000)]
     expected = sigma / math.sqrt(1 - phi ** 2)
     for k in (0, 10):
-        logs = [math.log1p(p[k] / 1e6) for p in paths]
+        logs = [math.log(_yearly_factor(p[k])) for p in paths]
         assert statistics.stdev(logs) == pytest.approx(expected, rel=0.05)
 
 
@@ -104,16 +108,22 @@ def test_persistence_carries_into_the_next_year() -> None:
     pairs = []
     for _ in range(6000):
         p = process_path(0, 0.6, 50_000, [standard_normal(rng) for _ in range(2)])
-        pairs.append((math.log1p(p[0] / 1e6), math.log1p(p[1] / 1e6)))
+        pairs.append((math.log(_yearly_factor(p[0])), math.log(_yearly_factor(p[1]))))
     a, b = zip(*pairs, strict=True)
     assert statistics.correlation(a, b) == pytest.approx(0.6, abs=0.04)
 
 
 def test_an_absurd_shock_is_clamped_not_an_overflow() -> None:
     rates = process_path(70_000, 0.0, 50_000_000, [100.0, -100.0])
-    assert rates[0] == round((1.07 * math.exp(5) - 1) * 1e6)
-    assert rates[1] == round((1.07 * math.exp(-5) - 1) * 1e6)
-    assert rates[1] > -1_000_000
+    assert _yearly_factor(rates[0]) == pytest.approx(_yearly_factor(70_000) * math.exp(5), rel=1e-5)
+    assert _yearly_factor(rates[1]) == pytest.approx(_yearly_factor(70_000) * math.exp(-5), rel=1e-5)
+
+
+def test_every_month_grows_by_a_positive_factor_at_the_lowest_level() -> None:
+    """A level just above -100% with the largest guarded shock still leaves
+    each month's factor, 1 + r/12, positive after rounding."""
+    (rate,) = process_path(-999_999, 0.0, 50_000_000, [-100.0])
+    assert 1 + rate / 12e6 > 0
 
 
 # --- validation ----------------------------------------------------------------------

@@ -2155,8 +2155,8 @@ def _validate_vary_process(
 ) -> None:
     """ADR-006 §4a: `vary_process` only on a varying set_rate amount row,
     with both of its parameters and no ramp; phi in [0, 1); a positive shock
-    size; and a level whose lower bound keeps `1 + L` positive, since the
-    path multiplies it."""
+    size; and a level whose lower bound is above -100%, a total loss, which
+    no path of growth around it can mean."""
     process = (row.get("vary_process") or "").strip()
     raw_phi = (row.get("vary_persistence") or "").strip()
     raw_sd = (row.get("vary_innovation_sd") or "").strip()
@@ -2204,7 +2204,7 @@ def _validate_vary_process(
         issues.append(
             f"{where}: a process row's level must stay above -100% "
             f"(its lower bound, given or inferred, is {effective_low:g} micros), "
-            "since its path multiplies 1 + the level"
+            "since its path is growth around that level"
         )
 
 

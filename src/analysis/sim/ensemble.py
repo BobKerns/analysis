@@ -269,9 +269,15 @@ def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list
 def process_path(level_micros: int, persistence: float, innovation_sd_micros: int,
                  shocks: list[float]) -> list[int]:
     """An AR(1) path's yearly rates in micros (ADR-006 §4a), one per shock:
-    the log departure ``x`` from ``1 + level`` starts at its stationary
-    spread and carries ``persistence`` of itself into each next year, plus
-    that year's shock. All-zero shocks give a flat path at the level."""
+    the log departure ``x`` of a year's growth factor from a held row's
+    starts at its stationary spread and carries ``persistence`` of itself
+    into each next year, plus that year's shock. All-zero shocks give a flat
+    path at the level.
+
+    The engine applies a rate ``r`` as ``r/12`` a month, so a year grows by
+    ``(1 + r/12)**12``; each rate is chosen so that factor is the level's
+    times ``exp(x)``, keeping the path's median compound growth a held
+    row's and every month's factor positive."""
     level = level_micros / _MICROS
     sigma = innovation_sd_micros / _MICROS
     rates: list[int] = []
@@ -281,7 +287,7 @@ def process_path(level_micros: int, persistence: float, innovation_sd_micros: in
              else persistence * x + sigma * eps)
         # Overflow protection only: realistic inputs never come near it.
         x = max(-PROCESS_SHOCK_CLAMP, min(PROCESS_SHOCK_CLAMP, x))
-        rates.append(round(((1 + level) * math.exp(x) - 1) * _MICROS))
+        rates.append(round(12 * ((1 + level / 12) * math.exp(x / 12) - 1) * _MICROS))
     return rates
 
 
