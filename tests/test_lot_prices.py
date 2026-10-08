@@ -97,7 +97,9 @@ def test_missing_price_before_start_is_an_error(
 ) -> None:
     write_aux("security_price__AAA.csv", "effective_date,price\n2026-06-30,99.00\n")
     set_brokerage_lots([LOT])
-    with pytest.raises(LoadError, match="no security_price for 'AAA' on or before 2026-05-31"):
+    # The message names the file in prices/, where prices live (ADR-003 §4.4).
+    with pytest.raises(LoadError, match=r"no security_price for 'AAA' on or before 2026-05-31 "
+                                        r"\(prices/security_price__AAA\.csv\)"):
         load_test_copy()
 
 

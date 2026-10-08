@@ -5353,7 +5353,7 @@ def prices_fetch_command(
     symbols: tuple[str, ...], data_dir: Path | None,
     since_text: str | None, provider_name: str, refresh: bool, dry_run: bool,
 ) -> None:
-    """Fetch prices into aux/security_price__<SYMBOL>.csv.
+    """Fetch prices into prices/security_price__<SYMBOL>.csv.
 
     With no SYMBOLS, fetches every symbol on a lot that has a quantity in any
     scenario (CASH is skipped). Stores each month's last close since the December
