@@ -57,6 +57,7 @@ from analysis.sim.types import DollarMode
 __all__ = [
     "EnsembleError", "resolve_member", "load_ensemble", "member_run_statuses",
     "latest_ensemble_batch", "members_net_worth_by_month", "summary",
+    "QUINTILES", "percentiles",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
     "factor_reach",
 ]
@@ -709,3 +710,16 @@ def summary(frame: pd.DataFrame) -> pd.DataFrame:
         "min": frame.min(axis=1),
         "max": frame.max(axis=1),
     })
+
+
+QUINTILES = (0.2, 0.4, 0.6, 0.8)
+
+
+def percentiles(frame: pd.DataFrame, qs: tuple[float, ...] = QUINTILES) -> pd.DataFrame:
+    """The ``qs`` quantiles across ``frame``'s columns (one column per
+    member), row by row, as columns ``p20``, ``p40``, ... -- the inner band
+    edges of a fan chart, whose outer edges are ``summary()``'s min/max."""
+    return pd.DataFrame(
+        {f"p{q * 100:g}": frame.quantile(q, axis=1) for q in qs},
+        index=frame.index,
+    )

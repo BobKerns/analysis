@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from analysis.sim.engine import run_scenario
@@ -19,6 +20,7 @@ from analysis.sim.ensemble import (
     member_run_statuses,
     members_net_worth_by_month,
     oat_plan,
+    percentiles,
     read_batch_manifest,
     resolve_member,
     summary,
@@ -832,3 +834,14 @@ def test_resolve_member_triangular_date_row(
             con.close()
     assert "2030-12-31" < dates[0] < "2031-06-30"  # median: past the mode, toward the long side
     assert all("2030-06-30" <= d <= "2031-12-31" for d in dates)
+
+
+def test_percentiles_names_columns_by_percent_and_interpolates() -> None:
+    members = pd.DataFrame(
+        [[0.0, 10, 20, 30, 40, 50]],
+        index=pd.date_range("2026-01-31", periods=1, freq="ME"),
+    )
+    result = percentiles(members)
+    assert list(result.columns) == ["p20", "p40", "p60", "p80"]
+    assert result.iloc[0].tolist() == pytest.approx([10.0, 20, 30, 40])
+    assert list(percentiles(members, (0.25,)).columns) == ["p25"]
