@@ -198,8 +198,9 @@ def test_allocation_command_can_exclude_classes(
         "--runfile", str(two_lot_run_file),
     ], env={"COLUMNS": "200"})
     assert result.exit_code == 0, result.output
-    assert "excluding real_estate, unclassified" in result.output
-    assert "real_estate " not in result.output.split("excluding")[1]
+    title = " ".join(result.output.split("┏")[0].split())  # rich wraps it to the table's width
+    assert title.endswith("excluding real_estate, unclassified")
+    assert "real_estate " not in result.output.split("┏")[1]
 
 
 def test_cd_symbol_is_its_own_class_without_any_rows(
@@ -266,3 +267,37 @@ def test_the_account_history_figure_is_displayed_and_closed(
     account_history_widget(two_lot_run, "asset", "Balances")
     assert any(isinstance(item, Figure) for item in shown)
     assert plt.get_fignums() == []  # closed, so the inline backend does not show it again
+
+
+def test_allocation_command_labels_a_run_month_as_nominal_dollars(
+    allocations_csv: Path, two_lot_run_file: Path, test_data_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "allocation", "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
+        "--runfile", str(two_lot_run_file), "--month", "2027-01",
+    ], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    assert "2027-01-31, nominal dollars" in " ".join(result.output.split())
+
+
+def test_allocation_command_on_a_scenario_without_lots_prints_an_empty_table(
+    test_data_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "allocation", "--scenario", "base", "--data-dir", str(test_data_dir), "--opening",
+    ], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    assert "no lots" in result.output and "Total" in result.output
+
+
+def test_a_wide_split_keeps_every_amount_in_a_narrow_terminal(
+    allocations_csv: Path, two_lot_run_file: Path, test_data_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "allocation", "--by", "account", "--scenario", "retire_alice",
+        "--data-dir", str(test_data_dir), "--runfile", str(two_lot_run_file),
+    ], env={"COLUMNS": "60"})
+    assert result.exit_code == 0, result.output
+    assert "…" not in result.output
+    total_row = next(line for line in result.output.splitlines() if line.startswith("│ Total"))
+    assert total_row.rstrip().endswith("100.0% │")  # not cropped at the terminal's edge
