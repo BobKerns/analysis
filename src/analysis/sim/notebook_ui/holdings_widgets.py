@@ -15,6 +15,7 @@ from ipywidgets import widgets
 from analysis.sim.connection import RunConnection, Connection
 from analysis.sim.holdings import (
     account_holdings,
+    current_month,
     holding_accounts,
     holding_months,
     holding_symbols,
@@ -62,7 +63,7 @@ def _month_dropdown(source: Connection) -> widgets.Dropdown | None:
     months = holding_months(source)
     if not months:
         return None
-    return widgets.Dropdown(options=months, value=months[-1], description="Month:")
+    return widgets.Dropdown(options=months, value=current_month(months), description="Month:")
 
 
 def _label(source: Connection) -> str:

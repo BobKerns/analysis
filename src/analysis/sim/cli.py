@@ -4120,7 +4120,8 @@ def _holdings_options(fn):
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
         click.option("--month", default=None,
-                     help="Month of the run to show, YYYY-MM (default: the last month)."),
+                     help="Month of the run to show, YYYY-MM (default: the current month, "
+                          "or the run's nearest one)."),
         click.option("--opening", is_flag=True, default=False,
                      help="Show the scenario's opening values instead of a run."),
         click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -4212,6 +4213,7 @@ def allocation_command(
 ) -> None:
     """Show the whole portfolio by asset class, from the lots and allocations.csv."""
     from rich.console import Console
+    from rich.measure import Measurement
 
     with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
         try:
@@ -4219,10 +4221,20 @@ def allocation_command(
             table = allocation.portfolio_allocation(source, month, by, excluded)
         except ValueError as exc:
             raise click.ClickException(str(exc)) from None
-    title = f"asset allocation ({described}; {frame['as_of'].iloc[0]})"
+    as_of = frame["as_of"].iloc[0] if len(frame) else "no lots"
+    if as_of not in ("opening", "no lots"):
+        as_of += ", nominal dollars"
+    title = f"asset allocation ({described}; {as_of})"
     if excluded:
         title += f", excluding {', '.join(excluded)}"
-    Console().print(allocation.render_allocation_table(table, title=title))
+    rendered = allocation.render_allocation_table(table, title=title)
+    console = Console()
+    # Never crop amounts to fit the terminal: a wide --by split prints at its full
+    # width (the terminal wraps it; `| less -S` scrolls it) rather than losing columns.
+    needed = Measurement.get(console, console.options.update(max_width=10_000), rendered).maximum
+    if needed > console.width:
+        console = Console(width=needed)
+    console.print(rendered)
     if allocation.UNCLASSIFIED in table.index:
         click.echo("unclassified: lots whose symbol has no rows in allocations.csv", err=True)
 

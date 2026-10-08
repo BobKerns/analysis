@@ -1,12 +1,13 @@
 """Holdings: the lots inside accounts, and which accounts hold a symbol (ADR-005).
 
 Works on either kind of connection. Given a :class:`RunConnection` the values
-are the run's month-end balances (the final month unless one is chosen); given
+are the run's month-end balances (the current month, or the run's nearest, unless one is chosen); given
 a :class:`ScenarioConnection` they are the opening values.
 """
 
 from __future__ import annotations
 
+from datetime import date
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
     from rich.text import JustifyMethod
 
 __all__ = [
-    "account_holdings", "holding_accounts", "holding_months", "holding_symbols",
+    "account_holdings", "current_month", "holding_accounts", "holding_months", "holding_symbols",
     "holdings_totals", "lots_frame", "render_holders_table", "render_holdings_table",
     "security_names", "symbol_holders",
 ]
@@ -35,11 +36,22 @@ def holding_months(source: Connection) -> list[str]:
     return sorted(source.items("lot_balance")["month"].unique())
 
 
+def current_month(months: list[str], today: date | None = None) -> str:
+    """The month-end in ``months`` (sorted ISO dates) for today's month, or the
+    nearest end when the run doesn't cover it. Holdings default to it (#125):
+    a run's last month is decades out, and its opening values go stale."""
+    this_month = (today or date.today()).isoformat()[:7]
+    for m in months:
+        if m[:7] >= this_month:
+            return m
+    return months[-1]
+
+
 def _pick_month(months: list[str], month: str | None) -> str:
     if not months:
         raise ValueError("the run has no lot balances")
     if month is None:
-        return months[-1]
+        return current_month(months)
     matches = [m for m in months if m.startswith(month)]
     if len(matches) != 1:
         raise ValueError(
