@@ -654,6 +654,43 @@ def test_refill_legs_point_at_the_debit_that_triggered_them(ledger_con: sqlite3.
     assert brokerage_parent == savings_leg
 
 
+def test_refill_before_a_split_withdrawal_points_at_its_basis_leg(ledger_con: sqlite3.Connection) -> None:
+    """A basis-tracked withdrawal refills once on its net amount; the refill
+    is linked to the first leg posted, the return_of_capital leg."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _post_withdrawal
+
+    # 1=payee, 2=brokerage (refills from 3), 3=cash.
+    balances = {1: 0, 2: 10_000, 3: 1_000_000}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = {1: "cash", 2: "brokerage_taxable", 3: "cash"}
+    account_name = {1: "Payee", 2: "Brokerage", 3: "Cash"}
+    cost_bases: dict[int, int | None] = {2: 4_000}
+    graph = ChainGraph(
+        members={}, leaf_lot={30: 3},
+        minimum_of={2: 5_000}, refill_chain_of={2: 30},
+        refill_target_of={2: None}, refill_amount_of={2: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
+        account_subkind=account_subkind, account_name=account_name, cost_bases=cost_bases,
+    )
+    _post_withdrawal(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, cost_bases, step_id=1, month_s="2026-05-31", from_id=2, to_id=1,
+        amount=8_000, reason_id=99, refill_ctx=refill_ctx,
+    )
+    rows = ledger_con.execute(
+        "SELECT id, from_account, tax_character, parent_event_id FROM transfer_event ORDER BY id"
+    ).fetchall()
+    refill = [r for r in rows if r[1] == 3]
+    basis_leg = [r for r in rows if r[2] == "return_of_capital"]
+    assert len(refill) == 1 and len(basis_leg) == 1
+    assert refill[0][3] == basis_leg[0][0]
+
+
 def test_post_withdrawal_rejects_untracked_taxable_non_cash_account(ledger_con: sqlite3.Connection) -> None:
     from analysis.sim.engine import EngineError, _post_withdrawal
 
