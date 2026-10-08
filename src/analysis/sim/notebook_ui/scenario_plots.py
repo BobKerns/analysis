@@ -45,7 +45,7 @@ def scrollable(styled) -> widgets.Output:
     return out
 
 
-def show_chains(sc):
+def show_chains(sc, **_):
     """
     Show only the interior chains (the ones not auto-created for a single account)
     from the scenario connection `sc`.
@@ -92,7 +92,7 @@ def scheduled_styler(view: pd.DataFrame, hidden: Collection[str] = ()):
     return styled.set_properties(subset=dates, **{"width": "7ch"}) if dates else styled
 
 
-def show_scheduled_view(sc):
+def show_scheduled_view(sc, **_):
     """
     Show the scheduled items from the scenario connection `sc`, with a checkbox
     for each optional column (id, name, priority, description) so the table can
@@ -123,7 +123,7 @@ def show_scheduled_view(sc):
     return widgets.VBox([widgets.HBox(list(boxes.values())), out])
 
 
-def show_calendar_view(sc):
+def show_calendar_view(sc, **_):
     """
     Show the calendar items from the scenario connection `sc`.
     """

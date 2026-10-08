@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import importlib
+import inspect
+import json
+import pkgutil
+import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.sim import notebook_ui
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.notebook_ui.pickers import (
     MultiScenarioConnections,
@@ -226,7 +233,7 @@ def test_scenario_picker_selecting_a_member_redraws_show_outputs_with_its_run(
     widget, container, _dropdown = scenario_picker(data, "recipe_1")
     _scenario_dropdown, member_dropdown, _ref_out = widget.children
     drawn: list[str] = []
-    container.show(lambda rc: drawn.append(rc.run_path.stem))
+    container.show(lambda rc, **_: drawn.append(rc.run_path.stem))
     assert drawn == ["member_0000"]
 
     member_dropdown.value = "member_0001"
@@ -246,12 +253,43 @@ def test_scenario_picker_changing_scenario_redraws_show_outputs_once(
 
     _widget, container, dropdown = scenario_picker(data, "recipe_1")
     drawn: list[str] = []
-    container.show(lambda _rc: drawn.append(container.scenario_ref.name))
+    container.show(lambda _rc, **_: drawn.append(container.scenario_ref.name))
 
     dropdown.value = "retire_alice"
 
     assert drawn == ["recipe_1", "retire_alice"]
     container.close()
+
+
+def _widgets_the_notebooks_show(repo_root: Path) -> dict[str, Callable]:
+    """Every function a notebook passes to ``show()``/``show_scenario()``,
+    resolved from the notebook_ui modules."""
+    names: set[str] = set()
+    for notebook in (repo_root / "notebooks").glob("*.ipynb"):
+        for cell in json.loads(notebook.read_text())["cells"]:
+            if cell["cell_type"] == "code":
+                names.update(re.findall(r"\.show(?:_scenario)?\(\s*(\w+)", "".join(cell["source"])))
+    found: dict[str, Callable] = {}
+    for module_info in pkgutil.iter_modules(notebook_ui.__path__, f"{notebook_ui.__name__}."):
+        module = importlib.import_module(module_info.name)
+        for name in names - found.keys():
+            if callable(fn := getattr(module, name, None)):
+                found[name] = fn
+    assert found.keys() == names, f"not found in notebook_ui: {sorted(names - found.keys())}"
+    return found
+
+
+def test_every_widget_the_notebooks_show_accepts_extra_keywords(repo_root: Path) -> None:
+    """show() passes context keywords (``member``, ...) to every widget, so
+    each must end its signature with ``**_``."""
+    shown = _widgets_the_notebooks_show(repo_root)
+    assert shown
+    strict = [
+        name for name, fn in sorted(shown.items())
+        if not any(p.kind is inspect.Parameter.VAR_KEYWORD
+                   for p in inspect.signature(fn).parameters.values())
+    ]
+    assert strict == []
 
 
 def test_scenario_picker_switching_away_from_an_ensemble_hides_the_member_dropdown(

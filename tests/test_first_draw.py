@@ -95,7 +95,7 @@ def test_connections_show_draws_after_the_cell_and_redraws_at_once_on_a_change(
 ) -> None:
     drawn: list[str] = []
     connections = _Connections()
-    out = connections.show(lambda: drawn.append("draw"))
+    out = connections.show(lambda **_: drawn.append("draw"))
     assert drawn == [] and out is not None  # deferred: the cell is running
     executing_cell.events.fire()
     assert drawn == ["draw"]

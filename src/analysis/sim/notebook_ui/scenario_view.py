@@ -40,7 +40,7 @@ def manifest_view(sc: ScenarioConnection) -> pd.DataFrame:
     return pd.DataFrame(rows.items(), columns=["field", "value"]).set_index("field")
 
 
-def persons_view(sc: ScenarioConnection) -> pd.DataFrame:
+def persons_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
     """Every person, one row each, with their date of death if the scenario sets one.
 
     ``date_of_death`` comes from ``person_lifespan.final_month`` (ADR-003

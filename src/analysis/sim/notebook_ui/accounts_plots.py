@@ -138,7 +138,7 @@ def account_history_widget(
     scenario_picker: widgets.Dropdown | None = None,
     dollar_mode: DollarModePicker | None = None,
     value_mode: ValuePlotModePicker | None = None,
-    y_axis_mode: YAxisPlotModePicker | None = None,
+    y_axis_mode: YAxisPlotModePicker | None = None, **_,
 ):
     """Balance-history widget covering every account kind.
 
@@ -226,7 +226,7 @@ def to_month(date: str) -> str:
         return "-"
     return ts.strftime("%Y-%m")
 
-def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None):
+def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, **_):
     """
     Show the account setup for the given scenario as of the specified date.
 

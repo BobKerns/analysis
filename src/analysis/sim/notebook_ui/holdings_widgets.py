@@ -103,7 +103,7 @@ def symbol_holders_view(
 
 
 def account_holdings_widget(
-    source: RunConnection | ScenarioConnection, account: str | None = None,
+    source: RunConnection | ScenarioConnection, account: str | None = None, **_,
 ) -> widgets.VBox:
     """The lots in one account (lot, symbol, acquired, quantity, price, balance,
     basis, unrealized gain), with an account dropdown and, for a run, a month."""
@@ -135,7 +135,7 @@ def account_holdings_widget(
 
 
 def symbol_holders_widget(
-    source: RunConnection | ScenarioConnection, symbol: str | None = None,
+    source: RunConnection | ScenarioConnection, symbol: str | None = None, **_,
 ) -> widgets.VBox:
     """Every lot holding one symbol, across accounts, with a symbol dropdown and,
     for a run, a month."""

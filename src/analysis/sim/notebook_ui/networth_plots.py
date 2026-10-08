@@ -60,7 +60,7 @@ def net_worth_widget(rc: RunConnection,
 
 
 def income_widget(rc: RunConnection,
-                  dollar_mode: DollarModePicker | None = None,
+                  dollar_mode: DollarModePicker | None = None, **_,
                   ) -> widgets.VBox:
     """Yearly income table + a nominal/CPI-constant stacked bar chart, by category."""
     dollar_mode = dollar_mode or DollarModePicker()
@@ -114,7 +114,7 @@ _EXPENSES_CAVEAT = (
 )
 
 
-def expenses_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None) -> widgets.VBox:
+def expenses_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None, **_) -> widgets.VBox:
     """Yearly expenses table + a nominal/CPI-constant stacked bar chart, by category."""
     dollar_mode = dollar_mode or DollarModePicker()
 
@@ -160,7 +160,7 @@ def expenses_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = No
     return widgets.VBox([dollar_mode, chart_out, caveat_out, table_out])
 
 
-def gains_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None) -> widgets.VBox:
+def gains_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None, **_) -> widgets.VBox:
     """Yearly realized-vs-unrealized gains table + chart, with an expenses overlay."""
     dollar_mode = dollar_mode or DollarModePicker()
 
@@ -208,7 +208,7 @@ def gains_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None)
     return widgets.VBox([dollar_mode, chart_out, table_out])
 
 
-def after_tax_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None) -> widgets.VBox:
+def after_tax_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None, **_) -> widgets.VBox:
     """Tax reconciliation table + after-tax income vs. non-tax-expense chart."""
     dollar_mode = dollar_mode or DollarModePicker()
 

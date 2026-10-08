@@ -120,6 +120,11 @@ class Connections(traitlets.HasTraits):
         Return an output widget that displays the result of calling `fn`
         with the current run connection.
 
+        `fn` must accept arbitrary keyword arguments (end its signature
+        with ``**_``): besides ``**kwargs``, ``show()`` passes context such as
+        ``member``, the selected ensemble member, and may add more. A widget
+        uses what it needs and ignores the rest.
+
         Parameters
         ----------
         fn : callable
@@ -132,10 +137,7 @@ class Connections(traitlets.HasTraits):
         def _draw():
             with out:
                 clear_output(wait=True)
-                result = self._invoke(fn,
-                                                *args,
-                                                member=self.member,
-                                                **kwargs)
+                result = self._invoke(fn, *args, member=self.member, **kwargs)
                 if result is not None:
                     display(result)
 
@@ -172,6 +174,10 @@ class SingleScenarioConnections(Connections):
         """
         Return an output widget that displays the result of calling `fn`
         with the current scenario connection.
+
+        As with :meth:`show`, `fn` must accept arbitrary keyword arguments
+        (end its signature with ``**_``): it receives the same context
+        keywords, such as ``member``.
 
         Parameters
         ----------

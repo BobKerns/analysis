@@ -56,7 +56,7 @@ def _pie(table: pd.DataFrame) -> None:
 def portfolio_allocation_widget(
     source: RunConnection | ScenarioConnection,
     by: Grouping | None = None,
-    exclude: tuple[str, ...] = (),
+    exclude: tuple[str, ...] = (), **_,
 ) -> widgets.VBox:
     """The portfolio by asset class, with a split dropdown, a checkbox per asset class
     (unchecked classes are left out, and the total covers the rest) and, for a run, a
