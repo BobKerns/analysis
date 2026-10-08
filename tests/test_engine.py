@@ -710,6 +710,43 @@ def test_negative_balance_warning_says_what_the_refill_did(
 
 
 @pytest.mark.allow_negative_balance
+def test_chain_draw_warning_reports_the_refill_it_drew(ledger_con: sqlite3.Connection) -> None:
+    """#105: a chain step that refills, then gives what it can down to a
+    negative minimum_balance, warns with that refill -- not with the empty
+    re-check a second look-ahead on the same debit used to record."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _chain_draw
+
+    # 1=target, 2=step account (minimum -$300, refills from 3), 3=$50 refill source.
+    balances = {1: 0, 2: 0, 3: 5_000}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = dict.fromkeys(balances, "cash")
+    account_name = {1: "Target", 2: "Source", 3: "Refill"}
+    graph = ChainGraph(
+        members={}, leaf_lot={10: 2, 20: 3},
+        minimum_of={2: -30_000}, refill_chain_of={2: 20},
+        refill_target_of={2: None}, refill_amount_of={2: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
+        account_subkind=account_subkind, account_name=account_name, cost_bases={},
+        chain_name={20: "Refill"},
+    )
+    with pytest.warns(RuntimeWarning, match=r"'Source' went negative \(balance=-300\.00\); "
+                      r"refill chain 'Refill' supplied \$50\.00 of \$700\.00$"):
+        taken = _chain_draw(
+            ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id=1, month_s="2026-05-31", graph=graph,
+            chain_id=10, amount_needed=100_000, target_account_id=1,
+            refill_ctx=refill_ctx,
+        )
+    assert taken == 35_000
+    assert refill_ctx.negative_events[0]["refill_status"] == "drawn"
+
+
+@pytest.mark.allow_negative_balance
 def test_negative_balance_warnings_record_the_refill_in_run_args(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
     tmp_path: Path,

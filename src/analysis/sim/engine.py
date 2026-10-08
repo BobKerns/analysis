@@ -769,7 +769,10 @@ def _post_transfer(
 
     ``refill_mark`` is a caller's own ``_ensure_min_balance`` result, for a
     refill drawn on ``from_id`` before this call: those legs are linked to
-    this event along with any this call's own look-ahead draws.
+    this event, and the look-ahead isn't run again. A second look-ahead
+    could draw nothing (the caller sized the debit to what the refilled
+    account can spare), but it would replace the caller's ``last_refill``
+    record, so a warning would describe the empty re-check, not the draw.
 
     ``net_effects=False`` posts the leg alone, skipping the liability cap, the
     refill look-ahead, the lot-tracking updates and the negative-balance
@@ -788,13 +791,11 @@ def _post_transfer(
     if remainder is None:
         remainder = requested - amount
     track = refill_ctx if net_effects else None
-    if track is not None and amount > 0:
-        mark = _ensure_min_balance(
+    if track is not None and amount > 0 and refill_mark is None:
+        refill_mark = _ensure_min_balance(
             con, balances, account_kinds, step_id, month_s, track,
             from_id, amount,
         )
-        if refill_mark is None:
-            refill_mark = mark
     cur = con.execute(
         "INSERT INTO transfer_event("
         "  step_id, date, from_account, to_account, from_lot_id, to_lot_id, "
@@ -1845,12 +1846,11 @@ def _post_withdrawal(
         if amount == 0:
             return
     if refill_ctx is not None and amount > 0:
-        mark = _ensure_min_balance(
-            con, balances, account_kinds, step_id, month_s, refill_ctx,
-            from_id, amount,
-        )
-        if refill_mark is None:
-            refill_mark = mark
+        if refill_mark is None:  # see _post_transfer's refill_mark
+            refill_mark = _ensure_min_balance(
+                con, balances, account_kinds, step_id, month_s, refill_ctx,
+                from_id, amount,
+            )
         # A refill into the account is a purchase that raised its basis.
         basis = cost_bases[from_id] or 0
     prior_balance = balances.get(from_id, 0)
