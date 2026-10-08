@@ -406,7 +406,7 @@ def scenario_picker(
         run_path = batch / f"{change['new']}.sqlite3"
         container.run = RunConnection(run_path, container.scenario)
         member_name = change['new']
-        container.member= int(member_name.split("_", maxsplit=1)[1])
+        container.member = int(member_name.split("_", maxsplit=1)[1])
         # The panel and metadata describe the member actually shown, not
         # the member 0 that resolve_scenario_name picked.
         container.scenario_ref = replace(ref, run_path=run_path)

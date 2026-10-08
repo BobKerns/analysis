@@ -40,18 +40,6 @@ def _state_dirs(data_dir: Path) -> tuple[Path, Path]:
     return state / "intent", state / "runs"
 
 
-def _load_and_run(data_dir: Path, scenario: str) -> None:
-    intent_dir, runs_dir = _state_dirs(data_dir)
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["sim", "load", scenario, "--data-dir", str(data_dir),
-         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-         "--allow-dirty-data"],
-    )
-    assert result.exit_code == 0, result.output
-
-
 def _create_scenario(data_dir: Path, name: str, parent: str) -> None:
     runner = CliRunner()
     result = runner.invoke(
@@ -60,11 +48,10 @@ def _create_scenario(data_dir: Path, name: str, parent: str) -> None:
     assert result.exit_code == 0, result.output
 
 
-def test_scenario_picker_opens_scenario_and_run_connections(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
-    _load_and_run(data, "retire_alice")
-
-    widget, container, dropdown = scenario_picker(data, "retire_alice")
+def test_scenario_picker_opens_scenario_and_run_connections(
+    test_data_dir: Path, retire_alice_test_run: Path,
+) -> None:
+    widget, container, dropdown = scenario_picker(test_data_dir, "retire_alice")
 
     assert isinstance(container.scenario, ScenarioConnection)
     assert isinstance(container.run, RunConnection)
@@ -82,7 +69,6 @@ def test_scenario_picker_switches_scenarios_closing_the_old_connections(
     retire_alice_run_file: Path,
     variant_a_run_file: Path,
 ) -> None:
-
     widget, container, dropdown = scenario_picker(data_dir, "retire_alice",
                                                   scenarios_dir=scenarios_dir,
                                                   runs_dir=runs_dir)
@@ -137,36 +123,10 @@ def test_scenario_picker_require_run_true_raises_when_missing(tmp_path: Path) ->
         scenario_picker(data, "retire_alice", require_run=True)
 
 
-def _create_and_run_ensemble(data_dir: Path, name: str, parent: str, size: int) -> None:
-    intent_dir, runs_dir = _state_dirs(data_dir)
-    intent_dir.mkdir(parents=True, exist_ok=True)
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    runner = CliRunner()
-    result = runner.invoke(
-        main, ["sim", "ensemble", "create", name, parent,
-               "--size", str(size), "--data-dir", str(data_dir)],
-    )
-    assert result.exit_code == 0, result.output
-    result = runner.invoke(
-        main, ["sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
-               "--scenario", name, "--data-dir", str(data_dir),
-               "--name", "checking_rate_vary", "--vary-target", "amount",
-               "--vary-distribution", "uniform", "--vary-low", "4.0", "--vary-high", "5.0"],
-    )
-    assert result.exit_code == 0, result.output
-    result = runner.invoke(
-        main, ["sim", "run", name, "--data-dir", str(data_dir),
-               "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-               "--allow-dirty-data"],
-    )
-    assert result.exit_code == 0, result.output
-
-
-def test_scenario_picker_shows_a_member_dropdown_for_an_ensemble_recipe(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
-    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=3)
-
-    widget, container, _dropdown = scenario_picker(data, "recipe_1")
+def test_scenario_picker_shows_a_member_dropdown_for_an_ensemble_recipe(
+    test_data_dir: Path, ensemble_recipe: str,
+) -> None:
+    widget, container, _dropdown = scenario_picker(test_data_dir, ensemble_recipe)
     _scenario_dropdown, member_dropdown, _ref_out = widget.children
     assert member_dropdown.layout.display is None
     assert [v for _label, v in member_dropdown.options] == [
@@ -179,12 +139,9 @@ def test_scenario_picker_shows_a_member_dropdown_for_an_ensemble_recipe(tmp_path
 
 
 def test_scenario_picker_hides_the_member_dropdown_for_an_ordinary_scenario(
-    tmp_path: Path,
+    test_data_dir: Path, retire_alice_test_run: Path,
 ) -> None:
-    data = _copy_prototype(tmp_path)
-    _load_and_run(data, "retire_alice")
-
-    widget, container, _dropdown = scenario_picker(data, "retire_alice")
+    widget, container, _dropdown = scenario_picker(test_data_dir, "retire_alice")
     _scenario_dropdown, member_dropdown, _ref_out = widget.children
     assert member_dropdown.layout.display == "none"
     assert member_dropdown.options == ()
@@ -192,27 +149,24 @@ def test_scenario_picker_hides_the_member_dropdown_for_an_ordinary_scenario(
 
 
 def test_scenario_picker_hides_the_member_dropdown_when_require_run_is_false(
-    tmp_path: Path,
+    test_data_dir: Path, ensemble_recipe: str,
 ) -> None:
     """An ensemble recipe's own intent (what require_run=False looks at) is
     the unresolved recipe, identical regardless of member -- member
     resolution happens per-run, not in the shared scenario-level intent."""
-    data = _copy_prototype(tmp_path)
-    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=2)
 
-    widget, container, _dropdown = scenario_picker(data, "recipe_1", require_run=False)
+    widget, container, _dropdown = scenario_picker(
+        test_data_dir, ensemble_recipe, require_run=False,
+    )
     _scenario_dropdown, member_dropdown, _ref_out = widget.children
     assert member_dropdown.layout.display == "none"
     container.close()
 
 
 def test_scenario_picker_selecting_a_member_switches_the_run_connection(
-    tmp_path: Path,
+    test_data_dir: Path, ensemble_recipe: str,
 ) -> None:
-    data = _copy_prototype(tmp_path)
-    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=2)
-
-    widget, container, _dropdown = scenario_picker(data, "recipe_1")
+    widget, container, _dropdown = scenario_picker(test_data_dir, ensemble_recipe)
     _scenario_dropdown, member_dropdown, _ref_out = widget.children
     old_run = container.run
 
@@ -225,12 +179,9 @@ def test_scenario_picker_selecting_a_member_switches_the_run_connection(
 
 
 def test_scenario_picker_selecting_a_member_redraws_show_outputs_with_its_run(
-    tmp_path: Path,
+    test_data_dir: Path, ensemble_recipe: str,
 ) -> None:
-    data = _copy_prototype(tmp_path)
-    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=2)
-
-    widget, container, _dropdown = scenario_picker(data, "recipe_1")
+    widget, container, _dropdown = scenario_picker(test_data_dir, ensemble_recipe)
     _scenario_dropdown, member_dropdown, _ref_out = widget.children
     drawn: list[str] = []
     container.show(lambda rc, **_: drawn.append(rc.run_path.stem))
@@ -245,29 +196,25 @@ def test_scenario_picker_selecting_a_member_redraws_show_outputs_with_its_run(
 
 
 def test_scenario_picker_changing_scenario_redraws_show_outputs_once(
-    tmp_path: Path,
+    test_data_dir: Path, ensemble_recipe: str, retire_alice_test_run: Path,
 ) -> None:
-    data = _copy_prototype(tmp_path)
-    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=2)
-    _load_and_run(data, "retire_alice")
-
-    _widget, container, dropdown = scenario_picker(data, "recipe_1")
+    _widget, container, dropdown = scenario_picker(test_data_dir, ensemble_recipe)
     drawn: list[str] = []
     container.show(lambda _rc, **_: drawn.append(container.scenario_ref.name))
 
     dropdown.value = "retire_alice"
 
-    assert drawn == ["recipe_1", "retire_alice"]
+    assert drawn == [ensemble_recipe, "retire_alice"]
     container.close()
 
 
-def test_show_and_show_scenario_pass_the_context_keywords(tmp_path: Path) -> None:
+def test_show_and_show_scenario_pass_the_context_keywords(
+    test_data_dir: Path, ensemble_recipe: str,
+) -> None:
     """The keywords show()/show_scenario() pass are a contract with every
     widget, so they're pinned here even where no widget reads them yet."""
-    data = _copy_prototype(tmp_path)
-    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=2)
 
-    widget, container, _dropdown = scenario_picker(data, "recipe_1")
+    widget, container, _dropdown = scenario_picker(test_data_dir, ensemble_recipe)
     _scenario_dropdown, member_dropdown, _ref_out = widget.children
     shown: list[tuple] = []
     container.show(lambda rc, *args, **kwargs: shown.append((rc, args, kwargs)))
@@ -321,13 +268,9 @@ def test_every_widget_the_notebooks_show_accepts_extra_keywords(repo_root: Path)
 
 
 def test_scenario_picker_switching_away_from_an_ensemble_hides_the_member_dropdown(
-    tmp_path: Path,
+    test_data_dir: Path, ensemble_recipe: str, retire_alice_test_run: Path,
 ) -> None:
-    data = _copy_prototype(tmp_path)
-    _create_and_run_ensemble(data, "recipe_1", "retire_alice", size=2)
-    _load_and_run(data, "retire_alice")
-
-    widget, _container, dropdown = scenario_picker(data, "recipe_1")
+    widget, _container, dropdown = scenario_picker(test_data_dir, ensemble_recipe)
     _scenario_dropdown, member_dropdown, _ref_out = widget.children
     assert member_dropdown.layout.display is None
 
@@ -336,11 +279,10 @@ def test_scenario_picker_switching_away_from_an_ensemble_hides_the_member_dropdo
     assert member_dropdown.layout.display == "none"
 
 
-def test_multi_scenario_picker_requires_at_least_one_variant(tmp_path: Path) -> None:
-    data = _copy_prototype(tmp_path)
-    _load_and_run(data, "retire_alice")
-
-    widget, container = multi_scenario_picker(data, "retire_alice", [])
+def test_multi_scenario_picker_requires_at_least_one_variant(
+    test_data_dir: Path, retire_alice_test_run: Path,
+) -> None:
+    widget, container = multi_scenario_picker(test_data_dir, "retire_alice", [])
 
     assert isinstance(container, MultiScenarioConnections)
     assert not container.ok
