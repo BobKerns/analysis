@@ -1842,7 +1842,7 @@ def _derive_opening_balances(
         if not known:
             issues.append(
                 f"account_values.csv row {i} ({name}): no security_price for "
-                f"'{symbol}' on or before {start} (aux/security_price__{symbol}.csv)"
+                f"'{symbol}' on or before {start} (prices/security_price__{symbol}.csv)"
             )
             continue
         row["opening_balance"] = _price_value(quantity, max(known)[1])

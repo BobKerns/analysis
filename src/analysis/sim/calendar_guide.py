@@ -1,4 +1,5 @@
-"""Guided entry for ``sim calendar add`` (issue #32).
+"""Guided entry for ``sim calendar add`` (issue #32), and for ``sim account
+lot add|edit`` (issue #124, in ``lot_guide``).
 
 ``sim calendar add`` takes up to five kinds of row and a dozen ``--vary-*``
 options whose meaning depends on each other. This module describes each
@@ -53,6 +54,10 @@ class GuideContext:
     other_rows: Mapping[str, Sequence[Answers]] = field(default_factory=dict)
     # names those other rows already use
     taken_names: frozenset[str] = frozenset()
+    # account -> its subkind, and -> its tax treatment
+    subkinds: Mapping[str, str] = field(default_factory=dict)
+    tax_treatments: Mapping[str, str] = field(default_factory=dict)
+    securities: Sequence[str] = ()
 
 
 def _always(ctx: GuideContext, answers: Answers) -> bool:  # noqa: ARG001
@@ -100,7 +105,8 @@ class Field:
 
 @dataclass(frozen=True)
 class KindSpec:
-    """One ``sim calendar add`` subcommand: its inputs, in asking order."""
+    """One ``sim calendar add`` subcommand (or another guided command): its
+    inputs, in asking order."""
 
     command: str
     summary: str
@@ -110,6 +116,8 @@ class KindSpec:
     # event to the loader (registries.CALENDAR_KEY_COLUMNS), so a second is
     # refused.
     key: tuple[str, ...] = ()
+    words: tuple[str, ...] = ("sim", "calendar", "add")  # the command line before ``command``
+    duplicate: str = "another row"  # what an answer duplicating a key would copy
 
     def field_named(self, name: str) -> Field | None:
         return next((f for f in self.fields if f.name == name), None)
@@ -470,7 +478,7 @@ def equivalent_command(
     """The non-interactive command line that writes the same row.
     ``scenario`` and ``data_dir`` are included when the guide was given them,
     so the command acts on the same scenario wherever it is run."""
-    words = ["sim", "calendar", "add", spec.command]
+    words = [*spec.words, spec.command]
     options: list[str] = []
     for field_ in spec.fields:
         value = answers.get(field_.param, "")
@@ -595,13 +603,13 @@ class Guide:
             if field_.is_required(answers):
                 return "an answer is required"
             if self._duplicates(spec, ctx, {**answers, field_.param: ""}, field_):
-                return "left blank, that would duplicate another row"
+                return f"left blank, that would duplicate {spec.duplicate}"
             return None
         if field_.type == "yesno":
             return None if answer.lower() in ("y", "n") else "answer y or n"
         # Before the choices check: a choice left out for this reason should say so.
         if self._duplicates(spec, ctx, {**answers, field_.param: answer}, field_):
-            return "that would duplicate another row"
+            return f"that would duplicate {spec.duplicate}"
         if field_.strict and answer not in choices:
             return f"not one of: {', '.join(choices)}" if choices else "there is nothing to choose from"
         if field_.unique and answer in ctx.taken_names:

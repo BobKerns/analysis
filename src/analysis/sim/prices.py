@@ -203,7 +203,7 @@ class FetchResult:
 
 
 def fetch_prices(
-    aux_dir: Path, symbols: Iterable[str], provider: PriceProvider, *,
+    prices_dir: Path, symbols: Iterable[str], provider: PriceProvider, *,
     since: date, today: date | None = None, refresh: bool = False, dry_run: bool = False,
 ) -> list[FetchResult]:
     """Fetch month-end (and latest) closes for each symbol into its prices file."""
@@ -222,12 +222,12 @@ def fetch_prices(
             result.error = "no prices in the period"
             continue
         result.latest = rows[-1]
-        path = aux_dir / f"security_price__{symbol}.csv"
+        path = prices_dir / f"security_price__{symbol}.csv"
         merged, result.added, result.changed = merge_price_rows(
             _read_price_file(path), rows, refresh=refresh,
         )
         if not dry_run and (result.added or result.changed):
-            aux_dir.mkdir(parents=True, exist_ok=True)
+            prices_dir.mkdir(parents=True, exist_ok=True)
             _write_price_file(path, merged)
     return results
 

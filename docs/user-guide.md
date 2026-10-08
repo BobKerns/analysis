@@ -244,12 +244,11 @@ arguments, it asks you questions and shows the valid choices for kind,
 subkind, and owner. Afterward, run `sim account check` — it tells you about
 anything that still needs your attention. Run `sim account sync` to add any
 missing `account_values.csv` rows, with a balance of zero, ready for you to
-fill in.
+fill in with `sim account lot edit` (Part 4.2).
 
-### 4.2 Add a new lot to a brokerage account
+### 4.2 Add, change or delete a lot
 
-There is no command for this yet; edit `account_values.csv` directly. Every
-account is really a set of **lots**. Lots can differ in symbol, purchase
+Every account is really a set of **lots**. Lots can differ in symbol, purchase
 date, and cost basis. An account you have not split has one lot, named
 `default`.
 
@@ -261,12 +260,44 @@ flowchart LR
     end
 ```
 
-To add a lot, add a row:
+Each lot is one row of `account_values.csv`. The `sim account lot` commands
+add, change, delete and list them, so you don't have to edit that file by
+hand (though you still can):
+
+```sh
+sim account lot list Asset_Brokerage_Joint
+sim account lot add Asset_Brokerage_Joint inherited_2029 \
+    --symbol AAA --acquired 2029-03-15 --quantity 500 --opening-cost-basis 50000
+sim account lot edit Asset_Brokerage_Joint inherited_2029 --opening-cost-basis 52000
+sim account lot delete Asset_Brokerage_Joint inherited_2029
+```
+
+Given a price for `AAA` (see below; otherwise add `--opening-balance`), the
+`add` above writes this row:
 
 ```csv
 account_name,lot,symbol,acquired,quantity,series,opening_balance,opening_cost_basis
 Asset_Brokerage_Joint,inherited_2029,AAA,2029-03-15,500,,,50000.00
 ```
+
+- Run `add` or `edit` without the account and lot to be asked instead. `add`
+  asks only what applies to the account: a cost basis only for a taxable
+  account, and the refill and overflow settings (Part 4.6) only if you want
+  them. `edit` lists the lots to pick from, then shows the lot's fields; name
+  one to change it, and `write` when you are done. `add` prints the
+  equivalent command, to reuse in a script.
+- Renaming a lot (`edit --new-lot`, or its `lot` field) also renames it
+  everywhere the scenario, and any scenario built on it, names it. Deleting
+  one lists the rows that move money in or out of it, and removes them if you
+  say yes. If the lot is a chain's only step, change or delete the chain
+  first.
+- In a scenario that builds on another (Part 1), `edit` on an inherited lot
+  writes a copy of the whole lot, changed, into this scenario, and leaves
+  the parent alone. A scenario can't remove a row it inherits, so `delete`
+  on an inherited lot sets it to zero here instead. These commands treat
+  that zeroed lot as deleted: `list` says so, and `add` can bring the lot
+  back. `list` also says which lots are inherited and which this scenario
+  changed.
 
 - For an **investment account**, you must always name the lot, everywhere
   the account is used: in `chains/*.csv`, in `scheduled.csv`'s
@@ -373,7 +404,8 @@ use a chain:
    (Part 4.5). In `calendar.csv`, `account_1`/`account_2` cannot — they must
    always name a plain account.
 2. **As a lot's own rule for refilling or overflowing.** This is set
-   directly on the lot's row in `account_values.csv`, not as a separate rule:
+   directly on the lot's row in `account_values.csv` (with
+   `sim account lot edit`, or by hand), not as a separate rule:
 
 ```mermaid
 flowchart LR
@@ -556,7 +588,7 @@ machine too small for a notebook comfortably.
 | To see | Run |
 | --- | --- |
 | accounts and their opening balances | `sim account list` |
-| the lots in one account | `sim account holdings <account>` |
+| the lots in one account | `sim account holdings <account>` (balances from a run), `sim account lot list <account>` (as entered) |
 | the accounts holding a symbol | `sim account holders <symbol>` |
 | the portfolio by asset class | `sim allocation` |
 | scheduled transactions | `sim scheduled list` |
