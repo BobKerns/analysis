@@ -22,11 +22,11 @@ usage() {
 mode=""
 target=""
 case "${1-}" in
-    --template) mode=template ;;
+    --template) mode="template" ;;
     -h|--help) usage ;;
     -*) usage ;;
     "") ;;
-    *) mode=link; target="$1" ;;
+    *) mode="link"; target="$1" ;;
 esac
 [ $# -le 1 ] || usage
 
@@ -44,7 +44,7 @@ if [ -z "$mode" ]; then
         printf "Path to your data repo (blank to use template data): " >&2
         read -r target || target=""
     fi
-    if [ -n "$target" ]; then mode=link; else mode=template; fi
+    if [ -n "$target" ]; then mode="link"; else mode="template"; fi
 fi
 
 if [ "$mode" = template ]; then
@@ -59,8 +59,8 @@ if [ "$mode" = template ]; then
 fi
 
 case "$target" in
-    "~") target="$HOME" ;;
-    "~/"*) target="$HOME/${target#"~/"}" ;;
+    \~) target="$HOME" ;;
+    \~/*) target="$HOME/${target#\~/}" ;;
 esac
 if [ ! -f "$target/sim/persons.csv" ]; then
     echo "link-data: $target is not a data repo (no sim/persons.csv)." >&2
