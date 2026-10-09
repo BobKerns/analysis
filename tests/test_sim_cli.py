@@ -1579,14 +1579,15 @@ def test_sim_ensemble_create_honors_explicit_seed(test_data_dir: Path) -> None:
     assert "seed: 12345" in result.output
 
 
-def test_sim_calendar_add_set_rate_writes_the_canonical_percent(
-    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+@pytest.mark.parametrize("typed", ["4.50", "4.50%"])
+def test_sim_calendar_add_set_rate_writes_and_reports_the_canonical_percent(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], typed: str,
 ) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
         [
-            "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.50",
+            "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", typed,
             "--data-dir", str(test_data_dir), "--scenario", "retire_alice",
         ],
     )
@@ -1595,6 +1596,7 @@ def test_sim_calendar_add_set_rate_writes_the_canonical_percent(
     row = df[df["series"] == "Asset_Checking"].iloc[-1]
     assert row["kind"] == "set_rate"
     assert row["amount"] == "4.5%"
+    assert "-> 4.5% on 2027-02-28" in result.output
 
 
 def test_sim_calendar_add_set_rate_with_vary_options(

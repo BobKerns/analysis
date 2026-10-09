@@ -2849,7 +2849,7 @@ def calendar_add_set_rate(
     path = scenario_dir / "calendar.csv"
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
-        f"{verb} set_rate {series!r} -> {rate_percent}% on {date} "
+        f"{verb} set_rate {series!r} -> {row["amount"]} on {date} "
         f"(aux_kind={aux_kind!r}) to {path}"
     )
 
