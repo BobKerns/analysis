@@ -1266,7 +1266,7 @@ def test_negative_rate_depreciates_asset_into_expense(test_data_dir: Path, tmp_p
 
     repo = test_data_dir
     (repo / "aux" / "rate__jalopy.csv").write_text(
-        "effective_date,annual_rate\n2020-01-31,-12\n", encoding="utf-8"
+        "effective_date,annual_rate\n2020-01-31,-12%\n", encoding="utf-8"
     )
     accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
     df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
@@ -2010,9 +2010,9 @@ def test_running_unresolved_vary_row_raises(
     loudly instead of firing the placeholder amount/date."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="4", vary_high="5",
+        vary_low="4%", vary_high="5%",
     )
     intent_path = load_scenario(
         test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,
@@ -2031,9 +2031,9 @@ def test_running_unresolved_vary_row_outside_scenario_range_still_raises(
     monthly loop, so it must be rejected before that loop starts."""
     append_calendar_row(
         date="2050-01-31", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="4", vary_high="5",
+        vary_low="4%", vary_high="5%",
     )
     intent_path = load_scenario(
         test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,

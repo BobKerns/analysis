@@ -7,13 +7,15 @@ reads them:
 
 - `annual_rate_micros` (rate and inflation series), `marginal_rate_micros`
   (tax brackets) and `rate_micros` (scheduled.csv, energy_credits) become
-  `annual_rate`, `marginal_rate` and `rate`, in percent: 45000 -> 4.5.
+  `annual_rate`, `marginal_rate` and `rate`, in percent: 45000 -> 4.5%.
 - `factor_micros` (rmd_factors) becomes `factor`, a plain number:
   26500000 -> 26.5.
 - calendar.csv: a `set_rate` row's `amount` and its `vary_*` amount bounds
   go from micros to percent, a `set_amount` or `one_off_transfer` row's from
   cents to dollars (120000 -> 1200.00); `vary_innovation_sd` goes from
   micros to percent.
+- allocations.csv's `weight` and a chain file's `percent`, already percents,
+  gain the % sign the loader now requires on every percent: 60 -> 60%.
 - A scenario's series/README.md gets its column description updated.
 
 Usage: scripts/convert_units_130.py [DATA_DIR] [--write]
@@ -46,7 +48,7 @@ AMOUNT_UNITS = {"set_rate": "percent", "set_amount": "dollars", "one_off_transfe
 VARY_AMOUNT_COLUMNS = ("vary_low", "vary_high", "vary_median", "vary_sd", "vary_mode")
 
 OLD_README_LINE = "- `annual_rate_micros`: the annual rate in micros (1% is `10000`)."
-NEW_README_LINE = "- `annual_rate`: the annual rate as a percent (`4.5` is 4.5%)."
+NEW_README_LINE = "- `annual_rate`: the annual rate as a percent, with its sign (`4.5%`)."
 
 
 def _plain(value: Decimal) -> str:
@@ -55,7 +57,7 @@ def _plain(value: Decimal) -> str:
 
 
 def micros_to_percent(raw: str) -> str:
-    return _plain(Decimal(int(raw)) / 10_000)
+    return _plain(Decimal(int(raw)) / 10_000) + "%"
 
 
 def micros_to_number(raw: str) -> str:
@@ -103,6 +105,19 @@ def convert_columns(header: list[str], rows: list[list[str]]) -> tuple[list[str]
                 row[index] = convert(row[index].strip())
                 changed += 1
     return new_header, changed
+
+
+def add_percent_signs(header: list[str], rows: list[list[str]], column: str) -> int:
+    """Append a % to each value in ``column`` that lacks one; returns how many."""
+    if column not in header:
+        return 0
+    index = header.index(column)
+    changed = 0
+    for row in rows:
+        if index < len(row) and row[index].strip() and not row[index].strip().endswith("%"):
+            row[index] = row[index].strip() + "%"
+            changed += 1
+    return changed
 
 
 def convert_calendar(header: list[str], rows: list[list[str]], where: Path) -> int:
@@ -158,6 +173,10 @@ def main() -> None:
         new_header, changed = convert_columns(header, rows)
         if path.name == "calendar.csv":
             changed += convert_calendar(header, rows, path)
+        elif path.name == "allocations.csv":
+            changed += add_percent_signs(header, rows, "weight")
+        elif path.parent.name == "chains":
+            changed += add_percent_signs(header, rows, "percent")
         if changed or new_header != header:
             planned.append((path, new_header, rows, newline, changed))
     readmes = [

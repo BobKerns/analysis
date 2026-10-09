@@ -247,7 +247,7 @@ def test_calendar_view_target_names_what_each_row_acts_on(
     kind when that isn't an ordinary rate -- and set_amount/retire_scheduled
     rows show their scheduled row, all in one `target` column."""
     append_calendar_row(
-        date="2027-03-31", kind="set_rate", series="cpi", amount="2.5",
+        date="2027-03-31", kind="set_rate", series="cpi", amount="2.5%",
         params_json='{"aux_kind": "inflation"}', description="CPI eases",
     )
     with open_scenario(test_data_dir, "retire_alice") as scenario:

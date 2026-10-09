@@ -35,9 +35,9 @@ def test_resolve_member_amount_target_draws_within_bounds(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="4", vary_high="5",
+        vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
     member = resolve_member(
@@ -105,9 +105,9 @@ def test_resolve_member_zero_uses_the_uniform_midpoint_not_a_draw(
     only the spread of members 1+."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="4", vary_high="5",
+        vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
     member = resolve_member(
@@ -130,9 +130,9 @@ def test_resolve_member_zero_uses_the_truncated_normal_median(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="4.5", vary_sd="0.2", vary_low="4", vary_high="5",
+        vary_median="4.5%", vary_sd="0.2%", vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
     member = resolve_member(
@@ -184,9 +184,9 @@ def test_resolve_member_is_reproducible_for_same_seed_and_index(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="4", vary_high="5",
+        vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
 
@@ -215,9 +215,9 @@ def test_resolve_member_different_members_draw_differently(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="0", vary_high="100",
+        vary_low="0%", vary_high="100%",
     )
     recipe = load_test_copy().intent_path
 
@@ -283,9 +283,9 @@ def test_resolve_member_ramp_interpolates_and_lands_on_target(
     # with it -- ADR-006's merge key includes `name`.)
     append_calendar_row(
         date="2027-06-30", kind="set_rate", name="checking_rate_ramp",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="6", vary_high="6", vary_ramp_months="3",
+        vary_low="6%", vary_high="6%", vary_ramp_months="3",
     )
     recipe = load_test_copy().intent_path
     member = resolve_member(
@@ -325,9 +325,9 @@ def test_resolve_member_ramp_starts_from_an_earlier_literal_rate_change(
     intervening change never happened."""
     append_calendar_row(
         date="2027-06-30", kind="set_rate", name="checking_rate_ramp",
-        series="Asset_Checking", amount="9.9999",
+        series="Asset_Checking", amount="9.9999%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="9", vary_high="9", vary_ramp_months="1",
+        vary_low="9%", vary_high="9%", vary_ramp_months="1",
     )
     recipe = load_test_copy().intent_path
     member = resolve_member(
@@ -358,9 +358,9 @@ def test_resolve_member_ramp_without_baseline_rate_raises(
     )
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="new_series_ramp",
-        series="never_before_seen_series", amount="4.5",
+        series="never_before_seen_series", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="6", vary_high="6", vary_ramp_months="3",
+        vary_low="6%", vary_high="6%", vary_ramp_months="3",
     )
     recipe = load_test_copy().intent_path
     with pytest.raises(EnsembleError, match="no existing"):
@@ -376,9 +376,9 @@ def test_load_ensemble_and_summary_across_members(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="0", vary_high="100",
+        vary_low="0%", vary_high="100%",
     )
     recipe = load_test_copy().intent_path
     for i in range(3):
@@ -420,9 +420,9 @@ def test_load_ensemble_excludes_a_failed_member(
     mean/range and overstate the member count."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="0", vary_high="100",
+        vary_low="0%", vary_high="100%",
     )
     recipe = load_test_copy().intent_path
     for i in range(2):
@@ -534,9 +534,9 @@ def test_read_batch_manifest_none_when_absent(tmp_path: Path) -> None:
 def _two_varying_rows(append_calendar_row: Callable[..., None]) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="4", vary_high="5",
+        vary_low="4%", vary_high="5%",
     )
     append_calendar_row(
         date="2027-06-30", kind="retire_scheduled", name="retire_bill_vary",
@@ -656,9 +656,9 @@ def test_resolve_member_ramp_at_quantile_lands_on_perturbed_target(
 ) -> None:
     append_calendar_row(
         date="2027-06-30", kind="set_rate", name="checking_rate_ramp",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="5", vary_high="7", vary_ramp_months="3",
+        vary_low="5%", vary_high="7%", vary_ramp_months="3",
     )
     recipe = load_test_copy().intent_path
     member = resolve_member(
@@ -783,9 +783,9 @@ def test_resolve_member_zero_lands_on_a_skewed_rows_authored_median(
     asymmetric bounds (#31)."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="4.5",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="4.5", vary_sd="0.5", vary_low="4", vary_high="7",
+        vary_median="4.5%", vary_sd="0.5%", vary_low="4%", vary_high="7%",
         vary_skew="0.7",
     )
     recipe = load_test_copy().intent_path

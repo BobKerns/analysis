@@ -122,7 +122,7 @@ def test_a_mixins_series_and_chain_overrides_are_inherited(
     derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
 ) -> None:
     derive_scenario("mix_rates", PARENT, {
-        "series/rate__Asset_Checking.csv": "effective_date,annual_rate\n2026-01-31,1\n",
+        "series/rate__Asset_Checking.csv": "effective_date,annual_rate\n2026-01-31,1%\n",
         "chains/asset__asset_checking_liquidity.csv": (
             "account_name,lot,maximum,percent,series,cadence\n"
             "Asset_TraditionalIRA_Alice,default,,,,\n"
@@ -211,7 +211,7 @@ def test_a_mixins_set_rate_warns_alone_and_is_read_by_its_child(
                            dtype=str, keep_default_na=False).iloc[:0]
     calendar.loc[0] = {**dict.fromkeys(calendar.columns, ""),
                        "date": "2027-01-31", "kind": "set_rate", "series": "housing",
-                       "amount": "3.5", "params_json": '{"aux_kind": "inflation"}',
+                       "amount": "3.5%", "params_json": '{"aux_kind": "inflation"}',
                        "name": "housing_rate"}
     scheduled = pd.read_csv(prototype_data / "scenarios" / PARENT / "scheduled.csv",
                             dtype=str, keep_default_na=False)

@@ -21,21 +21,32 @@ def _issues(load: Callable[[], LoadResult]) -> list[str]:
 
 
 @pytest.mark.parametrize(("text", "micros"), [
-    ("4.5", 45_000), ("4.5%", 45_000), (" -0.25 ", -2_500), ("150", 1_500_000), ("0.0001", 1),
+    ("4.5%", 45_000), (" -0.25% ", -2_500), ("150%", 1_500_000), ("0.0001%", 1), ("0%", 0),
 ])
 def test_percent_to_micros(text: str, micros: int) -> None:
     assert units.percent_to_micros(text) == micros
 
 
 @pytest.mark.parametrize(("text", "fragment"), [
-    ("4.00001", "more than four decimal places"), ("x", "invalid percent"), ("nan", "invalid percent"),
+    ("4.5", "needs its % sign"),
+    ("45000", "as micros, 45000 would be 4.5%"),
+    ("4.00001%", "invalid percent"),
+    (".5%", "invalid percent"),
+    ("x%", "invalid percent"),
+    ("nan%", "invalid percent"),
 ])
 def test_percent_to_micros_rejects(text: str, fragment: str) -> None:
     with pytest.raises(ValueError, match=fragment):
         units.percent_to_micros(text)
 
 
-@pytest.mark.parametrize(("micros", "text"), [(45_000, "4.5"), (60_000, "6"), (-2_500, "-0.25"), (0, "0")])
+def test_a_typed_percent_may_leave_off_its_sign() -> None:
+    assert units.percent_to_micros("4.5", require_sign=False) == 45_000
+
+
+@pytest.mark.parametrize(("micros", "text"), [
+    (45_000, "4.5%"), (60_000, "6%"), (-2_500, "-0.25%"), (0, "0%"),
+])
 def test_micros_to_percent(micros: int, text: str) -> None:
     assert units.micros_to_percent(micros) == text
 
@@ -46,12 +57,18 @@ def test_cents_round_trip(cents: int, text: str) -> None:
     assert units.dollars_to_cents(text) == cents
 
 
+@pytest.mark.parametrize("text", [".99", "1234.5", "1,234.56", "$1234.56", "1e3", "4.5%", "12.345"])
+def test_dollars_take_only_whole_dollars_or_dollars_and_cents(text: str) -> None:
+    with pytest.raises(ValueError):
+        units.dollars_to_cents(text)
+
+
 def test_natural_units_load_as_cents_and_micros(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
     append_calendar_row(date="2027-03-31", kind="set_rate", series="Asset_Checking", amount="5.25%")
     append_calendar_row(date="2029-04-30", kind="one_off_transfer", account_1="Income_Inheritance",
-                        account_2="Asset_Checking", amount="$1,234.56", tax_character="none")
+                        account_2="Asset_Checking", amount="1234.56", tax_character="none")
     con = sqlite3.connect(load_test_copy().intent_path)
     try:
         amounts = dict(con.execute("SELECT date, amount FROM calendar_event WHERE date IN "
@@ -85,11 +102,18 @@ def test_a_pre_130_column_names_the_conversion(
 def test_a_set_rate_over_100_percent_reads_as_unconverted_micros(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
+    append_calendar_row(date="2027-03-31", kind="set_rate", series="Asset_Checking", amount="45000%")
+    assert any("amount 45000% is over 100%" in i for i in _issues(load_test_copy))
+
+
+def test_a_bare_calendar_rate_names_its_missing_sign(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
     append_calendar_row(date="2027-03-31", kind="set_rate", series="Asset_Checking", amount="45000")
-    assert any("amount 45000 is over 100%" in i and "as micros, 45000 would be 4.5" in i
+    assert any("needs its % sign" in i and "as micros, 45000 would be 4.5%" in i
                for i in _issues(load_test_copy))
 
 
 def test_calendar_row_key_compares_amounts_by_value() -> None:
     row = {"date": "2027-03-31", "kind": "set_rate", "series": "Asset_Checking"}
-    assert calendar_row_key({**row, "amount": "4.5"}) == calendar_row_key({**row, "amount": "4.50%"})
+    assert calendar_row_key({**row, "amount": "4.5%"}) == calendar_row_key({**row, "amount": "4.50%"})

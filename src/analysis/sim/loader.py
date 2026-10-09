@@ -1185,7 +1185,8 @@ def _dollars_to_cents(
     *,
     resolver: _MoneyReferenceResolver | None = None,
 ) -> int:
-    """Parse a human-facing dollar amount (e.g. ``'1234.56'``, ``'-150'``) into
+    """Parse a human-facing dollar amount (``'1234.56'``, ``'-150'``, the only
+    shapes ``units.dollars_to_cents`` takes) or an ``@name`` rollup into
     integer cents. CSV money columns are kept in dollars-and-cents so they can
     be hand-edited; the engine continues to work in integer cents.
     """
@@ -1197,25 +1198,12 @@ def _dollars_to_cents(
         if not token:
             raise ValueError("money reference '@' missing token (e.g. '@home_basis')")
         return resolver.resolve(token)
-    try:
-        d = Decimal(raw)
-    except InvalidOperation as e:
-        raise ValueError(f"invalid money value: {s!r}") from e
-    cents = d * 100
-    if cents != cents.to_integral_value():
-        raise ValueError(f"money value {s!r} has sub-cent precision")
-    return int(cents)
+    return units.dollars_to_cents(raw)
 
 
 def _percent_to_micros(s: str) -> int:
-    """Parse a human-facing percentage such as ``25`` into millionths."""
-    try:
-        value = Decimal(s.strip()) * 10_000
-    except InvalidOperation as e:
-        raise ValueError(f"invalid percent value: {s!r}") from e
-    if value != value.to_integral_value():
-        raise ValueError(f"percent value {s!r} has excessive precision")
-    micros = int(value)
+    """Parse a human-facing share such as ``25%`` into millionths, 0-100%."""
+    micros = units.percent_to_micros(s)
     if not 0 <= micros <= 1_000_000:
         raise ValueError(f"percent value {s!r} must be between 0 and 100")
     return micros
@@ -2258,7 +2246,7 @@ def _validate_vary_process(
         issues.append(
             f"{where}: a process row's level must stay above -100% "
             f"(its lower bound, given or inferred, is "
-            f"{units.micros_to_percent(round(effective_low))}%), "
+            f"{units.micros_to_percent(round(effective_low))}), "
             "since its path is growth around that level"
         )
 

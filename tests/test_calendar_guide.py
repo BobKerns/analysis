@@ -53,8 +53,8 @@ def test_guide_writes_a_varying_row_and_shows_the_equivalent_command(
         f"--scenario retire_alice --data-dir {test_data_dir}"
     ) in result.output
     row = calendar_rows().query("name == 'checking_vary'").iloc[0]
-    assert (row["kind"], row["date"], row["amount"]) == ("set_rate", "2027-02", "4.5")
-    assert (row["vary_low"], row["vary_high"]) == ("4", "5")
+    assert (row["kind"], row["date"], row["amount"]) == ("set_rate", "2027-02", "4.5%")
+    assert (row["vary_low"], row["vary_high"]) == ("4%", "5%")
 
 
 def test_guide_asks_only_what_the_distribution_uses(calendar_add: Callable[..., Result]) -> None:
@@ -85,7 +85,7 @@ def test_guide_writes_a_process_row(
     assert "--vary-process ar1 --vary-persistence 0.2 --vary-innovation-sd 17" in result.output
     row = calendar_rows().query("name == 'stock_path'").iloc[0]
     assert (row["vary_process"], row["vary_persistence"], row["vary_innovation_sd"]) == (
-        "ar1", "0.2", "17")
+        "ar1", "0.2", "17%")
 
 
 def test_guide_asks_again_after_a_bad_answer(

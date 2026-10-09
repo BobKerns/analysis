@@ -84,8 +84,8 @@ def test_writing_a_varying_row_unchanged_keeps_its_bounds(
 ) -> None:
     append_calendar_row(
         date="2027-02", kind="set_rate", name="checking_vary", series="Asset_Checking",
-        amount="4.25", vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="4.25", vary_sd="1", vary_skew="0.5", vary_ramp_months="6",
+        amount="4.25%", vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="4.25%", vary_sd="1%", vary_skew="0.5", vary_ramp_months="6",
     )
     before = calendar_rows()
 
@@ -189,7 +189,7 @@ def test_edit_keeps_a_hand_authored_key_another_kinds_command_would_own(
         params_json=json.dumps({"aux_kind": "by hand"}),
     )
     append_calendar_row(
-        date="2031-06", kind="set_rate", series="Asset_Checking", amount="3",
+        date="2031-06", kind="set_rate", series="Asset_Checking", amount="3%",
         params_json=json.dumps({"description": "by hand"}),
     )
 
@@ -208,7 +208,7 @@ def test_edit_compares_another_rows_values_without_their_stray_spaces(
     calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
     append_calendar_row: Callable[..., None],
 ) -> None:
-    append_calendar_row(date="2028-01", kind="set_rate", series=" Asset_Checking ", amount="3")
+    append_calendar_row(date="2028-01", kind="set_rate", series=" Asset_Checking ", amount="3%")
     before = calendar_rows()
 
     # Row 1 is Asset_Checking's rate; moved to 2028-01 at 3% it would be row 6 again.
@@ -255,7 +255,7 @@ def test_edit_says_so_when_the_scenario_has_no_rows_of_its_own(
 
 
 def test_a_row_key_reads_dates_and_spacing_as_the_loader_does() -> None:
-    row = {"kind": "set_rate", "date": "2030-12-31", "series": "cpi", "amount": "3"}
+    row = {"kind": "set_rate", "date": "2030-12-31", "series": "cpi", "amount": "3%"}
 
     assert calendar_row_key({**row, "date": "2030-12"}) == calendar_row_key(row)
     assert calendar_row_key({**row, "series": " cpi "}) == calendar_row_key(row)

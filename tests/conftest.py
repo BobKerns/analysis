@@ -675,12 +675,12 @@ def blended_fund(test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[st
          "opening_cost_basis": "200000.00"},
     ])
     (test_data_dir / "allocations.csv").write_text(
-        "symbol,as_of,asset_class,weight\nFND,,stock_us,60\nFND,,bond,40\n")
+        "symbol,as_of,asset_class,weight\nFND,,stock_us,60%\nFND,,bond,40%\n")
     calendar = test_data_dir / "scenarios" / "retire_alice" / "calendar.csv"
     calendar.write_text(calendar.read_text().replace(
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,fund,"))
-    write_series("stock_us", "2026-01-31,8")
-    write_series("bond", "2026-01-31,4")
+    write_series("stock_us", "2026-01-31,8%")
+    write_series("bond", "2026-01-31,4%")
 
 
 @pytest.fixture(scope="function")
@@ -782,7 +782,7 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
     calendar.write_text(calendar.read_text().replace(
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,a,"))
     (test_data_dir / "aux" / "rate__AAA.csv").write_text(
-        "effective_date,annual_rate\n2026-01-31,2\n")
+        "effective_date,annual_rate\n2026-01-31,2%\n")
     (retire_alice_csv("chains") / "asset__lotb.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Brokerage_Joint,b,,,,\n")
 
@@ -964,9 +964,9 @@ def inflation_batch(
 
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="cpi_vary", series="cpi",
-        amount="2.5", params_json='{"aux_kind": "inflation"}',
+        amount="2.5%", params_json='{"aux_kind": "inflation"}',
         vary_target="amount", vary_distribution="uniform",
-        vary_low="1.5", vary_high="3.5",
+        vary_low="1.5%", vary_high="3.5%",
     )
     output = _load_and_run_batch(test_data_dir, intent_dir, runs_dir, "--sensitivity")
     assert "3/3 member(s) succeeded" in output, output

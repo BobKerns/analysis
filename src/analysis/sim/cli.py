@@ -1969,7 +1969,8 @@ def _percent_to_rate_micros(s: str) -> int:
     exceed 100%, so this doesn't reuse the loader's range-limited helper.
     """
     try:
-        return units.percent_to_micros(s)
+        # A typed argument is already named as a percent, so its sign is optional.
+        return units.percent_to_micros(s, require_sign=False)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
 

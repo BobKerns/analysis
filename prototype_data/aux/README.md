@@ -29,8 +29,7 @@ values; future months pick up the new ones.
 ## Units (same as everywhere else in the data repo)
 
 - **Money** is decimal **dollars**: `$31,500.00` → `31500.00`.
-- **Rates** are **percents**: `10%` → `10`, `9.3%` → `9.3` (a trailing `%`
-  is accepted too).
+- **Rates** are **percents**, with the `%` sign required: `10%`, `9.3%`.
 - **Factors** (`rmd_factors.csv`) are plain numbers: `26.5`.
 - **Dates** are `YYYY-MM-DD`, conventionally month-end (`2026-01-31`).
 
