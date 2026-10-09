@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from analysis.sim import units
+from analysis.sim.cli import _calendar_row_label
 from analysis.sim.loader import LoadError, LoadResult, calendar_row_key
 
 
@@ -97,6 +98,21 @@ def test_a_pre_130_column_names_the_conversion(
                           ("scheduled.csv", "rate_micros")):
         assert any(i.startswith(f"{where}: column {column}") and "convert_units_130.py" in i
                    for i in issues), issues
+
+
+def test_a_pre_130_header_with_no_rows_is_still_refused(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_aux("rmd_factors.csv", "effective_date,age,factor_micros\n")
+    assert any(i.startswith("aux/rmd_factors.csv: column factor_micros")
+               for i in _issues(load_test_copy))
+
+
+@pytest.mark.parametrize(("kind", "amount", "shown"), [
+    ("set_amount", "1200.00", "$1,200.00"), ("set_rate", "4.5%", "4.5%"),
+])
+def test_a_calendar_row_label_reads_the_authored_amount(kind: str, amount: str, shown: str) -> None:
+    assert shown in _calendar_row_label({"date": "2027-03-31", "kind": kind, "amount": amount})
 
 
 def test_a_set_rate_over_100_percent_reads_as_unconverted_micros(

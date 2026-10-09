@@ -614,6 +614,8 @@ def _read_scenario_inputs(
                 issues,
                 optional=has_parent or not required,
             )
+            if filename == "scheduled.csv":
+                _legacy_units_header(scenario_dir / filename, filename, issues)
             _normalize_month_columns(rows, filename, issues)
             _normalize_units(rows, filename, issues)
             return rows
@@ -1046,9 +1048,9 @@ def _read_aux_files(
         cols = registries.AUX_KIND_COLUMNS[kind]
         money_cols = registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
         micros_cols = registries.AUX_MICROS_COLUMNS.get(kind, {})
-        rows = _read_csv(csv_path, issues)
-        if _legacy_units_header(rows, f"aux/{csv_path.name}", issues):
+        if _legacy_units_header(csv_path, f"aux/{csv_path.name}", issues):
             continue
+        rows = _read_csv(csv_path, issues)
         for i, row in enumerate(rows, start=2):
             missing = [c for c in cols if c not in row]
             if missing:
@@ -1112,11 +1114,16 @@ _AUX_MICROS_PARSERS: dict[str, Callable[[str], int]] = {
 """How each `registries.AUX_MICROS_COLUMNS` unit is read."""
 
 
-def _legacy_units_header(rows: list[dict[str, str]], where: str, issues: list[str]) -> bool:
-    """Whether ``rows`` (one file's) still carry a pre-#130 micros column,
+def _legacy_units_header(path: Path, where: str, issues: list[str]) -> bool:
+    """Whether the CSV at ``path`` still has a pre-#130 micros column,
     reporting it if so: such a file's values would be read as percents or
-    plain numbers 10,000 or a million times too large."""
-    legacy = sorted(set(rows[0]) & registries.LEGACY_MICROS_COLUMNS) if rows else []
+    plain numbers 10,000 or a million times too large. Read from the header
+    itself, so a file with no rows yet is refused too."""
+    if not path.exists():
+        return False
+    with path.open(newline="", encoding="utf-8") as fh:
+        header = next(csv.reader(fh), [])
+    legacy = sorted({c.strip() for c in header} & registries.LEGACY_MICROS_COLUMNS)
     if legacy:
         issues.append(f"{where}: column {', '.join(legacy)}: {registries.UNITS_CONVERSION_HINT}")
     return bool(legacy)
@@ -1133,8 +1140,7 @@ def _normalize_units(rows: list[dict[str, str]], filename: str, issues: list[str
     """
     if filename == "scheduled.csv":
         # A pre-#130 file has no `rate` column, so its rows pass through
-        # untouched; the reported column fails the load.
-        _legacy_units_header(rows, filename, issues)
+        # untouched; read_overlay reports its column, which fails the load.
         for i, row in enumerate(rows, start=2):
             if "rate" not in row:
                 continue

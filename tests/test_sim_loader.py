@@ -1616,8 +1616,8 @@ def test_vary_truncated_normal_shape_loads_and_is_stored(
 
 @pytest.mark.parametrize(("extra", "message"), [
     ({"vary_skew": "0.5"}, "vary_sd is required"),               # shape needs an explicit sd
-    ({"vary_sd": "5000", "vary_tailweight": "0"}, "tailweight must be positive"),
-    ({"vary_sd": "5000", "vary_skew": "lots"}, "is not a number"),
+    ({"vary_sd": "0.5%", "vary_tailweight": "0"}, "tailweight must be positive"),
+    ({"vary_sd": "0.5%", "vary_skew": "lots"}, "is not a number"),
 ])
 def test_vary_truncated_normal_rejects_bad_shape(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
@@ -1663,9 +1663,9 @@ def test_vary_triangular_date_target_loads(
 
 
 @pytest.mark.parametrize(("extra", "message"), [
-    ({"vary_low": "4", "vary_high": "5", "vary_mode": "6"}, "vary_mode must lie within"),
-    ({"vary_low": "4"}, "triangular requires vary_high"),
-    ({"vary_low": "4", "vary_high": "5", "vary_sd": "1"}, "vary_sd is not used by triangular"),
+    ({"vary_low": "4%", "vary_high": "5%", "vary_mode": "6%"}, "vary_mode must lie within"),
+    ({"vary_low": "4%"}, "triangular requires vary_high"),
+    ({"vary_low": "4%", "vary_high": "5%", "vary_sd": "1%"}, "vary_sd is not used by triangular"),
 ])
 def test_vary_triangular_rejects_bad_parameters(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,

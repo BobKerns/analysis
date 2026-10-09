@@ -1778,12 +1778,14 @@ def _calendar_row_label(row: dict[str, str]) -> str:
         what = f"{row.get('account_1', '')} -> {row.get('account_2', '')}"
     else:
         what = row.get("scheduled_name") or row.get("series") or ""
-    amount = ""
-    if row.get("amount"):
+    # The row is as authored (dollars or a percent, by kind), not stored.
+    amount = row.get("amount", "")
+    unit = units.CALENDAR_AMOUNT_UNITS.get(kind)
+    if amount and unit is not None:
         try:
-            amount = registries.format_calendar_amount(kind, float(row["amount"]))
+            amount = registries.format_calendar_amount(kind, units.parse(unit, amount))
         except ValueError:
-            amount = row["amount"]
+            pass
     name = f"[{row['name']}]" if row.get("name") else ""
     parts = [f"{row.get('date', ''):<10}", f"{kind:<16}", what, amount, name]
     return "  ".join(part for part in parts if part.strip())
