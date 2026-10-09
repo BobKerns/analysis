@@ -27,6 +27,16 @@ see `engines` in `package.json`), it installs the spelling and markdown linters
 `package-lock.json`. Without Node.js, or with an older one, the script warns and carries on: the
 simulator and notebooks don't need it, only those two verification gates do.
 
+Last, it links the data and code repositories together. It asks for the path to
+your data repo, makes `data/shared` point to it, and asks which of the data
+repo's primary persons you are. Leave the path blank and it fills `data/shared`
+with the template data instead, used as a `test` person, which is what CI does.
+Either way, this then gives you a working environment:
+
+```sh
+source data/shared/sim/activate-analysis
+```
+
 ## What the script does, step by step (for reference or manual setup)
 
 1. Install [uv](https://github.com/astral-sh/uv)
@@ -69,6 +79,12 @@ simulator and notebooks don't need it, only those two verification gates do.
     This puts `cspell` and `markdownlint` in `node_modules/` (gitignored). Run
     them with `npm run spell` and `npm run markdownlint`. To change a version, edit
     `package.json` and run `npm install` to update the lockfile.
+7. Link the data and code repositories:
+    ```sh
+    scripts/link-data.sh /path/to/data-repo   # or --template for template data
+    ```
+    With no argument it asks for the path. Once `data/shared` exists, re-running
+    it leaves it alone; remove `data/shared` to link a different data repo.
 
 ## Jupyter and filesystem MCP servers
 

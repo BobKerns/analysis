@@ -262,16 +262,19 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # rebate schedule that appears and disappears on its own timeline (25C,
     # 25D, 30C all had different 2025/2026 sunset dates under OBBBA).
     # `category` free-text, e.g. "heat_pump", "ev_charger". `rate` is the
-    # credit as a percent (30 = 30%); `cap` is the per-project dollar
+    # credit as a percent (`30%`); `cap` is the per-project dollar
     # cap, 0/blank for uncapped. A category/date combo with no matching row
     # means "no credit available" -- callers must not assume a fallback.
     "energy_credits": ("effective_date", "category", "rate", "cap"),
+    # IRC §121 home-sale gain exclusion by filing status, read by the
+    # home_sale rule kind when its params give no explicit cap.
+    "home_sale_exclusion": ("effective_date", "filing_status", "amount"),
 }
 
 # Columns authored in a natural unit but stored as integer micros, by kind:
 # {kind: {csv column: (payload key, unit)}} (#130). The unit is `price`
 # (decimal dollars, positive, up to six places: sub-cent precision),
-# `percent` (a rate: 4.5 is 4.5%) or `number` (a plain decimal).
+# `percent` (a rate, with its sign: `4.5%`) or `number` (a plain decimal).
 AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "security_price": {"price": ("price_micros", "price")},
     "federal_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
@@ -305,6 +308,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "state_deductions": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
     "energy_credits": frozenset({"cap"}),
+    "home_sale_exclusion": frozenset({"amount"}),
 }
 
 

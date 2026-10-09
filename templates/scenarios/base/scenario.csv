@@ -1,0 +1,2 @@
+name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json
+base,"The main scenario; derive the others from it.",standard,2026-01-01,2060-12-31,42,,test,{}

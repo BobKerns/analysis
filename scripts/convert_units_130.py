@@ -47,8 +47,14 @@ LEGACY_COLUMNS = {*PERCENT_COLUMNS, *NUMBER_COLUMNS}
 AMOUNT_UNITS = {"set_rate": "percent", "set_amount": "dollars", "one_off_transfer": "dollars"}
 VARY_AMOUNT_COLUMNS = ("vary_low", "vary_high", "vary_median", "vary_sd", "vary_mode")
 
-OLD_README_LINE = "- `annual_rate_micros`: the annual rate in micros (1% is `10000`)."
-NEW_README_LINE = "- `annual_rate`: the annual rate as a percent, with its sign (`4.5%`)."
+# The series README's column line, as `sim scenario create` and the
+# template have each written it.
+README_LINES = {
+    "- `annual_rate_micros`: the annual rate in micros (1% is `10000`).":
+        "- `annual_rate`: the annual rate as a percent, with its sign (`4.5%`).",
+    "* `annual_rate_micros`: The effective rate in micros (% / 10,000).":
+        "* `annual_rate`: The effective rate as a percent, with its sign (`4.5%`).",
+}
 
 
 def _plain(value: Decimal) -> str:
@@ -181,7 +187,7 @@ def main() -> None:
             planned.append((path, new_header, rows, newline, changed))
     readmes = [
         p for p in sorted(data_dir.glob("scenarios/*/series/README.md"))
-        if OLD_README_LINE in p.read_text(encoding="utf-8")
+        if any(line in p.read_text(encoding="utf-8") for line in README_LINES)
     ]
 
     for path, header, _rows, _newline, changed in planned:
@@ -195,10 +201,10 @@ def main() -> None:
     for path, header, rows, newline, _changed in planned:
         _write(path, header, rows, newline)
     for path in readmes:
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(OLD_README_LINE, NEW_README_LINE),
-            encoding="utf-8",
-        )
+        text = path.read_text(encoding="utf-8")
+        for old, new in README_LINES.items():
+            text = text.replace(old, new)
+        path.write_text(text, encoding="utf-8")
     print(f"\nrewrote {len(planned)} CSV files and {len(readmes)} READMEs.")
 
 

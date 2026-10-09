@@ -3,7 +3,11 @@
 See [docs/user-guide.md](../docs/user-guide.md) for a task-based walkthrough (adding accounts and lots, changing expenses, modeling a sale, chains, lifespans, calendar events). This file is the CSV column reference and conventions cheat sheet.
 
 Skeletons for every CSV the simulator's loader expects (per [ADR-002](../docs/architecture/ADR-002-storage-schema.md) + [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md)).
-Copy this folder to a new data repo and edit. **Every header row matches the
+Copy this folder to a new data repo's `sim/` and edit: replace the `test`
+person in `persons.csv` with your own, delete `.analysis_user`, and start from
+the one scenario, `scenarios/base`. `scripts/link-data.sh --template` (run by
+`scripts/setup.sh` when you give it no data repo, and by CI) copies it unedited
+to `data/shared/sim`, where it loads as is. **Every header row matches the
 corresponding DDL column name exactly** to minimize confusion when reading the
 SQL schema alongside the source CSV.
 
@@ -35,7 +39,7 @@ SQL schema alongside the source CSV.
 
 - Scenario CSVs use decimal-dollar input where applicable (for example, `scheduled.csv` `amount`): `$1,234.56` is written as `1234.56`. The loader converts to integer cents.
 - Aux CSV money columns are also decimal dollars (e.g. `floor`, `amount`, `tier1_floor`, `tier2_floor`): `$1,234.56` → `1234.56`.
-- Rates in **integer micros** (× 1e6). `5%` → `50000`. `4.25%` → `42500`.
+- Rates are percents, with the `%` sign required: `5%`, `4.25%`. Dollar amounts are whole dollars or dollars and cents (`1234`, `-1234.56`, `0.99`).
 - Dates: a month column takes `YYYY-MM` or `YYYY-MM-DD` and is pinned to month-end at load. `birthdate`, a lot's `acquired`, and price dates are always a full `YYYY-MM-DD` and keep their day. Where the engine counts days, a full date keeps its day too: a `biweekly` rule's `start` (its first payday, so it must be a full date) and `end`, and a `retire_scheduled` event's `date`; a bare month there still means month-end. A date-varying calendar row's `vary_low`/`vary_high` keep a full date exactly, and a bare month spans the whole month.
 - Booleans: `0` / `1`.
 - JSON columns hold a single JSON value as a string. Use CSV quoting for embedded commas/quotes.
@@ -90,8 +94,11 @@ When sourced, `activate-analysis` will:
 
 - Discover the analysis program repo from `$ANALYSIS_DATA_DIR/.analysis`.
 - Prompt for the repo path if missing/invalid, validate it, and persist it.
-- Ensure `.analysis` is ignored in the data repo's `.gitignore`.
+- Ensure `.analysis`, `.current_scenario` and `.analysis_user` are ignored in the data repo's `.gitignore`.
 - Create `.venv` with `uv sync --group dev` if needed, then activate it.
+- Take `ANALYSIS_USER` from the environment or `.analysis_user`; if neither names a
+  person in `persons.csv`, list the `primary` persons and ask for an id or display
+  name, then remember it in `.analysis_user`.
 - Enable shell completion for `analysis`, `amazon`, and `sim`.
 
 ## Editing rows

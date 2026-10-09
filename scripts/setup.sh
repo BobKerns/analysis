@@ -1,6 +1,6 @@
 #!/bin/sh
 # One-time repo setup: uv, pinned Python, git hooks, deps, notebook filter,
-# lint tools.
+# lint tools, and the link to the data repo.
 # Safe to re-run; every step is idempotent.
 set -eu
 
@@ -69,5 +69,10 @@ else
     echo "Installing pinned lint tools (cspell, markdownlint)..."
     npm ci --no-audit --no-fund
 fi
+
+# Last, so the venv is there for the user prompt. Asks for the data repo's
+# path; a blank answer (or no terminal) builds template data instead.
+echo "Linking the data repo at data/shared..."
+scripts/link-data.sh
 
 echo "Setup complete."
