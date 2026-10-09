@@ -10,7 +10,7 @@ Each file has two columns:
 
 - `effective_date`: the month the rate takes effect; it holds until the
   next row's date.
-- `annual_rate_micros`: the annual rate in micros (1% is `10000`).
+- `annual_rate`: the annual rate as a percent, with its sign (`4.5%`).
 
 A file here replaces the parent scenario's file of the same name; a series
 with no file here is inherited from the parent. CPI is the exception: it

@@ -74,7 +74,7 @@ The `_other` catch-alls are deliberate escape hatches; the `--check` mode ([ADR-
 
 ### 2. `amount_rule_kind` registry
 
-Seven rule kinds. (Section numbers 2.4 and 2.8 are unused, so existing cross-references to the others stay valid.) Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate_micros`, `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
+Seven rule kinds. (Section numbers 2.4 and 2.8 are unused, so existing cross-references to the others stay valid.) Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate` (stored as `rate_micros`), `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
 
 **Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. [ADR-002](ADR-002-storage-schema.md)'s `transfer_event.reason_kind` CHECK and `scheduled_transaction.created_by_event_id` (tracing a synthesized rule back to its authoring calendar event) enforce this.
 
@@ -169,8 +169,8 @@ A placeholder rule that marks "compute taxes for the prior tax year" at a specif
 
 Monthly P&I against a mortgage liability account.
 
-- **Params:** the row's `to_account` is the mortgage liability; `interest_account` names the interest-expense account; `rate_micros` = annual rate as millionths of 1 (e.g. `60000` = 6.0%). Monthly P&I is the row's `amount`.
-- **Compute:** at fire time, `interest = round(liability_balance × annual_rate_micros / 12 / 1_000_000)`; `principal = payment_amount - interest`.
+- **Params:** the row's `to_account` is the mortgage liability; `interest_account` names the interest-expense account; `rate` = annual rate as a percent (e.g. `6%`), stored as `rate_micros`, millionths of 1. Monthly P&I is the row's `amount`.
+- **Compute:** at fire time, `interest = round(liability_balance × rate_micros / 12 / 1_000_000)`; `principal = payment_amount - interest`.
 - **Emits two events:**
   1. **Interest leg:** `from_account = Asset_Checking` (the row's `from_account`), `to_account = interest_account`, amount = `interest`, tax_character = `'none'`.
   2. **Principal leg:** `from_account = Asset_Checking`, `to_account = <liability>` (the row's `to_account`, reducing the liability balance), amount = `principal`, tax_character = `'none'`, `parent_event_id` linked to the interest leg.
@@ -203,7 +203,7 @@ Where expansions produce multiple synthesized rules, each rule's first (and only
 
 Replace one rate aux-table entry effective from this date forward.
 
-- **Columns:** `series` = rate-series name, `amount` = new value in micros (e.g. `45000` = 4.5%).
+- **Columns:** `series` = rate-series name, `amount` = new value as a percent (e.g. `4.5%`), stored in micros (`45000`). A value beyond ±100% is a load error: it is almost certainly one still in micros.
 - **Expansion:** inserts a new `aux_table` row with `kind = 'rate'`, the given `series`, `effective_date = event.date`, and `payload_json = {"value_micros": amount}`. The original row is **not** deleted; aux lookups use the most-recent-by-`effective_date` row.
 - **Unread series:** a row whose `(aux_kind, series)` no scheduled rule, chain step cap, or account growth series in the scenario reads loads with a warning, not an error: it has no effect there, but a mix-in or parent may set a series only the scenarios inheriting from it read. A rule that reads a series nothing supplies is still a load error, since the run would fail once it reached that rule.
 - **Ramp ([ADR-006](ADR-006-ensemble-scenarios.md), ensemble-only):** a row with `vary_target='amount'` and `vary_ramp_months` set draws its target the same way any `amount` variation does, then the vary step expands it into that many additional ordinary `set_rate` rows, one per month, linearly interpolated from the series' current value up to the drawn target, landing on it at `date + vary_ramp_months` — an "expanding" shape like §3.9's `life_transition`, not a new way of reading `aux_table` (still latest-row-on-or-before-month, no interpolation logic added there). Modeling a sudden jump is rarely the realistic prediction, which is the whole reason the ramp exists — including for a lot's future price expectation, since the engine only ever consults `security_price` once to derive an opening balance ([ADR-005](ADR-005-lots-and-per-lot-state.md) §6), so varying it is really varying this rate assumption.
@@ -214,7 +214,7 @@ Replace one rate aux-table entry effective from this date forward.
 
 Mutate a `ScheduledTransaction.amount` going forward.
 
-- **Columns:** `scheduled_name` = target rule name, `amount` = new base amount in cents, `param_date` = new base date (optional).
+- **Columns:** `scheduled_name` = target rule name, `amount` = new base amount in dollars (stored in cents), `param_date` = new base date (optional).
 - **Expansion:** updates the named row's `amount` (and `base_date` if given) in the run's in-memory intent. Persisted as an `applied_calendar_event` row; the run's snapshot of `scheduled_transaction` reflects the post-event state.
 - **Use:** "discretionary spending drops to $4,500/mo on retirement".
 
@@ -238,7 +238,7 @@ End an active `ScheduledTransaction`.
 
 A single one-shot movement, expressed as a synthesized rule so the §2 invariant holds.
 
-- **Columns:** `account_1` = from account or chain, `account_2` = to account or chain (not both chains), `amount` = cents, `tax_character` = tax character.
+- **Columns:** `account_1` = from account or chain, `account_2` = to account or chain (not both chains), `amount` = dollars (stored in cents), `tax_character` = tax character.
 - **Expansion:** synthesize one `scheduled_transaction` with `amount_rule_kind='fixed_amount'`, `cadence='one_off'`, `start = end = event.date`, `amount` from the payload, fields from payload, `created_by_event_id = calendar_event.id`. The engine fires it on `event.date` and routes it as it does any `fixed_amount` rule: lot to lot directly, or through a chain's sweep or draw, each `transfer_event` traced to that synthesized rule.
 - **Use:** windfalls, gifts, one-time settlements that have no recurring structure.
 
@@ -302,7 +302,7 @@ A shared influence that varying rows correlate with but that isn't itself a mode
 
 See `docs/user-guide.md` for a task-based walkthrough of common edits; this section is the exact column-by-column reference.
 
-All files: UTF-8, comma-delimited, one header row. Empty string means NULL. Boolean columns use `0`/`1`. A `YYYY-MM` date column names a month: it accepts `YYYY-MM` or `YYYY-MM-DD` and the loader pins either to that month's last day (a day within the month is ignored, #34), so a rule's `end` of `2030-06-15` still pays in June. Where the engine counts days, a full date keeps its day: a `biweekly` rule's `start` (its first payday, the 14-day anchor, so it must be a full date) and `end`, and a `retire_scheduled` event's `date` (it becomes that rule's `end`); a bare month there is still the month's end. Columns marked `YYYY-MM-DD` (`birthdate`, a lot's `acquired`, a `security_price`'s `effective_date`) are day-precise and keep the exact day. A `vary_target='date'` row's bounds are the one mixed case; see `vary_low`/`vary_high`. Money columns are decimal dollars (e.g. `1234.56`); the loader converts them to integer cents.
+All files: UTF-8, comma-delimited, one header row. Empty string means NULL. Boolean columns use `0`/`1`. A `YYYY-MM` date column names a month: it accepts `YYYY-MM` or `YYYY-MM-DD` and the loader pins either to that month's last day (a day within the month is ignored, #34), so a rule's `end` of `2030-06-15` still pays in June. Where the engine counts days, a full date keeps its day: a `biweekly` rule's `start` (its first payday, the 14-day anchor, so it must be a full date) and `end`, and a `retire_scheduled` event's `date` (it becomes that rule's `end`); a bare month there is still the month's end. Columns marked `YYYY-MM-DD` (`birthdate`, a lot's `acquired`, a `security_price`'s `effective_date`) are day-precise and keep the exact day. A `vary_target='date'` row's bounds are the one mixed case; see `vary_low`/`vary_high`. Money columns are decimal dollars, written `1234` or `-1234.56` and no other way (no `$`, thousands separator, single decimal digit, or bare `.99`); the loader converts them to integer cents. Every percent column (a rate, an allocation `weight`, a chain step's `percent`) takes its `%` sign, `4.5%` and never a bare `4.5`, with at least one digit before any decimal point and at most four after; a bare number in a percent column is a load error, so a percent can't be mistaken for dollars, a fraction, or micros. `rmd_factors.csv`'s `factor` is a plain number (`26.5`). The loader converts percents and factors to integer micros. Nothing past the loader sees dollars or percents. A file with a column from before this (`annual_rate_micros`, `marginal_rate_micros`, `rate_micros`, `factor_micros`) fails to load, naming the one-time conversion script `scripts/convert_units_130.py`.
 
 JSON-typed columns hold a single JSON value as a string; the loader parses and revalidates against the rule/event kind. Multi-line JSON in CSV is supported via standard CSV quoting.
 
@@ -434,7 +434,7 @@ What each symbol is made of, by asset class, for the portfolio overview (`sim al
 | `symbol` | text | ✓ | matches a lot's `symbol` |
 | `as_of` | YYYY-MM | | the date the weights describe; blank holds at every date. A fund's composition drifts (a target-date fund glides), so give several dated sets to follow it |
 | `asset_class` | enum | ✓ | `stock_us`, `stock_intl`, `stock` (stock whose US/international split is unknown: a placeholder to refine, distinct from bonds), `bond`, `cd` (certificates of deposit), `cash`, `real_estate`, `other` (`registries.ASSET_CLASSES`) |
-| `weight` | percent | ✓ | 0 to 100; the weights of one (`symbol`, `as_of`) set must add up to 100 |
+| `weight` | percent | ✓ | `0%` to `100%`; the weights of one (`symbol`, `as_of`) set must add up to 100 |
 
 For a date the overview uses the symbol's latest set on or before it, else its earliest. A lot with no rows for its symbol is classed by its account subkind (`cash`, `real_estate`, `vehicle`/`other_asset` as `other`; a `CASH` symbol is cash and a `CD` symbol is `cd`), and otherwise shown as `unclassified`, so a gap is visible. The weights are static per date: the model does not rebalance or let allocations drift with relative price movements, only follow the dated sets you give it, so a lot's class mix at any date is its balance times that date's weights. The file may be omitted.
 
@@ -566,23 +566,23 @@ loads correctly (it just won't be found via the tier it "should" have used).
 Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_values.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it.
 
 - **`federal_brackets.csv`**, **`state_brackets__<state>.csv`**:
-  `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate_micros`
+  `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate` (percent)
 - **`standard_deduction.csv`**:
   `effective_date`, `filing_status`, `amount`
 - **`federal_deductions.csv`**, **`state_deductions.csv`** (both optional): `effective_date`, `amount` — a dated itemized-deduction total, no `filing_status` split. `amount` may be `@name` (§4.1c). The `tax_accumulator` rule (§2.6) uses whichever is greater of this and the standard deduction; `state_deductions` falls back to `federal_deductions` if the scenario has no `state_deductions` rows at all.
 - **`ss_taxation_thresholds.csv`**:
   `effective_date`, `filing_status`, `tier1_floor`, `tier2_floor`
 - **`rmd_factors.csv`**:
-  `effective_date`, `age`, `factor_micros`
+  `effective_date`, `age`, `factor` (the divisor, e.g. `26.5`)
 - **`rate__<account_name>.csv`**:
-  `effective_date`, `annual_rate_micros`
+  `effective_date`, `annual_rate` (percent)
 - **`inflation__<series>.csv`**:
-  `effective_date`, `annual_rate_micros` (deterministic projection; future ensembles substitute realizations)
+  `effective_date`, `annual_rate` (percent; deterministic projection; future ensembles substitute realizations)
 - **`filing_status.csv`**:
   `effective_date`, `filing_status` (rows reflect transitions; one row per change)
 - **`rmd_start_age.csv`**:
   `effective_date`, `start_age`
-- **`ltcg_brackets.csv`** (optional): `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate_micros`. Federal long-term capital gain rates in the shape of `federal_brackets.csv`, but a band's `floor` is the taxable income, gain included, at which its rate starts (0%, 15%, 20%). See §2.6.
+- **`ltcg_brackets.csv`** (optional): `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate`. Federal long-term capital gain rates in the shape of `federal_brackets.csv`, but a band's `floor` is the taxable income, gain included, at which its rate starts (0%, 15%, 20%). See §2.6.
 - **`home_sale_exclusion.csv`** (optional): `effective_date`, `filing_status`, `amount`. The IRC §121 gain exclusion the `home_sale` rule applies when its params give no explicit cap.
 - **`security_price__<symbol>.csv`**: `effective_date`, `price` (decimal dollars, up to six places; stored as `price_micros`). Used only to derive a lot's `opening_balance` from its `quantity`, never month to month.
 
@@ -647,7 +647,7 @@ A child row with a new key is appended; one whose key matches the parent replace
 | `interest_account` | text | | mortgage_payment only: interest-expense account for the second leg |
 | `person` | text | | person id; required for `ss_benefit` and `rmd` |
 | `series` | text | | interpreted per `amount_rule_kind`: inflation series for `fixed_amount` (or `fixed` for none), rate series for `percent_of_balance`, COLA series for `ss_benefit`; rejected for any other rule kind |
-| `rate_micros` | int | | annual rate as millionths of 1; required for `mortgage_payment` (e.g. `60000` = 6.0%) |
+| `rate` | percent | | annual rate; required for `mortgage_payment` (e.g. `6%`); loader converts to integer micros |
 | `claim_age` | int | | required for `ss_benefit` |
 | `amount` | dollars | | interpreted per `amount_rule_kind`: base amount for `fixed_amount`, monthly P&I for `mortgage_payment`, or PIA at FRA for `ss_benefit`; decimal string e.g. `1234.56`; loader converts to integer cents |
 | `base_date` | YYYY-MM | | required when `series` names an inflation series |
@@ -672,7 +672,7 @@ Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` in
 | `account_name` | text | ✓ | account or another named chain to visit at this step |
 | `lot` | text | | the lot of `account_name`; **required for investment subkinds**, blank (meaning `default`) otherwise, and blank when the step is another chain. Every lot has an implicit leaf chain, named internally by account and lot, in the one chain namespace |
 | `maximum` | dollars | | ceiling on how much this step supplies; may be combined with `percent` |
-| `percent` | percentage | | percentage of the amount still outstanding when this step is reached; default 100% |
+| `percent` | percent | | share of the amount still outstanding when this step is reached, e.g. `50%`; default 100% |
 | `series` | text | | optional inflation series for `maximum`; the amount is based at the scenario start month; only meaningful when `maximum` is set |
 | `cadence` | enum | | `monthly` or `annual`; controls compounding for `series` and requires `series` |
 
@@ -703,7 +703,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `account_2` | text | | second event-specific account (e.g. `to_account` for `one_off_transfer`, which may also name a chain, though not when `account_1` does) |
 | `lot_2` | text | | the lot of `account_2` |
 | `series` | text | | rate series name; required for `set_rate` |
-| `amount` | int | | amount in appropriate units (micros for `set_rate`, cents for `one_off_transfer`, cents for `set_amount`); a placeholder, unused, when this row's own `vary_target='amount'` |
+| `amount` | number | | a percent for `set_rate` (`4.5%`), dollars for `one_off_transfer` and `set_amount` (`1234.56`); the loader converts to micros or cents. A placeholder, unused, when this row's own `vary_target='amount'` |
 | `param_date` | YYYY-MM | | effective date for `set_amount` new base |
 | `tax_character` | enum | | tax character for `one_off_transfer` |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
@@ -718,7 +718,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `vary_ramp_months` | int | optional, `vary_target='amount'` on a `kind='set_rate'` row only | see §3.1's ramp note |
 | `vary_process` | text | optional, `vary_target='amount'` on a `kind='set_rate'` row only | blank (one held draw) or `ar1`: the row's draw is a level, and the vary step expands it into one `set_rate` row per year moving around it (§3.1's process note, [ADR-006](ADR-006-ensemble-scenarios.md) §4a). Not with `vary_ramp_months`; the level's lower bound, given or inferred, must be above −100% |
 | `vary_persistence` | number | with `vary_process` | φ, at least 0 and below 1: how much of one year's departure from the level carries into the next |
-| `vary_innovation_sd` | int | with `vary_process` | one year's shock, in micros like the rate, > 0 |
+| `vary_innovation_sd` | percent | with `vary_process` | one year's shock, a percent like the rate (`17%`), > 0 |
 | `vary_correlate_with` | text | optional, on a varying row or a `latent_factor` | this row's parent in a correlation tree: another varying row's or a `latent_factor`'s `name` ([ADR-008](ADR-008-correlated-parameters.md)). The parent must exist (after inheritance), and the chain of parents can't loop |
 | `vary_correlation` | number | with `vary_correlate_with` | ρ in [-1, 1] between this row's and its parent's normal scores. Siblings under one parent correlate at the product of their ρ |
 | `vary_tail_dependence` | number | optional, on the root of a correlation tree only (a varying row or `latent_factor` with no `vary_correlate_with`) | `ν` ≥ 1: the Student-t copula's degrees of freedom for every row in the tree, so their extremes tend to coincide; lower is stronger, about 3 to 30; blank is the Gaussian copula ([ADR-008](ADR-008-correlated-parameters.md) §1). On a row with a parent it's a load error naming the tree's root; on a root nothing depends on, a warning |
@@ -960,3 +960,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#115](https://github.com/BobKerns/analysis/issues/115): `calendar.csv`'s `vary_process`, `vary_persistence` and `vary_innovation_sd` columns (§3.1, §4.8).
 - [#124](https://github.com/BobKerns/analysis/issues/124): `account lot add|edit|delete|list`, which edit an inherited lot by override and delete one by zeroing it (§7).
 - [#131](https://github.com/BobKerns/analysis/issues/131): `home_sale_exclusion.csv` is a registered aux kind, so the shipped template loads (§4.4).
+- [#130](https://github.com/BobKerns/analysis/issues/130): rates are written as percents and factors as plain numbers, and calendar amounts as percents or dollars; every percent takes its `%` sign and dollars take one strict form; the micros columns are renamed and refused (§2, §2.7, §3.1, §3.2, §3.5, §4, §4.1b, §4.4, §4.6, §4.7, §4.8).

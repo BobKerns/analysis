@@ -718,9 +718,9 @@ def test_parameters_describes_shape_and_moments(
     triangular date shows its mode, and its moments in days."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_sd="5000", vary_low="40000", vary_high="70000",
+        vary_median="4.5%", vary_sd="0.5%", vary_low="4%", vary_high="7%",
         vary_skew="0.7",
     )
     append_calendar_row(

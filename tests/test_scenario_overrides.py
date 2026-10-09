@@ -80,7 +80,7 @@ def test_a_scenario_can_add_a_series_file_the_shared_dir_does_not_have(
     series_dir = repo / "scenarios" / "retire_alice" / "series"
     series_dir.mkdir(exist_ok=True)
     (series_dir / "rate__NEWFUND.csv").write_text(
-        "effective_date,annual_rate_micros\n2026-01-31,50000\n", encoding="utf-8",
+        "effective_date,annual_rate\n2026-01-31,5%\n", encoding="utf-8",
     )
     result = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "out",
                            allow_dirty_data=True)
@@ -103,7 +103,7 @@ def test_a_shared_series_dir_at_the_data_repo_root_is_not_read(
     series_dir = repo / "series"
     series_dir.mkdir(exist_ok=True)
     (series_dir / "rate__STRAY.csv").write_text(
-        "effective_date,annual_rate_micros\n2026-01-31,50000\n", encoding="utf-8",
+        "effective_date,annual_rate\n2026-01-31,5%\n", encoding="utf-8",
     )
     result = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "out",
                            allow_dirty_data=True)

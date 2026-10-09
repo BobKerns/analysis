@@ -986,7 +986,7 @@ def _mortgage_ytd_split(
 ) -> tuple[int, int]:
     if monthly_payment is None or annual_micros is None:
         raise EngineError(
-            f"mortgage_payment id={tid}: YTD split requires amount and rate_micros"
+            f"mortgage_payment id={tid}: YTD split requires amount and rate"
         )
     remaining_ytd = ytd_total
     outstanding = max(0, starting_balance)
@@ -1256,7 +1256,7 @@ def _apply_mortgage_payment(
     annual_micros = params.get("rate_micros")
     if not (interest_name and annual_micros is not None):
         raise EngineError(
-            f"mortgage_payment id={tid}: requires interest_account and rate_micros"
+            f"mortgage_payment id={tid}: requires interest_account and rate"
         )
     interest_id = account_id_by_name.get(interest_name)
     if interest_id is None:

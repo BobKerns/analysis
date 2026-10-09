@@ -25,7 +25,7 @@ from analysis.sim.loader import LoadError, LoadResult
 
 from tests.test_correlation import _factor
 
-_PROCESS = {"vary_process": "ar1", "vary_persistence": "0.5", "vary_innovation_sd": "20000"}
+_PROCESS = {"vary_process": "ar1", "vary_persistence": "0.5", "vary_innovation_sd": "2%"}
 
 
 def _process_rate(
@@ -33,9 +33,9 @@ def _process_rate(
     series: str = "Asset_Checking", **extra: str,
 ) -> None:
     fields = {
-        "date": date, "kind": "set_rate", "name": name, "series": series, "amount": "45000",
+        "date": date, "kind": "set_rate", "name": name, "series": series, "amount": "4.5%",
         "vary_target": "amount", "vary_distribution": "uniform",
-        "vary_low": "40000", "vary_high": "50000", **_PROCESS,
+        "vary_low": "4%", "vary_high": "5%", **_PROCESS,
     }
     append_calendar_row(**(fields | extra))
 
@@ -137,10 +137,11 @@ def test_every_month_grows_by_a_positive_factor_at_the_lowest_level() -> None:
     ({"vary_persistence": "-0.1"}, "vary_persistence must be at least 0 and below 1"),
     ({"vary_persistence": "nan"}, "vary_persistence must be at least 0 and below 1"),
     ({"vary_persistence": "x"}, "vary_persistence 'x' is not a number"),
-    ({"vary_innovation_sd": "0"}, "vary_innovation_sd must be positive"),
-    ({"vary_innovation_sd": "1.5"}, "is not a whole number of micros"),
+    ({"vary_innovation_sd": "0%"}, "vary_innovation_sd must be positive"),
+    ({"vary_innovation_sd": "1.00001%"}, "invalid percent value"),
     ({"vary_ramp_months": "6"}, "vary_process and vary_ramp_months don't combine"),
-    ({"vary_low": "-1000000"}, "level must stay above -100%"),
+    ({"vary_low": "-100%"}, "level must stay above -100%"),
+    ({"vary_innovation_sd": "150%"}, "is over 100%"),
 ])
 def test_bad_process_rows_are_rejected(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
@@ -156,7 +157,7 @@ def test_an_inferred_bound_below_minus_100_percent_is_rejected(
 ) -> None:
     """The truncated_normal's default bound (median - 3 sd) counts too."""
     _process_rate(append_calendar_row, "stock_path", vary_distribution="truncated_normal",
-                  vary_low="", vary_high="", vary_median="70000", vary_sd="400000")
+                  vary_low="", vary_high="", vary_median="7%", vary_sd="40%")
     assert any("level must stay above -100%" in i for i in _issues(load_test_copy))
 
 
@@ -164,7 +165,7 @@ def test_process_columns_need_a_varying_set_rate_amount_row(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
     append_calendar_row(date="2027-03-31", kind="set_rate", series="Asset_Checking",
-                        amount="45000", **_PROCESS)
+                        amount="4.5%", **_PROCESS)
     append_calendar_row(
         date="2030-12-31", kind="retire_scheduled", name="late", scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform", vary_low="2030-06-30",
@@ -232,10 +233,10 @@ def test_a_path_stops_before_the_next_authored_rate_for_its_series(
 ) -> None:
     _process_rate(append_calendar_row, "stock_path")
     append_calendar_row(date="2031-02-28", kind="set_rate", series="Asset_Checking",
-                        amount="30000", description="authored later")
+                        amount="3%", description="authored later")
     # A different aux_kind on the same series name doesn't cut the path.
     append_calendar_row(date="2029-06-30", kind="set_rate", series="Asset_Checking",
-                        amount="20000", params_json='{"aux_kind": "inflation"}')
+                        amount="2%", params_json='{"aux_kind": "inflation"}')
     member = _member(load_test_copy().intent_path, tmp_path, 3)
     assert [d for d, _ in _generated(member, "stock_path")] == [
         "2028-02-29", "2029-02-28", "2030-02-28",
@@ -250,7 +251,7 @@ def test_a_later_row_on_the_same_date_takes_over_at_once(
     the process row on its own date replaces it, and the path never starts."""
     _process_rate(append_calendar_row, "stock_path")
     append_calendar_row(date="2027-02-28", kind="set_rate", series="Asset_Checking",
-                        amount="30000", description="same day, later row")
+                        amount="3%", description="same day, later row")
     member = _member(load_test_copy().intent_path, tmp_path, 2)
     assert _generated(member, "stock_path") == []
 
@@ -386,7 +387,7 @@ def test_editing_a_process_row_keeps_its_process(
     rows = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
     row = rows.query("name == 'stock_path'").iloc[0]
     assert (row["description"], row["vary_process"], row["vary_persistence"],
-            row["vary_innovation_sd"]) == ("stocks", "ar1", "0.2", "170000")
+            row["vary_innovation_sd"]) == ("stocks", "ar1", "0.2", "17%")
 
 
 # --- end to end ----------------------------------------------------------------------

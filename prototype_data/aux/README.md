@@ -29,11 +29,12 @@ values; future months pick up the new ones.
 ## Units (same as everywhere else in the data repo)
 
 - **Money** is decimal **dollars**: `$31,500.00` → `31500.00`.
-- **Rates** are integer **micros** (millionths): `10%` → `100000`,
-  `9.3%` → `93000`, `3.0%` → `30000`.
+- **Rates** are **percents**, with the `%` sign required: `10%`, `9.3%`.
+- **Factors** (`rmd_factors.csv`) are plain numbers: `26.5`.
 - **Dates** are `YYYY-MM-DD`, conventionally month-end (`2026-01-31`).
 
-The column-name suffix (`_micros`) marks rate/factor columns; money columns are plain (decimal dollars).
+The loader converts these to integer cents and micros; nothing past it sees
+dollars or percents.
 
 ## Filename pattern
 

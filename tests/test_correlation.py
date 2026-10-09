@@ -39,8 +39,8 @@ def _factor(append_calendar_row: Callable[..., None], name: str, **extra: str) -
 
 def _varying_rate(append_calendar_row: Callable[..., None], name: str, **extra: str) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="set_rate", name=name, series="Asset_Checking", amount="45000",
-        vary_target="amount", vary_distribution="uniform", vary_low="40000", vary_high="50000",
+        date="2027-02-28", kind="set_rate", name=name, series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform", vary_low="4%", vary_high="5%",
         **extra,
     )
 
@@ -64,8 +64,8 @@ def test_two_level_tree_loads_and_is_stored(
                   vary_correlation="0.8")
     append_calendar_row(
         date="2028-02-29", kind="set_rate", name="rate_b", series="Asset_Checking",
-        amount="45000", vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_sd="3000", vary_correlate_with="economy",
+        amount="4.5%", vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="4.5%", vary_sd="0.3%", vary_correlate_with="economy",
         vary_correlation="-0.4",
     )
     result = load_test_copy()
@@ -97,8 +97,8 @@ def test_two_factors_in_one_scenario_both_survive_the_merge(
     _factor(append_calendar_row, "f2")
     _varying_rate(append_calendar_row, "r1", vary_correlate_with="f1", vary_correlation="0.5")
     append_calendar_row(
-        date="2028-02-29", kind="set_rate", name="r2", series="Asset_Checking", amount="45000",
-        vary_target="amount", vary_distribution="uniform", vary_low="40000", vary_high="50000",
+        date="2028-02-29", kind="set_rate", name="r2", series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform", vary_low="4%", vary_high="5%",
         vary_correlate_with="f2", vary_correlation="0.5",
     )
     con = sqlite3.connect(load_test_copy().intent_path)
@@ -126,8 +126,8 @@ def test_child_scenario_overrides_and_uses_a_parent_factor(
         },
         dict.fromkeys(CALENDAR_HEADER, "") | {
             "date": "2027-02-28", "kind": "set_rate", "name": "rate_a",
-            "series": "Asset_Checking", "amount": "45000", "vary_target": "amount",
-            "vary_distribution": "uniform", "vary_low": "40000", "vary_high": "50000",
+            "series": "Asset_Checking", "amount": "4.5%", "vary_target": "amount",
+            "vary_distribution": "uniform", "vary_low": "4%", "vary_high": "5%",
             "vary_correlate_with": "economy", "vary_correlation": "0.6",
         },
     ])
@@ -168,8 +168,8 @@ def test_correlation_rejections(
     for i, (name, extra) in enumerate(rows):
         append_calendar_row(
             date=f"202{7 + i}-02-28", kind="set_rate", name=name, series="Asset_Checking",
-            amount="45000", vary_target="amount", vary_distribution="uniform",
-            vary_low="40000", vary_high="50000", **extra,
+            amount="4.5%", vary_target="amount", vary_distribution="uniform",
+            vary_low="4%", vary_high="5%", **extra,
         )
     assert any(message in issue for issue in _issues(load_test_copy)), _issues(load_test_copy)
 
@@ -180,7 +180,7 @@ def test_correlation_on_a_literal_row_is_rejected(
     _factor(append_calendar_row, "f")
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="fixed", series="Asset_Checking",
-        amount="45000", vary_correlate_with="f", vary_correlation="0.5",
+        amount="4.5%", vary_correlate_with="f", vary_correlation="0.5",
     )
     assert any("only valid on a varying row" in i for i in _issues(load_test_copy))
 
@@ -432,8 +432,8 @@ def _correlated_recipe(append_calendar_row: Callable[..., None], *, correlated: 
         _factor(append_calendar_row, "economy")
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="tied_rate", series="Asset_Checking",
-        amount="45000", vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_sd="5000", vary_low="38000", vary_high="70000",
+        amount="4.5%", vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="4.5%", vary_sd="0.5%", vary_low="3.8%", vary_high="7%",
         vary_skew="0.5", **link("economy", "0.8"),
     )
     append_calendar_row(
@@ -443,8 +443,8 @@ def _correlated_recipe(append_calendar_row: Callable[..., None], *, correlated: 
     )
     append_calendar_row(
         date="2028-02-29", kind="set_rate", name="free_rate", series="Asset_Checking",
-        amount="45000", vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        amount="4.5%", vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
     )
     append_calendar_row(
         date="2028-06-30", kind="retire_scheduled", name="free_date", scheduled_name="salary_alice",
@@ -539,8 +539,8 @@ def test_an_unrelated_tree_does_not_change_existing_draws(
     _factor(append_calendar_row, "markets")
     append_calendar_row(
         date="2029-02-28", kind="set_rate", name="other_rate", series="Asset_Checking",
-        amount="45000", vary_target="amount", vary_distribution="uniform", vary_low="40000",
-        vary_high="50000", vary_correlate_with="markets", vary_correlation="0.5",
+        amount="4.5%", vary_target="amount", vary_distribution="uniform", vary_low="4%",
+        vary_high="5%", vary_correlate_with="markets", vary_correlation="0.5",
     )
     after = _resolve(load_test_copy().intent_path, tmp_path / "a", 5)["draws"]
     for name in ("economy", "tied_rate", "tied_date", "free_rate", "free_date"):
@@ -569,8 +569,8 @@ def test_correlated_ramp_lands_on_its_drawn_target(
     _factor(append_calendar_row, "economy")
     append_calendar_row(
         date="2027-06-30", kind="set_rate", name="ramped", series="Asset_Checking",
-        amount="45000", vary_target="amount", vary_distribution="uniform",
-        vary_low="50000", vary_high="70000", vary_ramp_months="3",
+        amount="4.5%", vary_target="amount", vary_distribution="uniform",
+        vary_low="5%", vary_high="7%", vary_ramp_months="3",
         vary_correlate_with="economy", vary_correlation="0.7",
     )
     recipe = load_test_copy().intent_path
@@ -788,13 +788,13 @@ def test_independent_inputs_are_not_marked_correlated(
         _varying_rate(append_calendar_row, "tied", vary_correlate_with="f", vary_correlation="0.8")
         append_calendar_row(
             date="2028-02-29", kind="set_rate", name="untied", series="Asset_Checking",
-            amount="45000", vary_target="amount", vary_distribution="uniform",
-            vary_low="40000", vary_high="50000", vary_correlate_with="f", vary_correlation="0",
+            amount="4.5%", vary_target="amount", vary_distribution="uniform",
+            vary_low="4%", vary_high="5%", vary_correlate_with="f", vary_correlation="0",
         )
     append_calendar_row(
         date="2029-02-28", kind="set_rate", name="free_rate", series="Asset_Checking",
-        amount="45000", vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        amount="4.5%", vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
     )
     batch = _small_mc_batch(test_data_dir, intent_dir, runs_dir)
     assert not sensitivity.has_correlated_rows(batch)
@@ -809,8 +809,8 @@ def test_two_dependent_rows_mark_a_batch_correlated(
     _factor(append_calendar_row, "f")
     _varying_rate(append_calendar_row, "a", vary_correlate_with="f", vary_correlation="0.8")
     append_calendar_row(
-        date="2028-02-29", kind="set_rate", name="b", series="Asset_Checking", amount="45000",
-        vary_target="amount", vary_distribution="uniform", vary_low="40000", vary_high="50000",
+        date="2028-02-29", kind="set_rate", name="b", series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform", vary_low="4%", vary_high="5%",
         vary_correlate_with="f", vary_correlation="0.5",
     )
     assert sensitivity.has_correlated_rows(_small_mc_batch(test_data_dir, intent_dir, runs_dir))
@@ -915,15 +915,15 @@ def test_factor_reach_counts_varying_descendants(
     _factor(append_calendar_row, "inflation", vary_correlate_with="regime", vary_correlation="0.7")
     append_calendar_row(
         date="2029-02-28", kind="set_rate", name="cpi_rate", series="Asset_Checking",
-        amount="45000", vary_target="amount", vary_distribution="uniform", vary_low="40000",
-        vary_high="50000", vary_correlate_with="inflation", vary_correlation="0.9",
+        amount="4.5%", vary_target="amount", vary_distribution="uniform", vary_low="4%",
+        vary_high="5%", vary_correlate_with="inflation", vary_correlation="0.9",
     )
     _factor(append_calendar_row, "someday")
     _factor(append_calendar_row, "inert")
     append_calendar_row(
         date="2029-05-31", kind="set_rate", name="unmoved_rate", series="Asset_Checking",
-        amount="45000", vary_target="amount", vary_distribution="uniform", vary_low="40000",
-        vary_high="50000", vary_correlate_with="inert", vary_correlation="0",
+        amount="4.5%", vary_target="amount", vary_distribution="uniform", vary_low="4%",
+        vary_high="5%", vary_correlate_with="inert", vary_correlation="0",
     )
     reach = factor_reach(load_test_copy().intent_path)
     # A row reached only through a zero rho isn't moved (PR #53 review).

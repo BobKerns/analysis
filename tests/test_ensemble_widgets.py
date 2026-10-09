@@ -140,9 +140,9 @@ def small_ensemble_runs_dir(
     """Two already-resolved-and-run members of a tiny vary_distribution recipe."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
     batch_dir = runs_dir / "retire_alice" / "2026-01-01T000000Z"

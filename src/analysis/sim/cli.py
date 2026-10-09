@@ -29,7 +29,7 @@ from analysis.expenses.baseline import (
     load_expense_account_map,
     replace_generated_scheduled_rows,
 )
-from analysis.sim import allocation, calendar_guide, lot_guide, prices, registries, sensitivity
+from analysis.sim import allocation, calendar_guide, lot_guide, prices, registries, sensitivity, units
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
     open_run, open_scenario, year_end_values, Connection,
@@ -1778,12 +1778,14 @@ def _calendar_row_label(row: dict[str, str]) -> str:
         what = f"{row.get('account_1', '')} -> {row.get('account_2', '')}"
     else:
         what = row.get("scheduled_name") or row.get("series") or ""
-    amount = ""
-    if row.get("amount"):
+    # The row is as authored (dollars or a percent, by kind), not stored.
+    amount = row.get("amount", "")
+    unit = units.CALENDAR_AMOUNT_UNITS.get(kind)
+    if amount and unit is not None:
         try:
-            amount = registries.format_calendar_amount(kind, float(row["amount"]))
+            amount = registries.format_calendar_amount(kind, units.parse(unit, amount))
         except ValueError:
-            amount = row["amount"]
+            pass
     name = f"[{row['name']}]" if row.get("name") else ""
     parts = [f"{row.get('date', ''):<10}", f"{kind:<16}", what, amount, name]
     return "  ".join(part for part in parts if part.strip())
@@ -1969,12 +1971,17 @@ def _percent_to_rate_micros(s: str) -> int:
     exceed 100%, so this doesn't reuse the loader's range-limited helper.
     """
     try:
-        value = Decimal(s.strip()) * 10_000
-    except InvalidOperation as e:
-        raise click.ClickException(f"invalid percent value: {s!r}") from e
-    if value != value.to_integral_value():
-        raise click.ClickException(f"percent value {s!r} has excessive precision")
-    return int(value)
+        # A typed argument is already named as a percent, so its sign is optional.
+        return units.percent_to_micros(s, require_sign=False)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+
+
+# What each calendar amount unit is typed as (units.CALENDAR_AMOUNT_UNITS).
+_AMOUNT_PARSERS: dict[str, Callable[[str], int]] = {
+    "dollars": _parse_amount_cents,
+    "percent": _percent_to_rate_micros,
+}
 
 
 _TAIL_DEPENDENCE_HELP = (
@@ -2007,7 +2014,7 @@ def _vary_process_options(f):
 def _process_fields(
     vary_process: str | None, vary_persistence: str | None, vary_innovation_sd: str | None,
     *, vary_target: str, vary_ramp_months: int | None,
-    amount_parser: Callable[[str], int] | None,
+    amount_unit: str | None,
 ) -> dict[str, str]:
     """``vary_process``/``vary_persistence``/``vary_innovation_sd`` cells
     (ADR-006 §4a), checked as far as the row alone allows; the level's
@@ -2017,7 +2024,7 @@ def _process_fields(
             raise click.ClickException(
                 "--vary-persistence and --vary-innovation-sd go with --vary-process")
         return {}
-    if vary_target != "amount" or amount_parser is None:
+    if vary_target != "amount" or amount_unit is None:
         raise click.ClickException("--vary-process needs --vary-target amount")
     if vary_ramp_months is not None:
         raise click.ClickException("--vary-process and --vary-ramp-months don't combine")
@@ -2032,12 +2039,12 @@ def _process_fields(
     if not 0.0 <= phi < 1.0:
         raise click.ClickException(
             f"--vary-persistence must be at least 0 and below 1 (got {vary_persistence})")
-    sd = amount_parser(vary_innovation_sd)
+    sd = _AMOUNT_PARSERS[amount_unit](vary_innovation_sd)
     if sd <= 0:
         raise click.ClickException(
             f"--vary-innovation-sd must be positive (got {vary_innovation_sd})")
     return {"vary_process": vary_process, "vary_persistence": vary_persistence,
-            "vary_innovation_sd": str(sd)}
+            "vary_innovation_sd": units.format_stored(amount_unit, sd)}
 
 
 def _vary_row_options(f):
@@ -2185,7 +2192,7 @@ def _vary_row_fields(
     vary_correlation: str | None,
     vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
-    amount_parser: Callable[[str], int] | None,
+    amount_unit: str | None,
     vary_process: str | None = None,
     vary_persistence: str | None = None,
     vary_innovation_sd: str | None = None,
@@ -2196,8 +2203,8 @@ def _vary_row_fields(
     row's own literal value (percent for set-rate, dollars for set-amount/
     transfer) for an ``amount`` target, or ``YYYY-MM`` / ``YYYY-MM-DD`` for a
     ``date`` target (a bare month is resolved per bound by the loader, #34);
-    ``amount_parser`` converts the former to the row's own raw storage unit
-    (micros/cents), matching how the row's own literal value is converted.
+    ``amount_unit`` (``dollars`` or ``percent``) is that unit: a bound is
+    checked by parsing it, and written back in its canonical form (#130).
     """
     if not vary_distribution:
         if any([
@@ -2212,7 +2219,7 @@ def _vary_row_fields(
         raise click.ClickException("--vary-distribution requires --vary-target")
     if not row_name:
         raise click.ClickException("--vary-distribution requires --name")
-    if vary_target == "amount" and amount_parser is None:
+    if vary_target == "amount" and amount_unit is None:
         raise click.ClickException("this calendar kind has no amount column to vary")
 
     # Catch a distribution/bound mismatch here too, not just at 'sim load' --
@@ -2243,8 +2250,8 @@ def _vary_row_fields(
             return ""
         if vary_target == "date":
             return _validate_month_date(raw)
-        assert amount_parser is not None  # an amount target without one was rejected above
-        return str(amount_parser(raw))
+        assert amount_unit is not None  # an amount target without one was rejected above
+        return units.format_stored(amount_unit, _AMOUNT_PARSERS[amount_unit](raw))
 
     shape: dict[str, float] = {}
     for col, raw in (("vary_skew", vary_skew), ("vary_tailweight", vary_tailweight)):
@@ -2260,7 +2267,8 @@ def _vary_row_fields(
         # is "required" -- but *some* combination must be enough to resolve
         # every one, which is worth catching now rather than only at the
         # separate 'sim load' step.
-        assert amount_parser is not None  # rejected above for an amount target
+        assert amount_unit is not None  # rejected above for an amount target
+        amount_parser = _AMOUNT_PARSERS[amount_unit]
         skew = shape.get("vary_skew", 0.0)
         tailweight = shape.get("vary_tailweight", 1.0)
         try:
@@ -2290,7 +2298,7 @@ def _vary_row_fields(
         "vary_ramp_months": str(vary_ramp_months) if vary_ramp_months is not None else "",
         **_process_fields(
             vary_process, vary_persistence, vary_innovation_sd, vary_target=vary_target,
-            vary_ramp_months=vary_ramp_months, amount_parser=amount_parser,
+            vary_ramp_months=vary_ramp_months, amount_unit=amount_unit,
         ),
     }
 
@@ -2360,7 +2368,7 @@ def _do_add_transfer(
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
-        vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
+        vary_ramp_months=vary_ramp_months, amount_unit="dollars",
     )
 
     # account_1/account_2/amount/tax_character are already carried by the
@@ -2380,7 +2388,7 @@ def _do_add_transfer(
         "account_2": to_account,
         "lot_2": to_lot,
         "series": series,
-        "amount": str(cents),
+        "amount": units.cents_to_dollars(cents),
         "tax_character": tax_character,
         "params_json": json.dumps(payload, separators=(",", ":")),
         "description": description,
@@ -2485,28 +2493,15 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
     except ValueError:
         params = {}
 
-    def amount(raw: str) -> str:
-        """Storage units (micros or cents) back to what is typed (percent or dollars)."""
-        if not raw:
-            return ""
-        try:
-            value = Decimal(raw)
-        except InvalidOperation:
-            return raw
-        if spec.amount_unit == "percent":
-            return format((value / 10_000).normalize(), "f")
-        return f"{value / 100:.2f}"
-
     varying = bool(row.get("vary_distribution"))
-    drawn = (lambda raw: raw) if row.get("vary_target") == "date" else amount
     correlated = bool(row.get("vary_correlate_with"))
     values = {
         "date": row["date"],
         "aux_kind": str(params.get("aux_kind", "rate")),
         "series": row["series"],
-        "rate_percent": amount(row["amount"]),
+        "rate_percent": row["amount"],
         "scheduled_name": row["scheduled_name"],
-        "amount": amount(row["amount"]),
+        "amount": row["amount"],
         "param_date": row["param_date"],
         "from_account": row["account_1"], "from_lot": row["lot_1"],
         "to_account": row["account_2"], "to_lot": row["lot_2"],
@@ -2521,14 +2516,14 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
         "_vary": "y" if varying else "n",
         "vary_target": row["vary_target"],
         "vary_distribution": row["vary_distribution"],
-        "vary_low": drawn(row["vary_low"]), "vary_high": drawn(row["vary_high"]),
-        "vary_median": drawn(row["vary_median"]), "vary_sd": drawn(row["vary_sd"]),
-        "vary_mode": drawn(row["vary_mode"]),
+        "vary_low": row["vary_low"], "vary_high": row["vary_high"],
+        "vary_median": row["vary_median"], "vary_sd": row["vary_sd"],
+        "vary_mode": row["vary_mode"],
         "vary_skew": row["vary_skew"], "vary_tailweight": row["vary_tailweight"],
         "vary_ramp_months": row["vary_ramp_months"],
         "vary_process": row["vary_process"],
         "vary_persistence": row["vary_persistence"],
-        "vary_innovation_sd": amount(row["vary_innovation_sd"]),
+        "vary_innovation_sd": row["vary_innovation_sd"],
         "_correlate": "y" if correlated else "n",
         "vary_correlate_with": row["vary_correlate_with"],
         "vary_correlation": row["vary_correlation"],
@@ -2836,7 +2831,7 @@ def calendar_add_set_rate(
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
-        vary_ramp_months=vary_ramp_months, amount_parser=_percent_to_rate_micros,
+        vary_ramp_months=vary_ramp_months, amount_unit="percent",
         vary_process=vary_process, vary_persistence=vary_persistence,
         vary_innovation_sd=vary_innovation_sd,
     )
@@ -2844,7 +2839,7 @@ def calendar_add_set_rate(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     row = {
-        "date": date, "kind": "set_rate", "series": series, "amount": str(micros),
+        "date": date, "kind": "set_rate", "series": series, "amount": units.micros_to_percent(micros),
         # aux_kind has no promoted column of its own -- _build_cal_payload
         # only ever learns it from params_json (defaulting to 'rate' when
         # absent), so it's only written here when it differs from that.
@@ -2854,7 +2849,7 @@ def calendar_add_set_rate(
     path = scenario_dir / "calendar.csv"
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
-        f"{verb} set_rate {series!r} -> {rate_percent}% on {date} "
+        f"{verb} set_rate {series!r} -> {row["amount"]} on {date} "
         f"(aux_kind={aux_kind!r}) to {path}"
     )
 
@@ -2915,12 +2910,12 @@ def calendar_add_set_amount(
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
-        vary_ramp_months=vary_ramp_months, amount_parser=_parse_amount_cents,
+        vary_ramp_months=vary_ramp_months, amount_unit="dollars",
     )
 
     row = {
         "date": date, "kind": "set_amount", "scheduled_name": scheduled_name,
-        "amount": str(cents), "param_date": param_date,
+        "amount": units.cents_to_dollars(cents), "param_date": param_date,
         "description": description, "tags": tags, **vary_fields,
     }
     path = scenario_dir / "calendar.csv"
@@ -2983,7 +2978,7 @@ def calendar_add_retire_scheduled(
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
-        vary_ramp_months=vary_ramp_months, amount_parser=None,
+        vary_ramp_months=vary_ramp_months, amount_unit=None,
     )
 
     row = {

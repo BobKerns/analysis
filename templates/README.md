@@ -39,7 +39,7 @@ SQL schema alongside the source CSV.
 
 - Scenario CSVs use decimal-dollar input where applicable (for example, `scheduled.csv` `amount`): `$1,234.56` is written as `1234.56`. The loader converts to integer cents.
 - Aux CSV money columns are also decimal dollars (e.g. `floor`, `amount`, `tier1_floor`, `tier2_floor`): `$1,234.56` → `1234.56`.
-- Rates in **integer micros** (× 1e6). `5%` → `50000`. `4.25%` → `42500`.
+- Rates are percents, with the `%` sign required: `5%`, `4.25%`. Dollar amounts are whole dollars or dollars and cents (`1234`, `-1234.56`, `0.99`).
 - Dates: a month column takes `YYYY-MM` or `YYYY-MM-DD` and is pinned to month-end at load. `birthdate`, a lot's `acquired`, and price dates are always a full `YYYY-MM-DD` and keep their day. Where the engine counts days, a full date keeps its day too: a `biweekly` rule's `start` (its first payday, so it must be a full date) and `end`, and a `retire_scheduled` event's `date`; a bare month there still means month-end. A date-varying calendar row's `vary_low`/`vary_high` keep a full date exactly, and a bare month spans the whole month.
 - Booleans: `0` / `1`.
 - JSON columns hold a single JSON value as a string. Use CSV quoting for embedded commas/quotes.

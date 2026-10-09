@@ -408,7 +408,7 @@ def build_scheduled_baseline_rows(
             "interest_account": "",
             "person": "",
             "series": series,
-            "rate_micros": "",
+            "rate": "",
             "claim_age": "",
             "amount": f"{amount:.2f}",
             "base_date": start,

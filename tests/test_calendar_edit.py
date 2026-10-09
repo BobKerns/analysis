@@ -61,7 +61,7 @@ def test_edit_changes_one_field_and_leaves_the_row_in_place(
     assert result.exit_code == 0, result.output
     assert "updated set_amount 'healthcare'" in result.output
     after = calendar_rows()
-    assert after.loc[2, "amount"] == "150000"
+    assert after.loc[2, "amount"] == "1500.00"
     changed = after.ne(before)
     assert changed.sum().sum() == 1 and changed.loc[2, "amount"]
 
@@ -84,8 +84,8 @@ def test_writing_a_varying_row_unchanged_keeps_its_bounds(
 ) -> None:
     append_calendar_row(
         date="2027-02", kind="set_rate", name="checking_vary", series="Asset_Checking",
-        amount="42500", vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="42500", vary_sd="10000", vary_skew="0.5", vary_ramp_months="6",
+        amount="4.25%", vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="4.25%", vary_sd="1%", vary_skew="0.5", vary_ramp_months="6",
     )
     before = calendar_rows()
 
@@ -163,7 +163,7 @@ def test_edit_keeps_what_the_guide_has_no_field_for(
 ) -> None:
     append_calendar_row(
         date="2031-05", kind="one_off_transfer", account_1="Asset_Savings",
-        account_2="Asset_Checking", amount="10000", tax_character="none",
+        account_2="Asset_Checking", amount="100.00", tax_character="none",
         tags="expense:discretionary", params_json=json.dumps({"note": "hand-authored"}),
     )
 
@@ -171,7 +171,7 @@ def test_edit_keeps_what_the_guide_has_no_field_for(
 
     assert result.exit_code == 0, result.output
     row = calendar_rows().iloc[-1]
-    assert row["amount"] == "25000"
+    assert row["amount"] == "250.00"
     assert row["tags"] == "expense:discretionary"
     assert json.loads(row["params_json"])["note"] == "hand-authored"
 
@@ -185,11 +185,11 @@ def test_edit_keeps_a_hand_authored_key_another_kinds_command_would_own(
     # other kind each is just a key someone put there.
     append_calendar_row(
         date="2031-05", kind="one_off_transfer", account_1="Asset_Savings",
-        account_2="Asset_Checking", amount="10000", tax_character="none",
+        account_2="Asset_Checking", amount="100.00", tax_character="none",
         params_json=json.dumps({"aux_kind": "by hand"}),
     )
     append_calendar_row(
-        date="2031-06", kind="set_rate", series="Asset_Checking", amount="30000",
+        date="2031-06", kind="set_rate", series="Asset_Checking", amount="3%",
         params_json=json.dumps({"description": "by hand"}),
     )
 
@@ -208,7 +208,7 @@ def test_edit_compares_another_rows_values_without_their_stray_spaces(
     calendar_edit: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
     append_calendar_row: Callable[..., None],
 ) -> None:
-    append_calendar_row(date="2028-01", kind="set_rate", series=" Asset_Checking ", amount="30000")
+    append_calendar_row(date="2028-01", kind="set_rate", series=" Asset_Checking ", amount="3%")
     before = calendar_rows()
 
     # Row 1 is Asset_Checking's rate; moved to 2028-01 at 3% it would be row 6 again.
@@ -255,7 +255,7 @@ def test_edit_says_so_when_the_scenario_has_no_rows_of_its_own(
 
 
 def test_a_row_key_reads_dates_and_spacing_as_the_loader_does() -> None:
-    row = {"kind": "set_rate", "date": "2030-12-31", "series": "cpi", "amount": "30000"}
+    row = {"kind": "set_rate", "date": "2030-12-31", "series": "cpi", "amount": "3%"}
 
     assert calendar_row_key({**row, "date": "2030-12"}) == calendar_row_key(row)
     assert calendar_row_key({**row, "series": " cpi "}) == calendar_row_key(row)
@@ -269,7 +269,7 @@ def test_edit_ignores_a_lot_the_changed_account_no_longer_has(
 ) -> None:
     transfer = {
         "date": "2031-05", "kind": "one_off_transfer", "account_2": "Asset_Checking",
-        "amount": "10000", "tax_character": "none",
+        "amount": "100.00", "tax_character": "none",
     }
     append_calendar_row(**transfer, account_1="Asset_Savings")                           # row 6
     append_calendar_row(**transfer, account_1="Asset_Brokerage_Joint", lot_1="default")  # row 7
@@ -299,7 +299,7 @@ def test_edit_refuses_to_write_when_the_file_changed_under_it(
         context.meta[_CALENDAR_REPLACE_ROW] = (2, chosen)
         with pytest.raises(click.ClickException, match="changed while this row was being edited"):
             _write_calendar_row(
-                path, {**chosen, "amount": "150000"},
+                path, {**chosen, "amount": "1500.00"},
                 data_dir=test_data_dir, scenario_name="retire_alice",
             )
 
@@ -378,7 +378,7 @@ def test_edit_refuses_to_clear_a_field_when_that_would_copy_another_row(
 ) -> None:
     transfer = {
         "date": "2031-05", "kind": "one_off_transfer", "account_1": "Asset_Savings",
-        "account_2": "Asset_Checking", "amount": "10000", "tax_character": "none",
+        "account_2": "Asset_Checking", "amount": "100.00", "tax_character": "none",
     }
     append_calendar_row(**transfer)                 # row 6
     append_calendar_row(**transfer, series="cpi")   # row 7: differs only in its series
