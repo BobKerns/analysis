@@ -71,9 +71,9 @@ def test_sim_run_on_a_child_of_a_recipe_uses_the_recipes_member_count(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        vary_low="4", vary_high="5",
     )
     runner = CliRunner()
     data = ["--data-dir", str(test_data_dir)]

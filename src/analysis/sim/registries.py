@@ -34,7 +34,7 @@ AMOUNT_RULE_KINDS: set[str] = {
 SCHEDULED_CSV_HEADER: tuple[str, ...] = (
     "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
     "month_of_year", "amount_rule_kind", "interest_account", "person", "series",
-    "rate_micros", "claim_age", "amount", "base_date", "inflation_cadence",
+    "rate", "claim_age", "amount", "base_date", "inflation_cadence",
     "tax_character", "tax_year", "start", "end", "priority", "ytd_amount", "ytd_preroll",
     "description", "meta_json", "params_json", "tags",
 )
@@ -229,15 +229,15 @@ DEFAULT_PRIORITIES: dict[str, int] = {
 # payload JSON.
 AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "federal_brackets":
-        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
     "state_brackets":
-        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
     # Federal long-term capital gain rates: the same shape as federal_brackets,
     # but a band's floor is the taxable income (ordinary income plus the gain,
     # stacked on top) at which its rate starts. Optional: without it long-term
     # gains are taxed as ordinary income.
     "ltcg_brackets":
-        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate_micros"),
+        ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
     "standard_deduction": ("effective_date", "filing_status", "amount"),
     # Itemized deductions: a dated total, no filing_status split (unlike
     # standard_deduction). Optional; when present, the tax_accumulator rule uses
@@ -249,9 +249,9 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "state_deductions": ("effective_date", "amount"),
     "ss_taxation_thresholds":
         ("effective_date", "filing_status", "tier1_floor", "tier2_floor"),
-    "rmd_factors": ("effective_date", "age", "factor_micros"),
-    "rate": ("effective_date", "annual_rate_micros"),
-    "inflation": ("effective_date", "annual_rate_micros"),
+    "rmd_factors": ("effective_date", "age", "factor"),
+    "rate": ("effective_date", "annual_rate"),
+    "inflation": ("effective_date", "annual_rate"),
     "filing_status": ("effective_date", "filing_status"),
     "rmd_start_age": ("effective_date", "start_age"),
     # A security's price in decimal dollars (up to 6 places), one series per
@@ -261,21 +261,41 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # One row per (category, effective_date): a federal/state credit or
     # rebate schedule that appears and disappears on its own timeline (25C,
     # 25D, 30C all had different 2025/2026 sunset dates under OBBBA).
-    # `category` free-text, e.g. "heat_pump", "ev_charger". `rate_micros` is
-    # the credit fraction (300000 = 30%); `cap` is the per-project dollar
+    # `category` free-text, e.g. "heat_pump", "ev_charger". `rate` is the
+    # credit as a percent (30 = 30%); `cap` is the per-project dollar
     # cap, 0/blank for uncapped. A category/date combo with no matching row
     # means "no credit available" -- callers must not assume a fallback.
-    "energy_credits": ("effective_date", "category", "rate_micros", "cap"),
+    "energy_credits": ("effective_date", "category", "rate", "cap"),
 }
+
+# Columns authored in a natural unit but stored as integer micros, by kind:
+# {kind: {csv column: (payload key, unit)}} (#130). The unit is `price`
+# (decimal dollars, positive, up to six places: sub-cent precision),
+# `percent` (a rate: 4.5 is 4.5%) or `number` (a plain decimal).
+AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
+    "security_price": {"price": ("price_micros", "price")},
+    "federal_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
+    "state_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
+    "ltcg_brackets": {"marginal_rate": ("marginal_rate_micros", "percent")},
+    "rmd_factors": {"factor": ("factor_micros", "number")},
+    "rate": {"annual_rate": ("annual_rate_micros", "percent")},
+    "inflation": {"annual_rate": ("annual_rate_micros", "percent")},
+    "energy_credits": {"rate": ("rate_micros", "percent")},
+}
+
+# Column names the CSVs used before #130, when rates and factors were
+# written in micros. A file still carrying one fails to load, naming the
+# conversion script, rather than being read 10,000 times too large.
+LEGACY_MICROS_COLUMNS: frozenset[str] = frozenset({
+    "annual_rate_micros", "marginal_rate_micros", "rate_micros", "factor_micros",
+})
+UNITS_CONVERSION_HINT = (
+    "rates and factors are now percents and plain numbers (#130); "
+    "convert the data repo with scripts/convert_units_130.py"
+)
 
 # Per-aux-kind set of column names that hold dollar amounts in the CSV and must
 # be converted to integer cents during load.
-# Columns authored as decimal dollars but stored as integer micros of a dollar
-# (sub-cent precision), by kind: {kind: {csv column: payload key}}.
-AUX_DOLLAR_MICROS_COLUMNS: dict[str, dict[str, str]] = {
-    "security_price": {"price": "price_micros"},
-}
-
 AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "federal_brackets": frozenset({"floor"}),
     "ltcg_brackets": frozenset({"floor"}),

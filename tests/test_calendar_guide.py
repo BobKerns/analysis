@@ -53,8 +53,8 @@ def test_guide_writes_a_varying_row_and_shows_the_equivalent_command(
         f"--scenario retire_alice --data-dir {test_data_dir}"
     ) in result.output
     row = calendar_rows().query("name == 'checking_vary'").iloc[0]
-    assert (row["kind"], row["date"], row["amount"]) == ("set_rate", "2027-02", "45000")
-    assert (row["vary_low"], row["vary_high"]) == ("40000", "50000")
+    assert (row["kind"], row["date"], row["amount"]) == ("set_rate", "2027-02", "4.5")
+    assert (row["vary_low"], row["vary_high"]) == ("4", "5")
 
 
 def test_guide_asks_only_what_the_distribution_uses(calendar_add: Callable[..., Result]) -> None:
@@ -85,7 +85,7 @@ def test_guide_writes_a_process_row(
     assert "--vary-process ar1 --vary-persistence 0.2 --vary-innovation-sd 17" in result.output
     row = calendar_rows().query("name == 'stock_path'").iloc[0]
     assert (row["vary_process"], row["vary_persistence"], row["vary_innovation_sd"]) == (
-        "ar1", "0.2", "170000")
+        "ar1", "0.2", "17")
 
 
 def test_guide_asks_again_after_a_bad_answer(
@@ -115,7 +115,7 @@ def test_guide_lets_a_field_be_changed_at_the_review(
 
     assert result.exit_code == 0, result.output
     row = calendar_rows().query("kind == 'set_amount'").iloc[-1]
-    assert row["amount"] == "25000"
+    assert row["amount"] == "250.00"
 
 
 def test_guide_turning_variation_on_at_the_review_asks_its_questions(
@@ -177,7 +177,7 @@ def test_guide_asks_for_a_lot_only_where_a_blank_one_would_not_do(
     assert result.exit_code == 0, result.output
     assert "to lot" in result.output and "from lot" not in result.output
     row = calendar_rows().query("kind == 'one_off_transfer'").iloc[-1]
-    assert (row["account_2"], row["lot_2"], row["amount"]) == ("Asset_Brokerage_Joint", "default", "4200")
+    assert (row["account_2"], row["lot_2"], row["amount"]) == ("Asset_Brokerage_Joint", "default", "42.00")
 
 
 def test_a_subcommand_asks_for_the_arguments_it_was_not_given(
@@ -188,7 +188,7 @@ def test_a_subcommand_asks_for_the_arguments_it_was_not_given(
     assert result.exit_code == 0, result.output
     assert "vary this row" not in result.output   # only the arguments, not the whole guide
     row = calendar_rows().query("kind == 'set_amount'").iloc[-1]
-    assert (row["scheduled_name"], row["amount"]) == ("salary_bill", "10000")
+    assert (row["scheduled_name"], row["amount"]) == ("salary_bill", "100.00")
 
 
 @pytest.mark.usefixtures("without_prototype_defaults")

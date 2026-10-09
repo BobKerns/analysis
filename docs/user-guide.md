@@ -451,8 +451,8 @@ these:
 
 | Kind | Columns used | Use it for |
 | --- | --- | --- |
-| `set_rate` | `series`, `amount` (micros) | "checking starts earning 4% in 2027" |
-| `set_amount` | `scheduled_name`, `amount`, optional `param_date` | "spending drops to $4,500/mo on retirement" (Part 4.4) |
+| `set_rate` | `series`, `amount` (a percent, e.g. `4` for 4%) | "checking starts earning 4% in 2027" |
+| `set_amount` | `scheduled_name`, `amount` (dollars), optional `param_date` | "spending drops to $4,500/mo on retirement" (Part 4.4) |
 | `retire_scheduled` | `scheduled_name` | "salary stops on retirement" |
 | `one_off_transfer` | `account_1`/`lot_1`, `account_2`/`lot_2`, `amount`, `tax_character` | a windfall, a gift, a settlement between two plain accounts (not a chain — see Part 4.5) |
 

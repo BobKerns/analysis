@@ -22,7 +22,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import registries
+from analysis.sim import registries, units
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, month_end_iso, parse_day, vary_date_iso,
 )
@@ -463,11 +463,13 @@ def _check_duplicate_calendar_names(rows: list[dict[str, str]], issues: list[str
 
 def calendar_row_key(row: Mapping[str, str]) -> tuple[str, ...]:
     """The key ``_merge_calendar_rows`` gives a calendar.csv row as authored:
-    its key columns trimmed and its dates canonical, as the load sees them.
-    So ``2030-12`` and ``2030-12-31`` are the same date here, as they are
-    there. For checking, before a write, that two rows would not merge."""
+    its key columns trimmed and its dates and amounts canonical, as the load
+    sees them. So ``2030-12`` and ``2030-12-31`` are the same date here, and
+    ``4.5`` and ``4.50`` the same rate, as they are there. For checking,
+    before a write, that two rows would not merge."""
     canonical = {column: (value or "").strip() for column, value in row.items()}
     _normalize_month_columns([canonical], "calendar.csv", [])
+    _normalize_units([canonical], "calendar.csv", [])
     if canonical.get("kind") == registries.LATENT_FACTOR_KIND:
         return (registries.LATENT_FACTOR_KIND, canonical.get("name", ""))
     return tuple(canonical.get(column, "") for column in registries.CALENDAR_KEY_COLUMNS)
@@ -613,6 +615,7 @@ def _read_scenario_inputs(
                 optional=has_parent or not required,
             )
             _normalize_month_columns(rows, filename, issues)
+            _normalize_units(rows, filename, issues)
             return rows
 
         own_meta = own_scenario.pop("meta_json", "")
@@ -1042,8 +1045,11 @@ def _read_aux_files(
             continue
         cols = registries.AUX_KIND_COLUMNS[kind]
         money_cols = registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
-        micros_cols = registries.AUX_DOLLAR_MICROS_COLUMNS.get(kind, {})
-        for i, row in enumerate(_read_csv(csv_path, issues), start=2):
+        micros_cols = registries.AUX_MICROS_COLUMNS.get(kind, {})
+        rows = _read_csv(csv_path, issues)
+        if _legacy_units_header(rows, f"aux/{csv_path.name}", issues):
+            continue
+        for i, row in enumerate(rows, start=2):
             missing = [c for c in cols if c not in row]
             if missing:
                 issues.append(
@@ -1057,8 +1063,9 @@ def _read_aux_files(
                     continue
                 raw = row[c]
                 if c in micros_cols:
+                    key, unit = micros_cols[c]
                     try:
-                        payload[micros_cols[c]] = _dollars_to_micros(raw)
+                        payload[key] = _AUX_MICROS_PARSERS[unit](raw)
                     except (ValueError, InvalidOperation) as e:
                         issues.append(f"aux/{csv_path.name} row {i} ({c}): {e}")
                         row_ok = False
@@ -1095,6 +1102,53 @@ def _read_aux_files(
             if row_ok:
                 out.append((kind, series, payload, effective))
     return out
+
+
+_AUX_MICROS_PARSERS: dict[str, Callable[[str], int]] = {
+    "price": lambda raw: _dollars_to_micros(raw),
+    "percent": units.percent_to_micros,
+    "number": units.number_to_micros,
+}
+"""How each `registries.AUX_MICROS_COLUMNS` unit is read."""
+
+
+def _legacy_units_header(rows: list[dict[str, str]], where: str, issues: list[str]) -> bool:
+    """Whether ``rows`` (one file's) still carry a pre-#130 micros column,
+    reporting it if so: such a file's values would be read as percents or
+    plain numbers 10,000 or a million times too large."""
+    legacy = sorted(set(rows[0]) & registries.LEGACY_MICROS_COLUMNS) if rows else []
+    if legacy:
+        issues.append(f"{where}: column {', '.join(legacy)}: {registries.UNITS_CONVERSION_HINT}")
+    return bool(legacy)
+
+
+def _normalize_units(rows: list[dict[str, str]], filename: str, issues: list[str]) -> None:
+    """Rewrite one file's natural-unit cells (#130) as the integers the rest of
+    the load reads, in place, as ``_normalize_month_columns`` does for dates.
+
+    Done per file, before scenario inheritance merges rows, so a child's
+    ``4.50`` overrides its parent's ``4.5``. In scheduled.csv a rule's `rate`
+    (percent) becomes `rate_micros`; in calendar.csv, `amount` and its
+    `vary_*` bounds become cents or micros by kind (``units.calendar_row_to_storage``).
+    """
+    if filename == "scheduled.csv":
+        # A pre-#130 file has no `rate` column, so its rows pass through
+        # untouched; the reported column fails the load.
+        _legacy_units_header(rows, filename, issues)
+        for i, row in enumerate(rows, start=2):
+            if "rate" not in row:
+                continue
+            raw = row.pop("rate")
+            row["rate_micros"] = ""
+            if raw:
+                try:
+                    row["rate_micros"] = str(units.percent_to_micros(raw))
+                except ValueError as e:
+                    issues.append(f"scheduled.csv row {i} ({row.get('name', '')}): rate {e}")
+    elif filename == "calendar.csv":
+        for i, row in enumerate(rows, start=2):
+            for problem in units.calendar_row_to_storage(row):
+                issues.append(f"calendar.csv row {i}: {problem}")
 
 
 def _opt_int(raw: str | None) -> int | None:
@@ -2193,17 +2247,18 @@ def _validate_vary_process(
     else:
         if not 0.0 <= phi < 1.0:  # also rejects NaN
             issues.append(f"{where}: vary_persistence must be at least 0 and below 1 (got {raw_phi})")
-    try:
-        sd = int(raw_sd)
-    except ValueError:
-        issues.append(f"{where}: vary_innovation_sd '{raw_sd}' is not a whole number of micros")
-    else:
-        if sd <= 0:
-            issues.append(f"{where}: vary_innovation_sd must be positive (got {raw_sd})")
+    # A cell units.calendar_row_to_storage couldn't read is left unconverted,
+    # and is already reported.
+    if raw_sd.lstrip("-").isdigit() and int(raw_sd) <= 0:
+        issues.append(
+            f"{where}: vary_innovation_sd must be positive "
+            f"(got {units.micros_to_percent(int(raw_sd))})"
+        )
     if effective_low is not None and effective_low <= _MINUS_100_PERCENT_MICROS:
         issues.append(
             f"{where}: a process row's level must stay above -100% "
-            f"(its lower bound, given or inferred, is {effective_low:g} micros), "
+            f"(its lower bound, given or inferred, is "
+            f"{units.micros_to_percent(round(effective_low))}%), "
             "since its path is growth around that level"
         )
 
@@ -2378,8 +2433,8 @@ def _validate_calendar_correlation(
 def _parse_vary_params(
     row: dict[str, str], distribution: str, target: str, where: str, issues: list[str],
 ) -> tuple[dict[str, int], dict[str, float], bool]:
-    """A varying row's parameter cells: bounds in the target's own unit
-    (ints, or ISO dates as ordinals), and unitless shape numbers (#31).
+    """A varying row's parameter cells: bounds in the target's own stored unit
+    (cents or micros, or ISO dates as ordinals), and unitless shape numbers (#31).
     A column the distribution doesn't read is reported, not parsed. Returns
     ``(parsed, shape, parse_ok)``."""
     allowed = registries.DISTRIBUTION_PARAMS[distribution]
@@ -2399,12 +2454,14 @@ def _parse_vary_params(
             else:
                 parsed[col] = parse_day(raw).toordinal() if target == "date" else int(raw)
         except ValueError:
-            unit = "number" if col in _VARY_SHAPE_COLUMNS else (
-                MONTH_FORMAT_HINT if target == "date" else "integer"
-            )
-            prefix = "is not a" if unit == "number" else "is not a valid"
-            issues.append(f"{where}: {col} '{raw}' {prefix} {unit}")
             parse_ok = False
+            if col in _VARY_SHAPE_COLUMNS:
+                issues.append(f"{where}: {col} '{raw}' is not a number")
+            elif target == "date":
+                issues.append(f"{where}: {col} '{raw}' is not a valid {MONTH_FORMAT_HINT}")
+            # An amount bound that isn't an integer by now is one
+            # units.calendar_row_to_storage couldn't read (and reported), or
+            # sits on a kind with no amount (reported by the caller).
     return parsed, shape, parse_ok
 
 

@@ -268,7 +268,7 @@ def test_account_series_synthesizes_growth_rule_and_income_account(
     # case-insensitive filesystem would otherwise collide with it on a name
     # differing only in case.
     (repo / "scenarios" / "retire_alice" / "series" / "rate__IRA_Growth.csv").write_text(
-        "effective_date,annual_rate_micros\n2026-01-31,60000\n"
+        "effective_date,annual_rate\n2026-01-31,6\n"
     )
 
     result = load_scenario(
@@ -334,7 +334,7 @@ def test_calendar_series_with_a_space_rejected(
 ) -> None:
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="typo_series",
-        series="some new series", amount="45000",
+        series="some new series", amount="4.5",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -440,7 +440,7 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
         ),
         "scheduled.csv": (
             "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,interest_account"
-            ",person,series,rate_micros,claim_age,amount,base_date,inflation_cadence,tax_character"
+            ",person,series,rate,claim_age,amount,base_date,inflation_cadence,tax_character"
             ",start,end,priority,ytd_amount,ytd_preroll,description,meta_json,params_json,tags"
         ),
         "calendar.csv": (
@@ -1038,8 +1038,8 @@ def test_vary_target_required_with_distribution(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
-        vary_distribution="uniform", vary_low="40000", vary_high="50000",
+        series="Asset_Checking", amount="4.5",
+        vary_distribution="uniform", vary_low="4", vary_high="5",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1051,9 +1051,9 @@ def test_vary_distribution_unknown_rejected(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="lognormal",
-        vary_low="40000", vary_high="50000",
+        vary_low="4", vary_high="5",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1065,8 +1065,8 @@ def test_vary_uniform_requires_bounds(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
-        vary_target="amount", vary_distribution="uniform", vary_low="40000",
+        series="Asset_Checking", amount="4.5",
+        vary_target="amount", vary_distribution="uniform", vary_low="4",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1078,9 +1078,9 @@ def test_vary_name_required_with_distribution(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        vary_low="4", vary_high="5",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1093,9 +1093,9 @@ def test_vary_name_duplicate_rejected(
     for month_end in ("2027-02-28", "2027-03-31"):
         append_calendar_row(
             date=month_end, kind="set_rate", name="checking_rate_vary",
-            series="Asset_Checking", amount="45000",
+            series="Asset_Checking", amount="4.5",
             vary_target="amount", vary_distribution="uniform",
-            vary_low="40000", vary_high="50000",
+            vary_low="4", vary_high="5",
         )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1115,9 +1115,9 @@ def test_vary_rows_sharing_every_merge_key_field_but_name_is_ambiguous(
     for name in ("rate_vary_a", "rate_vary_b"):
         append_calendar_row(
             date="2027-02-28", kind="set_rate", name=name,
-            series="Asset_Checking", amount="45000",
+            series="Asset_Checking", amount="4.5",
             vary_target="amount", vary_distribution="uniform",
-            vary_low="40000", vary_high="50000",
+            vary_low="4", vary_high="5",
         )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1144,7 +1144,7 @@ def test_vary_row_overrides_inherited_unnamed_calendar_row(
         "series": inherited["series"], "amount": inherited["amount"],
         "tax_character": inherited["tax_character"], "name": "inheritance_vary",
         "vary_target": "amount", "vary_distribution": "uniform",
-        "vary_low": inherited["amount"], "vary_high": str(int(inherited["amount"]) * 2),
+        "vary_low": inherited["amount"], "vary_high": f"{float(inherited['amount']) * 2:.2f}",
     }])
     pd.concat([df, child], ignore_index=True).fillna("").to_csv(calendar_path, index=False)
 
@@ -1171,9 +1171,9 @@ def test_vary_rows_identical_including_name_rejected_as_duplicate(
     for _ in range(2):
         append_calendar_row(
             date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-            series="Asset_Checking", amount="45000",
+            series="Asset_Checking", amount="4.5",
             vary_target="amount", vary_distribution="uniform",
-            vary_low="40000", vary_high="50000",
+            vary_low="4", vary_high="5",
         )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1185,9 +1185,9 @@ def test_vary_ramp_months_requires_amount_target_on_set_rate(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_amount", name="healthcare_vary",
-        scheduled_name="healthcare", amount="120000",
+        scheduled_name="healthcare", amount="1200.00",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="100000", vary_high="140000", vary_ramp_months="12",
+        vary_low="1000.00", vary_high="1400.00", vary_ramp_months="12",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1232,9 +1232,9 @@ def test_vary_uniform_rejects_columns_it_does_not_use(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000", vary_median="45000",
+        vary_low="4", vary_high="5", vary_median="4.5",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1248,9 +1248,9 @@ def test_vary_uniform_rejects_high_below_low(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="50000", vary_high="40000",
+        vary_low="5", vary_high="4",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1276,9 +1276,9 @@ def test_vary_truncated_normal_rejects_nonpositive_sd(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_sd="0",
+        vary_median="4.5", vary_sd="0",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1294,9 +1294,9 @@ def test_vary_truncated_normal_low_equal_to_median_without_sd_is_degenerate(
     anyway, #31)."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_low="45000",
+        vary_median="4.5", vary_low="4.5",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1311,9 +1311,9 @@ def test_vary_truncated_normal_median_on_a_bound_is_rejected(
     the mass would have to be on it) -- the error points at vary_skew."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_sd="5000", vary_low="45000",
+        vary_median="4.5", vary_sd="0.5", vary_low="4.5",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1327,9 +1327,9 @@ def test_vary_truncated_normal_skewed_one_sided_spread_loads(
     bound just under the median."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_sd="5000", vary_low="44000", vary_skew="1.0",
+        vary_median="4.5", vary_sd="0.5", vary_low="4.4", vary_skew="1.0",
     )
     load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
 
@@ -1339,10 +1339,10 @@ def test_vary_truncated_normal_rejects_reversed_low_high(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_sd="5000",
-        vary_low="50000", vary_high="40000",
+        vary_median="4.5", vary_sd="0.5",
+        vary_low="5", vary_high="4",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1355,9 +1355,9 @@ def test_vary_one_off_transfer_uniform_requires_positive_low(
     append_calendar_row(
         date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
-        amount="100000", tax_character="none",
+        amount="1000.00", tax_character="none",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="-50000", vary_high="50000",
+        vary_low="-500.00", vary_high="500.00",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1372,9 +1372,9 @@ def test_vary_one_off_transfer_uniform_rejects_zero_low(
     append_calendar_row(
         date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
-        amount="100000", tax_character="none",
+        amount="1000.00", tax_character="none",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="0", vary_high="50000",
+        vary_low="0.00", vary_high="500.00",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1392,9 +1392,9 @@ def test_vary_one_off_transfer_truncated_normal_requires_positive_effective_low(
     append_calendar_row(
         date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
-        amount="100000", tax_character="none",
+        amount="1000.00", tax_character="none",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="50000", vary_sd="20000",
+        vary_median="500.00", vary_sd="200.00",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1409,9 +1409,9 @@ def test_vary_one_off_transfer_truncated_normal_with_positive_low_loads(
     append_calendar_row(
         date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
-        amount="100000", tax_character="none",
+        amount="1000.00", tax_character="none",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="100000", vary_sd="20000", vary_low="1",
+        vary_median="1000.00", vary_sd="200.00", vary_low="0.01",
     )
     load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
 
@@ -1435,7 +1435,7 @@ def test_vary_columns_present_without_distribution_rejected(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount",
     )
     with pytest.raises(LoadError) as ei:
@@ -1471,9 +1471,9 @@ def test_valid_vary_row_loads_cleanly(
     concrete value is Phase 2's job, not the loader's."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        vary_low="4", vary_high="5",
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     con = sqlite3.connect(result.intent_path)
@@ -1497,7 +1497,7 @@ def test_calendar_set_rate_series_nothing_reads_warns(
     scenarios inheriting from it read."""
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="typo_series",
-        series="mutual_fund", amount="30000",
+        series="mutual_fund", amount="3",
         params_json='{"aux_kind": "inflation"}',
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
@@ -1562,7 +1562,7 @@ def test_chain_step_series_with_a_calendar_supplier_loads_cleanly(
     df.to_csv(chain_path, index=False)
     append_calendar_row(
         date="2026-01-31", kind="set_rate", name="cpi_for_chain",
-        series="cpi", amount="30000", params_json='{"aux_kind": "inflation"}',
+        series="cpi", amount="3", params_json='{"aux_kind": "inflation"}',
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert result.intent_path.exists()
@@ -1583,9 +1583,9 @@ def test_vary_mean_column_is_rejected_as_renamed(
         if col not in df.columns:
             df[col] = ""
     df.loc[len(df)] = dict.fromkeys(df.columns, "") | {
-        "date": "2027-02-28", "kind": "set_rate", "series": "Asset_Checking", "amount": "45000",
+        "date": "2027-02-28", "kind": "set_rate", "series": "Asset_Checking", "amount": "4.5",
         "name": "checking_rate_vary", "vary_target": "amount",
-        "vary_distribution": "truncated_normal", "vary_mean": "45000", "vary_sd": "5000",
+        "vary_distribution": "truncated_normal", "vary_mean": "45000", "vary_sd": "0.5",
     }
     df.to_csv(path, index=False)
     with pytest.raises(LoadError) as ei:
@@ -1598,9 +1598,9 @@ def test_vary_truncated_normal_shape_loads_and_is_stored(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_sd="5000", vary_skew="0.5", vary_tailweight="0.8",
+        vary_median="4.5", vary_sd="0.5", vary_skew="0.5", vary_tailweight="0.8",
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     con = sqlite3.connect(result.intent_path)
@@ -1625,9 +1625,9 @@ def test_vary_truncated_normal_rejects_bad_shape(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_median="45000", vary_low="30000", vary_high="60000", **extra,
+        vary_median="4.5", vary_low="3", vary_high="6", **extra,
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1639,9 +1639,9 @@ def test_vary_shape_rejected_on_uniform(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000", vary_skew="0.5",
+        vary_low="4", vary_high="5", vary_skew="0.5",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1663,9 +1663,9 @@ def test_vary_triangular_date_target_loads(
 
 
 @pytest.mark.parametrize(("extra", "message"), [
-    ({"vary_low": "40000", "vary_high": "50000", "vary_mode": "60000"}, "vary_mode must lie within"),
-    ({"vary_low": "40000"}, "triangular requires vary_high"),
-    ({"vary_low": "40000", "vary_high": "50000", "vary_sd": "100"}, "vary_sd is not used by triangular"),
+    ({"vary_low": "4", "vary_high": "5", "vary_mode": "6"}, "vary_mode must lie within"),
+    ({"vary_low": "4"}, "triangular requires vary_high"),
+    ({"vary_low": "4", "vary_high": "5", "vary_sd": "1"}, "vary_sd is not used by triangular"),
 ])
 def test_vary_triangular_rejects_bad_parameters(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
@@ -1673,7 +1673,7 @@ def test_vary_triangular_rejects_bad_parameters(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5",
         vary_target="amount", vary_distribution="triangular", **extra,
     )
     with pytest.raises(LoadError) as ei:
@@ -1697,7 +1697,7 @@ def test_month_columns_accept_year_month_and_land_on_month_end(
     edit("scenario.csv", start="2026-05", end="2040-12")
     edit("scheduled.csv", start="2026-05", base_date="2026-05-15")
     append_calendar_row(date="2029-03", kind="retire_scheduled", scheduled_name="salary_bill")
-    write_aux("inflation__cpi.csv", "effective_date,annual_rate_micros\n2021-01,14000\n")
+    write_aux("inflation__cpi.csv", "effective_date,annual_rate\n2021-01,1.4\n")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
     con = sqlite3.connect(result.intent_path)

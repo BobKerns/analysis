@@ -656,10 +656,10 @@ def without_prototype_defaults(test_data_dir: Path) -> None:
 @pytest.fixture(scope="function")
 def write_series(retire_alice_csv: Callable[[str], Path]) -> Callable[[str, str], Path]:
     """Write a rate series into the private retire_alice copy's ``series/``, as
-    ``(series name, "effective_date,annual_rate_micros" rows)``."""
+    ``(series name, "effective_date,annual_rate" rows)``, rates in percent."""
     def _write(series: str, rows: str) -> Path:
         path = retire_alice_csv("series") / f"rate__{series}.csv"
-        path.write_text(f"effective_date,annual_rate_micros\n{rows}\n")
+        path.write_text(f"effective_date,annual_rate\n{rows}\n")
         return path
     return _write
 
@@ -679,8 +679,8 @@ def blended_fund(test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[st
     calendar = test_data_dir / "scenarios" / "retire_alice" / "calendar.csv"
     calendar.write_text(calendar.read_text().replace(
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,fund,"))
-    write_series("stock_us", "2026-01-31,80000")
-    write_series("bond", "2026-01-31,40000")
+    write_series("stock_us", "2026-01-31,8")
+    write_series("bond", "2026-01-31,4")
 
 
 @pytest.fixture(scope="function")
@@ -782,7 +782,7 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
     calendar.write_text(calendar.read_text().replace(
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,a,"))
     (test_data_dir / "aux" / "rate__AAA.csv").write_text(
-        "effective_date,annual_rate_micros\n2026-01-31,20000\n")
+        "effective_date,annual_rate\n2026-01-31,2\n")
     (retire_alice_csv("chains") / "asset__lotb.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Brokerage_Joint,b,,,,\n")
 
@@ -827,9 +827,9 @@ def _add_varying_gift_and_retirement(append_calendar_row: Callable[..., None]) -
     append_calendar_row(
         date="2029-06-30", kind="one_off_transfer", name="gift",
         account_1="Income_Inheritance", account_2="Asset_Brokerage_Joint", lot_2="default",
-        amount="2000000", tax_character="none",
+        amount="20000.00", tax_character="none",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="1000000", vary_high="3000000",
+        vary_low="10000.00", vary_high="30000.00",
     )
     append_calendar_row(
         date="2030-12-31", kind="retire_scheduled", name="retire_bill_vary",
@@ -964,9 +964,9 @@ def inflation_batch(
 
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="cpi_vary", series="cpi",
-        amount="25000", params_json='{"aux_kind": "inflation"}',
+        amount="2.5", params_json='{"aux_kind": "inflation"}',
         vary_target="amount", vary_distribution="uniform",
-        vary_low="15000", vary_high="35000",
+        vary_low="1.5", vary_high="3.5",
     )
     output = _load_and_run_batch(test_data_dir, intent_dir, runs_dir, "--sensitivity")
     assert "3/3 member(s) succeeded" in output, output

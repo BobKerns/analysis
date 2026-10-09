@@ -83,7 +83,7 @@ def test_a_fund_blends_the_prototypes_default_class_series(
 def test_a_fund_slice_series_overrides_its_class(
     write_series: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    write_series("FND.stock_us", "2026-01-31,100000")
+    write_series("FND.stock_us", "2026-01-31,10")
     _, params, _ = _growth_rule(load_test_copy().intent_path)
     assert params["blend"] == [["", [["bond", 400_000], ["FND.stock_us", 600_000]]]]
 
@@ -92,7 +92,7 @@ def test_a_fund_slice_series_overrides_its_class(
 def test_a_symbols_own_series_beats_its_blend(
     write_series: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    write_series("FND", "2026-01-31,50000")
+    write_series("FND", "2026-01-31,5")
     series, params, _ = _growth_rule(load_test_copy().intent_path)
     assert series == "FND" and "blend" not in params
 
@@ -139,7 +139,7 @@ def test_a_set_rate_on_a_slice_series_moves_the_fund(
 ) -> None:
     # Before the run starts, so the first growth already reads it. Accepted at
     # load: the blend counts as reading stock_us.
-    append_calendar_row(date="2026-05-31", kind="set_rate", series="stock_us", amount="120000")
+    append_calendar_row(date="2026-05-31", kind="set_rate", series="stock_us", amount="12")
     run = run_scenario(load_test_copy().intent_path, runs_dir / "fund.sqlite3", run_by="TEST",
                        allow_dirty_data=True, allow_dirty_code=True)
     # $300,000 x (0.6 x 12% + 0.4 x 4%) / 12 = $2,200.00

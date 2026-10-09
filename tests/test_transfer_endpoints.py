@@ -158,7 +158,7 @@ def test_the_loader_refuses_a_transfer_between_two_chains(
 ) -> None:
     if file == "calendar.csv":
         append_calendar_row(date="2030-06", kind="one_off_transfer", account_1=CHAIN,
-                            account_2=CHAIN, amount="100", tax_character="none")
+                            account_2=CHAIN, amount="1.00", tax_character="none")
     else:
         scheduled = pd.read_csv(retire_alice_csv(file), dtype=str, keep_default_na=False)
         added = pd.DataFrame([{

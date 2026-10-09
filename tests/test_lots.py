@@ -599,7 +599,7 @@ def _bracket_rows(path: Path, status: str) -> list[tuple[int, int]]:
     with path.open() as f:
         rows = [r for r in csv.DictReader(f)
                 if r["filing_status"] == status and r["effective_date"] == "2026-01-31"]
-    return sorted((round(float(r["floor"]) * 100), int(r["marginal_rate_micros"])) for r in rows)
+    return sorted((round(float(r["floor"]) * 100), round(float(r["marginal_rate"]) * 10_000)) for r in rows)
 
 
 def test_long_term_gains_are_taxed_at_the_preferential_rates(

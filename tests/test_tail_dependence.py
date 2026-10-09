@@ -186,7 +186,7 @@ def test_nu_on_a_literal_row_is_rejected(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
     append_calendar_row(date="2027-02-28", kind="set_rate", series="Asset_Checking",
-                        amount="45000", vary_tail_dependence="4")
+                        amount="4.5", vary_tail_dependence="4")
     assert any("only valid on a varying row" in issue for issue in _issues(load_test_copy))
 
 

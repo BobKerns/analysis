@@ -30,7 +30,7 @@ def _sim(*args: str, data_dir: Path, input: str | None = None):
 def _break_retire_alice(append_calendar_row: Callable[..., None]) -> None:
     # Only the loader rejects a series name with a space in it.
     append_calendar_row(date="2028-01-31", kind="set_rate", series="no such series",
-                        amount="3000000")
+                        amount="300")
 
 
 def test_good_edit_to_already_broken_scenario_blames_the_scenario(
@@ -140,7 +140,7 @@ def _child_with_transfer(data_dir: Path, **row: str) -> None:
 def test_edit_that_breaks_an_inheriting_scenario_is_rejected(test_data_dir: Path) -> None:
     _child_with_transfer(
         test_data_dir, date="2029-03-31", kind="one_off_transfer", account_1="Asset_Savings",
-        account_2="Asset_Checking", amount="100000", tax_character="none",
+        account_2="Asset_Checking", amount="1000.00", tax_character="none",
     )
     assert _sim("check", "child", data_dir=test_data_dir).exit_code == 0
     before = _snapshot(test_data_dir)
@@ -160,7 +160,7 @@ def test_inheriting_scenario_already_broken_is_reported_not_blamed(
 ) -> None:
     _child_with_transfer(
         test_data_dir, date="2029-03-31", kind="one_off_transfer", account_1="no_such_account",
-        account_2="Asset_Checking", amount="100000", tax_character="none",
+        account_2="Asset_Checking", amount="1000.00", tax_character="none",
     )
 
     result = _sim("calendar", "add", "set-rate", "2027-03-31", "Asset_Checking", "4",
@@ -205,7 +205,7 @@ def test_preflight_loader_crash_is_a_clean_error(
 def _add_rate_row(calendar: Path) -> None:
     _append_csv_row(calendar, registries.CALENDAR_HEADER,
                     {"date": "2027-03-31", "kind": "set_rate", "series": "Asset_Checking",
-                     "amount": "40000"})
+                     "amount": "4"})
 
 
 def test_concurrent_change_to_a_file_being_written_refuses_the_edit(test_data_dir: Path) -> None:
@@ -265,7 +265,7 @@ def test_delete_investment_account_drops_its_growth_rate_rows(
     """An investment account's leaf chain is '<account>:<lot>', so its own
     growth rule must be recognized by account, not by chain name."""
     append_calendar_row(date="2027-01-31", kind="set_rate", series="brokerage_growth",
-                        amount="60000")
+                        amount="6")
 
     result = _sim("account", "delete", "Asset_Brokerage_Joint", "--scenario", "retire_alice",
                   data_dir=test_data_dir, input="y\n")
