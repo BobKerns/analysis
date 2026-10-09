@@ -89,6 +89,10 @@ jobs:
           uv python install
           uv sync --locked --group dev
 
+      # The same data/shared layout a developer has, from templates/.
+      - name: Template data repo
+        run: scripts/link-data.sh --template
+
       - name: Tests
         run: uv run --no-sync python -m pytest -q -n auto
 
@@ -113,13 +117,11 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      # cspell.json loads the data repo's dictionary, which CI doesn't
-      # check out; an empty stub keeps the config loadable. Tracked files
-      # never use the data repo's names, so nothing here needs its words.
-      - name: Stub data-repo dictionary
-        run: |
-          mkdir -p data/shared/.cspell
-          echo '# Stub: the data repo is not checked out in CI' > data/shared/.cspell/data-words.txt
+      # CI has no data repo, so this builds data/shared from templates/,
+      # including the empty dictionary cspell.json loads. Tracked files never
+      # use the data repo's names, so nothing here needs its words.
+      - name: Template data repo
+        run: scripts/link-data.sh --template
 
       - name: Spelling
         run: npm run spell

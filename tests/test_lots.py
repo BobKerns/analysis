@@ -388,7 +388,7 @@ def test_shipped_account_values_files_carry_every_lot_column(
 
     for path in (
         prototype_data / "scenarios" / "retire_alice" / "account_values.csv",
-        repo_root / "templates" / "scenarios" / "template" / "account_values.csv",
+        repo_root / "templates" / "scenarios" / "base" / "account_values.csv",
     ):
         assert tuple(path.read_text().splitlines()[0].split(",")) == ACCOUNT_VALUES_CSV_HEADER, path
 

@@ -583,6 +583,7 @@ Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation
 - **`rmd_start_age.csv`**:
   `effective_date`, `start_age`
 - **`ltcg_brackets.csv`** (optional): `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate_micros`. Federal long-term capital gain rates in the shape of `federal_brackets.csv`, but a band's `floor` is the taxable income, gain included, at which its rate starts (0%, 15%, 20%). See §2.6.
+- **`home_sale_exclusion.csv`** (optional): `effective_date`, `filing_status`, `amount`. The IRC §121 gain exclusion the `home_sale` rule applies when its params give no explicit cap.
 - **`security_price__<symbol>.csv`**: `effective_date`, `price` (decimal dollars, up to six places; stored as `price_micros`). Used only to derive a lot's `opening_balance` from its `quantity`, never month to month.
 
 #### 4.5 Per-scenario: `data_repo/scenarios/<name>/scenario.csv`
@@ -958,3 +959,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#105](https://github.com/BobKerns/analysis/issues/105): a negative-balance warning names the refill chain it tried and what that chain supplied, and `negative_balance_warnings` records the same (§4.7).
 - [#115](https://github.com/BobKerns/analysis/issues/115): `calendar.csv`'s `vary_process`, `vary_persistence` and `vary_innovation_sd` columns (§3.1, §4.8).
 - [#124](https://github.com/BobKerns/analysis/issues/124): `account lot add|edit|delete|list`, which edit an inherited lot by override and delete one by zeroing it (§7).
+- [#131](https://github.com/BobKerns/analysis/issues/131): `home_sale_exclusion.csv` is a registered aux kind, so the shipped template loads (§4.4).
