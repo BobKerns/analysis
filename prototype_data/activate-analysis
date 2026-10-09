@@ -91,14 +91,24 @@ if [ -z "${ANALYSIS_USER-}" ] && [ -r "$ANALYSIS_DATA_DIR/.analysis_user" ]; the
 	IFS= read -r ANALYSIS_USER < "$ANALYSIS_DATA_DIR/.analysis_user"
 fi
 
-if [ -z "${ANALYSIS_USER-}" ]; then
-	printf "ANALYSIS_USER: " >&2
-	read -r ANALYSIS_USER
+# A remembered or exported user that persons.csv no longer has is asked
+# again rather than failing, so a renamed person isn't a dead end.
+if [ -n "${ANALYSIS_USER-}" ] && \
+	! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null; then
+	echo "activate-analysis: '$ANALYSIS_USER' is not in $ANALYSIS_DATA_DIR/persons.csv" >&2
+	unset ANALYSIS_USER
 fi
 
-if ! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null; then
-	unset ANALYSIS_USER
-	_analysis_fail "ANALYSIS_USER not found in $ANALYSIS_DATA_DIR/persons.csv"
+if [ -z "${ANALYSIS_USER-}" ]; then
+	# The same prompt scripts/link-data.sh uses: pick a primary person by id
+	# or display name.
+	ANALYSIS_USER="$(python -m analysis.sim.choose_user "$ANALYSIS_DATA_DIR")" || {
+		unset ANALYSIS_USER
+		echo "activate-analysis: no ANALYSIS_USER chosen" >&2
+		# Stop sourcing here: _analysis_fail's return only leaves the function.
+		# shellcheck disable=SC2317
+		return 1 2>/dev/null || exit 1
+	}
 fi
 export ANALYSIS_USER
 

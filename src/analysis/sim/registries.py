@@ -266,6 +266,9 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # cap, 0/blank for uncapped. A category/date combo with no matching row
     # means "no credit available" -- callers must not assume a fallback.
     "energy_credits": ("effective_date", "category", "rate_micros", "cap"),
+    # IRC §121 home-sale gain exclusion by filing status, read by the
+    # home_sale rule kind when its params give no explicit cap.
+    "home_sale_exclusion": ("effective_date", "filing_status", "amount"),
 }
 
 # Per-aux-kind set of column names that hold dollar amounts in the CSV and must
@@ -285,6 +288,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "state_deductions": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
     "energy_credits": frozenset({"cap"}),
+    "home_sale_exclusion": frozenset({"amount"}),
 }
 
 

@@ -93,11 +93,13 @@ Required behavior:
 - Resolve its own location via `BASH_SOURCE`/`(%):-%x` so it works regardless of caller `cwd`.
 - Set `ANALYSIS_DATA_DIR` to that absolute path.
 - Set `ANALYSIS_DATA_REPO_NAME` to the basename, unless already set by the user.
-- Prompt for `ANALYSIS_USER` if unset: read one line from `/dev/tty`, validate against `persons.csv` (column 1), re-prompt on miss, abort on EOF.
+- Take `ANALYSIS_USER` from the environment, else from the remembered `.analysis_user`. If it is unset, or `persons.csv` (column 1) has no such id, list the `primary` persons (id and display), read an id or display name, re-prompt on miss, abort on EOF, and remember the choice in `.analysis_user`. The list and prompt are `python -m analysis.sim.choose_user`, shared with `scripts/link-data.sh`.
 - Define `analysis_prompt_info`, which prints `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER]` and a trailing space, and prefix `PS1` with a literal `$(analysis_prompt_info)` only if it is not already present (so re-sourcing is idempotent; zsh gets `setopt prompt_subst`). `deactivate-analysis` strips it again.
 - Define a `deactivate` function that restores all saved values and unsets itself.
 
 The script is shell-agnostic at the user-visible level (works in bash and zsh); fish gets a separate `activate.fish` if/when needed.
+
+`scripts/link-data.sh` (run last by `scripts/setup.sh`, and by CI) links the two repositories: it symlinks the code repo's `data/shared` to the data repo, writes the code repo's path to `sim/.analysis` and asks which primary person the user is, as above. Given no path (a blank answer, `--template`, or no terminal), it instead builds `data/shared` from the code repo's `templates/` (whose `persons.csv` and `.analysis_user` supply a `test` person and whose one scenario is `base`), so tooling and tests always find the same layout.
 
 A Python equivalent `src/analysis/activate.py` is **not** sourceable but performs the same validations when called from `analysis sim`'s entry — so direct CLI use with manually-set env vars works without sourcing.
 
@@ -197,3 +199,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism.
 - [#59](https://github.com/BobKerns/analysis/issues/59): the scenario tree id covers mix-in scenarios' folders too.
 - [#106](https://github.com/BobKerns/analysis/issues/106): `sim check --all`.
+- [#131](https://github.com/BobKerns/analysis/issues/131): `scripts/link-data.sh` links the data repo at `data/shared` or builds template data there, and the user prompt lists the primary persons (§4).

@@ -3,7 +3,11 @@
 See [docs/user-guide.md](../docs/user-guide.md) for a task-based walkthrough (adding accounts and lots, changing expenses, modeling a sale, chains, lifespans, calendar events). This file is the CSV column reference and conventions cheat sheet.
 
 Skeletons for every CSV the simulator's loader expects (per [ADR-002](../docs/architecture/ADR-002-storage-schema.md) + [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md)).
-Copy this folder to a new data repo and edit. **Every header row matches the
+Copy this folder to a new data repo's `sim/` and edit: replace the `test`
+person in `persons.csv` with your own, delete `.analysis_user`, and start from
+the one scenario, `scenarios/base`. `scripts/link-data.sh --template` (run by
+`scripts/setup.sh` when you give it no data repo, and by CI) copies it unedited
+to `data/shared/sim`, where it loads as is. **Every header row matches the
 corresponding DDL column name exactly** to minimize confusion when reading the
 SQL schema alongside the source CSV.
 
@@ -90,8 +94,11 @@ When sourced, `activate-analysis` will:
 
 - Discover the analysis program repo from `$ANALYSIS_DATA_DIR/.analysis`.
 - Prompt for the repo path if missing/invalid, validate it, and persist it.
-- Ensure `.analysis` is ignored in the data repo's `.gitignore`.
+- Ensure `.analysis`, `.current_scenario` and `.analysis_user` are ignored in the data repo's `.gitignore`.
 - Create `.venv` with `uv sync --group dev` if needed, then activate it.
+- Take `ANALYSIS_USER` from the environment or `.analysis_user`; if neither names a
+  person in `persons.csv`, list the `primary` persons and ask for an id or display
+  name, then remember it in `.analysis_user`.
 - Enable shell completion for `analysis`, `amazon`, and `sim`.
 
 ## Editing rows
