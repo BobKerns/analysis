@@ -1033,6 +1033,25 @@ def test_money_reference_rejects_itemization_missing_value_column(
     assert any("expected a 'Value' column" in issue for issue in ei.value.issues)
 
 
+def test_itemization_error_names_its_file_and_line(
+    test_data_dir: Path, update_account_value: Callable[..., None], intent_dir: Path,
+) -> None:
+    """#136: an itemization's missing Value is reported at its physical
+    line (a blank line before it counted), by its path in the data repo."""
+    itemizations = test_data_dir / "itemizations"
+    itemizations.mkdir(exist_ok=True)
+    (itemizations / "home_basis.csv").write_text(
+        "Item,Value\npurchase,300000.00\n\nimprovements,\n", encoding="utf-8",
+    )
+    update_account_value("Asset_Home", "", opening_cost_basis="@home_basis")
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "itemizations/home_basis.csv line 4: missing Value for '@home_basis'" in issue
+        for issue in ei.value.issues
+    )
+
+
 def test_vary_target_required_with_distribution(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
@@ -1160,6 +1179,144 @@ def test_vary_row_overrides_inherited_unnamed_calendar_row(
         assert rows == [("inheritance_vary", "uniform")]
     finally:
         con.close()
+
+
+_CHILD_CALENDAR_HEADER = (
+    "date,kind,name,series,amount,vary_target,vary_distribution,vary_low,vary_high\n"
+)
+
+
+def test_child_overrides_named_calendar_row_with_a_new_amount(
+    append_calendar_row: Callable[..., None], derive_scenario: Callable[..., Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """#136: a child row naming an inherited named row overrides it even when
+    its amount (a merge-key field) differs -- not a second row with the same
+    name beside it."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
+    )
+    derive_scenario("child", "retire_alice", files={"calendar.csv": (
+        _CHILD_CALENDAR_HEADER
+        + "2027-02-28,set_rate,checking_rate_vary,Asset_Checking,-5%,amount,uniform,-20%,5%\n"
+    )})
+    con = sqlite3.connect(load_test_scenario("child"))
+    try:
+        rows = con.execute(
+            "SELECT amount, vary_low, vary_high FROM calendar_event WHERE name = ?",
+            ("checking_rate_vary",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [(-50_000, "-200000", "50000")]
+
+
+def test_partial_header_override_reads_amount_in_the_inherited_kinds_unit(
+    append_calendar_row: Callable[..., None], derive_scenario: Callable[..., Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """#136: a ``name,amount`` override inherits its row's kind, so its
+    amount is a percent for an inherited set_rate -- converted, not left as
+    text for the intent write to choke on."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
+    )
+    derive_scenario("child", "retire_alice", files={
+        "calendar.csv": "name,amount,vary_low\nchecking_rate_vary,4.75%,4.5%\n",
+    })
+    con = sqlite3.connect(load_test_scenario("child"))
+    try:
+        rows = con.execute(
+            "SELECT kind, amount, vary_low, vary_high FROM calendar_event WHERE name = ?",
+            ("checking_rate_vary",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("set_rate", 47_500, "45000", "50000")]
+
+
+def test_partial_header_override_of_retire_scheduled_keeps_its_day(
+    append_calendar_row: Callable[..., None], derive_scenario: Callable[..., Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """A ``name,date`` override inherits retire_scheduled, whose date keeps
+    its day -- so it must have the kind before its date is normalized."""
+    append_calendar_row(
+        date="2027-02-28", kind="retire_scheduled", name="bill_retires",
+        scheduled_name="salary_bill",
+    )
+    derive_scenario("child", "retire_alice", files={
+        "calendar.csv": "name,date\nbill_retires,2028-03-15\n",
+    })
+    con = sqlite3.connect(load_test_scenario("child"))
+    try:
+        rows = con.execute(
+            "SELECT date FROM calendar_event WHERE name = ?", ("bill_retires",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("2028-03-15",)]
+
+
+def test_unknown_correlation_parent_names_the_rows_file_and_line(
+    derive_scenario: Callable[..., Path], test_data_dir: Path, intent_dir: Path,
+) -> None:
+    derive_scenario("child", "retire_alice", files={"calendar.csv": (
+        "date,kind,name,series,amount,vary_target,vary_distribution,vary_low,"
+        "vary_high,vary_correlate_with,vary_correlation\n"
+        "\n"
+        "2027-02-28,set_rate,lonely,Asset_Checking,4%,amount,uniform,3%,5%,nobody,0.5\n"
+    )})
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "child", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        issue.startswith("scenarios/child/calendar.csv line 3 (lonely): vary_correlate_with")
+        for issue in ei.value.issues
+    )
+
+
+def test_override_missing_its_key_names_its_file_and_line(
+    derive_scenario: Callable[..., Path], test_data_dir: Path, intent_dir: Path,
+) -> None:
+    """#136: the row in the message is the authored cells only -- no internal
+    location key -- and its location leads, as for every other row error."""
+    derive_scenario("child", "retire_alice", files={"accounts.csv": "name,kind\n,asset\n"})
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "child", intent_dir=intent_dir, allow_dirty_data=True)
+    assert ei.value.issues == [
+        "scenarios/child/accounts.csv line 2: derived scenario override missing "
+        "key ('name',): {'name': '', 'kind': 'asset'}"
+    ]
+
+
+def test_calendar_errors_name_the_scenario_file_and_line(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    derive_scenario: Callable[..., Path], intent_dir: Path,
+) -> None:
+    """#136: a message about a merged calendar row names the file it was
+    authored in and its physical line -- blank lines counted -- not its
+    position in the parent-plus-child calendar."""
+    append_calendar_row(date="2027-03-31", kind="no_such_kind")
+    derive_scenario("child", "retire_alice", files={"calendar.csv": (
+        _CHILD_CALENDAR_HEADER
+        + "2027-02-28,set_rate,twice,Asset_Checking,4%,,,,\n"
+        + "\n"
+        + "2027-04-30,set_rate,twice,Asset_Checking,5%,,,,\n"
+    )})
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "child", intent_dir=intent_dir, allow_dirty_data=True)
+    issues = ei.value.issues
+    assert (
+        "scenarios/child/calendar.csv line 4: duplicate name 'twice' "
+        "(first seen on scenarios/child/calendar.csv line 2)"
+    ) in issues
+    assert "scenarios/retire_alice/calendar.csv line 7: unknown event kind 'no_such_kind'" in issues
 
 
 def test_vary_rows_identical_including_name_rejected_as_duplicate(
