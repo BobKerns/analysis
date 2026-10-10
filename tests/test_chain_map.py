@@ -141,3 +141,30 @@ def test_list_finds_a_chain_whose_name_looks_like_a_glob(
     assert result.exit_code == 0, result.output
     row = next(line for line in result.output.splitlines() if "odd[1]" in line)
     assert "this scenario" in row
+
+
+def test_flowchart_follows_policies_of_policy_chains(guide_chains: Path, update_account_value) -> None:
+    # ss_split reaches checking, which refills from a chain holding the IRA,
+    # which overflows to brokerage: two policies deep.
+    update_account_value("Asset_TraditionalIRA_Alice", "default", maximum_balance="900000.00",
+                         overflow_chain="Asset_Brokerage_Joint", overflow_lot="default")
+    with open_scenario(guide_chains, "retire_alice") as sc:
+        chart = chain_map.mermaid(chain_map.chain_map(sc), ["ss_split"])
+    assert '["Asset_Brokerage_Joint (default)"]' in chart  # its own node, not just named
+
+
+def test_names_that_look_like_markup_print_as_written(
+    guide_chains: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    chains = retire_alice_csv("chains")
+    (chains / "asset__tag[red].csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    (chains / "asset__out[bold]er.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\ntag[red],,,,,\n")
+    listed = _sim(guide_chains, "list")
+    assert listed.exit_code == 0, listed.output
+    assert "tag[red]" in listed.output and "out[bold]er" in listed.output
+    shown = _sim(guide_chains, "show", "tag[red]", "tag[red]")
+    assert shown.exit_code == 0, shown.output
+    assert "a step of out[bold]er (step 1)" in shown.output
+    assert shown.output.count("tag[red] (asset chain)") == 1  # a repeated name shows once
