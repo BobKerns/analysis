@@ -13,7 +13,7 @@ from rich.console import Console
 from analysis.cli import main
 from analysis.sim import chain_map
 from analysis.sim.connection import open_scenario
-from analysis.sim.notebook_ui.scenario_plots import MERMAID_URL, mermaid_bundle, show_chain_flow
+from analysis.sim.notebook_ui.scenario_plots import MERMAID_URL, MermaidWidget, show_chain_flow
 
 
 @pytest.fixture
@@ -117,19 +117,15 @@ def test_show_command_finds_the_chains_reaching_an_account(guide_chains: Path) -
 def test_flowchart_in_the_notebook_shows_one_chain(guide_chains: Path) -> None:
     with open_scenario(guide_chains, "retire_alice") as sc:
         box = show_chain_flow(sc, chain="bridge")
-    assert isinstance(box, widgets.VBox)
-    picker = box.children[0]
+        cmap = chain_map.chain_map(sc)
+    picker, chart = box.children
     assert isinstance(picker, widgets.Dropdown) and picker.value == "bridge"
     assert list(picker.options) == ["asset_checking_liquidity", "bridge", "retirement_draw", "ss_split"]
-
-
-def test_flowchart_html_draws_itself() -> None:
-    # VS Code has no Mermaid renderer for Markdown output, so the HTML loads Mermaid.
-    bundle = mermaid_bundle('flowchart LR\n    n0["a<b"]')
-    assert '<pre class="mermaid" id="chain-flow-' in bundle["text/html"]
-    assert "&quot;a&lt;b&quot;" in bundle["text/html"]  # the chart is the element's text
-    assert f'import mermaid from "{MERMAID_URL}"' in bundle["text/html"]
-    assert bundle["text/markdown"].startswith("```mermaid\nflowchart LR\n")
+    assert isinstance(chart, MermaidWidget) and chart.chart == chain_map.mermaid(cmap, ["bridge"])
+    picker.value = "ss_split"  # picking another chain redraws
+    assert chart.chart == chain_map.mermaid(cmap, ["ss_split"])
+    # The widget draws itself, so VS Code (which runs no script in an Output) draws it too.
+    assert f'import mermaid from "{MERMAID_URL}"' in MermaidWidget._esm
 
 
 def test_calendar_transfers_use_chains(guide_chains: Path, append_calendar_row) -> None:

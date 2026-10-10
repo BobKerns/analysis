@@ -1,10 +1,10 @@
 # Scenario descriptions for the notebook UI
 
-import html
-import uuid
 from collections.abc import Collection
 
+import anywidget
 import pandas as pd
+import traitlets
 from IPython.display import Markdown, display
 from ipywidgets import widgets
 
@@ -69,27 +69,36 @@ def show_chains(sc, **_):
 
 
 MERMAID_URL = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs"
-"""Where a flowchart's HTML loads Mermaid from, for front ends without it built in."""
+"""Where the flowchart widget loads Mermaid from."""
 
 
-def mermaid_bundle(chart: str) -> dict[str, str]:
-    """A display bundle for the Mermaid source ``chart``. VS Code has no Mermaid
-    renderer for Markdown output, so the HTML draws the chart itself with
-    Mermaid from a CDN; JupyterLab picks the HTML too. The Markdown fence and
-    the source are fallbacks for a front end that shows neither."""
-    element = f"chain-flow-{uuid.uuid4().hex}"
-    # Mermaid reads the chart from the element's text, so it is escaped like any text.
-    script = (
-        f'import mermaid from "{MERMAID_URL}";\n'
-        "mermaid.initialize({startOnLoad: false});\n"
-        f'mermaid.run({{nodes: [document.getElementById("{element}")]}});'
-    )
-    return {
-        "text/html": f'<pre class="mermaid" id="{element}">{html.escape(chart)}</pre>'
-                     f'<script type="module">{script}</script>',
-        "text/markdown": f"```mermaid\n{chart}\n```",
-        "text/plain": chart,
-    }
+class MermaidWidget(anywidget.AnyWidget):
+    """Draws the Mermaid source ``chart``, again whenever it changes. A widget
+    carries its own JavaScript, so it draws in VS Code, which runs no script
+    an Output widget's HTML holds, as well as in JupyterLab."""
+
+    _esm = f"""
+    import mermaid from "{MERMAID_URL}";
+    mermaid.initialize({{startOnLoad: false}});
+    let drawn = 0;
+    function render({{model, el}}) {{
+        async function draw() {{
+            const chart = model.get("chart");
+            try {{
+                const {{svg}} = await mermaid.render(`chain-flow-${{++drawn}}`, chart);
+                el.innerHTML = svg;
+            }} catch (error) {{
+                // Show the source, so a chart Mermaid can't draw is still readable.
+                el.textContent = `${{error}}\n\n${{chart}}`;
+                el.style.whiteSpace = "pre";
+            }}
+        }}
+        model.on("change:chart", draw);
+        draw();
+    }}
+    export default {{render}};
+    """
+    chart = traitlets.Unicode("").tag(sync=True)
 
 
 def show_chain_flow(sc, chain: str | None = None, **_):
@@ -106,14 +115,11 @@ def show_chain_flow(sc, chain: str | None = None, **_):
     names = sorted(cmap.steps)
     picker = widgets.Dropdown(options=names, value=chain if chain in names else names[0],
                               description="Chain:")
-
-    def _redraw(*_):
-        with out:
-            display(mermaid_bundle(chain_map.mermaid(cmap, [picker.value])), raw=True, clear=True)
-
-    picker.observe(_redraw, names="value")
-    _redraw()
-    return widgets.VBox([picker, out])
+    chart = MermaidWidget(chart=chain_map.mermaid(cmap, [picker.value]),
+                          layout=widgets.Layout(overflow="auto", max_width="100%"))
+    picker.observe(lambda change: setattr(chart, "chart", chain_map.mermaid(cmap, [change.new])),
+                   names="value")
+    return widgets.VBox([picker, chart])
 
 
 SCHEDULED_OPTIONAL_COLUMNS = {"id": False, "name": True, "priority": False, "description": True}
