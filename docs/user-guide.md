@@ -102,7 +102,7 @@ project word could be confused with a general word, that is pointed out.
 | **Scenario** | One full model of your household finances. Stored as a folder under `scenarios/<name>/`. |
 | **Derived scenario** | A scenario that has `parent_scenario` set. It starts from its parent (and any mix-ins) and only lists what is different. See Part 1. |
 | **Lot** | One holding inside an account. A brokerage account can have several lots: different funds, or shares bought on different dates. Every account has at least one lot. It is named `default` unless you split the account into more than one lot. |
-| **Chain** | A named, ordered list of places money can come from, or go to. Think: try this place first, then that place. Every account (and every lot) already has its own one-step chain, automatically. You only write a `chains/*.csv` file when you want more than one step. See Part 4.6. |
+| **Chain** | A named, ordered list of places money can come from, or go to. Think: try this place first, then that place. Every account (and every lot) already has its own one-step chain, automatically. You only write a `chains/*.csv` file when you want more than one step. See Part 4.6 and [the chains guide](guides/chains.md). |
 | **Series** | A named set of numbers a scenario can refer to by name: a growth or interest rate (`rate__*`), or an inflation projection (`inflation__*`). These files live in that scenario's own `series/` folder. This is a different idea from *asset class*, below. |
 | **`aux/`** | Shared tax-law facts every scenario uses unless it says otherwise: tax brackets, RMD tables, filing status. |
 | **`series/`** | A scenario's own growth-rate and inflation assumptions. Unlike `aux/`, there is no shared copy at the top of the data repo — each scenario has its own, inherited from its parent the same way `accounts.csv` is. |
@@ -401,8 +401,9 @@ use a chain:
 
 1. **As the source or destination of a rule.** In `scheduled.csv`,
    `from_account`/`to_account` can name a chain instead of a plain account
-   (Part 4.5). In `calendar.csv`, `account_1`/`account_2` cannot — they must
-   always name a plain account.
+   (Part 4.5), and so can a calendar transfer's `account_1`/`account_2`,
+   except a `transfer_balance`'s source. A transfer names a chain on one
+   side at most.
 2. **As a lot's own rule for refilling or overflowing.** This is set
    directly on the lot's row in `account_values.csv` (with
    `sim account lot edit`, or by hand), not as a separate rule:
@@ -428,6 +429,12 @@ need to write a `chains/<kind>__<name>.csv` file when you want more than one
 step — for example, "try savings first, then this brokerage lot, then that
 one" — with each step taking a `percent` or a `maximum` amount before
 whatever is left moves on to the next step.
+
+`sim chain list` shows the scenario's chains and what uses each one, and
+`sim chain show` draws them as trees (`--mermaid` for a flowchart).
+[The chains guide](guides/chains.md) explains how steps, percents and
+maximums, chains inside chains, and the refill and overflow limits work
+together, with worked examples and recipes.
 
 ### 4.7 Lifespan assumptions
 
@@ -639,4 +646,5 @@ answer.
 - [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](architecture/ADR-005-lots-and-per-lot-state.md) — lots in depth.
 - [notebooks/README.md](../notebooks/README.md) — the same information as interactive widgets.
 - [`docs/guides/century-of-rates.md`](guides/century-of-rates.md) — a century of inflation, interest rates and stock returns: what carries over from one year to the next.
+- [`docs/guides/chains.md`](guides/chains.md) — chains step by step: drawing and sweeping, shares, chains inside chains, refill and overflow.
 - [`docs/guides/ensembles.md`](guides/ensembles.md) — ranges of outcomes instead of one number (Part 4.10); [ADR-006](architecture/ADR-006-ensemble-scenarios.md) has the full design.

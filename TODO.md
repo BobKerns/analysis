@@ -15,7 +15,6 @@ walk the notebooks and `analysis.sim.notebook_ui`, check each view against `anal
 
 Known gaps (last reviewed 2026-09-24):
 
-- chains: no `sim chain list` (the notebook shows them)
 - persons and lifespans: no listing command
 - `year_to_date.csv` rows: no `sim ytd list`
 - calendar events other than one-time transfers: no listing command

@@ -3,9 +3,10 @@
 from collections.abc import Collection
 
 import pandas as pd
-from IPython.display import display
+from IPython.display import Markdown, display
 from ipywidgets import widgets
 
+from analysis.sim import chain_map
 from analysis.sim.notebook_ui.scenario_view import calendar_view, chains_view
 
 
@@ -63,6 +64,25 @@ def show_chains(sc, **_):
                                   "lot": _breakable, "series": _breakable},
                                  na_rep="-").hide(axis="index")
     return scrollable(_fit_to_width(styled, nowrap=["step", "maximum", "percent", "cadence"]))
+
+
+def chain_flow_markdown(sc) -> str:
+    """The chains of the scenario connection `sc` as Markdown holding a Mermaid
+    flowchart: steps as numbered lines, refill and overflow as arrows, and the
+    rules that use a chain. The same chart as `sim chain show --mermaid`."""
+    cmap = chain_map.chain_map(sc)
+    if not cmap.steps:
+        return "No chains: every lot is still a one-step chain of its own."
+    return f"```mermaid\n{chain_map.mermaid(cmap)}\n```"
+
+
+def show_chain_flow(sc, **_):
+    """`chain_flow_markdown` for the notebook. JupyterLab draws the Mermaid
+    block; VS Code needs a Mermaid extension, and shows the source without one."""
+    out = scrollable_output()
+    with out:
+        display(Markdown(chain_flow_markdown(sc)))
+    return out
 
 
 SCHEDULED_OPTIONAL_COLUMNS = {"id": False, "name": True, "priority": False, "description": True}

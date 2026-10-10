@@ -29,7 +29,7 @@ from analysis.expenses.baseline import (
     load_expense_account_map,
     replace_generated_scheduled_rows,
 )
-from analysis.sim import allocation, calendar_guide, lot_guide, prices, registries, sensitivity, units
+from analysis.sim import allocation, calendar_guide, chain_map, lot_guide, prices, registries, sensitivity, units
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
     open_run, open_scenario, year_end_values, Connection,
@@ -5692,6 +5692,127 @@ def prices_check_command(scenario: str | None, data_dir: Path | None, tolerance:
     flagged = int(frame["flag"].notna().sum())
     if flagged:
         raise click.ClickException(f"{flagged} lot(s) flagged")
+
+
+@sim_group_command.group(name="chain")
+def chain_group_command() -> None:
+    """See the scenario's chains: where money is drawn from, or swept to.
+
+    A chain is an ordered list of steps, each an account's lot or another
+    chain. See docs/guides/chains.md for how the steps, a lot's minimum and
+    maximum, refill and overflow fit together.
+    """
+
+
+def _chain_defined_in(scenarios_dir: Path, scenario: str, chain: str) -> str:
+    """The scenario in ``scenario``'s lineage whose chains/ file for ``chain``
+    is the one loaded (the last in load order, ADR-003 §4.7)."""
+    found = ""
+    for name in load_order(scenarios_dir, scenario):
+        if any((scenarios_dir / name / "chains").glob(f"*__{chain}.csv")):
+            found = name
+    return found
+
+
+@chain_group_command.command("list")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
+    """List the chains with their steps, where each is defined, and what uses it.
+
+    Only chains written in a chains/*.csv file are listed; every lot is also a
+    one-step chain of its own, usable wherever a chain is.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    from rich.measure import Measurement
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    with open_scenario(data, ref.name, scenarios_dir=ref.scenarios_dir) as scn:
+        cmap = chain_map.chain_map(scn)
+    if not cmap.steps:
+        click.echo(f"no chains in {ref.name}; every lot is still a one-step chain of its own")
+        return
+    table = Table(title=f"chains ({ref.name})", header_style="bold", show_lines=True)
+    for column in ("Chain", "Kind", "Steps", "Defined in", "Used by"):
+        table.add_column(column)
+    for name, steps in sorted(cmap.steps.items()):
+        defined = _chain_defined_in(ref.scenarios_dir, ref.name, name)
+        uses = cmap.uses.get(name, [])
+        table.add_row(
+            name, cmap.kinds[name],
+            "\n".join(f"{s.order}. {cmap.label(s.target)}: {chain_map.share_text(s)}" for s in steps),
+            "this scenario" if defined == ref.name else defined,
+            "\n".join(chain_map.use_text(cmap, u) for u in uses) or "[red]nothing[/red]",
+        )
+    console = Console()
+    # Wrap long steps rather than cropping names, as `sim allocation` does.
+    needed = Measurement.get(console, console.options.update(max_width=10_000), table).maximum
+    if needed > console.width:
+        console = Console(width=min(needed, max(console.width, 160)))
+    console.print(table)
+
+
+@chain_group_command.command("show")
+@click.argument("names", nargs=-1)
+@click.option("--mermaid", "as_mermaid", is_flag=True,
+              help="Print a Mermaid flowchart (for markdown, GitHub or JupyterLab) instead of a tree.")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def chain_show_command(
+    names: tuple[str, ...], as_mermaid: bool, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Show chains as trees: each step, what share it takes, and its lot's policy.
+
+    NAMES are chains, or accounts to show the chains that reach them; with
+    none, shows every chain. A step naming another chain is nested under it,
+    like a parenthesized expression. Each lot shows the minimum it keeps, the
+    chain it refills from, and the maximum it holds before overflowing.
+    """
+    from rich.console import Console
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    with open_scenario(data, ref.name, scenarios_dir=ref.scenarios_dir) as scn:
+        cmap = chain_map.chain_map(scn)
+    roots: list[str] = []
+    for name in names:
+        if cmap.is_interior(name):
+            roots.append(name)
+            continue
+        leaves = [leaf for leaf, (account, _lot) in cmap.leaves.items() if account == name or leaf == name]
+        if not leaves:
+            raise click.ClickException(f"{name} is neither a chain nor an account in {ref.name}")
+        reaching = [chain for chain in cmap.steps
+                    if any(leaf in cmap.descendants(chain) for leaf in leaves)]
+        for leaf in leaves:
+            policy = cmap.policies.get(leaf)
+            if policy is not None:
+                reaching += [c for c in (policy.refill_chain, policy.overflow_chain) if c]
+        if not reaching:
+            raise click.ClickException(f"no chain reaches {name} in {ref.name}")
+        roots += [chain for chain in reaching if chain not in roots]
+    if not names:
+        roots = sorted(cmap.steps)
+    if not roots:
+        click.echo(f"no chains in {ref.name}; every lot is still a one-step chain of its own")
+        return
+    if as_mermaid:
+        click.echo(chain_map.mermaid(cmap, roots))
+        return
+    console = Console()
+    for i, root in enumerate(roots):
+        if i:
+            console.print()
+        console.print(chain_map.chain_tree(cmap, root))
+        for use in cmap.uses.get(root, []):
+            console.print(f"  [dim]{chain_map.use_text(cmap, use)}[/dim]")
 
 
 @sim_group_command.group(name="scenario")

@@ -27,6 +27,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | the lots in an account | `analysis sim account holdings <account>` |
 | the portfolio by asset class | `analysis sim allocation` |
 | the accounts holding a symbol | `analysis sim account holders <symbol>` |
+| chains, as a table and a flowchart | `analysis sim chain list`, `analysis sim chain show [--mermaid]` |
 | scheduled transactions | `analysis sim scheduled list` |
 | one-time transfers | `analysis sim transfer list` |
 | a run's year-end net worth, and lots | `analysis sim explain <runfile>` |
