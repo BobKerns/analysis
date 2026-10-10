@@ -121,21 +121,20 @@ class _MoneyReferenceResolver:
         self._resolving.add(token)
         try:
             total = 0
+            label = _data_label(path, self.data_dir)
             with path.open(newline="", encoding="utf-8") as fh:
-                reader = csv.DictReader(fh)
-                if not reader.fieldnames or "Value" not in reader.fieldnames:
-                    raise ValueError(
-                        f"{path}: expected a 'Value' column for '@{token}'"
-                    )
-                for i, row in enumerate(reader, start=2):
-                    if not any((v or "").strip() for v in row.values()):
-                        continue
-                    raw = (row.get("Value") or "").strip()
-                    if raw == "":
-                        raise ValueError(
-                            f"{path} row {i}: missing Value for '@{token}'"
-                        )
-                    total += _dollars_to_cents(raw, resolver=self)
+                header = next(csv.reader(fh), [])
+            if "Value" not in header:
+                raise ValueError(f"{label}: expected a 'Value' column for '@{token}'")
+            problems: list[str] = []
+            rows = _read_csv(path, problems, label=label)
+            if problems:
+                raise ValueError(problems[0])
+            for where, row in _located(rows, label):
+                raw = row.get("Value") or ""
+                if raw == "":
+                    raise ValueError(f"{where}: missing Value for '@{token}'")
+                total += _dollars_to_cents(raw, resolver=self)
             self._cache[token] = total
             return total
         finally:
@@ -547,6 +546,7 @@ def _merge_calendar_rows(
             existing_name = name_of(merged[key])
             if existing_name and name and existing_name != name:
                 issues.append(collision(merged[key], row))
+                by_name.pop(existing_name, None)
             merged[key].update(row)
         else:
             order.append(key)
@@ -804,7 +804,9 @@ def load_scenario(
         *_merged_override_files(data_dir, scenario_dirs, "series", include_shared=False),
         *_merged_override_files(data_dir, scenario_dirs, "prices"),
     ]
-    aux_rows = _read_aux_files(aux_files, issues, money_resolver=money_resolver)
+    aux_rows = _read_aux_files(
+        aux_files, issues, data_dir=data_dir, money_resolver=money_resolver,
+    )
 
     _derive_opening_balances(model_rows, aux_rows, scenario_row, issues)
     _expand_account_growth(
@@ -1119,25 +1121,27 @@ def _read_aux_files(
     csv_paths: list[Path],
     issues: list[str],
     *,
+    data_dir: Path,
     money_resolver: _MoneyReferenceResolver,
 ) -> list[tuple[str, str | None, dict[str, Any], str]]:
     out: list[tuple[str, str | None, dict[str, Any], str]] = []
     for csv_path in csv_paths:
+        label = _data_label(csv_path, data_dir)
         stem = csv_path.stem
         if "__" in stem:
             kind, series = stem.split("__", 1)
         else:
             kind, series = stem, None
         if kind not in registries.AUX_KIND_COLUMNS:
-            issues.append(f"aux/{csv_path.name}: unknown kind '{kind}'")
+            issues.append(f"{label}: unknown kind '{kind}'")
             continue
         cols = registries.AUX_KIND_COLUMNS[kind]
         money_cols = registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
         micros_cols = registries.AUX_MICROS_COLUMNS.get(kind, {})
-        if _legacy_units_header(csv_path, f"aux/{csv_path.name}", issues):
+        if _legacy_units_header(csv_path, label, issues):
             continue
-        rows = _read_csv(csv_path, issues, label=f"aux/{csv_path.name}")
-        for where, row in _located(rows, f"aux/{csv_path.name}"):
+        rows = _read_csv(csv_path, issues, label=label)
+        for where, row in _located(rows, label):
             missing = [c for c in cols if c not in row]
             if missing:
                 issues.append(

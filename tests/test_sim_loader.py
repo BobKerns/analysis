@@ -1033,6 +1033,25 @@ def test_money_reference_rejects_itemization_missing_value_column(
     assert any("expected a 'Value' column" in issue for issue in ei.value.issues)
 
 
+def test_itemization_error_names_its_file_and_line(
+    test_data_dir: Path, update_account_value: Callable[..., None], intent_dir: Path,
+) -> None:
+    """#136: an itemization's missing Value is reported at its physical
+    line (a blank line before it counted), by its path in the data repo."""
+    itemizations = test_data_dir / "itemizations"
+    itemizations.mkdir(exist_ok=True)
+    (itemizations / "home_basis.csv").write_text(
+        "Item,Value\npurchase,300000.00\n\nimprovements,\n", encoding="utf-8",
+    )
+    update_account_value("Asset_Home", "", opening_cost_basis="@home_basis")
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "itemizations/home_basis.csv line 4: missing Value for '@home_basis'" in issue
+        for issue in ei.value.issues
+    )
+
+
 def test_vary_target_required_with_distribution(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
