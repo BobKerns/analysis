@@ -2477,6 +2477,7 @@ _CALENDAR_COMMAND_OF_KIND = {
     "set_amount": "set-amount",
     "retire_scheduled": "retire-scheduled",
     "one_off_transfer": "transfer",
+    "transfer_balance": "transfer-balance",
     registries.LATENT_FACTOR_KIND: "latent-factor",
 }
 
@@ -2507,7 +2508,7 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
         "to_account": row["account_2"], "to_lot": row["lot_2"],
         "tax_character": row["tax_character"] or "none",
         "description": row["description"] or (
-            # Only a transfer's command keeps a copy of it in params_json.
+            # Only a one_off_transfer's command keeps a copy of it in params_json.
             str(params.get("description", "")) if command == "transfer" else ""
         ),
         "tags": row["tags"],
@@ -2561,6 +2562,7 @@ def _guide_context(
         aux = "SELECT series FROM aux_table WHERE kind = ?"
         return calendar_guide.GuideContext(
             accounts=column(con, "SELECT name FROM account"),
+            asset_accounts=column(con, "SELECT name FROM account WHERE kind = 'asset'"),
             lots=_lot_info(con),
             chains=_interior_chains(con),
             scheduled_names=column(con, "SELECT name FROM scheduled_transaction"),
@@ -3084,6 +3086,102 @@ def calendar_add_transfer(
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months,
+    )
+
+
+@calendar_add_group_command.command("transfer-balance")
+@click.argument("date", required=False)
+@click.argument("from_account", required=False, shell_complete=_complete_account)
+@click.argument("to_account", required=False, shell_complete=_complete_account)
+@click.option("--from-lot", default=None,
+              help="Lot of the from account; asked for when a blank one would not say which.")
+@click.option("--to-lot", default=None,
+              help="Lot of the to account; asked for when a blank one would not say which.")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--tax-character", default="none", show_default=True,
+              help="ADR-003 tax_character; none for a direct rollover.")
+@click.option("--description", default="", help="Free-text description.")
+@click.option("--tags", default="",
+              help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
+@_vary_row_options
+def calendar_add_transfer_balance(
+    date: str | None, from_account: str | None, to_account: str | None,
+    from_lot: str | None, to_lot: str | None,
+    scenario: str | None, data_dir: Path | None, tax_character: str,
+    description: str, tags: str,
+    row_name: str | None, vary_target: str | None, vary_distribution: str | None,
+    vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
+    vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
+    vary_correlate_with: str | None, vary_correlation: str | None,
+    vary_tail_dependence: str | None,
+    vary_ramp_months: int | None,
+) -> None:
+    """Append a transfer_balance event (#134): on DATE, move the whole balance
+    of one lot of FROM_ACCOUNT, an asset account, into TO_ACCOUNT -- a
+    rollover, say. The amount is whatever the lot holds at the start of
+    DATE's month.
+
+    Only --vary-target=date is meaningful here (there is no amount to vary).
+    Arguments left out are asked for.
+    """
+    if vary_target == "amount":
+        raise click.ClickException(
+            "transfer_balance has no amount to vary; use --vary-target date"
+        )
+    try:
+        registries.parse_tags(tags)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    if tax_character not in registries.TAX_CHARACTERS:
+        raise click.ClickException(
+            f"unknown tax_character: {tax_character!r}; "
+            f"allowed: {sorted(registries.TAX_CHARACTERS)}"
+        )
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    with _intent_db(data_dir_p, scenario) as (con, _name):
+        accounts, lot_info, chains = _endpoints(con)
+        assets = [r[0] for r in con.execute(
+            "SELECT name FROM account WHERE kind = 'asset' ORDER BY name"
+        )]
+
+    if not date:
+        date = _prompt_with_completion("date (YYYY-MM or YYYY-MM-DD)")
+    date = _validate_month_date(date)
+    if from_account is None or to_account is None:
+        _echo_endpoints(accounts, lot_info, chains)
+    # The source is one lot of an asset: "the balance" means one real balance.
+    from_account, from_lot = _pick_endpoint(
+        "from", from_account or None, from_lot,
+        accounts=assets, lot_info=lot_info, chains=[], allow_chain=False,
+    )
+    to_account, to_lot = _pick_endpoint(
+        "to", to_account or None, to_lot, accounts=accounts, lot_info=lot_info, chains=chains,
+    )
+
+    vary_fields = _vary_row_fields(
+        row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
+        vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
+        vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
+        vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
+        vary_tail_dependence=vary_tail_dependence,
+        vary_ramp_months=vary_ramp_months, amount_unit=None,
+    )
+    row = {
+        "date": date, "kind": "transfer_balance",
+        "account_1": from_account, "lot_1": from_lot,
+        "account_2": to_account, "lot_2": to_lot,
+        "tax_character": tax_character, "description": description, "tags": tags,
+        **vary_fields,
+    }
+    path = scenario_dir / "calendar.csv"
+    verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
+    click.echo(
+        f"{verb} transfer_balance {from_account} -> {to_account} on {date} to {path}"
     )
 
 
@@ -5373,8 +5471,8 @@ def import_quicken(
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
-    """List one-time transfers: calendar one_off_transfer events and scheduled
-    rows with cadence one_off."""
+    """List one-time transfers: calendar one_off_transfer and transfer_balance
+    events, and scheduled rows with cadence one_off."""
     from rich.console import Console
     from rich.table import Table
 
@@ -5391,7 +5489,7 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
 
         rows: list[tuple[str, ...]] = []
         for row in con.execute(
-            "SELECT ce.date, ce.amount, "
+            "SELECT ce.date, ce.kind, ce.amount, "
             "       COALESCE(ce.tax_character, '') AS tax_character, "
             "       COALESCE(ce.description, '') AS description, "
             "       ce.account_1 AS chain_1, a1.name AS name_1, a1.subkind AS subkind_1, "
@@ -5405,13 +5503,19 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
             "LEFT JOIN chain c2 ON c2.name = ce.account_2 "
             "LEFT JOIN account_model_member m2 ON m2.id = c2.lot_id "
             "LEFT JOIN account a2 ON a2.id = c2.account_id "
-            "WHERE ce.kind = 'one_off_transfer' "
+            "WHERE ce.kind IN ('one_off_transfer', 'transfer_balance') "
         ):
+            if row["kind"] == "transfer_balance":
+                amount = "balance"  # whatever the lot holds when it fires
+            elif row["amount"] is not None:
+                amount = _fmt_cents(row["amount"]).strip()
+            else:
+                amount = ""
             rows.append((
                 row["date"], "calendar",
                 _account_with_lot(row["name_1"] or row["chain_1"], row["subkind_1"], row["lot_1"]),
                 _account_with_lot(row["name_2"] or row["chain_2"], row["subkind_2"], row["lot_2"]),
-                _fmt_cents(row["amount"]).strip() if row["amount"] is not None else "",
+                amount,
                 row["tax_character"], row["description"],
             ))
         for row in con.execute(

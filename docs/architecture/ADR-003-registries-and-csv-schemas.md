@@ -187,10 +187,10 @@ Fires once, automatically, the month a person dies -- for one-time death-trigger
 
 ### 3. `calendar_event.kind` registry
 
-Ten kinds. Per the §2 invariant, calendar events never write to `transfer_event` directly. They fall into three classes:
+Eleven kinds. Per the §2 invariant, calendar events never write to `transfer_event` directly. They fall into three classes:
 
 - **Intent-mutating** (no money moves at expansion time; the event amends the in-memory intent — rates, schedules, aux tables): `set_rate`, `set_amount`, `add_scheduled`, `retire_scheduled`, `swap_aux_table`.
-- **Rule-synthesizing** (the event inserts one or more `cadence='one_off'` scheduled_transactions with `created_by_event_id = calendar_event.id`; those rules then fire on `event.date` through the normal monthly step): `one_off_transfer`, `sell_asset`, `buy_asset`, `life_transition`. `life_transition` may also perform intent-mutating sub-actions (e.g. retiring a salary rule).
+- **Rule-synthesizing** (the event inserts one or more `cadence='one_off'` scheduled_transactions with `created_by_event_id = calendar_event.id`; those rules then fire on `event.date` through the normal monthly step): `one_off_transfer`, `transfer_balance`, `sell_asset`, `buy_asset`, `life_transition`. `life_transition` may also perform intent-mutating sub-actions (e.g. retiring a salary rule).
 - **Inert** (no effect in a run; read only by ensemble resolution): `latent_factor` (§3.10).
 
 Where expansions produce multiple synthesized rules, each rule's first (and only) firing is one row in `transfer_event`; linkage across siblings is via the shared `created_by_event_id` on `scheduled_transaction` plus `applied_calendar_event`.
@@ -297,6 +297,16 @@ A shared influence that varying rows correlate with but that isn't itself a mode
 - **Columns:** `name` (required) and `description`; optionally `vary_correlate_with`/`vary_correlation`, to depend on another factor and form a hierarchy, or, on a factor with no parent, `vary_tail_dependence`. Every other column must be blank. `date` may be blank: the loader stores the scenario start as a placeholder, which nothing reads.
 - **Effect:** none in a run (the engine skips it). Ensemble resolution draws its standard normal score, and its dependents' draws correlate with it.
 - **A factor with no dependents** loads with a warning, not an error: it may be work in progress, or meant for child scenarios to use.
+#### 3.11 `transfer_balance` (rule-synthesizing)
+
+Move one lot's whole balance, with the amount the simulated balance when the event fires rather than one written in advance: a 401(k) rolled into an IRA at a future date ([#134](https://github.com/BobKerns/analysis/issues/134)).
+
+- **Columns:** `account_1` (+ `lot_1`) = the source, which must be an asset account's lot, not a chain: "the balance" only means something for one real balance. `account_2` (+ `lot_2`) = the destination, an account's lot or a chain, as for §3.5. `tax_character` defaults to `none`, which is right for a direct rollover between tax-deferred accounts. `amount` must be blank, so `vary_target='amount'` is refused; `vary_target='date'` draws the transfer's date per ensemble member.
+- **Expansion:** calendar events apply at the start of their month, before its rules, so the amount is the source lot's balance at the previous month end, and that month's growth accrues at the destination. A zero or negative balance is a no-op, as for `on_death` (§2). Otherwise the event synthesizes one `fixed_amount` `cadence='one_off'` rule for that amount, exactly as §3.5 does, so the transfer routes as a `one_off_transfer` of that amount would (a refill of a source with a `minimum_balance` included) and its `transfer_event` traces to the synthesized rule. Basis and share quantity move with the money through the usual lot tracking ([ADR-005](ADR-005-lots-and-per-lot-state.md)).
+- **Lots:** there are no implicit chains ([ADR-005](ADR-005-lots-and-per-lot-state.md) §3), so emptying an account with several lots is one row per lot.
+- **Afterwards:** nothing stops the scenario moving money into the emptied lot later; end the rules that do (contributions, or an RMD rule that would otherwise draw on the old prior year-end balance) with `retire_scheduled` (§3.4) at the same date.
+- **Not covered:** an in-kind transfer between taxable accounts that carries the basis over without realizing gains.
+- **Use:** rolling a 401(k) or 401(a) into an IRA; closing an account into another.
 
 ### 4. CSV file layouts
 
@@ -698,14 +708,14 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `kind` | enum | ✓ | one of §3 |
 | `name` | text | for a row with `vary_distribution` set; optional otherwise | stable identifier, unique within the scenario ([ADR-006](ADR-006-ensemble-scenarios.md); also what calendar-event tagging keys on) |
 | `scheduled_name` | text | | name of target scheduled transaction; required for `retire_scheduled`, `set_amount` |
-| `account_1` | text | | first event-specific account (e.g. `from_account` for `one_off_transfer`, which may also name a chain) |
+| `account_1` | text | | first event-specific account (e.g. `from_account` for `one_off_transfer`, which may also name a chain, or the source lot of `transfer_balance`, which may not) |
 | `lot_1` | text | | the lot of `account_1`, as for `from_lot` in §4.6 |
-| `account_2` | text | | second event-specific account (e.g. `to_account` for `one_off_transfer`, which may also name a chain, though not when `account_1` does) |
+| `account_2` | text | | second event-specific account (e.g. `to_account` for `one_off_transfer` or `transfer_balance`, which may also name a chain, though not when `account_1` does) |
 | `lot_2` | text | | the lot of `account_2` |
 | `series` | text | | rate series name; required for `set_rate` |
-| `amount` | number | | a percent for `set_rate` (`4.5%`), dollars for `one_off_transfer` and `set_amount` (`1234.56`); the loader converts to micros or cents. A placeholder, unused, when this row's own `vary_target='amount'` |
+| `amount` | number | | a percent for `set_rate` (`4.5%`), dollars for `one_off_transfer` and `set_amount` (`1234.56`); the loader converts to micros or cents. Blank for `transfer_balance`, which moves whatever the lot holds. A placeholder, unused, when this row's own `vary_target='amount'` |
 | `param_date` | YYYY-MM | | effective date for `set_amount` new base |
-| `tax_character` | enum | | tax character for `one_off_transfer` |
+| `tax_character` | enum | | tax character for `one_off_transfer` and `transfer_balance` |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
 | `description` | text | | shows up in `explain` output |
 | `tags` | text | | see §6 |
@@ -896,7 +906,10 @@ blank one would not say which lot is meant -- for an investment account, or
 any account with more than one lot or none named `default` -- and a chain
 takes none. A
 value given on the command line that isn't one of the choices fails; one
-typed at a prompt is asked again.
+typed at a prompt is asked again. `calendar add transfer-balance` picks its
+destination the same way, but its source only among asset accounts, and
+always a lot, never a chain (§3.11); `transfer list` shows its amount as
+`balance`.
 
 ## Consequences
 
@@ -961,3 +974,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#124](https://github.com/BobKerns/analysis/issues/124): `account lot add|edit|delete|list`, which edit an inherited lot by override and delete one by zeroing it (§7).
 - [#131](https://github.com/BobKerns/analysis/issues/131): `home_sale_exclusion.csv` is a registered aux kind, so the shipped template loads (§4.4).
 - [#130](https://github.com/BobKerns/analysis/issues/130): rates are written as percents and factors as plain numbers, and calendar amounts as percents or dollars; every percent takes its `%` sign and dollars take one strict form; the micros columns are renamed and refused (§2, §2.7, §3.1, §3.2, §3.5, §4, §4.1b, §4.4, §4.6, §4.7, §4.8).
+- [#134](https://github.com/BobKerns/analysis/issues/134): the `transfer_balance` kind moves one lot's whole balance on a date, with `calendar add transfer-balance` (§3, new §3.11, §4.8, §7).

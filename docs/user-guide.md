@@ -446,7 +446,7 @@ to `filing_status.csv`.
 ### 4.8 Calendar for more complex changes
 
 `calendar.csv` is for anything that is not a steady, recurring rule: a
-dated, one-time change. Only four kinds are actually built today. Use only
+dated, one-time change. Only five kinds are actually built today. Use only
 these:
 
 | Kind | Columns used | Use it for |
@@ -455,6 +455,7 @@ these:
 | `set_amount` | `scheduled_name`, `amount` (dollars), optional `param_date` | "spending drops to $4,500/mo on retirement" (Part 4.4) |
 | `retire_scheduled` | `scheduled_name` | "salary stops on retirement" |
 | `one_off_transfer` | `account_1`/`lot_1`, `account_2`/`lot_2`, `amount`, `tax_character` | a windfall, a gift, a settlement between two plain accounts (not a chain — see Part 4.5) |
+| `transfer_balance` | `account_1`/`lot_1`, `account_2`/`lot_2`, `tax_character`; `amount` left blank | rolling a 401(k) into an IRA: moves everything the lot holds at the start of that month |
 
 **Not built yet, even though the file format accepts them:**
 `add_scheduled`, `swap_aux_table`, `sell_asset`, `buy_asset`,
