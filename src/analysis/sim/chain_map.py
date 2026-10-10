@@ -288,15 +288,21 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
                 shown.append(node)
     # A lot whose refill or overflow chain is shown belongs on the chart too,
     # and so does where a shown lot refills from or overflows to.
-    for leaf, policy in cmap.policies.items():
-        if leaf not in shown and (policy.refill_chain in shown or policy.overflow_chain in shown):
-            shown.append(leaf)
-    for leaf in list(shown):
-        policy = cmap.policies.get(leaf)
-        for chain in (policy.refill_chain, policy.overflow_chain) if policy else ():
-            for node in cmap.descendants(chain) if chain else ():
-                if node not in shown:
-                    shown.append(node)
+    # Repeated until nothing is added: a policy chain's own lots may have
+    # policies of their own.
+    grew = True
+    while grew:
+        before = len(shown)
+        for leaf, policy in cmap.policies.items():
+            if leaf not in shown and (policy.refill_chain in shown or policy.overflow_chain in shown):
+                shown.append(leaf)
+        for leaf in list(shown):
+            policy = cmap.policies.get(leaf)
+            for chain in (policy.refill_chain, policy.overflow_chain) if policy else ():
+                for node in cmap.descendants(chain) if chain else ():
+                    if node not in shown:
+                        shown.append(node)
+        grew = len(shown) > before
     # The far end of each rule using a shown chain, unless it is shown already.
     for node in list(shown):
         for use in cmap.uses.get(node, ()):

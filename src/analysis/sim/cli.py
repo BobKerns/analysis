@@ -5719,9 +5719,9 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
     one-step chain of its own, usable wherever a chain is.
     """
     from rich.console import Console
-    from rich.table import Table
-
+    from rich.markup import escape
     from rich.measure import Measurement
+    from rich.table import Table
 
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
@@ -5736,11 +5736,12 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
     for name, steps in sorted(cmap.steps.items()):
         defined = chain_edit.defining_scenario(ref.scenarios_dir, ref.name, name) or ""
         uses = cmap.uses.get(name, [])
+        # Names come from the data and may hold '[', so only "nothing" is markup.
         table.add_row(
-            name, cmap.kinds[name],
-            "\n".join(f"{s.order}. {cmap.label(s.target)}: {chain_map.share_text(s)}" for s in steps),
-            "this scenario" if defined == ref.name else defined,
-            "\n".join(chain_map.use_text(cmap, u) for u in uses) or "[red]nothing[/red]",
+            escape(name), escape(cmap.kinds[name]),
+            escape("\n".join(f"{s.order}. {cmap.label(s.target)}: {chain_map.share_text(s)}" for s in steps)),
+            "this scenario" if defined == ref.name else escape(defined),
+            escape("\n".join(chain_map.use_text(cmap, u) for u in uses)) or "[red]nothing[/red]",
         )
     console = Console()
     # Wrap long steps rather than cropping names, as `sim allocation` does.
@@ -5777,7 +5778,7 @@ def chain_show_command(
     roots: list[str] = []
     for name in names:
         if cmap.is_interior(name):
-            roots.append(name)
+            roots += [name] if name not in roots else []
             continue
         leaves = [leaf for leaf, (account, _lot) in cmap.leaves.items() if account == name or leaf == name]
         if not leaves:
@@ -5790,7 +5791,8 @@ def chain_show_command(
                 reaching += [c for c in (policy.refill_chain, policy.overflow_chain) if c]
         if not reaching:
             raise click.ClickException(f"no chain reaches {name} in {ref.name}")
-        roots += [chain for chain in reaching if chain not in roots]
+        # Several lots may share a refill or overflow chain; show it once.
+        roots += [chain for chain in dict.fromkeys(reaching) if chain not in roots]
     if not names:
         roots = sorted(cmap.steps)
     if not roots:
@@ -5805,7 +5807,7 @@ def chain_show_command(
             console.print()
         console.print(chain_map.chain_tree(cmap, root))
         for use in cmap.uses.get(root, []):
-            console.print(f"  [dim]{chain_map.use_text(cmap, use)}[/dim]")
+            console.print(f"  {chain_map.use_text(cmap, use)}", style="dim", markup=False)
 
 
 _STEP_OPTIONS_HELP = {
