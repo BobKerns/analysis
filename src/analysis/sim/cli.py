@@ -5709,7 +5709,9 @@ def _chain_defined_in(scenarios_dir: Path, scenario: str, chain: str) -> str:
     is the one loaded (the last in load order, ADR-003 §4.7)."""
     found = ""
     for name in load_order(scenarios_dir, scenario):
-        if any((scenarios_dir / name / "chains").glob(f"*__{chain}.csv")):
+        # Compare names, not a glob: a chain name may hold '[' or '*'.
+        if any(path.stem.partition("__")[2] == chain
+               for path in (scenarios_dir / name / "chains").glob("*.csv")):
             found = name
     return found
 
