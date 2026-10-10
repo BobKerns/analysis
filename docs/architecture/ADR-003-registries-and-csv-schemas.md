@@ -634,11 +634,11 @@ The main parent's whole line comes first; each mix-in then contributes its own l
 | `account_values.csv` | `account_name` |
 | `scheduled.csv` | `name` |
 | `chains/<kind>__<name>.csv` | whole file by chain name |
-| `calendar.csv` | (`date`, `kind`, `scheduled_name`, `account_1`, `lot_1`, `account_2`, `lot_2`, `series`, `amount`); a `latent_factor` row's key is its `name` alone, since its other key fields are blank |
+| `calendar.csv` | a named row overrides the inherited row with the same `name`, whatever its other fields; any other row matches on (`date`, `kind`, `scheduled_name`, `account_1`, `lot_1`, `account_2`, `lot_2`, `series`, `amount`), so naming an inherited unnamed row (to vary it) still replaces it; two differently named rows sharing all those fields are an error. A `latent_factor` row's key is its `name` alone, since its other key fields are blank |
 | `lifespan.csv` | `person` |
 | `year_to_date.csv` | `name` |
 
-A child row with a new key is appended; one whose key matches the parent replaces that row **entirely**, so an override must repeat every column it wants to keep, not just the changed ones. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits; only a scenario with no parent of its own must supply `accounts.csv`, `account_values.csv`, and `scheduled.csv`.
+A child row with a new key is appended; one whose key matches the parent replaces every column the child's file has, a blank cell included, so an override must repeat every column it wants to keep, not just the changed ones. A column the child's header leaves out keeps the parent's value. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits; only a scenario with no parent of its own must supply `accounts.csv`, `account_values.csv`, and `scheduled.csv`. A load error about a row names the file it was authored in, by its path within the data repo, and the line its record starts on (blank lines counted), not its position among the merged rows.
 
 `analysis sim scenario create <name> <parent> [<mixin> ...]` creates one: it writes `scenario.csv` with the parent link (and any mix-ins) header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, and a `series/` folder holding a `README.md` that explains what goes there (so the folder isn't empty), verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a).
 
@@ -975,3 +975,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#131](https://github.com/BobKerns/analysis/issues/131): `home_sale_exclusion.csv` is a registered aux kind, so the shipped template loads (§4.4).
 - [#130](https://github.com/BobKerns/analysis/issues/130): rates are written as percents and factors as plain numbers, and calendar amounts as percents or dollars; every percent takes its `%` sign and dollars take one strict form; the micros columns are renamed and refused (§2, §2.7, §3.1, §3.2, §3.5, §4, §4.1b, §4.4, §4.6, §4.7, §4.8).
 - [#134](https://github.com/BobKerns/analysis/issues/134): the `transfer_balance` kind moves one lot's whole balance on a date, with `calendar add transfer-balance` (§3, new §3.11, §4.8, §7).
+- [#136](https://github.com/BobKerns/analysis/issues/136): a child's named `calendar.csv` row overrides the inherited row of that name whatever its other fields; an override keeps the columns its file leaves out; load errors name a row's file and line (§4.5).
