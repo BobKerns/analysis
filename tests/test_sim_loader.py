@@ -1214,6 +1214,50 @@ def test_child_overrides_named_calendar_row_with_a_new_amount(
     assert rows == [(-50_000, "-200000", "50000")]
 
 
+def test_partial_header_override_reads_amount_in_the_inherited_kinds_unit(
+    append_calendar_row: Callable[..., None], derive_scenario: Callable[..., Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """#136: a ``name,amount`` override inherits its row's kind, so its
+    amount is a percent for an inherited set_rate -- converted, not left as
+    text for the intent write to choke on."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
+    )
+    derive_scenario("child", "retire_alice", files={
+        "calendar.csv": "name,amount,vary_low\nchecking_rate_vary,4.75%,4.5%\n",
+    })
+    con = sqlite3.connect(load_test_scenario("child"))
+    try:
+        rows = con.execute(
+            "SELECT kind, amount, vary_low, vary_high FROM calendar_event WHERE name = ?",
+            ("checking_rate_vary",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("set_rate", 47_500, "45000", "50000")]
+
+
+def test_unknown_correlation_parent_names_the_rows_file_and_line(
+    derive_scenario: Callable[..., Path], test_data_dir: Path, intent_dir: Path,
+) -> None:
+    derive_scenario("child", "retire_alice", files={"calendar.csv": (
+        "date,kind,name,series,amount,vary_target,vary_distribution,vary_low,"
+        "vary_high,vary_correlate_with,vary_correlation\n"
+        "\n"
+        "2027-02-28,set_rate,lonely,Asset_Checking,4%,amount,uniform,3%,5%,nobody,0.5\n"
+    )})
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "child", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        issue.startswith("scenarios/child/calendar.csv line 3 (lonely): vary_correlate_with")
+        for issue in ei.value.issues
+    )
+
+
 def test_calendar_errors_name_the_scenario_file_and_line(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
     derive_scenario: Callable[..., Path], intent_dir: Path,

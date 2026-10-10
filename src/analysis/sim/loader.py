@@ -546,14 +546,47 @@ def _merge_calendar_rows(
             existing_name = name_of(merged[key])
             if existing_name and name and existing_name != name:
                 issues.append(collision(merged[key], row))
-                by_name.pop(existing_name, None)
             merged[key].update(row)
+            # The update may have renamed or unnamed the row (a blank name
+            # cell), so its old name must stop finding it.
+            current = name_of(merged[key])
+            if existing_name and existing_name != current:
+                by_name.pop(existing_name, None)
+            if current:
+                by_name[current] = key
         else:
             order.append(key)
             merged[key] = dict(row)
-        if name:
-            by_name[name] = key
+            if name:
+                by_name[name] = key
     return [merged[key] for key in order]
+
+
+_UNIT_CONTEXT_COLUMNS = ("kind", "vary_target")
+"""The calendar.csv columns that decide what unit a row's amount cells are in
+(``units.calendar_row_to_storage``)."""
+
+
+def _inherit_unit_context(
+    rows: list[dict[str, str]], inherited: list[dict[str, str]],
+) -> None:
+    """Give a child calendar.csv row that overrides an inherited row by name
+    the ``_UNIT_CONTEXT_COLUMNS`` its own file leaves out, before its cells
+    are converted to stored units: a ``name,amount`` override inherits its
+    ``kind``, so its ``5%`` must be read as that kind's unit, not left as
+    text (#136). Only columns missing from the child's header are filled --
+    exactly what the merge would carry over anyway; a blank cell is the
+    child's own value."""
+    by_name = {
+        name: row for row in inherited if (name := (row.get("name") or "").strip())
+    }
+    for row in rows:
+        source = by_name.get((row.get("name") or "").strip())
+        if source is None:
+            continue
+        for column in _UNIT_CONTEXT_COLUMNS:
+            if column not in row and column in source:
+                row[column] = source[column]
 
 
 def _merge_scenario_rows(
@@ -636,6 +669,7 @@ def _read_scenario_inputs(
         def read_overlay(
             filename: str, *, required: bool = False,
             scenario_dir: Path = scenario_dir, has_parent: bool = has_parent,
+            inherited: list[dict[str, str]] | None = None,
         ) -> list[dict[str, str]]:
             rows = _read_csv(
                 scenario_dir / filename,
@@ -646,6 +680,8 @@ def _read_scenario_inputs(
             if filename == "scheduled.csv":
                 _legacy_units_header(scenario_dir / filename, filename, issues)
             _normalize_month_columns(rows, filename, issues)
+            if inherited:
+                _inherit_unit_context(rows, inherited)
             _normalize_units(rows, filename, issues)
             return rows
 
@@ -682,7 +718,7 @@ def _read_scenario_inputs(
         scheduled_rows = _merge_scenario_rows(
             scheduled_rows, read_overlay("scheduled.csv", required=True), ("name",)
         )
-        calendar_rows_raw = read_overlay("calendar.csv")
+        calendar_rows_raw = read_overlay("calendar.csv", inherited=calendar_rows)
         _check_duplicate_calendar_names(calendar_rows_raw, issues)
         calendar_rows = _merge_calendar_rows(
             calendar_rows, calendar_rows_raw, registries.CALENDAR_KEY_COLUMNS, issues,
@@ -2483,7 +2519,8 @@ def _validate_calendar_correlation(
     for child, parent in parents.items():
         if parent not in nodes:
             issues.append(
-                f"calendar.csv row {nodes[child]} ({child}): vary_correlate_with '{parent}' "
+                f"{_where(rows[nodes[child] - 2], 'calendar.csv', nodes[child])} ({child}): "
+                f"vary_correlate_with '{parent}' "
                 "names no varying row or latent_factor"
             )
     reported: set[str] = set()
