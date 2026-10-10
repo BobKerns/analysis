@@ -2813,9 +2813,11 @@ def _apply_calendar_event(
                     "chain; the balance moved must be one lot's"
                 )
             # Applied before the month's rules, so this is the previous
-            # month-end balance and the month's growth accrues at the
-            # destination. Nothing to move is a no-op, as for on_death.
-            amount = max(0, balances.get(lot[0], 0))
+            # month-end balance (plus any calendar event earlier this month)
+            # and the month's growth accrues at the destination. Nothing to
+            # move is a no-op, as for on_death.
+            lot_id = lot[0]
+            amount = max(0, balances.get(lot_id, 0))
             if amount == 0:
                 return
             description = con.execute(
@@ -2827,10 +2829,17 @@ def _apply_calendar_event(
                 con, model_id, f"balance_evt_{ev_id}", from_id, to_id, amount,
                 tax_char, ev_date, ev_id, description,
             )
-            _post_fixed_amount(
-                con, balances, account_kinds, step_id, month_s, refill_ctx,
-                from_id, to_id, amount, tax_char, tid,
-                what=f"transfer_balance event id={ev_id}",
-            )
+            # Emptying the lot is the point, so its refill look-ahead must not
+            # top it back up to its minimum_balance first: marked as already
+            # refilling, the lot is skipped as a refill cycle would be.
+            refill_ctx.refilling.add(lot_id)
+            try:
+                _post_fixed_amount(
+                    con, balances, account_kinds, step_id, month_s, refill_ctx,
+                    from_id, to_id, amount, tax_char, tid,
+                    what=f"transfer_balance event id={ev_id}",
+                )
+            finally:
+                refill_ctx.refilling.discard(lot_id)
         case _:  # pragma: no cover
             raise EngineError(f"supported but unhandled calendar kind: {ev_kind}")

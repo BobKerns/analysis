@@ -2140,6 +2140,11 @@ def _validate_transfer_balance(
     problem = _resolve_ref(row, "account_2", "lot_2", leaves, chain_names)
     if problem:
         issues.append(f"calendar.csv row {i}: account_2 {problem}")
+    elif row.get("account_1") == row.get("account_2"):
+        issues.append(
+            f"calendar.csv row {i}: transfer_balance moves a lot's balance into "
+            "the same lot; name a different account_2 or lot_2"
+        )
     if (row.get("amount") or "").strip():
         issues.append(
             f"calendar.csv row {i}: transfer_balance takes no amount (it moves the "

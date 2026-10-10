@@ -49,6 +49,18 @@ def _lot_balances(run: Path, account: str) -> dict[str, int]:
         ).fetchall())
 
 
+def _growth(run: Path, account: str, month: str) -> int:
+    """What ``account``'s growth rule credited it with in ``month``."""
+    with sqlite3.connect(run) as con:
+        return con.execute(
+            "SELECT SUM(te.amount) FROM transfer_event te "
+            "JOIN scheduled_transaction s ON s.id = te.reason_id AND te.reason_kind = 'rule' "
+            "JOIN account ta ON ta.id = te.to_account "
+            "WHERE ta.name = ? AND te.date = ? AND s.name LIKE 'growth%'",
+            (account, month),
+        ).fetchone()[0]
+
+
 def _balance_events(run: Path) -> list[tuple[str, str, str, int, str, str | None]]:
     """Every transfer a transfer_balance event's synthesized rule posted."""
     with sqlite3.connect(run) as con:
@@ -81,9 +93,39 @@ def test_the_whole_balance_moves_and_the_destination_grows_on_it(
         "fixed_amount", "roll the 401(k) into the IRA",
     )]
     # Moved at the start of January, so January's growth accrues in the IRA,
-    # and the emptied 401(k) earns nothing after.
+    # on the rolled-over money too, and the emptied 401(k) earns nothing after.
     assert all(balance == 0 for month, balance in k401.items() if month >= "2030-01-31")
-    assert ira["2030-01-31"] - ira["2029-12-31"] == moved
+    growth = _growth(run, "Asset_TraditionalIRA_Alice", "2030-01-31")
+    assert ira["2030-01-31"] - ira["2029-12-31"] == moved + growth
+    # Both accounts grow at the same 6%: the 401(k)'s December growth gives
+    # the monthly rate the IRA's January growth applies to both sums.
+    rate = _growth(run, "Asset_401k_Alice", "2029-12-31") / k401["2029-11-30"]
+    assert growth == pytest.approx((ira["2029-12-31"] + moved) * rate, rel=1e-4)
+
+
+def test_a_source_with_a_minimum_balance_is_not_refilled_before_it_empties(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    """Checking keeps a $2,000 minimum through its liquidity chain. Moving its
+    whole balance must not first refill it to that minimum, which would leave
+    $2,000 behind and draw savings down to supply it."""
+    append_calendar_row(**{**ROLLOVER, "account_1": "Asset_Checking", "lot_1": "",
+                           "account_2": "Asset_Savings", "lot_2": "",
+                           "date": "2027-03-31", "description": "close checking"})
+    run = run_scenario(load_test_copy().intent_path, runs_dir / "refill.sqlite3", run_by="TEST",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    checking = _lot_balances(run, "Asset_Checking")
+    [(_date, _from, _to, moved, _kind, _description)] = _balance_events(run)
+    assert moved == checking["2027-02-28"]
+    with sqlite3.connect(run) as con:
+        refills = con.execute(
+            "SELECT COUNT(*) FROM transfer_event te "
+            "JOIN transfer_event debit ON debit.id = te.parent_event_id "
+            "JOIN scheduled_transaction s ON s.id = debit.reason_id "
+            "WHERE te.reason_kind = 'refill' AND s.name LIKE 'balance_evt_%'"
+        ).fetchone()[0]
+    assert refills == 0
 
 
 def test_an_empty_lot_moves_nothing(
@@ -108,6 +150,7 @@ def test_an_empty_lot_moves_nothing(
     ({"account_1": "asset_checking_liquidity", "lot_1": ""}, "is a chain; transfer_balance"),
     ({"account_1": "Liability_Mortgage", "lot_1": ""}, "is not an asset account"),
     ({"lot_1": ""}, "is an investment account and needs a lot_1"),
+    ({"account_2": "Asset_401k_Alice"}, "into the same lot"),
     ({"amount": "100.00"}, "transfer_balance takes no amount"),
     ({"name": "roll", "vary_target": "amount", "vary_distribution": "uniform",
       "vary_low": "1.00", "vary_high": "2.00"}, "vary_target='amount' is only valid"),
@@ -196,3 +239,15 @@ def test_calendar_edit_rewrites_the_row_in_place(
     after = read()
     assert after.iloc[-1]["date"] == "2031-06"
     assert after.drop(columns="date").equals(before.drop(columns="date"))
+
+
+def test_a_varying_rollover_reports_the_accounts_it_moves_between() -> None:
+    from analysis.sim.sensitivity import _affects
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        "SELECT 'transfer_balance' AS kind, 'Asset_401k_Alice' AS account_1, "
+        "'Asset_TraditionalIRA_Alice' AS account_2, NULL AS series, NULL AS scheduled_name"
+    ).fetchone()
+    assert _affects(row) == "Asset_401k_Alice → Asset_TraditionalIRA_Alice"
