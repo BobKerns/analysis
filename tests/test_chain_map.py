@@ -15,6 +15,7 @@ from analysis.sim import chain_map
 from analysis.sim.connection import ScenarioConnection, open_scenario
 from analysis.sim.notebook_ui.scenario_plots import chain_flow_markdown, show_chain_flow
 
+
 @pytest.fixture
 def cmap(guide_chains: Path) -> Generator[chain_map.ChainMap]:
     with open_scenario(guide_chains, "retire_alice") as sc:
