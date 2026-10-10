@@ -1258,6 +1258,20 @@ def test_unknown_correlation_parent_names_the_rows_file_and_line(
     )
 
 
+def test_override_missing_its_key_names_its_file_and_line(
+    derive_scenario: Callable[..., Path], test_data_dir: Path, intent_dir: Path,
+) -> None:
+    """#136: the row in the message is the authored cells only -- no internal
+    location key -- and its location leads, as for every other row error."""
+    derive_scenario("child", "retire_alice", files={"accounts.csv": "name,kind\n,asset\n"})
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "child", intent_dir=intent_dir, allow_dirty_data=True)
+    assert ei.value.issues == [
+        "scenarios/child/accounts.csv line 2: derived scenario override missing "
+        "key ('name',): {'name': '', 'kind': 'asset'}"
+    ]
+
+
 def test_calendar_errors_name_the_scenario_file_and_line(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
     derive_scenario: Callable[..., Path], intent_dir: Path,

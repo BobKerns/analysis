@@ -600,11 +600,13 @@ def _merge_scenario_rows(
     merged = {tuple(row.get(column, "") for column in key_columns): dict(row)
               for row in parent_rows}
     order = list(merged)
-    for row in child_rows:
+    for i, row in enumerate(child_rows, start=2):
         key = tuple(row.get(column, "") for column in key_columns)
         if require_key and not all(key):
+            cells = {k: v for k, v in row.items() if k != ORIGIN}
             raise LoadError([
-                f"derived scenario override missing key {key_columns}: {row}"
+                f"{_where(row, 'override', i)}: derived scenario override missing "
+                f"key {key_columns}: {cells}"
             ])
         if key not in merged:
             order.append(key)
@@ -660,7 +662,8 @@ def _read_scenario_inputs(
         own_scenario = scenario_rows[0] if scenario_rows else {}
         if own_scenario.get("name") and own_scenario["name"] != name:
             issues.append(
-                f"scenario.csv name='{own_scenario['name']}' != folder '{name}'"
+                f"{_where(own_scenario, 'scenario.csv', 2)}: "
+                f"name='{own_scenario['name']}' != folder '{name}'"
             )
         # Only a scenario with no parent of its own must supply the core
         # files; anything deriving from another may leave them out to inherit.
