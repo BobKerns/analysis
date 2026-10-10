@@ -5770,6 +5770,7 @@ def symbol_add_command(
         added = symbols.add_symbol(data, symbol, name=name, weights=weights, as_of=as_of)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
+    symbol = added.symbol
     if added.named:
         click.echo(f"{symbol}: named {name!r} in securities.csv")
     if added.weighted:
@@ -5778,7 +5779,8 @@ def symbol_add_command(
         click.echo(f"{symbol}: no allocation yet, so `sim allocation` shows it as unclassified; "
                    "see the user guide, Part 4.11 \"Add a stock or fund\"")
     failed = 0
-    if fetch and symbol not in prices.NO_PRICE_SYMBOLS:
+    # CASH and CD have no ticker to look up (registries.SYMBOL_ASSET_CLASS).
+    if fetch and symbol not in registries.SYMBOL_ASSET_CLASS:
         failed = _fetch_prices(data, [symbol], since_text, provider_name)
     if guided:
         words = ["sim", "symbol", "add", symbol]
@@ -5833,9 +5835,10 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
 def symbol_list_command(data_dir: Path | None) -> None:
     """List every symbol: its name, latest allocation, prices and the lots holding it.
 
-    A symbol appears if any of securities.csv, allocations.csv, prices/ or a
-    scenario's account_values.csv names it. A missing allocation or price is
-    shown in red, since `sim allocation` or a lot's opening balance needs it.
+    A symbol appears if any of securities.csv, allocations.csv, prices/, a
+    scenario's own prices/ or its account_values.csv names it. A missing
+    allocation or price is shown in red, since `sim allocation` or a lot's
+    opening balance needs it; CASH and CD need no prices.
     """
     from rich.console import Console
     from rich.table import Table
@@ -5853,8 +5856,14 @@ def symbol_list_command(data_dir: Path | None) -> None:
         allocation = r.allocation or "[red]none[/red]"
         if r.allocation_sets > 1:
             allocation += f" [dim]+{r.allocation_sets - 1} earlier[/dim]"
-        cash = r.symbol in prices.NO_PRICE_SYMBOLS
-        count = "-" if cash else (str(r.prices) if r.prices else "[red]none[/red]")
+        if r.symbol in registries.SYMBOL_ASSET_CLASS:  # CASH and CD: no ticker, no prices
+            count = "-"
+        elif r.prices or r.scenario_prices:
+            count = str(r.prices)
+        else:
+            count = "[red]none[/red]"
+        if r.scenario_prices:
+            count += f"\n[dim]own file in {', '.join(r.scenario_prices)}[/dim]"
         latest = f"{r.latest_price} ({r.latest_date})" if r.latest_date else ""
         table.add_row(r.symbol, r.name, allocation, count, latest, "\n".join(r.held_by))
     Console().print(table)

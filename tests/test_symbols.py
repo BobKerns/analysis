@@ -131,3 +131,30 @@ def test_list_shows_every_symbol_and_its_gaps(
     result = _sim(test_data_dir, "list")
     assert result.exit_code == 0, result.output
     assert "ABCDX" in result.output and "QQQX" in result.output and "none" in result.output
+
+
+def test_list_counts_a_scenarios_own_prices_and_needs_none_for_cd(
+    test_data_dir: Path, add_account_value, retire_alice_csv,
+) -> None:
+    own = retire_alice_csv("prices")
+    own.mkdir(exist_ok=True)
+    (own / "security_price__QQQX.csv").write_text("effective_date,price\n2026-05-29,10.00\n")
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="QQQX", quantity="10", opening_balance="1.00")
+    add_account_value("Asset_Savings", lot="cd", symbol="CD", opening_balance="5000.00")
+    frame = symbols.symbol_table(test_data_dir).set_index("symbol")
+    assert frame.loc["QQQX", "scenario_prices"] == ["retire_alice"]
+    result = CliRunner().invoke(main, ["sim", "symbol", "list", "--data-dir", str(test_data_dir)],
+                                env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    rows = {line.split("│")[1].strip(): line.split("│") for line in result.output.splitlines()
+            if line.count("│") > 2}
+    assert rows["QQQX"][4].strip() == "0"  # not "none": retire_alice has its own file
+    assert "own file in retire_alice" in result.output
+    assert rows["CD"][4].strip() == "-"  # a CD has no ticker, so no prices to miss
+
+
+def test_add_writes_a_ticker_in_upper_case(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "add", "abcdx", "--no-fetch", "--weight", "bond=100%")
+    assert result.exit_code == 0, result.output
+    assert "ABCDX,,bond,100%" in (test_data_dir / "allocations.csv").read_text()
+    assert result.output.startswith("ABCDX:")

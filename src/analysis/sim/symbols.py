@@ -99,16 +99,29 @@ def _latest_weights(rows: list[dict[str, str]]) -> dict[str, tuple[str, list[tup
     return latest
 
 
+def _scenario_prices(scenarios_dir: Path) -> dict[str, list[str]]:
+    """Symbol to the scenarios with their own ``prices/`` file for it, which
+    replaces the shared one for that scenario and its children."""
+    found: dict[str, list[str]] = {}
+    if scenarios_dir.is_dir():
+        for folder in sorted(p for p in scenarios_dir.iterdir() if p.is_dir()):
+            for symbol in _price_files(folder / "prices"):
+                found.setdefault(symbol, []).append(folder.name)
+    return found
+
+
 def symbol_table(data_dir: Path) -> pd.DataFrame:
     """One row per symbol named anywhere: its name, latest weights, prices and
     holders. Columns: ``symbol``, ``name``, ``allocation``, ``allocation_sets``,
-    ``prices``, ``latest_price``, ``latest_date``, ``held_by``."""
+    ``prices``, ``latest_price``, ``latest_date`` (the shared ``prices/`` file),
+    ``scenario_prices`` (the scenarios with their own), ``held_by``."""
     names = {row["symbol"]: row.get("name", "") for row in _read(data_dir / SECURITIES)[1] if row.get("symbol")}
     weights = _latest_weights([r for r in _read(data_dir / ALLOCATIONS)[1] if r.get("symbol")])
     prices = _price_files(data_dir / "prices")
     holders = _holders(data_dir / "scenarios")
+    overrides = _scenario_prices(data_dir / "scenarios")
     records = []
-    for symbol in sorted({*names, *weights, *prices, *holders}):
+    for symbol in sorted({*names, *weights, *prices, *overrides, *holders}):
         allocation, sets = "", 0
         if symbol in weights:
             as_of, classes, sets = weights[symbol]
@@ -126,10 +139,11 @@ def symbol_table(data_dir: Path) -> pd.DataFrame:
             "symbol": symbol, "name": names.get(symbol, ""),
             "allocation": allocation, "allocation_sets": sets,
             "prices": count, "latest_price": latest_price, "latest_date": latest_date,
+            "scenario_prices": overrides.get(symbol, []),
             "held_by": holders.get(symbol, []),
         })
     columns = ["symbol", "name", "allocation", "allocation_sets", "prices",
-               "latest_price", "latest_date", "held_by"]
+               "latest_price", "latest_date", "scenario_prices", "held_by"]
     return pd.DataFrame(records, columns=columns)
 
 
@@ -155,6 +169,8 @@ def parse_weights(specs: list[str]) -> dict[str, str]:
 
 @dataclass
 class SymbolAdded:
+    symbol: str
+    """The symbol as written: tickers are upper case, so ``vti`` is ``VTI``."""
     named: bool
     """A ``securities.csv`` row was written."""
     weighted: bool
@@ -194,7 +210,7 @@ def add_symbol(
     what isn't given. Raises ``ValueError``, writing nothing, when a row would
     not load (a duplicate name, a set that doesn't add up to 100%, a second set
     for the same ``as_of``)."""
-    symbol = symbol.strip()
+    symbol = symbol.strip().upper()
     if not symbol or any(ch.isspace() for ch in symbol) or "/" in symbol:
         # It becomes part of a filename, prices/security_price__<SYMBOL>.csv.
         raise ValueError(f"symbol {symbol!r} must be one word, with no spaces or '/'")
@@ -260,4 +276,4 @@ def add_symbol(
         for tmp, _path in temps[done:]:
             tmp.unlink(missing_ok=True)
         raise
-    return SymbolAdded(named=bool(name), weighted=bool(weights))
+    return SymbolAdded(symbol, named=bool(name), weighted=bool(weights))
