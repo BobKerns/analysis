@@ -31,6 +31,41 @@ sim chain show --mermaid        # a flowchart to paste into markdown
 The [scenario overview notebook](../../notebooks/scenario_overview.ipynb)
 shows the same chains as a table and as a flowchart.
 
+## Making and changing chains
+
+`sim chain add` with no arguments asks what the chain is for and builds it
+a step at a time:
+
+1. Is it where money **comes from** or where extra money **goes**?
+2. Should it **drain** the steps in order, **split** the total by shares
+   (such as 60% here and 40% there), or take **up to an amount** from each?
+3. Its name, then each step: an account (and its lot, when one must be
+   named) or another chain.
+
+It works out the `percent` and `maximum` columns from your answers. Shares
+of the total become shares of what's left, so 50%, 30% and 20% are written
+as `50%`, `60%` and a plain last step (section 3 explains why). It then
+prints the equivalent commands and how to put the chain to use.
+
+The same changes as commands, for scripts or a quick fix:
+
+```sh
+sim chain add checking_backup Asset_Savings              # a chain and its first step
+sim chain step add checking_backup Asset_Brokerage_Joint --lot default --percent 50%
+sim chain step add checking_backup Asset_Roth_Alice --lot default --position 1
+sim chain step edit checking_backup 2 --maximum 500      # '' clears a column
+sim chain step move checking_backup 1 3
+sim chain step rm checking_backup 3
+sim chain rename checking_backup cash_backup             # and every reference to it
+sim chain delete cash_backup                             # refused while anything uses it
+```
+
+Every change is checked by loading the scenario, and any scenario built on
+it, before anything is written. Changing a chain the scenario inherits
+writes the scenario's own copy, which replaces the parent's here. A rename
+starts in the scenario the chain comes from and follows it into every
+scenario built on that one.
+
 ## 1. What a chain is
 
 A chain is a file, `chains/<kind>__<name>.csv`, in a scenario folder. Each

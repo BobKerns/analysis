@@ -432,6 +432,8 @@ whatever is left moves on to the next step.
 
 `sim chain list` shows the scenario's chains and what uses each one, and
 `sim chain show` draws them as trees (`--mermaid` for a flowchart).
+`sim chain add` with no arguments builds a chain by asking what it is for;
+`sim chain step add|edit|move|rm`, `rename` and `delete` change one.
 [The chains guide](guides/chains.md) explains how steps, percents and
 maximums, chains inside chains, and the refill and overflow limits work
 together, with worked examples and recipes.

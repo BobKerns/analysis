@@ -911,6 +911,21 @@ destination the same way, but its source only among asset accounts, and
 always a lot, never a chain (§3.11); `transfer list` shows its amount as
 `balance`.
 
+`chain add|step add|step edit|step move|step rm|rename|delete` edit one
+chain file (§4.7). Editing an inherited chain writes the scenario's own
+copy of the whole file, as for a lot. A rename is refused except in the
+scenario where the chain first appears, since renaming only a copy would
+leave the parent's chain in place under the old name; from there it renames
+the file and every reference (`from_account`/`to_account`,
+`account_1`/`account_2`, `refill_chain`/`overflow_chain`, other chains'
+steps) in that scenario and every scenario inheriting from it. `delete` is
+refused while anything in the scenario uses the chain, and deleting a
+scenario's copy of an inherited chain lets the parent's apply again. The
+guided `chain add` asks whether the chain is a source or a destination and
+whether to drain its steps in order, split the total by shares, or cap each
+step, and writes the matching `percent` and `maximum` cells: shares of the
+total become shares of what is left, with the last step left plain.
+
 ## Consequences
 
 ### Positive
@@ -975,3 +990,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#131](https://github.com/BobKerns/analysis/issues/131): `home_sale_exclusion.csv` is a registered aux kind, so the shipped template loads (§4.4).
 - [#130](https://github.com/BobKerns/analysis/issues/130): rates are written as percents and factors as plain numbers, and calendar amounts as percents or dollars; every percent takes its `%` sign and dollars take one strict form; the micros columns are renamed and refused (§2, §2.7, §3.1, §3.2, §3.5, §4, §4.1b, §4.4, §4.6, §4.7, §4.8).
 - [#134](https://github.com/BobKerns/analysis/issues/134): the `transfer_balance` kind moves one lot's whole balance on a date, with `calendar add transfer-balance` (§3, new §3.11, §4.8, §7).
+- [#129](https://github.com/BobKerns/analysis/issues/129): `chain add|step|rename|delete` edit chain files, with a guided `chain add` (§7).
