@@ -48,7 +48,7 @@ SUPPORTED_RULE_KINDS = frozenset(
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
-    {"set_rate", "set_amount", "retire_scheduled", "one_off_transfer"}
+    {"set_rate", "set_amount", "retire_scheduled", "one_off_transfer", "transfer_balance"}
 )
 
 # Positions in the `txns` rows loaded by run_scenario, for the fields that
@@ -2669,6 +2669,25 @@ def _cadence_count(
     return 1 if _cadence_fires(cadence, month_of_year, month, start) else 0
 
 
+def _synthesize_one_off_rule(
+    con, model_id: int, name: str, from_id: int, to_id: int, amount: int,
+    tax_char: str, ev_date: str, ev_id: int, description: str | None,
+) -> int:
+    """Insert the cadence='one_off' fixed_amount rule a rule-synthesizing
+    calendar event fires through (ADR-003 \u00a73), and return its id."""
+    cur = con.execute(
+        "INSERT INTO scheduled_transaction("
+        "  model_id, name, from_account, to_account, cadence, "
+        "  amount_rule_kind, amount_cents, tax_character, start, \"end\", "
+        "  priority, created_by_event_id, description"
+        ") VALUES (?, ?, ?, ?, 'one_off', 'fixed_amount', ?, ?, ?, ?, "
+        "  200, ?, ?)",
+        (model_id, name, from_id, to_id, amount, tax_char, ev_date, ev_date, ev_id,
+         description),
+    )
+    return inserted_id(cur)
+
+
 def _apply_calendar_event(
     con,
     ev_id: int, ev_date: str, ev_kind: str, payload: dict[str, Any],
@@ -2762,21 +2781,65 @@ def _apply_calendar_event(
                     f"one_off_transfer event id={ev_id}: unknown account or chain "
                     f"(account_1={frm_name!r} or account_2={to_name!r})"
                 )
-            cur = con.execute(
-                "INSERT INTO scheduled_transaction("
-                "  model_id, name, from_account, to_account, cadence, "
-                "  amount_rule_kind, amount_cents, tax_character, start, \"end\", "
-                "  priority, created_by_event_id, description"
-                ") VALUES (?, ?, ?, ?, 'one_off', 'fixed_amount', ?, ?, ?, ?, "
-                "  200, ?, ?)",
-                (model_id, f"oneoff_evt_{ev_id}", from_id, to_id,
-                 int(amount), tax_char, ev_date, ev_date, ev_id,
-                 payload.get("description")),
+            tid = _synthesize_one_off_rule(
+                con, model_id, f"oneoff_evt_{ev_id}", from_id, to_id, int(amount),
+                tax_char, ev_date, ev_id, payload.get("description"),
             )
             _post_fixed_amount(
                 con, balances, account_kinds, step_id, month_s, refill_ctx,
-                from_id, to_id, int(amount), tax_char, inserted_id(cur),
+                from_id, to_id, int(amount), tax_char, tid,
                 what=f"one_off_transfer event id={ev_id}",
             )
+        case "transfer_balance":
+            frm_name = payload.get("account_1")
+            to_name = payload.get("account_2")
+            tax_char = payload.get("tax_character") or "none"
+            if frm_name is None or to_name is None:
+                raise EngineError(
+                    f"transfer_balance event id={ev_id}: requires from_account and "
+                    "to_account (account_1, account_2)"
+                )
+            from_id = chain_id_by_name.get(frm_name)
+            to_id = chain_id_by_name.get(to_name)
+            if from_id is None or to_id is None:
+                raise EngineError(
+                    f"transfer_balance event id={ev_id}: unknown account or chain "
+                    f"(account_1={frm_name!r} or account_2={to_name!r})"
+                )
+            lot = con.execute("SELECT lot_id FROM chain WHERE id = ?", (from_id,)).fetchone()
+            if lot is None or lot[0] is None:
+                raise EngineError(
+                    f"transfer_balance event id={ev_id}: account_1={frm_name!r} is a "
+                    "chain; the balance moved must be one lot's"
+                )
+            # Applied before the month's rules, so this is the previous
+            # month-end balance (plus any calendar event earlier this month)
+            # and the month's growth accrues at the destination. Nothing to
+            # move is a no-op, as for on_death.
+            lot_id = lot[0]
+            amount = max(0, balances.get(lot_id, 0))
+            if amount == 0:
+                return
+            description = con.execute(
+                "SELECT description FROM calendar_event WHERE id = ?", (ev_id,),
+            ).fetchone()[0]
+            # A fixed_amount of the balance, so it routes exactly as the same
+            # one_off_transfer would and its transfer_event traces to the row.
+            tid = _synthesize_one_off_rule(
+                con, model_id, f"balance_evt_{ev_id}", from_id, to_id, amount,
+                tax_char, ev_date, ev_id, description,
+            )
+            # Emptying the lot is the point, so its refill look-ahead must not
+            # top it back up to its minimum_balance first: marked as already
+            # refilling, the lot is skipped as a refill cycle would be.
+            refill_ctx.refilling.add(lot_id)
+            try:
+                _post_fixed_amount(
+                    con, balances, account_kinds, step_id, month_s, refill_ctx,
+                    from_id, to_id, amount, tax_char, tid,
+                    what=f"transfer_balance event id={ev_id}",
+                )
+            finally:
+                refill_ctx.refilling.discard(lot_id)
         case _:  # pragma: no cover
             raise EngineError(f"supported but unhandled calendar kind: {ev_kind}")

@@ -791,7 +791,10 @@ def load_scenario(
     )
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
-    _validate_calendar(calendar_rows, leaves, set(chains), issues)
+    _validate_calendar(
+        calendar_rows, leaves, set(chains), issues,
+        asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
+    )
     _validate_calendar_correlation(calendar_rows, issues, warnings)
     _validate_series_references(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, warnings,
@@ -2071,7 +2074,7 @@ _MINUS_100_PERCENT_MICROS = -1_000_000
 
 def _validate_calendar(
     rows: list[dict[str, str]], leaves: _LeafIndex, chain_names: set[str],
-    issues: list[str],
+    issues: list[str], *, asset_accounts: frozenset[str] = frozenset(),
 ) -> None:
     seen_names: dict[str, int] = {}
     for i, row in enumerate(rows, start=2):
@@ -2087,6 +2090,8 @@ def _validate_calendar(
                 issues.append(
                     f"calendar.csv row {i}: account_1 and account_2 may not both be chains"
                 )
+        elif kind == "transfer_balance":
+            _validate_transfer_balance(row, i, leaves, chain_names, asset_accounts, issues)
         params_json = row.get("params_json") or "{}"
         try:
             json.loads(params_json)
@@ -2108,6 +2113,43 @@ def _validate_calendar(
             else:
                 seen_names[name] = i
         _validate_calendar_vary(row, i, kind, name, issues)
+
+
+def _validate_transfer_balance(
+    row: dict[str, str], i: int, leaves: _LeafIndex,
+    chain_names: set[str], asset_accounts: frozenset[str], issues: list[str],
+) -> None:
+    """ADR-003 \u00a73.11: the source is one asset lot, since "the balance" only
+    means something for one real balance; the destination is a lot or a chain,
+    as for one_off_transfer; and there is no amount to give."""
+    source = row.get("account_1", "")
+    if source in chain_names:
+        issues.append(
+            f"calendar.csv row {i}: account_1 '{source}' is a chain; transfer_balance "
+            "moves one lot's balance, so name an account (one row per lot)"
+        )
+    else:
+        problem = _resolve_ref(row, "account_1", "lot_1", leaves, chain_names)
+        if problem:
+            issues.append(f"calendar.csv row {i}: account_1 {problem}")
+        elif source not in asset_accounts:
+            issues.append(
+                f"calendar.csv row {i}: account_1 '{source}' is not an asset account; "
+                "transfer_balance moves an asset's balance"
+            )
+    problem = _resolve_ref(row, "account_2", "lot_2", leaves, chain_names)
+    if problem:
+        issues.append(f"calendar.csv row {i}: account_2 {problem}")
+    elif row.get("account_1") == row.get("account_2"):
+        issues.append(
+            f"calendar.csv row {i}: transfer_balance moves a lot's balance into "
+            "the same lot; name a different account_2 or lot_2"
+        )
+    if (row.get("amount") or "").strip():
+        issues.append(
+            f"calendar.csv row {i}: transfer_balance takes no amount (it moves the "
+            "whole balance); leave amount blank"
+        )
 
 
 def _validate_calendar_vary(

@@ -552,6 +552,30 @@ def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
 
 
 @pytest.fixture(scope="function")
+def add_alice_401k(
+    retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None],
+) -> Callable[[str], None]:
+    """Give the private retire_alice copy a traditional 401(k) for Alice, lot
+    ``default``, with the opening balance given: a balance to roll over
+    (#134). It and her IRA, the rollover's destination, both grow at
+    ``brokerage_growth``."""
+    def _add(opening_balance: str = "100000.00") -> None:
+        path = retire_alice_csv("accounts.csv")
+        accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
+        accounts.loc[len(accounts)] = {
+            **dict.fromkeys(accounts.columns, ""),
+            "name": "Asset_401k_Alice", "kind": "asset", "subkind": "traditional_401k",
+            "owner": "alice", "tax_treatment": "tax_deferred",
+            "series": "brokerage_growth", "tax_character": "deferred", "meta_json": "{}",
+        }
+        ira = accounts["name"] == "Asset_TraditionalIRA_Alice"
+        accounts.loc[ira, ["series", "tax_character"]] = ["brokerage_growth", "deferred"]
+        accounts.to_csv(path, index=False)
+        add_account_value("Asset_401k_Alice", lot="default", opening_balance=opening_balance)
+    return _add
+
+
+@pytest.fixture(scope="function")
 def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
     """Create a scenario in the private data copy deriving from ``parents``
     (a ``parent_scenario`` value: one name, or colon-separated mix-ins after

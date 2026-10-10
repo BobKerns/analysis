@@ -1005,7 +1005,7 @@ def _spread(kind: str, target: str, sd: float) -> str:
 
 def _affects(row: sqlite3.Row) -> str:
     """What a varying calendar row acts on, in the author's own names."""
-    if row["kind"] == "one_off_transfer":
+    if row["kind"] in ("one_off_transfer", "transfer_balance"):
         return f"{row['account_1']} → {row['account_2']}"
     return row["series"] or row["scheduled_name"] or ""
 

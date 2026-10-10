@@ -1,7 +1,7 @@
 """Guided entry for ``sim calendar add`` (issue #32), and for ``sim account
 lot add|edit`` (issue #124, in ``lot_guide``).
 
-``sim calendar add`` takes up to five kinds of row and a dozen ``--vary-*``
+``sim calendar add`` takes up to six kinds of row and a dozen ``--vary-*``
 options whose meaning depends on each other. This module describes each
 kind's inputs as data (``KINDS``) and walks them as questions, asking only
 what the answers so far make relevant.
@@ -40,6 +40,8 @@ class GuideContext:
     """What the scenario offers as completions."""
 
     accounts: Sequence[str] = ()
+    # the asset accounts among them, the only ones a balance can move out of
+    asset_accounts: Sequence[str] = ()
     # account -> (is an investment account, its lot labels)
     lots: Mapping[str, tuple[bool, Sequence[str]]] = field(default_factory=dict)
     # interior chains, which a transfer may name in place of an account
@@ -417,6 +419,35 @@ KINDS: tuple[KindSpec, ...] = (
             _DESCRIPTION,
             Field("series", "series tag", option="--series", required=False),
             *_vary_fields(targets=("amount", "date"), ramp=False),
+        ),
+    ),
+    KindSpec(
+        "transfer-balance", "an account's whole balance moves, as in a rollover",
+        key=("date", "from_account", "from_lot", "to_account", "to_lot"),
+        fields=(
+            _DATE,
+            Field(
+                "from_account", "from account", strict=True,
+                choices=lambda ctx, answers: list(ctx.asset_accounts),  # noqa: ARG005
+                help="An asset account; its whole balance (one lot's) moves.",
+            ),
+            Field(
+                "from_lot", "from lot", option="--from-lot", strict=True,
+                choices=_lots_of("from_account"), applies=_lot_asked("from_account"),
+            ),
+            Field("to_account", "to account or chain", choices=_from_endpoints, strict=True),
+            Field(
+                "to_lot", "to lot", option="--to-lot", strict=True,
+                choices=_lots_of("to_account"), applies=_lot_asked("to_account"),
+            ),
+            Field(
+                "tax_character", "tax character", option="--tax-character", default="none",
+                choices=lambda ctx, answers: sorted(registries.TAX_CHARACTERS),  # noqa: ARG005
+                strict=True,
+                help="none for a direct rollover between tax-deferred accounts.",
+            ),
+            _DESCRIPTION, _TAGS,
+            *_vary_fields(targets=("date",), ramp=False),
         ),
     ),
     KindSpec(

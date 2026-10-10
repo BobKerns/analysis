@@ -82,8 +82,8 @@ def withdrawal_tax_character(tax_treatment: str | None, subkind: str) -> str | N
 
 CALENDAR_EVENT_KINDS: set[str] = {
     "set_rate", "set_amount", "add_scheduled", "retire_scheduled", "swap_aux_table",
-    "one_off_transfer", "sell_asset", "buy_asset", "life_transition",
-    "latent_factor",
+    "one_off_transfer", "transfer_balance", "sell_asset", "buy_asset",
+    "life_transition", "latent_factor",
 }
 
 # ADR-008 §3: a shared influence (an "inflation regime") that rows correlate
