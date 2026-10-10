@@ -1,5 +1,7 @@
 # Scenario descriptions for the notebook UI
 
+import html
+import uuid
 from collections.abc import Collection
 
 import pandas as pd
@@ -66,23 +68,52 @@ def show_chains(sc, **_):
     return scrollable(_fit_to_width(styled, nowrap=["step", "maximum", "percent", "cadence"]))
 
 
-def chain_flow_markdown(sc) -> str:
-    """The chains of the scenario connection `sc` as Markdown holding a Mermaid
-    flowchart: steps as numbered lines, refill and overflow as arrows, and the
-    rules that use a chain. The same chart as `sim chain show --mermaid`."""
+MERMAID_URL = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs"
+"""Where a flowchart's HTML loads Mermaid from, for front ends without it built in."""
+
+
+def mermaid_bundle(chart: str) -> dict[str, str]:
+    """A display bundle for the Mermaid source ``chart``. VS Code has no Mermaid
+    renderer for Markdown output, so the HTML draws the chart itself with
+    Mermaid from a CDN; JupyterLab picks the HTML too. The Markdown fence and
+    the source are fallbacks for a front end that shows neither."""
+    element = f"chain-flow-{uuid.uuid4().hex}"
+    # Mermaid reads the chart from the element's text, so it is escaped like any text.
+    script = (
+        f'import mermaid from "{MERMAID_URL}";\n'
+        "mermaid.initialize({startOnLoad: false});\n"
+        f'mermaid.run({{nodes: [document.getElementById("{element}")]}});'
+    )
+    return {
+        "text/html": f'<pre class="mermaid" id="{element}">{html.escape(chart)}</pre>'
+                     f'<script type="module">{script}</script>',
+        "text/markdown": f"```mermaid\n{chart}\n```",
+        "text/plain": chart,
+    }
+
+
+def show_chain_flow(sc, chain: str | None = None, **_):
+    """One chain's flowchart, picked from a dropdown: every chain at once is too
+    tangled to read. ``chain`` picks the one shown first. The same chart as
+    ``sim chain show CHAIN --mermaid``: its steps as numbered lines, the refill
+    and overflow of its lots as arrows, and the rules that use it."""
     cmap = chain_map.chain_map(sc)
-    if not cmap.steps:
-        return "No chains: every lot is still a one-step chain of its own."
-    return f"```mermaid\n{chain_map.mermaid(cmap)}\n```"
-
-
-def show_chain_flow(sc, **_):
-    """`chain_flow_markdown` for the notebook. JupyterLab draws the Mermaid
-    block; VS Code needs a Mermaid extension, and shows the source without one."""
     out = scrollable_output()
-    with out:
-        display(Markdown(chain_flow_markdown(sc)))
-    return out
+    if not cmap.steps:
+        with out:
+            display(Markdown("No chains: every lot is still a one-step chain of its own."))
+        return out
+    names = sorted(cmap.steps)
+    picker = widgets.Dropdown(options=names, value=chain if chain in names else names[0],
+                              description="Chain:")
+
+    def _redraw(*_):
+        with out:
+            display(mermaid_bundle(chain_map.mermaid(cmap, [picker.value])), raw=True, clear=True)
+
+    picker.observe(_redraw, names="value")
+    _redraw()
+    return widgets.VBox([picker, out])
 
 
 SCHEDULED_OPTIONAL_COLUMNS = {"id": False, "name": True, "priority": False, "description": True}
