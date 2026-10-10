@@ -564,7 +564,8 @@ def _merge_calendar_rows(
 
 _UNIT_CONTEXT_COLUMNS = ("kind", "vary_target")
 """The calendar.csv columns that decide what unit a row's amount cells are in
-(``units.calendar_row_to_storage``)."""
+(``units.calendar_row_to_storage``) and whether its date keeps its day
+(``_keeps_exact_day``)."""
 
 
 def _inherit_unit_context(
@@ -572,11 +573,12 @@ def _inherit_unit_context(
 ) -> None:
     """Give a child calendar.csv row that overrides an inherited row by name
     the ``_UNIT_CONTEXT_COLUMNS`` its own file leaves out, before its cells
-    are converted to stored units: a ``name,amount`` override inherits its
-    ``kind``, so its ``5%`` must be read as that kind's unit, not left as
-    text (#136). Only columns missing from the child's header are filled --
-    exactly what the merge would carry over anyway; a blank cell is the
-    child's own value."""
+    are normalized: a ``name,amount`` override inherits its ``kind``, so its
+    ``5%`` must be read as that kind's unit, not left as text, and a
+    ``name,date`` override of a ``retire_scheduled`` row keeps its day (#136).
+    Only columns missing from the child's header are filled -- exactly what
+    the merge would carry over anyway; a blank cell is the child's own
+    value."""
     by_name = {
         name: row for row in inherited if (name := (row.get("name") or "").strip())
     }
@@ -682,9 +684,11 @@ def _read_scenario_inputs(
             )
             if filename == "scheduled.csv":
                 _legacy_units_header(scenario_dir / filename, filename, issues)
-            _normalize_month_columns(rows, filename, issues)
+            # Before both normalizations: a kind decides a date's day as well
+            # as an amount's unit (``_keeps_exact_day``).
             if inherited:
                 _inherit_unit_context(rows, inherited)
+            _normalize_month_columns(rows, filename, issues)
             _normalize_units(rows, filename, issues)
             return rows
 

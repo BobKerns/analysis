@@ -1241,6 +1241,29 @@ def test_partial_header_override_reads_amount_in_the_inherited_kinds_unit(
     assert rows == [("set_rate", 47_500, "45000", "50000")]
 
 
+def test_partial_header_override_of_retire_scheduled_keeps_its_day(
+    append_calendar_row: Callable[..., None], derive_scenario: Callable[..., Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """A ``name,date`` override inherits retire_scheduled, whose date keeps
+    its day -- so it must have the kind before its date is normalized."""
+    append_calendar_row(
+        date="2027-02-28", kind="retire_scheduled", name="bill_retires",
+        scheduled_name="salary_bill",
+    )
+    derive_scenario("child", "retire_alice", files={
+        "calendar.csv": "name,date\nbill_retires,2028-03-15\n",
+    })
+    con = sqlite3.connect(load_test_scenario("child"))
+    try:
+        rows = con.execute(
+            "SELECT date FROM calendar_event WHERE name = ?", ("bill_retires",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("2028-03-15",)]
+
+
 def test_unknown_correlation_parent_names_the_rows_file_and_line(
     derive_scenario: Callable[..., Path], test_data_dir: Path, intent_dir: Path,
 ) -> None:
