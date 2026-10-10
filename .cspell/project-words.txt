@@ -4,6 +4,7 @@ addl
 affordances
 aggfunc
 AMOLED
+anywidget
 arcsinh
 arctanh
 autocorr
