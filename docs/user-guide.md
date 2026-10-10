@@ -366,20 +366,17 @@ Asset_Brokerage_Joint,inherited_2029
 ```
 
 ```csv
-# scheduled.csv — a one-off row, not a calendar.csv event (see below)
+# scheduled.csv — a one-off row (a calendar.csv one_off_transfer works too)
 name,from_account,from_lot,to_account,to_lot,cadence,amount_rule_kind,amount,tax_character,start,end,priority
-sell_2029_lot,sell the 2029 lot,,Asset_Checking,,one_off,fixed_amount,75000.00,none,2030-06-30,2030-06-30,500
+sell_2029_lot,sell_the_2029_lot,,Asset_Checking,,one_off,fixed_amount,75000.00,none,2030-06-30,2030-06-30,500
 ```
 
-This must be a row in `scheduled.csv`, not a `one_off_transfer` event in
-`calendar.csv`. Today, only `scheduled.csv`'s `from_account`/`to_account`
-columns can name a chain; a calendar event's `account_1`/`account_2` columns
-must name a plain account. The chain's name, used in `from_account`, comes
-from its filename: take the part after the double underscore, and change
-every underscore to a space. So `asset__sell_the_2029_lot.csv` becomes the
-name `sell the 2029 lot` — the same rule used for `series`/`aux` filenames
-(underscores are needed in the filename, but the name itself can have
-spaces). Leave `from_lot` blank — naming a chain already says which lot to
+A `one_off_transfer` event in `calendar.csv` can do the same: its
+`account_1`/`account_2` columns may name a chain just as `scheduled.csv`'s
+`from_account`/`to_account` can. The chain's name, used in `from_account`, is
+the part of its filename after the double underscore, exactly as written: so
+`asset__sell_the_2029_lot.csv` is the chain `sell_the_2029_lot`. A chain name
+has no spaces. Leave `from_lot` blank — naming a chain already says which lot to
 use. Set `tax_character` to `none`: this value is ignored once the money is
 drawn through a chain, but the column must still have some value the loader
 recognizes; it cannot be left empty. What actually triggers the automatic
