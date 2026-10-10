@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -15,36 +15,9 @@ from analysis.sim import chain_map
 from analysis.sim.connection import ScenarioConnection, open_scenario
 from analysis.sim.notebook_ui.scenario_plots import chain_flow_markdown, show_chain_flow
 
-_HEADER = "account_name,lot,maximum,percent,series,cadence\n"
-
-
 @pytest.fixture
-def chained(
-    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], update_account_value,
-) -> Path:
-    """The guide's examples on the private copy: a chain inside a chain drawn by a
-    rule, a benefit swept into a split, and checking's refill and overflow."""
-    chains = retire_alice_csv("chains")
-    (chains / "asset__bridge.csv").write_text(
-        _HEADER + "Asset_Savings,,10000.00,,cpi,annual\nAsset_Brokerage_Joint,default,,,,\n")
-    (chains / "asset__retirement_draw.csv").write_text(
-        _HEADER + "bridge,,,50%,,\nAsset_TraditionalIRA_Alice,default,,,,\n")
-    (chains / "asset__ss_split.csv").write_text(
-        _HEADER + "Asset_Checking,,,50%,,\nAsset_Savings,,,,,\n")
-    scheduled = retire_alice_csv("scheduled.csv")
-    text = scheduled.read_text().replace(
-        "ss_alice,Income_SS_Alice,,Asset_Checking,", "ss_alice,Income_SS_Alice,,ss_split,")
-    text += ("monthly_draw,retirement_draw,,Asset_Checking,,monthly,,fixed_amount,,,,,,1000.00,,,"
-             "none,,2030-01-31,,200,,,,{},,\n")
-    scheduled.write_text(text)
-    update_account_value("Asset_Checking", "", maximum_balance="30000.00", refill_target="3000.00",
-                         overflow_chain="Asset_Savings")
-    return test_data_dir
-
-
-@pytest.fixture
-def cmap(chained: Path) -> Generator[chain_map.ChainMap]:
-    with open_scenario(chained, "retire_alice") as sc:
+def cmap(guide_chains: Path) -> Generator[chain_map.ChainMap]:
+    with open_scenario(guide_chains, "retire_alice") as sc:
         yield chain_map.chain_map(sc)
 
 
@@ -119,24 +92,24 @@ def test_mermaid_draws_steps_policies_and_rules(cmap: chain_map.ChainMap) -> Non
     assert len(node) == len(set(node.values()))  # one node per chain or lot, however often used
 
 
-def test_list_command(chained: Path) -> None:
-    result = _sim(chained, "list")
+def test_list_command(guide_chains: Path) -> None:
+    result = _sim(guide_chains, "list")
     assert result.exit_code == 0, result.output
     assert "retirement_draw" in result.output
     assert "drawn from by rule monthly_draw (to Asset_Checking)" in result.output
     assert "this scenario" in result.output
 
 
-def test_show_command_finds_the_chains_reaching_an_account(chained: Path) -> None:
-    result = _sim(chained, "show", "Asset_Brokerage_Joint")
+def test_show_command_finds_the_chains_reaching_an_account(guide_chains: Path) -> None:
+    result = _sim(guide_chains, "show", "Asset_Brokerage_Joint")
     assert result.exit_code == 0, result.output
     assert "bridge (asset chain)" in result.output and "retirement_draw (asset chain)" in result.output
     assert "ss_split" not in result.output
-    refill = _sim(chained, "show", "Asset_Checking")  # through its own refill and overflow
+    refill = _sim(guide_chains, "show", "Asset_Checking")  # through its own refill and overflow
     assert "asset_checking_liquidity (asset chain)" in refill.output
-    mermaid = _sim(chained, "show", "ss_split", "--mermaid")
+    mermaid = _sim(guide_chains, "show", "ss_split", "--mermaid")
     assert mermaid.output.startswith("flowchart LR")
-    missing = _sim(chained, "show", "nowhere")
+    missing = _sim(guide_chains, "show", "nowhere")
     assert missing.exit_code != 0 and "neither a chain nor an account" in missing.output
 
 
