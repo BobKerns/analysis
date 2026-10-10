@@ -60,6 +60,7 @@ def test_add_without_weights_points_to_the_guide(test_data_dir: Path) -> None:
     (["--weight", "stock_us"], "must be CLASS=PERCENT"),
     (["--as-of", "2026-01"], "give the weights too"),
     (["--weight", "bond=100%", "--as-of", "soon"], "not a YYYY-MM month"),
+    (["--weight", "stock_us=110%", "--weight", "bond=-10%"], "weight percent value '110%' must be between 0 and 100"),
 ])
 def test_add_refuses_rows_that_would_not_load(test_data_dir: Path, args: list[str], message: str) -> None:
     before = (test_data_dir / "allocations.csv").read_text()
@@ -80,6 +81,24 @@ def test_add_refuses_a_second_name_or_a_second_set_for_one_date(test_data_dir: P
     assert same_month.exit_code != 0 and "already has weights as of 2026-01-15" in same_month.output
     later = _sim(test_data_dir, "add", "ABCDX", "--no-fetch", "--weight", "cash=100%", "--as-of", "2027-01")
     assert later.exit_code == 0, later.output  # a later set follows a glide path
+
+
+def test_add_puts_back_the_first_file_when_the_second_cannot_be_written(
+    test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = (test_data_dir / "securities.csv").read_bytes()
+    real_replace = symbols.os.replace
+
+    def replace(src, dst):
+        if Path(dst).name == "allocations.csv":
+            raise OSError("disk full")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(symbols.os, "replace", replace)
+    with pytest.raises(OSError, match="disk full"):
+        symbols.add_symbol(test_data_dir, "ABCDX", name="A Fund", weights={"bond": "100%"})
+    assert (test_data_dir / "securities.csv").read_bytes() == before
+    assert not list(test_data_dir.glob(".*.csv.*"))  # no temp files left
 
 
 def test_add_keeps_the_rows_when_the_fetch_fails(test_data_dir: Path, provider: None) -> None:

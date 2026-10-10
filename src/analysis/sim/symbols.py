@@ -244,6 +244,20 @@ def add_symbol(
         for tmp, _path in temps:
             tmp.unlink(missing_ok=True)
         raise
-    for tmp, path in temps:
-        os.replace(tmp, path)
+    # Both files or neither: if a later rename fails, put back what the earlier ones replaced.
+    originals = [(path, path.read_bytes() if path.exists() else None) for _tmp, path in temps]
+    done = 0
+    try:
+        for tmp, path in temps:
+            os.replace(tmp, path)
+            done += 1
+    except BaseException:
+        for path, before in originals[:done]:
+            if before is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(before)
+        for tmp, _path in temps[done:]:
+            tmp.unlink(missing_ok=True)
+        raise
     return SymbolAdded(named=bool(name), weighted=bool(weights))

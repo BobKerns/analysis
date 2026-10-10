@@ -5790,6 +5790,10 @@ def symbol_add_command(
             words += ["--as-of", as_of]
         if not fetch:
             words.append("--no-fetch")
+        if fetch and provider_name != "yahoo":
+            words += ["--provider", provider_name]
+        if fetch and since_text:
+            words += ["--since", since_text]
         click.echo("equivalent command: " + " ".join(shlex.quote(w) for w in words))
     if failed:
         raise click.ClickException(
