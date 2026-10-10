@@ -167,6 +167,17 @@ def chain_map(sc: ScenarioConnection) -> ChainMap:
             cmap.uses.setdefault(row.from_name, []).append(Use("draw", what, row.to_name))
         if row.to_name in cmap.steps:
             cmap.uses.setdefault(row.to_name, []).append(Use("sweep", what, row.from_name))
+    # A calendar transfer becomes a rule only when the engine runs, so the
+    # intent's calendar rows are read directly; only these two kinds move money.
+    for row in named_rows(sc.items("calendar_event")):
+        if row.kind not in ("one_off_transfer", "transfer_balance"):
+            continue
+        what = f"calendar {row.name or row.kind} ({row.date})"
+        source, destination = _text(row.account_1), _text(row.account_2)
+        if source in cmap.steps:
+            cmap.uses.setdefault(source, []).append(Use("draw", what, destination or ""))
+        if destination in cmap.steps:
+            cmap.uses.setdefault(destination, []).append(Use("sweep", what, source or ""))
     return cmap
 
 

@@ -130,7 +130,7 @@ def test_bad_price_is_an_error(
 ) -> None:
     write_aux("security_price__AAA.csv", f"effective_date,price\n2026-01-31,{price}\n")
     set_brokerage_lots([{**LOT, "opening_balance": "1.00"}])
-    with pytest.raises(LoadError, match=r"security_price__AAA.csv row 2 \(price\)"):
+    with pytest.raises(LoadError, match=r"security_price__AAA.csv line 2 \(price\)"):
         load_test_copy()
 
 

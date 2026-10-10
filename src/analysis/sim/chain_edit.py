@@ -35,7 +35,10 @@ REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
 def chain_file(scenario_dir: Path, name: str) -> Path | None:
     """The scenario folder's own file for chain ``name``, if it has one."""
     chains = scenario_dir / "chains"
-    found = sorted(chains.glob(f"*__{name}.csv")) if chains.is_dir() else []
+    # Compare names, not a glob: a chain name may hold '[' or '*'.
+    found = sorted(
+        path for path in chains.glob("*.csv") if path.stem.partition("__")[2] == name
+    ) if chains.is_dir() else []
     return found[0] if found else None
 
 

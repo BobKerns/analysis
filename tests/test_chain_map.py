@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import pytest
@@ -117,3 +117,27 @@ def test_flowchart_in_the_notebook(test_retire_alice_scenario: ScenarioConnectio
     assert isinstance(show_chain_flow(test_retire_alice_scenario), widgets.Output)
     markdown = chain_flow_markdown(test_retire_alice_scenario)
     assert markdown.startswith("```mermaid\nflowchart LR\n") and markdown.endswith("\n```")
+
+
+def test_calendar_transfers_use_chains(guide_chains: Path, append_calendar_row) -> None:
+    # A calendar transfer is a rule only once the engine runs, so the map reads the calendar.
+    append_calendar_row(date="2030-01", kind="one_off_transfer", name="roof",
+                        account_1="retirement_draw", account_2="Asset_Checking", amount="5000")
+    append_calendar_row(date="2031-01", kind="transfer_balance", name="close_savings",
+                        account_1="Asset_Savings", account_2="ss_split")
+    with open_scenario(guide_chains, "retire_alice") as sc:
+        cmap = chain_map.chain_map(sc)
+    uses = {name: [(u.kind, u.by, u.detail) for u in found] for name, found in cmap.uses.items()}
+    assert ("draw", "calendar roof (2030-01-31)", "Asset_Checking") in uses["retirement_draw"]
+    assert ("sweep", "calendar close_savings (2031-01-31)", "Asset_Savings") in uses["ss_split"]
+
+
+def test_list_finds_a_chain_whose_name_looks_like_a_glob(
+    guide_chains: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    (retire_alice_csv("chains") / "asset__odd[1].csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    result = _sim(guide_chains, "list")
+    assert result.exit_code == 0, result.output
+    row = next(line for line in result.output.splitlines() if "odd[1]" in line)
+    assert "this scenario" in row

@@ -178,3 +178,14 @@ def test_guided_add_by_caps_into_a_destination(test_data_dir: Path, test_scenari
     assert _steps(test_scenarios_dir, "spill") == [
         ("Asset_Savings", "", "2000.00", ""), ("Asset_Brokerage_Joint", "default", "", "")]
     assert "--overflow-chain spill" in result.output
+
+
+def test_a_chain_file_is_found_by_its_exact_name(
+    test_scenarios_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    chains = retire_alice_csv("chains")
+    for stem in ("asset__odd[1]", "asset__odd1", "asset__odd_more"):
+        (chains / f"{stem}.csv").write_text("account_name,lot,maximum,percent,series,cadence\n")
+    scenario = test_scenarios_dir / "retire_alice"
+    assert chain_edit.chain_file(scenario, "odd[1]") == chains / "asset__odd[1].csv"
+    assert chain_edit.chain_file(scenario, "odd*") is None
