@@ -1162,6 +1162,63 @@ def test_vary_row_overrides_inherited_unnamed_calendar_row(
         con.close()
 
 
+_CHILD_CALENDAR_HEADER = (
+    "date,kind,name,series,amount,vary_target,vary_distribution,vary_low,vary_high\n"
+)
+
+
+def test_child_overrides_named_calendar_row_with_a_new_amount(
+    append_calendar_row: Callable[..., None], derive_scenario: Callable[..., Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """#136: a child row naming an inherited named row overrides it even when
+    its amount (a merge-key field) differs -- not a second row with the same
+    name beside it."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
+    )
+    derive_scenario("child", "retire_alice", files={"calendar.csv": (
+        _CHILD_CALENDAR_HEADER
+        + "2027-02-28,set_rate,checking_rate_vary,Asset_Checking,-5%,amount,uniform,-20%,5%\n"
+    )})
+    con = sqlite3.connect(load_test_scenario("child"))
+    try:
+        rows = con.execute(
+            "SELECT amount, vary_low, vary_high FROM calendar_event WHERE name = ?",
+            ("checking_rate_vary",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [(-50_000, "-200000", "50000")]
+
+
+def test_calendar_errors_name_the_scenario_file_and_line(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    derive_scenario: Callable[..., Path], intent_dir: Path,
+) -> None:
+    """#136: a message about a merged calendar row names the file it was
+    authored in and its physical line -- blank lines counted -- not its
+    position in the parent-plus-child calendar."""
+    append_calendar_row(date="2027-03-31", kind="no_such_kind")
+    derive_scenario("child", "retire_alice", files={"calendar.csv": (
+        _CHILD_CALENDAR_HEADER
+        + "2027-02-28,set_rate,twice,Asset_Checking,4%,,,,\n"
+        + "\n"
+        + "2027-04-30,set_rate,twice,Asset_Checking,5%,,,,\n"
+    )})
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "child", intent_dir=intent_dir, allow_dirty_data=True)
+    issues = ei.value.issues
+    assert (
+        "scenarios/child/calendar.csv line 4: duplicate name 'twice' "
+        "(first seen on scenarios/child/calendar.csv line 2)"
+    ) in issues
+    assert "scenarios/retire_alice/calendar.csv line 7: unknown event kind 'no_such_kind'" in issues
+
+
 def test_vary_rows_identical_including_name_rejected_as_duplicate(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:

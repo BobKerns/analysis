@@ -37,9 +37,9 @@ def test_the_file_is_optional(test_data_dir: Path, load_test_copy: Callable[[], 
 
 
 @pytest.mark.parametrize(("text", "message"), [
-    ("symbol,name\nVTI,A\nVTI,B\n", r"row 3 \(VTI\): duplicate symbol"),
-    ("symbol,name\nVTI,\n", r"row 2 \(VTI\): missing name"),
-    ("symbol,name\n,Apple Inc.\n", r"row 2: missing symbol"),
+    ("symbol,name\nVTI,A\nVTI,B\n", r"line 3 \(VTI\): duplicate symbol"),
+    ("symbol,name\nVTI,\n", r"line 2 \(VTI\): missing name"),
+    ("symbol,name\n,Apple Inc.\n", r"line 2: missing symbol"),
 ])
 def test_bad_rows_are_rejected(
     text: str, message: str, test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
