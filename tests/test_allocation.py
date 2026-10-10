@@ -301,3 +301,17 @@ def test_a_wide_split_keeps_every_amount_in_a_narrow_terminal(
     assert "…" not in result.output
     total_row = next(line for line in result.output.splitlines() if line.startswith("│ Total"))
     assert total_row.rstrip().endswith("100.0% │")  # not cropped at the terminal's edge
+
+
+ADD_SYMBOL_HEADING = "### 4.11 Add a stock or fund"
+
+
+@pytest.mark.parametrize("command", [["allocation"], ["prices"], ["prices", "fetch"], ["symbol", "add"]])
+def test_symbol_commands_point_to_the_add_a_symbol_guide(command: list[str]) -> None:
+    """Issue #127: adding a symbol is documented, not a command, so the help says where."""
+    guide = Path(__file__).parents[1] / "docs" / "user-guide.md"
+    assert ADD_SYMBOL_HEADING in guide.read_text()  # the section the help names still exists
+    result = CliRunner().invoke(main, ["sim", *command, "--help"], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    assert "Part 4.11" in result.output
+    assert "Add a stock or fund" in " ".join(result.output.split())
