@@ -145,6 +145,8 @@ def rename_references(scenario_dir: Path, old: str, new: str) -> list[str]:
             changed.append(filename)
     chains = scenario_dir / "chains"
     for path in sorted(chains.glob("*.csv")) if chains.is_dir() else []:
+        if path.stem.startswith("_"):
+            continue  # a template the loader skips; leave it as written
         if _rename_cells(path, ("account_name",), old, new):
             changed.append(f"chains/{path.name}")
     return changed

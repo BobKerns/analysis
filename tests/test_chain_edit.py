@@ -328,3 +328,13 @@ def test_an_underscore_template_is_not_a_chain(test_scenarios_dir: Path,
     (retire_alice_csv("chains") / "_asset__example.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
     assert chain_edit.chain_file(test_scenarios_dir / "retire_alice", "example") is None
+
+
+def test_rename_leaves_underscore_templates_alone(test_data_dir: Path,
+                                                  retire_alice_csv: Callable[[str], Path]) -> None:
+    template = retire_alice_csv("chains") / "_asset__example.csv"
+    text = "account_name,lot,maximum,percent,series,cadence\nasset_checking_liquidity,,,,,\n"
+    template.write_text(text)
+    result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "liquidity")
+    assert result.exit_code == 0, result.output
+    assert template.read_text() == text
