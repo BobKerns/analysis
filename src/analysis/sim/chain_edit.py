@@ -101,15 +101,30 @@ def _rename_cells(path: Path, columns: tuple[str, ...], old: str, new: str) -> b
     return changed
 
 
+def name_problem(name: str) -> str | None:
+    """Why ``name`` can't be a new chain's name, or None. The name becomes
+    part of a filename in ``chains/``, so it must stay one path segment the
+    loader's ``<kind>__<name>.csv`` glob finds."""
+    if not name or any(c.isspace() for c in name):
+        return "a chain name is one word, without spaces"
+    if any(c in name for c in ":/\\") or name.startswith("."):
+        return f"a chain name can't contain ':', '/' or '\\', or start with '.': {name!r}"
+    return None
+
+
 def rename_references(scenario_dir: Path, old: str, new: str) -> list[str]:
     """Rename chain ``old`` to ``new`` throughout one scenario folder: its own
     file for the chain (kept under the same kind), the steps of its other
     chains, and every column that may name a chain. Returns what changed, as
     paths relative to the folder."""
+    if problem := name_problem(new):
+        raise ValueError(problem)
     changed: list[str] = []
     own = chain_file(scenario_dir, old)
     if own is not None:
         kind = own.stem.split("__", 1)[0]
+        if (taken := chain_file(scenario_dir, new)) is not None:
+            raise FileExistsError(f"{scenario_dir.name} already has chains/{taken.name}")
         own.rename(own.with_name(f"{kind}__{new}.csv"))
         changed.append(f"chains/{own.name} -> chains/{kind}__{new}.csv")
     for filename, columns in REFERENCE_COLUMNS.items():

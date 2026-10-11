@@ -74,6 +74,9 @@ def test_add_then_change_the_steps(test_data_dir: Path, test_scenarios_dir: Path
     (["step", "add", "nope", "Asset_Checking"], "no chain 'nope'"),
     (["step", "rm", "asset_checking_liquidity", "3"], "has steps 1 to 2, not 3"),
     (["step", "add", "asset_checking_liquidity", "asset_checking_liquidity"], "a step of itself"),
+    (["add", "../escape", "Asset_Savings"], "can't contain ':', '/'"),
+    (["add", ".hidden", "Asset_Savings"], "or start with '.'"),
+    (["rename", "asset_checking_liquidity", "nested/name"], "can't contain ':', '/'"),
 ])
 def test_refused_changes_write_nothing(test_data_dir: Path, args: list[str], message: str) -> None:
     before = sorted(p.read_bytes() for p in (test_data_dir / "scenarios").rglob("*.csv"))
@@ -248,3 +251,29 @@ def test_guided_rename_and_delete(test_data_dir: Path, test_scenarios_dir: Path)
     deleted = _sim(test_data_dir, "delete", input="reserve\ny\n")
     assert deleted.exit_code == 0, deleted.output
     assert chain_edit.chain_file(test_scenarios_dir / "retire_alice", "reserve") is None
+
+
+def test_guided_step_add_asks_only_what_options_leave_out(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    result = _sim(test_data_dir, "step", "add", "asset_checking_liquidity", "--maximum", "100",
+                  input="Asset_Roth_Alice\ndefault\n25\ncpi\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert "at most how much" not in result.output
+    path = chain_edit.chain_file(test_scenarios_dir / "retire_alice", "asset_checking_liquidity")
+    assert path is not None
+    assert chain_edit.read_steps(path)[-1] == {
+        "account_name": "Asset_Roth_Alice", "lot": "default", "maximum": "100.00", "percent": "25%",
+        "series": "cpi", "cadence": ""}
+
+
+def test_rename_refuses_a_name_a_descendant_already_uses(test_data_dir: Path, test_scenarios_dir: Path,
+                                                         derive_scenario) -> None:
+    derive_scenario("kid", "retire_alice", files={
+        "chains/asset__asset_checking_liquidity.csv":
+            "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n",
+        "chains/asset__reserve.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
+    result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "reserve")
+    assert result.exit_code != 0
+    assert "kid already define(s) a chain 'reserve'" in result.output
+    assert chain_edit.chain_file(test_scenarios_dir / "kid", "asset_checking_liquidity") is not None
+    assert chain_edit.read_steps(test_scenarios_dir / "kid" / "chains" / "asset__reserve.csv")[0][
+        "account_name"] == "Asset_Checking"

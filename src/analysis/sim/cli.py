@@ -7,7 +7,7 @@ import json
 import math
 import secrets
 import shlex
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Callable, Generator, Mapping, Set
 from contextlib import ExitStack, contextmanager
 import os
 import sqlite3
@@ -5917,11 +5917,12 @@ def _ask_step_column(text: str, current: str, blank: str, parse: Callable[[str],
             click.echo(f"  {exc}")
 
 
-def _ask_step_columns(row: dict[str, str], inflation: list[str]) -> None:
+def _ask_step_columns(row: dict[str, str], inflation: list[str], given: Set[str] = frozenset()) -> None:
     """Ask a guided step's percent, maximum, and the series and cadence that
-    grow the maximum, each starting from ``row``'s value. Series and cadence
-    are only asked once there is a maximum for them to grow, since the loader
-    refuses a series without one."""
+    grow the maximum, each starting from ``row``'s value; a column in
+    ``given`` came as an option and is kept. Series and cadence are only
+    asked once there is a maximum for them to grow, since the loader refuses
+    a series without one."""
 
     def series(answer: str) -> str:
         if answer not in inflation:
@@ -5933,20 +5934,26 @@ def _ask_step_columns(row: dict[str, str], inflation: list[str]) -> None:
             raise ValueError(f"one of: {', '.join(_STEP_CADENCES)}")
         return answer
 
-    row["percent"] = _ask_step_column(
-        "share of what is still outstanding when this step is reached, in %", row.get("percent", ""),
-        "all of it", _step_percent)
-    row["maximum"] = _ask_step_column(
-        "at most how much, in dollars", row.get("maximum", ""), "no limit", _step_maximum)
+    if "percent" not in given:
+        row["percent"] = _ask_step_column(
+            "share of what is still outstanding when this step is reached, in %", row.get("percent", ""),
+            "all of it", _step_percent)
+    if "maximum" not in given:
+        row["maximum"] = _ask_step_column(
+            "at most how much, in dollars", row.get("maximum", ""), "no limit", _step_maximum)
     if not row["maximum"]:
-        row["series"] = row["cadence"] = ""
+        # Nothing for a series to grow; one given anyway is left for the
+        # loader to refuse by name.
+        for column in {"series", "cadence"} - given:
+            row[column] = ""
         return
-    if not inflation and not row.get("series"):
+    if "series" not in given and (inflation or row.get("series")):
+        row["series"] = _ask_step_column(
+            "inflation series that grows the maximum", row.get("series", ""), "a fixed maximum", series,
+            choices=inflation)
+    if "cadence" in given:
         return
-    row["series"] = _ask_step_column(
-        "inflation series that grows the maximum", row.get("series", ""), "a fixed maximum", series,
-        choices=inflation)
-    if not row["series"]:
+    if not row.get("series"):
         row["cadence"] = ""
         return
     row["cadence"] = _ask_step_column(
@@ -6049,8 +6056,8 @@ def _ask_chain(con: sqlite3.Connection, text: str = "chain") -> str:
 def _ask_new_chain_name(taken: set[str], text: str = "chain name (one word, no spaces)") -> str:
     while True:
         name = _prompt_with_completion(text).strip()
-        if not name or " " in name or ":" in name:
-            click.echo("  a chain name is one word, without spaces or ':'")
+        if problem := chain_edit.name_problem(name):
+            click.echo(f"  {problem}")
         elif name in taken:
             click.echo(f"  {name!r} is already a chain or an account's name")
         else:
@@ -6095,6 +6102,8 @@ def chain_add_command(
         else:
             direction = None
             assert name is not None
+            if problem := chain_edit.name_problem(name):
+                raise click.ClickException(problem)
             if name in taken:
                 raise click.ClickException(f"{name!r} is already a chain or an account's name")
             if account is None:
@@ -6246,9 +6255,9 @@ def chain_step_add_command(
             _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains)
         row = _step_row(name, account, lot, percent, maximum, series, cadence, endpoints)
         if guided:
-            given = {"percent": percent, "maximum": maximum, "series": series, "cadence": cadence}
-            if not any(given.values()):
-                _ask_step_columns(row, _inflation_series(edit.con))
+            given = {k for k, v in
+                     {"percent": percent, "maximum": maximum, "series": series, "cadence": cadence}.items() if v}
+            _ask_step_columns(row, _inflation_series(edit.con), given=given)
             if position is None and steps:
                 while not (answer := _prompt_with_completion(
                     f"  its step number, 1 to {len(steps) + 1}", default=str(len(steps) + 1),
@@ -6397,10 +6406,19 @@ def chain_rename_command(old: str | None, new: str | None, scenario: str | None,
         taken = {r[0] for r in edit.con.execute("SELECT name FROM chain")}
         if new is None:
             new = _ask_new_chain_name(taken, f"new name for {old} (one word, no spaces)")
+        elif problem := chain_edit.name_problem(new):
+            raise click.ClickException(problem)
         elif new in taken:
             raise click.ClickException(f"{new!r} is already a chain or an account's name")
+        affected = (edit.name, *chain_edit.descendants(scenarios, edit.name))
+        # A scenario built on this one may already have its own chain called
+        # NEW, which the rename would overwrite or shadow; check before
+        # touching anything.
+        if clashes := [each for each in affected if chain_edit.chain_file(scenarios / each, new) is not None]:
+            raise click.ClickException(
+                f"{', '.join(clashes)} already define(s) a chain {new!r}; rename or delete it first")
         changed = []
-        for each in (edit.name, *chain_edit.descendants(scenarios, edit.name)):
+        for each in affected:
             changed += [f"{each}: {c}" for c in chain_edit.rename_references(scenarios / each, old, new)]
     click.echo(f"renamed chain {old} to {new}")
     for line in changed:
