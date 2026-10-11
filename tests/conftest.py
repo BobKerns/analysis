@@ -575,6 +575,34 @@ def add_alice_401k(
     return _add
 
 
+_CHAIN_HEADER = "account_name,lot,maximum,percent,series,cadence\n"
+
+
+@pytest.fixture(scope="function")
+def guide_chains(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], update_account_value,
+) -> Path:
+    """docs/guides/chains.md's examples on the private copy (issue #129): a
+    chain inside a chain drawn by a rule, a benefit swept into a split, and
+    checking's refill and overflow. Returns the data dir."""
+    chains = retire_alice_csv("chains")
+    (chains / "asset__bridge.csv").write_text(
+        _CHAIN_HEADER + "Asset_Savings,,10000.00,,cpi,annual\nAsset_Brokerage_Joint,default,,,,\n")
+    (chains / "asset__retirement_draw.csv").write_text(
+        _CHAIN_HEADER + "bridge,,,50%,,\nAsset_TraditionalIRA_Alice,default,,,,\n")
+    (chains / "asset__ss_split.csv").write_text(
+        _CHAIN_HEADER + "Asset_Checking,,,50%,,\nAsset_Savings,,,,,\n")
+    scheduled = retire_alice_csv("scheduled.csv")
+    text = scheduled.read_text().replace(
+        "ss_alice,Income_SS_Alice,,Asset_Checking,", "ss_alice,Income_SS_Alice,,ss_split,")
+    text += ("monthly_draw,retirement_draw,,Asset_Checking,,monthly,,fixed_amount,,,,,,1000.00,,,"
+             "none,,2030-01-31,,200,,,,{},,\n")
+    scheduled.write_text(text)
+    update_account_value("Asset_Checking", "", maximum_balance="30000.00", refill_target="3000.00",
+                         overflow_chain="Asset_Savings")
+    return test_data_dir
+
+
 @pytest.fixture(scope="function")
 def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
     """Create a scenario in the private data copy deriving from ``parents``

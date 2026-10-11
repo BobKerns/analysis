@@ -1,0 +1,179 @@
+"""Reading a scenario's chains: `sim chain list|show` and the flowchart (issue #129)."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Generator
+from pathlib import Path
+
+import pytest
+from click.testing import CliRunner
+from ipywidgets import widgets
+from rich.console import Console
+
+from analysis.cli import main
+from analysis.sim import chain_map
+from analysis.sim.connection import open_scenario
+from analysis.sim.notebook_ui.scenario_plots import MERMAID_URL, MermaidWidget, show_chain_flow
+
+
+@pytest.fixture
+def cmap(guide_chains: Path) -> Generator[chain_map.ChainMap]:
+    with open_scenario(guide_chains, "retire_alice") as sc:
+        yield chain_map.chain_map(sc)
+
+
+def _sim(data_dir: Path, *args: str):
+    return CliRunner().invoke(
+        main, ["sim", "chain", *args, "--scenario", "retire_alice", "--data-dir", str(data_dir)],
+        terminal_width=200,
+    )
+
+
+def test_steps_policies_and_uses(cmap: chain_map.ChainMap) -> None:
+    assert [(s.order, s.target) for s in cmap.steps["retirement_draw"]] == [
+        (1, "bridge"), (2, "Asset_TraditionalIRA_Alice:default")]
+    assert cmap.kinds["bridge"] == "asset"
+    assert cmap.label("Asset_TraditionalIRA_Alice:default") == "Asset_TraditionalIRA_Alice (default)"
+    assert cmap.label("Asset_Savings") == "Asset_Savings"  # one lot: the lot says nothing
+    checking = cmap.policies["Asset_Checking"]
+    assert (checking.minimum_cents, checking.maximum_cents) == (200_000, 3_000_000)
+    assert (checking.refill_chain, checking.overflow_chain) == ("asset_checking_liquidity", "Asset_Savings")
+    assert checking.refill_target_cents == 300_000
+    uses = {name: [(u.kind, u.by, u.detail) for u in found] for name, found in cmap.uses.items()}
+    assert uses["retirement_draw"] == [("draw", "rule monthly_draw", "Asset_Checking")]
+    assert uses["ss_split"] == [("sweep", "rule ss_alice", "Income_SS_Alice")]
+    assert uses["bridge"] == [("step", "retirement_draw", "1")]
+    assert ("refill", "Asset_Checking", "") in uses["asset_checking_liquidity"]
+    assert ("overflow", "Asset_Checking", "") in uses["Asset_Savings"]
+    assert cmap.descendants("retirement_draw") == [
+        "retirement_draw", "bridge", "Asset_Savings", "Asset_Brokerage_Joint:default",
+        "Asset_TraditionalIRA_Alice:default"]
+
+
+@pytest.mark.parametrize(("maximum", "percent", "series", "expected"), [
+    (None, 1_000_000, None, "all that's left"),
+    (None, 500_000, None, "50% of what's left"),
+    (30_000, 1_000_000, None, "all that's left, up to $300"),
+    (30_050, 333_333, None, "33.3333% of what's left, up to $300.50"),
+    (1_000_000, 1_000_000, "cpi", "all that's left, up to $10,000 growing with cpi (monthly)"),
+])
+def test_share_text(maximum: int | None, percent: int, series: str | None, expected: str) -> None:
+    step = chain_map.Step(1, "x", maximum, percent, series, None)
+    assert chain_map.share_text(step) == expected
+
+
+def test_tree_nests_a_chain_inside_a_chain(cmap: chain_map.ChainMap) -> None:
+    console = Console(width=200, record=True)
+    console.print(chain_map.chain_tree(cmap, "retirement_draw"))
+    lines = console.export_text().splitlines()
+    assert lines[0] == "retirement_draw (asset chain)"
+    assert lines[1].startswith("├── 1. bridge (chain)  50% of what's left")
+    assert lines[2].startswith("│   ├── 1. Asset_Savings  all that's left, up to $10,000")
+    assert lines[4].startswith("└── 2. Asset_TraditionalIRA_Alice (default)  all that's left")
+
+
+def test_tree_shows_each_lots_limits(cmap: chain_map.ChainMap) -> None:
+    console = Console(width=200, record=True)
+    console.print(chain_map.chain_tree(cmap, "ss_split"))
+    assert ("keeps $2,000; refills from asset_checking_liquidity up to $3,000; "
+            "holds at most $30,000, extra to Asset_Savings") in console.export_text()
+
+
+def test_mermaid_draws_steps_policies_and_rules(cmap: chain_map.ChainMap) -> None:
+    chart = chain_map.mermaid(cmap)
+    assert chart.startswith("flowchart LR\n")
+    ids = {line.split("[")[0].split("(")[0].strip(): line for line in chart.splitlines()[1:]
+           if "[" in line and "--" not in line}
+    node = {label: nid for nid, line in ids.items() for label in [line.split('"')[1].split("<br/>")[0]]}
+    assert f'{node["retirement_draw"]} ---|"1: 50% of what\'s left"| {node["bridge"]}' in chart
+    assert f'{node["asset_checking_liquidity"]} -.->|"refill, before a debit"| {node["Asset_Checking"]}' in chart
+    assert f'{node["Asset_Checking"]} ==>|"overflow, month end"| {node["Asset_Savings"]}' in chart
+    assert f'{node["retirement_draw"]} -->|"rule monthly_draw"| {node["Asset_Checking"]}' in chart
+    assert f'{node["Income_SS_Alice"]} -->|"rule ss_alice"| {node["ss_split"]}' in chart
+    assert len(node) == len(set(node.values()))  # one node per chain or lot, however often used
+
+
+def test_list_command(guide_chains: Path) -> None:
+    result = _sim(guide_chains, "list")
+    assert result.exit_code == 0, result.output
+    assert "retirement_draw" in result.output
+    assert "drawn from by rule monthly_draw (to Asset_Checking)" in result.output
+    assert "this scenario" in result.output
+
+
+def test_show_command_finds_the_chains_reaching_an_account(guide_chains: Path) -> None:
+    result = _sim(guide_chains, "show", "Asset_Brokerage_Joint")
+    assert result.exit_code == 0, result.output
+    assert "bridge (asset chain)" in result.output and "retirement_draw (asset chain)" in result.output
+    assert "ss_split" not in result.output
+    refill = _sim(guide_chains, "show", "Asset_Checking")  # through its own refill and overflow
+    assert "asset_checking_liquidity (asset chain)" in refill.output
+    mermaid = _sim(guide_chains, "show", "ss_split", "--mermaid")
+    assert mermaid.output.startswith("flowchart LR")
+    missing = _sim(guide_chains, "show", "nowhere")
+    assert missing.exit_code != 0 and "neither a chain nor an account" in missing.output
+
+
+def test_flowchart_in_the_notebook_shows_one_chain(guide_chains: Path) -> None:
+    with open_scenario(guide_chains, "retire_alice") as sc:
+        box = show_chain_flow(sc, chain="bridge")
+        cmap = chain_map.chain_map(sc)
+    picker, chart = box.children
+    assert isinstance(picker, widgets.Dropdown) and picker.value == "bridge"
+    assert list(picker.options) == ["asset_checking_liquidity", "bridge", "retirement_draw", "ss_split"]
+    assert isinstance(chart, MermaidWidget) and chart.chart == chain_map.mermaid(cmap, ["bridge"])
+    picker.value = "ss_split"  # picking another chain redraws
+    assert chart.chart == chain_map.mermaid(cmap, ["ss_split"])
+    # The widget draws itself, so VS Code (which runs no script in an Output) draws it too.
+    assert f'import mermaid from "{MERMAID_URL}"' in MermaidWidget._esm
+
+
+def test_calendar_transfers_use_chains(guide_chains: Path, append_calendar_row) -> None:
+    # A calendar transfer is a rule only once the engine runs, so the map reads the calendar.
+    append_calendar_row(date="2030-01", kind="one_off_transfer", name="roof",
+                        account_1="retirement_draw", account_2="Asset_Checking", amount="5000")
+    append_calendar_row(date="2031-01", kind="transfer_balance", name="close_savings",
+                        account_1="Asset_Savings", account_2="ss_split")
+    with open_scenario(guide_chains, "retire_alice") as sc:
+        cmap = chain_map.chain_map(sc)
+    uses = {name: [(u.kind, u.by, u.detail) for u in found] for name, found in cmap.uses.items()}
+    assert ("draw", "calendar roof (2030-01-31)", "Asset_Checking") in uses["retirement_draw"]
+    assert ("sweep", "calendar close_savings (2031-01-31)", "Asset_Savings") in uses["ss_split"]
+
+
+def test_list_finds_a_chain_whose_name_looks_like_a_glob(
+    guide_chains: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    (retire_alice_csv("chains") / "asset__odd[1].csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    result = _sim(guide_chains, "list")
+    assert result.exit_code == 0, result.output
+    row = next(line for line in result.output.splitlines() if "odd[1]" in line)
+    assert "this scenario" in row
+
+
+def test_flowchart_follows_policies_of_policy_chains(guide_chains: Path, update_account_value) -> None:
+    # ss_split reaches checking, which refills from a chain holding the IRA,
+    # which overflows to brokerage: two policies deep.
+    update_account_value("Asset_TraditionalIRA_Alice", "default", maximum_balance="900000.00",
+                         overflow_chain="Asset_Brokerage_Joint", overflow_lot="default")
+    with open_scenario(guide_chains, "retire_alice") as sc:
+        chart = chain_map.mermaid(chain_map.chain_map(sc), ["ss_split"])
+    assert '["Asset_Brokerage_Joint (default)"]' in chart  # its own node, not just named
+
+
+def test_names_that_look_like_markup_print_as_written(
+    guide_chains: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    chains = retire_alice_csv("chains")
+    (chains / "asset__tag[red].csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    (chains / "asset__out[bold]er.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\ntag[red],,,,,\n")
+    listed = _sim(guide_chains, "list")
+    assert listed.exit_code == 0, listed.output
+    assert "tag[red]" in listed.output and "out[bold]er" in listed.output
+    shown = _sim(guide_chains, "show", "tag[red]", "tag[red]")
+    assert shown.exit_code == 0, shown.output
+    assert "a step of out[bold]er (step 1)" in shown.output
+    assert shown.output.count("tag[red] (asset chain)") == 1  # a repeated name shows once

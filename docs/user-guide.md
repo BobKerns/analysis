@@ -102,7 +102,7 @@ project word could be confused with a general word, that is pointed out.
 | **Scenario** | One full model of your household finances. Stored as a folder under `scenarios/<name>/`. |
 | **Derived scenario** | A scenario that has `parent_scenario` set. It starts from its parent (and any mix-ins) and only lists what is different. See Part 1. |
 | **Lot** | One holding inside an account. A brokerage account can have several lots: different funds, or shares bought on different dates. Every account has at least one lot. It is named `default` unless you split the account into more than one lot. |
-| **Chain** | A named, ordered list of places money can come from, or go to. Think: try this place first, then that place. Every account (and every lot) already has its own one-step chain, automatically. You only write a `chains/*.csv` file when you want more than one step. See Part 4.6. |
+| **Chain** | A named, ordered list of places money can come from, or go to. Think: try this place first, then that place. Every account (and every lot) already has its own one-step chain, automatically. You only write a `chains/*.csv` file when you want more than one step. See Part 4.6 and [the chains guide](guides/chains.md). |
 | **Series** | A named set of numbers a scenario can refer to by name: a growth or interest rate (`rate__*`), or an inflation projection (`inflation__*`). These files live in that scenario's own `series/` folder. This is a different idea from *asset class*, below. |
 | **`aux/`** | Shared tax-law facts every scenario uses unless it says otherwise: tax brackets, RMD tables, filing status. |
 | **`series/`** | A scenario's own growth-rate and inflation assumptions. Unlike `aux/`, there is no shared copy at the top of the data repo — each scenario has its own, inherited from its parent the same way `accounts.csv` is. |
@@ -366,20 +366,17 @@ Asset_Brokerage_Joint,inherited_2029
 ```
 
 ```csv
-# scheduled.csv — a one-off row, not a calendar.csv event (see below)
+# scheduled.csv — a one-off row (a calendar.csv one_off_transfer works too)
 name,from_account,from_lot,to_account,to_lot,cadence,amount_rule_kind,amount,tax_character,start,end,priority
-sell_2029_lot,sell the 2029 lot,,Asset_Checking,,one_off,fixed_amount,75000.00,none,2030-06-30,2030-06-30,500
+sell_2029_lot,sell_the_2029_lot,,Asset_Checking,,one_off,fixed_amount,75000.00,none,2030-06-30,2030-06-30,500
 ```
 
-This must be a row in `scheduled.csv`, not a `one_off_transfer` event in
-`calendar.csv`. Today, only `scheduled.csv`'s `from_account`/`to_account`
-columns can name a chain; a calendar event's `account_1`/`account_2` columns
-must name a plain account. The chain's name, used in `from_account`, comes
-from its filename: take the part after the double underscore, and change
-every underscore to a space. So `asset__sell_the_2029_lot.csv` becomes the
-name `sell the 2029 lot` — the same rule used for `series`/`aux` filenames
-(underscores are needed in the filename, but the name itself can have
-spaces). Leave `from_lot` blank — naming a chain already says which lot to
+A `one_off_transfer` event in `calendar.csv` can do the same: its
+`account_1`/`account_2` columns may name a chain just as `scheduled.csv`'s
+`from_account`/`to_account` can. The chain's name, used in `from_account`, is
+the part of its filename after the double underscore, exactly as written: so
+`asset__sell_the_2029_lot.csv` is the chain `sell_the_2029_lot`. A chain name
+has no spaces. Leave `from_lot` blank — naming a chain already says which lot to
 use. Set `tax_character` to `none`: this value is ignored once the money is
 drawn through a chain, but the column must still have some value the loader
 recognizes; it cannot be left empty. What actually triggers the automatic
@@ -402,8 +399,9 @@ use a chain:
 
 1. **As the source or destination of a rule.** In `scheduled.csv`,
    `from_account`/`to_account` can name a chain instead of a plain account
-   (Part 4.5). In `calendar.csv`, `account_1`/`account_2` cannot — they must
-   always name a plain account.
+   (Part 4.5), and so can a calendar transfer's `account_1`/`account_2`,
+   except a `transfer_balance`'s source. A transfer names a chain on one
+   side at most.
 2. **As a lot's own rule for refilling or overflowing.** This is set
    directly on the lot's row in `account_values.csv` (with
    `sim account lot edit`, or by hand), not as a separate rule:
@@ -429,6 +427,12 @@ need to write a `chains/<kind>__<name>.csv` file when you want more than one
 step — for example, "try savings first, then this brokerage lot, then that
 one" — with each step taking a `percent` or a `maximum` amount before
 whatever is left moves on to the next step.
+
+`sim chain list` shows the scenario's chains and what uses each one, and
+`sim chain show` draws them as trees (`--mermaid` for a flowchart).
+[The chains guide](guides/chains.md) explains how steps, percents and
+maximums, chains inside chains, and the refill and overflow limits work
+together, with worked examples and recipes.
 
 ### 4.7 Lifespan assumptions
 
@@ -720,4 +724,5 @@ asset-class mix; see Part 4.11.
 - [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](architecture/ADR-005-lots-and-per-lot-state.md) — lots in depth.
 - [notebooks/README.md](../notebooks/README.md) — the same information as interactive widgets.
 - [`docs/guides/century-of-rates.md`](guides/century-of-rates.md) — a century of inflation, interest rates and stock returns: what carries over from one year to the next.
+- [`docs/guides/chains.md`](guides/chains.md) — chains step by step: drawing and sweeping, shares, chains inside chains, refill and overflow.
 - [`docs/guides/ensembles.md`](guides/ensembles.md) — ranges of outcomes instead of one number (Part 4.10); [ADR-006](architecture/ADR-006-ensemble-scenarios.md) has the full design.
