@@ -5766,13 +5766,18 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
     for column in ("Chain", "Kind", "Steps", "Defined in", "Used by"):
         table.add_column(column)
     for name, steps in sorted(cmap.steps.items()):
-        defined = chain_edit.defining_scenario(ref.scenarios_dir, ref.name, name) or ""
+        try:
+            defined = chain_edit.defining_scenario(ref.scenarios_dir, ref.name, name) or ""
+            where = "this scenario" if defined == ref.name else escape(defined)
+        except chain_edit.AmbiguousChain as exc:
+            where = f"[red]{escape(str(exc))}[/red]"
         uses = cmap.uses.get(name, [])
-        # Names come from the data and may hold '[', so only "nothing" is markup.
+        # Names come from the data and may hold '[', so only "nothing" and a
+        # clash are markup.
         table.add_row(
             escape(name), escape(cmap.kinds[name]),
             escape("\n".join(f"{s.order}. {cmap.label(s.target)}: {chain_map.share_text(s)}" for s in steps)),
-            "this scenario" if defined == ref.name else escape(defined),
+            where,
             escape("\n".join(chain_map.use_text(cmap, u) for u in uses)) or "[red]nothing[/red]",
         )
     console = Console()
@@ -6098,8 +6103,12 @@ def chain_add_command(
     with _scenario_edit(data, scenario) as edit:
         con, scenario_name = edit.con, edit.name
         endpoints = _endpoints(con)
-        taken = {r[0] for r in con.execute("SELECT name FROM chain")}
+        # Chains and accounts share one namespace, and an investment account's
+        # own chains are named account:lot, so its bare name isn't a chain row.
+        taken = {r[0] for r in con.execute("SELECT name FROM chain UNION SELECT name FROM account")}
         kinds = {r[0]: r[1] for r in con.execute("SELECT name, kind FROM account")}
+        for chain_name, chain_kind in con.execute("SELECT name, kind FROM chain WHERE lot_id IS NULL"):
+            kinds.setdefault(chain_name, chain_kind)  # a step may be another chain
         guided = name is None
         if guided:
             plan = _guided_chain(endpoints, taken)
@@ -6412,7 +6421,7 @@ def chain_rename_command(old: str | None, new: str | None, scenario: str | None,
             raise click.ClickException(
                 f"{old} comes from {first}; rename it there (--scenario {first}), "
                 "and the scenarios built on it follow")
-        taken = {r[0] for r in edit.con.execute("SELECT name FROM chain")}
+        taken = {r[0] for r in edit.con.execute("SELECT name FROM chain UNION SELECT name FROM account")}
         if new is None:
             new = _ask_new_chain_name(taken, f"new name for {old} (one word, no spaces)")
         elif problem := chain_edit.name_problem(new):

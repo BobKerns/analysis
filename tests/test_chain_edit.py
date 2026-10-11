@@ -76,6 +76,8 @@ def test_add_then_change_the_steps(test_data_dir: Path, test_scenarios_dir: Path
     (["step", "add", "asset_checking_liquidity", "asset_checking_liquidity"], "a step of itself"),
     (["add", "../escape", "Asset_Savings"], "can't contain ':', '/'"),
     (["add", ".hidden", "Asset_Savings"], "or start with '.'"),
+    (["add", "Asset_Brokerage_Joint", "Asset_Savings"], "already a chain or an account's name"),
+    (["rename", "asset_checking_liquidity", "Asset_Roth_Alice"], "already a chain or an account's name"),
     (["rename", "asset_checking_liquidity", "nested/name"], "can't contain ':', '/'"),
     (["step", "edit", "asset_checking_liquidity", "2", "--lot", ""], "Asset_TraditionalIRA_Alice needs a lot"),
 ])
@@ -338,3 +340,20 @@ def test_rename_leaves_underscore_templates_alone(test_data_dir: Path,
     result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "liquidity")
     assert result.exit_code == 0, result.output
     assert template.read_text() == text
+
+
+def test_a_chain_of_income_chains_is_an_income_chain(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    assert _sim(test_data_dir, "add", "earned", "Income_Interest").exit_code == 0
+    result = _sim(test_data_dir, "add", "all_earned", "earned")
+    assert result.exit_code == 0, result.output
+    assert "added chain all_earned (income, 1 step(s))" in result.output
+
+
+def test_chain_list_names_two_files_for_one_chain(test_data_dir: Path,
+                                                  retire_alice_csv: Callable[[str], Path]) -> None:
+    (retire_alice_csv("chains") / "income__asset_checking_liquidity.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nIncome_Interest,,,,,\n")
+    result = CliRunner().invoke(main, ["sim", "chain", "list", "--scenario", "retire_alice",
+                                       "--data-dir", str(test_data_dir)], terminal_width=400)
+    assert result.exit_code == 0, result.output
+    assert "2 files for chain" in result.output
