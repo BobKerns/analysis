@@ -6195,7 +6195,7 @@ def _guided_chain(endpoints: _Endpoints, taken: set[str]) -> _ChainPlan:
                                                default="").strip()
                 try:
                     if text:
-                        row["maximum"] = units.cents_to_dollars(units.dollars_to_cents(text))
+                        row["maximum"] = _step_maximum(text)
                 except ValueError as exc:
                     click.echo(f"  {exc}")
                     continue
@@ -6256,7 +6256,8 @@ def chain_step_add_command(
         row = _step_row(name, account, lot, percent, maximum, series, cadence, endpoints)
         if guided:
             given = {k for k, v in
-                     {"percent": percent, "maximum": maximum, "series": series, "cadence": cadence}.items() if v}
+                     {"percent": percent, "maximum": maximum, "series": series, "cadence": cadence}.items()
+                     if v is not None}
             _ask_step_columns(row, _inflation_series(edit.con), given=given)
             if position is None and steps:
                 while not (answer := _prompt_with_completion(
@@ -6411,12 +6412,16 @@ def chain_rename_command(old: str | None, new: str | None, scenario: str | None,
         elif new in taken:
             raise click.ClickException(f"{new!r} is already a chain or an account's name")
         affected = (edit.name, *chain_edit.descendants(scenarios, edit.name))
-        # A scenario built on this one may already have its own chain called
-        # NEW, which the rename would overwrite or shadow; check before
-        # touching anything.
-        if clashes := [each for each in affected if chain_edit.chain_file(scenarios / each, new) is not None]:
+        # A scenario built on this one may already have a chain called NEW,
+        # its own or one from a mix-in, which the rename would overwrite or
+        # shadow; check before touching anything.
+        clashes = {each: owner for each in affected
+                   if (owner := chain_edit.defining_scenario(scenarios, each, new)) is not None}
+        if clashes:
             raise click.ClickException(
-                f"{', '.join(clashes)} already define(s) a chain {new!r}; rename or delete it first")
+                f"a chain {new!r} already applies in "
+                + ", ".join(each if owner == each else f"{each} (from {owner})" for each, owner in clashes.items())
+                + "; rename or delete it first")
         changed = []
         for each in affected:
             changed += [f"{each}: {c}" for c in chain_edit.rename_references(scenarios / each, old, new)]

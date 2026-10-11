@@ -173,11 +173,13 @@ def test_guided_add_by_shares(test_data_dir: Path, test_scenarios_dir: Path) -> 
 def test_guided_add_by_caps_into_a_destination(test_data_dir: Path, test_scenarios_dir: Path) -> None:
     answers = "\n".join([
         "to", "caps", "Asset_Savings", "spill",  # an account's name is taken, so it is asked again
-        "Asset_Savings", "2000", "Asset_Brokerage_Joint", "default", "", "",
+        "Asset_Savings", "-5", "2000",  # a negative cap is asked again
+        "Asset_Brokerage_Joint", "default", "", "",
     ]) + "\n"
     result = _sim(test_data_dir, "add", input=answers)
     assert result.exit_code == 0, result.output
     assert "'Asset_Savings' is already a chain or an account's name" in result.output
+    assert "maximum '-5' can't be negative" in result.output
     assert _steps(test_scenarios_dir, "spill") == [
         ("Asset_Savings", "", "2000.00", ""), ("Asset_Brokerage_Joint", "default", "", "")]
     assert "--overflow-chain spill" in result.output
@@ -273,7 +275,26 @@ def test_rename_refuses_a_name_a_descendant_already_uses(test_data_dir: Path, te
         "chains/asset__reserve.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
     result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "reserve")
     assert result.exit_code != 0
-    assert "kid already define(s) a chain 'reserve'" in result.output
+    assert "a chain 'reserve' already applies in kid;" in result.output
     assert chain_edit.chain_file(test_scenarios_dir / "kid", "asset_checking_liquidity") is not None
     assert chain_edit.read_steps(test_scenarios_dir / "kid" / "chains" / "asset__reserve.csv")[0][
         "account_name"] == "Asset_Checking"
+
+
+def test_an_empty_option_is_a_blank_column_not_a_question(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    result = _sim(test_data_dir, "step", "add", "asset_checking_liquidity", "--percent", "", "--maximum", "100",
+                  "--series", "", input="Asset_Roth_Alice\ndefault\n\n")
+    assert result.exit_code == 0, result.output
+    assert "share of what is still outstanding" not in result.output
+    assert "inflation series" not in result.output
+    assert _steps(test_scenarios_dir, "asset_checking_liquidity")[-1] == (
+        "Asset_Roth_Alice", "default", "100.00", "")
+
+
+def test_rename_refuses_a_name_a_mix_in_brings(test_data_dir: Path, derive_scenario) -> None:
+    derive_scenario("mix", "base", files={
+        "chains/asset__reserve.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
+    derive_scenario("kid", "retire_alice:mix")
+    result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "reserve")
+    assert result.exit_code != 0
+    assert "a chain 'reserve' already applies in kid (from mix)" in result.output
