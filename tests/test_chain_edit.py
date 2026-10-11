@@ -357,3 +357,10 @@ def test_chain_list_names_two_files_for_one_chain(test_data_dir: Path,
                                        "--data-dir", str(test_data_dir)], terminal_width=400)
     assert result.exit_code == 0, result.output
     assert "2 files for chain" in result.output
+
+
+def test_an_empty_maximum_option_is_a_blank_column(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    result = _sim(test_data_dir, "step", "add", "asset_checking_liquidity", "--maximum", "",
+                  input="Asset_Roth_Alice\ndefault\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert _steps(test_scenarios_dir, "asset_checking_liquidity")[-1] == ("Asset_Roth_Alice", "default", "", "")

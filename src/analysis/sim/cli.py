@@ -5879,7 +5879,8 @@ def _step_row(
         raise click.ClickException(f"chain {chain!r} can't be a step of itself")
     name, lot_ = _pick_endpoint("step", account, lot, accounts=endpoints.accounts,
                                 lot_info=endpoints.lot_info, chains=endpoints.chains, lot_option="--lot")
-    row = {"account_name": name, "lot": lot_, "series": series or "", "cadence": cadence or ""}
+    row = {"account_name": name, "lot": lot_, "percent": "", "maximum": "",
+           "series": series or "", "cadence": cadence or ""}
     try:
         if percent:
             row["percent"] = _step_percent(percent)
