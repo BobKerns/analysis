@@ -1710,6 +1710,8 @@ def _scenario_edit(data_dir: Path, scenario: str | None) -> Generator[StagedEdit
         ) from None
     except ConcurrentEdit as exc:
         raise click.ClickException(str(exc)) from None
+    except chain_edit.AmbiguousChain as exc:  # nothing is written; say which files clash
+        raise click.ClickException(str(exc)) from None
     except LoadError as exc:  # e.g. an unknown scenario, before anything was staged
         raise click.ClickException("; ".join(exc.issues)) from None
     for warning in edit.warnings:
@@ -6118,7 +6120,8 @@ def chain_add_command(
     click.echo(f"added chain {name} ({kind}, {len(steps)} step(s)) in {scenario_name}")
     if guided:
         first, *rest = steps
-        commands = [["sim", "chain", "add", name, *_step_words(first)]]
+        # --kind always: a replay would otherwise infer it from the first step alone.
+        commands = [["sim", "chain", "add", name, *_step_words(first), "--kind", kind]]
         commands += [["sim", "chain", "step", "add", name, *_step_words(step)] for step in rest]
         click.echo("equivalent commands:")
         for words in commands:
@@ -6307,9 +6310,12 @@ def chain_step_edit_command(
         endpoints = _endpoints(edit.con)
         before = dict(steps[index])
         merged = {**before, **given}
+        entry = endpoints.lot_info.get(merged["account_name"])
+        if given and not merged["lot"] and entry is not None and calendar_guide.lot_needed(entry):
+            raise click.ClickException(
+                f"{merged['account_name']} needs a lot; its lots: {', '.join(entry[1])}")
         if not given:
             click.echo(f"step {number}: {_step_summary(before)}")
-            entry = endpoints.lot_info.get(merged["account_name"])
             if entry is not None and calendar_guide.lot_needed(entry):
                 lots = list(entry[1])
                 while (answer := _prompt_with_completion(

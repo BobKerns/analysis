@@ -77,6 +77,7 @@ def test_add_then_change_the_steps(test_data_dir: Path, test_scenarios_dir: Path
     (["add", "../escape", "Asset_Savings"], "can't contain ':', '/'"),
     (["add", ".hidden", "Asset_Savings"], "or start with '.'"),
     (["rename", "asset_checking_liquidity", "nested/name"], "can't contain ':', '/'"),
+    (["step", "edit", "asset_checking_liquidity", "2", "--lot", ""], "Asset_TraditionalIRA_Alice needs a lot"),
 ])
 def test_refused_changes_write_nothing(test_data_dir: Path, args: list[str], message: str) -> None:
     before = sorted(p.read_bytes() for p in (test_data_dir / "scenarios").rglob("*.csv"))
@@ -166,6 +167,7 @@ def test_guided_add_by_shares(test_data_dir: Path, test_scenarios_dir: Path) -> 
     assert _steps(test_scenarios_dir, "triple") == [
         ("Asset_Savings", "", "", "50%"), ("Asset_Brokerage_Joint", "default", "", "60%"),
         ("Asset_TraditionalIRA_Alice", "default", "", "")]
+    assert "sim chain add triple Asset_Savings --percent 50% --kind asset" in result.output
     assert "sim chain step add triple Asset_Brokerage_Joint --lot default --percent 60%" in result.output
     assert "--refill-chain triple" in result.output  # how to use a chain money comes from
 
@@ -298,3 +300,12 @@ def test_rename_refuses_a_name_a_mix_in_brings(test_data_dir: Path, derive_scena
     result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "reserve")
     assert result.exit_code != 0
     assert "a chain 'reserve' already applies in kid (from mix)" in result.output
+
+
+def test_two_files_for_one_chain_are_refused(test_data_dir: Path, retire_alice_csv: Callable[[str], Path]) -> None:
+    (retire_alice_csv("chains") / "income__asset_checking_liquidity.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nIncome_Interest,,,,,\n")
+    result = _sim(test_data_dir, "delete", "asset_checking_liquidity")
+    assert result.exit_code != 0
+    assert "retire_alice has 2 files for chain 'asset_checking_liquidity'" in result.output
+    assert (retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv").exists()

@@ -32,13 +32,24 @@ REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
 ``account_name`` steps are handled with the chain files."""
 
 
+class AmbiguousChain(ValueError):
+    """A scenario folder has more than one file for the same chain name."""
+
+
 def chain_file(scenario_dir: Path, name: str) -> Path | None:
-    """The scenario folder's own file for chain ``name``, if it has one."""
+    """The scenario folder's own file for chain ``name``, if it has one.
+    Two files for one name (``asset__x.csv`` and ``income__x.csv``) raise
+    ``AmbiguousChain``: the loader would quietly keep only the last, so an
+    edit to either could miss the chain that actually runs."""
     chains = scenario_dir / "chains"
     # Compare names, not a glob: a chain name may hold '[' or '*'.
     found = sorted(
         path for path in chains.glob("*.csv") if path.stem.partition("__")[2] == name
     ) if chains.is_dir() else []
+    if len(found) > 1:
+        raise AmbiguousChain(
+            f"{scenario_dir.name} has {len(found)} files for chain {name!r} "
+            f"({', '.join(p.name for p in found)}); remove all but one first")
     return found[0] if found else None
 
 
