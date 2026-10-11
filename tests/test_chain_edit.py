@@ -309,3 +309,22 @@ def test_two_files_for_one_chain_are_refused(test_data_dir: Path, retire_alice_c
     assert result.exit_code != 0
     assert "retire_alice has 2 files for chain 'asset_checking_liquidity'" in result.output
     assert (retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv").exists()
+
+
+def test_rename_refuses_when_a_mix_in_shadows_the_chain(test_data_dir: Path, test_scenarios_dir: Path,
+                                                        derive_scenario) -> None:
+    derive_scenario("mix", "base", files={
+        "chains/asset__asset_checking_liquidity.csv":
+            "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
+    derive_scenario("kid", "retire_alice:mix")
+    result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "liquidity")
+    assert result.exit_code != 0
+    assert "kid gets asset_checking_liquidity from mix" in result.output
+    assert chain_edit.chain_file(test_scenarios_dir / "retire_alice", "asset_checking_liquidity") is not None
+
+
+def test_an_underscore_template_is_not_a_chain(test_scenarios_dir: Path,
+                                               retire_alice_csv: Callable[[str], Path]) -> None:
+    (retire_alice_csv("chains") / "_asset__example.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    assert chain_edit.chain_file(test_scenarios_dir / "retire_alice", "example") is None

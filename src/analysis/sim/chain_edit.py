@@ -44,7 +44,9 @@ def chain_file(scenario_dir: Path, name: str) -> Path | None:
     chains = scenario_dir / "chains"
     # Compare names, not a glob: a chain name may hold '[' or '*'.
     found = sorted(
-        path for path in chains.glob("*.csv") if path.stem.partition("__")[2] == name
+        path for path in chains.glob("*.csv")
+        # The loader skips a '_' file (a template such as _asset__example.csv).
+        if not path.stem.startswith("_") and path.stem.partition("__")[2] == name
     ) if chains.is_dir() else []
     if len(found) > 1:
         raise AmbiguousChain(

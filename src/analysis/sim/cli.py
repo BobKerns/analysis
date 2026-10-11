@@ -6093,7 +6093,10 @@ def chain_add_command(
     prints the equivalent commands, and how to put the chain to use.
     """
     data = _resolve_data_dir(data_dir)
-    with _intent_db(data, scenario) as (con, scenario_name):
+    # The questions are asked inside the staged edit, so a change made to the
+    # scenario while they are answered is caught rather than overwritten.
+    with _scenario_edit(data, scenario) as edit:
+        con, scenario_name = edit.con, edit.name
         endpoints = _endpoints(con)
         taken = {r[0] for r in con.execute("SELECT name FROM chain")}
         kinds = {r[0]: r[1] for r in con.execute("SELECT name, kind FROM account")}
@@ -6111,11 +6114,10 @@ def chain_add_command(
             if account is None:
                 _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains)
             steps = [_step_row(name, account, lot, percent, maximum, series, cadence, endpoints)]
-    assert name is not None
-    if kind is None:
-        all_income = all(kinds.get(step["account_name"]) == "income" for step in steps)
-        kind = "income" if all_income else "asset"
-    with _scenario_edit(data, scenario_name) as edit:
+        assert name is not None
+        if kind is None:
+            all_income = all(kinds.get(step["account_name"]) == "income" for step in steps)
+            kind = "income" if all_income else "asset"
         chain_edit.write_steps(edit.scenario_dir / "chains" / f"{kind}__{name}.csv", steps)
     click.echo(f"added chain {name} ({kind}, {len(steps)} step(s)) in {scenario_name}")
     if guided:
@@ -6418,15 +6420,24 @@ def chain_rename_command(old: str | None, new: str | None, scenario: str | None,
         elif new in taken:
             raise click.ClickException(f"{new!r} is already a chain or an account's name")
         affected = (edit.name, *chain_edit.descendants(scenarios, edit.name))
+        # A scenario here that gets OLD from a mix-in outside this lineage
+        # keeps that chain, so renaming its references would point them at
+        # the wrong one.
+        if shadowed := {each: source for each in affected
+                        if (source := chain_edit.defining_scenario(scenarios, each, old)) not in affected}:
+            raise click.ClickException(
+                "; ".join(f"{each} gets {old} from {source}" for each, source in shadowed.items())
+                + f", which a rename in {edit.name} doesn't reach; rename it there first")
         # A scenario built on this one may already have a chain called NEW,
         # its own or one from a mix-in, which the rename would overwrite or
         # shadow; check before touching anything.
-        clashes = {each: owner for each in affected
-                   if (owner := chain_edit.defining_scenario(scenarios, each, new)) is not None}
+        clashes = {each: source for each in affected
+                   if (source := chain_edit.defining_scenario(scenarios, each, new)) is not None}
         if clashes:
             raise click.ClickException(
                 f"a chain {new!r} already applies in "
-                + ", ".join(each if owner == each else f"{each} (from {owner})" for each, owner in clashes.items())
+                + ", ".join(each if source == each else f"{each} (from {source})"
+                            for each, source in clashes.items())
                 + "; rename or delete it first")
         changed = []
         for each in affected:
