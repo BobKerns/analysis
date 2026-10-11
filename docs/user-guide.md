@@ -308,7 +308,8 @@ Asset_Brokerage_Joint,inherited_2029,AAA,2029-03-15,500,,,50000.00
   instead. The balance is then calculated from a price. Run
   `sim prices fetch` to get prices; it saves them to
   `prices/security_price__<SYMBOL>.csv`. Run `sim prices check` to compare a
-  balance you typed in against quantity times price.
+  balance you typed in against quantity times price. Part 4.11 covers
+  adding a symbol the data repo doesn't have yet.
 - Once you have a run, `sim account holdings <account>` shows every lot's
   balance, cost basis, and unrealized gain.
 
@@ -365,20 +366,17 @@ Asset_Brokerage_Joint,inherited_2029
 ```
 
 ```csv
-# scheduled.csv — a one-off row, not a calendar.csv event (see below)
+# scheduled.csv — a one-off row (a calendar.csv one_off_transfer works too)
 name,from_account,from_lot,to_account,to_lot,cadence,amount_rule_kind,amount,tax_character,start,end,priority
-sell_2029_lot,sell the 2029 lot,,Asset_Checking,,one_off,fixed_amount,75000.00,none,2030-06-30,2030-06-30,500
+sell_2029_lot,sell_the_2029_lot,,Asset_Checking,,one_off,fixed_amount,75000.00,none,2030-06-30,2030-06-30,500
 ```
 
-This must be a row in `scheduled.csv`, not a `one_off_transfer` event in
-`calendar.csv`. Today, only `scheduled.csv`'s `from_account`/`to_account`
-columns can name a chain; a calendar event's `account_1`/`account_2` columns
-must name a plain account. The chain's name, used in `from_account`, comes
-from its filename: take the part after the double underscore, and change
-every underscore to a space. So `asset__sell_the_2029_lot.csv` becomes the
-name `sell the 2029 lot` — the same rule used for `series`/`aux` filenames
-(underscores are needed in the filename, but the name itself can have
-spaces). Leave `from_lot` blank — naming a chain already says which lot to
+A `one_off_transfer` event in `calendar.csv` can do the same: its
+`account_1`/`account_2` columns may name a chain just as `scheduled.csv`'s
+`from_account`/`to_account` can. The chain's name, used in `from_account`, is
+the part of its filename after the double underscore, exactly as written: so
+`asset__sell_the_2029_lot.csv` is the chain `sell_the_2029_lot`. A chain name
+has no spaces. Leave `from_lot` blank — naming a chain already says which lot to
 use. Set `tax_character` to `none`: this value is ignored once the money is
 drawn through a chain, but the column must still have some value the loader
 recognizes; it cannot be left empty. What actually triggers the automatic
@@ -542,6 +540,83 @@ See [docs/guides/ensembles.md](guides/ensembles.md) for the full
 how-to, including how many members is reasonable for your case (it depends
 mainly on how many things you're varying at once).
 
+### 4.11 Add a stock or fund
+
+A symbol (a ticker such as `ABCDX`) can have three things recorded about it
+at the data repo root, shared by every scenario:
+
+- **its name**, in `securities.csv`. Holdings views show it beside the
+  symbol.
+- **what it holds**, in `allocations.csv`: its share in each asset class.
+  These drive `sim allocation` and how a fund lot grows (at the blend of its
+  classes' rate series). Without them the symbol shows as `unclassified`.
+- **its prices**, in `prices/security_price__ABCDX.csv`. A price is needed
+  only when a lot gives `quantity` instead of `opening_balance`.
+
+One command records all three:
+
+```sh
+sim symbol add ABCDX --name "A Balanced Fund" \
+  --weight stock_us=60% --weight bond=40%
+```
+
+It writes the name and the weights, then fetches the prices (as
+`sim prices fetch ABCDX` would). Run `sim symbol add` with no symbol to be
+asked for each instead. The weights must add up to 100%; `--as-of 2027-01`
+dates a set, and adding another set with a later date follows a fund whose
+mix changes over time, such as a target-date fund. Leave out `--weight` if
+you don't know the mix yet, and add it later; an AI can look it up (below).
+To change a name or a set of weights already written, edit the file.
+
+If the price provider has no prices for the symbol (a 401(k)'s collective
+trust fund often has no public ticker), the name and weights are still
+written, and you can type the prices into
+`prices/security_price__ABCDX.csv` yourself: `effective_date,price`, one row
+per month-end, the date as `YYYY-MM-DD` and the price in dollars, such as
+`2026-09-30,41.275`.
+
+Then put it in an account: a lot with `symbol` and `quantity`, which
+`sim account lot add` asks for (Part 4.2). Once a lot holds the symbol,
+`sim prices fetch` with no symbol keeps its prices up to date with the
+others.
+
+To check it:
+
+- `sim symbol list` shows every symbol, its latest weights, its prices and
+  the lots holding it, with a missing allocation or price marked.
+- `sim prices check` compares each lot's stated balance with quantity times
+  price.
+- `sim allocation --by security` shows how the symbol's lots split.
+
+#### Asking an AI to fill it in
+
+An AI assistant can look up a fund's published breakdown for you, and a
+price history the fetch can't get. Give it the formats, because the loader
+rejects anything else. To get the weights as a command you can run:
+
+```text
+Look up the most recent published asset breakdown of the fund ABCDX and
+write it as one command:
+  sim symbol add ABCDX --name "<its name>" --weight CLASS=PERCENT ...
+- CLASS is one of: stock_us, stock_intl, stock, bond, cd, cash,
+  real_estate, other. Use stock only when the US/international split is
+  not published.
+- PERCENT has its % sign, such as 62.5%, at most four decimal places. The
+  weights must add up to exactly 100%.
+- Add --as-of YYYY-MM, the month the breakdown describes. For a
+  target-date fund, give one command per year of its published glide path,
+  each with its own --as-of, and --name only on the first.
+Tell me the source and date of the breakdown you used.
+```
+
+For prices, ask for "month-end closing prices of ABCDX from YYYY-MM to
+YYYY-MM as `effective_date,price` rows, the date as YYYY-MM-DD and the price
+in dollars with no `$` sign."
+
+Check the answer against the fund's own fact sheet before you save it. An
+AI's figures can be out of date or simply wrong, and nothing in the
+simulator can tell.
+
 ## 5. Looking at your results
 
 A **run** is what happens when the simulator plays a scenario forward, month
@@ -638,6 +713,9 @@ Naming the scenario (and the run file, if you have more than one run for it)
 helps the most. A vague question like "how's my retirement looking?" forces
 the AI to guess what you mean; a specific one gets a specific, checkable
 answer.
+
+An AI can also fill in data files for you, such as a new fund's
+asset-class mix; see Part 4.11.
 
 ## See also
 

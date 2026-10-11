@@ -19,6 +19,7 @@ dependencies = [
   "scipy>=1.18.1",
   "truststore>=0.10.4",
   "markdown-it-py>=4.2.0",
+  "anywidget>=0.9.18",
 ]
 
 [project.scripts]

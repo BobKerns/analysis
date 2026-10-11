@@ -1,8 +1,10 @@
 # Project-specific words for cspell
+ABCDX
 addl
 affordances
 aggfunc
 AMOLED
+anywidget
 arcsinh
 arctanh
 autocorr
@@ -127,6 +129,7 @@ purelib
 pyeb
 pypi
 pytestmark
+QQQX
 rcond
 rcpie
 recategorize

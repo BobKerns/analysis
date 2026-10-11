@@ -31,7 +31,8 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, registries, sensitivity, units,
+    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, registries, sensitivity,
+    symbols, units,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -4310,7 +4311,13 @@ def allocation_command(
     excluded: tuple[str, ...], by: str | None, scenario: str | None, data_dir: Path | None, month: str | None,
     opening: bool, runfile: Path | None,
 ) -> None:
-    """Show the whole portfolio by asset class, from the lots and allocations.csv."""
+    """Show the whole portfolio by asset class, from the lots and allocations.csv.
+
+    A symbol with no allocations.csv rows shows as unclassified: give it some
+    with `sim symbol add SYMBOL --weight CLASS=PERCENT ...`. An AI assistant
+    can look the weights up from the fund's published breakdown; see the user
+    guide, Part 4.11 "Add a stock or fund".
+    """
     from rich.console import Console
     from rich.measure import Measurement
 
@@ -4335,7 +4342,8 @@ def allocation_command(
         console = Console(width=needed)
     console.print(rendered)
     if allocation.UNCLASSIFIED in table.index:
-        click.echo("unclassified: lots whose symbol has no rows in allocations.csv", err=True)
+        click.echo("unclassified: lots whose symbol has no rows in allocations.csv"
+                   " (user guide Part 4.11: Add a stock or fund)", err=True)
 
 
 @account_group_command.group(name="tag")
@@ -5583,7 +5591,14 @@ def _scenario_write(
 
 @sim_group_command.group(name="prices")
 def prices_group_command() -> None:
-    """Security prices for the lots that have a quantity."""
+    """Security prices for the lots that have a quantity.
+
+    `sim symbol add` adds a new symbol, fetching its prices with its name and
+    allocation. For one the provider has no prices for, ask an AI assistant
+    for its month-end prices or type them into
+    prices/security_price__<SYMBOL>.csv; see the user guide, Part 4.11 "Add a
+    stock or fund".
+    """
 
 
 @prices_group_command.command("fetch")
@@ -5608,16 +5623,34 @@ def prices_fetch_command(
     before the earliest scenario start's year (so a prior year-end balance can be
     derived), plus the latest close. Only the ticker symbols are sent to the
     provider.
+
+    Name a symbol to fetch it before any lot holds it (`sim symbol add` also
+    records its name and allocation). A symbol the provider doesn't have
+    fails here; see the user guide, Part 4.11 "Add a stock or fund", for
+    other ways to get its prices.
     """
     data = _resolve_data_dir(data_dir)
     scenarios_dir = data / "scenarios"
     if not scenarios_dir.is_dir():
         raise click.ClickException(f"no scenarios/ in {data}")
-    use = prices.prices_in_use(scenarios_dir)
-    chosen = list(symbols) or use.symbols
+    chosen = list(symbols) or prices.prices_in_use(scenarios_dir).symbols
     if not chosen:
         click.echo("no symbol on a lot with a quantity; nothing to fetch")
         return
+    failed = _fetch_prices(data, chosen, since_text, provider_name, refresh=refresh, dry_run=dry_run)
+    if dry_run:
+        click.echo("dry run: no files written")
+    if failed:
+        raise click.ClickException(f"{failed} of {len(chosen)} symbol(s) failed")
+
+
+def _fetch_prices(
+    data: Path, symbols: list[str], since_text: str | None, provider_name: str,
+    *, refresh: bool = False, dry_run: bool = False,
+) -> int:
+    """Fetch ``symbols``' prices into ``data``'s prices/, echoing a line per
+    symbol; returns how many failed."""
+    use = prices.prices_in_use(data / "scenarios")
     today = datetime.now(UTC).date()
     try:
         since = (date.fromisoformat(since_text) if since_text
@@ -5626,7 +5659,7 @@ def prices_fetch_command(
         raise click.ClickException(f"--since {since_text!r} is not a YYYY-MM-DD date") from None
     provider = prices.PRICE_PROVIDERS[provider_name]()
     results = prices.fetch_prices(
-        data / "prices", chosen, provider, since=since, today=today, refresh=refresh, dry_run=dry_run,
+        data / "prices", symbols, provider, since=since, today=today, refresh=refresh, dry_run=dry_run,
     )
     failed = 0
     for r in results:
@@ -5638,10 +5671,7 @@ def prices_fetch_command(
         day, price = r.latest
         change = f"{r.added} added" + (f", {r.changed} changed" if r.changed else "")
         click.echo(f"{r.symbol}: {change} (latest {prices.format_price(price)} on {day})")
-    if dry_run:
-        click.echo("dry run: no files written")
-    if failed:
-        raise click.ClickException(f"{failed} of {len(results)} symbol(s) failed")
+    return failed
 
 
 @prices_group_command.command("check")
@@ -6221,6 +6251,151 @@ def chain_delete_command(name: str, scenario: str | None, data_dir: Path | None)
         click.echo(f"deleted {edit.name}'s own copy of {name}; {inherited}'s applies again")
     else:
         click.echo(f"deleted chain {name}")
+
+
+@sim_group_command.group(name="symbol")
+def symbol_group_command() -> None:
+    """The stocks and funds the data repo knows: name, allocation and prices."""
+
+
+@symbol_group_command.command("add")
+@click.argument("symbol", required=False)
+@click.option("--name", default=None, help="The security's name, for securities.csv.")
+@click.option("--weight", "weight_specs", multiple=True, metavar="CLASS=PERCENT",
+              help="Its share in one asset class (repeatable), e.g. --weight stock_us=60% "
+                   "--weight bond=40%; together they must add up to 100%. "
+                   f"Classes: {', '.join(registries.ASSET_CLASSES)}.")
+@click.option("--as-of", "as_of", default=None, metavar="YYYY-MM",
+              help="The month the weights describe (default: every date).")
+@click.option("--fetch/--no-fetch", default=True, show_default=True,
+              help="Fetch its prices into prices/security_price__<SYMBOL>.csv.")
+@click.option("--provider", "provider_name", default="yahoo", show_default=True,
+              type=click.Choice(sorted(prices.PRICE_PROVIDERS)), help="Where prices come from.")
+@click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
+              help="Earliest price to fetch (default: as for `sim prices fetch`).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def symbol_add_command(
+    symbol: str | None, name: str | None, weight_specs: tuple[str, ...], as_of: str | None,
+    fetch: bool, provider_name: str, since_text: str | None, data_dir: Path | None,
+) -> None:
+    """Add a stock or fund: its name, its asset-class weights and its prices.
+
+    Writes a securities.csv row (with --name) and one set of allocations.csv
+    rows (with --weight), then fetches its prices. Without SYMBOL, asks for
+    each of these and prints the equivalent command. A lot then holds it with
+    `sim account lot add ... --symbol SYMBOL --quantity N`.
+
+    An AI assistant can look up a fund's asset-class weights from its published
+    breakdown; see the user guide, Part 4.11 "Add a stock or fund".
+    """
+    data = _resolve_data_dir(data_dir)
+    guided = symbol is None
+    if guided:
+        symbol, name, weight_specs, as_of = _ask_symbol()
+    assert symbol is not None
+    try:
+        weights = symbols.parse_weights(list(weight_specs))
+        added = symbols.add_symbol(data, symbol, name=name, weights=weights, as_of=as_of)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    symbol = added.symbol
+    if added.named:
+        click.echo(f"{symbol}: named {name!r} in securities.csv")
+    if added.weighted:
+        click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in weights.items())} in allocations.csv")
+    else:
+        click.echo(f"{symbol}: no allocation yet, so `sim allocation` shows it as unclassified; "
+                   "see the user guide, Part 4.11 \"Add a stock or fund\"")
+    failed = 0
+    # CASH and CD have no ticker to look up (registries.SYMBOL_ASSET_CLASS).
+    if fetch and symbol not in registries.SYMBOL_ASSET_CLASS:
+        failed = _fetch_prices(data, [symbol], since_text, provider_name)
+    if guided:
+        words = ["sim", "symbol", "add", symbol]
+        if name:
+            words += ["--name", name]
+        for spec in weight_specs:
+            words += ["--weight", spec]
+        if as_of:
+            words += ["--as-of", as_of]
+        if not fetch:
+            words.append("--no-fetch")
+        if fetch and provider_name != "yahoo":
+            words += ["--provider", provider_name]
+        if fetch and since_text:
+            words += ["--since", since_text]
+        click.echo("equivalent command: " + " ".join(shlex.quote(w) for w in words))
+    if failed:
+        raise click.ClickException(
+            f"{symbol} was added, but its prices could not be fetched; type them into "
+            f"prices/security_price__{symbol}.csv instead (user guide, Part 4.11)"
+        )
+
+
+def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
+    """``symbol add``'s arguments, asked a question at a time."""
+    symbol = click.prompt("symbol (ticker)").strip()
+    name = click.prompt("name (optional)", default="", show_default=False).strip() or None
+    click.echo(f"  asset classes: {', '.join(registries.ASSET_CLASSES)}")
+    click.echo("  e.g. stock_us=60% bond=40%; blank to add the weights later (an AI can look them up)")
+    while True:
+        text = click.prompt("weights (optional)", default="", show_default=False).strip()
+        try:
+            weights = symbols.parse_weights(text.split()) if text else {}
+        except ValueError as exc:
+            click.echo(f"  {exc}")
+            continue
+        total = sum(units.percent_to_micros(w) for w in weights.values())
+        if weights and total != 1_000_000:
+            click.echo(f"  these add up to {units.micros_to_percent(total)}, not 100%")
+            continue
+        break
+    as_of = None
+    if weights:
+        as_of = click.prompt("as of YYYY-MM (optional; blank for every date)",
+                             default="", show_default=False).strip() or None
+    return symbol, name, tuple(text.split()), as_of
+
+
+@symbol_group_command.command("list")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def symbol_list_command(data_dir: Path | None) -> None:
+    """List every symbol: its name, latest allocation, prices and the lots holding it.
+
+    A symbol appears if any of securities.csv, allocations.csv, prices/, a
+    scenario's own prices/ or its account_values.csv names it. A missing
+    allocation or price is shown in red, since `sim allocation` or a lot's
+    opening balance needs it; CASH and CD need no prices.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    frame = symbols.symbol_table(data)
+    if frame.empty:
+        click.echo("no symbols in securities.csv, allocations.csv, prices/ or any lot")
+        return
+    table = Table(title="symbols", header_style="bold")
+    for column, justify in (("Symbol", "left"), ("Name", "left"), ("Allocation (latest)", "left"),
+                            ("Prices", "right"), ("Latest price", "right"), ("Held by", "left")):
+        table.add_column(column, justify=justify)
+    for r in named_rows(frame):
+        allocation = r.allocation or "[red]none[/red]"
+        if r.allocation_sets > 1:
+            allocation += f" [dim]+{r.allocation_sets - 1} earlier[/dim]"
+        if r.symbol in registries.SYMBOL_ASSET_CLASS:  # CASH and CD: no ticker, no prices
+            count = "-"
+        elif r.prices or r.scenario_prices:
+            count = str(r.prices)
+        else:
+            count = "[red]none[/red]"
+        if r.scenario_prices:
+            count += f"\n[dim]own file in {', '.join(r.scenario_prices)}[/dim]"
+        latest = f"{r.latest_price} ({r.latest_date})" if r.latest_date else ""
+        table.add_row(r.symbol, r.name, allocation, count, latest, "\n".join(r.held_by))
+    Console().print(table)
 
 
 @sim_group_command.group(name="scenario")

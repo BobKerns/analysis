@@ -12,8 +12,8 @@ from rich.console import Console
 
 from analysis.cli import main
 from analysis.sim import chain_map
-from analysis.sim.connection import ScenarioConnection, open_scenario
-from analysis.sim.notebook_ui.scenario_plots import chain_flow_markdown, show_chain_flow
+from analysis.sim.connection import open_scenario
+from analysis.sim.notebook_ui.scenario_plots import MERMAID_URL, MermaidWidget, show_chain_flow
 
 
 @pytest.fixture
@@ -114,10 +114,18 @@ def test_show_command_finds_the_chains_reaching_an_account(guide_chains: Path) -
     assert missing.exit_code != 0 and "neither a chain nor an account" in missing.output
 
 
-def test_flowchart_in_the_notebook(test_retire_alice_scenario: ScenarioConnection) -> None:
-    assert isinstance(show_chain_flow(test_retire_alice_scenario), widgets.Output)
-    markdown = chain_flow_markdown(test_retire_alice_scenario)
-    assert markdown.startswith("```mermaid\nflowchart LR\n") and markdown.endswith("\n```")
+def test_flowchart_in_the_notebook_shows_one_chain(guide_chains: Path) -> None:
+    with open_scenario(guide_chains, "retire_alice") as sc:
+        box = show_chain_flow(sc, chain="bridge")
+        cmap = chain_map.chain_map(sc)
+    picker, chart = box.children
+    assert isinstance(picker, widgets.Dropdown) and picker.value == "bridge"
+    assert list(picker.options) == ["asset_checking_liquidity", "bridge", "retirement_draw", "ss_split"]
+    assert isinstance(chart, MermaidWidget) and chart.chart == chain_map.mermaid(cmap, ["bridge"])
+    picker.value = "ss_split"  # picking another chain redraws
+    assert chart.chart == chain_map.mermaid(cmap, ["ss_split"])
+    # The widget draws itself, so VS Code (which runs no script in an Output) draws it too.
+    assert f'import mermaid from "{MERMAID_URL}"' in MermaidWidget._esm
 
 
 def test_calendar_transfers_use_chains(guide_chains: Path, append_calendar_row) -> None:

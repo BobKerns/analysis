@@ -2,7 +2,9 @@
 
 from collections.abc import Collection
 
+import anywidget
 import pandas as pd
+import traitlets
 from IPython.display import Markdown, display
 from ipywidgets import widgets
 
@@ -66,23 +68,58 @@ def show_chains(sc, **_):
     return scrollable(_fit_to_width(styled, nowrap=["step", "maximum", "percent", "cadence"]))
 
 
-def chain_flow_markdown(sc) -> str:
-    """The chains of the scenario connection `sc` as Markdown holding a Mermaid
-    flowchart: steps as numbered lines, refill and overflow as arrows, and the
-    rules that use a chain. The same chart as `sim chain show --mermaid`."""
+MERMAID_URL = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs"
+"""Where the flowchart widget loads Mermaid from."""
+
+
+class MermaidWidget(anywidget.AnyWidget):
+    """Draws the Mermaid source ``chart``, again whenever it changes. A widget
+    carries its own JavaScript, so it draws in VS Code, which runs no script
+    an Output widget's HTML holds, as well as in JupyterLab."""
+
+    _esm = f"""
+    import mermaid from "{MERMAID_URL}";
+    mermaid.initialize({{startOnLoad: false}});
+    let drawn = 0;
+    function render({{model, el}}) {{
+        async function draw() {{
+            const chart = model.get("chart");
+            try {{
+                const {{svg}} = await mermaid.render(`chain-flow-${{++drawn}}`, chart);
+                el.innerHTML = svg;
+            }} catch (error) {{
+                // Show the source, so a chart Mermaid can't draw is still readable.
+                el.textContent = `${{error}}\n\n${{chart}}`;
+                el.style.whiteSpace = "pre";
+            }}
+        }}
+        model.on("change:chart", draw);
+        draw();
+    }}
+    export default {{render}};
+    """
+    chart = traitlets.Unicode("").tag(sync=True)
+
+
+def show_chain_flow(sc, chain: str | None = None, **_):
+    """One chain's flowchart, picked from a dropdown: every chain at once is too
+    tangled to read. ``chain`` picks the one shown first. The same chart as
+    ``sim chain show CHAIN --mermaid``: its steps as numbered lines, the refill
+    and overflow of its lots as arrows, and the rules that use it."""
     cmap = chain_map.chain_map(sc)
-    if not cmap.steps:
-        return "No chains: every lot is still a one-step chain of its own."
-    return f"```mermaid\n{chain_map.mermaid(cmap)}\n```"
-
-
-def show_chain_flow(sc, **_):
-    """`chain_flow_markdown` for the notebook. JupyterLab draws the Mermaid
-    block; VS Code needs a Mermaid extension, and shows the source without one."""
     out = scrollable_output()
-    with out:
-        display(Markdown(chain_flow_markdown(sc)))
-    return out
+    if not cmap.steps:
+        with out:
+            display(Markdown("No chains: every lot is still a one-step chain of its own."))
+        return out
+    names = sorted(cmap.steps)
+    picker = widgets.Dropdown(options=names, value=chain if chain in names else names[0],
+                              description="Chain:")
+    chart = MermaidWidget(chart=chain_map.mermaid(cmap, [picker.value]),
+                          layout=widgets.Layout(overflow="auto", max_width="100%"))
+    picker.observe(lambda change: setattr(chart, "chart", chain_map.mermaid(cmap, [change.new])),
+                   names="value")
+    return widgets.VBox([picker, chart])
 
 
 SCHEDULED_OPTIONAL_COLUMNS = {"id": False, "name": True, "priority": False, "description": True}
