@@ -160,7 +160,7 @@ def test_guided_add_by_shares(test_data_dir: Path, test_scenarios_dir: Path) -> 
     answers = "\n".join([
         "from", "shares", "triple",
         "Asset_Savings", "50",
-        "Asset_Brokerage_Joint", "default", "120", "30",  # a share over what is left is asked again
+        "", "Asset_Brokerage_Joint", "default", "120", "30",  # blank before 100%, or too big a share, asks again
         "Asset_TraditionalIRA_Alice", "default", "20",
     ]) + "\n"
     result = _sim(test_data_dir, "add", input=answers)

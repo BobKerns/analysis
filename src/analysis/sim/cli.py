@@ -6179,9 +6179,10 @@ def _guided_chain(endpoints: _Endpoints, taken: set[str]) -> _ChainPlan:
             break
         prompt = f"step {n}: account or chain to {verb}" + (" (blank to finish)" if steps and split != "shares" else "")
         account = _prompt_with_completion(prompt, choices=[*endpoints.accounts, *endpoints.chains],
-                                          default="" if steps else None).strip()
+                                          default="" if steps and split != "shares" else None).strip()
         if not account:
-            if steps:
+            # Shares go on until they reach 100%, so only order and caps may stop early.
+            if steps and split != "shares":
                 break
             continue
         try:
