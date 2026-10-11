@@ -924,7 +924,11 @@ scenario's copy of an inherited chain lets the parent's apply again. The
 guided `chain add` asks whether the chain is a source or a destination and
 whether to drain its steps in order, split the total by shares, or cap each
 step, and writes the matching `percent` and `maximum` cells: shares of the
-total become shares of what is left, with the last step left plain.
+total become shares of what is left, with the last step left plain. The
+other commands ask for whatever is left out: the chain, the step, the new
+name, and, for a guided `step add` or `step edit`, each of the step's
+columns. A step's `series` and `cadence` are asked only once it has a
+`maximum` for them to grow, and a guided `delete` asks to confirm.
 
 ## Consequences
 
@@ -991,4 +995,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#130](https://github.com/BobKerns/analysis/issues/130): rates are written as percents and factors as plain numbers, and calendar amounts as percents or dollars; every percent takes its `%` sign and dollars take one strict form; the micros columns are renamed and refused (§2, §2.7, §3.1, §3.2, §3.5, §4, §4.1b, §4.4, §4.6, §4.7, §4.8).
 - [#134](https://github.com/BobKerns/analysis/issues/134): the `transfer_balance` kind moves one lot's whole balance on a date, with `calendar add transfer-balance` (§3, new §3.11, §4.8, §7).
 - [#136](https://github.com/BobKerns/analysis/issues/136): a child's named `calendar.csv` row overrides the inherited row of that name whatever its other fields; an override keeps the columns its file leaves out; load errors name a row's file and line (§4.5).
-- [#129](https://github.com/BobKerns/analysis/issues/129): `chain add|step|rename|delete` edit chain files, with a guided `chain add` (§7).
+- [#129](https://github.com/BobKerns/analysis/issues/129): `chain add|step|rename|delete` edit chain files, each guided when its arguments are left out (§7).

@@ -189,3 +189,62 @@ def test_a_chain_file_is_found_by_its_exact_name(
     scenario = test_scenarios_dir / "retire_alice"
     assert chain_edit.chain_file(scenario, "odd[1]") == chains / "asset__odd[1].csv"
     assert chain_edit.chain_file(scenario, "odd*") is None
+
+
+def test_guided_step_add_asks_every_column(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    answers = "\n".join([
+        "Asset_Brokerage_Joint", "default",
+        "150", "40",  # a percent over 100% is asked again
+        "1000", "nowhere", "cpi", "annual", "1",
+    ]) + "\n"
+    result = _sim(test_data_dir, "step", "add", "asset_checking_liquidity", input=answers)
+    assert result.exit_code == 0, result.output
+    assert "must be more than 0% and at most 100%" in result.output
+    assert "no inflation series 'nowhere'" in result.output
+    assert "chains: asset_checking_liquidity" not in result.output  # not offered as its own step
+    path = chain_edit.chain_file(test_scenarios_dir / "retire_alice", "asset_checking_liquidity")
+    assert path is not None
+    assert chain_edit.read_steps(path)[0] == {
+        "account_name": "Asset_Brokerage_Joint", "lot": "default", "maximum": "1000.00", "percent": "40%",
+        "series": "cpi", "cadence": "annual"}
+    assert ("sim chain step add asset_checking_liquidity Asset_Brokerage_Joint --lot default --percent 40% "
+            "--maximum 1000.00 --series cpi --cadence annual --position 1") in result.output
+
+
+def test_guided_step_edit_keeps_or_clears_each_column(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    assert _sim(test_data_dir, "step", "edit", "asset_checking_liquidity", "2", "--percent", "25",
+                "--maximum", "800", "--series", "cpi").exit_code == 0
+    # step 2, its lot kept, percent cleared, maximum kept, series cleared
+    result = _sim(test_data_dir, "step", "edit", "asset_checking_liquidity", input="2\n\n-\n\n-\n")
+    assert result.exit_code == 0, result.output
+    assert "2. Asset_TraditionalIRA_Alice (default), 25% of what is left, at most 800.00, grown by cpi" \
+        in result.output
+    assert _steps(test_scenarios_dir, "asset_checking_liquidity")[1] == (
+        "Asset_TraditionalIRA_Alice", "default", "800.00", "")
+    assert "sim chain step edit asset_checking_liquidity 2 --percent '' --series ''" in result.output
+
+
+def test_step_rm_and_move_ask_for_what_is_left_out(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    moved = _sim(test_data_dir, "step", "move", input="Asset_Savings\nasset_checking_liquidity\n2\n1\n")
+    assert moved.exit_code == 0, moved.output
+    assert "one of: asset_checking_liquidity" in moved.output  # an account isn't an editable chain
+    assert [s[0] for s in _steps(test_scenarios_dir, "asset_checking_liquidity")] == [
+        "Asset_TraditionalIRA_Alice", "Asset_Savings"]
+    removed = _sim(test_data_dir, "step", "rm", "asset_checking_liquidity", input="3\n1\n")
+    assert removed.exit_code == 0, removed.output
+    assert "asset_checking_liquidity has steps 1 to 2" in removed.output
+    assert [s[0] for s in _steps(test_scenarios_dir, "asset_checking_liquidity")] == ["Asset_Savings"]
+
+
+def test_guided_rename_and_delete(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    assert _sim(test_data_dir, "add", "backup", "Asset_Savings").exit_code == 0
+    renamed = _sim(test_data_dir, "rename", input="backup\nAsset_Savings\nreserve\n")
+    assert renamed.exit_code == 0, renamed.output
+    assert "'Asset_Savings' is already a chain or an account's name" in renamed.output
+    assert "renamed chain backup to reserve" in renamed.output
+    kept = _sim(test_data_dir, "delete", input="reserve\nn\n")
+    assert kept.exit_code == 0 and "nothing was deleted" in kept.output
+    assert chain_edit.chain_file(test_scenarios_dir / "retire_alice", "reserve") is not None
+    deleted = _sim(test_data_dir, "delete", input="reserve\ny\n")
+    assert deleted.exit_code == 0, deleted.output
+    assert chain_edit.chain_file(test_scenarios_dir / "retire_alice", "reserve") is None

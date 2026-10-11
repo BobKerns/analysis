@@ -49,6 +49,19 @@ of the total become shares of what's left, so 50%, 30% and 20% are written
 as `50%`, `60%` and a plain last step (section 3 explains why). It then
 prints the equivalent commands and how to put the chain to use.
 
+Changing a chain asks too. Leave out what you'd rather be asked for:
+
+- `sim chain step add checking_backup` shows the steps, then asks for the
+  new step's account (and lot), its percent, its maximum, the inflation
+  series that grows the maximum and how it compounds, and where it goes.
+- `sim chain step edit checking_backup` asks which step, then each of its
+  columns. Enter keeps the current value and `-` clears it.
+- `sim chain step move`, `sim chain step rm`, `sim chain rename` and
+  `sim chain delete` ask for the chain, the step or the new name. A guided
+  delete shows the steps and asks you to confirm.
+
+The guided add and edit print the equivalent command when they finish.
+
 The same changes as commands, for scripts or a quick fix:
 
 ```sh
