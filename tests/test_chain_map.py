@@ -265,7 +265,7 @@ def test_depth_one_draws_one_step_out(cmap: chain_map.ChainMap) -> None:
     assert set(node) == {"retirement_draw", "bridge", "Asset_TraditionalIRA_Alice (default)"}
     assert _cut(chart) == {node["bridge"]}
     assert "classDef more stroke-dasharray" in chart
-    # The rules of a chain retirement_draw is not would be two steps from bridge.
+    # retirement_draw's rules are two steps from bridge, so depth 1 leaves them out.
     assert "monthly_draw" not in chain_map.mermaid(cmap, ["bridge"], rules=True, depth="1")
     assert "monthly_draw" in chain_map.mermaid(cmap, ["retirement_draw"], rules=True, depth="1")
 
