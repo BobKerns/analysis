@@ -4852,6 +4852,8 @@ def _lot_row(params: dict[str, object], original: dict[str, str] | None, *, inve
     }
     for column in lot_guide.VALUE_COLUMNS:
         value = str(params.get(column, "")).strip()
+        if column == "symbol":
+            value = value.upper()  # tickers are upper case; the loader rejects any other
         if original is not None and value == original[column].strip():
             row[column] = original[column]
         else:
@@ -5618,7 +5620,7 @@ def prices_group_command() -> None:
     """Security prices for the lots that have a quantity.
 
     `sim symbol add` adds a new symbol, fetching its prices with its name and
-    allocation. For one the provider has no prices for, ask an AI assistant
+    allocation; `sim prices show` shows what is stored. For one the provider has no prices for, ask an AI assistant
     for its month-end prices or type them into
     prices/security_price__<SYMBOL>.csv; see the user guide, Part 4.11 "Add a
     stock or fund".
@@ -5642,38 +5644,49 @@ def prices_fetch_command(
 ) -> None:
     """Fetch prices into prices/security_price__<SYMBOL>.csv.
 
-    With no SYMBOLS, fetches every symbol on a lot that has a quantity in any
-    scenario (CASH is skipped). Stores each month's last close since the December
-    before the earliest scenario start's year (so a prior year-end balance can be
-    derived), plus the latest close. Only the ticker symbols are sent to the
-    provider.
+    With no SYMBOLS, fetches every symbol the data repo knows: those on a lot
+    with a quantity in any scenario, in securities.csv or allocations.csv, or
+    with a prices/ file already (CASH and CD are skipped). Stores each month's
+    last close since the December before the earliest scenario start's year
+    (so a prior year-end balance can be derived), plus the latest close. Only
+    the ticker symbols are sent to the provider; they are upper-cased first.
 
-    Name a symbol to fetch it before any lot holds it (`sim symbol add` also
-    records its name and allocation). A symbol the provider doesn't have
-    fails here; see the user guide, Part 4.11 "Add a stock or fund", for
-    other ways to get its prices.
+    A symbol the provider doesn't have fails, unless no lot holds it and you
+    didn't name it: then it is only reported, so a fund whose prices you type
+    in yourself doesn't fail every fetch. See the user guide, Part 4.11 "Add a
+    stock or fund", for other ways to get its prices. `sim prices show` shows
+    what was stored.
     """
     data = _resolve_data_dir(data_dir)
     scenarios_dir = data / "scenarios"
     if not scenarios_dir.is_dir():
         raise click.ClickException(f"no scenarios/ in {data}")
-    chosen = list(symbols) or prices.prices_in_use(scenarios_dir).symbols
+    held = prices.prices_in_use(scenarios_dir).symbols
+    chosen = _upper(symbols) or sorted({*held, *prices.known_symbols(data)})
     if not chosen:
-        click.echo("no symbol on a lot with a quantity; nothing to fetch")
+        click.echo("no symbol in securities.csv, allocations.csv, prices/ or on a lot; nothing to fetch")
         return
-    failed = _fetch_prices(data, chosen, since_text, provider_name, refresh=refresh, dry_run=dry_run)
+    optional = set() if symbols else set(chosen) - set(held)
+    failed = _fetch_prices(data, chosen, since_text, provider_name,
+                           refresh=refresh, dry_run=dry_run, optional=optional)
     if dry_run:
         click.echo("dry run: no files written")
     if failed:
         raise click.ClickException(f"{failed} of {len(chosen)} symbol(s) failed")
 
 
+def _upper(symbols: tuple[str, ...]) -> list[str]:
+    """Typed symbols as tickers: upper case, each once, in the order given."""
+    return list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
+
+
 def _fetch_prices(
     data: Path, symbols: list[str], since_text: str | None, provider_name: str,
-    *, refresh: bool = False, dry_run: bool = False,
+    *, refresh: bool = False, dry_run: bool = False, optional: Set[str] = frozenset(),
 ) -> int:
     """Fetch ``symbols``' prices into ``data``'s prices/, echoing a line per
-    symbol; returns how many failed."""
+    symbol; returns how many failed. A symbol in ``optional`` that fails is
+    reported but not counted."""
     use = prices.prices_in_use(data / "scenarios")
     today = datetime.now(UTC).date()
     try:
@@ -5687,6 +5700,9 @@ def _fetch_prices(
     )
     failed = 0
     for r in results:
+        if r.error and r.symbol in optional:
+            click.echo(f"{r.symbol}: {r.error} (no lot holds it, so not counted as a failure)", err=True)
+            continue
         if r.error:
             failed += 1
             click.echo(f"{r.symbol}: {r.error}", err=True)
@@ -5696,6 +5712,84 @@ def _fetch_prices(
         change = f"{r.added} added" + (f", {r.changed} changed" if r.changed else "")
         click.echo(f"{r.symbol}: {change} (latest {prices.format_price(price)} on {day})")
     return failed
+
+
+@prices_group_command.command("show")
+@click.argument("symbols", nargs=-1)
+@click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
+              help="With SYMBOLS, show only prices from this date on.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def prices_show_command(symbols: tuple[str, ...], since_text: str | None, data_dir: Path | None) -> None:
+    """Show the prices stored in prices/.
+
+    With no SYMBOLS, one row per symbol: how many prices are stored, the first
+    and latest date, the latest price, and how far it has moved since the end
+    of the month before and since the end of last year. A symbol with no
+    prices is shown in red if a lot holds it with a quantity (so its balance
+    needs a price) or securities.csv or allocations.csv names it; a lot with
+    only a balance needs none. With SYMBOLS, each one's
+    stored prices, a row per date, with the change from the row before.
+
+    These are the shared prices/ files; `sim symbol list` notes a scenario
+    with its own file for a symbol.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    prices_dir = data / "prices"
+    console = Console()
+
+    def change(v):
+        return "" if v is None or pd.isna(v) else f"{v * 100:+.1f}%"
+
+    if not symbols:
+        if since_text:
+            raise click.ClickException("--since needs a SYMBOL")
+        scenarios_dir = data / "scenarios"
+        held = prices.prices_in_use(scenarios_dir).symbols if scenarios_dir.is_dir() else []
+        frame = prices.price_summary(prices_dir, {*held, *prices.known_symbols(data)})
+        if frame.empty:
+            click.echo("no prices in prices/, and no symbol in securities.csv, allocations.csv or on a lot")
+            return
+        table = Table(title="stored prices", header_style="bold")
+        for name, justify in (("Symbol", "left"), ("Prices", "right"), ("From", "left"),
+                              ("Latest", "left"), ("Latest price", "right"),
+                              ("Since month-end", "right"), ("Since year-end", "right")):
+            table.add_column(name, justify=justify, no_wrap=True)
+        for r in named_rows(frame):
+            if not r.prices:
+                table.add_row(r.symbol, "[red]none[/red]", "", "", "", "", "")
+                continue
+            table.add_row(r.symbol, str(r.prices), str(r.first_date), str(r.latest_date),
+                          prices.format_price(r.latest_price), change(r.month_change),
+                          change(r.year_change))
+        console.print(table)
+        return
+
+    try:
+        since = date.fromisoformat(since_text) if since_text else None
+    except ValueError:
+        raise click.ClickException(f"--since {since_text!r} is not a YYYY-MM-DD date") from None
+    missing = []
+    for symbol in _upper(symbols):
+        history = prices.price_history(prices_dir, symbol, since)
+        if history is None:
+            missing.append(symbol)
+            click.echo(f"{symbol}: no prices/security_price__{symbol}.csv; "
+                       f"`sim prices fetch {symbol}` gets them", err=True)
+            continue
+        table = Table(title=f"{symbol} prices", header_style="bold")
+        for name in ("Date", "Price", "Change"):
+            table.add_column(name, justify="left" if name == "Date" else "right", no_wrap=True)
+        for r in named_rows(history):
+            table.add_row(str(r.effective_date), prices.format_price(r.price), change(r.change))
+        if not len(history):
+            table.caption = f"no prices since {since}"
+        console.print(table)
+    if missing:
+        raise click.ClickException(f"no prices for {', '.join(missing)}")
 
 
 @prices_group_command.command("check")

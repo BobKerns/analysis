@@ -52,10 +52,10 @@ def check(test_data_dir: Path) -> Callable[[str], None]:
     return run
 
 
-def test_add_writes_the_lot_from_its_options(
+def test_add_writes_the_lot_from_its_options_with_the_symbol_upper_cased(
     lot: Callable[..., Result], values: Callable[..., pd.DataFrame], check: Callable[[str], None],
 ) -> None:
-    result = lot("add", BROKERAGE, "growth", "--symbol", "VTI", "--acquired", "2024-02-01",
+    result = lot("add", BROKERAGE, "growth", "--symbol", "vti", "--acquired", "2024-02-01",
                  "--opening-balance", "$1,500", "--opening-cost-basis", "1200")
 
     assert result.exit_code == 0, result.output

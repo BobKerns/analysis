@@ -286,3 +286,99 @@ def test_the_default_yahoo_provider_uses_the_real_http_get() -> None:
     from analysis.sim import prices
 
     assert prices.YahooProvider()._get is prices._http_get
+
+
+def test_known_symbols_are_those_named_anywhere_but_cash_and_cd(test_data_dir: Path) -> None:
+    (test_data_dir / "securities.csv").write_text("symbol,name\nQQQ,Q\nCASH,Cash\n")
+    (test_data_dir / "allocations.csv").write_text("symbol,as_of,asset_class,weight\nCD,,cd,100%\nBBB,,bond,100%\n")
+    (test_data_dir / "prices").mkdir(exist_ok=True)
+    (test_data_dir / "prices" / "security_price__TYPED.csv").write_text("effective_date,price\n")
+    assert prices.known_symbols(test_data_dir) == ["BBB", "QQQ", "TYPED"]
+
+
+def test_bare_fetch_gets_a_symbol_no_lot_holds_and_only_reports_its_failure(
+    test_data_dir: Path, add_account_value, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="AAA", quantity="10", opening_balance="1.00")
+    (test_data_dir / "securities.csv").write_text("symbol,name\nQQQ,Q\nTYPED,Typed by hand\n")
+    provider = FakeProvider({"AAA": DAILY, "QQQ": DAILY})
+    monkeypatch.setitem(prices.PRICE_PROVIDERS, "yahoo", lambda: provider)
+    runner = CliRunner()
+    result = runner.invoke(main, ["sim", "prices", "fetch", "--data-dir", str(test_data_dir)])
+    assert result.exit_code == 0, result.output
+    assert "QQQ: 3 added" in result.output
+    assert "TYPED: not found (no lot holds it, so not counted as a failure)" in result.output
+    assert [asked[0] for asked in provider.asked] == ["AAA", "QQQ", "TYPED"]
+    # Named, the same symbol fails: you asked for it.
+    named = runner.invoke(main, ["sim", "prices", "fetch", "typed", "--data-dir", str(test_data_dir)])
+    assert named.exit_code != 0 and "TYPED: not found" in named.output
+
+
+def test_a_held_symbol_still_fails_a_bare_fetch(
+    test_data_dir: Path, add_account_value, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="ZZZ", quantity="10", opening_balance="1.00")
+    monkeypatch.setitem(prices.PRICE_PROVIDERS, "yahoo", lambda: FakeProvider({}))
+    result = CliRunner().invoke(main, ["sim", "prices", "fetch", "--data-dir", str(test_data_dir)])
+    assert result.exit_code != 0 and "1 of 1 symbol(s) failed" in result.output
+
+
+def test_a_typed_symbol_is_fetched_upper_case(test_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = FakeProvider({"QQQ": DAILY})
+    monkeypatch.setitem(prices.PRICE_PROVIDERS, "yahoo", lambda: provider)
+    result = CliRunner().invoke(main, ["sim", "prices", "fetch", "qqq", "--data-dir", str(test_data_dir)])
+    assert result.exit_code == 0, result.output
+    assert (test_data_dir / "prices" / "security_price__QQQ.csv").exists()
+    assert provider.asked[0][0] == "QQQ"
+
+
+QQQ_PRICES = "effective_date,price\n2025-12-31,400.00\n2026-08-31,560.00\n2026-09-30,580.00\n2026-10-13,609.00\n"
+
+
+def test_price_summary_gives_the_latest_price_and_its_changes(tmp_path: Path) -> None:
+    (tmp_path / "security_price__QQQ.csv").write_text(QQQ_PRICES)
+    frame = prices.price_summary(tmp_path, ["ABCDX"])
+    assert list(frame["symbol"]) == ["ABCDX", "QQQ"]
+    qqq = frame.iloc[1]
+    assert (qqq["prices"], qqq["first_date"], qqq["latest_date"], qqq["latest_price"]) == (
+        4, date(2025, 12, 31), date(2026, 10, 13), Decimal("609.00"))
+    assert qqq["month_change"] == pytest.approx(0.05)  # since 09-30's 580
+    assert qqq["year_change"] == pytest.approx(0.5225)  # since 2025-12-31's 400
+    assert frame.iloc[0]["prices"] == 0
+
+
+def test_price_history_changes_from_the_row_before_even_before_since(tmp_path: Path) -> None:
+    (tmp_path / "security_price__QQQ.csv").write_text(QQQ_PRICES)
+    history = prices.price_history(tmp_path, "QQQ", since=date(2026, 9, 1))
+    assert history is not None
+    assert list(history["effective_date"]) == [date(2026, 9, 30), date(2026, 10, 13)]
+    assert list(history["change"]) == pytest.approx([580 / 560 - 1, 609 / 580 - 1])
+    assert prices.price_history(tmp_path, "NOPE") is None
+
+
+def test_show_command_lists_every_symbol_and_one_symbols_history(test_data_dir: Path) -> None:
+    (test_data_dir / "prices").mkdir(exist_ok=True)
+    (test_data_dir / "prices" / "security_price__QQQ.csv").write_text(QQQ_PRICES)
+    (test_data_dir / "securities.csv").write_text("symbol,name\nQQQ,Q\nABCDX,A fund\n")
+    runner = CliRunner()
+    every = runner.invoke(main, ["sim", "prices", "show", "--data-dir", str(test_data_dir)],
+                          env={"COLUMNS": "200"})
+    assert every.exit_code == 0, every.output
+    rows = {line.split("│")[1].strip(): line for line in every.output.splitlines() if line.count("│") > 2}
+    assert "none" in rows["ABCDX"]
+    assert "609.00" in rows["QQQ"] and "+5.0%" in rows["QQQ"] and "+52.2%" in rows["QQQ"]
+    one = runner.invoke(main, ["sim", "prices", "show", "qqq", "--since", "2026-10-01",
+                               "--data-dir", str(test_data_dir)])
+    assert one.exit_code == 0, one.output
+    assert "2026-10-13" in one.output and "+5.0%" in one.output and "2026-09-30" not in one.output
+    missing = runner.invoke(main, ["sim", "prices", "show", "ABCDX", "--data-dir", str(test_data_dir)])
+    assert missing.exit_code != 0 and "sim prices fetch ABCDX" in missing.output
+
+
+def test_symbols_read_from_the_files_are_upper_cased(test_data_dir: Path, add_account_value) -> None:
+    # The loader rejects these, but fetch reads the files itself and must not
+    # write a lower-case price file or miss that a lot holds the symbol.
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="aaa", quantity="10", opening_balance="1.00")
+    (test_data_dir / "securities.csv").write_text("symbol,name\n" "qqq,Q\n")
+    assert prices.prices_in_use(test_data_dir / "scenarios").symbols == ["AAA"]
+    assert prices.known_symbols(test_data_dir) == ["QQQ"]
