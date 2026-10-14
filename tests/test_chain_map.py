@@ -80,14 +80,35 @@ def test_tree_shows_each_lots_limits(cmap: chain_map.ChainMap) -> None:
 
 
 def _nodes(chart: str, prefix: str = "n") -> dict[str, str]:
-    """A chart's node ids by label; with ``prefix="c"``, its copies' ids (a
-    copy closes a loop)."""
-    ids = {line.split("[")[0].split("(")[0].strip(): line for line in chart.splitlines()[1:]
-           if "[" in line and "--" not in line}
-    node = {label: nid for nid, line in ids.items() if nid.startswith(prefix)
-            for label in [line.split('"')[1].split("<br/>")[0]]}
+    """A chart's node ids by label, a lot in its account's box as
+    ``account (lot)``; with ``prefix="c"``, its copies' ids (a copy closes a loop)."""
+    node: dict[str, str] = {}
+    box = None
+    for line in chart.splitlines()[1:]:
+        if line.strip() == "end":
+            box = None
+        elif line.lstrip().startswith("subgraph "):
+            box = line.split('"')[1]
+        elif "[" in line and "--" not in line and (nid := line.split("[")[0].split("(")[0].strip()).startswith(prefix):
+            label = line.split('"')[1].split("<br/>")[0]
+            node[label if box is None else f"{box} ({label})"] = nid
     assert len(node) == len(set(node.values()))  # one node per chain or lot, however often used
     return node
+
+
+def _boxes(chart: str) -> dict[str, list[str]]:
+    """Each account box's title, by box id, and the labels of the lots in it."""
+    boxes: dict[str, list[str]] = {}
+    box = None
+    for line in chart.splitlines():
+        if line.strip() == "end":
+            box = None
+        elif line.lstrip().startswith("subgraph "):
+            box = line.split()[1].split("[")[0]
+            boxes[box] = [line.split('"')[1]]
+        elif box is not None:
+            boxes[box].append(line.split('"')[1].split("<br/>")[0])
+    return boxes
 
 
 def test_mermaid_arrows_follow_the_money(cmap: chain_map.ChainMap) -> None:
@@ -193,6 +214,43 @@ def test_a_source_chain_follows_refill_not_overflow(
     assert "overflow, month end" not in chart
 
 
+def test_an_accounts_lots_share_a_box_named_for_it(
+    guide_chains: Path, set_brokerage_lots, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """Bob, #144: an account whose lots are named is a box titled with the
+    account, holding a box per lot titled with the lot alone. A one-lot
+    account stays a box of its own."""
+    set_brokerage_lots([{"lot": "default", "opening_balance": "1000.00"},
+                        {"lot": "growth", "opening_balance": "2000.00"}])
+    bridge = retire_alice_csv("chains/source/bridge.csv")
+    bridge.write_text(bridge.read_text() + "Asset_Brokerage_Joint,growth,,,,\n")
+    with open_scenario(guide_chains, "retire_alice") as sc:
+        chart = chain_map.mermaid(chain_map.chain_map(sc), ["retirement_draw"])
+    boxes = sorted(_boxes(chart).values())
+    assert boxes == [["Asset_Brokerage_Joint", "default", "growth"], ["Asset_TraditionalIRA_Alice", "default"]]
+    node = _nodes(chart)
+    assert f'{node["Asset_Brokerage_Joint (growth)"]} -->|"3: all that\'s left"| {node["bridge"]}' in chart
+    assert f'{node["Asset_Savings"]}["Asset_Savings"]' in chart  # one lot: no box, named for the account
+
+
+def test_a_copy_of_a_lot_gets_a_box_of_its_own() -> None:
+    """Bob, #144: a copy in its original's box would be drawn back beside it,
+    the closing edge turned around."""
+    cmap = chain_map.ChainMap(
+        roles={"draw": "source"},
+        steps={"draw": [chain_map.Step(1, "lot", None, 1_000_000, None, None)]},
+        leaves={"lot": ("Acct", "a")},
+        uses={"draw": [chain_map.Use("draw", "rule back", "lot")]},
+        multi_lot=frozenset({"Acct"}),
+    )
+    chart = chain_map.mermaid(cmap, rules=True)
+    node, copy = _nodes(chart), _nodes(chart, "c")
+    assert f'{node["Acct (a)"]} -->|"1: all that\'s left"| {node["draw"]}' in chart
+    assert f'{node["draw"]} -->|"rule back"| {copy["Acct (a)"]}' in chart
+    assert _boxes(chart) == {"a0": ["Acct", "a"], "ac0": ["Acct", "a"]}
+    assert not _has_loop(chart)
+
+
 def test_list_command(guide_chains: Path) -> None:
     result = _sim(guide_chains, "list")
     assert result.exit_code == 0, result.output
@@ -264,7 +322,7 @@ def test_flowchart_follows_policies_of_policy_chains(guide_chains: Path, update_
                          overflow_chain="Asset_Brokerage_Joint", overflow_lot="default")
     with open_scenario(guide_chains, "retire_alice") as sc:
         chart = chain_map.mermaid(chain_map.chain_map(sc), ["ss_split"])
-    assert '["Asset_Brokerage_Joint (default)"]' in chart  # its own node, not just named
+    assert "Asset_Brokerage_Joint (default)" in _nodes(chart)  # its own node, not just named
 
 
 def test_names_that_look_like_markup_print_as_written(

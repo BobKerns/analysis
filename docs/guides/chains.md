@@ -241,11 +241,21 @@ Asset_TraditionalIRA_Alice,default,,,,
 
 ```mermaid
 flowchart LR
+    subgraph bro_acct["Asset_Brokerage_Joint"]
+        bro["default"]
+    end
+    subgraph ira_acct["Asset_TraditionalIRA_Alice"]
+        ira["default"]
+    end
     sav["Asset_Savings"] -->|"1: all that's left"| br(["bridge"])
-    bro["Asset_Brokerage_Joint (default)"] -->|"2: all that's left"| br
+    bro -->|"2: all that's left"| br
     br -->|"1: 50% of what's left"| rd(["retirement_draw"])
-    ira["Asset_TraditionalIRA_Alice (default)"] -->|"2: all that's left"| rd
+    ira -->|"2: all that's left"| rd
 ```
+
+A rounded box is a chain and a square one a lot. An account whose lots are
+named, because it has several or holds investments, is drawn as a box
+titled with the account, holding a box for each lot that the chart reaches.
 
 Read it as `retirement_draw = 50% × (Savings, then Brokerage), then IRA`.
 On a $2,000 withdrawal, `bridge` is handed $1,000 and takes it from Savings
