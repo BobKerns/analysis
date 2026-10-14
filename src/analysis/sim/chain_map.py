@@ -275,6 +275,9 @@ def _quoted(text: str) -> str:
     return '"' + text.replace('"', "#quot;") + '"'
 
 
+_PICKED = "fill:#ffe08a,stroke:#b8860b,stroke-width:3px,color:#000"
+"""The highlight on the chains a chart was drawn for: dark text on amber
+reads in a light or a dark theme."""
 _REFILL = '"refill, before a debit"'
 _OVERFLOW = '"overflow, month end"'
 
@@ -292,6 +295,8 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
     source chain never follows overflow, nor a destination chain refill: a
     lot's other policy is about money that never passes through the chain.
     Steps and rules are solid arrows, refill and overflow dotted ones.
+    The chains ``names`` asks for are highlighted, so they stand out in a
+    tangled chart; with no ``names``, every chain was asked for and none is.
     """
     roots = list(cmap.steps) if names is None else list(names)
     shown: list[str] = []
@@ -364,4 +369,7 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
             text = label if policy is None else f"{label}<br/><small>{policy_text(cmap, policy)}</small>"
             lines.append(f"    {ids[node]}[{_quoted(text)}]")
     lines += [f"    {ids[a]} {arrow}|{label}| {ids[b]}" for a, arrow, label, b in edges]
+    if names is not None and roots:
+        lines.append(f"    classDef picked {_PICKED}")
+        lines.append(f"    class {','.join(ids[root] for root in dict.fromkeys(roots))} picked")
     return "\n".join(lines)

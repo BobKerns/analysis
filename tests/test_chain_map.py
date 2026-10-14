@@ -102,6 +102,14 @@ def test_mermaid_arrows_follow_the_money(cmap: chain_map.ChainMap) -> None:
     assert f'{node["Asset_Checking"]} -.->|"overflow, month end"| {node["Asset_Savings"]}' in chart
 
 
+def test_the_chains_asked_for_are_highlighted(cmap: chain_map.ChainMap) -> None:
+    """Bob, #143: the picked chain is hard to find in a tangled chart."""
+    chart = chain_map.mermaid(cmap, ["ss_split"])
+    assert chart.endswith(f"    class {_nodes(chart)['ss_split']} picked")
+    assert "classDef picked fill:" in chart
+    assert "picked" not in chain_map.mermaid(cmap)  # every chain: nothing to single out
+
+
 def test_a_destination_chain_follows_overflow_not_refill(cmap: chain_map.ChainMap) -> None:
     """Money paid into ss_split may overflow on from checking, but never
     passes through checking's refill chain."""

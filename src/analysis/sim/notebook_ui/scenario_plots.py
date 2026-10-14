@@ -104,8 +104,9 @@ class MermaidWidget(anywidget.AnyWidget):
 def show_chain_flow(sc, chain: str | None = None, **_):
     """One chain's flowchart, picked from a dropdown: every chain at once is too
     tangled to read. ``chain`` picks the one shown first. The same chart as
-    ``sim chain show CHAIN --mermaid``: its steps as numbered lines, the refill
-    and overflow of its lots as arrows, and the rules that use it."""
+    ``sim chain show CHAIN --mermaid``: arrows the way money moves through its
+    steps, its lots' refill or overflow, and the rules that use it, with the
+    picked chain highlighted."""
     cmap = chain_map.chain_map(sc)
     out = scrollable_output()
     if not cmap.steps:
