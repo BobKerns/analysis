@@ -1,5 +1,6 @@
 # Scenario descriptions for the notebook UI
 
+import html
 from collections.abc import Collection
 
 import anywidget
@@ -9,7 +10,7 @@ from IPython.display import Markdown, display
 from ipywidgets import widgets
 
 from analysis.sim import chain_map
-from analysis.sim.notebook_ui.scenario_view import calendar_view, chains_view
+from analysis.sim.notebook_ui.scenario_view import UNUSED, calendar_view, chain_table
 
 
 def truncate(width):
@@ -50,21 +51,37 @@ def scrollable(styled) -> widgets.Output:
 
 def show_chains(sc, **_):
     """
-    Show only the interior chains (the ones not auto-created for a single account)
-    from the scenario connection `sc`.
+    The named chains from the scenario connection ``sc``, one row per step,
+    each chain a block under a rule, with its role and what uses it on its
+    first row (``sim chain list`` in table form).
 
-    Formats the "maximum", "amount", and "percent" columns for display.
+    A step's ``series`` is the inflation series (such as ``cpi``) that grows
+    its ``maximum`` from the scenario's start, compounding at its ``cadence``.
     """
-    chains = chains_view(sc)
-    interior_chains = chains[chains["step"].notna()].copy()
-    # threshold=0 means "no minimum" -- not meaningfully different from n/a.
-    interior_chains["maximum"] = interior_chains["maximum"].mask(interior_chains["maximum"] == 0)
-    styled = interior_chains.style.format({"maximum": "${:,.2f}",
-                                  "amount": "${:,.2f}",
-                                  "percent": "{:,.2f}%",
-                                  "chain": _breakable, "draw_from": _breakable,
-                                  "lot": _breakable, "series": _breakable},
-                                 na_rep="-").hide(axis="index")
+    table = chain_table(sc)
+    first = table["chain"] != ""
+
+    def separators(frame: pd.DataFrame) -> pd.DataFrame:
+        css = pd.DataFrame("", index=frame.index, columns=frame.columns)
+        css.loc[first & (frame.index > 0)] = "border-top: 2px solid #888"
+        return css
+
+    def used_by(text: str) -> str:
+        # Names come from the data, so escape them before adding markup.
+        return "<br>".join(_breakable(html.escape(line)) for line in text.split("\n"))
+
+    styled = (table.style
+              .apply(separators, axis=None)
+              .map(lambda v: "color: red" if v == UNUSED else "", subset=["used_by"])
+              .hide(axis="index")
+              # A chain's name and uses sit level with its first step, not
+              # centered on a tall row, and its rule runs unbroken across.
+              .set_table_styles([{"selector": "td", "props": [("vertical-align", "top")]},
+                                 {"selector": "", "props": [("border-collapse", "collapse")]}])
+              .format({"maximum": "${:,.2f}", "percent": "{:,.2f}%",
+                       "chain": _breakable, "draw_from": _breakable,
+                       "lot": _breakable, "series": _breakable, "used_by": used_by},
+                      na_rep="-"))
     return scrollable(_fit_to_width(styled, nowrap=["step", "maximum", "percent", "cadence"]))
 
 

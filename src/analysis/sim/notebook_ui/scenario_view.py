@@ -15,7 +15,7 @@ import json
 
 import pandas as pd
 
-from analysis.sim import registries
+from analysis.sim import chain_map, registries
 from analysis.sim.connection import ScenarioConnection
 
 
@@ -114,6 +114,32 @@ def chains_view(sc: ScenarioConnection) -> pd.DataFrame:
         .sort_values(["chain", "step"], na_position="first")
         .reset_index(drop=True)
     )
+
+
+UNUSED = "nothing"
+"""The ``used_by`` of a chain that no rule, lot or other chain uses."""
+
+
+def chain_table(sc: ScenarioConnection) -> pd.DataFrame:
+    """The named chains, one row per step, with each chain's ``role`` and
+    what it is ``used_by`` (one use per line) on its first step only, so the
+    rows of one chain read as a block; the later steps leave ``chain``,
+    ``role`` and ``used_by`` empty. ``used_by`` is :data:`UNUSED` for a chain
+    nothing uses. The same facts ``sim chain list`` shows, with the steps'
+    numbers kept in columns of their own (issue #141)."""
+    cmap = chain_map.chain_map(sc)
+    steps = chains_view(sc)
+    steps = steps[steps["step"].notna()].reset_index(drop=True)
+    # threshold=0 means "no minimum" -- not meaningfully different from n/a.
+    steps["maximum"] = steps["maximum"].mask(steps["maximum"] == 0)
+    first = ~steps["chain"].duplicated()
+    steps.insert(1, "role", steps["chain"].map(cmap.roles))
+    steps["used_by"] = steps["chain"].map(
+        lambda name: "\n".join(chain_map.use_text(cmap, u) for u in cmap.uses.get(name, ())) or UNUSED
+    )
+    for column in ("chain", "role", "used_by"):
+        steps[column] = steps[column].where(first, "")
+    return steps
 
 
 _SCHEDULED_COLS = [
