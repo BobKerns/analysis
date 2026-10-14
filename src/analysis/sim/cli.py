@@ -7,7 +7,7 @@ import json
 import math
 import secrets
 import shlex
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping, Set
 from contextlib import ExitStack, contextmanager
 import os
 import sqlite3
@@ -31,7 +31,8 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_map, lot_guide, prices, registries, sensitivity, symbols, units,
+    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, registries, sensitivity,
+    symbols, units,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -1709,6 +1710,8 @@ def _scenario_edit(data_dir: Path, scenario: str | None) -> Generator[StagedEdit
         ) from None
     except ConcurrentEdit as exc:
         raise click.ClickException(str(exc)) from None
+    except chain_edit.AmbiguousChain as exc:  # nothing is written; say which files clash
+        raise click.ClickException(str(exc)) from None
     except LoadError as exc:  # e.g. an unknown scenario, before anything was staged
         raise click.ClickException("; ".join(exc.issues)) from None
     for warning in edit.warnings:
@@ -1889,7 +1892,7 @@ def _echo_endpoints(
 def _pick_endpoint(
     label: str, name: str | None, lot: str | None, *,
     accounts: list[str], lot_info: dict[str, tuple[bool, list[str]]], chains: list[str],
-    allow_chain: bool = True,
+    allow_chain: bool = True, lot_option: str | None = None,
 ) -> tuple[str, str]:
     """One side of a transfer: an account and its lot, or an interior chain
     and no lot (#98). A value given on the command line is checked against the
@@ -1916,7 +1919,7 @@ def _pick_endpoint(
 
     if name in chains:
         if lot:
-            raise click.ClickException(f"{name!r} is a chain, so --{label}-lot must be blank")
+            raise click.ClickException(f"{name!r} is a chain, so {lot_option or f'--{label}-lot'} must be blank")
         return name, ""
     entry = lot_info.get(name, (False, [registries.DEFAULT_LOT]))
     lots = list(entry[1])
@@ -5736,18 +5739,6 @@ def chain_group_command() -> None:
     """
 
 
-def _chain_defined_in(scenarios_dir: Path, scenario: str, chain: str) -> str:
-    """The scenario in ``scenario``'s lineage whose chains/ file for ``chain``
-    is the one loaded (the last in load order, ADR-003 §4.7)."""
-    found = ""
-    for name in load_order(scenarios_dir, scenario):
-        # Compare names, not a glob: a chain name may hold '[' or '*'.
-        if any(path.stem.partition("__")[2] == chain
-               for path in (scenarios_dir / name / "chains").glob("*.csv")):
-            found = name
-    return found
-
-
 @chain_group_command.command("list")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
@@ -5775,13 +5766,18 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
     for column in ("Chain", "Kind", "Steps", "Defined in", "Used by"):
         table.add_column(column)
     for name, steps in sorted(cmap.steps.items()):
-        defined = _chain_defined_in(ref.scenarios_dir, ref.name, name)
+        try:
+            defined = chain_edit.defining_scenario(ref.scenarios_dir, ref.name, name) or ""
+            where = "this scenario" if defined == ref.name else escape(defined)
+        except chain_edit.AmbiguousChain as exc:
+            where = f"[red]{escape(str(exc))}[/red]"
         uses = cmap.uses.get(name, [])
-        # Names come from the data and may hold '[', so only "nothing" is markup.
+        # Names come from the data and may hold '[', so only "nothing" and a
+        # clash are markup.
         table.add_row(
             escape(name), escape(cmap.kinds[name]),
             escape("\n".join(f"{s.order}. {cmap.label(s.target)}: {chain_map.share_text(s)}" for s in steps)),
-            "this scenario" if defined == ref.name else escape(defined),
+            where,
             escape("\n".join(chain_map.use_text(cmap, u) for u in uses)) or "[red]nothing[/red]",
         )
     console = Console()
@@ -5849,6 +5845,659 @@ def chain_show_command(
         console.print(chain_map.chain_tree(cmap, root))
         for use in cmap.uses.get(root, []):
             console.print(f"  {chain_map.use_text(cmap, use)}", style="dim", markup=False)
+
+
+_STEP_OPTIONS_HELP = {
+    "lot": "The account's lot; needed for an investment account, or one with several lots.",
+    "percent": "Share of what is still outstanding when the step is reached, e.g. 50% (default: all of it).",
+    "maximum": "Most the step supplies or takes, in dollars (default: no limit).",
+    "series": "Inflation series that grows --maximum from the scenario start, e.g. cpi.",
+    "cadence": "How --series compounds: monthly or annual.",
+}
+
+
+def _step_options(f):
+    for option in ("cadence", "series", "maximum", "percent", "lot"):
+        f = click.option(f"--{option}", default=None, help=_STEP_OPTIONS_HELP[option])(f)
+    return f
+
+
+def _scenario_options(f):
+    f = click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+                     default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")(f)
+    return click.option("--scenario", default=None,
+                        help="Scenario folder name (default: the only scenario in data-dir).")(f)
+
+
+def _step_row(
+    chain: str, account: str | None, lot: str | None, percent: str | None, maximum: str | None,
+    series: str | None, cadence: str | None, endpoints: _Endpoints,
+) -> dict[str, str]:
+    """One chain step as its CSV row, checked: a known account (and lot) or
+    chain, and the percent and dollars in the forms the loader accepts."""
+    if account == chain:
+        raise click.ClickException(f"chain {chain!r} can't be a step of itself")
+    name, lot_ = _pick_endpoint("step", account, lot, accounts=endpoints.accounts,
+                                lot_info=endpoints.lot_info, chains=endpoints.chains, lot_option="--lot")
+    row = {"account_name": name, "lot": lot_, "percent": "", "maximum": "",
+           "series": series or "", "cadence": cadence or ""}
+    try:
+        if percent:
+            row["percent"] = _step_percent(percent)
+        if maximum:
+            row["maximum"] = _step_maximum(maximum)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    return row
+
+
+def _step_percent(text: str) -> str:
+    """A step's percent as its CSV cell: blank for 100%, which is the default."""
+    micros = units.percent_to_micros(text, require_sign=False)
+    if not 0 < micros <= 1_000_000:
+        raise ValueError(f"percent {text!r} must be more than 0% and at most 100%")
+    return "" if micros == 1_000_000 else units.micros_to_percent(micros)
+
+
+def _step_maximum(text: str) -> str:
+    cents = units.dollars_to_cents(text)
+    if cents < 0:
+        raise ValueError(f"maximum {text!r} can't be negative")
+    return units.cents_to_dollars(cents)
+
+
+_STEP_CADENCES = {"monthly": "grow it every month", "annual": "grow it once a year"}
+
+
+def _ask_step_column(text: str, current: str, blank: str, parse: Callable[[str], str],
+                     choices: list[str] | None = None) -> str:
+    """One column of a guided step: Enter keeps ``current`` (or leaves the
+    column blank, meaning ``blank``), '-' clears it, and anything else is
+    ``parse``d, asking again until it parses."""
+    hint = f"Enter keeps it, - for {blank}" if current else f"blank for {blank}"
+    while True:
+        answer = _prompt_with_completion(f"  {text} ({hint})", choices=choices, default=current).strip()
+        if answer in ("", "-"):
+            return ""
+        try:
+            return parse(answer)
+        except ValueError as exc:
+            click.echo(f"  {exc}")
+
+
+def _ask_step_columns(row: dict[str, str], inflation: list[str], given: Set[str] = frozenset()) -> None:
+    """Ask a guided step's percent, maximum, and the series and cadence that
+    grow the maximum, each starting from ``row``'s value; a column in
+    ``given`` came as an option and is kept. Series and cadence are only
+    asked once there is a maximum for them to grow, since the loader refuses
+    a series without one."""
+
+    def series(answer: str) -> str:
+        if answer not in inflation:
+            raise ValueError(f"no inflation series {answer!r}; the scenario's: {', '.join(inflation)}")
+        return answer
+
+    def cadence(answer: str) -> str:
+        if answer not in _STEP_CADENCES:
+            raise ValueError(f"one of: {', '.join(_STEP_CADENCES)}")
+        return answer
+
+    if "percent" not in given:
+        row["percent"] = _ask_step_column(
+            "share of what is still outstanding when this step is reached, in %", row.get("percent", ""),
+            "all of it", _step_percent)
+    if "maximum" not in given:
+        row["maximum"] = _ask_step_column(
+            "at most how much, in dollars", row.get("maximum", ""), "no limit", _step_maximum)
+    if not row["maximum"]:
+        # Nothing for a series to grow; one given anyway is left for the
+        # loader to refuse by name.
+        for column in {"series", "cadence"} - given:
+            row[column] = ""
+        return
+    if "series" not in given and (inflation or row.get("series")):
+        row["series"] = _ask_step_column(
+            "inflation series that grows the maximum", row.get("series", ""), "a fixed maximum", series,
+            choices=inflation)
+    if "cadence" in given:
+        return
+    if not row.get("series"):
+        row["cadence"] = ""
+        return
+    row["cadence"] = _ask_step_column(
+        "how the series compounds, monthly or annual", row.get("cadence", ""), "monthly", cadence,
+        choices=list(_STEP_CADENCES))
+
+
+def _inflation_series(con: sqlite3.Connection) -> list[str]:
+    return [r[0] for r in con.execute(
+        "SELECT DISTINCT series FROM aux_table WHERE kind = 'inflation' AND series != '' ORDER BY series")]
+
+
+def _step_summary(row: Mapping[str, str]) -> str:
+    """A step's account and the columns it sets, for a numbered list."""
+    parts = [f"{row['percent']} of what is left" if row.get("percent") else ""]
+    if row.get("maximum"):
+        grows = f", grown by {row['series']} ({row.get('cadence') or 'monthly'})" if row.get("series") else ""
+        parts.append(f"at most {row['maximum']}{grows}")
+    return ", ".join([_step_label(row), *filter(None, parts)])
+
+
+def _echo_steps(name: str, steps: list[dict[str, str]]) -> None:
+    click.echo(f"steps of {name}:")
+    for n, row in enumerate(steps, 1):
+        click.echo(f"  {n}. {_step_summary(row)}")
+
+
+def _ask_step_number(steps: list[dict[str, str]], name: str, text: str = "step number", *,
+                     show: bool = True) -> int:
+    if show:
+        _echo_steps(name, steps)
+    while True:
+        answer = _prompt_with_completion(f"{text} (1 to {len(steps)})").strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(steps):
+            return int(answer)
+        click.echo(f"  {name} has steps 1 to {len(steps)}")
+
+
+def _echo_equivalent(words: list[str]) -> None:
+    click.echo("equivalent command:")
+    click.echo("  " + " ".join(shlex.quote(w) for w in words))
+
+
+def _step_words(row: Mapping[str, str]) -> list[str]:
+    """``row``'s step as command-line words: the account, then its options."""
+    words = [row["account_name"]]
+    for column in ("lot", "percent", "maximum", "series", "cadence"):
+        if row.get(column):
+            words += [f"--{column}", row[column]]
+    return words
+
+
+@contextmanager
+def _editing_chain(
+    data_dir: Path | None, scenario: str | None, name: str | None,
+) -> Generator[tuple[StagedEdit, str, list[dict[str, str]]]]:
+    """Stage an edit of chain ``name``'s steps: the body changes the list it is
+    handed, which is then written back, all only if the scenario still loads.
+    A chain the scenario inherits is written as its own copy, overriding the
+    parent's, as an inherited lot is. Without ``name``, asks which chain."""
+    data = _resolve_data_dir(data_dir)
+    with _scenario_edit(data, scenario) as edit:
+        if name is None:
+            name = _ask_chain(edit.con)
+        scenarios = edit.data_dir / "scenarios"
+        owner = chain_edit.defining_scenario(scenarios, edit.name, name)
+        if owner is None:
+            raise click.ClickException(_no_chain(edit.con, name, edit.name))
+        source = chain_edit.chain_file(scenarios / owner, name)
+        assert source is not None  # defining_scenario found it
+        steps = chain_edit.read_steps(source)
+        yield edit, name, steps
+        target = source if owner == edit.name else edit.scenario_dir / "chains" / source.name
+        chain_edit.write_steps(target, steps)
+    if owner != edit.name:
+        click.echo(f"{name} came from {owner}; wrote {edit.name}'s own copy of it, which replaces it here")
+
+
+def _no_chain(con: sqlite3.Connection, name: str, scenario: str) -> str:
+    accounts = {r[0] for r in con.execute("SELECT name FROM account")}
+    if name in accounts:
+        return (f"{name} is an account, which is already a one-step chain; "
+                f"`sim chain add` makes a chain of several steps")
+    return f"no chain {name!r} in {scenario} (see `sim chain list`)"
+
+
+def _ask_chain(con: sqlite3.Connection, text: str = "chain") -> str:
+    """Ask which of the scenario's chains, the ones a chain file defines
+    (an account's own one-step chain is left out, as it can't be edited)."""
+    accounts = {r[0] for r in con.execute("SELECT name FROM account")}
+    chains = [c for c in _interior_chains(con) if c not in accounts]
+    if not chains:
+        raise click.ClickException("the scenario has no chains yet; `sim chain add` makes one")
+    click.echo(f"chains: {', '.join(chains)}")
+    while (answer := _prompt_with_completion(text, choices=chains).strip()) not in chains:
+        click.echo(f"  one of: {', '.join(chains)}")
+    return answer
+
+
+def _ask_new_chain_name(taken: set[str], text: str = "chain name (one word, no spaces)") -> str:
+    while True:
+        name = _prompt_with_completion(text).strip()
+        if problem := chain_edit.name_problem(name):
+            click.echo(f"  {problem}")
+        elif name in taken:
+            click.echo(f"  {name!r} is already a chain or an account's name")
+        else:
+            return name
+
+
+def _step_index(steps: list[dict[str, str]], number: int, name: str) -> int:
+    if not 1 <= number <= len(steps):
+        raise click.ClickException(f"{name} has steps 1 to {len(steps)}, not {number}")
+    return number - 1
+
+
+@chain_group_command.command("add")
+@click.argument("name", required=False)
+@click.argument("account", required=False, shell_complete=_complete_account)
+@click.option("--kind", type=click.Choice(sorted(registries.CHAIN_KINDS)), default=None,
+              help="What the steps hold (default: income if every step is an income account, else asset).")
+@_step_options
+@_scenario_options
+def chain_add_command(
+    name: str | None, account: str | None, kind: str | None,
+    lot: str | None, percent: str | None, maximum: str | None, series: str | None, cadence: str | None,
+    scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Make a new chain, with ACCOUNT (or another chain) as its first step.
+
+    Add more steps with `sim chain step add`. Without NAME, asks what the chain
+    is for and builds it a step at a time: whether it is where money comes
+    from or where extra money goes, and whether to drain the steps in order,
+    split the total by shares, or take up to an amount from each. It then
+    prints the equivalent commands, and how to put the chain to use.
+    """
+    data = _resolve_data_dir(data_dir)
+    # The questions are asked inside the staged edit, so a change made to the
+    # scenario while they are answered is caught rather than overwritten.
+    with _scenario_edit(data, scenario) as edit:
+        con, scenario_name = edit.con, edit.name
+        endpoints = _endpoints(con)
+        # Chains and accounts share one namespace, and an investment account's
+        # own chains are named account:lot, so its bare name isn't a chain row.
+        taken = {r[0] for r in con.execute("SELECT name FROM chain UNION SELECT name FROM account")}
+        kinds = {r[0]: r[1] for r in con.execute("SELECT name, kind FROM account")}
+        for chain_name, chain_kind in con.execute("SELECT name, kind FROM chain WHERE lot_id IS NULL"):
+            kinds.setdefault(chain_name, chain_kind)  # a step may be another chain
+        guided = name is None
+        if guided:
+            plan = _guided_chain(endpoints, taken)
+            name, steps, direction = plan.name, plan.steps, plan.direction
+        else:
+            direction = None
+            assert name is not None
+            if problem := chain_edit.name_problem(name):
+                raise click.ClickException(problem)
+            if name in taken:
+                raise click.ClickException(f"{name!r} is already a chain or an account's name")
+            if account is None:
+                _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains)
+            steps = [_step_row(name, account, lot, percent, maximum, series, cadence, endpoints)]
+        assert name is not None
+        if kind is None:
+            all_income = all(kinds.get(step["account_name"]) == "income" for step in steps)
+            kind = "income" if all_income else "asset"
+        chain_edit.write_steps(edit.scenario_dir / "chains" / f"{kind}__{name}.csv", steps)
+    click.echo(f"added chain {name} ({kind}, {len(steps)} step(s)) in {scenario_name}")
+    if guided:
+        first, *rest = steps
+        # --kind always: a replay would otherwise infer it from the first step alone.
+        commands = [["sim", "chain", "add", name, *_step_words(first), "--kind", kind]]
+        commands += [["sim", "chain", "step", "add", name, *_step_words(step)] for step in rest]
+        click.echo("equivalent commands:")
+        for words in commands:
+            click.echo("  " + " ".join(shlex.quote(w) for w in words))
+        _echo_chain_next_steps(name, direction)
+
+
+class _ChainPlan(NamedTuple):
+    name: str
+    steps: list[dict[str, str]]
+    direction: str
+
+
+_DIRECTIONS = {"from": "where money comes from", "to": "where extra money goes"}
+_SPLITS = {
+    "order": "drain them in order: all from the first, then the next when it runs out",
+    "shares": "split the total by shares, such as 60% here and 40% there",
+    "caps": "take up to an amount from each, then move on to the next",
+}
+
+
+def _ask_choice(text: str, choices: Mapping[str, str]) -> str:
+    for key, meaning in choices.items():
+        click.echo(f"  {key}: {meaning}")
+    while (answer := _prompt_with_completion(text, choices=list(choices)).strip()) not in choices:
+        click.echo(f"  one of: {', '.join(choices)}")
+    return answer
+
+
+def _guided_chain(endpoints: _Endpoints, taken: set[str]) -> _ChainPlan:
+    """``chain add``'s questions: what the chain is for, then its steps, then
+    the percent or maximum columns that do what was asked."""
+    direction = _ask_choice("is this chain where money comes from, or where extra money goes? (from/to)",
+                            _DIRECTIONS)
+    verb = "draw from" if direction == "from" else "put into"
+    split = _ask_choice(f"how should it {verb} its steps? (order/shares/caps)", _SPLITS)
+    name = _ask_new_chain_name(taken)
+    _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains)
+    steps: list[dict[str, str]] = []
+    shares: list[Decimal] = []
+    while True:
+        n = len(steps) + 1
+        if shares and sum(shares) == 100:
+            break
+        prompt = f"step {n}: account or chain to {verb}" + (" (blank to finish)" if steps and split != "shares" else "")
+        account = _prompt_with_completion(prompt, choices=[*endpoints.accounts, *endpoints.chains],
+                                          default="" if steps and split != "shares" else None).strip()
+        if not account:
+            # Shares go on until they reach 100%, so only order and caps may stop early.
+            if steps and split != "shares":
+                break
+            continue
+        try:
+            row = _step_row(name, account, None, None, None, None, None, endpoints)
+        except click.ClickException as exc:
+            click.echo(f"  {exc.message}")
+            continue
+        if split == "shares":
+            left = 100 - sum(shares)
+            while True:
+                text = _prompt_with_completion(f"  its share of the total, in % ({left:g}% left)").strip()
+                try:
+                    share = Decimal(units.percent_to_micros(text, require_sign=False)) / 10_000
+                except ValueError as exc:
+                    click.echo(f"  {exc}")
+                    continue
+                if not 0 < share <= left:
+                    click.echo(f"  a share is more than 0% and at most the {left:g}% left")
+                    continue
+                break
+            shares.append(share)
+        elif split == "caps":
+            while True:
+                text = _prompt_with_completion("  at most how much, in dollars (blank for no limit)",
+                                               default="").strip()
+                try:
+                    if text:
+                        row["maximum"] = _step_maximum(text)
+                except ValueError as exc:
+                    click.echo(f"  {exc}")
+                    continue
+                break
+            if not text:
+                click.echo("  no limit: later steps are reached only when this one runs out")
+        steps.append(row)
+    if split == "shares":
+        for row, percent in zip(steps, chain_edit.shares_to_percents(shares), strict=True):
+            row["percent"] = percent
+    elif split == "caps" and steps[-1].get("maximum"):
+        click.echo("  note: every step has a limit, so beyond their total nothing more moves")
+    return _ChainPlan(name, steps, direction)
+
+
+def _echo_chain_next_steps(name: str, direction: str | None) -> None:
+    if direction == "from":
+        click.echo(f"to use it: a rule's from account (`sim scheduled add DATE {name} ACCOUNT AMOUNT`), or a lot's "
+                   f"refill (`sim account lot edit ACCOUNT LOT --refill-chain {name} --minimum-balance DOLLARS`)")
+    elif direction == "to":
+        click.echo(f"to use it: a rule's to account (`sim scheduled add DATE ACCOUNT {name} AMOUNT`), or a lot's "
+                   f"overflow (`sim account lot edit ACCOUNT LOT --overflow-chain {name} --maximum-balance DOLLARS`)")
+    click.echo(f"see it with `sim chain show {name}`")
+
+
+@chain_group_command.group(name="step")
+def chain_step_group() -> None:
+    """Add, change, remove or reorder a chain's steps. Each command asks for
+    the chain, and the step, when they are left out."""
+
+
+@chain_step_group.command("add")
+@click.argument("name", required=False)
+@click.argument("account", required=False, shell_complete=_complete_account)
+@click.option("--position", type=int, default=None,
+              help="Step number the new step takes, moving later steps down (default: last).")
+@_step_options
+@_scenario_options
+def chain_step_add_command(
+    name: str | None, account: str | None, position: int | None,
+    lot: str | None, percent: str | None, maximum: str | None, series: str | None, cadence: str | None,
+    scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Add a step to chain NAME: ACCOUNT (and its lot), or another chain.
+
+    Without ACCOUNT, shows the chain's steps and asks for the new one: its
+    account, then its percent, maximum, series and cadence (unless given as
+    options), and where it goes; it then prints the equivalent command.
+    """
+    with _editing_chain(data_dir, scenario, name) as (edit, name, steps):
+        endpoints = _endpoints(edit.con)
+        guided = account is None
+        if guided:
+            # A chain can't be its own step, so it isn't offered as one.
+            endpoints = endpoints._replace(chains=[c for c in endpoints.chains if c != name])
+            _echo_steps(name, steps)
+            _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains)
+        row = _step_row(name, account, lot, percent, maximum, series, cadence, endpoints)
+        if guided:
+            given = {k for k, v in
+                     {"percent": percent, "maximum": maximum, "series": series, "cadence": cadence}.items()
+                     if v is not None}
+            _ask_step_columns(row, _inflation_series(edit.con), given=given)
+            if position is None and steps:
+                while not (answer := _prompt_with_completion(
+                    f"  its step number, 1 to {len(steps) + 1}", default=str(len(steps) + 1),
+                ).strip()).isdigit() or not 1 <= int(answer) <= len(steps) + 1:
+                    click.echo(f"  a step number from 1 to {len(steps) + 1}")
+                position = int(answer)
+        index = len(steps) if position is None else position - 1
+        if not 0 <= index <= len(steps):
+            raise click.ClickException(f"--position is 1 to {len(steps) + 1} for {name}")
+        steps.insert(index, row)
+    click.echo(f"{name}: step {index + 1} is {_step_summary(row)}")
+    if guided:
+        where = [] if index == len(steps) - 1 else ["--position", str(index + 1)]
+        _echo_equivalent(["sim", "chain", "step", "add", name, *_step_words(row), *where])
+
+
+def _step_label(row: Mapping[str, str]) -> str:
+    """A step's account, with its lot when it names one."""
+    return f"{row['account_name']} ({row['lot']})" if row.get("lot") else row["account_name"]
+
+
+@chain_step_group.command("edit")
+@click.argument("name", required=False)
+@click.argument("number", type=int, required=False)
+@_step_options
+@_scenario_options
+def chain_step_edit_command(
+    name: str | None, number: int | None,
+    lot: str | None, percent: str | None, maximum: str | None, series: str | None, cadence: str | None,
+    scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Change step NUMBER of chain NAME. Each option given replaces that
+    column; give it as '' to clear it (a percent cleared is 100%).
+
+    Without NUMBER, shows the steps and asks which. Without any option, asks
+    for each column in turn, starting from its current value, and prints the
+    equivalent command.
+    """
+    given = {k: v for k, v in
+             {"lot": lot, "percent": percent, "maximum": maximum, "series": series, "cadence": cadence}.items()
+             if v is not None}
+    with _editing_chain(data_dir, scenario, name) as (edit, name, steps):
+        if number is None:
+            number = _ask_step_number(steps, name)
+        index = _step_index(steps, number, name)
+        endpoints = _endpoints(edit.con)
+        before = dict(steps[index])
+        merged = {**before, **given}
+        entry = endpoints.lot_info.get(merged["account_name"])
+        if given and not merged["lot"] and entry is not None and calendar_guide.lot_needed(entry):
+            raise click.ClickException(
+                f"{merged['account_name']} needs a lot; its lots: {', '.join(entry[1])}")
+        if not given:
+            click.echo(f"step {number}: {_step_summary(before)}")
+            if entry is not None and calendar_guide.lot_needed(entry):
+                lots = list(entry[1])
+                while (answer := _prompt_with_completion(
+                    "  lot", choices=lots, default=merged["lot"] or None,
+                ).strip()) not in lots:
+                    click.echo(f"  not one of: {', '.join(lots)}")
+                merged["lot"] = answer
+            _ask_step_columns(merged, _inflation_series(edit.con))
+        steps[index] = _step_row(
+            name, merged["account_name"], merged["lot"] or None, merged["percent"] or None,
+            merged["maximum"] or None, merged["series"] or None, merged["cadence"] or None,
+            endpoints,
+        )
+        after = steps[index]
+    click.echo(f"{name}: step {number} is {_step_summary(after)}")
+    if not given:
+        changed = [c for c in ("lot", "percent", "maximum", "series", "cadence")
+                   if before.get(c, "") != after.get(c, "")]
+        if changed:
+            words = ["sim", "chain", "step", "edit", name, str(number)]
+            for column in changed:
+                words += [f"--{column}", after.get(column, "")]
+            _echo_equivalent(words)
+        else:
+            click.echo("  (nothing changed)")
+
+
+@chain_step_group.command("rm")
+@click.argument("name", required=False)
+@click.argument("number", type=int, required=False)
+@_scenario_options
+def chain_step_rm_command(name: str | None, number: int | None, scenario: str | None, data_dir: Path | None) -> None:
+    """Remove step NUMBER from chain NAME (without NUMBER, shows the steps
+    and asks which). A chain keeps at least one step; use `sim chain delete`
+    to remove the whole chain."""
+    with _editing_chain(data_dir, scenario, name) as (_edit, name, steps):
+        if number is None:
+            number = _ask_step_number(steps, name, "step to remove")
+        index = _step_index(steps, number, name)
+        if len(steps) == 1:
+            raise click.ClickException(f"step {number} is {name}'s only step; `sim chain delete {name}` "
+                                       "removes the chain")
+        removed = steps.pop(index)
+    click.echo(f"{name}: removed step {number} ({_step_label(removed)})")
+
+
+@chain_step_group.command("move")
+@click.argument("name", required=False)
+@click.argument("number", type=int, required=False)
+@click.argument("to", type=int, required=False)
+@_scenario_options
+def chain_step_move_command(
+    name: str | None, number: int | None, to: int | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Move step NUMBER of chain NAME to position TO, shifting the steps
+    between. Either left out is asked for, after showing the steps."""
+    with _editing_chain(data_dir, scenario, name) as (_edit, name, steps):
+        if number is None:
+            number = _ask_step_number(steps, name, "step to move")
+        elif to is None:
+            _echo_steps(name, steps)
+        index = _step_index(steps, number, name)
+        if to is None:
+            to = _ask_step_number(steps, name, f"move step {number} to", show=False)
+        target = _step_index(steps, to, name)
+        steps.insert(target, steps.pop(index))
+    click.echo(f"{name}: step {number} is now step {to}")
+
+
+@chain_group_command.command("rename")
+@click.argument("old", required=False)
+@click.argument("new", required=False)
+@_scenario_options
+def chain_rename_command(old: str | None, new: str | None, scenario: str | None, data_dir: Path | None) -> None:
+    """Rename chain OLD to NEW, and every reference to it: rules, calendar
+    transfers, lots' refill and overflow, and other chains' steps, here and in
+    every scenario that inherits from this one. Either name left out is
+    asked for."""
+    data = _resolve_data_dir(data_dir)
+    with _scenario_edit(data, scenario) as edit:
+        if old is None:
+            old = _ask_chain(edit.con, "chain to rename")
+        scenarios = edit.data_dir / "scenarios"
+        owner = chain_edit.defining_scenario(scenarios, edit.name, old)
+        if owner is None:
+            raise click.ClickException(_no_chain(edit.con, old, edit.name))
+        first = next(each for each in load_order(scenarios, edit.name)
+                     if chain_edit.chain_file(scenarios / each, old) is not None)
+        if first != edit.name:
+            # Renaming only a copy would leave the parent's chain in place
+            # under the old name, so a rename starts where the chain does.
+            raise click.ClickException(
+                f"{old} comes from {first}; rename it there (--scenario {first}), "
+                "and the scenarios built on it follow")
+        taken = {r[0] for r in edit.con.execute("SELECT name FROM chain UNION SELECT name FROM account")}
+        if new is None:
+            new = _ask_new_chain_name(taken, f"new name for {old} (one word, no spaces)")
+        elif problem := chain_edit.name_problem(new):
+            raise click.ClickException(problem)
+        elif new in taken:
+            raise click.ClickException(f"{new!r} is already a chain or an account's name")
+        affected = (edit.name, *chain_edit.descendants(scenarios, edit.name))
+        # A scenario here that gets OLD from a mix-in outside this lineage
+        # keeps that chain, so renaming its references would point them at
+        # the wrong one.
+        if shadowed := {each: source for each in affected
+                        if (source := chain_edit.defining_scenario(scenarios, each, old)) not in affected}:
+            raise click.ClickException(
+                "; ".join(f"{each} gets {old} from {source}" for each, source in shadowed.items())
+                + f", which a rename in {edit.name} doesn't reach; rename it there first")
+        # A scenario built on this one may already have a chain called NEW,
+        # its own or one from a mix-in, which the rename would overwrite or
+        # shadow; check before touching anything.
+        clashes = {each: source for each in affected
+                   if (source := chain_edit.defining_scenario(scenarios, each, new)) is not None}
+        if clashes:
+            raise click.ClickException(
+                f"a chain {new!r} already applies in "
+                + ", ".join(each if source == each else f"{each} (from {source})"
+                            for each, source in clashes.items())
+                + "; rename or delete it first")
+        changed = []
+        for each in affected:
+            changed += [f"{each}: {c}" for c in chain_edit.rename_references(scenarios / each, old, new)]
+    click.echo(f"renamed chain {old} to {new}")
+    for line in changed:
+        click.echo(f"  {line}")
+
+
+@chain_group_command.command("delete")
+@click.argument("name", required=False)
+@_scenario_options
+def chain_delete_command(name: str | None, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete chain NAME. Refused while a rule, a calendar transfer, a lot's
+    refill or overflow, or another chain uses it: change those first. A
+    scenario's own copy of a chain it inherits is deleted, and the parent's
+    applies again. Without NAME, asks which chain, shows its steps, and asks
+    to confirm."""
+    data = _resolve_data_dir(data_dir)
+    with _scenario_edit(data, scenario) as edit:
+        guided = name is None
+        if name is None:
+            name = _ask_chain(edit.con, "chain to delete")
+        scenarios = edit.data_dir / "scenarios"
+        owner = chain_edit.defining_scenario(scenarios, edit.name, name)
+        if owner is None:
+            raise click.ClickException(_no_chain(edit.con, name, edit.name))
+        if owner != edit.name:
+            raise click.ClickException(f"{name} is defined in {owner}; delete it there (--scenario {owner})")
+        own = chain_edit.chain_file(edit.scenario_dir, name)
+        assert own is not None
+        if guided:
+            _echo_steps(name, chain_edit.read_steps(own))
+            if not click.confirm(f"delete {name}?", default=False):
+                click.echo("nothing was deleted")
+                return
+        own.unlink()
+        inherited = chain_edit.defining_scenario(scenarios, edit.name, name)
+        if inherited is None:
+            with open_scenario(edit.real_data_dir, edit.name) as scn:
+                cmap = chain_map.chain_map(scn)
+            if uses := cmap.uses.get(name, []):
+                raise click.ClickException(
+                    f"{name} is still used; change these first:\n  "
+                    + "\n  ".join(chain_map.use_text(cmap, u) for u in uses))
+    if inherited:
+        click.echo(f"deleted {edit.name}'s own copy of {name}; {inherited}'s applies again")
+    else:
+        click.echo(f"deleted chain {name}")
 
 
 @sim_group_command.group(name="symbol")

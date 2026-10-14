@@ -33,6 +33,54 @@ shows the same chains as a table, and one chain at a time as a flowchart
 picked from a list. The flowchart draws itself with Mermaid loaded from the
 web, so it needs a connection in VS Code and JupyterLab alike.
 
+## Making and changing chains
+
+`sim chain add` with no arguments asks what the chain is for and builds it
+a step at a time:
+
+1. Is it where money **comes from** or where extra money **goes**?
+2. Should it **drain** the steps in order, **split** the total by shares
+   (such as 60% here and 40% there), or take **up to an amount** from each?
+3. Its name, then each step: an account (and its lot, when one must be
+   named) or another chain.
+
+It works out the `percent` and `maximum` columns from your answers. Shares
+of the total become shares of what's left, so 50%, 30% and 20% are written
+as `50%`, `60%` and a plain last step (section 3 explains why). It then
+prints the equivalent commands and how to put the chain to use.
+
+Changing a chain asks too. Leave out what you'd rather be asked for:
+
+- `sim chain step add checking_backup` shows the steps, then asks for the
+  new step's account (and lot), its percent, its maximum, the inflation
+  series that grows the maximum and how it compounds, and where it goes.
+- `sim chain step edit checking_backup` asks which step, then each of its
+  columns. Enter keeps the current value and `-` clears it.
+- `sim chain step move`, `sim chain step rm`, `sim chain rename` and
+  `sim chain delete` ask for the chain, the step or the new name. A guided
+  delete shows the steps and asks you to confirm.
+
+The guided add and edit print the equivalent command when they finish.
+
+The same changes as commands, for scripts or a quick fix:
+
+```sh
+sim chain add checking_backup Asset_Savings              # a chain and its first step
+sim chain step add checking_backup Asset_Brokerage_Joint --lot default --percent 50%
+sim chain step add checking_backup Asset_Roth_Alice --lot default --position 1
+sim chain step edit checking_backup 2 --maximum 500      # '' clears a column
+sim chain step move checking_backup 1 3
+sim chain step rm checking_backup 3
+sim chain rename checking_backup cash_backup             # and every reference to it
+sim chain delete cash_backup                             # refused while anything uses it
+```
+
+Every change is checked by loading the scenario, and any scenario built on
+it, before anything is written. Changing a chain the scenario inherits
+writes the scenario's own copy, which replaces the parent's here. A rename
+starts in the scenario the chain comes from and follows it into every
+scenario built on that one.
+
 ## 1. What a chain is
 
 A chain is a file, `chains/<kind>__<name>.csv`, in a scenario folder. Each
