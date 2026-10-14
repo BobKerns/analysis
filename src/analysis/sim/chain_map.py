@@ -340,17 +340,30 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
 
     for root in roots:
         expand(root, None)
-    # The lots that refill from a shown source chain, or overflow into a shown
-    # destination, and the far end of each rule using a shown chain: one step
-    # further along the money, but not followed on from there.
+    # One step further along the money from what is shown so far: the lots
+    # that refill from a shown source chain or overflow into a shown
+    # destination, the far end of each rule using a shown chain, and the
+    # chains a root is a step of. None of these is followed on from there.
+    reached = list(shown)
+    for root in roots:
+        for use in cmap.uses.get(root, ()):
+            if use.kind != "step":
+                continue
+            step = next(s for s in cmap.steps[use.by] if str(s.order) == use.detail)
+            label = _quoted(f"{step.order}: {share_text(step)}")
+            show(use.by)
+            if cmap.roles.get(use.by) == "source":
+                edge(root, "-->", label, use.by)
+            else:
+                edge(use.by, "-->", label, root)
     for leaf, policy in cmap.policies.items():
-        if policy.refill_chain in shown and cmap.roles.get(policy.refill_chain) == "source":
+        if policy.refill_chain in reached and cmap.roles.get(policy.refill_chain) == "source":
             show(leaf)
             edge(policy.refill_chain, "-.->", _REFILL, leaf)
-        if policy.overflow_chain in shown and cmap.roles.get(policy.overflow_chain) == "destination":
+        if policy.overflow_chain in reached and cmap.roles.get(policy.overflow_chain) == "destination":
             show(leaf)
             edge(leaf, "-.->", _OVERFLOW, policy.overflow_chain)
-    for node in list(shown):
+    for node in reached:
         for use in cmap.uses.get(node, ()):
             if use.kind == "draw":
                 show(use.detail)
@@ -358,18 +371,61 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
             elif use.kind == "sweep":
                 show(use.detail)
                 edge(use.detail, "-->", _quoted(use.by), node)
+    return _render(cmap, shown, edges, roots if names is not None else [])
+
+
+def _render(
+    cmap: ChainMap, shown: list[str], edges: list[tuple[str, str, str, str]], picked: list[str],
+) -> str:
+    """The Mermaid text for ``shown`` and ``edges``, ``picked`` highlighted.
+
+    Mermaid lays a flowchart out left to right only while it has no loop:
+    given one, it turns an edge around and the chart reads both ways. Money
+    can go round one (a rule paying into a lot of the very chain it draws
+    from, as an IRA contribution from the cash an IRA refills), so an edge
+    that would close a loop goes to a copy of its target instead, a node of
+    its own (``c`` in place of the node id's ``n``) that leads nowhere
+    further."""
     ids = _node_ids(shown)
     lines = ["flowchart LR"]
     for node in shown:
-        label = cmap.label(node)
-        if cmap.is_interior(node):
-            lines.append(f"    {ids[node]}([{_quoted(label)}])")
-        else:
-            policy = cmap.policies.get(node)
-            text = label if policy is None else f"{label}<br/><small>{policy_text(cmap, policy)}</small>"
-            lines.append(f"    {ids[node]}[{_quoted(text)}]")
-    lines += [f"    {ids[a]} {arrow}|{label}| {ids[b]}" for a, arrow, label, b in edges]
-    if names is not None and roots:
+        lines.append(f"    {ids[node]}{_shape(cmap, node, with_policy=True)}")
+    after: dict[str, set[str]] = {}  # node id -> the ids its edges lead to so far
+
+    def leads_to(start: str, goal: str) -> bool:
+        seen, todo = set(), [start]
+        while todo:
+            if (node := todo.pop()) == goal:
+                return True
+            if node not in seen:
+                seen.add(node)
+                todo.extend(after.get(node, ()))
+        return False
+
+    copied: set[str] = set()
+    drawn: list[str] = []
+    for a, arrow, label, b in edges:
+        source, target = ids[a], ids[b]
+        if leads_to(target, source):
+            target = "c" + target[1:]  # one copy per node, however many loops end there
+            if target not in copied:
+                copied.add(target)
+                lines.append(f"    {target}{_shape(cmap, b, with_policy=False)}")
+        after.setdefault(source, set()).add(target)
+        drawn.append(f"    {source} {arrow}|{label}| {target}")
+    lines += drawn
+    if picked:
         lines.append(f"    classDef picked {_PICKED}")
-        lines.append(f"    class {','.join(ids[root] for root in dict.fromkeys(roots))} picked")
+        lines.append(f"    class {','.join(ids[root] for root in dict.fromkeys(picked))} picked")
     return "\n".join(lines)
+
+
+def _shape(cmap: ChainMap, node: str, *, with_policy: bool) -> str:
+    """A node's Mermaid shape and label: a rounded box for a chain, a box for
+    a lot, with the lot's policy under its name when ``with_policy``."""
+    label = cmap.label(node)
+    if cmap.is_interior(node):
+        return f"([{_quoted(label)}])"
+    policy = cmap.policies.get(node) if with_policy else None
+    text = label if policy is None else f"{label}<br/><small>{policy_text(cmap, policy)}</small>"
+    return f"[{_quoted(text)}]"

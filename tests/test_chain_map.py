@@ -79,11 +79,13 @@ def test_tree_shows_each_lots_limits(cmap: chain_map.ChainMap) -> None:
             "holds at most $30,000, extra to Asset_Savings") in console.export_text()
 
 
-def _nodes(chart: str) -> dict[str, str]:
-    """A chart's node ids by label."""
+def _nodes(chart: str, prefix: str = "n") -> dict[str, str]:
+    """A chart's node ids by label; with ``prefix="c"``, its copies' ids (a
+    copy closes a loop)."""
     ids = {line.split("[")[0].split("(")[0].strip(): line for line in chart.splitlines()[1:]
            if "[" in line and "--" not in line}
-    node = {label: nid for nid, line in ids.items() for label in [line.split('"')[1].split("<br/>")[0]]}
+    node = {label: nid for nid, line in ids.items() if nid.startswith(prefix)
+            for label in [line.split('"')[1].split("<br/>")[0]]}
     assert len(node) == len(set(node.values()))  # one node per chain or lot, however often used
     return node
 
@@ -93,13 +95,57 @@ def test_mermaid_arrows_follow_the_money(cmap: chain_map.ChainMap) -> None:
     chain's steps point into it and a destination chain's out of it."""
     chart = chain_map.mermaid(cmap)
     assert chart.startswith("flowchart LR\n")
-    node = _nodes(chart)
+    node, copy = _nodes(chart), _nodes(chart, "c")
     assert f'{node["bridge"]} -->|"1: 50% of what\'s left"| {node["retirement_draw"]}' in chart
-    assert f'{node["retirement_draw"]} -->|"rule monthly_draw"| {node["Asset_Checking"]}' in chart
-    assert f'{node["asset_checking_liquidity"]} -.->|"refill, before a debit"| {node["Asset_Checking"]}' in chart
+    # Checking overflows to savings, which refills checking: a loop, closed by a copy.
+    assert f'{node["retirement_draw"]} -->|"rule monthly_draw"| {copy["Asset_Checking"]}' in chart
+    assert f'{node["asset_checking_liquidity"]} -.->|"refill, before a debit"| {copy["Asset_Checking"]}' in chart
     assert f'{node["Income_SS_Alice"]} -->|"rule ss_alice"| {node["ss_split"]}' in chart
     assert f'{node["ss_split"]} -->|"1: 50% of what\'s left"| {node["Asset_Checking"]}' in chart
     assert f'{node["Asset_Checking"]} -.->|"overflow, month end"| {node["Asset_Savings"]}' in chart
+
+
+def _has_loop(chart: str) -> bool:
+    after: dict[str, set[str]] = {}
+    for line in chart.splitlines():
+        if "--" in line:
+            parts = line.split()
+            after.setdefault(parts[0], set()).add(parts[-1])
+    done: set[str] = set()
+
+    def loops(node: str, path: set[str]) -> bool:
+        if node in path:
+            return True
+        if node in done:
+            return False
+        done.add(node)
+        return any(loops(nxt, path | {node}) for nxt in after.get(node, ()))
+    return any(loops(node, set()) for node in list(after))
+
+
+def test_a_loop_is_closed_by_a_copy_so_the_chart_reads_left_to_right(
+    guide_chains: Path, append_calendar_row,
+) -> None:
+    """Bob, #143: Mermaid turns an edge of a loop around, so the chart has
+    none. Here a transfer pays back into savings, one of the draw's own lots."""
+    append_calendar_row(date="2030-01", kind="one_off_transfer", name="top_up",
+                        account_1="retirement_draw", account_2="Asset_Savings", amount="5000")
+    with open_scenario(guide_chains, "retire_alice") as sc:
+        cmap = chain_map.chain_map(sc)
+    for names in (None, ["ss_split"], ["asset_checking_liquidity"], ["retirement_draw"], ["bridge"]):
+        assert not _has_loop(chain_map.mermaid(cmap, names)), names
+    chart = chain_map.mermaid(cmap, ["retirement_draw"])
+    node, copy = _nodes(chart), _nodes(chart, "c")
+    assert f'{node["Asset_Savings"]} -->|"1: all that\'s left, up to $10,000' in chart
+    assert f'(annual)"| {node["bridge"]}' in chart
+    assert f'{node["retirement_draw"]} -->|"calendar top_up (2030-01-31)"| {copy["Asset_Savings"]}' in chart
+
+
+def test_a_chain_shown_alone_shows_the_chains_it_is_a_step_of(cmap: chain_map.ChainMap) -> None:
+    """Bob, #143: money drawn from bridge goes on to retirement_draw."""
+    chart = chain_map.mermaid(cmap, ["bridge"])
+    node = _nodes(chart)
+    assert f'{node["bridge"]} -->|"1: 50% of what\'s left"| {node["retirement_draw"]}' in chart
 
 
 def test_the_chains_asked_for_are_highlighted(cmap: chain_map.ChainMap) -> None:
