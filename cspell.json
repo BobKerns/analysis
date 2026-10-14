@@ -19,7 +19,8 @@
     "out/**",
     "state/**",
     "historical_data/*/**",
-    "docs/**/*.svg"
+    "docs/**/*.svg",
+    "src/analysis/sim/vendor/**"
   ],
   "dictionaries": ["python", "softwareTerms", "project-words", "data-words"],
   "files": ["**/*.md", "**/*.rst", "**/*.txt", "**/*.py", "**/.gitignore", "**/*.csv", "**/*.toml", "**/.gitattributes"]

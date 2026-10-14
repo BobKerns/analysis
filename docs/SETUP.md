@@ -100,9 +100,8 @@ Chromium once:
 uv run playwright install chromium
 ```
 
-The first `--graph` also downloads Mermaid's script (the same release the
-notebooks load) into `~/.cache/analysis/`. The chart itself never leaves your
-machine.
+Mermaid's script (the release the notebooks load) ships with the code, so
+`--graph` works offline, and the chart never leaves your machine.
 
 **A terminal that shows images.** Recommended, all free:
 

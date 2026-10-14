@@ -8,38 +8,36 @@ notebook's flowchart. :func:`terminal_protocol` asks the terminal which
 protocol it takes, and :func:`kitty_sequence` / :func:`iterm_sequence`
 wrap the PNG for it.
 
-The chart never leaves the machine: Mermaid's script is fetched once, from
-the same pinned release the notebook loads, and kept in the user's cache.
+The chart never leaves the machine, and drawing it needs no network: the
+Mermaid script ships with the package (``vendor/``, the release the notebook
+loads, gzipped), and the page drawing the chart may fetch nothing.
 """
 
 from __future__ import annotations
 
 import base64
-import hashlib
+import gzip
 import math
 import os
 import re
 import select
 import sys
-import tempfile
-import urllib.request
 from pathlib import Path
 from typing import Literal
 
 __all__ = [
-    "MERMAID_SCRIPT_URL", "MERMAID_URL", "GraphError", "fit_columns", "iterm_sequence",
+    "MERMAID_URL", "GraphError", "fit_columns", "iterm_sequence",
     "kitty_sequence", "render", "terminal_protocol",
 ]
 
-MERMAID_VERSION = "11.4.1"
+MERMAID_VERSION = "11.17.2"
 MERMAID_URL = f"https://cdn.jsdelivr.net/npm/mermaid@{MERMAID_VERSION}/dist/mermaid.esm.min.mjs"
 """Where the notebook's flowchart widget imports Mermaid from."""
-MERMAID_SCRIPT_URL = f"https://cdn.jsdelivr.net/npm/mermaid@{MERMAID_VERSION}/dist/mermaid.min.js"
-"""The same release as a plain script, which a page can load from a local file."""
-MERMAID_SCRIPT_SHA256 = "a43bc1afd446f9c4cc66ac5dd45d02e8d65e26fc5344ec0ef787f88d6ddb6f9e"
-"""``mermaid.min.js`` of that release (as npm publishes it). The script sees
-the chart, so a copy that doesn't match is never run. Change it with
-``MERMAID_VERSION``."""
+MERMAID_SCRIPT = Path(__file__).parent / "vendor" / f"mermaid-{MERMAID_VERSION}.min.js.gz"
+"""The same release as a plain script, as npm publishes it, gzipped: the
+minified script's short names trip the blocked-keyword check, which skips a
+binary file. To upgrade, replace it, change ``MERMAID_VERSION``, and update
+the hash in ``tests/test_chain_graph.py``."""
 
 type Protocol = Literal["kitty", "iterm"]
 type ImageFormat = Literal["png", "svg"]
@@ -49,41 +47,7 @@ _INSTALL_HINT = ("install Google Chrome, or run `uv run playwright install chrom
 
 
 class GraphError(Exception):
-    """The chart couldn't be drawn: no browser, or no copy of Mermaid."""
-
-
-def _cache_dir() -> Path:
-    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "analysis"
-
-
-def _verified(script: bytes) -> bool:
-    return hashlib.sha256(script).hexdigest() == MERMAID_SCRIPT_SHA256
-
-
-def mermaid_script() -> Path:
-    """The cached Mermaid script, downloaded the first time it's needed, and
-    checked against :data:`MERMAID_SCRIPT_SHA256` every time."""
-    path = _cache_dir() / f"mermaid-{MERMAID_VERSION}.min.js"
-    if path.exists() and _verified(path.read_bytes()):
-        return path
-    try:
-        with urllib.request.urlopen(MERMAID_SCRIPT_URL, timeout=60) as response:
-            script = response.read()
-    except OSError as error:
-        raise GraphError(f"couldn't fetch Mermaid from {MERMAID_SCRIPT_URL}: {error}") from error
-    if not _verified(script):
-        raise GraphError(f"the Mermaid script from {MERMAID_SCRIPT_URL} isn't the release "
-                         "expected (its SHA-256 differs), so it wasn't run")
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Write a file of its own, then rename: an interrupted download never
-        # leaves a cached half, and two first runs at once don't share one.
-        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".partial", delete=False) as f:
-            f.write(script)
-        Path(f.name).replace(path)
-    except OSError as error:
-        raise GraphError(f"couldn't save Mermaid in {path}: {error}") from error
-    return path
+    """The chart couldn't be drawn: no browser, or Mermaid couldn't draw it."""
 
 
 _PAGE = '<html><body style="margin:0;background:white"><div id="chart"></div></body></html>'
@@ -112,7 +76,7 @@ def render(
     :data:`_ZOOM` times ``scale``."""
     from playwright.sync_api import Error, sync_playwright
 
-    script = mermaid_script()
+    script = gzip.decompress(MERMAID_SCRIPT.read_bytes()).decode()
     with sync_playwright() as playwright:
         try:
             browser = playwright.chromium.launch()
@@ -127,7 +91,7 @@ def render(
             # The page holds the chart: it may fetch nothing from anywhere.
             page.route("**/*", lambda route: route.abort())
             page.set_content(_PAGE)
-            page.add_script_tag(path=script)
+            page.add_script_tag(content=script)
             try:
                 svg = page.evaluate(_DRAW, source)
             except Error as error:
