@@ -124,7 +124,7 @@ LOT = KindSpec(
         ),
         Field(
             "refill_chain", "refill from (account or source chain)", option="--refill-chain",
-            required=False, applies=_managed, choices=_refill_chains, strict=True,
+            required=False, applies=_managed, choices=_refill_chains, strict=True, chain_role="source",
         ),
         Field(
             "refill_lot", "refill lot", option="--refill-lot", strict=True,
@@ -147,6 +147,7 @@ LOT = KindSpec(
         Field(
             "overflow_chain", "overflow into (account or destination chain)", option="--overflow-chain",
             required=False, applies=_managed, choices=_overflow_chains, strict=True,
+            chain_role="destination",
         ),
         Field(
             "overflow_lot", "overflow lot", option="--overflow-lot", strict=True,

@@ -85,6 +85,17 @@ def test_scheduled_add_offers_chains_at_the_prompt(
     assert last_row("scheduled.csv")["from_account"] == CHAIN
 
 
+def test_each_side_lists_only_the_chains_it_takes(
+    sim: Callable[..., Result], into_chain: str,
+) -> None:
+    """#143: the from side lists source chains, the to side destination ones."""
+    result = sim("scheduled", "add", answers=("2030-01", "Asset_Checking", into_chain, "100.00"))
+
+    assert result.exit_code == 0, result.output
+    listed = [line for line in result.output.splitlines() if line.startswith("chains: ")]
+    assert listed == [f"chains: {CHAIN}", f"chains: {into_chain}"]
+
+
 def test_the_account_list_shows_the_lots_an_account_must_name(
     sim: Callable[..., Result], savings_lots: tuple[str, str],
 ) -> None:
@@ -261,7 +272,20 @@ def test_guide_offers_no_chain_to_a_transfer_out_of_one(
     ))
 
     assert result.exit_code == 0, result.output
-    assert "not one of:" in result.output
+    assert f"'{CHAIN}' is a chain, and a transfer can't run from one chain into another" in result.output
+
+
+def test_guide_names_the_role_with_no_chain_of_the_right_one(
+    sim: Callable[..., Result], last_row: Callable[[str], pd.Series],
+) -> None:
+    """With no destination chain at all, the to side still says why a
+    source chain is refused (#143)."""
+    result = sim("calendar", "add", answers=(
+        "transfer", "2030-06", "Asset_Checking", CHAIN, "Asset_Savings", "", "42.00", "", "", "", "n", "",
+    ))
+
+    assert result.exit_code == 0, result.output
+    assert f"'{CHAIN}' is a source chain; only a destination chain or an account fits here" in result.output
 
 
 @pytest.mark.parametrize("kind", ["transfer", "transfer-balance"])

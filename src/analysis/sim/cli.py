@@ -1977,12 +1977,15 @@ def _pick_endpoints(
 ) -> tuple[str, str, str, str]:
     """Both sides of a transfer, from then to, each with its lot (#98)."""
     accounts, lot_info, chains, roles = endpoints
-    if from_account is None or to_account is None:
-        _echo_endpoints(accounts, lot_info, chains)
+    # Each side lists what it takes just before it is asked: its own role's chains.
+    if from_account is None:
+        _echo_endpoints(accounts, lot_info, endpoints.chains_for("source"))
     from_account, from_lot = _pick_endpoint(
         "from", from_account, from_lot, accounts=accounts, lot_info=lot_info,
         chains=endpoints.chains_for("source"), roles=roles, role="source",
     )
+    if to_account is None:
+        _echo_endpoints(accounts, lot_info, endpoints.chains_for("destination") if from_account not in chains else [])
     to_account, to_lot = _pick_endpoint(
         "to", to_account, to_lot, accounts=accounts, lot_info=lot_info,
         chains=endpoints.chains_for("destination"), roles=roles, role="destination",
@@ -3180,13 +3183,15 @@ def calendar_add_transfer_balance(
     if not date:
         date = _prompt_with_completion("date (YYYY-MM or YYYY-MM-DD)")
     date = _validate_month_date(date)
-    if from_account is None or to_account is None:
-        _echo_endpoints(accounts, lot_info, chains)
     # The source is one lot of an asset: "the balance" means one real balance.
+    if not from_account:
+        _echo_endpoints(assets, lot_info, [])
     from_account, from_lot = _pick_endpoint(
         "from", from_account or None, from_lot,
         accounts=assets, lot_info=lot_info, chains=[], allow_chain=False,
     )
+    if not to_account:
+        _echo_endpoints(accounts, lot_info, endpoints.chains_for("destination"))
     to_account, to_lot = _pick_endpoint(
         "to", to_account or None, to_lot, accounts=accounts, lot_info=lot_info,
         chains=endpoints.chains_for("destination"), roles=roles, role="destination",
