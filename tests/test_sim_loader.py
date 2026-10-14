@@ -16,6 +16,7 @@ from analysis.sim.loader import (
     DEFAULT_SCENARIO_NAME,
     DataDirtyRefused,
     LoadError,
+    LoadResult,
     growth_rule_name,
     load_scenario,
     read_current_scenario,
@@ -347,7 +348,7 @@ def test_calendar_series_with_a_space_rejected(
 def test_chain_name_with_a_space_rejected(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
 ) -> None:
-    (retire_alice_csv("chains") / "asset__roth first.csv").write_text(
+    (retire_alice_csv("chains/source") / "roth first.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Roth_Alice,,,,,\n"
     )
     with pytest.raises(LoadError) as ei:
@@ -356,6 +357,72 @@ def test_chain_name_with_a_space_rejected(
         "chain name 'roth first' may not contain a space" in issue
         for issue in ei.value.issues
     )
+
+
+def test_a_chain_file_outside_a_role_folder_is_rejected(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Issue #143: a chain's role is the folder it is in, so a file left
+    directly under chains/ (as before) says where it belongs."""
+    (retire_alice_csv("chains") / "asset__old.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any(
+        "chains/asset__old.csv: a chain file belongs in chains/source/ (drawn from) "
+        "or chains/destination/ (paid into), named <name>.csv" in issue
+        for issue in ei.value.issues
+    ), ei.value.issues
+
+
+def test_one_chain_in_both_role_folders_is_rejected(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    (retire_alice_csv("chains/destination") / "asset_checking_liquidity.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any("chain 'asset_checking_liquidity' is in both source/ and destination/" in issue
+               for issue in ei.value.issues), ei.value.issues
+
+
+def _move_chain(retire_alice_csv: Callable[[str], Path], name: str, role: str) -> None:
+    """Move a guide_chains chain into the other role folder."""
+    other = "destination" if role == "source" else "source"
+    (retire_alice_csv(f"chains/{other}") / f"{name}.csv").rename(retire_alice_csv(f"chains/{role}") / f"{name}.csv")
+
+
+@pytest.mark.parametrize(("chain", "role", "expected"), [
+    ("ss_split", "source",
+     "(ss_alice): to_account 'ss_split' is a source chain; to_account takes a destination chain"),
+    ("retirement_draw", "destination",
+     "(monthly_draw): from_account 'retirement_draw' is a destination chain; "
+     "from_account takes a source chain"),
+    ("retirement_draw", "destination",
+     "chains/destination/retirement_draw.csv line 2: account_name 'bridge' is a source chain"),
+    ("asset_checking_liquidity", "destination",
+     "(Asset_Checking): refill_chain 'asset_checking_liquidity' is a destination chain"),
+])
+def test_a_chain_is_used_the_way_its_role_says(
+    guide_chains: Path, retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult], chain: str, role: str, expected: str,
+) -> None:
+    """Issue #143: a source chain is only drawn from, a destination chain
+    only paid into, and a chain's steps share its role."""
+    _move_chain(retire_alice_csv, chain, role)
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any(expected in issue for issue in ei.value.issues), ei.value.issues
+
+
+def test_an_overflow_chain_must_be_a_destination(
+    guide_chains: Path, update_account_value, load_test_copy: Callable[[], LoadResult],
+) -> None:
+    update_account_value("Asset_Checking", "", overflow_chain="bridge")
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any("(Asset_Checking): overflow_chain 'bridge' is a source chain; overflow_chain takes "
+               "a destination chain (chains/destination/)" in issue for issue in ei.value.issues), ei.value.issues
 
 
 @pytest.mark.parametrize(
@@ -461,20 +528,20 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
     [
         ({}, "refill_chain", "Asset_Checking", "Asset_Checking"),
         (
-            {"asset__asset_checking_liquidity.csv": "Asset_Savings,,,,,\nAsset_Checking,,,,,\n"},
+            {"source/asset_checking_liquidity.csv": "Asset_Savings,,,,,\nAsset_Checking,,,,,\n"},
             "refill_chain", "asset_checking_liquidity",
             "asset_checking_liquidity -> Asset_Checking",
         ),
         (
             {
-                "asset__asset_checking_liquidity.csv": "Asset_Savings,,,,,\ninner,,,,,\n",
-                "asset__inner.csv": "Asset_Checking,,,,,\n",
+                "source/asset_checking_liquidity.csv": "Asset_Savings,,,,,\ninner,,,,,\n",
+                "source/inner.csv": "Asset_Checking,,,,,\n",
             },
             "refill_chain", "asset_checking_liquidity",
             "asset_checking_liquidity -> inner -> Asset_Checking",
         ),
         (
-            {"asset__spill.csv": "Asset_Savings,,,,,\nAsset_Checking,,,,,\n"},
+            {"destination/spill.csv": "Asset_Savings,,,,,\nAsset_Checking,,,,,\n"},
             "overflow_chain", "spill", "spill -> Asset_Checking",
         ),
     ],
@@ -518,7 +585,7 @@ def test_policy_loop_through_another_lot_loads(
     checking, is a legitimate loop through another lot's policy."""
     import pandas as pd
 
-    (retire_alice_csv("chains") / "asset__spill.csv").write_text(
+    (retire_alice_csv("chains/destination") / "spill.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"
     )
     values_path = retire_alice_csv("account_values.csv")
@@ -1694,7 +1761,7 @@ def test_chain_step_series_with_no_supplier_rejected(
     (engine._chain_step_allocation) -- always aux_kind='inflation', and
     only actually read when maximum is also set. Nothing supplying it would
     otherwise only fail once run, with an opaque 'no aux row' EngineError."""
-    chain_path = retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv"
+    chain_path = retire_alice_csv("chains/source") / "asset_checking_liquidity.csv"
     df = pd.read_csv(chain_path, dtype=str, keep_default_na=False)
     df.loc[0, "maximum"] = "1000.00"
     df.loc[0, "series"] = "no_such_inflation_series"
@@ -1712,7 +1779,7 @@ def test_chain_step_series_with_a_calendar_supplier_loads_cleanly(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
     append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
-    chain_path = retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv"
+    chain_path = retire_alice_csv("chains/source") / "asset_checking_liquidity.csv"
     df = pd.read_csv(chain_path, dtype=str, keep_default_na=False)
     df.loc[0, "maximum"] = "1000.00"
     df.loc[0, "series"] = "cpi"

@@ -43,7 +43,7 @@ def test_shares_must_add_up_to_100() -> None:
 
 
 def test_add_then_change_the_steps(test_data_dir: Path, test_scenarios_dir: Path, load_test_copy) -> None:
-    assert _sim(test_data_dir, "add", "backup", "Asset_Savings", "--maximum", "500").exit_code == 0
+    assert _sim(test_data_dir, "add", "backup", "Asset_Savings", "--maximum", "500", "--role", "source").exit_code == 0
     added = _sim(test_data_dir, "step", "add", "backup", "Asset_Brokerage_Joint", "--lot", "default",
                  "--percent", "50")
     assert added.exit_code == 0, added.output
@@ -54,7 +54,7 @@ def test_add_then_change_the_steps(test_data_dir: Path, test_scenarios_dir: Path
         ("Asset_Savings", "", "500.00", ""),
         ("Asset_Brokerage_Joint", "default", "", "50%"),  # the % is added on the way in
     ]
-    assert (test_scenarios_dir / "retire_alice" / "chains" / "asset__backup.csv").exists()
+    assert (test_scenarios_dir / "retire_alice" / "chains" / "source" / "backup.csv").exists()
     edited = _sim(test_data_dir, "step", "edit", "backup", "2", "--maximum", "", "--percent", "25%")
     assert edited.exit_code == 0, edited.output
     assert _sim(test_data_dir, "step", "move", "backup", "1", "3").exit_code == 0
@@ -66,10 +66,12 @@ def test_add_then_change_the_steps(test_data_dir: Path, test_scenarios_dir: Path
 
 @pytest.mark.parametrize(("args", "message"), [
     (["add", "Asset_Savings", "Asset_Checking"], "already a chain or an account's name"),
-    (["add", "x", "Nowhere"], "unknown step account or chain: 'Nowhere'"),
-    (["add", "x", "Asset_Savings", "--percent", "150"], "at most 100%"),
-    (["add", "x", "Asset_Savings", "--maximum", "12.5"], "invalid dollar value"),
-    (["add", "x", "asset_checking_liquidity", "--lot", "a"], "is a chain, so --lot must be blank"),
+    (["add", "x", "Nowhere", "--role", "source"], "unknown step account or chain: 'Nowhere'"),
+    (["add", "x", "Asset_Savings", "--percent", "150", "--role", "source"], "at most 100%"),
+    (["add", "x", "Asset_Savings", "--maximum", "12.5", "--role", "source"], "invalid dollar value"),
+    (["add", "x", "asset_checking_liquidity", "--lot", "a", "--role", "source"], "is a chain, so --lot must be blank"),
+    (["add", "x", "asset_checking_liquidity", "--role", "destination"],
+     "'asset_checking_liquidity' is a source chain; only a destination chain or an account fits here"),
     (["step", "add", "Asset_Savings", "Asset_Checking"], "already a one-step chain"),
     (["step", "add", "nope", "Asset_Checking"], "no chain 'nope'"),
     (["step", "rm", "asset_checking_liquidity", "3"], "has steps 1 to 2, not 3"),
@@ -90,7 +92,7 @@ def test_refused_changes_write_nothing(test_data_dir: Path, args: list[str], mes
 
 
 def test_a_chain_keeps_one_step(test_data_dir: Path, retire_alice_csv: Callable[[str], Path]) -> None:
-    (retire_alice_csv("chains") / "asset__solo.csv").write_text(
+    (retire_alice_csv("chains/source") / "solo.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
     result = _sim(test_data_dir, "step", "rm", "solo", "1")
     assert result.exit_code != 0 and "only step; `sim chain delete solo`" in result.output
@@ -106,11 +108,11 @@ def test_a_change_that_would_not_load_is_refused(test_data_dir: Path, test_scena
 def test_rename_follows_every_reference(guide_chains: Path, test_scenarios_dir: Path, derive_scenario,
                                         load_test_copy) -> None:
     derive_scenario("kid", "retire_alice", files={
-        "chains/asset__bridge.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"})
+        "chains/source/bridge.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"})
     result = _sim(guide_chains, "rename", "bridge", "gap")
     assert result.exit_code == 0, result.output
-    assert "retire_alice: chains/asset__bridge.csv -> chains/asset__gap.csv" in result.output
-    assert "kid: chains/asset__bridge.csv -> chains/asset__gap.csv" in result.output  # its override too
+    assert "retire_alice: chains/source/bridge.csv -> chains/source/gap.csv" in result.output
+    assert "kid: chains/source/bridge.csv -> chains/source/gap.csv" in result.output  # its override too
     assert _steps(test_scenarios_dir, "retirement_draw")[0][0] == "gap"
     renamed = _sim(guide_chains, "rename", "ss_split", "benefit_split")
     assert renamed.exit_code == 0, renamed.output
@@ -124,7 +126,7 @@ def test_rename_follows_every_reference(guide_chains: Path, test_scenarios_dir: 
 
 def test_a_copy_is_renamed_where_the_chain_starts(guide_chains: Path, derive_scenario) -> None:
     derive_scenario("kid", "retire_alice", files={
-        "chains/asset__bridge.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"})
+        "chains/source/bridge.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"})
     result = _sim(guide_chains, "rename", "bridge", "gap", scenario="kid")
     assert result.exit_code != 0 and "bridge comes from retire_alice; rename it there" in result.output
 
@@ -148,17 +150,17 @@ def test_delete_refuses_a_chain_in_use(guide_chains: Path, test_scenarios_dir: P
     result = _sim(guide_chains, "delete", "bridge")
     assert result.exit_code != 0
     assert "bridge is still used; change these first:\n  a step of retirement_draw (step 1)" in result.output
-    assert (test_scenarios_dir / "retire_alice" / "chains" / "asset__bridge.csv").exists()
+    assert (test_scenarios_dir / "retire_alice" / "chains" / "source" / "bridge.csv").exists()
     assert _sim(guide_chains, "step", "edit", "retirement_draw", "1", "--lot", "").exit_code == 0
     replaced = _sim(guide_chains, "step", "rm", "retirement_draw", "1")
     assert replaced.exit_code == 0, replaced.output
     assert _sim(guide_chains, "delete", "bridge").exit_code == 0
-    assert not (test_scenarios_dir / "retire_alice" / "chains" / "asset__bridge.csv").exists()
+    assert not (test_scenarios_dir / "retire_alice" / "chains" / "source" / "bridge.csv").exists()
 
 
 def test_guided_add_by_shares(test_data_dir: Path, test_scenarios_dir: Path) -> None:
     answers = "\n".join([
-        "from", "shares", "triple",
+        "source", "shares", "triple",
         "Asset_Savings", "50",
         "", "Asset_Brokerage_Joint", "default", "120", "30",  # blank before 100%, or too big a share, asks again
         "Asset_TraditionalIRA_Alice", "default", "20",
@@ -169,14 +171,14 @@ def test_guided_add_by_shares(test_data_dir: Path, test_scenarios_dir: Path) -> 
     assert _steps(test_scenarios_dir, "triple") == [
         ("Asset_Savings", "", "", "50%"), ("Asset_Brokerage_Joint", "default", "", "60%"),
         ("Asset_TraditionalIRA_Alice", "default", "", "")]
-    assert "sim chain add triple Asset_Savings --percent 50% --kind asset" in result.output
+    assert "sim chain add triple Asset_Savings --percent 50% --role source" in result.output
     assert "sim chain step add triple Asset_Brokerage_Joint --lot default --percent 60%" in result.output
     assert "--refill-chain triple" in result.output  # how to use a chain money comes from
 
 
 def test_guided_add_by_caps_into_a_destination(test_data_dir: Path, test_scenarios_dir: Path) -> None:
     answers = "\n".join([
-        "to", "caps", "Asset_Savings", "spill",  # an account's name is taken, so it is asked again
+        "destination", "caps", "Asset_Savings", "spill",  # an account's name is taken, so it is asked again
         "Asset_Savings", "-5", "2000",  # a negative cap is asked again
         "Asset_Brokerage_Joint", "default", "", "",
     ]) + "\n"
@@ -192,11 +194,11 @@ def test_guided_add_by_caps_into_a_destination(test_data_dir: Path, test_scenari
 def test_a_chain_file_is_found_by_its_exact_name(
     test_scenarios_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
-    chains = retire_alice_csv("chains")
-    for stem in ("asset__odd[1]", "asset__odd1", "asset__odd_more"):
+    chains = retire_alice_csv("chains/source")
+    for stem in ("odd[1]", "odd1", "odd_more"):
         (chains / f"{stem}.csv").write_text("account_name,lot,maximum,percent,series,cadence\n")
     scenario = test_scenarios_dir / "retire_alice"
-    assert chain_edit.chain_file(scenario, "odd[1]") == chains / "asset__odd[1].csv"
+    assert chain_edit.chain_file(scenario, "odd[1]") == chains / "odd[1].csv"
     assert chain_edit.chain_file(scenario, "odd*") is None
 
 
@@ -246,7 +248,8 @@ def test_step_rm_and_move_ask_for_what_is_left_out(test_data_dir: Path, test_sce
 
 
 def test_guided_rename_and_delete(test_data_dir: Path, test_scenarios_dir: Path) -> None:
-    assert _sim(test_data_dir, "add", "backup", "Asset_Savings").exit_code == 0
+    assert _sim(test_data_dir, "add", "backup", "Asset_Savings", input="destination\n").exit_code == 0
+    assert (test_scenarios_dir / "retire_alice" / "chains" / "destination" / "backup.csv").exists()
     renamed = _sim(test_data_dir, "rename", input="backup\nAsset_Savings\nreserve\n")
     assert renamed.exit_code == 0, renamed.output
     assert "'Asset_Savings' is already a chain or an account's name" in renamed.output
@@ -274,14 +277,14 @@ def test_guided_step_add_asks_only_what_options_leave_out(test_data_dir: Path, t
 def test_rename_refuses_a_name_a_descendant_already_uses(test_data_dir: Path, test_scenarios_dir: Path,
                                                          derive_scenario) -> None:
     derive_scenario("kid", "retire_alice", files={
-        "chains/asset__asset_checking_liquidity.csv":
+        "chains/source/asset_checking_liquidity.csv":
             "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n",
-        "chains/asset__reserve.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
+        "chains/source/reserve.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
     result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "reserve")
     assert result.exit_code != 0
     assert "a chain 'reserve' already applies in kid;" in result.output
     assert chain_edit.chain_file(test_scenarios_dir / "kid", "asset_checking_liquidity") is not None
-    assert chain_edit.read_steps(test_scenarios_dir / "kid" / "chains" / "asset__reserve.csv")[0][
+    assert chain_edit.read_steps(test_scenarios_dir / "kid" / "chains" / "source" / "reserve.csv")[0][
         "account_name"] == "Asset_Checking"
 
 
@@ -297,7 +300,7 @@ def test_an_empty_option_is_a_blank_column_not_a_question(test_data_dir: Path, t
 
 def test_rename_refuses_a_name_a_mix_in_brings(test_data_dir: Path, derive_scenario) -> None:
     derive_scenario("mix", "base", files={
-        "chains/asset__reserve.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
+        "chains/source/reserve.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
     derive_scenario("kid", "retire_alice:mix")
     result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "reserve")
     assert result.exit_code != 0
@@ -305,18 +308,18 @@ def test_rename_refuses_a_name_a_mix_in_brings(test_data_dir: Path, derive_scena
 
 
 def test_two_files_for_one_chain_are_refused(test_data_dir: Path, retire_alice_csv: Callable[[str], Path]) -> None:
-    (retire_alice_csv("chains") / "income__asset_checking_liquidity.csv").write_text(
+    (retire_alice_csv("chains/destination") / "asset_checking_liquidity.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nIncome_Interest,,,,,\n")
     result = _sim(test_data_dir, "delete", "asset_checking_liquidity")
     assert result.exit_code != 0
-    assert "retire_alice has 2 files for chain 'asset_checking_liquidity'" in result.output
-    assert (retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv").exists()
+    assert "chain 'asset_checking_liquidity' is in both source/ and destination/" in result.output
+    assert (retire_alice_csv("chains/source") / "asset_checking_liquidity.csv").exists()
 
 
 def test_rename_refuses_when_a_mix_in_shadows_the_chain(test_data_dir: Path, test_scenarios_dir: Path,
                                                         derive_scenario) -> None:
     derive_scenario("mix", "base", files={
-        "chains/asset__asset_checking_liquidity.csv":
+        "chains/source/asset_checking_liquidity.csv":
             "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
     derive_scenario("kid", "retire_alice:mix")
     result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "liquidity")
@@ -327,14 +330,14 @@ def test_rename_refuses_when_a_mix_in_shadows_the_chain(test_data_dir: Path, tes
 
 def test_an_underscore_template_is_not_a_chain(test_scenarios_dir: Path,
                                                retire_alice_csv: Callable[[str], Path]) -> None:
-    (retire_alice_csv("chains") / "_asset__example.csv").write_text(
+    (retire_alice_csv("chains/source") / "_example.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
     assert chain_edit.chain_file(test_scenarios_dir / "retire_alice", "example") is None
 
 
 def test_rename_leaves_underscore_templates_alone(test_data_dir: Path,
                                                   retire_alice_csv: Callable[[str], Path]) -> None:
-    template = retire_alice_csv("chains") / "_asset__example.csv"
+    template = retire_alice_csv("chains/source") / "_example.csv"
     text = "account_name,lot,maximum,percent,series,cadence\nasset_checking_liquidity,,,,,\n"
     template.write_text(text)
     result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "liquidity")
@@ -342,21 +345,20 @@ def test_rename_leaves_underscore_templates_alone(test_data_dir: Path,
     assert template.read_text() == text
 
 
-def test_a_chain_of_income_chains_is_an_income_chain(test_data_dir: Path, test_scenarios_dir: Path) -> None:
-    assert _sim(test_data_dir, "add", "earned", "Income_Interest").exit_code == 0
-    result = _sim(test_data_dir, "add", "all_earned", "earned")
+def test_add_asks_the_role_and_names_it(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    result = _sim(test_data_dir, "add", "earned", "Income_Interest", input="sideways\ndestination\n")
     assert result.exit_code == 0, result.output
-    assert "added chain all_earned (income, 1 step(s))" in result.output
+    assert "one of: source, destination" in result.output
+    assert "added destination chain earned (1 step(s))" in result.output
+    assert chain_edit.chain_file(test_scenarios_dir / "retire_alice", "earned") == (
+        test_scenarios_dir / "retire_alice" / "chains" / "destination" / "earned.csv")
 
 
-def test_chain_list_names_two_files_for_one_chain(test_data_dir: Path,
-                                                  retire_alice_csv: Callable[[str], Path]) -> None:
-    (retire_alice_csv("chains") / "income__asset_checking_liquidity.csv").write_text(
-        "account_name,lot,maximum,percent,series,cadence\nIncome_Interest,,,,,\n")
-    result = CliRunner().invoke(main, ["sim", "chain", "list", "--scenario", "retire_alice",
-                                       "--data-dir", str(test_data_dir)], terminal_width=400)
-    assert result.exit_code == 0, result.output
-    assert "2 files for chain" in result.output
+def test_a_step_takes_only_a_chain_of_the_same_role(test_data_dir: Path) -> None:
+    assert _sim(test_data_dir, "add", "earned", "Income_Interest", "--role", "destination").exit_code == 0
+    result = _sim(test_data_dir, "step", "add", "earned", "asset_checking_liquidity")
+    assert result.exit_code != 0
+    assert "'asset_checking_liquidity' is a source chain; only a destination chain" in result.output
 
 
 def test_an_empty_maximum_option_is_a_blank_column(test_data_dir: Path, test_scenarios_dir: Path) -> None:

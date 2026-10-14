@@ -18,7 +18,16 @@ from analysis.sim import calendar_guide
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import LoadError, LoadResult
 
-CHAIN = "asset_checking_liquidity"  # the prototype's one interior chain
+CHAIN = "asset_checking_liquidity"  # the prototype's one interior chain, a source
+INTO = "savings_first"  # a destination chain, from the ``into_chain`` fixture
+
+
+@pytest.fixture
+def into_chain(retire_alice_csv: Callable[[str], Path]) -> str:
+    """A destination chain paying into Asset_Savings, for a transfer's to side."""
+    (retire_alice_csv("chains/destination") / f"{INTO}.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    return INTO
 
 
 @pytest.fixture
@@ -151,6 +160,16 @@ def test_a_transfer_cannot_run_from_one_chain_into_another(sim: Callable[..., Re
     assert "can't run from one chain into another" in typed.output
 
 
+def test_each_side_takes_only_chains_of_its_role(sim: Callable[..., Result], into_chain: str) -> None:
+    """A from side names a source chain, a to side a destination (#143)."""
+    backwards = sim("scheduled", "add", "2030-01", into_chain, "Asset_Checking", "1.00")
+    assert backwards.exit_code != 0
+    assert f"'{into_chain}' is a destination chain; only a source chain or an account fits here" in backwards.output
+    typed = sim("scheduled", "add", answers=("2030-01", "Asset_Checking", CHAIN, into_chain, "1.00"))
+    assert typed.exit_code == 0, typed.output
+    assert f"'{CHAIN}' is a source chain; only a destination chain or an account fits here" in typed.output
+
+
 @pytest.mark.parametrize("file", ["scheduled.csv", "calendar.csv"])
 def test_the_loader_refuses_a_transfer_between_two_chains(
     file: str, retire_alice_csv: Callable[[str], Path],
@@ -175,14 +194,15 @@ def test_the_loader_refuses_a_transfer_between_two_chains(
 
 
 @pytest.mark.parametrize(("source", "destination", "leg"), [
-    # Out of a chain is a draw down its steps, Asset_Savings first.
+    # Out of a source chain is a draw down its steps, Asset_Savings first.
     (CHAIN, "Asset_Checking", ("Asset_Savings", "Asset_Checking")),
-    # Into a chain is a sweep into its steps.
-    ("Asset_Checking", CHAIN, ("Asset_Checking", "Asset_Savings")),
+    # Into a destination chain is a sweep into its steps.
+    ("Asset_Checking", INTO, ("Asset_Checking", "Asset_Savings")),
 ])
 def test_a_one_off_transfer_through_a_chain_is_traced_to_its_rule(
     source: str, destination: str, leg: tuple[str, str],
     sim: Callable[..., Result], load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    into_chain: str,  # noqa: ARG001
 ) -> None:
     """Calendar transfers take chains now (#98), and run like a fixed_amount
     rule's, every leg traced to the synthesized rule (a sweep's legs too, not

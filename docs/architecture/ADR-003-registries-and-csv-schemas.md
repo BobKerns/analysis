@@ -333,7 +333,7 @@ flowchart TB
     end
     subgraph base["scenarios/base/ (root scenario)"]
         base_files["accounts.csv, account_values.csv,
-scheduled.csv, calendar.csv, chains/*.csv, ..."]
+scheduled.csv, calendar.csv, chains/*/*.csv, ..."]
         base_series["series/*.csv — this scenario's
 growth-rate/inflation projections"]
         base_override["aux/, prices/, itemizations/
@@ -369,7 +369,7 @@ flowchart LR
 (name, kind, subkind, series, tax_character)"]
     values["account_values.csv
 (account_name, lot, symbol, series, ...)"]
-    chains["chains/*.csv
+    chains["chains/*/*.csv
 (account_name, lot)"]
     scheduled["scheduled.csv
 (from_account, to_account, series, person)"]
@@ -407,10 +407,10 @@ prior_year_end_balance = @name| itemizations
     scheduled -->|amount = @name| itemizations
 ```
 
-A chain's own file (`chains/<kind>__<name>.csv`) is itself a list of `account_name` (+ `lot`)
+A chain's own file (`chains/<role>/<name>.csv`) is itself a list of `account_name` (+ `lot`)
 rows, so it is both a target (from `scheduled.csv`/`calendar.csv`/`accounts.csv`
 `refill_chain`/`overflow_chain`) and a source of the same `account_name`/`lot` references shown
-above; it is folded into "chains/*.csv" here rather than drawn as its own layer.
+above; it is folded into "chains/*/*.csv" here rather than drawn as its own layer.
 
 #### 4.1 Shared base: `data_repo/persons.csv`
 
@@ -548,12 +548,12 @@ Opening state for the accounts declared in §4.2, **one row per lot** ([ADR-005]
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `minimum_balance` | dollars | | look-ahead refill floor (§4.7): a debit that would drop the lot's balance below this triggers a draw on `refill_chain` *before* the debit posts. `0`/blank means no floor. |
-| `refill_chain` | text | | account or named `chains/*.csv` chain to draw from when `minimum_balance` would be breached; required for `refill_target`/`refill_amount` to have any effect. May name another lot of the same account. |
+| `refill_chain` | text | | account or named source chain (`chains/source/`) to draw from when `minimum_balance` would be breached; required for `refill_target`/`refill_amount` to have any effect. May name another lot of the same account. |
 | `refill_lot` | text | | the lot of `refill_chain`, when it names an account |
 | `refill_target` | dollars | | when set, a triggered refill draws enough to bring the balance up to this fixed level (must be >= `minimum_balance`). Mutually exclusive with `refill_amount`. |
 | `refill_amount` | dollars | | when set, a triggered refill draws this fixed amount, or more if needed to reach `minimum_balance`. Mutually exclusive with `refill_target`. Neither set means refill exactly to `minimum_balance`. |
 | `maximum_balance` | dollars | | month-end overflow ceiling (§4.7): after each month's rules post, any excess above this is swept into `overflow_chain`. `NULL`/blank means unbounded. |
-| `overflow_chain` | text | | account or named `chains/*.csv` chain to sweep excess into |
+| `overflow_chain` | text | | account or named destination chain (`chains/destination/`) to sweep excess into |
 | `overflow_lot` | text | | the lot of `overflow_chain`, when it names an account |
 
 #### 4.4 `data_repo/aux/`, `data_repo/prices/` (shared) and `scenarios/<name>/series/` (per-scenario)
@@ -633,14 +633,14 @@ The main parent's whole line comes first; each mix-in then contributes its own l
 | `accounts.csv` | `name` |
 | `account_values.csv` | `account_name` |
 | `scheduled.csv` | `name` |
-| `chains/<kind>__<name>.csv` | whole file by chain name |
+| `chains/<role>/<name>.csv` | whole file by chain name, in either role folder |
 | `calendar.csv` | a named row overrides the inherited row with the same `name`, whatever its other fields; any other row matches on (`date`, `kind`, `scheduled_name`, `account_1`, `lot_1`, `account_2`, `lot_2`, `series`, `amount`), so naming an inherited unnamed row (to vary it) still replaces it; two differently named rows sharing all those fields are an error. A `latent_factor` row's key is its `name` alone, since its other key fields are blank |
 | `lifespan.csv` | `person` |
 | `year_to_date.csv` | `name` |
 
 A child row with a new key is appended; one whose key matches the parent replaces every column the child's file has, a blank cell included, so an override must repeat every column it wants to keep, not just the changed ones. A column the child's header leaves out keeps the parent's value. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits; only a scenario with no parent of its own must supply `accounts.csv`, `account_values.csv`, and `scheduled.csv`. A load error about a row names the file it was authored in, by its path within the data repo, and the line its record starts on (blank lines counted), not its position among the merged rows.
 
-`analysis sim scenario create <name> <parent> [<mixin> ...]` creates one: it writes `scenario.csv` with the parent link (and any mix-ins) header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, and a `series/` folder holding a `README.md` that explains what goes there (so the folder isn't empty), verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a).
+`analysis sim scenario create <name> <parent> [<mixin> ...]` creates one: it writes `scenario.csv` with the parent link (and any mix-ins) header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, a `series/` folder holding a `README.md` that explains what goes there (so the folder isn't empty), and `chains/source/` and `chains/destination/`, each kept by an empty `.gitignore`, with a header-only `_example.csv` in `source/` that the loader skips; it verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a).
 
 #### 4.6 Per-scenario: `data_repo/scenarios/<name>/scheduled.csv`
 
@@ -675,7 +675,7 @@ A child row with a new key is appended; one whose key matches the parent replace
 
 Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` into `series`, and `base_amount` into `amount`. Each is now read per `amount_rule_kind` (see the rows above); the loader rejects a row that still carries a retired column, and rejects `series` on a rule kind that does not read it.
 
-#### 4.7 Per-scenario: `data_repo/scenarios/<name>/chains/<kind>__<name>.csv`
+#### 4.7 Per-scenario: `data_repo/scenarios/<name>/chains/<role>/<name>.csv`
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
@@ -686,7 +686,7 @@ Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` in
 | `series` | text | | optional inflation series for `maximum`; the amount is based at the scenario start month; only meaningful when `maximum` is set |
 | `cadence` | enum | | `monthly` or `annual`; controls compounding for `series` and requires `series` |
 
-Steps are scanned in file order. Each step's allocation is `percent` of whatever amount is still outstanding when the scan reaches it (default 100%, so an unallocated step consumes all of it), capped at `maximum` if set — the two may be combined, e.g. "up to $X, or Y% of what's left, whichever is smaller." Whatever a step doesn't supply — whether because its own account (after any refill_chain draw, see below) is exhausted or because the step's percent/maximum allocation was smaller than what's still needed — falls through to the next step. A cascading sequence of percentages (e.g. 50%, then 100% of what's left) distributes a draw across multiple steps in parallel rather than draining each one in turn; ordinary rows with neither field preserve the original "drain each step fully before moving on" liquidity-chain behavior. Chain names share one namespace with account names (the loader rejects a chain whose name collides with an account, since every real account already has an implicit leaf chain of its own name). A chain file's `<kind>` is drawn from a closed registry, currently `asset` and `income`; the kind is extensible without engine changes.
+Steps are scanned in file order. Each step's allocation is `percent` of whatever amount is still outstanding when the scan reaches it (default 100%, so an unallocated step consumes all of it), capped at `maximum` if set — the two may be combined, e.g. "up to $X, or Y% of what's left, whichever is smaller." Whatever a step doesn't supply — whether because its own account (after any refill_chain draw, see below) is exhausted or because the step's percent/maximum allocation was smaller than what's still needed — falls through to the next step. A cascading sequence of percentages (e.g. 50%, then 100% of what's left) distributes a draw across multiple steps in parallel rather than draining each one in turn; ordinary rows with neither field preserve the original "drain each step fully before moving on" liquidity-chain behavior. Chain names share one namespace with account names (the loader rejects a chain whose name collides with an account, since every real account already has an implicit leaf chain of its own name).
 
 There is deliberately no per-step reserve column: a step's account is "exhausted" once it is at or below its own `minimum_balance` (§4.3, default 0) — checked *after* that lot's own `refill_chain` (if any) has been drawn, not before. This is why `minimum_balance`/`refill_chain` live on the lot (§4.3), not the chain step: the same floor applies no matter which chain reaches the lot, and refilling is handled once, in one place.
 
@@ -696,7 +696,7 @@ A step naming the lot being refilled (or swept) is skipped, since a lot can't fu
 
 Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue -- a balance can only exceed its ceiling from accumulated credits over a month -- so it stays a month-end sweep after all of a month's rules have posted.
 
-`<kind>` is `asset` or `income` (`registries.CHAIN_KINDS`): the kind of the accounts the chain's steps name, matching the implicit leaf chain every account has.
+**A chain's role is the folder its file is in** (`registries.CHAIN_ROLES`), and the file name is the chain name. A `source` chain is drawn from: a rule's `from_account`, a calendar transfer's `account_1`, a lot's `refill_chain`, an `rmd` rule's chain. A `destination` chain is paid into: a rule's `to_account`, a calendar transfer's `account_2`, a lot's `overflow_chain`. A step naming another chain names one of the same role. The loader rejects a chain used against its role, a chain file directly under `chains/`, and one name in both folders of one scenario; a leaf chain (one lot) plays either part. No chain is both: money drawn through a chain and money paid through it follow different policies, so the role also says which one a reader follows. Money drawn from a source chain may first refill the lots it reaches, but never passes through their overflow; money paid into a destination chain may overflow on from the lots it reaches, but never passes through their refill chains. `sim chain show --mermaid` draws a chain that way, every arrow pointing the way money moves.
 
 **Withdrawing from a taxable lot.** A draw or sweep leg out of a `taxable` non-cash lot (e.g. in a `brokerage_taxable` account) splits into a `return_of_capital` leg and a gain leg (`engine._post_withdrawal`). Basis is tracked **per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)); an account's basis is the sum over its lots (the `account_state` view). The split is pro-rata to the fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount // balance`); it reduces that lot's basis, and its `quantity` when tracked. The gain leg is `stcg` if the lot was acquired a year or less before the sale, else `ltcg`. Money moved into a basis-tracked lot adds to its basis (and shares), except built-in growth, which is total return and leaves basis alone. A realized loss (basis exceeds proceeds) is a negative gain leg, the same convention as a `year_to_date.csv` loss carryforward. The lot needs an `opening_cost_basis` (a zero balance starts at basis 0); an untracked basis (`NULL`) raises, telling the author to add it to `account_values.csv`.
 
@@ -901,7 +901,8 @@ since one that opens empty and is funded later is common.
 The commands that add a transfer (`transfer add`, `calendar add transfer`,
 the guided `calendar add`, `scheduled add`) pick each side the same way,
 whether a value is typed at a prompt or given on the command line: an
-account or a chain, then the account's lot. The lot is asked whenever a
+account or a chain (a source chain on the from side, a destination chain on
+the to side), then the account's lot. The lot is asked whenever a
 blank one would not say which lot is meant -- for an investment account, or
 any account with more than one lot or none named `default` -- and a chain
 takes none. A
@@ -921,8 +922,9 @@ the file and every reference (`from_account`/`to_account`,
 steps) in that scenario and every scenario inheriting from it. `delete` is
 refused while anything in the scenario uses the chain, and deleting a
 scenario's copy of an inherited chain lets the parent's apply again. The
-guided `chain add` asks whether the chain is a source or a destination and
-whether to drain its steps in order, split the total by shares, or cap each
+guided `chain add` asks whether the chain is a source or a destination
+(`--role`, asked when left out, and it decides the folder the file is
+written in) and whether to drain its steps in order, split the total by shares, or cap each
 step, and writes the matching `percent` and `maximum` cells: shares of the
 total become shares of what is left, with the last step left plain. The
 other commands ask for whatever is left out: the chain, the step, the new
@@ -996,3 +998,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#134](https://github.com/BobKerns/analysis/issues/134): the `transfer_balance` kind moves one lot's whole balance on a date, with `calendar add transfer-balance` (§3, new §3.11, §4.8, §7).
 - [#136](https://github.com/BobKerns/analysis/issues/136): a child's named `calendar.csv` row overrides the inherited row of that name whatever its other fields; an override keeps the columns its file leaves out; load errors name a row's file and line (§4.5).
 - [#129](https://github.com/BobKerns/analysis/issues/129): `chain add|step|rename|delete` edit chain files, each guided when its arguments are left out (§7).
+- [#143](https://github.com/BobKerns/analysis/issues/143): a chain's role, `source` or `destination`, is the folder its file is in, replacing the `asset`/`income` kind prefix; the loader rejects a chain used against its role (§4.3, §4.5, §4.7, §7).

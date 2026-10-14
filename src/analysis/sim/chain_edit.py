@@ -1,7 +1,8 @@
 """Editing chain files: the CSV side of ``sim chain add|step|rename|delete`` (issue #129).
 
-A chain is one file, ``chains/<kind>__<name>.csv`` (ADR-003 §4.7), and a
-scenario inheriting it may override the whole file. These helpers read and
+A chain is one file, ``chains/<role>/<name>.csv`` (ADR-003 §4.7), where the
+role is ``source`` or ``destination``, and a scenario inheriting it may
+override the whole file. These helpers read and
 write those files and the references to a chain by name; the CLI runs them
 inside a staged edit (``staging.staged_edit``), so a change that would not
 load is never written.
@@ -13,11 +14,12 @@ import csv
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
+from analysis.sim import registries
 from analysis.sim.lineage import load_order
 
 __all__ = [
-    "CHAIN_COLUMNS", "REFERENCE_COLUMNS", "chain_file", "defining_scenario", "descendants",
-    "read_steps", "rename_references", "shares_to_percents", "write_steps",
+    "CHAIN_COLUMNS", "REFERENCE_COLUMNS", "chain_file", "chain_files", "defining_scenario", "descendants",
+    "new_chain_file", "read_steps", "rename_references", "shares_to_percents", "write_steps",
 ]
 
 CHAIN_COLUMNS = ("account_name", "lot", "maximum", "percent", "series", "cadence")
@@ -36,22 +38,35 @@ class AmbiguousChain(ValueError):
     """A scenario folder has more than one file for the same chain name."""
 
 
+def chain_files(scenario_dir: Path) -> list[Path]:
+    """The scenario folder's own chain files, in both role folders. The
+    loader skips a '_' file (a template such as ``_example.csv``), so this
+    does too."""
+    chains = scenario_dir / "chains"
+    return [
+        path
+        for role in registries.CHAIN_ROLES
+        for path in sorted((chains / role).glob("*.csv"))
+        if not path.stem.startswith("_")
+    ]
+
+
+def new_chain_file(scenario_dir: Path, role: str, name: str) -> Path:
+    """Where a new ``role`` chain ``name`` is written in a scenario folder."""
+    return scenario_dir / "chains" / role / f"{name}.csv"
+
+
 def chain_file(scenario_dir: Path, name: str) -> Path | None:
     """The scenario folder's own file for chain ``name``, if it has one.
-    Two files for one name (``asset__x.csv`` and ``income__x.csv``) raise
-    ``AmbiguousChain``: the loader would quietly keep only the last, so an
-    edit to either could miss the chain that actually runs."""
-    chains = scenario_dir / "chains"
+    Two files for one name (``source/x.csv`` and ``destination/x.csv``)
+    raise ``AmbiguousChain``: the loader refuses the scenario, and an edit
+    to either could miss the one meant."""
     # Compare names, not a glob: a chain name may hold '[' or '*'.
-    found = sorted(
-        path for path in chains.glob("*.csv")
-        # The loader skips a '_' file (a template such as _asset__example.csv).
-        if not path.stem.startswith("_") and path.stem.partition("__")[2] == name
-    ) if chains.is_dir() else []
+    found = [path for path in chain_files(scenario_dir) if path.stem == name]
     if len(found) > 1:
         raise AmbiguousChain(
             f"{scenario_dir.name} has {len(found)} files for chain {name!r} "
-            f"({', '.join(p.name for p in found)}); remove all but one first")
+            f"({', '.join(f'{p.parent.name}/{p.name}' for p in found)}); remove all but one first")
     return found[0] if found else None
 
 
@@ -116,8 +131,8 @@ def _rename_cells(path: Path, columns: tuple[str, ...], old: str, new: str) -> b
 
 def name_problem(name: str) -> str | None:
     """Why ``name`` can't be a new chain's name, or None. The name becomes
-    part of a filename in ``chains/``, so it must stay one path segment the
-    loader's ``<kind>__<name>.csv`` glob finds."""
+    part of a filename in ``chains/<role>/``, so it must stay one path
+    segment the loader's ``<name>.csv`` glob finds."""
     if not name or any(c.isspace() for c in name):
         return "a chain name is one word, without spaces"
     if any(c in name for c in ":/\\") or name.startswith("."):
@@ -127,7 +142,7 @@ def name_problem(name: str) -> str | None:
 
 def rename_references(scenario_dir: Path, old: str, new: str) -> list[str]:
     """Rename chain ``old`` to ``new`` throughout one scenario folder: its own
-    file for the chain (kept under the same kind), the steps of its other
+    file for the chain (kept in the same role folder), the steps of its other
     chains, and every column that may name a chain. Returns what changed, as
     paths relative to the folder."""
     if problem := name_problem(new):
@@ -135,20 +150,17 @@ def rename_references(scenario_dir: Path, old: str, new: str) -> list[str]:
     changed: list[str] = []
     own = chain_file(scenario_dir, old)
     if own is not None:
-        kind = own.stem.split("__", 1)[0]
+        role = own.parent.name
         if (taken := chain_file(scenario_dir, new)) is not None:
-            raise FileExistsError(f"{scenario_dir.name} already has chains/{taken.name}")
-        own.rename(own.with_name(f"{kind}__{new}.csv"))
-        changed.append(f"chains/{own.name} -> chains/{kind}__{new}.csv")
+            raise FileExistsError(f"{scenario_dir.name} already has chains/{taken.parent.name}/{taken.name}")
+        own.rename(own.with_name(f"{new}.csv"))
+        changed.append(f"chains/{role}/{own.name} -> chains/{role}/{new}.csv")
     for filename, columns in REFERENCE_COLUMNS.items():
         if _rename_cells(scenario_dir / filename, columns, old, new):
             changed.append(filename)
-    chains = scenario_dir / "chains"
-    for path in sorted(chains.glob("*.csv")) if chains.is_dir() else []:
-        if path.stem.startswith("_"):
-            continue  # a template the loader skips; leave it as written
+    for path in chain_files(scenario_dir):
         if _rename_cells(path, ("account_name",), old, new):
-            changed.append(f"chains/{path.name}")
+            changed.append(f"chains/{path.parent.name}/{path.name}")
     return changed
 
 

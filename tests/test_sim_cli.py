@@ -293,10 +293,10 @@ def test_sim_scenario_create_derives_and_activates(test_data_dir: Path, tmp_path
 
     scenario_dir = data / "scenarios" / "late"
     assert (data / ".current_scenario").read_text().strip() == "late"
-    assert (scenario_dir / "chains").is_dir()
-    assert (scenario_dir / "chains" / ".gitignore").read_text() == ""
-    assert (scenario_dir / "chains" / "_asset__example.csv").read_text() == (
-        "account_name,maximum,percent,series,cadence\n"
+    for role in ("source", "destination"):
+        assert (scenario_dir / "chains" / role / ".gitignore").read_text() == ""
+    assert (scenario_dir / "chains" / "source" / "_example.csv").read_text() == (
+        "account_name,lot,maximum,percent,series,cadence\n"
     )
     # series/ starts with a README rather than empty, so git keeps it (#91).
     assert (scenario_dir / "series" / "README.md").read_text() == SERIES_README

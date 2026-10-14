@@ -876,6 +876,7 @@ def load_scenario(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, warnings,
     )
     _validate_chains(chains, model_rows, leaves, issues, money_resolver=money_resolver)
+    _validate_chain_roles(chains, scheduled_rows, calendar_rows, model_rows, issues)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
     _validate_lifespan(lifespan_rows, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
@@ -2731,8 +2732,8 @@ def _validate_series_references(
         supplied.add((params.get("aux_kind", "rate"), series))
 
     demanded: set[tuple[str, str]] = set()
-    for name, (kind, rows) in chains.items():
-        for where, row in _located(rows, f"chains/{kind}__{name}.csv"):
+    for name, (role, rows) in chains.items():
+        for where, row in _located(rows, _chain_label(role, name)):
             series = row.get("series", "")
             if not series or not row.get("maximum"):
                 continue  # _chain_step_allocation only reads series when maximum is also set
@@ -2816,27 +2817,22 @@ def _validate_tags(where: str, name: str, raw: str,
         issues.append(f"{where} ({name}): {e}")
 
 
-def _chain_name_from_filename(path: Path) -> tuple[str, str] | None:
-    """Parse a chain filename: ``<kind>__<name>.csv``, name literal (no
-    space decoding -- ADR-003 §4.1 names that become filenames use their
-    filename form everywhere, spaces forbidden)."""
-    stem = path.stem
-    if "__" not in stem:
-        return None
-    kind, name = stem.split("__", 1)
-    return kind, name
+def _chain_label(role: str, name: str) -> str:
+    """A chain file as error messages name it: ``chains/<role>/<name>.csv``."""
+    return f"chains/{role}/{name}.csv"
 
 
 def _read_chain_files(
     data_dir: Path, scenario_name: str, issues: list[str],
 ) -> dict[str, tuple[str, list[dict[str, str]]]]:
-    """Read ``chains/*.csv`` for a scenario and every scenario it inherits
-    from, in load order.
+    """Read ``chains/<role>/*.csv`` for a scenario and every scenario it
+    inherits from, in load order: chain name to its role and step rows.
 
     Unlike the other per-scenario CSVs, chains merge by WHOLE FILE per chain
-    name (ADR-003 §4.7): a later scenario's ``chains/<kind>__<name>.csv``
-    entirely replaces an earlier one's file of that name; a chain no later
-    scenario overrides is inherited unchanged.
+    name (ADR-003 §4.7): a later scenario's file for a chain entirely
+    replaces an earlier one's, whichever role directory either is in; a
+    chain no later scenario overrides is inherited unchanged. The file name
+    is the chain name, literally (ADR-003 §4.1: no space decoding).
     """
     scenarios_dir = data_dir / "scenarios"
     chains: dict[str, tuple[str, list[dict[str, str]]]] = {}
@@ -2845,17 +2841,63 @@ def _read_chain_files(
         if not chains_dir.is_dir():
             continue
         for path in sorted(chains_dir.glob("*.csv")):
-            if path.stem.startswith("_"):
-                continue
-            parsed = _chain_name_from_filename(path)
-            if parsed is None:
-                issues.append(f"chains/{path.name}: filename must be '<kind>__<name>.csv'")
-                continue
-            kind, chain_name = parsed
-            chains[chain_name] = (
-                kind, _read_csv(path, issues, label=_data_label(path, data_dir)),
-            )
+            if not path.stem.startswith("_"):
+                issues.append(
+                    f"{_data_label(path, data_dir)}: a chain file belongs in chains/source/ "
+                    "(drawn from) or chains/destination/ (paid into), named <name>.csv"
+                )
+        own: dict[str, str] = {}
+        for role in registries.CHAIN_ROLES:
+            for path in sorted((chains_dir / role).glob("*.csv")):
+                if path.stem.startswith("_"):
+                    continue
+                chain_name = path.stem
+                if chain_name in own:
+                    issues.append(
+                        f"scenarios/{name}/chains: chain '{chain_name}' is in both "
+                        f"{own[chain_name]}/ and {role}/; keep one"
+                    )
+                    continue
+                own[chain_name] = role
+                chains[chain_name] = (
+                    role, _read_csv(path, issues, label=_data_label(path, data_dir)),
+                )
     return chains
+
+
+def _validate_chain_roles(
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
+    scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
+    model_rows: list[dict[str, str]],
+    issues: list[str],
+) -> None:
+    """Each named chain is used the way its role says (ADR-003 §4.7): a
+    source chain is drawn from, a destination chain paid into, and a chain's
+    steps that are themselves chains share its role."""
+
+    def check(where: str, column: str, chain: str, role: str) -> None:
+        if chain in chains and chains[chain][0] != role:
+            issues.append(
+                f"{where}: {column} '{chain}' is a {chains[chain][0]} chain; "
+                f"{column} takes a {role} chain (chains/{role}/)"
+            )
+
+    for rows, filename, from_col, to_col in (
+        (scheduled_rows, "scheduled.csv", "from_account", "to_account"),
+        (calendar_rows, "calendar.csv", "account_1", "account_2"),
+    ):
+        for where, row in _located(rows, filename):
+            where = f"{where} ({row.get('name', '')})" if row.get("name") else where
+            check(where, from_col, row.get(from_col, ""), "source")
+            check(where, to_col, row.get(to_col, ""), "destination")
+    for where, row in _located(model_rows, "account_values.csv"):
+        where = f"{where} ({row.get('account_name', '')})"
+        check(where, "refill_chain", row.get("refill_chain", ""), "source")
+        check(where, "overflow_chain", row.get("overflow_chain", ""), "destination")
+    for name, (role, rows) in chains.items():
+        for where, row in _located(rows, _chain_label(role, name)):
+            check(where, "account_name", row.get("account_name", ""), role)
 
 
 def _reject_cycles(edges: dict[str, set[str]], issues: list[str], *, label: str) -> None:
@@ -2917,15 +2959,10 @@ def _validate_chains(
 
     edges: dict[str, set[str]] = {name: set() for name in chains}
     members: dict[str, list[str]] = {name: [] for name in chains}
-    for name, (kind, rows) in chains.items():
-        if kind not in registries.CHAIN_KINDS:
-            issues.append(
-                f"chains/{kind}__{name}.csv: unknown kind '{kind}'; "
-                f"allowed: {sorted(registries.CHAIN_KINDS)}"
-            )
+    for name, (role, rows) in chains.items():
         if not rows:
-            issues.append(f"chains/{kind}__{name}.csv: must have at least one row")
-        for where, row in _located(rows, f"chains/{kind}__{name}.csv"):
+            issues.append(f"{_chain_label(role, name)}: must have at least one row")
+        for where, row in _located(rows, _chain_label(role, name)):
             member = row.get("account_name", "")
             if not member:
                 issues.append(f"{where}: missing account_name")
@@ -3173,26 +3210,25 @@ def _write_intent(
     counts["account_model_member"] = member_count
 
     # Liquidity chains (ADR-003 §4.7): one implicit leaf chain per lot, plus
-    # one interior chain per chains/*.csv file, in one shared name space.
+    # one interior chain per chains/<role>/*.csv file, in one shared name space.
     chain_ids: dict[str, int] = {}
     for leaf, lot_id in lot_ids.items():
         account_name = lot_account[leaf]
-        account = next(a for a in accounts if a["name"] == account_name)
         cur = con.execute(
-            "INSERT INTO chain(name, kind, account_id, lot_id) VALUES (?,?,?,?)",
-            (leaf, account["kind"], account_ids[account_name], lot_id),
+            "INSERT INTO chain(name, role, account_id, lot_id) VALUES (?,NULL,?,?)",
+            (leaf, account_ids[account_name], lot_id),
         )
         chain_ids[leaf] = inserted_id(cur)
-    for name, (kind, _rows) in chains.items():
+    for name, (role, _rows) in chains.items():
         cur = con.execute(
-            "INSERT INTO chain(name, kind, account_id, lot_id) VALUES (?,?,NULL,NULL)",
-            (name, kind),
+            "INSERT INTO chain(name, role, account_id, lot_id) VALUES (?,?,NULL,NULL)",
+            (name, role),
         )
         chain_ids[name] = inserted_id(cur)
     counts["chain"] = len(chain_ids)
 
     step_count = 0
-    for name, (_kind, rows) in chains.items():
+    for name, (_role, rows) in chains.items():
         for i, row in enumerate(rows, start=1):
             con.execute(
                 "INSERT INTO chain_steps(chain_id, step_order, draw_from_chain_id, "

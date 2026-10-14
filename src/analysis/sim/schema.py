@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -65,16 +65,20 @@ CREATE INDEX idx_account_owner ON account(owner);
 -- set: the chain IS that account) or an INTERIOR named chain (account_id NULL,
 -- with >=1 chain_steps rows, walked in step_order until a step's amount need
 -- is satisfied). Every real account gets an implicit leaf chain at load time
--- (name = account.name, kind = account.kind), so `chain.name` is one namespace
--- covering both kinds -- account.refill_chain_id/overflow_chain_id and
+-- (name = account.name), so `chain.name` is one namespace covering both
+-- kinds -- account.refill_chain_id/overflow_chain_id and
 -- chain_steps.draw_from_chain_id always reference `chain(id)`, never
 -- `account(id)` directly, so no union-typed reference column is ever needed.
+-- An interior chain's `role` says which way money moves through it: 'source'
+-- (drawn from) or 'destination' (paid into). A leaf plays either part, so its
+-- role is NULL.
 CREATE TABLE chain (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
-    kind       TEXT NOT NULL,
+    role       TEXT CHECK (role IN ('source', 'destination')),
     account_id INTEGER REFERENCES account(id),
-    lot_id     INTEGER REFERENCES account_model_member(id)
+    lot_id     INTEGER REFERENCES account_model_member(id),
+    CHECK ((account_id IS NULL) = (role IS NOT NULL))
 );
 CREATE INDEX idx_chain_account ON chain(account_id);
 

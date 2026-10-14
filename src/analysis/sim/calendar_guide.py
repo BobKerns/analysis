@@ -46,6 +46,8 @@ class GuideContext:
     lots: Mapping[str, tuple[bool, Sequence[str]]] = field(default_factory=dict)
     # interior chains, which a transfer may name in place of an account
     chains: Sequence[str] = ()
+    # each chain's role (ADR-003 §4.7); a chain left out fits either side
+    chain_roles: Mapping[str, str] = field(default_factory=dict)
     scheduled_names: Sequence[str] = ()
     # aux_kind -> the series names of that kind
     series: Mapping[str, Sequence[str]] = field(default_factory=dict)
@@ -341,16 +343,21 @@ def _lots_of(account_param: str) -> Callable[[GuideContext, Answers], Sequence[s
     return choices
 
 
+def chains_of(ctx: GuideContext, role: str) -> list[str]:
+    """The chains that may stand where a ``role`` chain is needed."""
+    return [c for c in ctx.chains if ctx.chain_roles.get(c, role) == role]
+
+
 def _to_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:
-    """Accounts and chains for the to side; no chain when the from side is
-    one, since a transfer can't run from one chain into another."""
+    """Accounts and destination chains for the to side; no chain when the
+    from side is one, since a transfer can't run from one chain into another."""
     if answers.get("from_account", "") in ctx.chains:
         return list(ctx.accounts)
-    return [*ctx.accounts, *ctx.chains]
+    return [*ctx.accounts, *chains_of(ctx, "destination")]
 
 
 def _from_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
-    return [*ctx.accounts, *ctx.chains]
+    return [*ctx.accounts, *chains_of(ctx, "source")]
 
 
 KINDS: tuple[KindSpec, ...] = (

@@ -32,7 +32,7 @@ def set_rmd_source(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Non
         if chain:
             name, members = chain
             lines = "".join(f"{account},{lot},,,,\n" for account, lot in members)
-            (retire_alice_csv("chains") / f"asset__{name}.csv").write_text(
+            (retire_alice_csv("chains/source") / f"{name}.csv").write_text(
                 "account_name,lot,maximum,percent,series,cadence\n" + lines)
     return _set
 

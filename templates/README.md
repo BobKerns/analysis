@@ -30,7 +30,7 @@ SQL schema alongside the source CSV.
         calendar.csv              # CalendarEvents
         lifespan.csv              # optional per-person final_month override ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.9)
         year_to_date.csv          # optional partial-first-year catch-up facts ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.10)
-        chains/<kind>__<name>.csv # optional named liquidity chains ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.7)
+        chains/<role>/<name>.csv  # optional named chains: role is source or destination ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.7)
         series/<kind>__<series>.csv  # this scenario's growth-rate/inflation series (no shared default; §4.4)
         aux/, prices/, itemizations/  # optional per-scenario overrides ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.1d)
 ```
@@ -134,7 +134,7 @@ The loader enforces referential integrity (strict join validation), so missing o
 
 ### Lots
 
-Each `account_values.csv` row is one **lot**: a position inside one account. An account you don't split has a single lot named `default`, and you can leave the `lot` column blank for it. Every file that names an account has a `lot` column beside it: `lot` in `account_values.csv` and `chains/*.csv`, `from_lot`/`to_lot` in `scheduled.csv` and `year_to_date.csv`, `lot_1`/`lot_2` in `calendar.csv`. Lot names are free-form (`default`, `1`, `2024-03`, ...) but may not contain `:`.
+Each `account_values.csv` row is one **lot**: a position inside one account. An account you don't split has a single lot named `default`, and you can leave the `lot` column blank for it. Every file that names an account has a `lot` column beside it: `lot` in `account_values.csv` and the chain files, `from_lot`/`to_lot` in `scheduled.csv` and `year_to_date.csv`, `lot_1`/`lot_2` in `calendar.csv`. Lot names are free-form (`default`, `1`, `2024-03`, ...) but may not contain `:`.
 
 **Investment accounts** (`brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) must always name their lot, everywhere; a blank lot is a load error that lists the account's lots. Other accounts can leave it blank. A chain named in an account column takes no lot.
 

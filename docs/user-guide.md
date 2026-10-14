@@ -102,7 +102,7 @@ project word could be confused with a general word, that is pointed out.
 | **Scenario** | One full model of your household finances. Stored as a folder under `scenarios/<name>/`. |
 | **Derived scenario** | A scenario that has `parent_scenario` set. It starts from its parent (and any mix-ins) and only lists what is different. See Part 1. |
 | **Lot** | One holding inside an account. A brokerage account can have several lots: different funds, or shares bought on different dates. Every account has at least one lot. It is named `default` unless you split the account into more than one lot. |
-| **Chain** | A named, ordered list of places money can come from, or go to. Think: try this place first, then that place. Every account (and every lot) already has its own one-step chain, automatically. You only write a `chains/*.csv` file when you want more than one step. See Part 4.6 and [the chains guide](guides/chains.md). |
+| **Chain** | A named, ordered list of places money can come from, or go to. Think: try this place first, then that place. Every account (and every lot) already has its own one-step chain, automatically. You only write a chain file, `chains/source/<name>.csv` or `chains/destination/<name>.csv`, when you want more than one step. See Part 4.6 and [the chains guide](guides/chains.md). |
 | **Series** | A named set of numbers a scenario can refer to by name: a growth or interest rate (`rate__*`), or an inflation projection (`inflation__*`). These files live in that scenario's own `series/` folder. This is a different idea from *asset class*, below. |
 | **`aux/`** | Shared tax-law facts every scenario uses unless it says otherwise: tax brackets, RMD tables, filing status. |
 | **`series/`** | A scenario's own growth-rate and inflation assumptions. Unlike `aux/`, there is no shared copy at the top of the data repo — each scenario has its own, inherited from its parent the same way `accounts.csv` is. |
@@ -300,7 +300,7 @@ Asset_Brokerage_Joint,inherited_2029,AAA,2029-03-15,500,,,50000.00
   changed.
 
 - For an **investment account**, you must always name the lot, everywhere
-  the account is used: in `chains/*.csv`, in `scheduled.csv`'s
+  the account is used: in the chain files, in `scheduled.csv`'s
   `from_lot`/`to_lot` columns, and in `calendar.csv`'s `lot_1`/`lot_2`
   columns. If you leave the lot blank, the scenario will fail to load, and
   the error message will list the account's real lots.
@@ -360,7 +360,7 @@ lists that lot — even a chain file with just one line — instead of naming
 the account directly:
 
 ```csv
-# chains/asset__sell_the_2029_lot.csv
+# chains/source/sell_the_2029_lot.csv
 account_name,lot
 Asset_Brokerage_Joint,inherited_2029
 ```
@@ -374,9 +374,9 @@ sell_2029_lot,sell_the_2029_lot,,Asset_Checking,,one_off,fixed_amount,75000.00,n
 A `one_off_transfer` event in `calendar.csv` can do the same: its
 `account_1`/`account_2` columns may name a chain just as `scheduled.csv`'s
 `from_account`/`to_account` can. The chain's name, used in `from_account`, is
-the part of its filename after the double underscore, exactly as written: so
-`asset__sell_the_2029_lot.csv` is the chain `sell_the_2029_lot`. A chain name
-has no spaces. Leave `from_lot` blank — naming a chain already says which lot to
+its filename without `.csv`, exactly as written: so
+`chains/source/sell_the_2029_lot.csv` is the chain `sell_the_2029_lot`. It is
+in `source/` because money is drawn from it. A chain name has no spaces. Leave `from_lot` blank — naming a chain already says which lot to
 use. Set `tax_character` to `none`: this value is ignored once the money is
 drawn through a chain, but the column must still have some value the loader
 recognizes; it cannot be left empty. What actually triggers the automatic
@@ -411,7 +411,7 @@ flowchart LR
     checking["Asset_Checking\nminimum_balance = $2,000"]
     reserve["Asset_Checking:reserve lot"]
     savings["Asset_Savings"]
-    checking -- "refill_chain (below minimum, before the payment)" --> reserve
+    reserve -- "refill_chain (below minimum, before the payment)" --> checking
     checking -- "overflow_chain (above maximum, month end)" --> savings
 ```
 
@@ -423,10 +423,13 @@ an account directly. If you name an account directly, use
 `refill_lot`/`overflow_lot` to say which of that account's lots to use — the
 same account-plus-lot pairing used everywhere else in this tool. Every
 account and lot already has its own automatic one-step chain, so you only
-need to write a `chains/<kind>__<name>.csv` file when you want more than one
-step — for example, "try savings first, then this brokerage lot, then that
-one" — with each step taking a `percent` or a `maximum` amount before
+need to write a chain file when you want more than one step — for example,
+"try savings first, then this brokerage lot, then that one" — with each step taking a `percent` or a `maximum` amount before
 whatever is left moves on to the next step.
+
+A chain drawn from (a `from_account`, a `refill_chain`) goes in
+`chains/source/<name>.csv`; a chain paid into (a `to_account`, an
+`overflow_chain`) goes in `chains/destination/<name>.csv`.
 
 `sim chain list` shows the scenario's chains and what uses each one, and
 `sim chain show` draws them as trees (`--mermaid` for a flowchart).
