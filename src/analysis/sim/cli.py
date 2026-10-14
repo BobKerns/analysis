@@ -5905,7 +5905,10 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
     except chain_graph.GraphError as error:
         raise click.ClickException(str(error)) from error
     if graph_file is not None:
-        graph_file.write_bytes(image)
+        try:
+            graph_file.write_bytes(image)
+        except OSError as error:
+            raise click.ClickException(f"couldn't write {graph_file}: {error}") from error
         click.echo(f"wrote {graph_file}")
         return
     if protocol is None:

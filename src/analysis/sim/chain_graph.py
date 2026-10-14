@@ -15,11 +15,13 @@ the same pinned release the notebook loads, and kept in the user's cache.
 from __future__ import annotations
 
 import base64
+import hashlib
 import math
 import os
 import re
 import select
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Literal
@@ -34,6 +36,10 @@ MERMAID_URL = f"https://cdn.jsdelivr.net/npm/mermaid@{MERMAID_VERSION}/dist/merm
 """Where the notebook's flowchart widget imports Mermaid from."""
 MERMAID_SCRIPT_URL = f"https://cdn.jsdelivr.net/npm/mermaid@{MERMAID_VERSION}/dist/mermaid.min.js"
 """The same release as a plain script, which a page can load from a local file."""
+MERMAID_SCRIPT_SHA256 = "a43bc1afd446f9c4cc66ac5dd45d02e8d65e26fc5344ec0ef787f88d6ddb6f9e"
+"""``mermaid.min.js`` of that release (as npm publishes it). The script sees
+the chart, so a copy that doesn't match is never run. Change it with
+``MERMAID_VERSION``."""
 
 type Protocol = Literal["kitty", "iterm"]
 type ImageFormat = Literal["png", "svg"]
@@ -50,21 +56,33 @@ def _cache_dir() -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "analysis"
 
 
+def _verified(script: bytes) -> bool:
+    return hashlib.sha256(script).hexdigest() == MERMAID_SCRIPT_SHA256
+
+
 def mermaid_script() -> Path:
-    """The cached Mermaid script, downloaded the first time it's needed."""
+    """The cached Mermaid script, downloaded the first time it's needed, and
+    checked against :data:`MERMAID_SCRIPT_SHA256` every time."""
     path = _cache_dir() / f"mermaid-{MERMAID_VERSION}.min.js"
-    if path.exists():
+    if path.exists() and _verified(path.read_bytes()):
         return path
     try:
         with urllib.request.urlopen(MERMAID_SCRIPT_URL, timeout=60) as response:
             script = response.read()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Write then rename, so an interrupted download never leaves a cached half.
-        partial = path.with_suffix(".partial")
-        partial.write_bytes(script)
-        partial.replace(path)
     except OSError as error:
-        raise GraphError(f"couldn't fetch Mermaid from {MERMAID_SCRIPT_URL} into {path}: {error}") from error
+        raise GraphError(f"couldn't fetch Mermaid from {MERMAID_SCRIPT_URL}: {error}") from error
+    if not _verified(script):
+        raise GraphError(f"the Mermaid script from {MERMAID_SCRIPT_URL} isn't the release "
+                         "expected (its SHA-256 differs), so it wasn't run")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Write a file of its own, then rename: an interrupted download never
+        # leaves a cached half, and two first runs at once don't share one.
+        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".partial", delete=False) as f:
+            f.write(script)
+        Path(f.name).replace(path)
+    except OSError as error:
+        raise GraphError(f"couldn't save Mermaid in {path}: {error}") from error
     return path
 
 
@@ -106,6 +124,8 @@ def render(
                 raise GraphError(f"no browser to draw the chart with: {_INSTALL_HINT}") from error
         def draw(scale: float):
             page = browser.new_page(device_scale_factor=scale)
+            # The page holds the chart: it may fetch nothing from anywhere.
+            page.route("**/*", lambda route: route.abort())
             page.set_content(_PAGE)
             page.add_script_tag(path=script)
             try:

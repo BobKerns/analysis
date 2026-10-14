@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import tempfile
 from pathlib import Path
 
@@ -174,3 +175,40 @@ def test_render_draws_a_png_with_mermaid() -> None:
     assert abs(grown - width * chain_graph._ZOOM) <= 2
     # Fitted to a narrow one, it shrinks to the width asked for.
     assert abs(chain_graph.png_size(chain_graph.render(chart, scale=1.0, fit_width=100))[0] - 100) <= 2
+
+
+class _Response:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_) -> None:
+        pass
+
+    def read(self) -> bytes:
+        return self.body
+
+
+def test_a_mismatched_mermaid_script_is_never_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    cached = tmp_path / "analysis" / f"mermaid-{chain_graph.MERMAID_VERSION}.min.js"
+    cached.parent.mkdir()
+    cached.write_bytes(b"tampered")  # a bad cached copy is fetched again
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout: _Response(b"also tampered"))
+    with pytest.raises(chain_graph.GraphError, match="SHA-256 differs"):
+        chain_graph.mermaid_script()
+    monkeypatch.setattr(chain_graph, "MERMAID_SCRIPT_SHA256", hashlib.sha256(b"good").hexdigest())
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout: _Response(b"good"))
+    assert chain_graph.mermaid_script().read_bytes() == b"good" == cached.read_bytes()
+    assert not list(cached.parent.glob("*.partial"))
+
+
+def test_graph_file_that_cant_be_written(
+    guide_chains: Path, tmp_path: Path, stub_render: list[tuple[str, str]],
+) -> None:
+    result = _sim(guide_chains, "bridge", "--graph-file", str(tmp_path / "missing" / "chart.png"))
+    assert result.exit_code == 1 and f"couldn't write {tmp_path / 'missing' / 'chart.png'}" in result.output
