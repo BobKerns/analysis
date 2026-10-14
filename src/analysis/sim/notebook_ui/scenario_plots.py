@@ -91,8 +91,25 @@ class MermaidWidget(anywidget.AnyWidget):
     carries its own JavaScript, so it draws in VS Code, which runs no script
     an Output widget's HTML holds, as well as in JupyterLab."""
 
+    # VS Code's widget renderer loads RequireJS, so a global ``define`` is
+    # there, and the UMD-wrapped libraries Mermaid bundles call it instead
+    # of filling in their exports: 11.17.2 fails as it loads (issue #153).
+    # Hiding ``define`` during the import sends them down their CommonJS
+    # path, as in JupyterLab. Each widget runs this module afresh, so the
+    # import is shared through the page: a second widget loading while the
+    # first waits would otherwise save the hidden ``undefined`` and restore it.
     _esm = f"""
-    import mermaid from "{MERMAID_URL}";
+    const loading = Symbol.for("analysis.MermaidWidget.mermaid");
+    globalThis[loading] ??= (async () => {{
+        const define = globalThis.define;
+        globalThis.define = undefined;
+        try {{
+            return (await import("{MERMAID_URL}")).default;
+        }} finally {{
+            globalThis.define = define;
+        }}
+    }})();
+    const mermaid = await globalThis[loading];
     mermaid.initialize({{startOnLoad: false}});
     let drawn = 0;
     function render({{model, el}}) {{
