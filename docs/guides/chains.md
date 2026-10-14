@@ -27,9 +27,16 @@ sim chain show                  # each chain as a tree, with each lot's limits
 sim chain show Asset_Checking   # just the chains that reach this account
 sim chain show bridge --graph   # one chain's flowchart, drawn in the terminal
 sim chain show bridge --graph --rules    # with the rules that use it
+sim chain show bridge --graph --depth lots  # only as far as the first lot on each path
 sim chain show bridge --mermaid # its Mermaid source, to paste into markdown
 sim chain show bridge --graph-file bridge.svg  # saved as an image (.png or .svg)
 ```
+
+`--depth` makes a deep chain's chart easier to read: `1` draws only one step
+either side of the chain, `lots` follows each path out only as far as the
+first lot (not on to its refill or overflow), and `all`, the default, draws
+everything. A box with a dashed outline is where the chart stopped short of
+what it leads to.
 
 `--graph` needs a terminal that shows images, such as iTerm2, kitty, Ghostty,
 WezTerm or VS Code's; anywhere else it writes a PNG and prints its path. See
@@ -37,7 +44,8 @@ WezTerm or VS Code's; anywhere else it writes a PNG and prints its path. See
 
 The [scenario overview notebook](../../notebooks/scenario_overview.ipynb)
 shows the same chains as a table, and one chain at a time as a flowchart
-picked from a list, with a **Rules** checkbox to add the rules that use it.
+picked from a list, with a **Rules** checkbox to add the rules that use it
+and a **Depth** list that does what `--depth` does.
 The flowchart draws itself with Mermaid loaded from the web, so it needs a
 connection in VS Code and JupyterLab alike.
 

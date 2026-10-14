@@ -24,10 +24,15 @@ from analysis.sim import registries
 from analysis.sim.connection import ScenarioConnection
 
 __all__ = [
-    "ChainMap", "LotPolicy", "Step", "Use", "chain_map", "chain_tree", "mermaid", "share_text",
+    "DEPTHS", "ChainMap", "Depth", "LotPolicy", "Step", "Use", "chain_map", "chain_tree", "mermaid",
+    "share_text",
 ]
 
 type UseKind = Literal["draw", "sweep", "refill", "overflow", "step"]
+type Depth = Literal["1", "lots", "all"]
+DEPTHS: tuple[Depth, ...] = ("1", "lots", "all")
+"""How far a flowchart reaches out from its chains (issue #149): one step,
+as far as the first lot on each path, or all the way."""
 
 
 @dataclass(frozen=True)
@@ -278,11 +283,15 @@ def _quoted(text: str) -> str:
 _PICKED = "fill:#ffe08a,stroke:#b8860b,stroke-width:3px,color:#000"
 """The highlight on the chains a chart was drawn for: dark text on amber
 reads in a light or a dark theme."""
+_MORE = "stroke-dasharray:6 4"
+"""The outline of a node the chart stops at short of all it leads to."""
 _REFILL = '"refill, before a debit"'
 _OVERFLOW = '"overflow, month end"'
 
 
-def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool = False) -> str:
+def mermaid(
+    cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool = False, depth: Depth = "all",
+) -> str:
     """A Mermaid flowchart of ``names`` (default: every interior chain) and
     everything money passes through on its way through them, every arrow
     pointing the way money moves, left to right (issue #143).
@@ -301,6 +310,15 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool =
     The rules and calendar transfers using a shown chain are left out unless
     ``rules`` asks for them: they are many, often fire once, and each adds a
     node and perhaps a loop, where the chains are what the chart is for.
+
+    ``depth`` limits how far the chart reaches out into what the chains
+    asked for are made of (issue #149): ``"1"``, their steps (or a lot's
+    refill or overflow chain) and no further; ``"lots"``, down through
+    sub-chains as far as the first lot on each path, not on to that lot's
+    refill or overflow; ``"all"``, everything. What uses those chains is
+    shown one step out regardless, though under ``"1"`` only for the chains
+    asked for. A node the chart stops at short of what it leads to has a
+    dashed outline.
     """
     roots = list(cmap.steps) if names is None else list(names)
     shown: list[str] = []
@@ -315,13 +333,26 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool =
             edges.append((source, arrow, label, target))
 
     expanded: set[tuple[str, str | None]] = set()
+    stopped: list[str] = []  # nodes shown without what they lead to
 
-    def expand(node: str, role: str | None) -> None:
+    def leads_on(node: str, role: str | None) -> bool:
+        if cmap.is_interior(node):
+            return bool(cmap.steps[node])
+        policy = cmap.policies.get(node)
+        return policy is not None and bool(
+            (role != "destination" and policy.refill_chain)
+            or (role != "source" and policy.overflow_chain))
+
+    def expand(node: str, role: str | None, root: bool = False) -> None:
         """Show ``node`` and what money passes through it, reached as a
         ``role`` chain's step (a root lot has no role, so it brings both
         its policies)."""
         role = cmap.roles.get(node, role)
         show(node)
+        if not root and (depth == "1" or (depth == "lots" and not cmap.is_interior(node))):
+            if leads_on(node, role):
+                stopped.append(node)
+            return
         if (node, role) in expanded:  # a refill or overflow may lead back here
             return
         expanded.add((node, role))
@@ -343,12 +374,16 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool =
             expand(policy.overflow_chain, "destination")
 
     for root in roots:
-        expand(root, None)
+        expand(root, None, root=True)
+    # A node stopped at on one path may be followed on another.
+    opened = {node for node, _role in expanded}
+    cut = [node for node in dict.fromkeys(stopped) if node not in opened]
     # One step further along the money from what is shown so far: the lots
     # that refill from a shown source chain or overflow into a shown
     # destination, the chains a root is a step of, and (with ``rules``) the
     # far end of each rule using a shown chain. None is followed on from there.
-    reached = list(shown)
+    # Under depth 1, only from the roots: whatever else is shown is already a step out.
+    reached = list(roots) if depth == "1" else list(shown)
     parents: list[str] = []
     for root in roots:
         for use in cmap.uses.get(root, ()):
@@ -370,7 +405,7 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool =
             show(leaf)
             edge(leaf, "-.->", _OVERFLOW, policy.overflow_chain)
     # A root's parent chains bring their rules too, but nothing further.
-    for node in dict.fromkeys([*reached, *parents]) if rules else ():
+    for node in dict.fromkeys(reached if depth == "1" else [*reached, *parents]) if rules else ():
         for use in cmap.uses.get(node, ()):
             if use.kind == "draw":
                 show(use.detail)
@@ -378,13 +413,15 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool =
             elif use.kind == "sweep":
                 show(use.detail)
                 edge(use.detail, "-->", _quoted(use.by), node)
-    return _render(cmap, shown, edges, roots if names is not None else [])
+    return _render(cmap, shown, edges, roots if names is not None else [], cut)
 
 
 def _render(
     cmap: ChainMap, shown: list[str], edges: list[tuple[str, str, str, str]], picked: list[str],
+    cut: list[str],
 ) -> str:
-    """The Mermaid text for ``shown`` and ``edges``, ``picked`` highlighted.
+    """The Mermaid text for ``shown`` and ``edges``, ``picked`` highlighted
+    and ``cut`` (the nodes the chart stops at early) outlined in dashes.
 
     Mermaid lays a flowchart out left to right only while it has no loop:
     given one, it turns an edge around and the chart reads both ways. Money
@@ -422,6 +459,9 @@ def _render(
         drawn.append(f"    {source} {arrow}|{label}| {target}")
     lines += _grouped(cmap, list(copies.items()), "ac", with_policy=False)
     lines += drawn
+    if cut:
+        lines.append(f"    classDef more {_MORE}")
+        lines.append(f"    class {','.join(ids[node] for node in cut)} more")
     if picked:
         lines.append(f"    classDef picked {_PICKED}")
         lines.append(f"    class {','.join(ids[root] for root in dict.fromkeys(picked))} picked")
