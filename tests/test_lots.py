@@ -262,7 +262,7 @@ def test_post_transfer_reduces_quantity_pro_rata_and_zeroes_on_full_drain(
 
 
 def _liquidity_chain(retire_alice_csv: Callable[[str], Path]) -> Path:
-    return retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv"
+    return retire_alice_csv("chains/source") / "asset_checking_liquidity.csv"
 
 
 def test_chain_file_lot_column_matches_account_lot_spelling(

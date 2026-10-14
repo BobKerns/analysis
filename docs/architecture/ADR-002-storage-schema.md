@@ -43,8 +43,8 @@ data_repo/
             lifespan.csv    # per-person final month
             year_to_date.csv # partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10)
             chains/
-                asset__asset_checking_liquidity.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
-                income__salary_split.csv
+                source/asset_checking_liquidity.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
+                destination/salary_split.csv
         retire_2032/
             ...             # a derived scenario names `parent_scenario` (plus any
                             # colon-separated mix-ins) in scenario.csv and ships
@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 33) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 34) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -175,16 +175,20 @@ CREATE INDEX idx_account_owner ON account(owner);
 -- set: the chain IS that account) or an INTERIOR named chain (account_id NULL,
 -- with >=1 chain_steps rows, walked in step_order until a step's amount need
 -- is satisfied). Every real account gets an implicit leaf chain at load time
--- (name = account.name, kind = account.kind), so `chain.name` is one namespace
--- covering both kinds -- account.refill_chain_id/overflow_chain_id and
+-- (name = account.name), so `chain.name` is one namespace covering both
+-- kinds -- account.refill_chain_id/overflow_chain_id and
 -- chain_steps.draw_from_chain_id always reference `chain(id)`, never
 -- `account(id)` directly, so no union-typed reference column is ever needed.
+-- An interior chain's `role` says which way money moves through it: 'source'
+-- (drawn from) or 'destination' (paid into). A leaf plays either part, so its
+-- role is NULL.
 CREATE TABLE chain (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
-    kind       TEXT NOT NULL,
+    role       TEXT CHECK (role IN ('source', 'destination')),
     account_id INTEGER REFERENCES account(id),
-    lot_id     INTEGER REFERENCES account_model_member(id)
+    lot_id     INTEGER REFERENCES account_model_member(id),
+    CHECK ((account_id IS NULL) = (role IS NOT NULL))
 );
 CREATE INDEX idx_chain_account ON chain(account_id);
 
@@ -662,7 +666,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `security` | The name of each symbol lots hold (from `securities.csv`). |
 | `security_allocation` | What each symbol is made of by asset class, as dated weight sets (from `allocations.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.1b). |
 | `scheduled_transaction` | Recurring or one-off rule that emits transfer events on a cadence; `amount_rule_kind` selects the formula. |
-| `chain` | A place money can be drawn from or deposited into: either a leaf (one lot) or a named, ordered, reusable liquidity chain. One namespace over both. |
+| `chain` | A place money can be drawn from or deposited into: either a leaf (one lot) or a named, ordered, reusable liquidity chain, which is either a source (drawn from) or a destination (paid into). One namespace over both. |
 | `chain_steps` | The ordered steps of an interior chain — which chain each step draws from, and the maximum/percent allocation limiting that step. |
 | `calendar` | The patch sequence this scenario applies to the running model (one row per intent/run file). |
 | `calendar_event` | One patch on one date; `kind` selects the semantics; the common parameters are columns (`scheduled_name`, `account_1`, `account_2`, `series`, `amount`, `param_date`, `tax_character`) and `payload_json` carries the rest. `name` is a stable identifier (required, unique, for a row varied under [ADR-006](ADR-006-ensemble-scenarios.md)); its `vary_*` columns mark the row's `amount` or `date` as drawn per ensemble member rather than literal. |
@@ -828,7 +832,7 @@ There are no migrations: the database files are always generated, never upgraded
 - Exact vocabulary of `account.subkind` values — drafted in code, will become a checked list in [ADR-003](ADR-003-registries-and-csv-schemas.md).
 - Exact vocabulary of `aux_table.kind` — same.
 - Whether `tax_year_summary` should also store the inputs used (bracket-table aux_table id, filing status). Likely yes; added when the tax scan is implemented.
-- ~~Exact CSV layout for the per-scenario folder~~ — **settled** in [ADR-003](ADR-003-registries-and-csv-schemas.md) §4 (`scenario.csv`, `accounts.csv`, `account_values.csv`, `scheduled.csv`, `calendar.csv`, `lifespan.csv`, `year_to_date.csv`, `chains/<kind>__<name>.csv`).
+- ~~Exact CSV layout for the per-scenario folder~~ — **settled** in [ADR-003](ADR-003-registries-and-csv-schemas.md) §4 (`scenario.csv`, `accounts.csv`, `account_values.csv`, `scheduled.csv`, `calendar.csv`, `lifespan.csv`, `year_to_date.csv`, `chains/<role>/<name>.csv`).
 
 ## Amendments
 
@@ -842,3 +846,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#68](https://github.com/BobKerns/analysis/issues/68): `calendar_event.vary_tail_dependence` (schema 32).
 - [#104](https://github.com/BobKerns/analysis/issues/104): a refill leg's `transfer_event.parent_event_id` points at the debit that triggered it.
 - [#115](https://github.com/BobKerns/analysis/issues/115): `calendar_event.vary_process`, `vary_persistence` and `vary_innovation_sd` (schema 33).
+- [#143](https://github.com/BobKerns/analysis/issues/143): `chain.kind` replaced by `chain.role` (`source`/`destination`, NULL for a leaf) (schema 34).

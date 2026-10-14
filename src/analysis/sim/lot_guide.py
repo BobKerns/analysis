@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from analysis.sim import registries
-from analysis.sim.calendar_guide import Answers, Field, GuideContext, KindSpec, lot_needed
+from analysis.sim.calendar_guide import Answers, Field, GuideContext, KindSpec, chains_of, lot_needed
 
 # Subkinds whose lots may need a prior Dec 31 balance, for a first-year RMD.
 _RMD_SUBKINDS = frozenset({"traditional_ira", "traditional_401k"})
@@ -27,8 +27,12 @@ def _accounts(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: AR
     return list(ctx.accounts)
 
 
-def _chains(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
-    return [*ctx.accounts, *ctx.chains]
+def _refill_chains(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
+    return [*ctx.accounts, *chains_of(ctx, "source")]
+
+
+def _overflow_chains(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
+    return [*ctx.accounts, *chains_of(ctx, "destination")]
 
 
 def _taxable(ctx: GuideContext, answers: Answers) -> bool:
@@ -119,8 +123,8 @@ LOT = KindSpec(
             help="A debit that would go below it first draws on the refill chain.",
         ),
         Field(
-            "refill_chain", "refill from (account or chain)", option="--refill-chain",
-            required=False, applies=_managed, choices=_chains, strict=True,
+            "refill_chain", "refill from (account or source chain)", option="--refill-chain",
+            required=False, applies=_managed, choices=_refill_chains, strict=True, chain_role="source",
         ),
         Field(
             "refill_lot", "refill lot", option="--refill-lot", strict=True,
@@ -141,8 +145,9 @@ LOT = KindSpec(
             help="Any excess at month end is swept into the overflow chain.",
         ),
         Field(
-            "overflow_chain", "overflow into (account or chain)", option="--overflow-chain",
-            required=False, applies=_managed, choices=_chains, strict=True,
+            "overflow_chain", "overflow into (account or destination chain)", option="--overflow-chain",
+            required=False, applies=_managed, choices=_overflow_chains, strict=True,
+            chain_role="destination",
         ),
         Field(
             "overflow_lot", "overflow lot", option="--overflow-lot", strict=True,

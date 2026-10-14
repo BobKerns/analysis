@@ -68,7 +68,7 @@ Leaf chains are per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7 
 | file | account column | lot column |
 | --- | --- | --- |
 | `account_values.csv` | `account_name` | `lot` |
-| `chains/*.csv` | `account_name` | `lot` |
+| `chains/<role>/*.csv` | `account_name` | `lot` |
 | `scheduled.csv` | `from_account`, `to_account` | `from_lot`, `to_lot` |
 | `year_to_date.csv` | `from_account`, `to_account` | `from_lot`, `to_lot` |
 | `calendar.csv` | `account_1`, `account_2` | `lot_1`, `lot_2` |

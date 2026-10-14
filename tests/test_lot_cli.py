@@ -304,14 +304,14 @@ def test_deleting_a_chains_only_step_is_refused(
     lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
     retire_alice_csv: Callable[[str], Path],
 ) -> None:
-    (retire_alice_csv("chains") / "asset__roth_only.csv").write_text(
+    (retire_alice_csv("chains/source") / "roth_only.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Roth_Bill,default,,,,\n")
     before = values()
 
     result = lot("delete", "Asset_Roth_Bill", "default", "--yes")
 
     assert result.exit_code != 0
-    assert "only step of retire_alice/chains/asset__roth_only.csv" in result.output
+    assert "only step of retire_alice/chains/source/roth_only.csv" in result.output
     pd.testing.assert_frame_equal(values(), before)
 
 
@@ -320,7 +320,7 @@ def test_a_chain_without_a_lot_column_names_the_default_lot(
     lot: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
     check: Callable[[str], None], new_lot: str | None,
 ) -> None:
-    chain = retire_alice_csv("chains") / "asset__cash_only.csv"
+    chain = retire_alice_csv("chains/source") / "cash_only.csv"
     chain.write_text("account_name,maximum,percent,series,cadence\nAsset_Savings,,,,\nAsset_Checking,,,,\n")
 
     if new_lot is None:
@@ -427,3 +427,12 @@ def test_an_amount_must_be_finite(
     assert "invalid amount" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
     pd.testing.assert_frame_equal(values(), before)
+
+
+def test_overflow_takes_a_destination_chain_not_a_source(lot: Callable[..., Result]) -> None:
+    """Issue #143: a lot overflows into a destination chain, and the
+    prototype's one chain is a source."""
+    result = lot("edit", "Asset_Checking", "", "--maximum-balance", "30000",
+                 "--overflow-chain", "asset_checking_liquidity")
+    assert result.exit_code != 0
+    assert "overflow_chain 'asset_checking_liquidity' is a source chain" in result.output

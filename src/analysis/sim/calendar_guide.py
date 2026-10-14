@@ -46,6 +46,8 @@ class GuideContext:
     lots: Mapping[str, tuple[bool, Sequence[str]]] = field(default_factory=dict)
     # interior chains, which a transfer may name in place of an account
     chains: Sequence[str] = ()
+    # each chain's role (ADR-003 §4.7); a chain left out fits either side
+    chain_roles: Mapping[str, str] = field(default_factory=dict)
     scheduled_names: Sequence[str] = ()
     # aux_kind -> the series names of that kind
     series: Mapping[str, Sequence[str]] = field(default_factory=dict)
@@ -84,6 +86,7 @@ class Field:
     strict: bool = False  # the answer must be one of ``choices``
     unique: bool = False  # the answer must not be a name another row uses
     applies: Callable[[GuideContext, Answers], bool] = _always
+    chain_role: str | None = None  # the role a chain named here must have (#143)
 
     @property
     def name(self) -> str:
@@ -341,16 +344,35 @@ def _lots_of(account_param: str) -> Callable[[GuideContext, Answers], Sequence[s
     return choices
 
 
+def chains_of(ctx: GuideContext, role: str) -> list[str]:
+    """The chains that may stand where a ``role`` chain is needed."""
+    return [c for c in ctx.chains if ctx.chain_roles.get(c, role) == role]
+
+
+def _chain_problem(ctx: GuideContext, answers: Answers, field_: Field, answer: str) -> str | None:
+    """Why ``answer``, a chain left out of ``field_``'s choices, doesn't fit:
+    a chain refused for its role or for the other side being one should say
+    so, not just list the rest, as the CLI's pickers do."""
+    if field_.chain_role is None or answer not in ctx.chains:
+        return None
+    if field_.param == "to_account" and answers.get("from_account", "") in ctx.chains:
+        return f"{answer!r} is a chain, and a transfer can't run from one chain into another"
+    role = ctx.chain_roles.get(answer, field_.chain_role)
+    if role == field_.chain_role:
+        return None
+    return f"{answer!r} is a {role} chain; only a {field_.chain_role} chain or an account fits here"
+
+
 def _to_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:
-    """Accounts and chains for the to side; no chain when the from side is
-    one, since a transfer can't run from one chain into another."""
+    """Accounts and destination chains for the to side; no chain when the
+    from side is one, since a transfer can't run from one chain into another."""
     if answers.get("from_account", "") in ctx.chains:
         return list(ctx.accounts)
-    return [*ctx.accounts, *ctx.chains]
+    return [*ctx.accounts, *chains_of(ctx, "destination")]
 
 
 def _from_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
-    return [*ctx.accounts, *ctx.chains]
+    return [*ctx.accounts, *chains_of(ctx, "source")]
 
 
 KINDS: tuple[KindSpec, ...] = (
@@ -400,12 +422,14 @@ KINDS: tuple[KindSpec, ...] = (
         key=("date", "from_account", "from_lot", "to_account", "to_lot", "amount", "series"),
         fields=(
             _DATE,
-            Field("from_account", "from account or chain", choices=_from_endpoints, strict=True),
+            Field("from_account", "from account or chain", choices=_from_endpoints, strict=True,
+                  chain_role="source"),
             Field(
                 "from_lot", "from lot", option="--from-lot", strict=True,
                 choices=_lots_of("from_account"), applies=_lot_asked("from_account"),
             ),
-            Field("to_account", "to account or chain", choices=_to_endpoints, strict=True),
+            Field("to_account", "to account or chain", choices=_to_endpoints, strict=True,
+                  chain_role="destination"),
             Field(
                 "to_lot", "to lot", option="--to-lot", strict=True,
                 choices=_lots_of("to_account"), applies=_lot_asked("to_account"),
@@ -435,7 +459,8 @@ KINDS: tuple[KindSpec, ...] = (
                 "from_lot", "from lot", option="--from-lot", strict=True,
                 choices=_lots_of("from_account"), applies=_lot_asked("from_account"),
             ),
-            Field("to_account", "to account or chain", choices=_from_endpoints, strict=True),
+            Field("to_account", "to account or chain", choices=_to_endpoints, strict=True,
+                  chain_role="destination"),
             Field(
                 "to_lot", "to lot", option="--to-lot", strict=True,
                 choices=_lots_of("to_account"), applies=_lot_asked("to_account"),
@@ -641,6 +666,8 @@ class Guide:
         # Before the choices check: a choice left out for this reason should say so.
         if self._duplicates(spec, ctx, {**answers, field_.param: answer}, field_):
             return f"that would duplicate {spec.duplicate}"
+        if field_.strict and answer not in choices and (wrong := _chain_problem(ctx, answers, field_, answer)):
+            return wrong
         if field_.strict and answer not in choices:
             return f"not one of: {', '.join(choices)}" if choices else "there is nothing to choose from"
         if field_.unique and answer in ctx.taken_names:

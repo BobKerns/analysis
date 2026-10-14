@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.sim.loader import LoadError
-from analysis.sim import registries
+from analysis.sim import chain_edit, registries
 from analysis.sim.lineage import read_parents
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.readme import parse_readme_summary
@@ -89,11 +89,14 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
     series_dir.mkdir()
     (series_dir / "README.md").write_text(SERIES_README, encoding="utf-8")
 
-    chains_dir = target / "chains"
-    chains_dir.mkdir()
-    (chains_dir / ".gitignore").write_text("", encoding="utf-8")
-    pd.DataFrame(columns=["account_name", "maximum", "percent", "series", "cadence"]).to_csv(
-        chains_dir / "_asset__example.csv", index=False,
+    # Both role folders, kept in git by an empty .gitignore, so it's plain
+    # where a new chain goes (ADR-003 §4.7).
+    for role in registries.CHAIN_ROLES:
+        role_dir = target / "chains" / role
+        role_dir.mkdir(parents=True)
+        (role_dir / ".gitignore").write_text("", encoding="utf-8")
+    pd.DataFrame(columns=list(chain_edit.CHAIN_COLUMNS)).to_csv(
+        target / "chains" / "source" / "_example.csv", index=False,
     )
     cli._append_csv_row(
         target / "scenario.csv",

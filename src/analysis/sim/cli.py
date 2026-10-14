@@ -1868,10 +1868,19 @@ def _lot_info(con: sqlite3.Connection) -> dict[str, tuple[bool, list[str]]]:
     return info
 
 
-def _interior_chains(con: sqlite3.Connection) -> list[str]:
+def _interior_chains(con: sqlite3.Connection, role: str | None = None) -> list[str]:
     """The chains a transfer may name in place of an account: every chain but
-    the implicit leaf chain of each lot."""
-    return [r[0] for r in con.execute("SELECT name FROM chain WHERE lot_id IS NULL ORDER BY name")]
+    the implicit leaf chain of each lot; with ``role``, only the chains of
+    that role (``source`` for a from side, ``destination`` for a to side)."""
+    if role is None:
+        return [r[0] for r in con.execute("SELECT name FROM chain WHERE lot_id IS NULL ORDER BY name")]
+    return [r[0] for r in con.execute(
+        "SELECT name FROM chain WHERE lot_id IS NULL AND role = ? ORDER BY name", (role,))]
+
+
+def _chain_roles(con: sqlite3.Connection) -> dict[str, str]:
+    """Each named chain's role (ADR-003 §4.7)."""
+    return dict(con.execute("SELECT name, role FROM chain WHERE role IS NOT NULL").fetchall())
 
 
 def _echo_endpoints(
@@ -1893,17 +1902,22 @@ def _pick_endpoint(
     label: str, name: str | None, lot: str | None, *,
     accounts: list[str], lot_info: dict[str, tuple[bool, list[str]]], chains: list[str],
     allow_chain: bool = True, lot_option: str | None = None,
+    roles: Mapping[str, str] | None = None, role: str | None = None,
 ) -> tuple[str, str]:
     """One side of a transfer: an account and its lot, or an interior chain
     and no lot (#98). A value given on the command line is checked against the
     same choices as one typed at a prompt, and fails if it doesn't fit; a value
     left out is asked, again until it fits. The lot is asked whenever
     ``calendar_guide.lot_needed`` says a blank one wouldn't do, as the guided
-    ``sim calendar add`` does."""
+    ``sim calendar add`` does. ``chains`` are the ones of ``role``, the role
+    this side takes; given ``roles`` (every chain's role), naming a chain of
+    the other role says so."""
 
     def endpoint_problem(answer: str) -> str | None:
-        if answer in chains and not allow_chain:
+        if not allow_chain and (answer in chains or answer in (roles or ())):
             return f"{answer!r} is a chain, and a transfer can't run from one chain into another"
+        if roles and role and answer not in chains and answer in roles:
+            return f"{answer!r} is a {roles[answer]} chain; only a {role} chain or an account fits here"
         if answer not in accounts and answer not in chains:
             return f"unknown {label} account or chain: {answer!r}"
         return None
@@ -1942,12 +1956,17 @@ class _Endpoints(NamedTuple):
     accounts: list[str]
     lot_info: dict[str, tuple[bool, list[str]]]
     chains: list[str]
+    roles: dict[str, str]
+    """Each chain's role: a from side names a source chain, a to side a destination."""
+
+    def chains_for(self, role: str) -> list[str]:
+        return [c for c in self.chains if self.roles.get(c) == role]
 
 
 def _endpoints(con: sqlite3.Connection) -> _Endpoints:
     return _Endpoints(
         [r[0] for r in con.execute("SELECT name FROM account ORDER BY name")],
-        _lot_info(con), _interior_chains(con),
+        _lot_info(con), _interior_chains(con), _chain_roles(con),
     )
 
 
@@ -1957,14 +1976,19 @@ def _pick_endpoints(
     to_account: str | None, to_lot: str | None,
 ) -> tuple[str, str, str, str]:
     """Both sides of a transfer, from then to, each with its lot (#98)."""
-    accounts, lot_info, chains = endpoints
-    if from_account is None or to_account is None:
-        _echo_endpoints(accounts, lot_info, chains)
+    accounts, lot_info, chains, roles = endpoints
+    # Each side lists what it takes just before it is asked: its own role's chains.
+    if from_account is None:
+        _echo_endpoints(accounts, lot_info, endpoints.chains_for("source"))
     from_account, from_lot = _pick_endpoint(
-        "from", from_account, from_lot, accounts=accounts, lot_info=lot_info, chains=chains,
+        "from", from_account, from_lot, accounts=accounts, lot_info=lot_info,
+        chains=endpoints.chains_for("source"), roles=roles, role="source",
     )
+    if to_account is None:
+        _echo_endpoints(accounts, lot_info, endpoints.chains_for("destination") if from_account not in chains else [])
     to_account, to_lot = _pick_endpoint(
-        "to", to_account, to_lot, accounts=accounts, lot_info=lot_info, chains=chains,
+        "to", to_account, to_lot, accounts=accounts, lot_info=lot_info,
+        chains=endpoints.chains_for("destination"), roles=roles, role="destination",
         allow_chain=from_account not in chains,
     )
     return from_account, from_lot, to_account, to_lot
@@ -2570,7 +2594,7 @@ def _guide_context(
             accounts=column(con, "SELECT name FROM account"),
             asset_accounts=column(con, "SELECT name FROM account WHERE kind = 'asset'"),
             lots=_lot_info(con),
-            chains=_interior_chains(con),
+            chains=_interior_chains(con), chain_roles=_chain_roles(con),
             scheduled_names=column(con, "SELECT name FROM scheduled_transaction"),
             series={
                 "rate": sorted({
@@ -3150,7 +3174,8 @@ def calendar_add_transfer_balance(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     with _intent_db(data_dir_p, scenario) as (con, _name):
-        accounts, lot_info, chains = _endpoints(con)
+        endpoints = _endpoints(con)
+        accounts, lot_info, chains, roles = endpoints
         assets = [r[0] for r in con.execute(
             "SELECT name FROM account WHERE kind = 'asset' ORDER BY name"
         )]
@@ -3158,15 +3183,18 @@ def calendar_add_transfer_balance(
     if not date:
         date = _prompt_with_completion("date (YYYY-MM or YYYY-MM-DD)")
     date = _validate_month_date(date)
-    if from_account is None or to_account is None:
-        _echo_endpoints(accounts, lot_info, chains)
     # The source is one lot of an asset: "the balance" means one real balance.
+    if not from_account:
+        _echo_endpoints(assets, lot_info, [])
     from_account, from_lot = _pick_endpoint(
         "from", from_account or None, from_lot,
         accounts=assets, lot_info=lot_info, chains=[], allow_chain=False,
     )
+    if not to_account:
+        _echo_endpoints(accounts, lot_info, endpoints.chains_for("destination"))
     to_account, to_lot = _pick_endpoint(
-        "to", to_account or None, to_lot, accounts=accounts, lot_info=lot_info, chains=chains,
+        "to", to_account or None, to_lot, accounts=accounts, lot_info=lot_info,
+        chains=endpoints.chains_for("destination"), roles=roles, role="destination",
     )
 
     vary_fields = _vary_row_fields(
@@ -3776,7 +3804,7 @@ def _rename_account_files(scenario_dir: Path, old_name: str, new_name: str) -> b
                                           ("from_account", "to_account", "interest_account"),
                                           old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "calendar.csv", ("account_1", "account_2"), old_name, new_name)
-    for chain_path in sorted((scenario_dir / "chains").glob("*.csv")) if (scenario_dir / "chains").is_dir() else []:
+    for chain_path in chain_edit.chain_files(scenario_dir):
         changed |= _rename_account_row_values(chain_path, ("account_name",), old_name, new_name)
     changed |= _rename_account_row_values(scenario_dir / "quicken_account_map.csv",
                                           ("account_name",),
@@ -3869,9 +3897,7 @@ def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = 
         (scenario_dir / filename, fields)
         for filename, fields in _ACCOUNT_REFERENCE_FIELDS
     ]
-    chains_dir = scenario_dir / "chains"
-    if chains_dir.is_dir():
-        paths.extend((path, ("account_name",)) for path in sorted(chains_dir.glob("*.csv")))
+    paths.extend((path, ("account_name",)) for path in chain_edit.chain_files(scenario_dir))
 
     for path, fields in paths:
         if not path.exists():
@@ -3897,9 +3923,7 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
         (scenario_dir / filename, fields)
         for filename, fields in _ACCOUNT_REFERENCE_FIELDS
     ]
-    chains_dir = scenario_dir / "chains"
-    if chains_dir.is_dir():
-        paths.extend((path, ("account_name",)) for path in sorted(chains_dir.glob("*.csv")))
+    paths.extend((path, ("account_name",)) for path in chain_edit.chain_files(scenario_dir))
 
     for path, fields in paths:
         if not path.exists():
@@ -4549,9 +4573,7 @@ def _names_lot(row: dict[str, str] | pd.Series, account_field: str, lot_field: s
 
 def _lot_reference_files(scenario_dir: Path) -> list[tuple[Path, tuple[tuple[str, str], ...]]]:
     paths = [(scenario_dir / name, pairs) for name, pairs in _LOT_REFERENCE_FIELDS]
-    chains_dir = scenario_dir / "chains"
-    if chains_dir.is_dir():
-        paths.extend((path, (("account_name", "lot"),)) for path in sorted(chains_dir.glob("*.csv")))
+    paths.extend((path, (("account_name", "lot"),)) for path in chain_edit.chain_files(scenario_dir))
     return [(path, pairs) for path, pairs in paths if path.exists() and path.stat().st_size > 0]
 
 
@@ -4609,14 +4631,13 @@ def _emptied_chains(scenario_dir: Path, name: str, account: str, lot: str) -> li
     them with no steps, which the loader rejects."""
     emptied: list[str] = []
     for scenario_name in (name, *_lot_descendants(scenario_dir.parent, name)):
-        chains_dir = scenario_dir.parent / scenario_name / "chains"
-        for path in sorted(chains_dir.glob("*.csv")) if chains_dir.is_dir() else []:
+        for path in chain_edit.chain_files(scenario_dir.parent / scenario_name):
             if path.stat().st_size == 0:
                 continue
             frame = pd.read_csv(path, dtype=str, keep_default_na=False)
             if len(frame) and all(_names_lot(row, "account_name", "lot", account, lot)
                                   for _, row in frame.iterrows()):
-                emptied.append(f"{scenario_name}/chains/{path.name}")
+                emptied.append(f"{scenario_name}/chains/{path.parent.name}/{path.name}")
     return emptied
 
 
@@ -4775,7 +4796,7 @@ def _lot_guide_context(
         return calendar_guide.GuideContext(
             accounts=[name for name, _subkind, _tax in accounts],
             lots=_lot_info(con),
-            chains=_interior_chains(con),
+            chains=_interior_chains(con), chain_roles=_chain_roles(con),
             series={"rate": rate_series},
             other_rows={lot_guide.LOT.command: [
                 {"account": one.account, "lot": one.lot}
@@ -5747,7 +5768,7 @@ def chain_group_command() -> None:
 def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
     """List the chains with their steps, where each is defined, and what uses it.
 
-    Only chains written in a chains/*.csv file are listed; every lot is also a
+    Only chains written in a chain file are listed; every lot is also a
     one-step chain of its own, usable wherever a chain is.
     """
     from rich.console import Console
@@ -5763,7 +5784,7 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
         click.echo(f"no chains in {ref.name}; every lot is still a one-step chain of its own")
         return
     table = Table(title=f"chains ({ref.name})", header_style="bold", show_lines=True)
-    for column in ("Chain", "Kind", "Steps", "Defined in", "Used by"):
+    for column in ("Chain", "Role", "Steps", "Defined in", "Used by"):
         table.add_column(column)
     for name, steps in sorted(cmap.steps.items()):
         try:
@@ -5775,7 +5796,7 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
         # Names come from the data and may hold '[', so only "nothing" and a
         # clash are markup.
         table.add_row(
-            escape(name), escape(cmap.kinds[name]),
+            escape(name), escape(cmap.roles[name]),
             escape("\n".join(f"{s.order}. {cmap.label(s.target)}: {chain_map.share_text(s)}" for s in steps)),
             where,
             escape("\n".join(chain_map.use_text(cmap, u) for u in uses)) or "[red]nothing[/red]",
@@ -5792,12 +5813,15 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
 @click.argument("names", nargs=-1)
 @click.option("--mermaid", "as_mermaid", is_flag=True,
               help="Print a Mermaid flowchart (for markdown, GitHub or JupyterLab) instead of a tree.")
+@click.option("--rules", "with_rules", is_flag=True,
+              help="With --mermaid, also draw the rules and calendar transfers that use each chain.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def chain_show_command(
-    names: tuple[str, ...], as_mermaid: bool, scenario: str | None, data_dir: Path | None,
+    names: tuple[str, ...], as_mermaid: bool, with_rules: bool, scenario: str | None,
+    data_dir: Path | None,
 ) -> None:
     """Show chains as trees: each step, what share it takes, and its lot's policy.
 
@@ -5836,7 +5860,7 @@ def chain_show_command(
         click.echo(f"no chains in {ref.name}; every lot is still a one-step chain of its own")
         return
     if as_mermaid:
-        click.echo(chain_map.mermaid(cmap, roots))
+        click.echo(chain_map.mermaid(cmap, roots, rules=with_rules))
         return
     console = Console()
     for i, root in enumerate(roots):
@@ -5871,14 +5895,16 @@ def _scenario_options(f):
 
 def _step_row(
     chain: str, account: str | None, lot: str | None, percent: str | None, maximum: str | None,
-    series: str | None, cadence: str | None, endpoints: _Endpoints,
+    series: str | None, cadence: str | None, endpoints: _Endpoints, role: str,
 ) -> dict[str, str]:
-    """One chain step as its CSV row, checked: a known account (and lot) or
-    chain, and the percent and dollars in the forms the loader accepts."""
+    """One step of a ``role`` chain as its CSV row, checked: a known account
+    (and lot) or chain of the same role, and the percent and dollars in the
+    forms the loader accepts."""
     if account == chain:
         raise click.ClickException(f"chain {chain!r} can't be a step of itself")
     name, lot_ = _pick_endpoint("step", account, lot, accounts=endpoints.accounts,
-                                lot_info=endpoints.lot_info, chains=endpoints.chains, lot_option="--lot")
+                                lot_info=endpoints.lot_info, chains=endpoints.chains_for(role),
+                                lot_option="--lot", roles=endpoints.roles, role=role)
     row = {"account_name": name, "lot": lot_, "percent": "", "maximum": "",
            "series": series or "", "cadence": cadence or ""}
     try:
@@ -6034,7 +6060,8 @@ def _editing_chain(
         assert source is not None  # defining_scenario found it
         steps = chain_edit.read_steps(source)
         yield edit, name, steps
-        target = source if owner == edit.name else edit.scenario_dir / "chains" / source.name
+        target = (source if owner == edit.name
+                  else chain_edit.new_chain_file(edit.scenario_dir, source.parent.name, name))
         chain_edit.write_steps(target, steps)
     if owner != edit.name:
         click.echo(f"{name} came from {owner}; wrote {edit.name}'s own copy of it, which replaces it here")
@@ -6081,20 +6108,20 @@ def _step_index(steps: list[dict[str, str]], number: int, name: str) -> int:
 @chain_group_command.command("add")
 @click.argument("name", required=False)
 @click.argument("account", required=False, shell_complete=_complete_account)
-@click.option("--kind", type=click.Choice(sorted(registries.CHAIN_KINDS)), default=None,
-              help="What the steps hold (default: income if every step is an income account, else asset).")
+@click.option("--role", type=click.Choice(registries.CHAIN_ROLES), default=None,
+              help="source: money is drawn from it; destination: money is paid into it (asked if left out).")
 @_step_options
 @_scenario_options
 def chain_add_command(
-    name: str | None, account: str | None, kind: str | None,
+    name: str | None, account: str | None, role: str | None,
     lot: str | None, percent: str | None, maximum: str | None, series: str | None, cadence: str | None,
     scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Make a new chain, with ACCOUNT (or another chain) as its first step.
 
     Add more steps with `sim chain step add`. Without NAME, asks what the chain
-    is for and builds it a step at a time: whether it is where money comes
-    from or where extra money goes, and whether to drain the steps in order,
+    is for and builds it a step at a time: whether it is a source, where money
+    comes from, or a destination, where money goes, and whether to drain the steps in order,
     split the total by shares, or take up to an amount from each. It then
     prints the equivalent commands, and how to put the chain to use.
     """
@@ -6107,47 +6134,44 @@ def chain_add_command(
         # Chains and accounts share one namespace, and an investment account's
         # own chains are named account:lot, so its bare name isn't a chain row.
         taken = {r[0] for r in con.execute("SELECT name FROM chain UNION SELECT name FROM account")}
-        kinds = {r[0]: r[1] for r in con.execute("SELECT name, kind FROM account")}
-        for chain_name, chain_kind in con.execute("SELECT name, kind FROM chain WHERE lot_id IS NULL"):
-            kinds.setdefault(chain_name, chain_kind)  # a step may be another chain
         guided = name is None
         if guided:
-            plan = _guided_chain(endpoints, taken)
-            name, steps, direction = plan.name, plan.steps, plan.direction
+            plan = _guided_chain(endpoints, taken, role)
+            name, steps, role = plan.name, plan.steps, plan.role
         else:
-            direction = None
             assert name is not None
             if problem := chain_edit.name_problem(name):
                 raise click.ClickException(problem)
             if name in taken:
                 raise click.ClickException(f"{name!r} is already a chain or an account's name")
+            if role is None:
+                role = _ask_role()
             if account is None:
-                _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains)
-            steps = [_step_row(name, account, lot, percent, maximum, series, cadence, endpoints)]
+                _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains_for(role))
+            steps = [_step_row(name, account, lot, percent, maximum, series, cadence, endpoints, role)]
         assert name is not None
-        if kind is None:
-            all_income = all(kinds.get(step["account_name"]) == "income" for step in steps)
-            kind = "income" if all_income else "asset"
-        chain_edit.write_steps(edit.scenario_dir / "chains" / f"{kind}__{name}.csv", steps)
-    click.echo(f"added chain {name} ({kind}, {len(steps)} step(s)) in {scenario_name}")
+        chain_edit.write_steps(chain_edit.new_chain_file(edit.scenario_dir, role, name), steps)
+    click.echo(f"added {role} chain {name} ({len(steps)} step(s)) in {scenario_name}")
     if guided:
         first, *rest = steps
-        # --kind always: a replay would otherwise infer it from the first step alone.
-        commands = [["sim", "chain", "add", name, *_step_words(first), "--kind", kind]]
+        commands = [["sim", "chain", "add", name, *_step_words(first), "--role", role]]
         commands += [["sim", "chain", "step", "add", name, *_step_words(step)] for step in rest]
         click.echo("equivalent commands:")
         for words in commands:
             click.echo("  " + " ".join(shlex.quote(w) for w in words))
-        _echo_chain_next_steps(name, direction)
+        _echo_chain_next_steps(name, role)
 
 
 class _ChainPlan(NamedTuple):
     name: str
     steps: list[dict[str, str]]
-    direction: str
+    role: str
 
 
-_DIRECTIONS = {"from": "where money comes from", "to": "where extra money goes"}
+_ROLES = {
+    "source": "where money comes from: a rule draws from it, or a lot refills from it",
+    "destination": "where money goes: a rule pays into it, or a lot overflows into it",
+}
 _SPLITS = {
     "order": "drain them in order: all from the first, then the next when it runs out",
     "shares": "split the total by shares, such as 60% here and 40% there",
@@ -6163,15 +6187,19 @@ def _ask_choice(text: str, choices: Mapping[str, str]) -> str:
     return answer
 
 
-def _guided_chain(endpoints: _Endpoints, taken: set[str]) -> _ChainPlan:
-    """``chain add``'s questions: what the chain is for, then its steps, then
-    the percent or maximum columns that do what was asked."""
-    direction = _ask_choice("is this chain where money comes from, or where extra money goes? (from/to)",
-                            _DIRECTIONS)
-    verb = "draw from" if direction == "from" else "put into"
+def _ask_role() -> str:
+    return _ask_choice("is this chain a source or a destination? (source/destination)", _ROLES)
+
+
+def _guided_chain(endpoints: _Endpoints, taken: set[str], role: str | None) -> _ChainPlan:
+    """``chain add``'s questions: what the chain is for (unless ``role`` says),
+    then its steps, then the percent or maximum columns that do what was asked."""
+    role = role or _ask_role()
+    verb = "draw from" if role == "source" else "put into"
     split = _ask_choice(f"how should it {verb} its steps? (order/shares/caps)", _SPLITS)
     name = _ask_new_chain_name(taken)
-    _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains)
+    chains = endpoints.chains_for(role)
+    _echo_endpoints(endpoints.accounts, endpoints.lot_info, chains)
     steps: list[dict[str, str]] = []
     shares: list[Decimal] = []
     while True:
@@ -6179,7 +6207,7 @@ def _guided_chain(endpoints: _Endpoints, taken: set[str]) -> _ChainPlan:
         if shares and sum(shares) == 100:
             break
         prompt = f"step {n}: account or chain to {verb}" + (" (blank to finish)" if steps and split != "shares" else "")
-        account = _prompt_with_completion(prompt, choices=[*endpoints.accounts, *endpoints.chains],
+        account = _prompt_with_completion(prompt, choices=[*endpoints.accounts, *chains],
                                           default="" if steps and split != "shares" else None).strip()
         if not account:
             # Shares go on until they reach 100%, so only order and caps may stop early.
@@ -6187,7 +6215,7 @@ def _guided_chain(endpoints: _Endpoints, taken: set[str]) -> _ChainPlan:
                 break
             continue
         try:
-            row = _step_row(name, account, None, None, None, None, None, endpoints)
+            row = _step_row(name, account, None, None, None, None, None, endpoints, role)
         except click.ClickException as exc:
             click.echo(f"  {exc.message}")
             continue
@@ -6224,14 +6252,14 @@ def _guided_chain(endpoints: _Endpoints, taken: set[str]) -> _ChainPlan:
             row["percent"] = percent
     elif split == "caps" and steps[-1].get("maximum"):
         click.echo("  note: every step has a limit, so beyond their total nothing more moves")
-    return _ChainPlan(name, steps, direction)
+    return _ChainPlan(name, steps, role)
 
 
-def _echo_chain_next_steps(name: str, direction: str | None) -> None:
-    if direction == "from":
+def _echo_chain_next_steps(name: str, role: str) -> None:
+    if role == "source":
         click.echo(f"to use it: a rule's from account (`sim scheduled add DATE {name} ACCOUNT AMOUNT`), or a lot's "
                    f"refill (`sim account lot edit ACCOUNT LOT --refill-chain {name} --minimum-balance DOLLARS`)")
-    elif direction == "to":
+    else:
         click.echo(f"to use it: a rule's to account (`sim scheduled add DATE ACCOUNT {name} AMOUNT`), or a lot's "
                    f"overflow (`sim account lot edit ACCOUNT LOT --overflow-chain {name} --maximum-balance DOLLARS`)")
     click.echo(f"see it with `sim chain show {name}`")
@@ -6268,8 +6296,9 @@ def chain_step_add_command(
             # A chain can't be its own step, so it isn't offered as one.
             endpoints = endpoints._replace(chains=[c for c in endpoints.chains if c != name])
             _echo_steps(name, steps)
-            _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains)
-        row = _step_row(name, account, lot, percent, maximum, series, cadence, endpoints)
+            _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains_for(endpoints.roles[name]))
+        row = _step_row(name, account, lot, percent, maximum, series, cadence, endpoints,
+                        endpoints.roles[name])
         if guided:
             given = {k for k, v in
                      {"percent": percent, "maximum": maximum, "series": series, "cadence": cadence}.items()
@@ -6340,7 +6369,7 @@ def chain_step_edit_command(
         steps[index] = _step_row(
             name, merged["account_name"], merged["lot"] or None, merged["percent"] or None,
             merged["maximum"] or None, merged["series"] or None, merged["cadence"] or None,
-            endpoints,
+            endpoints, endpoints.roles[name],
         )
         after = steps[index]
     click.echo(f"{name}: step {number} is {_step_summary(after)}")
@@ -6738,9 +6767,9 @@ def scenario_create(
         click.echo(f"  inherits: {' + '.join(inherits)}")
         for filename in ("scenario.csv", *skeletons):
             click.echo(f"  {filename}")
-        click.echo("  chains/")
-        click.echo("  chains/.gitignore")
-        click.echo("  chains/_asset__example.csv")
+        click.echo("  chains/source/.gitignore")
+        click.echo("  chains/source/_example.csv")
+        click.echo("  chains/destination/.gitignore")
         click.echo("  series/")
         click.echo("  series/README.md")
         click.echo(f"  current scenario: {name}")

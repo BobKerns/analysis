@@ -18,7 +18,16 @@ from analysis.sim import calendar_guide
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import LoadError, LoadResult
 
-CHAIN = "asset_checking_liquidity"  # the prototype's one interior chain
+CHAIN = "asset_checking_liquidity"  # the prototype's one interior chain, a source
+INTO = "savings_first"  # a destination chain, from the ``into_chain`` fixture
+
+
+@pytest.fixture
+def into_chain(retire_alice_csv: Callable[[str], Path]) -> str:
+    """A destination chain paying into Asset_Savings, for a transfer's to side."""
+    (retire_alice_csv("chains/destination") / f"{INTO}.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    return INTO
 
 
 @pytest.fixture
@@ -74,6 +83,17 @@ def test_scheduled_add_offers_chains_at_the_prompt(
     assert f"chains: {CHAIN}" in result.output
     assert "lot:" not in result.output   # neither side asks for one
     assert last_row("scheduled.csv")["from_account"] == CHAIN
+
+
+def test_each_side_lists_only_the_chains_it_takes(
+    sim: Callable[..., Result], into_chain: str,
+) -> None:
+    """#143: the from side lists source chains, the to side destination ones."""
+    result = sim("scheduled", "add", answers=("2030-01", "Asset_Checking", into_chain, "100.00"))
+
+    assert result.exit_code == 0, result.output
+    listed = [line for line in result.output.splitlines() if line.startswith("chains: ")]
+    assert listed == [f"chains: {CHAIN}", f"chains: {into_chain}"]
 
 
 def test_the_account_list_shows_the_lots_an_account_must_name(
@@ -151,6 +171,16 @@ def test_a_transfer_cannot_run_from_one_chain_into_another(sim: Callable[..., Re
     assert "can't run from one chain into another" in typed.output
 
 
+def test_each_side_takes_only_chains_of_its_role(sim: Callable[..., Result], into_chain: str) -> None:
+    """A from side names a source chain, a to side a destination (#143)."""
+    backwards = sim("scheduled", "add", "2030-01", into_chain, "Asset_Checking", "1.00")
+    assert backwards.exit_code != 0
+    assert f"'{into_chain}' is a destination chain; only a source chain or an account fits here" in backwards.output
+    typed = sim("scheduled", "add", answers=("2030-01", "Asset_Checking", CHAIN, into_chain, "1.00"))
+    assert typed.exit_code == 0, typed.output
+    assert f"'{CHAIN}' is a source chain; only a destination chain or an account fits here" in typed.output
+
+
 @pytest.mark.parametrize("file", ["scheduled.csv", "calendar.csv"])
 def test_the_loader_refuses_a_transfer_between_two_chains(
     file: str, retire_alice_csv: Callable[[str], Path],
@@ -175,14 +205,15 @@ def test_the_loader_refuses_a_transfer_between_two_chains(
 
 
 @pytest.mark.parametrize(("source", "destination", "leg"), [
-    # Out of a chain is a draw down its steps, Asset_Savings first.
+    # Out of a source chain is a draw down its steps, Asset_Savings first.
     (CHAIN, "Asset_Checking", ("Asset_Savings", "Asset_Checking")),
-    # Into a chain is a sweep into its steps.
-    ("Asset_Checking", CHAIN, ("Asset_Checking", "Asset_Savings")),
+    # Into a destination chain is a sweep into its steps.
+    ("Asset_Checking", INTO, ("Asset_Checking", "Asset_Savings")),
 ])
 def test_a_one_off_transfer_through_a_chain_is_traced_to_its_rule(
     source: str, destination: str, leg: tuple[str, str],
     sim: Callable[..., Result], load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    into_chain: str,  # noqa: ARG001
 ) -> None:
     """Calendar transfers take chains now (#98), and run like a fixed_amount
     rule's, every leg traced to the synthesized rule (a sweep's legs too, not
@@ -241,7 +272,36 @@ def test_guide_offers_no_chain_to_a_transfer_out_of_one(
     ))
 
     assert result.exit_code == 0, result.output
-    assert "not one of:" in result.output
+    assert f"'{CHAIN}' is a chain, and a transfer can't run from one chain into another" in result.output
+
+
+def test_guide_names_the_role_with_no_chain_of_the_right_one(
+    sim: Callable[..., Result], last_row: Callable[[str], pd.Series],
+) -> None:
+    """With no destination chain at all, the to side still says why a
+    source chain is refused (#143)."""
+    result = sim("calendar", "add", answers=(
+        "transfer", "2030-06", "Asset_Checking", CHAIN, "Asset_Savings", "", "42.00", "", "", "", "n", "",
+    ))
+
+    assert result.exit_code == 0, result.output
+    assert f"'{CHAIN}' is a source chain; only a destination chain or an account fits here" in result.output
+
+
+@pytest.mark.parametrize("kind", ["transfer", "transfer-balance"])
+def test_guide_says_why_a_chain_of_the_other_role_is_refused(
+    kind: str, sim: Callable[..., Result], last_row: Callable[[str], pd.Series], into_chain: str,
+) -> None:
+    """#143: the to side takes a destination chain, and naming a source
+    chain there says so rather than only listing the choices."""
+    amount = ("42.00",) if kind == "transfer" else ()
+    result = sim("calendar", "add", answers=(
+        kind, "2030-06", "Asset_Checking", CHAIN, into_chain, *amount, "", "", "", "n", "",
+    ))
+
+    assert result.exit_code == 0, result.output
+    assert f"'{CHAIN}' is a source chain; only a destination chain or an account fits here" in result.output
+    assert last_row("calendar.csv")["account_2"] == into_chain
 
 
 def test_transfer_list_names_a_chain(sim: Callable[..., Result]) -> None:

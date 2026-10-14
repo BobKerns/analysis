@@ -585,12 +585,12 @@ def guide_chains(
     """docs/guides/chains.md's examples on the private copy (issue #129): a
     chain inside a chain drawn by a rule, a benefit swept into a split, and
     checking's refill and overflow. Returns the data dir."""
-    chains = retire_alice_csv("chains")
-    (chains / "asset__bridge.csv").write_text(
+    sources, destinations = retire_alice_csv("chains/source"), retire_alice_csv("chains/destination")
+    (sources / "bridge.csv").write_text(
         _CHAIN_HEADER + "Asset_Savings,,10000.00,,cpi,annual\nAsset_Brokerage_Joint,default,,,,\n")
-    (chains / "asset__retirement_draw.csv").write_text(
+    (sources / "retirement_draw.csv").write_text(
         _CHAIN_HEADER + "bridge,,,50%,,\nAsset_TraditionalIRA_Alice,default,,,,\n")
-    (chains / "asset__ss_split.csv").write_text(
+    (destinations / "ss_split.csv").write_text(
         _CHAIN_HEADER + "Asset_Checking,,,50%,,\nAsset_Savings,,,,,\n")
     scheduled = retire_alice_csv("scheduled.csv")
     text = scheduled.read_text().replace(
@@ -805,7 +805,7 @@ def savings_lots(retire_alice_csv: Callable[[str], Path]) -> tuple[str, str]:
     rows = pd.DataFrame([{**savings, "lot": lot, "opening_balance": "10000.00"} for lot in lots])
     pd.concat([values[values["account_name"] != "Asset_Savings"], rows], ignore_index=True).to_csv(
         path, index=False)
-    chain_path = retire_alice_csv("chains/asset__asset_checking_liquidity.csv")
+    chain_path = retire_alice_csv("chains/source/asset_checking_liquidity.csv")
     chain = pd.read_csv(chain_path, dtype=str, keep_default_na=False)
     chain.loc[chain["account_name"] == "Asset_Savings", "lot"] = lots[0]
     chain.to_csv(chain_path, index=False)
@@ -835,7 +835,7 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,a,"))
     (test_data_dir / "aux" / "rate__AAA.csv").write_text(
         "effective_date,annual_rate\n2026-01-31,2%\n")
-    (retire_alice_csv("chains") / "asset__lotb.csv").write_text(
+    (retire_alice_csv("chains/source") / "lotb.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Brokerage_Joint,b,,,,\n")
 
     scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)

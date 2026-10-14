@@ -168,10 +168,11 @@ ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
     "tax_character", "opened", "closed", "meta_json", "tags",
 )
 
-# Kinds a chains/<kind>__<name>.csv file may declare (ADR-003 §4.7); a closed
-# registry like every other file-kind vocabulary, extensible without engine
-# changes (a future 'expense' entry would enable deposit-only chains).
-CHAIN_KINDS: set[str] = {"asset", "income"}
+# A named chain's role, which is the subdirectory of chains/ its file lives in
+# (ADR-003 §4.7): a source chain is drawn from (a rule's from_account, a lot's
+# refill_chain), a destination chain is paid into (a rule's to_account, a lot's
+# overflow_chain). Leaf chains, one lot each, play either part.
+CHAIN_ROLES: tuple[str, ...] = ("source", "destination")
 
 
 class GrowthCounterparty(NamedTuple):

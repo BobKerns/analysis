@@ -123,7 +123,7 @@ def test_a_mixins_series_and_chain_overrides_are_inherited(
 ) -> None:
     derive_scenario("mix_rates", PARENT, {
         "series/rate__Asset_Checking.csv": "effective_date,annual_rate\n2026-01-31,1%\n",
-        "chains/asset__asset_checking_liquidity.csv": (
+        "chains/source/asset_checking_liquidity.csv": (
             "account_name,lot,maximum,percent,series,cadence\n"
             "Asset_TraditionalIRA_Alice,default,,,,\n"
         ),

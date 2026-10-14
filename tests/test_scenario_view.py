@@ -76,7 +76,7 @@ def test_lots_are_spelled_out_where_an_account_has_several(
     add_account_value: Callable[..., None],
 ) -> None:
     add_account_value("Asset_Roth_Alice", lot="b", opening_balance="10.00")
-    (retire_alice_csv("chains") / "asset__roth_first.csv").write_text(
+    (retire_alice_csv("chains/source") / "roth_first.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\n"
         "Asset_Roth_Alice,default,,,,\n"    # one of two lots, and it is named default
         "Asset_Roth_Alice,b,,,,\n"
@@ -92,7 +92,7 @@ def test_lots_are_spelled_out_where_an_account_has_several(
 def test_a_step_that_draws_from_another_chain_has_no_lot(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
-    (retire_alice_csv("chains") / "asset__outer.csv").write_text(
+    (retire_alice_csv("chains/source") / "outer.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nasset_checking_liquidity,,,,,\n"
     )
     _, steps = _steps(test_data_dir)

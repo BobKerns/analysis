@@ -26,19 +26,22 @@ sim chain list                  # every chain, its steps, and what uses it
 sim chain show                  # each chain as a tree, with each lot's limits
 sim chain show Asset_Checking   # just the chains that reach this account
 sim chain show bridge --mermaid # one chain's flowchart, to paste into markdown
+sim chain show bridge --mermaid --rules  # with the rules that use it
 ```
 
 The [scenario overview notebook](../../notebooks/scenario_overview.ipynb)
 shows the same chains as a table, and one chain at a time as a flowchart
-picked from a list. The flowchart draws itself with Mermaid loaded from the
-web, so it needs a connection in VS Code and JupyterLab alike.
+picked from a list, with a **Rules** checkbox to add the rules that use it.
+The flowchart draws itself with Mermaid loaded from the web, so it needs a
+connection in VS Code and JupyterLab alike.
 
 ## Making and changing chains
 
 `sim chain add` with no arguments asks what the chain is for and builds it
 a step at a time:
 
-1. Is it where money **comes from** or where extra money **goes**?
+1. Is it a **source**, where money comes from, or a **destination**, where
+   money goes? This decides the folder its file goes in (section 1).
 2. Should it **drain** the steps in order, **split** the total by shares
    (such as 60% here and 40% there), or take **up to an amount** from each?
 3. Its name, then each step: an account (and its lot, when one must be
@@ -65,7 +68,7 @@ The guided add and edit print the equivalent command when they finish.
 The same changes as commands, for scripts or a quick fix:
 
 ```sh
-sim chain add checking_backup Asset_Savings              # a chain and its first step
+sim chain add checking_backup Asset_Savings --role source  # a chain and its first step
 sim chain step add checking_backup Asset_Brokerage_Joint --lot default --percent 50%
 sim chain step add checking_backup Asset_Roth_Alice --lot default --position 1
 sim chain step edit checking_backup 2 --maximum 500      # '' clears a column
@@ -83,12 +86,14 @@ scenario built on that one.
 
 ## 1. What a chain is
 
-A chain is a file, `chains/<kind>__<name>.csv`, in a scenario folder. Each
-row is a **step**: a place money can come from or go to, tried in the order
-the rows are written.
+A chain is a file, `chains/source/<name>.csv` or
+`chains/destination/<name>.csv`, in a scenario folder. Each row is a
+**step**: a place money can come from or go to, tried in the order the rows
+are written. The folder is the chain's **role** (section 2): a source chain
+is where money comes from, a destination chain is where it goes.
 
 ```text
-# chains/asset__checking_backup.csv
+# chains/source/checking_backup.csv
 account_name,lot,maximum,percent,series,cadence
 Asset_Savings,,,,,
 Asset_Brokerage_Joint,default,,,,
@@ -109,16 +114,17 @@ A few rules about names and columns:
   must be blank when the step is another chain.
 - A chain's name shares one namespace with account names, so it can't be
   the same as an account's. It can't contain a space or a `:`.
-- `<kind>` is `asset` or `income`: the kind of accounts the steps name.
-  Nearly every chain is `asset`; `income` is for one whose steps are income
-  accounts.
+- The file name is the chain's name. A chain is in one role folder, not
+  both.
 - A scenario that builds on another inherits its chains. A file of the same
   name in the child replaces the parent's chain as a whole; steps are not
   merged.
 
-## 2. Two directions: drawing and sweeping
+## 2. Two roles: drawing and sweeping
 
-The same chain can be read two ways, depending on where it is used.
+Every chain has one of two roles, and the folder its file is in says which.
+A source chain is only ever drawn from, and a destination chain only ever
+swept into; the loader refuses a chain used the other way round.
 
 ```mermaid
 flowchart LR
@@ -137,14 +143,14 @@ flowchart LR
 ```
 
 **A draw** takes money *out* of the steps, first step first, to cover an
-amount. A chain is drawn from when it is:
+amount. A **source** chain (`chains/source/`) is drawn from, as:
 
 - a rule's `from_account` in `scheduled.csv` (a monthly withdrawal);
 - a calendar transfer's `account_1` (`one_off_transfer`);
 - a lot's `refill_chain` in `account_values.csv` (section 5).
 
 **A sweep** puts money *into* the steps, first step first, until it is
-placed. A chain is swept into when it is:
+placed. A **destination** chain (`chains/destination/`) is swept into, as:
 
 - a rule's `to_account` (a benefit split between accounts);
 - a calendar transfer's `account_2` (`one_off_transfer`,
@@ -152,7 +158,15 @@ placed. A chain is swept into when it is:
 - a lot's `overflow_chain` (section 5).
 
 A transfer can name a chain on one side only. "From one chain to another"
-would need a rule for pairing their steps, and there isn't one.
+would need a rule for pairing their steps, and there isn't one. A step that
+is another chain names one of the same role.
+
+The role also decides which of a lot's limits (section 5) money passing
+through the chain can meet. Money drawn from a source chain may first
+refill the lots it reaches, but never passes through their overflow; money
+swept into a destination chain may overflow on from the lots it reaches,
+but never passes through their refill chains. The flowcharts follow the
+same rule, with every arrow pointing the way money moves.
 
 ## 3. How a step decides its share
 
@@ -214,12 +228,12 @@ Say Alice wants each withdrawal to come half from "Savings, then the
 brokerage account," and the rest from her IRA:
 
 ```text
-# chains/asset__bridge.csv
+# chains/source/bridge.csv
 account_name,lot,maximum,percent,series,cadence
 Asset_Savings,,,,,
 Asset_Brokerage_Joint,default,,,,
 
-# chains/asset__retirement_draw.csv
+# chains/source/retirement_draw.csv
 account_name,lot,maximum,percent,series,cadence
 bridge,,,50%,,
 Asset_TraditionalIRA_Alice,default,,,,
@@ -227,10 +241,10 @@ Asset_TraditionalIRA_Alice,default,,,,
 
 ```mermaid
 flowchart LR
-    rd(["retirement_draw"]) ---|"1: 50% of what's left"| br(["bridge"])
-    rd ---|"2: all that's left"| ira["Asset_TraditionalIRA_Alice (default)"]
-    br ---|"1: all that's left"| sav["Asset_Savings"]
-    br ---|"2: all that's left"| bro["Asset_Brokerage_Joint (default)"]
+    sav["Asset_Savings"] -->|"1: all that's left"| br(["bridge"])
+    bro["Asset_Brokerage_Joint (default)"] -->|"2: all that's left"| br
+    br -->|"1: 50% of what's left"| rd(["retirement_draw"])
+    ira["Asset_TraditionalIRA_Alice (default)"] -->|"2: all that's left"| rd
 ```
 
 Read it as `retirement_draw = 50% × (Savings, then Brokerage), then IRA`.
@@ -246,7 +260,7 @@ IRA.
 `sim chain show retirement_draw` prints the same nesting as a tree:
 
 ```text
-retirement_draw (asset chain)
+retirement_draw (source chain)
 ├── 1. bridge (chain)  50% of what's left
 │   ├── 1. Asset_Savings  all that's left
 │   └── 2. Asset_Brokerage_Joint (default)  all that's left
@@ -266,7 +280,7 @@ way whichever chain reaches it.
 ```mermaid
 flowchart LR
     backup(["checking_backup"]) -.->|"refill, before a debit"| chk["Asset_Checking<br/><small>keeps $2,000; holds at most $30,000</small>"]
-    chk ==>|"overflow, month end"| sav["Asset_Savings"]
+    chk -.->|"overflow, month end"| sav["Asset_Savings"]
 ```
 
 ### `minimum_balance`: a floor, in two ways
@@ -327,7 +341,7 @@ brokerage account, then Alice's IRA. Anything over $30,000 goes back to
 savings at month end.
 
 ```text
-# chains/asset__checking_backup.csv
+# chains/source/checking_backup.csv
 account_name,lot,maximum,percent,series,cadence
 Asset_Savings,,,,,
 Asset_Brokerage_Joint,default,,,,
@@ -371,7 +385,7 @@ Send half of Alice's Social Security to checking and the rest to savings.
 The `ss_benefit` rule's `to_account` is this chain:
 
 ```text
-# chains/asset__ss_split.csv
+# chains/destination/ss_split.csv
 account_name,lot,maximum,percent,series,cadence
 Asset_Checking,,,50%,,
 Asset_Savings,,,,,
@@ -396,6 +410,14 @@ step a `maximum` instead of a `percent`.
 - **"cycle detected" or "leads back to the lot itself" at load.** A chain
   contains itself, or a lot refills from or overflows into itself. The
   error shows the path.
+- **"is a source chain; to_account takes a destination chain" at load**
+  (or the other way round). The chain is used against its role (section
+  2). Move its file to the other folder, or point the rule or lot at a
+  chain of the right role.
+- **"a chain file belongs in chains/source/ or chains/destination/" at
+  load.** A chain file sits directly under `chains/`, as before chains had
+  roles. Move it into the folder for its role and drop the `asset__` or
+  `income__` prefix from its name.
 - **A chain nothing uses.** `sim chain list` shows `nothing` in its
   *Used by* column. Point a rule or a lot at it, or delete the file.
 

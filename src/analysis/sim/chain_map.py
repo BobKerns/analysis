@@ -1,11 +1,11 @@
 """A scenario's chains as a graph, for reading them rather than running them (issue #129).
 
 A chain (ADR-003 §4.7) is an ordered list of steps, each a lot or another
-chain; every lot is also a one-step *leaf* chain of its own. What a chain
-means depends on where it is used: a rule drawing from it, or a lot's
-``refill_chain``, takes money out of its steps in turn (a *draw*); a rule
-paying into it, or a lot's ``overflow_chain``, puts money into them (a
-*sweep*). :func:`chain_map` gathers the steps, the lot policies the steps
+chain; every lot is also a one-step *leaf* chain of its own. A named chain
+has a role: a *source* chain is drawn from, by a rule or as a lot's
+``refill_chain``, taking money out of its steps in turn (a *draw*); a
+*destination* chain is paid into, by a rule or as a lot's
+``overflow_chain``, putting money into them (a *sweep*). :func:`chain_map` gathers the steps, the lot policies the steps
 meet (minimum, refill, maximum, overflow) and every use of each chain, from
 a loaded scenario; :func:`chain_tree` and :func:`mermaid` draw it, for
 ``sim chain show|flow`` and the scenario notebook alike.
@@ -62,8 +62,8 @@ class Use:
 
 @dataclass
 class ChainMap:
-    kinds: dict[str, str] = field(default_factory=dict)
-    """Interior chain name to its kind (``asset``, ``income``)."""
+    roles: dict[str, str] = field(default_factory=dict)
+    """Interior chain name to its role (``source``, ``destination``)."""
     steps: dict[str, list[Step]] = field(default_factory=dict)
     """Interior chain name to its steps, in order."""
     leaves: dict[str, tuple[str, str]] = field(default_factory=dict)
@@ -124,7 +124,7 @@ def chain_map(sc: ScenarioConnection) -> ChainMap:
         if _text(row.account_name) is not None:
             cmap.leaves[row.name] = (row.account_name, row.lot or registries.DEFAULT_LOT)
         else:
-            cmap.kinds[row.name] = row.kind
+            cmap.roles[row.name] = row.role
             cmap.steps[row.name] = []
     for row in named_rows(sc.items("chain_steps").sort_values(["chain_name", "step_order"])):
         cmap.steps[row.chain_name].append(Step(
@@ -244,7 +244,7 @@ def chain_tree(cmap: ChainMap, name: str):
 
     def heading(node: str) -> str:
         if cmap.is_interior(node):
-            return f"[bold]{escape(node)}[/bold] [dim]({cmap.kinds[node]} chain)[/dim]"
+            return f"[bold]{escape(node)}[/bold] [dim]({cmap.roles[node]} chain)[/dim]"
         return f"[bold]{escape(cmap.label(node))}[/bold] [dim](one lot)[/dim]"
 
     tree = Tree(heading(name))
@@ -275,65 +275,164 @@ def _quoted(text: str) -> str:
     return '"' + text.replace('"', "#quot;") + '"'
 
 
-def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
+_PICKED = "fill:#ffe08a,stroke:#b8860b,stroke-width:3px,color:#000"
+"""The highlight on the chains a chart was drawn for: dark text on amber
+reads in a light or a dark theme."""
+_REFILL = '"refill, before a debit"'
+_OVERFLOW = '"overflow, month end"'
+
+
+def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool = False) -> str:
     """A Mermaid flowchart of ``names`` (default: every interior chain) and
-    everything under them: steps as plain lines numbered in order, refill and
-    overflow as arrows showing which way money moves, and the rules that draw
-    from or pay into a chain."""
+    everything money passes through on its way through them, every arrow
+    pointing the way money moves, left to right (issue #143).
+
+    A source chain is drawn from, so money flows from its steps into it and
+    out along the rules that draw from it; the lots it reaches bring their
+    refill chains, which feed them. A destination chain is paid into, so
+    money flows in along the rules that pay into it and out to its steps;
+    the lots it reaches bring their overflow chains, which they feed. A
+    source chain never follows overflow, nor a destination chain refill: a
+    lot's other policy is about money that never passes through the chain.
+    Steps and rules are solid arrows, refill and overflow dotted ones.
+    The chains ``names`` asks for are highlighted, so they stand out in a
+    tangled chart; with no ``names``, every chain was asked for and none is.
+
+    The rules and calendar transfers using a shown chain are left out unless
+    ``rules`` asks for them: they are many, often fire once, and each adds a
+    node and perhaps a loop, where the chains are what the chart is for.
+    """
     roots = list(cmap.steps) if names is None else list(names)
     shown: list[str] = []
+    edges: list[tuple[str, str, str, str]] = []  # (from, arrow, label, to), in the order drawn
+
+    def show(node: str) -> None:
+        if node not in shown:
+            shown.append(node)
+
+    def edge(source: str, arrow: str, label: str, target: str) -> None:
+        if (source, arrow, label, target) not in edges:
+            edges.append((source, arrow, label, target))
+
+    expanded: set[tuple[str, str | None]] = set()
+
+    def expand(node: str, role: str | None) -> None:
+        """Show ``node`` and what money passes through it, reached as a
+        ``role`` chain's step (a root lot has no role, so it brings both
+        its policies)."""
+        role = cmap.roles.get(node, role)
+        show(node)
+        if (node, role) in expanded:  # a refill or overflow may lead back here
+            return
+        expanded.add((node, role))
+        for step in cmap.steps.get(node, ()):
+            label = _quoted(f"{step.order}: {share_text(step)}")
+            if role == "source":
+                edge(step.target, "-->", label, node)
+            else:
+                edge(node, "-->", label, step.target)
+            expand(step.target, role)
+        policy = cmap.policies.get(node)
+        if policy is None:
+            return
+        if role != "destination" and policy.refill_chain:
+            edge(policy.refill_chain, "-.->", _REFILL, node)
+            expand(policy.refill_chain, "source")
+        if role != "source" and policy.overflow_chain:
+            edge(node, "-.->", _OVERFLOW, policy.overflow_chain)
+            expand(policy.overflow_chain, "destination")
+
     for root in roots:
-        for node in cmap.descendants(root):
-            if node not in shown:
-                shown.append(node)
-    # A lot whose refill or overflow chain is shown belongs on the chart too,
-    # and so does where a shown lot refills from or overflows to.
-    # Repeated until nothing is added: a policy chain's own lots may have
-    # policies of their own.
-    grew = True
-    while grew:
-        before = len(shown)
-        for leaf, policy in cmap.policies.items():
-            if leaf not in shown and (policy.refill_chain in shown or policy.overflow_chain in shown):
-                shown.append(leaf)
-        for leaf in list(shown):
-            policy = cmap.policies.get(leaf)
-            for chain in (policy.refill_chain, policy.overflow_chain) if policy else ():
-                for node in cmap.descendants(chain) if chain else ():
-                    if node not in shown:
-                        shown.append(node)
-        grew = len(shown) > before
-    # The far end of each rule using a shown chain, unless it is shown already.
-    for node in list(shown):
+        expand(root, None)
+    # One step further along the money from what is shown so far: the lots
+    # that refill from a shown source chain or overflow into a shown
+    # destination, the chains a root is a step of, and (with ``rules``) the
+    # far end of each rule using a shown chain. None is followed on from there.
+    reached = list(shown)
+    parents: list[str] = []
+    for root in roots:
+        for use in cmap.uses.get(root, ()):
+            if use.kind != "step":
+                continue
+            step = next(s for s in cmap.steps[use.by] if str(s.order) == use.detail)
+            label = _quoted(f"{step.order}: {share_text(step)}")
+            show(use.by)
+            parents.append(use.by)
+            if cmap.roles.get(use.by) == "source":
+                edge(root, "-->", label, use.by)
+            else:
+                edge(use.by, "-->", label, root)
+    for leaf, policy in cmap.policies.items():
+        if policy.refill_chain in reached and cmap.roles.get(policy.refill_chain) == "source":
+            show(leaf)
+            edge(policy.refill_chain, "-.->", _REFILL, leaf)
+        if policy.overflow_chain in reached and cmap.roles.get(policy.overflow_chain) == "destination":
+            show(leaf)
+            edge(leaf, "-.->", _OVERFLOW, policy.overflow_chain)
+    # A root's parent chains bring their rules too, but nothing further.
+    for node in dict.fromkeys([*reached, *parents]) if rules else ():
         for use in cmap.uses.get(node, ()):
-            if use.kind in ("draw", "sweep") and use.detail not in shown:
-                shown.append(use.detail)
+            if use.kind == "draw":
+                show(use.detail)
+                edge(node, "-->", _quoted(use.by), use.detail)
+            elif use.kind == "sweep":
+                show(use.detail)
+                edge(use.detail, "-->", _quoted(use.by), node)
+    return _render(cmap, shown, edges, roots if names is not None else [])
+
+
+def _render(
+    cmap: ChainMap, shown: list[str], edges: list[tuple[str, str, str, str]], picked: list[str],
+) -> str:
+    """The Mermaid text for ``shown`` and ``edges``, ``picked`` highlighted.
+
+    Mermaid lays a flowchart out left to right only while it has no loop:
+    given one, it turns an edge around and the chart reads both ways. Money
+    can go round one (a rule paying into a lot of the very chain it draws
+    from, as an IRA contribution from the cash an IRA refills), so an edge
+    that would close a loop goes to a copy of its target instead, a node of
+    its own (``c`` in place of the node id's ``n``) that leads nowhere
+    further."""
     ids = _node_ids(shown)
     lines = ["flowchart LR"]
     for node in shown:
-        label = cmap.label(node)
-        if cmap.is_interior(node):
-            lines.append(f"    {ids[node]}([{_quoted(label)}])")
-        else:
-            policy = cmap.policies.get(node)
-            text = label if policy is None else f"{label}<br/><small>{policy_text(cmap, policy)}</small>"
-            lines.append(f"    {ids[node]}[{_quoted(text)}]")
-    for node in shown:
-        for step in cmap.steps.get(node, ()):
-            if step.target in ids:
-                share = share_text(step)
-                lines.append(f"    {ids[node]} ---|{_quoted(f'{step.order}: {share}')}| {ids[step.target]}")
-    for leaf, policy in cmap.policies.items():
-        if leaf not in ids:
-            continue
-        if policy.refill_chain in ids:
-            lines.append(f"    {ids[policy.refill_chain]} -.->|\"refill, before a debit\"| {ids[leaf]}")
-        if policy.overflow_chain in ids:
-            lines.append(f"    {ids[leaf]} ==>|\"overflow, month end\"| {ids[policy.overflow_chain]}")
-    for node in shown:
-        for use in cmap.uses.get(node, ()):
-            if use.kind == "draw":
-                lines.append(f"    {ids[node]} -->|{_quoted(use.by)}| {ids[use.detail]}")
-            elif use.kind == "sweep":
-                lines.append(f"    {ids[use.detail]} -->|{_quoted(use.by)}| {ids[node]}")
+        lines.append(f"    {ids[node]}{_shape(cmap, node, with_policy=True)}")
+    after: dict[str, set[str]] = {}  # node id -> the ids its edges lead to so far
+
+    def leads_to(start: str, goal: str) -> bool:
+        seen, todo = set(), [start]
+        while todo:
+            if (node := todo.pop()) == goal:
+                return True
+            if node not in seen:
+                seen.add(node)
+                todo.extend(after.get(node, ()))
+        return False
+
+    copied: set[str] = set()
+    drawn: list[str] = []
+    for a, arrow, label, b in edges:
+        source, target = ids[a], ids[b]
+        if leads_to(target, source):
+            target = "c" + target[1:]  # one copy per node, however many loops end there
+            if target not in copied:
+                copied.add(target)
+                lines.append(f"    {target}{_shape(cmap, b, with_policy=False)}")
+        after.setdefault(source, set()).add(target)
+        drawn.append(f"    {source} {arrow}|{label}| {target}")
+    lines += drawn
+    if picked:
+        lines.append(f"    classDef picked {_PICKED}")
+        lines.append(f"    class {','.join(ids[root] for root in dict.fromkeys(picked))} picked")
     return "\n".join(lines)
+
+
+def _shape(cmap: ChainMap, node: str, *, with_policy: bool) -> str:
+    """A node's Mermaid shape and label: a rounded box for a chain, a box for
+    a lot, with the lot's policy under its name when ``with_policy``."""
+    label = cmap.label(node)
+    if cmap.is_interior(node):
+        return f"([{_quoted(label)}])"
+    policy = cmap.policies.get(node) if with_policy else None
+    text = label if policy is None else f"{label}<br/><small>{policy_text(cmap, policy)}</small>"
+    return f"[{_quoted(text)}]"
