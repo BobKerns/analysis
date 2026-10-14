@@ -86,6 +86,38 @@ source data/shared/sim/activate-analysis
     With no argument it asks for the path. Once `data/shared` exists, re-running
     it leaves it alone; remove `data/shared` to link a different data repo.
 
+## Drawing chain flowcharts in the terminal
+
+`sim chain show CHAIN --graph` draws a chain's flowchart as an image, right in
+the terminal. Two things make that work.
+
+**A browser to draw with.** The chart is drawn by Mermaid in a headless browser
+through [Playwright](https://playwright.dev/python/), which `uv sync` installs.
+An installed Google Chrome is enough; without one, fetch Playwright's own
+Chromium once:
+
+```sh
+uv run playwright install chromium
+```
+
+Mermaid's script (the release the notebooks load) ships with the code, so
+`--graph` works offline, and the chart never leaves your machine.
+
+**A terminal that shows images.** Recommended, all free:
+
+- [iTerm2](https://iterm2.com) (macOS)
+- [kitty](https://sw.kovidgoyal.net/kitty/) (macOS, Linux)
+- [Ghostty](https://ghostty.org) (macOS, Linux)
+- [WezTerm](https://wezterm.org) (macOS, Linux, Windows)
+- VS Code's integrated terminal, with `terminal.integrated.enableImages` on
+
+iTerm2 gets its own image protocol. Elsewhere `--graph` asks the terminal
+whether it takes the kitty graphics protocol, and falls back to iTerm2's
+protocol for older VS Code and WezTerm. In any other terminal, including macOS
+Terminal and inside tmux, it writes the chart to a PNG file and prints its
+path. If it guesses your terminal wrong, set `ANALYSIS_IMAGE_PROTOCOL` to
+`kitty`, `iterm` or `none`.
+
 ## Jupyter and filesystem MCP servers
 
 Two project-level MCP servers are configured for coding agents (Copilot CLI,

@@ -7,6 +7,7 @@ import json
 import math
 import secrets
 import shlex
+import shutil
 from collections.abc import Callable, Generator, Mapping, Set
 from contextlib import ExitStack, contextmanager
 import os
@@ -5812,16 +5813,22 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
 @chain_group_command.command("show")
 @click.argument("names", nargs=-1)
 @click.option("--mermaid", "as_mermaid", is_flag=True,
-              help="Print a Mermaid flowchart (for markdown, GitHub or JupyterLab) instead of a tree.")
+              help="Print the flowchart's Mermaid source (to paste into markdown) instead of a tree.")
+@click.option("--graph", "as_graph", is_flag=True,
+              help="Draw the flowchart in the terminal (kitty or iTerm2 image protocol), "
+                   "or write it to a PNG file when the terminal can't show images.")
+@click.option("--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
+              help="Write the flowchart to this .png or .svg file instead of showing it.")
 @click.option("--rules", "with_rules", is_flag=True,
-              help="With --mermaid, also draw the rules and calendar transfers that use each chain.")
+              help="With --mermaid, --graph or --graph-file, also draw the rules and calendar "
+                   "transfers that use each chain.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def chain_show_command(
-    names: tuple[str, ...], as_mermaid: bool, with_rules: bool, scenario: str | None,
-    data_dir: Path | None,
+    names: tuple[str, ...], as_mermaid: bool, as_graph: bool, graph_file: Path | None,
+    with_rules: bool, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show chains as trees: each step, what share it takes, and its lot's policy.
 
@@ -5832,6 +5839,10 @@ def chain_show_command(
     """
     from rich.console import Console
 
+    if sum([as_mermaid, as_graph, graph_file is not None]) > 1:
+        raise click.UsageError("use one of --mermaid, --graph and --graph-file")
+    if graph_file is not None and graph_file.suffix.lower() not in (".png", ".svg"):
+        raise click.UsageError(f"--graph-file {graph_file} must end in .png or .svg")
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     with open_scenario(data, ref.name, scenarios_dir=ref.scenarios_dir) as scn:
@@ -5862,6 +5873,9 @@ def chain_show_command(
     if as_mermaid:
         click.echo(chain_map.mermaid(cmap, roots, rules=with_rules))
         return
+    if as_graph or graph_file is not None:
+        _draw_chain_graph(chain_map.mermaid(cmap, roots, rules=with_rules), graph_file)
+        return
     console = Console()
     for i, root in enumerate(roots):
         if i:
@@ -5869,6 +5883,55 @@ def chain_show_command(
         console.print(chain_map.chain_tree(cmap, root))
         for use in cmap.uses.get(root, []):
             console.print(f"  {chain_map.use_text(cmap, use)}", style="dim", markup=False)
+
+
+def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
+    """Draw the Mermaid ``source`` into ``graph_file``, or show it in the
+    terminal; a terminal that can't show images gets a PNG file instead,
+    and a pointer to one that can."""
+    from analysis.sim import chain_graph
+
+    protocol = chain_graph.terminal_protocol() if graph_file is None else None
+    # Draw for the terminal's own cells, so the chart's text matches the
+    # terminal's on a Retina screen and off it.
+    cell = chain_graph.cell_size() if protocol else None
+    fmt = "svg" if graph_file is not None and graph_file.suffix.lower() == ".svg" else "png"
+    # As wide as the terminal, short of its last column, which some
+    # terminals wrap at.
+    fit_width = (shutil.get_terminal_size().columns - 1) * cell[0] if cell else None
+    try:
+        image = chain_graph.render(source, fmt, scale=chain_graph.terminal_scale(cell),
+                                   fit_width=fit_width)
+    except chain_graph.GraphError as error:
+        raise click.ClickException(str(error)) from error
+    if graph_file is not None:
+        try:
+            graph_file.write_bytes(image)
+        except OSError as error:
+            raise click.ClickException(f"couldn't write {graph_file}: {error}") from error
+        click.echo(f"wrote {graph_file}")
+        return
+    if protocol is None:
+        name = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="chain-", suffix=".png", delete=False) as f:
+                name = f.name
+                f.write(image)
+        except OSError as error:
+            if name is not None:
+                Path(name).unlink(missing_ok=True)  # don't leave half a chart behind
+            raise click.ClickException(f"couldn't write the chart to a temporary file: {error}") from error
+        click.echo(f"wrote {name}")
+        click.echo("This terminal can't show images. iTerm2, kitty, Ghostty, WezTerm or "
+                   "VS Code's terminal draws the chart in place.", err=True)
+        return
+    columns = chain_graph.fit_columns(chain_graph.png_size(image)[0],
+                                      shutil.get_terminal_size().columns, cell and cell[0])
+    if protocol == "kitty":
+        click.echo(chain_graph.kitty_sequence(image, columns), nl=False)
+        chain_graph.swallow_replies()
+    else:
+        click.echo(chain_graph.iterm_sequence(image, columns), nl=False)
 
 
 _STEP_OPTIONS_HELP = {

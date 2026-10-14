@@ -25,9 +25,15 @@ Before changing anything, look at what the scenario already has:
 sim chain list                  # every chain, its steps, and what uses it
 sim chain show                  # each chain as a tree, with each lot's limits
 sim chain show Asset_Checking   # just the chains that reach this account
-sim chain show bridge --mermaid # one chain's flowchart, to paste into markdown
-sim chain show bridge --mermaid --rules  # with the rules that use it
+sim chain show bridge --graph   # one chain's flowchart, drawn in the terminal
+sim chain show bridge --graph --rules    # with the rules that use it
+sim chain show bridge --mermaid # its Mermaid source, to paste into markdown
+sim chain show bridge --graph-file bridge.svg  # saved as an image (.png or .svg)
 ```
+
+`--graph` needs a terminal that shows images, such as iTerm2, kitty, Ghostty,
+WezTerm or VS Code's; anywhere else it writes a PNG and prints its path. See
+[Setup](../SETUP.md#drawing-chain-flowcharts-in-the-terminal).
 
 The [scenario overview notebook](../../notebooks/scenario_overview.ipynb)
 shows the same chains as a table, and one chain at a time as a flowchart

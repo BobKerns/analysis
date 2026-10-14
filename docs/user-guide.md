@@ -433,7 +433,12 @@ A chain drawn from (a `from_account`, a `refill_chain`) goes in
 `overflow_chain`) goes in `chains/destination/<name>.csv`.
 
 `sim chain list` shows the scenario's chains and what uses each one, and
-`sim chain show` draws them as trees (`--mermaid` for a flowchart).
+`sim chain show` draws them as trees; `--graph` draws one chain's flowchart in
+the terminal, and `--mermaid` prints the flowchart's Mermaid source for a
+README. To show the chart in place, `--graph` needs a terminal that shows
+images; iTerm2, kitty, Ghostty, WezTerm or VS Code's integrated terminal are
+recommended. Anywhere else it writes the chart to a PNG and prints its path
+([Setup](SETUP.md#drawing-chain-flowcharts-in-the-terminal) says why and how).
 `sim chain add` with no arguments builds a chain by asking what it is for;
 `sim chain step add|edit|move|rm`, `rename` and `delete` change one.
 [The chains guide](guides/chains.md) explains how steps, percents and

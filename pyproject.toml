@@ -20,6 +20,7 @@ dependencies = [
   "truststore>=0.10.4",
   "markdown-it-py>=4.2.0",
   "anywidget>=0.9.18",
+  "playwright>=1.64.0",
 ]
 
 [project.scripts]
