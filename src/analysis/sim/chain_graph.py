@@ -156,12 +156,14 @@ def iterm_sequence(png: bytes, columns: int | None = None) -> str:
 # the second, so reading up to the second's reply never hangs.
 _KITTY_QUERY = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c"
 _DEVICE_ATTRIBUTES = re.compile(rb"\x1b\[\?[\d;]*c")
+# Any id: iTerm2 answers a kitty query with i=0, not the id it was asked with.
+_KITTY_OK = re.compile(rb"\x1b_Gi=\d+;OK\x1b\\")
 _ITERM_PROGRAMS = {"iTerm.app", "vscode", "WezTerm"}
 
 
 def kitty_reply(reply: bytes) -> bool:
     """Whether the terminal's ``reply`` to the kitty query says it takes kitty graphics."""
-    return b"\x1b_Gi=31;OK\x1b\\" in reply
+    return _KITTY_OK.search(reply) is not None
 
 
 def _ask_terminal(query: str, timeout: float = 1.0) -> bytes:
@@ -182,6 +184,10 @@ def _ask_terminal(query: str, timeout: float = 1.0) -> bytes:
             if not ready:
                 break
             reply += os.read(fd, 1024)
+        # Some terminals (iTerm2) answer the queries out of order; take in a
+        # late answer here, or it lands at the shell prompt.
+        while select.select([fd], [], [], 0.05)[0]:
+            reply += os.read(fd, 1024)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
     return reply
@@ -190,9 +196,20 @@ def _ask_terminal(query: str, timeout: float = 1.0) -> bytes:
 def terminal_protocol() -> Protocol | None:
     """The image protocol this terminal takes, or ``None`` when it takes
     none, the output isn't a terminal, or it's inside tmux (which needs
-    passthrough wrapping this doesn't do)."""
+    passthrough wrapping this doesn't do). ``$ANALYSIS_IMAGE_PROTOCOL``
+    (``kitty``, ``iterm`` or ``none``) overrides the guess, for a terminal
+    it gets wrong."""
+    forced = os.environ.get("ANALYSIS_IMAGE_PROTOCOL", "").lower()
+    if forced in ("kitty", "iterm"):
+        return forced
+    if forced == "none":
+        return None
     if not (sys.stdin.isatty() and sys.stdout.isatty()) or os.environ.get("TMUX"):
         return None
+    if os.environ.get("TERM_PROGRAM") == "iTerm.app":
+        # iTerm2 accepts a kitty image but showed nothing (issue #142), so it
+        # gets its own protocol, without asking.
+        return "iterm"
     try:
         if kitty_reply(_ask_terminal(_KITTY_QUERY)):
             return "kitty"

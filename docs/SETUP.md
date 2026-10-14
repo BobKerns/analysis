@@ -112,10 +112,12 @@ machine.
 - [WezTerm](https://wezterm.org) (macOS, Linux, Windows)
 - VS Code's integrated terminal, with `terminal.integrated.enableImages` on
 
-`--graph` asks the terminal whether it takes the kitty graphics protocol, and
-falls back to iTerm2's image protocol for older iTerm2 and VS Code. Elsewhere,
-including macOS Terminal and inside tmux, it writes the chart to a PNG file and
-prints its path.
+iTerm2 gets its own image protocol. Elsewhere `--graph` asks the terminal
+whether it takes the kitty graphics protocol, and falls back to iTerm2's
+protocol for older VS Code and WezTerm. In any other terminal, including macOS
+Terminal and inside tmux, it writes the chart to a PNG file and prints its
+path. If it guesses your terminal wrong, set `ANALYSIS_IMAGE_PROTOCOL` to
+`kitty`, `iterm` or `none`.
 
 ## Jupyter and filesystem MCP servers
 

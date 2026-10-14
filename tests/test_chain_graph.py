@@ -50,7 +50,8 @@ def test_png_size_and_fit_columns() -> None:
 @pytest.mark.parametrize(("reply", "term_program", "expected"), [
     (b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c", None, "kitty"),
     (b"\x1b[?62;22c", "vscode", "iterm"),  # no kitty answer: an older VS Code
-    (b"\x1b[?62;22c", "iTerm.app", "iterm"),
+    (b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c", "iTerm.app", "iterm"),  # its own protocol, though it answers
+    (b"\x1b[?62;22c\x1b_Gi=0;OK\x1b\\", "WezTerm", "kitty"),  # any id, in either order
     (b"\x1b[?62;22c", "Apple_Terminal", None),
 ])
 def test_terminal_protocol_asks_the_terminal(
@@ -59,6 +60,7 @@ def test_terminal_protocol_asks_the_terminal(
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("ANALYSIS_IMAGE_PROTOCOL", raising=False)
     if term_program is None:
         monkeypatch.delenv("TERM_PROGRAM", raising=False)
     else:
@@ -67,7 +69,20 @@ def test_terminal_protocol_asks_the_terminal(
     assert chain_graph.terminal_protocol() == expected
 
 
+@pytest.mark.parametrize(("forced", "expected"), [("kitty", "kitty"), ("iterm", "iterm"), ("none", None)])
+def test_image_protocol_can_be_forced(
+    monkeypatch: pytest.MonkeyPatch, forced: str, expected: str | None,
+) -> None:
+    monkeypatch.setenv("ANALYSIS_IMAGE_PROTOCOL", forced)
+    monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+    monkeypatch.setattr(chain_graph, "_ask_terminal", lambda query: b"\x1b_Gi=31;OK\x1b\\")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    assert chain_graph.terminal_protocol() == expected
+
+
 def test_no_protocol_inside_tmux_or_when_piped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANALYSIS_IMAGE_PROTOCOL", raising=False)
     monkeypatch.setattr(chain_graph, "_ask_terminal", lambda query: b"\x1b_Gi=31;OK\x1b\\")
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     assert chain_graph.terminal_protocol() is None
