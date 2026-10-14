@@ -1179,6 +1179,8 @@ def _read_aux_files(
         if kind not in registries.AUX_KIND_COLUMNS:
             issues.append(f"{label}: unknown kind '{kind}'")
             continue
+        if kind == "security_price" and series:
+            _validate_symbol_case(label, series, issues)
         cols = registries.AUX_KIND_COLUMNS[kind]
         money_cols = registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
         micros_cols = registries.AUX_MICROS_COLUMNS.get(kind, {})
@@ -1671,6 +1673,7 @@ def _validate_securities(rows: list[dict[str, str]], issues: list[str]) -> None:
         if not symbol:
             issues.append(f"{where}: missing symbol")
             continue
+        _validate_symbol_case(where, symbol, issues)
         if symbol in seen:
             issues.append(f"{where} ({symbol}): duplicate symbol")
         seen.add(symbol)
@@ -1689,6 +1692,7 @@ def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None
         if not symbol:
             issues.append(f"{where}: missing symbol")
             continue
+        _validate_symbol_case(where, symbol, issues)
         if as_of:
             try:
                 date.fromisoformat(as_of)
@@ -1921,6 +1925,7 @@ def _validate_account_model_money(
         symbol = row.get("symbol", "")
         if symbol:
             _validate_no_spaces(where, name, "symbol", symbol, issues)
+            _validate_symbol_case(f"{where} ({name})", symbol, issues)
         lot_series = row.get("series", "")
         if lot_series:
             _validate_no_spaces(where, name, "series", lot_series, issues)
@@ -2796,6 +2801,13 @@ def _validate_series_references(
                 "account growth series -- this value has no effect here, "
                 "unless a scenario inheriting from this one reads it"
             )
+
+
+def _validate_symbol_case(where: str, symbol: str, issues: list[str]) -> None:
+    """Tickers are upper case. A lower-case spelling would be a second symbol,
+    with its own price file and allocation, that nothing else matches."""
+    if symbol != symbol.upper():
+        issues.append(f"{where}: symbol '{symbol}' must be upper case ('{symbol.upper()}')")
 
 
 def _validate_no_spaces(where: str, owner: str, field: str, value: str,

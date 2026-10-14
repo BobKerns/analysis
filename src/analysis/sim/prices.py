@@ -5,7 +5,8 @@ price on or before the scenario start), so what is stored is a sparse history:
 the last close of each month from the December before the earliest scenario start's year,
 plus the most recent close. Files are merged, never rewritten: a date already in
 a file keeps its price unless ``refresh`` is set. Only ticker symbols leave the
-machine.
+machine. ``price_summary`` and ``price_history`` read the files back for
+``sim prices show``.
 """
 
 from __future__ import annotations
@@ -18,13 +19,14 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import pandas as pd
 
+from analysis.sim import registries
 from analysis.sim.dates import parse_month
 from analysis.frames import named_rows
 from analysis.tls import ssl_context, verify_reason
@@ -33,13 +35,16 @@ if TYPE_CHECKING:
     from analysis.sim.connection import ScenarioConnection
 
 __all__ = [
-    "FetchResult", "PRICE_PROVIDERS", "PriceProvider", "PriceUse", "YahooProvider",
-    "check_prices", "default_since", "fetch_prices", "format_price", "merge_price_rows",
-    "month_end_closes", "prices_in_use",
+    "FetchResult", "PRICE_FILE_PREFIX", "PRICE_PROVIDERS", "PriceProvider", "PriceUse",
+    "YahooProvider", "check_prices", "default_since", "fetch_prices", "format_price",
+    "known_symbols", "merge_price_rows", "month_end_closes", "price_files", "price_history",
+    "price_summary", "prices_in_use",
 ]
 
 PRICE_COLUMNS = ("effective_date", "price")
-NO_PRICE_SYMBOLS = frozenset({"CASH"})  # dollar-denominated: nothing to look up
+PRICE_FILE_PREFIX = "security_price__"
+# CASH and CD are dollar-denominated, with no ticker to look up.
+NO_PRICE_SYMBOLS = frozenset(registries.SYMBOL_ASSET_CLASS)
 
 
 class PriceError(Exception):
@@ -162,6 +167,33 @@ def _write_price_file(path: Path, rows: dict[str, str]) -> None:
         writer.writerows(sorted(rows.items()))
 
 
+def price_files(prices_dir: Path) -> dict[str, Path]:
+    """Symbol to its ``security_price__<SYMBOL>.csv`` in ``prices_dir``."""
+    if not prices_dir.is_dir():
+        return {}
+    return {
+        path.stem.removeprefix(PRICE_FILE_PREFIX): path
+        for path in prices_dir.glob(f"{PRICE_FILE_PREFIX}*.csv")
+    }
+
+
+def _csv_symbols(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    with path.open(newline="", encoding="utf-8") as fh:
+        return {s for row in csv.DictReader(fh) if (s := (row.get("symbol") or "").strip())}
+
+
+def known_symbols(data_dir: Path) -> list[str]:
+    """Symbols the data repo names without a lot holding them: those in
+    ``securities.csv`` or ``allocations.csv``, or with a shared ``prices/`` file,
+    so one added ahead of a lot still gets (and keeps) its prices. CASH and CD
+    are left out."""
+    named = (_csv_symbols(data_dir / "securities.csv") | _csv_symbols(data_dir / "allocations.csv")
+             | set(price_files(data_dir / "prices")))
+    return sorted(named - NO_PRICE_SYMBOLS)
+
+
 @dataclass
 class PriceUse:
     """Which symbols the scenarios hold with a quantity, and how far back prices are needed."""
@@ -222,7 +254,7 @@ def fetch_prices(
             result.error = "no prices in the period"
             continue
         result.latest = rows[-1]
-        path = prices_dir / f"security_price__{symbol}.csv"
+        path = prices_dir / f"{PRICE_FILE_PREFIX}{symbol}.csv"
         merged, result.added, result.changed = merge_price_rows(
             _read_price_file(path), rows, refresh=refresh,
         )
@@ -238,6 +270,70 @@ def default_since(earliest_start: date | None, today: date) -> date:
     ``prior_year_end_balance`` can be derived from) are included."""
     anchor = earliest_start or today
     return date(anchor.year - 1, 12, 1)
+
+
+def _stored(path: Path) -> list[tuple[date, Decimal]]:
+    """A price file's rows, oldest first; a row that doesn't parse is skipped,
+    since the loader reports it."""
+    rows = []
+    for day, text in _read_price_file(path).items():
+        try:
+            rows.append((date.fromisoformat(day.strip()), Decimal(text.strip())))
+        except (ValueError, ArithmeticError):
+            continue
+    return sorted(rows)
+
+
+def _change_since(rows: list[tuple[date, Decimal]], cutoff: date) -> float | None:
+    """The latest price's change, as a fraction, from the last price on or
+    before ``cutoff``; None when the file doesn't reach back that far."""
+    latest = rows[-1][1]
+    earlier = [price for when, price in rows if when <= cutoff]
+    if not earlier or not earlier[-1]:
+        return None
+    return float(latest / earlier[-1] - 1)
+
+
+SUMMARY_COLUMNS = ("symbol", "prices", "first_date", "latest_date", "latest_price",
+                   "month_change", "year_change")
+
+
+def price_summary(prices_dir: Path, symbols: Iterable[str] = ()) -> pd.DataFrame:
+    """One row per symbol with a price file in ``prices_dir``, plus each of
+    ``symbols`` (with ``prices`` 0) that has none: its count of prices, first
+    and latest date, latest price, and the latest price's change since the
+    previous month's end and since the previous year's end (fractions; NaN
+    when the file doesn't reach back that far)."""
+    files = price_files(prices_dir)
+    rows = []
+    for symbol in sorted({*files, *symbols}):
+        stored = _stored(files[symbol]) if symbol in files else []
+        row = dict.fromkeys(SUMMARY_COLUMNS)
+        row.update(symbol=symbol, prices=len(stored))
+        if stored:
+            latest = stored[-1][0]
+            month_end = latest.replace(day=1) - timedelta(days=1)
+            row.update(first_date=stored[0][0], latest_date=latest, latest_price=stored[-1][1],
+                       month_change=_change_since(stored, month_end),
+                       year_change=_change_since(stored, date(latest.year - 1, 12, 31)))
+        rows.append(row)
+    return pd.DataFrame(rows, columns=list(SUMMARY_COLUMNS))
+
+
+def price_history(prices_dir: Path, symbol: str, since: date | None = None) -> pd.DataFrame | None:
+    """``symbol``'s stored prices (``effective_date``, ``price``) with each one's
+    ``change`` from the row before (a fraction), from ``since`` on; None when it
+    has no price file."""
+    path = prices_dir / f"{PRICE_FILE_PREFIX}{symbol}.csv"
+    if not path.exists():
+        return None
+    rows, previous = [], None
+    for day, price in _stored(path):
+        change = float(price / previous - 1) if previous else None
+        previous = price
+        if since is None or day >= since:
+            rows.append({"effective_date": day, "price": price, "change": change})
+    return pd.DataFrame(rows, columns=["effective_date", "price", "change"])
 
 
 CHECK_COLUMNS = (

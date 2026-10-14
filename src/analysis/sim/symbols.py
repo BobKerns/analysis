@@ -21,6 +21,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.sim import registries, units
+from analysis.sim.prices import price_files
 from analysis.sim.dates import month_end_iso
 from analysis.sim.loader import _validate_allocations, _validate_securities
 
@@ -30,7 +31,6 @@ SECURITIES = "securities.csv"
 ALLOCATIONS = "allocations.csv"
 _SECURITY_COLUMNS = ["symbol", "name"]
 _ALLOCATION_COLUMNS = ["symbol", "as_of", "asset_class", "weight"]
-_PRICE_PREFIX = "security_price__"
 
 
 def _read(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -56,15 +56,6 @@ def _month_key(text: str) -> str:
         return month_end_iso(text)
     except ValueError:
         return text
-
-
-def _price_files(prices_dir: Path) -> dict[str, Path]:
-    if not prices_dir.is_dir():
-        return {}
-    return {
-        path.stem.removeprefix(_PRICE_PREFIX): path
-        for path in prices_dir.glob(f"{_PRICE_PREFIX}*.csv")
-    }
 
 
 def _holders(scenarios_dir: Path) -> dict[str, list[str]]:
@@ -105,7 +96,7 @@ def _scenario_prices(scenarios_dir: Path) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
     if scenarios_dir.is_dir():
         for folder in sorted(p for p in scenarios_dir.iterdir() if p.is_dir()):
-            for symbol in _price_files(folder / "prices"):
+            for symbol in price_files(folder / "prices"):
                 found.setdefault(symbol, []).append(folder.name)
     return found
 
@@ -117,7 +108,7 @@ def symbol_table(data_dir: Path) -> pd.DataFrame:
     ``scenario_prices`` (the scenarios with their own), ``held_by``."""
     names = {row["symbol"]: row.get("name", "") for row in _read(data_dir / SECURITIES)[1] if row.get("symbol")}
     weights = _latest_weights([r for r in _read(data_dir / ALLOCATIONS)[1] if r.get("symbol")])
-    prices = _price_files(data_dir / "prices")
+    prices = price_files(data_dir / "prices")
     holders = _holders(data_dir / "scenarios")
     overrides = _scenario_prices(data_dir / "scenarios")
     records = []

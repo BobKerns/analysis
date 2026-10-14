@@ -308,7 +308,8 @@ Asset_Brokerage_Joint,inherited_2029,AAA,2029-03-15,500,,,50000.00
 - You can leave `opening_balance` blank if you give `symbol` and `quantity`
   instead. The balance is then calculated from a price. Run
   `sim prices fetch` to get prices; it saves them to
-  `prices/security_price__<SYMBOL>.csv`. Run `sim prices check` to compare a
+  `prices/security_price__<SYMBOL>.csv`, and `sim prices show` lists what
+  it saved. Run `sim prices check` to compare a
   balance you typed in against quantity times price. Part 4.11 covers
   adding a symbol the data repo doesn't have yet.
 - Once you have a run, `sim account holdings <account>` shows every lot's
@@ -585,14 +586,22 @@ per month-end, the date as `YYYY-MM-DD` and the price in dollars, such as
 `2026-09-30,41.275`.
 
 Then put it in an account: a lot with `symbol` and `quantity`, which
-`sim account lot add` asks for (Part 4.2). Once a lot holds the symbol,
-`sim prices fetch` with no symbol keeps its prices up to date with the
-others.
+`sim account lot add` asks for (Part 4.2). You don't have to do that right
+away: `sim prices fetch` with no symbol keeps the prices of every symbol in
+`securities.csv` or `allocations.csv` up to date, whether or not a lot holds
+it yet, so you can add one ahead of time and watch its price.
+
+Symbols are upper case, like the tickers they are. The commands upper-case
+whatever you type, and the loader rejects a lower-case symbol written into a
+file by hand.
 
 To check it:
 
 - `sim symbol list` shows every symbol, its latest weights, its prices and
   the lots holding it, with a missing allocation or price marked.
+- `sim prices show` lists the stored prices of every symbol, with the
+  latest price and how far it has moved since the last month-end and
+  year-end; `sim prices show ABCDX` lists one symbol's prices.
 - `sim prices check` compares each lot's stated balance with quantity times
   price.
 - `sim allocation --by security` shows how the symbol's lots split.
