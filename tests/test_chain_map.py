@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Generator
 from pathlib import Path
 
@@ -289,8 +290,66 @@ def test_flowchart_in_the_notebook_shows_one_chain(guide_chains: Path) -> None:
     assert chart.chart == chain_map.mermaid(cmap, ["ss_split"], rules=True) != chain_map.mermaid(cmap, ["ss_split"])
     # The widget draws itself, so VS Code (which runs no script in an Output) draws it too.
     assert f'await import("{MERMAID_URL}")' in MermaidWidget._esm
-    # With VS Code's RequireJS ``define`` hidden while it loads (issue #153).
-    assert "globalThis.define = undefined" in MermaidWidget._esm
+
+
+# Stands in for Mermaid: like the UMD libraries it bundles, it takes the AMD
+# path when a global ``define`` is there, and then has nothing to export.
+_STUB_MERMAID = """
+if (typeof define === "function") throw new TypeError("took the AMD path");
+export default {
+    initialize() {},
+    async render(id, chart) { return {svg: `<svg id="${id}"></svg>`}; },
+};
+"""
+
+# Two widgets loading at once, as anywidget runs the module, under VS Code's
+# RequireJS ``define``.
+_TWO_WIDGETS = """async (esm) => {
+    const define = function () {};
+    define.amd = {};
+    globalThis.define = define;
+    const load = () => import(URL.createObjectURL(new Blob([esm], {type: "text/javascript"})));
+    const widgets = await Promise.all([load(), load()]);
+    const drawn = widgets.map(({default: widget}) => {
+        const el = document.createElement("div");
+        widget.render({model: {get: () => "flowchart LR", on() {}}, el});
+        return el;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return {drawn: drawn.map((el) => el.innerHTML), restored: globalThis.define === define};
+}"""
+
+
+def test_flowchart_widget_loads_beside_vs_codes_amd_define() -> None:
+    """VS Code's widget renderer leaves RequireJS's ``define`` on the page,
+    which broke Mermaid's bundled libraries (issue #153): the widget hides it
+    while Mermaid loads, and gives the same one back, however many load."""
+    from playwright.sync_api import Error, Route, sync_playwright
+
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch()
+        except Error:
+            try:
+                browser = playwright.chromium.launch(channel="chrome")
+            except Error as error:
+                pytest.skip(f"no browser: {error.message.splitlines()[0]}")
+        try:
+            page = browser.new_page()
+
+            def mermaid(route: Route) -> None:
+                time.sleep(0.5)  # a slow network: the second widget starts while the first waits
+                route.fulfill(body=_STUB_MERMAID, content_type="text/javascript",
+                              headers={"access-control-allow-origin": "*"})
+
+            page.route(MERMAID_URL, mermaid)
+            page.route("https://notebook.test/", lambda route: route.fulfill(body="<html></html>",
+                                                                             content_type="text/html"))
+            page.goto("https://notebook.test/")
+            result = page.evaluate(_TWO_WIDGETS, MermaidWidget._esm)
+        finally:
+            browser.close()
+    assert result == {"drawn": ['<svg id="chain-flow-1"></svg>'] * 2, "restored": True}
 
 
 def test_calendar_transfers_use_chains(guide_chains: Path, append_calendar_row) -> None:
