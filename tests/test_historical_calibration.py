@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import io
 import math
+import re
 import ssl
 import urllib.error
 import zipfile
@@ -485,6 +486,40 @@ def test_summarize_with_a_window_spreads_rolling_rates_but_compounds_every_year(
     assert math.isnan(s.persistence)
 
 
+def test_row_values_floor_persistence_and_bracket_the_level_sd(hc):
+    # Alternating years: persistence -1, which a process row enters as 0.
+    annual = pd.Series({1900 + i: (12.0 if i % 2 else 8.0) for i in range(40)})
+    v = hc.row_values("x", annual, hold_years=20)
+    single = hc.summarize("x", annual, None)
+    assert v.rate == pytest.approx(single.compound)
+    assert v.persistence == 0.0
+    assert v.shock_sd == pytest.approx(single.shock_sd)
+    assert v.level_sd_low == pytest.approx(single.sd / math.sqrt(40))
+    assert v.level_sd_high == pytest.approx(hc.summarize("x", annual, None, window=10).sd)
+    assert v.held_sd == pytest.approx(hc.summarize("x", annual, None, window=20).sd)
+
+
+def test_row_values_leave_a_rolling_sd_blank_without_two_whole_windows(hc):
+    annual = pd.Series({1984 + i: 2.0 + (i % 3) for i in range(42)})
+    v = hc.row_values("x", annual, hold_years=30)
+    assert math.isnan(v.held_sd)
+    assert not math.isnan(v.level_sd_high)  # 42 years hold two 10-year windows
+
+
+def test_row_value_cells_write_percents_as_the_csv_takes_them(hc):
+    v = hc.RowValues("x", 10.04, 1.26, 1.9, 5.5, 0.0, 18.94)
+    held, process = hc.row_value_cells(v, 30)
+    assert held == ["x", "held 30 yr", "10.0%", "1.3%", "—", "—"]
+    assert process == ["x", "process (ar1)", "10.0%", "1.9% to 5.5%", "0.00", "18.9%"]
+
+
+def test_legend_names_every_suggested_column(hc):
+    named = {name for row in hc.LEGEND for name in re.split(r",? |, ", row[0])}
+    for column in hc.ROW_VALUE_COLUMNS[2:]:
+        for name in column.split(", "):
+            assert name in named, name
+
+
 def test_runs_above_finds_consecutive_stretches(hc):
     rates = pd.Series({1972: 3.0, 1973: 8.0, 1974: 12.0, 1975: 7.0, 1976: 5.0, 1977: 7.0, 1979: 9.0})
     runs = hc.runs_above(rates, 6.0)
@@ -502,6 +537,8 @@ def test_main_prints_a_table_per_period(calibration_rate_csv, calibration_cache_
     assert result.exit_code == 0, result.output
     assert "### Early (2020–2021)" in out and "### All (start–latest)" in out
     assert "| Premium | 2020–2021 |   2 |" in out
+    assert "Suggested calendar.csv values (Early" in out and "| Premium | process (ar1) |" in out
+    assert "### Legend" in out and "--vary-innovation-sd" in out
 
 
 def test_series_used_twice_keep_their_own_labels(hc, downloads, calibration_cache_dir):
