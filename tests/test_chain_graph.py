@@ -104,7 +104,7 @@ def stub_render(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     """Draws nothing: records each chart and format asked for, and returns FAKE_PNG."""
     calls: list[tuple[str, str]] = []
 
-    def render(source: str, fmt: str = "png", scale: float = 2.0) -> bytes:
+    def render(source: str, fmt: str = "png", scale: float = 2.0, fit_width: float | None = None) -> bytes:
         calls.append((source, fmt))
         return FAKE_PNG
 
@@ -151,7 +151,7 @@ def test_graph_in_a_kitty_terminal(
 
 
 def test_graph_error_is_one_line(guide_chains: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail(source: str, fmt: str = "png", scale: float = 2.0) -> bytes:
+    def fail(source: str, fmt: str = "png", scale: float = 2.0, fit_width: float | None = None) -> bytes:
         raise chain_graph.GraphError("no browser to draw the chart with")
 
     monkeypatch.setattr(chain_graph, "render", fail)
@@ -161,10 +161,16 @@ def test_graph_error_is_one_line(guide_chains: Path, monkeypatch: pytest.MonkeyP
 
 def test_render_draws_a_png_with_mermaid() -> None:
     """The real thing, where a browser and a copy of Mermaid are at hand."""
+    chart = "flowchart LR\n    a[Alice] -->|1: all| b([bridge])\n"
     try:
-        png = chain_graph.render("flowchart LR\n    a[Alice] -->|1: all| b([bridge])\n")
+        png = chain_graph.render(chart, scale=1.0)
     except chain_graph.GraphError as error:
         pytest.skip(str(error))
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     width, height = chain_graph.png_size(png)
     assert width > height > 0
+    # Fitted to a wide terminal, a small chart grows, but only so far.
+    grown = chain_graph.png_size(chain_graph.render(chart, scale=1.0, fit_width=10_000))[0]
+    assert abs(grown - width * chain_graph._ZOOM) <= 2
+    # Fitted to a narrow one, it shrinks to the width asked for.
+    assert abs(chain_graph.png_size(chain_graph.render(chart, scale=1.0, fit_width=100))[0] - 100) <= 2

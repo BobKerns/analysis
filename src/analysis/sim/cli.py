@@ -5896,8 +5896,12 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
     # terminal's on a Retina screen and off it.
     cell = chain_graph.cell_size() if protocol else None
     fmt = "svg" if graph_file is not None and graph_file.suffix.lower() == ".svg" else "png"
+    # As wide as the terminal, short of its last column, which some
+    # terminals wrap at.
+    fit_width = (shutil.get_terminal_size().columns - 1) * cell[0] if cell else None
     try:
-        image = chain_graph.render(source, fmt, scale=chain_graph.terminal_scale(cell))
+        image = chain_graph.render(source, fmt, scale=chain_graph.terminal_scale(cell),
+                                   fit_width=fit_width)
     except chain_graph.GraphError as error:
         raise click.ClickException(str(error)) from error
     if graph_file is not None:

@@ -78,11 +78,20 @@ _DRAW = """async (source) => {
 }"""
 
 
-def render(source: str, fmt: ImageFormat = "png", scale: float = 2.0) -> bytes:
+_ZOOM = 2.0
+"""How far a chart may grow past ``scale`` to fill ``fit_width``: its labels
+at most twice the terminal's text, so a small chart doesn't balloon."""
+
+
+def render(
+    source: str, fmt: ImageFormat = "png", scale: float = 2.0, fit_width: float | None = None,
+) -> bytes:
     """Draw Mermaid ``source`` as a PNG, ``scale`` pixels to each of the
     chart's own (twice, by default, for a sharp image on a high-density
     screen), or as SVG text; on a white background so it reads on a dark
-    terminal too."""
+    terminal too. With ``fit_width``, the PNG is that many pixels wide
+    instead, shrinking a wide chart or growing a narrow one up to
+    :data:`_ZOOM` times ``scale``."""
     from playwright.sync_api import Error, sync_playwright
 
     script = mermaid_script()
@@ -95,7 +104,7 @@ def render(source: str, fmt: ImageFormat = "png", scale: float = 2.0) -> bytes:
                 browser = playwright.chromium.launch(channel="chrome")
             except Error as error:
                 raise GraphError(f"no browser to draw the chart with: {_INSTALL_HINT}") from error
-        try:
+        def draw(scale: float):
             page = browser.new_page(device_scale_factor=scale)
             page.set_content(_PAGE)
             page.add_script_tag(path=script)
@@ -103,9 +112,23 @@ def render(source: str, fmt: ImageFormat = "png", scale: float = 2.0) -> bytes:
                 svg = page.evaluate(_DRAW, source)
             except Error as error:
                 raise GraphError(f"Mermaid couldn't draw the chart: {error.message}") from error
+            return page, svg
+
+        try:
+            page, svg = draw(scale)
             if fmt == "svg":
                 return svg.encode()
-            return page.locator("#chart svg").screenshot(omit_background=False)
+            chart = page.locator("#chart svg")
+            if fit_width:
+                # A page's scale is fixed when it opens, so the chart is drawn
+                # again on a page at the scale that fills the width.
+                box = chart.bounding_box()
+                if box and box["width"]:
+                    fitted = min(fit_width / box["width"], scale * _ZOOM)
+                    if abs(fitted - scale) > 0.01:
+                        page, _ = draw(fitted)
+                        chart = page.locator("#chart svg")
+            return chart.screenshot(omit_background=False)
         finally:
             browser.close()
 
