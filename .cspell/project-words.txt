@@ -65,6 +65,7 @@ fontsize
 footgun
 framealpha
 gethostname
+Ghostty
 gmtoffset
 gpgsign
 heloc
@@ -72,10 +73,12 @@ hexsha
 HIFO
 htmlcov
 huggingface
+IHDR
 imshow
 inspectable
 IRMAA
 isin
+iterm
 jupyterhub
 kendalltau
 kernelspec
@@ -181,10 +184,15 @@ tailweight
 taxchar
 tbill
 tbond
+tcgetattr
+TCSADRAIN
+TCSANOW
+tcsetattr
 tctronics
 testpaths
 textconv
 textcoords
+TIOCGWINSZ
 TLJH
 tolist
 topup

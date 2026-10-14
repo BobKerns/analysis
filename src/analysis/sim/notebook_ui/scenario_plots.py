@@ -9,6 +9,7 @@ from IPython.display import Markdown, display
 from ipywidgets import widgets
 
 from analysis.sim import chain_map
+from analysis.sim.chain_graph import MERMAID_URL
 from analysis.sim.notebook_ui.scenario_view import calendar_view, chains_view
 
 
@@ -68,10 +69,6 @@ def show_chains(sc, **_):
     return scrollable(_fit_to_width(styled, nowrap=["step", "maximum", "percent", "cadence"]))
 
 
-MERMAID_URL = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs"
-"""Where the flowchart widget loads Mermaid from."""
-
-
 class MermaidWidget(anywidget.AnyWidget):
     """Draws the Mermaid source ``chart``, again whenever it changes. A widget
     carries its own JavaScript, so it draws in VS Code, which runs no script
@@ -104,7 +101,8 @@ class MermaidWidget(anywidget.AnyWidget):
 def show_chain_flow(sc, chain: str | None = None, **_):
     """One chain's flowchart, picked from a dropdown: every chain at once is too
     tangled to read. ``chain`` picks the one shown first. The same chart as
-    ``sim chain show CHAIN --mermaid``: arrows the way money moves through its
+    ``sim chain show CHAIN --graph`` draws in the terminal (``--mermaid``
+    prints its Mermaid source): arrows the way money moves through its
     steps and its lots' refill or overflow, with the picked chain
     highlighted. A checkbox adds the rules that use it, as ``--rules`` does."""
     cmap = chain_map.chain_map(sc)
