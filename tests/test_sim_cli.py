@@ -301,6 +301,8 @@ def test_sim_scenario_create_derives_and_activates(test_data_dir: Path, tmp_path
     # series/ starts with a README rather than empty, so git keeps it (#91).
     assert (scenario_dir / "series" / "README.md").read_text() == SERIES_README
     assert "  series/README.md\n" in result.output
+    for listed in ("chains/source/.gitignore", "chains/source/_example.csv", "chains/destination/.gitignore"):
+        assert f"  {listed}\n" in result.output
 
     def header_of(name: str) -> list[str]:
         return (scenario_dir / name).read_text(encoding="utf-8").splitlines()

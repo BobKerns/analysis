@@ -2846,6 +2846,13 @@ def _read_chain_files(
                     f"{_data_label(path, data_dir)}: a chain file belongs in chains/source/ "
                     "(drawn from) or chains/destination/ (paid into), named <name>.csv"
                 )
+        for folder in sorted(p for p in chains_dir.iterdir() if p.is_dir()):
+            if folder.name not in registries.CHAIN_ROLES and any(
+                    not path.stem.startswith("_") for path in folder.glob("*.csv")):
+                issues.append(
+                    f"{_data_label(folder, data_dir)}: not a chain role; a chain file belongs "
+                    "in chains/source/ (drawn from) or chains/destination/ (paid into)"
+                )
         own: dict[str, str] = {}
         for role in registries.CHAIN_ROLES:
             for path in sorted((chains_dir / role).glob("*.csv")):

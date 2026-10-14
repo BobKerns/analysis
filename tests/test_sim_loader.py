@@ -386,6 +386,19 @@ def test_one_chain_in_both_role_folders_is_rejected(
                for issue in ei.value.issues), ei.value.issues
 
 
+def test_a_chain_file_in_a_misspelled_role_folder_is_rejected(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Issue #143: a folder that names no role is not silently skipped."""
+    # cspell:ignore sorce
+    (folder := retire_alice_csv("chains/sorce")).mkdir()
+    (folder / "stray.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any("chains/sorce: not a chain role" in issue for issue in ei.value.issues), ei.value.issues
+
+
 def _move_chain(retire_alice_csv: Callable[[str], Path], name: str, role: str) -> None:
     """Move a guide_chains chain into the other role folder."""
     other = "destination" if role == "source" else "source"

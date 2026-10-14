@@ -264,6 +264,22 @@ def test_guide_offers_no_chain_to_a_transfer_out_of_one(
     assert "not one of:" in result.output
 
 
+@pytest.mark.parametrize("kind", ["transfer", "transfer-balance"])
+def test_guide_says_why_a_chain_of_the_other_role_is_refused(
+    kind: str, sim: Callable[..., Result], last_row: Callable[[str], pd.Series], into_chain: str,
+) -> None:
+    """#143: the to side takes a destination chain, and naming a source
+    chain there says so rather than only listing the choices."""
+    amount = ("42.00",) if kind == "transfer" else ()
+    result = sim("calendar", "add", answers=(
+        kind, "2030-06", "Asset_Checking", CHAIN, into_chain, *amount, "", "", "", "n", "",
+    ))
+
+    assert result.exit_code == 0, result.output
+    assert f"'{CHAIN}' is a source chain; only a destination chain or an account fits here" in result.output
+    assert last_row("calendar.csv")["account_2"] == into_chain
+
+
 def test_transfer_list_names_a_chain(sim: Callable[..., Result]) -> None:
     added = sim("calendar", "add", "transfer", "2027-03", CHAIN, "Asset_Checking", "1234.00")
     assert added.exit_code == 0, added.output

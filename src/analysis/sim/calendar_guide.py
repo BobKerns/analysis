@@ -348,6 +348,16 @@ def chains_of(ctx: GuideContext, role: str) -> list[str]:
     return [c for c in ctx.chains if ctx.chain_roles.get(c, role) == role]
 
 
+def _wrong_role(ctx: GuideContext, answer: str, choices: Sequence[str]) -> str | None:
+    """Why ``answer``, a chain of the other role, isn't among ``choices``:
+    a chain left out for its role should say so, not just list the rest."""
+    role = ctx.chain_roles.get(answer)
+    offered = {ctx.chain_roles[c] for c in choices if c in ctx.chain_roles}
+    if role is None or not offered or role in offered:
+        return None
+    return f"'{answer}' is a {role} chain; only a {'/'.join(sorted(offered))} chain or an account fits here"
+
+
 def _to_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:
     """Accounts and destination chains for the to side; no chain when the
     from side is one, since a transfer can't run from one chain into another."""
@@ -442,7 +452,7 @@ KINDS: tuple[KindSpec, ...] = (
                 "from_lot", "from lot", option="--from-lot", strict=True,
                 choices=_lots_of("from_account"), applies=_lot_asked("from_account"),
             ),
-            Field("to_account", "to account or chain", choices=_from_endpoints, strict=True),
+            Field("to_account", "to account or chain", choices=_to_endpoints, strict=True),
             Field(
                 "to_lot", "to lot", option="--to-lot", strict=True,
                 choices=_lots_of("to_account"), applies=_lot_asked("to_account"),
@@ -648,6 +658,8 @@ class Guide:
         # Before the choices check: a choice left out for this reason should say so.
         if self._duplicates(spec, ctx, {**answers, field_.param: answer}, field_):
             return f"that would duplicate {spec.duplicate}"
+        if field_.strict and answer not in choices and (wrong := _wrong_role(ctx, answer, choices)):
+            return wrong
         if field_.strict and answer not in choices:
             return f"not one of: {', '.join(choices)}" if choices else "there is nothing to choose from"
         if field_.unique and answer in ctx.taken_names:

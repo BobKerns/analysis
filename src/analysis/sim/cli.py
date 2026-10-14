@@ -6762,9 +6762,9 @@ def scenario_create(
         click.echo(f"  inherits: {' + '.join(inherits)}")
         for filename in ("scenario.csv", *skeletons):
             click.echo(f"  {filename}")
-        click.echo("  chains/")
-        click.echo("  chains/.gitignore")
-        click.echo("  chains/_asset__example.csv")
+        click.echo("  chains/source/.gitignore")
+        click.echo("  chains/source/_example.csv")
+        click.echo("  chains/destination/.gitignore")
         click.echo("  series/")
         click.echo("  series/README.md")
         click.echo(f"  current scenario: {name}")

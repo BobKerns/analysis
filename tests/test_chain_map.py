@@ -147,6 +147,8 @@ def test_rules_are_left_out_unless_asked_for(cmap: chain_map.ChainMap) -> None:
     assert "rule " not in chart and "Income_SS_Alice" not in chart
     assert f'{_nodes(chart)["bridge"]} -->|"1: 50% of what\'s left"|' in chart
     assert '"rule monthly_draw"' in chain_map.mermaid(cmap, rules=True)
+    # A parent chain shown alongside brings its rules, but goes no further.
+    assert '"rule monthly_draw"' in chain_map.mermaid(cmap, ["bridge"], rules=True)
 
 
 def test_a_chain_shown_alone_shows_the_chains_it_is_a_step_of(cmap: chain_map.ChainMap) -> None:

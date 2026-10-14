@@ -349,6 +349,7 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool =
     # destination, the chains a root is a step of, and (with ``rules``) the
     # far end of each rule using a shown chain. None is followed on from there.
     reached = list(shown)
+    parents: list[str] = []
     for root in roots:
         for use in cmap.uses.get(root, ()):
             if use.kind != "step":
@@ -356,6 +357,7 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool =
             step = next(s for s in cmap.steps[use.by] if str(s.order) == use.detail)
             label = _quoted(f"{step.order}: {share_text(step)}")
             show(use.by)
+            parents.append(use.by)
             if cmap.roles.get(use.by) == "source":
                 edge(root, "-->", label, use.by)
             else:
@@ -367,7 +369,8 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool =
         if policy.overflow_chain in reached and cmap.roles.get(policy.overflow_chain) == "destination":
             show(leaf)
             edge(leaf, "-.->", _OVERFLOW, policy.overflow_chain)
-    for node in reached if rules else ():
+    # A root's parent chains bring their rules too, but nothing further.
+    for node in dict.fromkeys([*reached, *parents]) if rules else ():
         for use in cmap.uses.get(node, ()):
             if use.kind == "draw":
                 show(use.detail)
