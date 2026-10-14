@@ -251,6 +251,48 @@ def test_a_copy_of_a_lot_gets_a_box_of_its_own() -> None:
     assert not _has_loop(chart)
 
 
+def _cut(chart: str) -> set[str]:
+    """The ids of the nodes a chart stops at short of what they lead to."""
+    lines = [line.split()[1] for line in chart.splitlines() if line.strip().startswith("class ") and
+             line.endswith(" more")]
+    return set(lines[0].split(",")) if lines else set()
+
+
+def test_depth_one_draws_one_step_out(cmap: chain_map.ChainMap) -> None:
+    """Issue #149: bridge is a step of retirement_draw, drawn but not opened."""
+    chart = chain_map.mermaid(cmap, ["retirement_draw"], depth="1")
+    node = _nodes(chart)
+    assert set(node) == {"retirement_draw", "bridge", "Asset_TraditionalIRA_Alice (default)"}
+    assert _cut(chart) == {node["bridge"]}
+    assert "classDef more stroke-dasharray" in chart
+    # retirement_draw's rules are two steps from bridge, so depth 1 leaves them out.
+    assert "monthly_draw" not in chain_map.mermaid(cmap, ["bridge"], rules=True, depth="1")
+    assert "monthly_draw" in chain_map.mermaid(cmap, ["retirement_draw"], rules=True, depth="1")
+
+
+def test_depth_lots_stops_at_the_first_lot(cmap: chain_map.ChainMap) -> None:
+    """Issue #149: through bridge to its lots, but not on to checking's overflow."""
+    draw = chain_map.mermaid(cmap, ["retirement_draw"], depth="lots")
+    assert "Asset_Savings" in _nodes(draw) and "Asset_Brokerage_Joint (default)" in _nodes(draw)
+    assert not _cut(draw)  # none of those lots refills
+    chart = chain_map.mermaid(cmap, ["ss_split"], depth="lots")
+    node = _nodes(chart)
+    assert "overflow, month end" not in chart
+    assert _cut(chart) == {node["Asset_Checking"]}
+    assert "overflow, month end" in chain_map.mermaid(cmap, ["ss_split"])  # depth all, as before
+    assert "more" not in chain_map.mermaid(cmap, ["ss_split"])
+
+
+def test_a_lot_drawn_from_its_own_chart_goes_one_step(cmap: chain_map.ChainMap) -> None:
+    """A lot asked for brings its own refill and overflow at any depth."""
+    chart = chain_map.mermaid(cmap, ["Asset_Checking"], depth="1")
+    node = _nodes(chart)
+    assert f'{node["asset_checking_liquidity"]} -.->|"refill, before a debit"| {node["Asset_Checking"]}' in chart
+    assert f'{node["Asset_Checking"]} -.->|"overflow, month end"| {node["Asset_Savings"]}' in chart
+    assert node["asset_checking_liquidity"] in _cut(chart)
+    assert not _cut(chain_map.mermaid(cmap, ["Asset_Checking"], depth="lots")) & {node["asset_checking_liquidity"]}
+
+
 def test_list_command(guide_chains: Path) -> None:
     result = _sim(guide_chains, "list")
     assert result.exit_code == 0, result.output
@@ -270,6 +312,12 @@ def test_show_command_finds_the_chains_reaching_an_account(guide_chains: Path) -
     mermaid = _sim(guide_chains, "show", "ss_split", "--mermaid")
     assert mermaid.output.startswith("flowchart LR") and "rule ss_alice" not in mermaid.output
     assert "rule ss_alice" in _sim(guide_chains, "show", "ss_split", "--mermaid", "--rules").output
+    shallow = _sim(guide_chains, "show", "retirement_draw", "--mermaid", "--depth", "1")
+    assert shallow.exit_code == 0, shallow.output
+    assert "Asset_Savings" not in shallow.output and "Asset_Savings" in _sim(
+        guide_chains, "show", "retirement_draw", "--mermaid").output
+    treeless = _sim(guide_chains, "show", "retirement_draw", "--depth", "lots")
+    assert treeless.exit_code != 0 and "--depth needs --mermaid" in treeless.output
     missing = _sim(guide_chains, "show", "nowhere")
     assert missing.exit_code != 0 and "neither a chain nor an account" in missing.output
 
@@ -278,7 +326,7 @@ def test_flowchart_in_the_notebook_shows_one_chain(guide_chains: Path) -> None:
     with open_scenario(guide_chains, "retire_alice") as sc:
         box = show_chain_flow(sc, chain="bridge")
         cmap = chain_map.chain_map(sc)
-    (picker, rules), chart = box.children[0].children, box.children[1]
+    (picker, depth, rules), chart = box.children[0].children, box.children[1]
     assert isinstance(picker, widgets.Dropdown) and picker.value == "bridge"
     assert isinstance(rules, widgets.Checkbox) and not rules.value
     assert list(picker.options) == ["asset_checking_liquidity", "bridge", "retirement_draw", "ss_split"]
@@ -287,6 +335,8 @@ def test_flowchart_in_the_notebook_shows_one_chain(guide_chains: Path) -> None:
     assert chart.chart == chain_map.mermaid(cmap, ["ss_split"])
     rules.value = True  # and so does asking for the rules
     assert chart.chart == chain_map.mermaid(cmap, ["ss_split"], rules=True) != chain_map.mermaid(cmap, ["ss_split"])
+    depth.value = "1"  # and so does limiting its depth
+    assert chart.chart == chain_map.mermaid(cmap, ["ss_split"], rules=True, depth="1")
     # The widget draws itself, so VS Code (which runs no script in an Output) draws it too.
     assert f'import mermaid from "{MERMAID_URL}"' in MermaidWidget._esm
 

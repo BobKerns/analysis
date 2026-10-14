@@ -135,6 +135,18 @@ def test_graph_file_writes_the_chart(
     assert fmt == "svg" and source.startswith("flowchart LR") and "rule ss_alice" in source
 
 
+def test_graph_and_graph_file_take_a_depth(
+    guide_chains: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_render: list[tuple[str, str]],
+) -> None:
+    """Issue #149: --depth reaches the drawn chart as it does --mermaid's."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    for option in (["--graph"], ["--graph-file", str(tmp_path / "chart.png")]):
+        result = _sim(guide_chains, "retirement_draw", *option, "--depth", "1")
+        assert result.exit_code == 0, result.output
+    assert len(stub_render) == 2
+    assert all("Asset_Savings" not in source and " more" in source for source, _fmt in stub_render)
+
+
 def test_graph_without_an_image_terminal_writes_a_png(
     guide_chains: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_render: list[tuple[str, str]],
 ) -> None:
