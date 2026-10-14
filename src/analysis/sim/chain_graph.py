@@ -50,6 +50,10 @@ class GraphError(Exception):
     """The chart couldn't be drawn: no browser, or Mermaid couldn't draw it."""
 
 
+class NoBrowserError(GraphError):
+    """Neither Playwright's Chromium nor Chrome is installed."""
+
+
 _PAGE = '<html><body style="margin:0;background:white"><div id="chart"></div></body></html>'
 
 _DRAW = """async (source) => {
@@ -85,7 +89,7 @@ def render(
             try:
                 browser = playwright.chromium.launch(channel="chrome")
             except Error as error:
-                raise GraphError(f"no browser to draw the chart with: {_INSTALL_HINT}") from error
+                raise NoBrowserError(f"no browser to draw the chart with: {_INSTALL_HINT}") from error
         def draw(scale: float):
             page = browser.new_page(device_scale_factor=scale)
             # The page holds the chart: it may fetch nothing from anywhere.
@@ -228,13 +232,13 @@ def terminal_protocol() -> Protocol | None:
     none, the output isn't a terminal, or it's inside tmux (which needs
     passthrough wrapping this doesn't do). ``$ANALYSIS_IMAGE_PROTOCOL``
     (``kitty``, ``iterm`` or ``none``) overrides the guess, for a terminal
-    it gets wrong."""
+    it gets wrong, but never sends images to output that isn't a terminal."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None  # escapes would only garble a pipe or a file
     forced = os.environ.get("ANALYSIS_IMAGE_PROTOCOL", "").lower()
     if forced in ("kitty", "iterm"):
-        return forced
-    if forced == "none":
-        return None
-    if not (sys.stdin.isatty() and sys.stdout.isatty()) or os.environ.get("TMUX"):
+        return forced  # even in tmux: whoever set it may have passthrough on
+    if forced == "none" or os.environ.get("TMUX"):
         return None
     if os.environ.get("TERM_PROGRAM") == "iTerm.app":
         # iTerm2 accepts a kitty image but showed nothing (issue #142), so it

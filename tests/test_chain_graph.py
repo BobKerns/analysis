@@ -88,6 +88,10 @@ def test_image_protocol_can_be_forced(
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     assert chain_graph.terminal_protocol() == expected
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1/default,1,0")  # a forced protocol holds in tmux
+    assert chain_graph.terminal_protocol() == expected
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)  # but never reaches a pipe
+    assert chain_graph.terminal_protocol() is None
 
 
 def test_no_protocol_inside_tmux_or_when_piped(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,7 +170,7 @@ def test_render_draws_a_png_with_mermaid() -> None:
     chart = "flowchart LR\n    a[Alice] -->|1: all| b([bridge])\n"
     try:
         png = chain_graph.render(chart, scale=1.0)
-    except chain_graph.GraphError as error:
+    except chain_graph.NoBrowserError as error:  # anything else is a failure
         pytest.skip(str(error))
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     width, height = chain_graph.png_size(png)

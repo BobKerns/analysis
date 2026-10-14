@@ -5912,9 +5912,15 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
         click.echo(f"wrote {graph_file}")
         return
     if protocol is None:
-        handle, name = tempfile.mkstemp(prefix="chain-", suffix=".png")
-        with os.fdopen(handle, "wb") as f:
-            f.write(image)
+        name = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="chain-", suffix=".png", delete=False) as f:
+                name = f.name
+                f.write(image)
+        except OSError as error:
+            if name is not None:
+                Path(name).unlink(missing_ok=True)  # don't leave half a chart behind
+            raise click.ClickException(f"couldn't write the chart to a temporary file: {error}") from error
         click.echo(f"wrote {name}")
         click.echo("This terminal can't show images. iTerm2, kitty, Ghostty, WezTerm or "
                    "VS Code's terminal draws the chart in place.", err=True)
