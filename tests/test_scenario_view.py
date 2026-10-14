@@ -21,6 +21,8 @@ from analysis.sim.notebook_ui.scenario_plots import (
 from analysis.sim.readme import description_view
 from analysis.sim.notebook_ui.scenario_view import (
     calendar_view,
+    UNUSED,
+    chain_table,
     chains_view,
     scheduled_view,
 )
@@ -119,7 +121,51 @@ def test_show_chains_displays_the_lot_column(test_data_dir: Path, monkeypatch) -
         show_chains(scenario)
     columns = list(shown[0].data.columns)
     assert columns.index("lot") == columns.index("draw_from") + 1
-    assert set(shown[0].data["step"].dropna()) == {1, 2}  # interior chains only
+    assert set(shown[0].data["step"]) == {1, 2}  # interior chains only
+
+
+def _outer_chain(retire_alice_csv: Callable[[str], Path]) -> None:
+    """A second chain, after the prototype's: one step inflating with cpi,
+    one drawing from the prototype's chain, and nothing using it."""
+    (retire_alice_csv("chains/source") / "outer.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\n"
+        "Asset_Savings,,500.00,,cpi,annual\n"
+        "asset_checking_liquidity,,,,,\n"
+    )
+
+
+def test_chain_table_names_each_chain_once_with_its_role_and_uses(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    _outer_chain(retire_alice_csv)
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        table = chain_table(scenario)
+    assert list(table["chain"]) == ["asset_checking_liquidity", "", "outer", ""]
+    assert list(table["role"]) == ["source", "", "source", ""]
+    assert table.loc[0, "used_by"].split("\n") == [
+        "a step of outer (step 2)", "refills Asset_Checking",
+    ]
+    assert list(table["used_by"])[1:] == ["", UNUSED, ""]
+    assert (table.loc[2, "maximum"], table.loc[2, "series"], table.loc[2, "cadence"]) == (
+        500.0, "cpi", "annual")
+
+
+def test_show_chains_rules_off_each_chain_and_flags_an_unused_one(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], monkeypatch,
+) -> None:
+    _outer_chain(retire_alice_csv)
+    shown = []
+    monkeypatch.setattr("analysis.sim.notebook_ui.scenario_plots.display",
+                        lambda styled, **_: shown.append(styled))
+    with open_scenario(test_data_dir, "retire_alice") as scenario:
+        show_chains(scenario)
+    html = shown[0].to_html()
+    # The first row of the second chain starts a new block, all the way across.
+    assert _rows_with(html, "border-top: 2px solid #888") == {2}
+    assert _columns_with(html, "border-top: 2px solid #888") == set(
+        range(len(shown[0].data.columns)))
+    assert _rows_with(html, "color: red") == {2}
+    assert "a step of outer (step 2)<br>refills Asset_<wbr>Checking" in html
 
 
 def test_scheduled_view_has_separate_account_and_lot_columns(
@@ -197,6 +243,17 @@ def _columns_with(html: str, declaration: str) -> set[int]:
         if declaration in body:
             columns |= {int(n) for n in re.findall(r"_col(\d+)", selectors)}
     return columns
+
+
+def _rows_with(html: str, declaration: str) -> set[int]:
+    """Row numbers whose cells the rendered stylesheet gives ``declaration``."""
+    import re
+
+    rows: set[int] = set()
+    for selectors, body in re.findall(r"([^{}]+)\{([^}]*)\}", html.split("</style>")[0]):
+        if declaration in body:
+            rows |= {int(n) for n in re.findall(r"_row(\d+)", selectors)}
+    return rows
 
 
 def test_only_numbers_and_dates_are_kept_on_one_line(test_data_dir: Path) -> None:
