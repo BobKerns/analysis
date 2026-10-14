@@ -1,6 +1,7 @@
 """Ensemble notebook widgets (ADR-006): pick a generated recipe, see its
 members' net worth as a quintile-shaded ("fan") chart plus a year-end
-mean/median/SD/range table with the quintile breakpoints."""
+mean/median/SD table with the 5th/95th percentiles and quintile
+breakpoints."""
 
 from __future__ import annotations
 
@@ -70,28 +71,30 @@ def ensemble_summary_view(
 
 
 def _band_edges(monthly_summary: pd.DataFrame) -> list[str]:
-    """``min``, any ``pNN`` percentile columns in ascending order, ``max``:
-    the fan chart's band boundaries from the outside in."""
-    inner = sorted(
+    """The ``pNN`` percentile columns in ascending order -- the fan chart's
+    band boundaries, outermost first and last -- or ``min``/``max`` for a
+    plain ``summary()`` frame that has none."""
+    edges = sorted(
         (c for c in monthly_summary.columns if c[:1] == "p" and c[1:].replace(".", "").isdigit()),
         key=lambda c: float(c[1:]),
     )
-    return ["min", *inner, "max"]
+    return edges or ["min", "max"]
 
 
 def _band_label(low: str, high: str) -> str:
     if (low, high) == ("min", "max"):
         return "range"
-    return f"{low[1:]}–{high[1:]}%"
+    return f"{float(low[1:]):g}–{float(high[1:]):g}%"
 
 
 def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
     """Shade the member distribution month by month behind mean/median
-    lines: one band between each pair of adjacent edges (``min``, the
-    ``pNN`` columns ``ensemble.percentiles()`` adds, ``max``), darker toward
-    the middle, so the chart shows where members cluster rather than just
-    how far apart the extremes are. With no ``pNN`` columns it's the single
-    min-max band ``sim ensemble summary`` describes."""
+    lines: one band between each pair of adjacent ``pNN`` columns
+    (``ensemble.summary_with_percentiles()``'s 5th to 95th percentiles),
+    darker toward the middle, so the chart shows where members cluster
+    rather than how far apart one lucky and one unlucky member ended up.
+    A plain ``summary()`` frame, with no ``pNN`` columns, gets the single
+    min-max band."""
     if ax is None:
         _fig, ax = plt.subplots(figsize=(10, 5))
     edges = _band_edges(monthly_summary)
@@ -110,14 +113,14 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
         strength = 0.5 + 0.4 * depth / max(depth_count - 1, 1)
         color = tuple(1 - strength * (1 - c) for c in base)
         # The band is labelled by the edges it shares a depth with -- the
-        # outer pair is "range", the next "20–80%", and so on -- once each.
+        # outer pair is "5–95%", the next "20–80%", and so on -- once each.
         label = None
         if depth not in labelled:
             labelled.add(depth)
             label = _band_label(edges[depth], edges[len(edges) - 1 - depth])
         ax.fill_between(
             monthly_summary.index, monthly_summary[low], monthly_summary[high],
-            # A full-strength edge outlines every band, so the min/max
+            # A full-strength edge outlines every band, so the outer
             # envelope stays visible however a renderer treats pale fills.
             color=color, edgecolor=base, linewidth=0.6, label=label,
         )
@@ -228,7 +231,8 @@ def ensemble_widget(*_,
             # major formatter to its own log-scale default, which would
             # otherwise clobber ensemble_fan_chart's dollar formatting.
             wants_log = log_linear_picker.value == LogLinearMode.LOG
-            if wants_log and (monthly_summary["min"] <= 0).any():
+            plotted = [_band_edges(monthly_summary)[0], "mean", "median"]
+            if wants_log and (monthly_summary[plotted] <= 0).any().any():
                 # Log scale can't represent zero or negative net worth --
                 # silently switching to linear would clip exactly the
                 # insolvency tail this chart exists to show, rather than

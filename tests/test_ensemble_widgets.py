@@ -18,11 +18,9 @@ from analysis.sim.ensemble import (
     latest_ensemble_batch,
     load_ensemble,
     members_net_worth_by_month,
-    percentiles,
     resolve_member,
     summary_with_percentiles,
 )
-from analysis.sim.ensemble import summary as ensemble_summary
 from analysis.sim.loader import LoadResult
 from analysis.sim.notebook_ui.ensemble_widgets import (
     ensemble_fan_chart,
@@ -63,11 +61,11 @@ def test_ensemble_fan_chart_shades_quintile_bands_darker_toward_the_middle() -> 
         [[float(m * 10 + month) for m in range(11)] for month in range(6)],
         index=pd.date_range("2026-01-31", periods=6, freq="ME"),
     )
-    monthly = ensemble_summary(members).join(percentiles(members))
+    monthly = summary_with_percentiles(members)
     ax = ensemble_fan_chart(monthly)
-    assert len(ax.collections) == 5  # min-p20, p20-p40, p40-p60, p60-p80, p80-max
+    assert len(ax.collections) == 5  # p05-p20, p20-p40, p40-p60, p60-p80, p80-p95
     _handles, labels = ax.get_legend_handles_labels()
-    assert labels == ["range", "20–80%", "40–60%", "mean", "median"]
+    assert labels == ["5–95%", "20–80%", "40–60%", "mean", "median"]
     # Lighter (closer to white) at the edges, darkest in the middle band,
     # and symmetric about it.
     lightness = [sum(c.get_facecolor()[0][:3]) for c in ax.collections]
@@ -189,10 +187,10 @@ def test_ensemble_widget_matches_cli_summary_numbers(small_ensemble_runs_dir: Pa
         _heading, yearly = ensemble_summary_view(monthly_summary, len(connections))
         assert len(yearly) > 0
         assert list(yearly.columns) == [
-            "mean", "median", "std", "min", "p20", "p40", "p60", "p80", "max",
+            "mean", "median", "std", "p05", "p20", "p40", "p60", "p80", "p95",
         ]
         # Each breakpoint sits between its neighbors, low to high.
-        ordered = yearly[["min", "p20", "p40", "p60", "p80", "max"]]
+        ordered = yearly[["p05", "p20", "p40", "p60", "p80", "p95"]]
         assert (ordered.diff(axis=1).iloc[:, 1:] >= -1e-6).all().all()
     finally:
         for con in connections.values():

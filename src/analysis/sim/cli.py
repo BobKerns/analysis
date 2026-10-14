@@ -844,8 +844,8 @@ def ensemble_create(
 def ensemble_summary(
     scenario_name: str, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
 ) -> None:
-    """Mean/median/SD, range and quintile breakpoints of year-end net worth
-    across SCENARIO_NAME's members."""
+    """Mean/median/SD and 5th/20th/.../95th percentiles of year-end net
+    worth across SCENARIO_NAME's members."""
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
@@ -873,7 +873,7 @@ def ensemble_summary(
             f"member(s), {len(failed)} failed"
         )
         # One header row over right-aligned columns, the same columns the
-        # notebook's table shows: with ten statistics a row, key=value
+        # notebook's table shows: with nine statistics a row, key=value
         # fields made it hard to tell this was the same data (#155).
         header = ["year", *table.columns]
         rows = [[str(year), *(f"{value:,.0f}" for value in row)] for year, row in table.iterrows()]
