@@ -288,7 +288,9 @@ def test_flowchart_in_the_notebook_shows_one_chain(guide_chains: Path) -> None:
     rules.value = True  # and so does asking for the rules
     assert chart.chart == chain_map.mermaid(cmap, ["ss_split"], rules=True) != chain_map.mermaid(cmap, ["ss_split"])
     # The widget draws itself, so VS Code (which runs no script in an Output) draws it too.
-    assert f'import mermaid from "{MERMAID_URL}"' in MermaidWidget._esm
+    assert f'await import("{MERMAID_URL}")' in MermaidWidget._esm
+    # With VS Code's RequireJS ``define`` hidden while it loads (issue #153).
+    assert "globalThis.define = undefined" in MermaidWidget._esm
 
 
 def test_calendar_transfers_use_chains(guide_chains: Path, append_calendar_row) -> None:
