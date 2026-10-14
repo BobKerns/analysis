@@ -26,12 +26,14 @@ sim chain list                  # every chain, its steps, and what uses it
 sim chain show                  # each chain as a tree, with each lot's limits
 sim chain show Asset_Checking   # just the chains that reach this account
 sim chain show bridge --mermaid # one chain's flowchart, to paste into markdown
+sim chain show bridge --mermaid --rules  # with the rules that use it
 ```
 
 The [scenario overview notebook](../../notebooks/scenario_overview.ipynb)
 shows the same chains as a table, and one chain at a time as a flowchart
-picked from a list. The flowchart draws itself with Mermaid loaded from the
-web, so it needs a connection in VS Code and JupyterLab alike.
+picked from a list, with a **Rules** checkbox to add the rules that use it.
+The flowchart draws itself with Mermaid loaded from the web, so it needs a
+connection in VS Code and JupyterLab alike.
 
 ## Making and changing chains
 

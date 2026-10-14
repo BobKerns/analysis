@@ -105,8 +105,8 @@ def show_chain_flow(sc, chain: str | None = None, **_):
     """One chain's flowchart, picked from a dropdown: every chain at once is too
     tangled to read. ``chain`` picks the one shown first. The same chart as
     ``sim chain show CHAIN --mermaid``: arrows the way money moves through its
-    steps, its lots' refill or overflow, and the rules that use it, with the
-    picked chain highlighted."""
+    steps and its lots' refill or overflow, with the picked chain
+    highlighted. A checkbox adds the rules that use it, as ``--rules`` does."""
     cmap = chain_map.chain_map(sc)
     out = scrollable_output()
     if not cmap.steps:
@@ -116,11 +116,16 @@ def show_chain_flow(sc, chain: str | None = None, **_):
     names = sorted(cmap.steps)
     picker = widgets.Dropdown(options=names, value=chain if chain in names else names[0],
                               description="Chain:")
+    rules = widgets.Checkbox(value=False, description="Rules", indent=False)
     chart = MermaidWidget(chart=chain_map.mermaid(cmap, [picker.value]),
                           layout=widgets.Layout(overflow="auto", max_width="100%"))
-    picker.observe(lambda change: setattr(chart, "chart", chain_map.mermaid(cmap, [change.new])),
-                   names="value")
-    return widgets.VBox([picker, chart])
+
+    def redraw(_change=None) -> None:
+        chart.chart = chain_map.mermaid(cmap, [picker.value], rules=rules.value)
+
+    picker.observe(redraw, names="value")
+    rules.observe(redraw, names="value")
+    return widgets.VBox([widgets.HBox([picker, rules]), chart])
 
 
 SCHEDULED_OPTIONAL_COLUMNS = {"id": False, "name": True, "priority": False, "description": True}

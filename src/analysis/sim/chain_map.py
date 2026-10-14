@@ -282,7 +282,7 @@ _REFILL = '"refill, before a debit"'
 _OVERFLOW = '"overflow, month end"'
 
 
-def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
+def mermaid(cmap: ChainMap, names: Iterable[str] | None = None, *, rules: bool = False) -> str:
     """A Mermaid flowchart of ``names`` (default: every interior chain) and
     everything money passes through on its way through them, every arrow
     pointing the way money moves, left to right (issue #143).
@@ -297,6 +297,10 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
     Steps and rules are solid arrows, refill and overflow dotted ones.
     The chains ``names`` asks for are highlighted, so they stand out in a
     tangled chart; with no ``names``, every chain was asked for and none is.
+
+    The rules and calendar transfers using a shown chain are left out unless
+    ``rules`` asks for them: they are many, often fire once, and each adds a
+    node and perhaps a loop, where the chains are what the chart is for.
     """
     roots = list(cmap.steps) if names is None else list(names)
     shown: list[str] = []
@@ -342,8 +346,8 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
         expand(root, None)
     # One step further along the money from what is shown so far: the lots
     # that refill from a shown source chain or overflow into a shown
-    # destination, the far end of each rule using a shown chain, and the
-    # chains a root is a step of. None of these is followed on from there.
+    # destination, the chains a root is a step of, and (with ``rules``) the
+    # far end of each rule using a shown chain. None is followed on from there.
     reached = list(shown)
     for root in roots:
         for use in cmap.uses.get(root, ()):
@@ -363,7 +367,7 @@ def mermaid(cmap: ChainMap, names: Iterable[str] | None = None) -> str:
         if policy.overflow_chain in reached and cmap.roles.get(policy.overflow_chain) == "destination":
             show(leaf)
             edge(leaf, "-.->", _OVERFLOW, policy.overflow_chain)
-    for node in reached:
+    for node in reached if rules else ():
         for use in cmap.uses.get(node, ()):
             if use.kind == "draw":
                 show(use.detail)

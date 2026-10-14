@@ -93,7 +93,7 @@ def _nodes(chart: str, prefix: str = "n") -> dict[str, str]:
 def test_mermaid_arrows_follow_the_money(cmap: chain_map.ChainMap) -> None:
     """Issue #143: every arrow points the way money moves, so a source
     chain's steps point into it and a destination chain's out of it."""
-    chart = chain_map.mermaid(cmap)
+    chart = chain_map.mermaid(cmap, rules=True)
     assert chart.startswith("flowchart LR\n")
     node, copy = _nodes(chart), _nodes(chart, "c")
     assert f'{node["bridge"]} -->|"1: 50% of what\'s left"| {node["retirement_draw"]}' in chart
@@ -133,12 +133,20 @@ def test_a_loop_is_closed_by_a_copy_so_the_chart_reads_left_to_right(
     with open_scenario(guide_chains, "retire_alice") as sc:
         cmap = chain_map.chain_map(sc)
     for names in (None, ["ss_split"], ["asset_checking_liquidity"], ["retirement_draw"], ["bridge"]):
-        assert not _has_loop(chain_map.mermaid(cmap, names)), names
-    chart = chain_map.mermaid(cmap, ["retirement_draw"])
+        assert not _has_loop(chain_map.mermaid(cmap, names, rules=True)), names
+    chart = chain_map.mermaid(cmap, ["retirement_draw"], rules=True)
     node, copy = _nodes(chart), _nodes(chart, "c")
     assert f'{node["Asset_Savings"]} -->|"1: all that\'s left, up to $10,000' in chart
     assert f'(annual)"| {node["bridge"]}' in chart
     assert f'{node["retirement_draw"]} -->|"calendar top_up (2030-01-31)"| {copy["Asset_Savings"]}' in chart
+
+
+def test_rules_are_left_out_unless_asked_for(cmap: chain_map.ChainMap) -> None:
+    """Bob, #143: rules, many of them firing once, crowd out the chains."""
+    chart = chain_map.mermaid(cmap)
+    assert "rule " not in chart and "Income_SS_Alice" not in chart
+    assert f'{_nodes(chart)["bridge"]} -->|"1: 50% of what\'s left"|' in chart
+    assert '"rule monthly_draw"' in chain_map.mermaid(cmap, rules=True)
 
 
 def test_a_chain_shown_alone_shows_the_chains_it_is_a_step_of(cmap: chain_map.ChainMap) -> None:
@@ -200,7 +208,8 @@ def test_show_command_finds_the_chains_reaching_an_account(guide_chains: Path) -
     refill = _sim(guide_chains, "show", "Asset_Checking")  # through its own refill and overflow
     assert "asset_checking_liquidity (source chain)" in refill.output
     mermaid = _sim(guide_chains, "show", "ss_split", "--mermaid")
-    assert mermaid.output.startswith("flowchart LR")
+    assert mermaid.output.startswith("flowchart LR") and "rule ss_alice" not in mermaid.output
+    assert "rule ss_alice" in _sim(guide_chains, "show", "ss_split", "--mermaid", "--rules").output
     missing = _sim(guide_chains, "show", "nowhere")
     assert missing.exit_code != 0 and "neither a chain nor an account" in missing.output
 
@@ -209,12 +218,15 @@ def test_flowchart_in_the_notebook_shows_one_chain(guide_chains: Path) -> None:
     with open_scenario(guide_chains, "retire_alice") as sc:
         box = show_chain_flow(sc, chain="bridge")
         cmap = chain_map.chain_map(sc)
-    picker, chart = box.children
+    (picker, rules), chart = box.children[0].children, box.children[1]
     assert isinstance(picker, widgets.Dropdown) and picker.value == "bridge"
+    assert isinstance(rules, widgets.Checkbox) and not rules.value
     assert list(picker.options) == ["asset_checking_liquidity", "bridge", "retirement_draw", "ss_split"]
     assert isinstance(chart, MermaidWidget) and chart.chart == chain_map.mermaid(cmap, ["bridge"])
     picker.value = "ss_split"  # picking another chain redraws
     assert chart.chart == chain_map.mermaid(cmap, ["ss_split"])
+    rules.value = True  # and so does asking for the rules
+    assert chart.chart == chain_map.mermaid(cmap, ["ss_split"], rules=True) != chain_map.mermaid(cmap, ["ss_split"])
     # The widget draws itself, so VS Code (which runs no script in an Output) draws it too.
     assert f'import mermaid from "{MERMAID_URL}"' in MermaidWidget._esm
 

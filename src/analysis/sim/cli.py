@@ -5808,12 +5808,15 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
 @click.argument("names", nargs=-1)
 @click.option("--mermaid", "as_mermaid", is_flag=True,
               help="Print a Mermaid flowchart (for markdown, GitHub or JupyterLab) instead of a tree.")
+@click.option("--rules", "with_rules", is_flag=True,
+              help="With --mermaid, also draw the rules and calendar transfers that use each chain.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (default: the only scenario in data-dir).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def chain_show_command(
-    names: tuple[str, ...], as_mermaid: bool, scenario: str | None, data_dir: Path | None,
+    names: tuple[str, ...], as_mermaid: bool, with_rules: bool, scenario: str | None,
+    data_dir: Path | None,
 ) -> None:
     """Show chains as trees: each step, what share it takes, and its lot's policy.
 
@@ -5852,7 +5855,7 @@ def chain_show_command(
         click.echo(f"no chains in {ref.name}; every lot is still a one-step chain of its own")
         return
     if as_mermaid:
-        click.echo(chain_map.mermaid(cmap, roots))
+        click.echo(chain_map.mermaid(cmap, roots, rules=with_rules))
         return
     console = Console()
     for i, root in enumerate(roots):
