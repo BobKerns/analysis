@@ -181,16 +181,16 @@ def _csv_symbols(path: Path) -> set[str]:
     if not path.exists():
         return set()
     with path.open(newline="", encoding="utf-8") as fh:
-        return {s for row in csv.DictReader(fh) if (s := (row.get("symbol") or "").strip())}
+        return {s.upper() for row in csv.DictReader(fh) if (s := (row.get("symbol") or "").strip())}
 
 
 def known_symbols(data_dir: Path) -> list[str]:
     """Symbols the data repo names without a lot holding them: those in
     ``securities.csv`` or ``allocations.csv``, or with a shared ``prices/`` file,
     so one added ahead of a lot still gets (and keeps) its prices. CASH and CD
-    are left out."""
+    are left out. Symbols are upper-cased, as the loader requires them to be."""
     named = (_csv_symbols(data_dir / "securities.csv") | _csv_symbols(data_dir / "allocations.csv")
-             | set(price_files(data_dir / "prices")))
+             | {s.upper() for s in price_files(data_dir / "prices")})
     return sorted(named - NO_PRICE_SYMBOLS)
 
 
@@ -213,7 +213,7 @@ def prices_in_use(scenarios_dir: Path, scenario: str | None = None) -> PriceUse:
         if values.exists():
             with values.open(newline="", encoding="utf-8") as fh:
                 for row in csv.DictReader(fh):
-                    symbol = (row.get("symbol") or "").strip()
+                    symbol = (row.get("symbol") or "").strip().upper()
                     if symbol and (row.get("quantity") or "").strip() and symbol not in NO_PRICE_SYMBOLS:
                         symbols.add(symbol)
         meta = folder / "scenario.csv"

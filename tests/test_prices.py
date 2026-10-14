@@ -373,3 +373,12 @@ def test_show_command_lists_every_symbol_and_one_symbols_history(test_data_dir: 
     assert "2026-10-13" in one.output and "+5.0%" in one.output and "2026-09-30" not in one.output
     missing = runner.invoke(main, ["sim", "prices", "show", "ABCDX", "--data-dir", str(test_data_dir)])
     assert missing.exit_code != 0 and "sim prices fetch ABCDX" in missing.output
+
+
+def test_symbols_read_from_the_files_are_upper_cased(test_data_dir: Path, add_account_value) -> None:
+    # The loader rejects these, but fetch reads the files itself and must not
+    # write a lower-case price file or miss that a lot holds the symbol.
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="aaa", quantity="10", opening_balance="1.00")
+    (test_data_dir / "securities.csv").write_text("symbol,name\n" "qqq,Q\n")
+    assert prices.prices_in_use(test_data_dir / "scenarios").symbols == ["AAA"]
+    assert prices.known_symbols(test_data_dir) == ["QQQ"]

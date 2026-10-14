@@ -5725,8 +5725,10 @@ def prices_show_command(symbols: tuple[str, ...], since_text: str | None, data_d
 
     With no SYMBOLS, one row per symbol: how many prices are stored, the first
     and latest date, the latest price, and how far it has moved since the end
-    of the month before and since the end of last year. A symbol the data repo names (on a lot, in securities.csv or in
-    allocations.csv) with no prices is shown in red. With SYMBOLS, each one's
+    of the month before and since the end of last year. A symbol with no
+    prices is shown in red if a lot holds it with a quantity (so its balance
+    needs a price) or securities.csv or allocations.csv names it; a lot with
+    only a balance needs none. With SYMBOLS, each one's
     stored prices, a row per date, with the change from the row before.
 
     These are the shared prices/ files; `sim symbol list` notes a scenario
