@@ -1378,7 +1378,7 @@ def test_sim_run_ensemble_reports_member_failures_without_stopping(
     }
 
 
-def test_sim_ensemble_summary_reports_mean_median_range(
+def test_sim_ensemble_summary_prints_a_header_row_with_percentile_breakpoints(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
     intent_dir: Path, runs_dir: Path,
 ) -> None:
@@ -1412,9 +1412,14 @@ def test_sim_ensemble_summary_reports_mean_median_range(
     assert result.exit_code == 0, result.output
     assert "ensemble retire_alice (" in result.output
     assert "3 succeeded member(s), 0 failed" in result.output
-    assert "mean=" in result.output and "median=" in result.output
-    assert "min=" in result.output and "max=" in result.output
-    assert "2026" in result.output and "2040" in result.output
+    lines = result.output.splitlines()
+    assert lines[1].split() == [
+        "year", "mean", "median", "std", "p05", "p20", "p40", "p60", "p80", "p95",
+    ]
+    years = [line.split()[0] for line in lines[2:]]
+    assert years[0] == "2026" and "2040" in years
+    # Right-aligned: every row ends where the header does.
+    assert len({len(line) for line in lines[1:len(years) + 2]}) == 1
 
 
 def test_sim_ensemble_summary_errors_when_no_runs(runs_dir: Path) -> None:

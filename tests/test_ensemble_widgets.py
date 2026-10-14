@@ -18,10 +18,9 @@ from analysis.sim.ensemble import (
     latest_ensemble_batch,
     load_ensemble,
     members_net_worth_by_month,
-    percentiles,
     resolve_member,
+    summary_with_percentiles,
 )
-from analysis.sim.ensemble import summary as ensemble_summary
 from analysis.sim.loader import LoadResult
 from analysis.sim.notebook_ui.ensemble_widgets import (
     ensemble_fan_chart,
@@ -62,11 +61,11 @@ def test_ensemble_fan_chart_shades_quintile_bands_darker_toward_the_middle() -> 
         [[float(m * 10 + month) for m in range(11)] for month in range(6)],
         index=pd.date_range("2026-01-31", periods=6, freq="ME"),
     )
-    monthly = ensemble_summary(members).join(percentiles(members))
+    monthly = summary_with_percentiles(members)
     ax = ensemble_fan_chart(monthly)
-    assert len(ax.collections) == 5  # min-p20, p20-p40, p40-p60, p60-p80, p80-max
+    assert len(ax.collections) == 5  # p05-p20, p20-p40, p40-p60, p60-p80, p80-p95
     _handles, labels = ax.get_legend_handles_labels()
-    assert labels == ["range", "20–80%", "40–60%", "mean", "median"]
+    assert labels == ["5–95%", "20–80%", "40–60%", "mean", "median"]
     # Lighter (closer to white) at the edges, darkest in the middle band,
     # and symmetric about it.
     lightness = [sum(c.get_facecolor()[0][:3]) for c in ax.collections]
@@ -184,10 +183,15 @@ def test_ensemble_widget_matches_cli_summary_numbers(small_ensemble_runs_dir: Pa
     assert batch is not None
     connections = load_ensemble(batch)
     try:
-        monthly_summary = ensemble_summary(members_net_worth_by_month(connections))
+        monthly_summary = summary_with_percentiles(members_net_worth_by_month(connections))
         _heading, yearly = ensemble_summary_view(monthly_summary, len(connections))
         assert len(yearly) > 0
-        assert (yearly["min"] <= yearly["max"] + 1e-6).all()
+        assert list(yearly.columns) == [
+            "mean", "median", "std", "p05", "p20", "p40", "p60", "p80", "p95",
+        ]
+        # Each breakpoint sits between its neighbors, low to high.
+        ordered = yearly[["p05", "p20", "p40", "p60", "p80", "p95"]]
+        assert (ordered.diff(axis=1).iloc[:, 1:] >= -1e-6).all().all()
     finally:
         for con in connections.values():
             con.close()
@@ -259,11 +263,14 @@ def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_wort
         return real_fan_chart(monthly_summary, ax=ax)
 
     monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
+    # The reported frame's shape, with only the lowest band (p05) reaching
+    # zero: mean and median stay positive, so only the p05 check can trip.
     negative_summary = pd.DataFrame({
-        "mean": [100.0, -10.0], "median": [95.0, -15.0],
-        "std": [5.0, 5.0], "min": [50.0, -80.0], "max": [150.0, 50.0],
+        "mean": [100.0, 90.0], "median": [95.0, 85.0], "std": [5.0, 5.0],
+        "p05": [50.0, -20.0], "p20": [70.0, 40.0], "p40": [90.0, 80.0],
+        "p60": [100.0, 95.0], "p80": [120.0, 110.0], "p95": [150.0, 140.0],
     }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
-    monkeypatch.setattr(ensemble_widgets, "ensemble_summary", lambda *a, **k: negative_summary)
+    monkeypatch.setattr(ensemble_widgets, "summary_with_percentiles", lambda *a, **k: negative_summary)
 
     log_linear_mode = LogLinearModePicker(log_linear_mode=LogLinearMode.LOG)
     ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
