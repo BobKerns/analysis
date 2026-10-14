@@ -40,6 +40,13 @@ def test_iterm_sequence() -> None:
     assert sequence.endswith("\x07\n")
 
 
+def test_terminal_scale_matches_the_terminal_text() -> None:
+    assert chain_graph.terminal_scale(None) == 2.0  # the terminal doesn't say
+    # A Retina cell is twice an ordinary one in the pixels the terminal draws
+    # images in, so the chart is drawn twice as large and shows the same size.
+    assert chain_graph.terminal_scale((16.0, 38.4)) == 2 * chain_graph.terminal_scale((8.0, 19.2)) == 2.0
+
+
 def test_png_size_and_fit_columns() -> None:
     assert chain_graph.png_size(FAKE_PNG) == (640, 200)
     assert chain_graph.fit_columns(640, 200, 8.0) == 80  # fits: its own width
@@ -97,7 +104,7 @@ def stub_render(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     """Draws nothing: records each chart and format asked for, and returns FAKE_PNG."""
     calls: list[tuple[str, str]] = []
 
-    def render(source: str, fmt: str = "png") -> bytes:
+    def render(source: str, fmt: str = "png", scale: float = 2.0) -> bytes:
         calls.append((source, fmt))
         return FAKE_PNG
 
@@ -137,14 +144,14 @@ def test_graph_in_a_kitty_terminal(
     guide_chains: Path, monkeypatch: pytest.MonkeyPatch, stub_render: list[tuple[str, str]],
 ) -> None:
     monkeypatch.setattr(chain_graph, "terminal_protocol", lambda: "kitty")
-    monkeypatch.setattr(chain_graph, "cell_width", lambda: None)
+    monkeypatch.setattr(chain_graph, "cell_size", lambda: None)
     result = _sim(guide_chains, "bridge", "--graph")
     assert result.exit_code == 0, result.output
     assert result.output.startswith("\x1b_Ga=T,f=100,q=2,m=1;")
 
 
 def test_graph_error_is_one_line(guide_chains: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail(source: str, fmt: str = "png") -> bytes:
+    def fail(source: str, fmt: str = "png", scale: float = 2.0) -> bytes:
         raise chain_graph.GraphError("no browser to draw the chart with")
 
     monkeypatch.setattr(chain_graph, "render", fail)

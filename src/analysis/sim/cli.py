@@ -5891,16 +5891,19 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
     and a pointer to one that can."""
     from analysis.sim import chain_graph
 
+    protocol = chain_graph.terminal_protocol() if graph_file is None else None
+    # Draw for the terminal's own cells, so the chart's text matches the
+    # terminal's on a Retina screen and off it.
+    cell = chain_graph.cell_size() if protocol else None
     fmt = "svg" if graph_file is not None and graph_file.suffix.lower() == ".svg" else "png"
     try:
-        image = chain_graph.render(source, fmt)
+        image = chain_graph.render(source, fmt, scale=chain_graph.terminal_scale(cell))
     except chain_graph.GraphError as error:
         raise click.ClickException(str(error)) from error
     if graph_file is not None:
         graph_file.write_bytes(image)
         click.echo(f"wrote {graph_file}")
         return
-    protocol = chain_graph.terminal_protocol()
     if protocol is None:
         handle, name = tempfile.mkstemp(prefix="chain-", suffix=".png")
         with os.fdopen(handle, "wb") as f:
@@ -5909,10 +5912,8 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
         click.echo("This terminal can't show images. iTerm2, kitty, Ghostty, WezTerm or "
                    "VS Code's terminal draws the chart in place.", err=True)
         return
-    # The PNG is drawn at twice the chart's size, so half its width is the
-    # width the chart was laid out at.
-    columns = chain_graph.fit_columns(chain_graph.png_size(image)[0] // 2,
-                                      shutil.get_terminal_size().columns, chain_graph.cell_width())
+    columns = chain_graph.fit_columns(chain_graph.png_size(image)[0],
+                                      shutil.get_terminal_size().columns, cell and cell[0])
     sequence = chain_graph.kitty_sequence if protocol == "kitty" else chain_graph.iterm_sequence
     click.echo(sequence(image, columns), nl=False)
 

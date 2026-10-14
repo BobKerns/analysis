@@ -78,10 +78,11 @@ _DRAW = """async (source) => {
 }"""
 
 
-def render(source: str, fmt: ImageFormat = "png") -> bytes:
-    """Draw Mermaid ``source`` as a PNG (twice the chart's size, for a sharp
-    image on a high-density screen) or as SVG text, on a white background so
-    it reads on a dark terminal too."""
+def render(source: str, fmt: ImageFormat = "png", scale: float = 2.0) -> bytes:
+    """Draw Mermaid ``source`` as a PNG, ``scale`` pixels to each of the
+    chart's own (twice, by default, for a sharp image on a high-density
+    screen), or as SVG text; on a white background so it reads on a dark
+    terminal too."""
     from playwright.sync_api import Error, sync_playwright
 
     script = mermaid_script()
@@ -95,7 +96,7 @@ def render(source: str, fmt: ImageFormat = "png") -> bytes:
             except Error as error:
                 raise GraphError(f"no browser to draw the chart with: {_INSTALL_HINT}") from error
         try:
-            page = browser.new_page(device_scale_factor=2)
+            page = browser.new_page(device_scale_factor=scale)
             page.set_content(_PAGE)
             page.add_script_tag(path=script)
             try:
@@ -218,15 +219,33 @@ def terminal_protocol() -> Protocol | None:
     return "iterm" if os.environ.get("TERM_PROGRAM") in _ITERM_PROGRAMS else None
 
 
-def cell_width() -> float | None:
-    """The terminal's cell width in pixels, when it reports its pixel size."""
+def cell_size() -> tuple[float, float] | None:
+    """The terminal's cell width and height in its own pixels, which on a
+    Retina screen are device pixels, when it reports its pixel size."""
     try:
         import fcntl
         import struct
         import termios
 
-        rows, columns, x_pixels, _ = struct.unpack(
+        rows, columns, x_pixels, y_pixels = struct.unpack(
             "HHHH", fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\0" * 8))
     except (ImportError, OSError):
         return None
-    return x_pixels / columns if x_pixels and columns and rows else None
+    if not (x_pixels and y_pixels and columns and rows):
+        return None
+    return x_pixels / columns, y_pixels / rows
+
+
+# Mermaid's labels are 16px; a terminal cell is about 1.2 times its font's height.
+_MERMAID_FONT_PX = 16
+_LINE_HEIGHT = 1.2
+
+
+def terminal_scale(cell: tuple[float, float] | None) -> float:
+    """The scale to render at so the chart's labels come out the size of the
+    terminal's own text, on a Retina screen or not alike: the terminal reports
+    its cells in the pixels it draws images in. Twice the chart's size when
+    the terminal doesn't say."""
+    if cell is None:
+        return 2.0
+    return min(4.0, max(0.5, cell[1] / (_LINE_HEIGHT * _MERMAID_FONT_PX)))
