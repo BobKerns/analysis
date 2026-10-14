@@ -392,11 +392,13 @@ def _render(
     from, as an IRA contribution from the cash an IRA refills), so an edge
     that would close a loop goes to a copy of its target instead, a node of
     its own (``c`` in place of the node id's ``n``) that leads nowhere
-    further."""
+    further.
+
+    The lots of an account whose lots are named sit in a box titled with the
+    account (issue #144). A copy gets a box of its own: in its original's,
+    Mermaid would pull it back beside the original and turn its edge around."""
     ids = _node_ids(shown)
-    lines = ["flowchart LR"]
-    for node in shown:
-        lines.append(f"    {ids[node]}{_shape(cmap, node, with_policy=True)}")
+    lines = ["flowchart LR", *_grouped(cmap, [(ids[node], node) for node in shown], "a", with_policy=True)]
     after: dict[str, set[str]] = {}  # node id -> the ids its edges lead to so far
 
     def leads_to(start: str, goal: str) -> bool:
@@ -409,17 +411,16 @@ def _render(
                 todo.extend(after.get(node, ()))
         return False
 
-    copied: set[str] = set()
+    copies: dict[str, str] = {}  # copy id -> the node it copies
     drawn: list[str] = []
     for a, arrow, label, b in edges:
         source, target = ids[a], ids[b]
         if leads_to(target, source):
             target = "c" + target[1:]  # one copy per node, however many loops end there
-            if target not in copied:
-                copied.add(target)
-                lines.append(f"    {target}{_shape(cmap, b, with_policy=False)}")
+            copies.setdefault(target, b)
         after.setdefault(source, set()).add(target)
         drawn.append(f"    {source} {arrow}|{label}| {target}")
+    lines += _grouped(cmap, list(copies.items()), "ac", with_policy=False)
     lines += drawn
     if picked:
         lines.append(f"    classDef picked {_PICKED}")
@@ -427,10 +428,39 @@ def _render(
     return "\n".join(lines)
 
 
-def _shape(cmap: ChainMap, node: str, *, with_policy: bool) -> str:
+def _boxed(cmap: ChainMap, node: str) -> str | None:
+    """The account whose box ``node`` is drawn in: one whose lots are named."""
+    if node in cmap.leaves and (account := cmap.leaves[node][0]) in cmap.multi_lot:
+        return account
+    return None
+
+
+def _grouped(cmap: ChainMap, nodes: list[tuple[str, str]], prefix: str, *, with_policy: bool) -> list[str]:
+    """The Mermaid lines declaring ``nodes`` (``(id, node)`` pairs), the lots
+    of each boxed account in one ``subgraph`` where its first lot comes."""
+    boxes: dict[str, list[tuple[str, str]]] = {}
+    for nid, node in nodes:
+        if (account := _boxed(cmap, node)) is not None:
+            boxes.setdefault(account, []).append((nid, node))
+    box_ids = {account: f"{prefix}{i}" for i, account in enumerate(boxes)}
+    lines: list[str] = []
+    for nid, node in nodes:
+        account = _boxed(cmap, node)
+        if account is None:
+            lines.append(f"    {nid}{_shape(cmap, node, with_policy=with_policy)}")
+        elif (lots := boxes.pop(account, None)) is not None:  # None: its box is already drawn
+            lines.append(f"    subgraph {box_ids[account]}[{_quoted(account)}]")
+            lines += [f"        {lot_id}{_shape(cmap, lot, with_policy=with_policy, boxed=True)}"
+                      for lot_id, lot in lots]
+            lines.append("    end")
+    return lines
+
+
+def _shape(cmap: ChainMap, node: str, *, with_policy: bool, boxed: bool = False) -> str:
     """A node's Mermaid shape and label: a rounded box for a chain, a box for
-    a lot, with the lot's policy under its name when ``with_policy``."""
-    label = cmap.label(node)
+    a lot, with the lot's policy under its name when ``with_policy``. A lot
+    drawn in its account's box (``boxed``) is named by its lot alone."""
+    label = cmap.leaves[node][1] if boxed else cmap.label(node)
     if cmap.is_interior(node):
         return f"([{_quoted(label)}])"
     policy = cmap.policies.get(node) if with_policy else None
