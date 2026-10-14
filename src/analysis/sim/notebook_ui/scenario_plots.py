@@ -121,7 +121,8 @@ def show_chain_flow(sc, chain: str | None = None, **_):
     ``sim chain show CHAIN --graph`` draws in the terminal (``--mermaid``
     prints its Mermaid source): arrows the way money moves through its
     steps and its lots' refill or overflow, with the picked chain
-    highlighted. A checkbox adds the rules that use it, as ``--rules`` does."""
+    highlighted. A checkbox adds the rules that use it, as ``--rules`` does,
+    and a dropdown limits how far it reaches, as ``--depth`` does."""
     cmap = chain_map.chain_map(sc)
     out = scrollable_output()
     if not cmap.steps:
@@ -131,16 +132,18 @@ def show_chain_flow(sc, chain: str | None = None, **_):
     names = sorted(cmap.steps)
     picker = widgets.Dropdown(options=names, value=chain if chain in names else names[0],
                               description="Chain:")
+    depth = widgets.Dropdown(options=[("1 step", "1"), ("to lots", "lots"), ("all", "all")],
+                             value="all", description="Depth:", layout=widgets.Layout(width="max-content"))
     rules = widgets.Checkbox(value=False, description="Rules", indent=False)
     chart = MermaidWidget(chart=chain_map.mermaid(cmap, [picker.value]),
                           layout=widgets.Layout(overflow="auto", max_width="100%"))
 
     def redraw(_change=None) -> None:
-        chart.chart = chain_map.mermaid(cmap, [picker.value], rules=rules.value)
+        chart.chart = chain_map.mermaid(cmap, [picker.value], rules=rules.value, depth=depth.value)
 
-    picker.observe(redraw, names="value")
-    rules.observe(redraw, names="value")
-    return widgets.VBox([widgets.HBox([picker, rules]), chart])
+    for control in (picker, depth, rules):
+        control.observe(redraw, names="value")
+    return widgets.VBox([widgets.HBox([picker, depth, rules]), chart])
 
 
 SCHEDULED_OPTIONAL_COLUMNS = {"id": False, "name": True, "priority": False, "description": True}
