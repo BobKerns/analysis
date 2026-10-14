@@ -5914,8 +5914,11 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
         return
     columns = chain_graph.fit_columns(chain_graph.png_size(image)[0],
                                       shutil.get_terminal_size().columns, cell and cell[0])
-    sequence = chain_graph.kitty_sequence if protocol == "kitty" else chain_graph.iterm_sequence
-    click.echo(sequence(image, columns), nl=False)
+    if protocol == "kitty":
+        click.echo(chain_graph.kitty_sequence(image, columns), nl=False)
+        chain_graph.swallow_replies()
+    else:
+        click.echo(chain_graph.iterm_sequence(image, columns), nl=False)
 
 
 _STEP_OPTIONS_HELP = {

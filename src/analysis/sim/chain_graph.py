@@ -194,6 +194,28 @@ def _ask_terminal(query: str, timeout: float = 1.0) -> bytes:
     return reply
 
 
+def swallow_replies(timeout: float = 0.2) -> None:
+    """Take in any reply the terminal sends to an image just shown. iTerm2
+    answers a kitty image though ``q=2`` asks it not to, and an answer left
+    unread is typeahead: the shell shows it at the next prompt."""
+    if not sys.stdin.isatty():
+        return
+    try:
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+    except (ImportError, OSError):
+        return
+    try:
+        tty.setcbreak(fd, termios.TCSANOW)
+        while select.select([fd], [], [], timeout)[0]:
+            os.read(fd, 1024)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
 def terminal_protocol() -> Protocol | None:
     """The image protocol this terminal takes, or ``None`` when it takes
     none, the output isn't a terminal, or it's inside tmux (which needs
