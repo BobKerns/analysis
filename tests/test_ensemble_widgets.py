@@ -263,9 +263,12 @@ def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_wort
         return real_fan_chart(monthly_summary, ax=ax)
 
     monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
+    # The reported frame's shape, with only the lowest band (p05) reaching
+    # zero: mean and median stay positive, so only the p05 check can trip.
     negative_summary = pd.DataFrame({
-        "mean": [100.0, -10.0], "median": [95.0, -15.0],
-        "std": [5.0, 5.0], "min": [50.0, -80.0], "max": [150.0, 50.0],
+        "mean": [100.0, 90.0], "median": [95.0, 85.0], "std": [5.0, 5.0],
+        "p05": [50.0, -20.0], "p20": [70.0, 40.0], "p40": [90.0, 80.0],
+        "p60": [100.0, 95.0], "p80": [120.0, 110.0], "p95": [150.0, 140.0],
     }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
     monkeypatch.setattr(ensemble_widgets, "summary_with_percentiles", lambda *a, **k: negative_summary)
 
