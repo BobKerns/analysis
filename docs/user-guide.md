@@ -676,7 +676,7 @@ None of them need you to write any code.
 | `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, and after-tax income. |
 | `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, and where they cross over (break-even). |
 | `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range, with a running balance for one account and each refill linked to the debit that triggered it — good for auditing "why did this happen." |
-| `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median with the min–max range shaded behind it, plus a year-end mean/median/SD/range table. |
+| `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median over quintile bands shaded out to the min–max range, plus a year-end mean/median/SD/range table with the quintile breakpoints. |
 
 Open one with `analysis jupyter` (or the **Jupyter** VS Code task, below), or
 in VS Code directly if it runs well enough there for your machine

@@ -59,7 +59,7 @@ from analysis.sim.types import DollarMode
 __all__ = [
     "EnsembleError", "resolve_member", "load_ensemble", "member_run_statuses",
     "latest_ensemble_batch", "members_net_worth_by_month", "summary",
-    "QUINTILES", "percentiles",
+    "QUINTILES", "percentiles", "summary_with_percentiles",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
     "factor_reach", "process_path",
 ]
@@ -879,4 +879,18 @@ def percentiles(frame: pd.DataFrame, qs: tuple[float, ...] = QUINTILES) -> pd.Da
     return pd.DataFrame(
         {f"p{q * 100:g}": frame.quantile(q, axis=1) for q in qs},
         index=frame.index,
+    )
+
+
+def summary_with_percentiles(
+    frame: pd.DataFrame, qs: tuple[float, ...] = QUINTILES,
+) -> pd.DataFrame:
+    """``summary()`` with ``percentiles()`` between its ``min`` and ``max``
+    columns, so a row reads low to high: the one frame both the notebook's
+    year-end table and ``sim ensemble summary`` print (#155). With a large
+    ensemble the extremes run far beyond where most members land; the
+    breakpoints show the spread the min/max can't."""
+    stats = summary(frame)
+    return pd.concat(
+        [stats.drop(columns="max"), percentiles(frame, qs), stats["max"]], axis=1,
     )

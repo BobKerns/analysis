@@ -169,7 +169,7 @@ frames = [rc.items("net_worth").assign(member=i) for i, rc in enumerate(members)
 by_month = pd.concat(frames).groupby("month")["net_worth"].agg(["mean", "median", "std", "min", "max"])
 ```
 
-— the same shape of aggregation `scenario_compare.ipynb` already does across a handful of named variants, just over many random ones. A new `notebooks/ensemble.ipynb` plots the standard Monte Carlo fan (quintile bands over time, from `ensemble.percentiles()`, shaded darker toward the middle and out to the min–max range); `sim ensemble summary <recipe>` is the terminal equivalent from day one, printing the same table plus the failure count from §7, so this doesn't join the CLI-gap backlog in `TODO.md`.
+— the same shape of aggregation `scenario_compare.ipynb` already does across a handful of named variants, just over many random ones. A new `notebooks/ensemble.ipynb` plots the standard Monte Carlo fan (quintile bands over time, from `ensemble.percentiles()`, shaded darker toward the middle and out to the min–max range) over a year-end table of mean, median, SD, min, the quintile breakpoints (`p20`…`p80`, from `ensemble.summary_with_percentiles()`) and max — with a large ensemble the extremes run far past where most members land, so the range alone says little; `sim ensemble summary <recipe>` is the terminal equivalent from day one, printing the same table (a header row over aligned columns) plus the failure count from §7, so this doesn't join the CLI-gap backlog in `TODO.md`.
 
 ### 9. Member 0: a deterministic base case
 
@@ -208,3 +208,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#115](https://github.com/BobKerns/analysis/issues/115): a varying `set_rate` row may carry a year-by-year **process** around its drawn level (§2, §3, new §4a, §5).
 - [#130](https://github.com/BobKerns/analysis/issues/130): `vary_*` amount bounds and `vary_innovation_sd` are written as percents or dollars, like the row's `amount` (§2, §4a).
 - [#134](https://github.com/BobKerns/analysis/issues/134): `transfer_balance` rows vary only their date (§2).
+- [#155](https://github.com/BobKerns/analysis/issues/155): the year-end table, notebook and `sim ensemble summary` alike, includes the quintile breakpoints between min and max (§8).

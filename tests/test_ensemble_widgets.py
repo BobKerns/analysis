@@ -20,6 +20,7 @@ from analysis.sim.ensemble import (
     members_net_worth_by_month,
     percentiles,
     resolve_member,
+    summary_with_percentiles,
 )
 from analysis.sim.ensemble import summary as ensemble_summary
 from analysis.sim.loader import LoadResult
@@ -184,10 +185,15 @@ def test_ensemble_widget_matches_cli_summary_numbers(small_ensemble_runs_dir: Pa
     assert batch is not None
     connections = load_ensemble(batch)
     try:
-        monthly_summary = ensemble_summary(members_net_worth_by_month(connections))
+        monthly_summary = summary_with_percentiles(members_net_worth_by_month(connections))
         _heading, yearly = ensemble_summary_view(monthly_summary, len(connections))
         assert len(yearly) > 0
-        assert (yearly["min"] <= yearly["max"] + 1e-6).all()
+        assert list(yearly.columns) == [
+            "mean", "median", "std", "min", "p20", "p40", "p60", "p80", "max",
+        ]
+        # Each breakpoint sits between its neighbors, low to high.
+        ordered = yearly[["min", "p20", "p40", "p60", "p80", "max"]]
+        assert (ordered.diff(axis=1).iloc[:, 1:] >= -1e-6).all().all()
     finally:
         for con in connections.values():
             con.close()
@@ -263,7 +269,7 @@ def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_wort
         "mean": [100.0, -10.0], "median": [95.0, -15.0],
         "std": [5.0, 5.0], "min": [50.0, -80.0], "max": [150.0, 50.0],
     }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
-    monkeypatch.setattr(ensemble_widgets, "ensemble_summary", lambda *a, **k: negative_summary)
+    monkeypatch.setattr(ensemble_widgets, "summary_with_percentiles", lambda *a, **k: negative_summary)
 
     log_linear_mode = LogLinearModePicker(log_linear_mode=LogLinearMode.LOG)
     ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)

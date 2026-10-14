@@ -1,6 +1,6 @@
 """Ensemble notebook widgets (ADR-006): pick a generated recipe, see its
 members' net worth as a quintile-shaded ("fan") chart plus a year-end
-mean/median/SD/range table."""
+mean/median/SD/range table with the quintile breakpoints."""
 
 from __future__ import annotations
 
@@ -21,9 +21,8 @@ from analysis.sim.ensemble import (
     load_ensemble,
     member_run_statuses,
     members_net_worth_by_month,
-    percentiles,
+    summary_with_percentiles,
 )
-from analysis.sim.ensemble import summary as ensemble_summary
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.notebook_ui.pickers import (
     DollarModePicker,
@@ -58,8 +57,8 @@ def list_ensemble_recipes(runs_dir: Path) -> list[str]:
 def ensemble_summary_view(
     monthly_summary: pd.DataFrame, member_count: int, failed_count: int = 0,
 ) -> tuple[str, pd.DataFrame]:
-    """Heading and year-end mean/median/SD/range table from a month-indexed
-    ``summary()`` frame (mean/median/std/min/max columns). ``member_count``
+    """Heading and year-end table from a month-indexed ``summary()`` or
+    ``summary_with_percentiles()`` frame, columns as given. ``member_count``
     is how many *succeeded* members the frame was built from; ``failed_count``
     (excluded from it) is reported alongside, not silently dropped."""
     yearly = year_end_values(monthly_summary)
@@ -204,7 +203,7 @@ def ensemble_widget(*_,
             # reflects its own inflation path, which can differ member to
             # member when the varying row is itself inflation/CPI-linked.
             net_worth = members_net_worth_by_month(connections, mode=mode)
-            monthly_summary = ensemble_summary(net_worth)
+            monthly_summary = summary_with_percentiles(net_worth)
             heading, yearly = ensemble_summary_view(monthly_summary, len(connections), failed_count)
             description = (
                 description_view(next(iter(connections.values())), data_dir=resolved_data_dir)
@@ -241,9 +240,7 @@ def ensemble_widget(*_,
                 wants_log = False
             if wants_log:
                 ax.set_yscale("log")
-            # Quintiles shade the chart only; the year-end table stays the
-            # same columns `sim ensemble summary` prints.
-            ensemble_fan_chart(monthly_summary.join(percentiles(net_worth)), ax=ax)
+            ensemble_fan_chart(monthly_summary, ax=ax)
             ax.set_title(f"Net worth fan chart ({mode_label}) ({recipe})")
             ax.tick_params(axis="x", labelrotation=90)
             display(_png(fig))
