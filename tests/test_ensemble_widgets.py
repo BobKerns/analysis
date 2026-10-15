@@ -205,13 +205,13 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
     from analysis.sim.types import DollarMode
 
     modes_seen: list[DollarMode] = []
-    real = ensemble_widgets.members_net_worth_by_month
+    real = ensemble_widgets.members_balance_by_month
 
-    def _spy(connections, mode=DollarMode.NOMINAL):
+    def _spy(connections, account=None, mode=DollarMode.NOMINAL):
         modes_seen.append(mode)
-        return real(connections, mode=mode)
+        return real(connections, account, mode=mode)
 
-    monkeypatch.setattr(ensemble_widgets, "members_net_worth_by_month", _spy)
+    monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
     dollar_mode = DollarModePicker()
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir, dollar_mode=dollar_mode)
     _dropdown, pickers, _out = box.children
@@ -291,3 +291,88 @@ def test_ensemble_widget_leaves_no_figure_open_in_pyplot(small_ensemble_runs_dir
     plt.close("all")
     ensemble_widget(runs_dir=small_ensemble_runs_dir)
     assert plt.get_fignums() == []
+
+
+def test_ensemble_widget_account_picker_lists_net_worth_then_accounts(
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#163: any one account's spread, not just net worth's."""
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    axes: list = []
+    real_fan_chart = ensemble_widgets.ensemble_fan_chart
+
+    def _spy_fan_chart(monthly_summary, ax=None):
+        axes.append(ax)
+        return real_fan_chart(monthly_summary, ax=ax)
+
+    monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
+    box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
+    _dropdown, pickers, _out = box.children
+    account_picker = pickers.children[2]
+    assert account_picker.options[0] == ensemble_widgets.NET_WORTH
+    assert "Asset_Checking" in account_picker.options
+    account_picker.value = "Asset_Checking"
+    assert axes[-1].get_title().startswith("Asset_Checking fan chart")
+
+
+def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    tables: list[pd.DataFrame] = []
+    real_view = ensemble_widgets.ensemble_summary_view
+
+    def _spy_view(monthly_summary, member_count, failed_count=0):
+        heading, yearly = real_view(monthly_summary, member_count, failed_count)
+        tables.append(yearly)
+        return heading, yearly
+
+    monkeypatch.setattr(ensemble_widgets, "ensemble_summary_view", _spy_view)
+    box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
+    _dropdown, pickers, _out = box.children
+    assert list(tables[-1].columns)[-2:] == ["cvar05", "cvar20"]
+    pickers.children[3].value = "1000000"  # the reserve field
+    assert list(tables[-1].columns)[-2:] == ["below_reserve", "ever_below_reserve"]
+
+
+def test_ensemble_compare_widget_draws_one_section_per_variant(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two recipes from one seed pair member by member, so the paired-fan
+    panel is drawn too; one from another seed is said not to pair."""
+    from IPython.display import Image
+
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.styled import StyledMarkdown
+
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("child", 1)
+    seeded_ensemble_batch("other", 2)
+    shown: list[object] = []
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
+    recipe_pickers, _pickers, _out = box.children
+    baseline_picker, variant_picker = recipe_pickers.children
+    baseline_picker.value = "baseline"
+    shown.clear()
+    variant_picker.value = ("child", "other")
+    headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
+    assert any("### child vs baseline" in h and "paired over 3 futures" in h for h in headings)
+    assert any("### other vs baseline" in h and "not paired" in h for h in headings)
+    assert sum(isinstance(item, Image) for item in shown) == 2
+    assert plt.get_fignums() == []
+
+
+def test_ensemble_compare_figure_skips_the_paired_panel_when_unpaired() -> None:
+    from analysis.sim.notebook_ui.ensemble_widgets import ensemble_compare_figure
+
+    months = pd.date_range("2027-01-31", periods=3, freq="ME")
+    baseline = pd.DataFrame({"member_0000": [1.0, 2.0, 3.0], "member_0001": [2.0, 3.0, 4.0]},
+                            index=months)
+    paired = ensemble_compare_figure("a", "b", baseline, baseline + 1,
+                                     [("member_0000", "member_0000")], "nominal")
+    unpaired = ensemble_compare_figure("a", "b", baseline, baseline + 1, [], "nominal")
+    assert (len(paired.axes), len(unpaired.axes)) == (3, 2)

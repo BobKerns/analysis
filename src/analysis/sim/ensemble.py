@@ -25,6 +25,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from analysis.sim.connection import RunConnection
@@ -53,6 +54,7 @@ from analysis.sim.correlation import (
     tree_root,
 )
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
+from analysis.sim import units
 from analysis.sim.registries import ENSEMBLE_MODES, LATENT_FACTOR_KIND, PROCESS_SHOCK_CLAMP
 from analysis.sim.types import DollarMode
 
@@ -62,6 +64,9 @@ __all__ = [
     "QUINTILES", "REPORT_PERCENTILES", "percentiles", "summary_with_percentiles",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
     "factor_reach", "process_path",
+    "members_balance_by_month", "TAIL_LEVELS", "tail_means", "reserve_shares",
+    "recipe_reserve", "quantile_deltas", "member_pairs", "paired_deltas",
+    "risk_summary", "comparison_deltas",
 ]
 
 _MICROS = 1_000_000
@@ -900,3 +905,141 @@ def summary_with_percentiles(
         [summary(frame)[["mean", "median", "std"]], percentiles(frame, tuple(sorted(qs)))],
         axis=1,
     )
+
+
+def members_balance_by_month(
+    connections: dict[str, RunConnection], account: str | None = None,
+    mode: DollarMode = DollarMode.NOMINAL,
+) -> pd.DataFrame:
+    """One account's balance (USD) by month, one column per member, or net
+    worth when ``account`` is None (#163). Each member converts its own
+    series to CPI-constant dollars, since its inflation path is its own."""
+    if account is None:
+        return members_net_worth_by_month(connections, mode)
+    frame = pd.DataFrame({
+        name: con.account_balance(account, mode) for name, con in connections.items()
+    })
+    if frame.empty:
+        raise EnsembleError(f"no account {account!r} in these members")
+    return frame
+
+
+# The tail fractions whose mean ("CVaR", expected shortfall) the ensemble
+# reports and compares (#163). Fixed rather than chosen per comparison: a
+# standard pair leaves nothing to fiddle with until a comparison looks better.
+TAIL_LEVELS = (0.05, 0.20)
+
+
+def tail_means(frame: pd.DataFrame, levels: tuple[float, ...] = TAIL_LEVELS) -> pd.DataFrame:
+    """CVaR row by row: the mean of the worst ``level`` share of ``frame``'s
+    columns (one per member), as columns ``cvar05``, ``cvar20``. The worst
+    share is rounded up to whole members, at least one. A tail's mean is
+    steadier than the single breakpoint at its edge, and says how bad the
+    bad futures are, not just where they start (#163)."""
+    ordered = np.sort(frame.to_numpy(dtype=float), axis=1)
+    n = ordered.shape[1]
+    return pd.DataFrame(
+        # The epsilon keeps 0.2 * 80 at 16 rather than float-rounding to 17.
+        {f"cvar{q * 100:02g}": ordered[:, :max(1, math.ceil(q * n - 1e-9))].mean(axis=1)
+         for q in levels},
+        index=frame.index,
+    )
+
+
+def reserve_shares(frame: pd.DataFrame, reserve: float) -> pd.DataFrame:
+    """Row by row, the share of members below ``reserve`` that month
+    (``below_reserve``) and the share that have been below it at any month
+    so far (``ever_below_reserve``). ``frame`` and ``reserve`` must be in
+    the same dollars: the reserve is CPI-constant, so pass a CPI-constant
+    frame."""
+    below = frame < reserve
+    return pd.DataFrame({
+        "below_reserve": below.mean(axis=1),
+        "ever_below_reserve": below.cummax().mean(axis=1),
+    })
+
+
+def recipe_reserve(connections: dict[str, RunConnection]) -> float | None:
+    """The ``scenario.meta_json`` ``reserve`` (CPI-constant dollars) the
+    members ran with, or None when the recipe sets none (#163)."""
+    con = next(iter(connections.values()))
+    raw = con.scenario_meta().get("reserve")
+    return None if raw is None else units.json_dollars_to_cents(raw) / 100
+
+
+def quantile_deltas(
+    baseline: pd.DataFrame, variant: pd.DataFrame,
+    qs: tuple[float, ...] = REPORT_PERCENTILES,
+) -> pd.DataFrame:
+    """``variant``'s percentiles minus ``baseline``'s, row by row: each
+    breakpoint against the same breakpoint (``p05`` ... ``p95``). Valid for
+    any two ensembles; the members at a breakpoint needn't be the same
+    future on both sides."""
+    qs = tuple(sorted(qs))
+    return percentiles(variant, qs) - percentiles(baseline, qs)
+
+
+def member_pairs(
+    baseline: dict[str, RunConnection], variant: dict[str, RunConnection],
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Members of the two ensembles that drew the same future: same member
+    index, same seed. Draws are keyed by (seed, member, row name), and a
+    child recipe inherits its parent's seed, so these share every draw for
+    every row the recipes share (ADR-006 §3). Returns the ``(baseline stem,
+    variant stem)`` pairs, or no pairs and the reason they can't be paired."""
+
+    def by_index(connections: dict[str, RunConnection]) -> dict[int, tuple[str, int | None]]:
+        members = {}
+        for stem, con in connections.items():
+            member = con.ensemble_member()
+            if member is not None:
+                members[member[0]] = (stem, member[1])
+        return members
+
+    left, right = by_index(baseline), by_index(variant)
+    common = sorted(left.keys() & right.keys())
+    if not common:
+        return [], "no member index succeeded in both ensembles"
+    if any(left[i][1] is None or left[i][1] != right[i][1] for i in common):
+        return [], "the recipes have different seeds, so their members drew different futures"
+    return [(left[i][0], right[i][0]) for i in common], None
+
+
+def paired_deltas(
+    baseline: pd.DataFrame, variant: pd.DataFrame, pairs: list[tuple[str, str]],
+) -> pd.DataFrame:
+    """Per-future differences, ``variant`` minus ``baseline``, one column per
+    pair from ``member_pairs`` (named for the baseline member)."""
+    return pd.DataFrame({a: variant[b] - baseline[a] for a, b in pairs})
+
+
+def risk_summary(
+    frame: pd.DataFrame, reserve: float | None = None,
+    cpi_frame: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """``tail_means(frame)``, plus ``reserve_shares`` against ``reserve``
+    when one is given: computed on ``cpi_frame`` (the same members in
+    CPI-constant dollars) when ``frame`` is nominal, since the reserve is
+    CPI-constant."""
+    tails = tail_means(frame)
+    if reserve is None:
+        return tails
+    shares = reserve_shares(frame if cpi_frame is None else cpi_frame, reserve)
+    return pd.concat([tails, shares], axis=1)
+
+
+def comparison_deltas(
+    baseline: pd.DataFrame, variant: pd.DataFrame,
+    pairs: list[tuple[str, str]] | None = None,
+) -> pd.DataFrame:
+    """Month by month, ``variant`` against ``baseline``: each percentile
+    breakpoint's delta (``Δp05`` ...), each tail mean's (``Δcvar05``,
+    ``Δcvar20``), and, given ``member_pairs``, the share of paired futures
+    where the variant comes out ahead (``P(ahead)``) (#163)."""
+    deltas = pd.concat(
+        [quantile_deltas(baseline, variant), tail_means(variant) - tail_means(baseline)],
+        axis=1,
+    ).add_prefix("Δ")
+    if pairs:
+        deltas["P(ahead)"] = (paired_deltas(baseline, variant, pairs) > 0).mean(axis=1)
+    return deltas

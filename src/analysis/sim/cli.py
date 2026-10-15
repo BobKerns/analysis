@@ -37,7 +37,7 @@ from analysis.sim import (
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
-    open_run, open_scenario, year_end_values, Connection,
+    open_run, open_scenario, year_end_values, Connection, RunConnection,
 )
 from analysis.sim.holdings import (
     account_holdings,
@@ -58,9 +58,13 @@ from analysis.sim.ensemble import (
     latest_ensemble_batch,
     load_ensemble,
     member_run_statuses,
-    members_net_worth_by_month,
+    comparison_deltas,
+    member_pairs,
+    members_balance_by_month,
     oat_plan,
+    recipe_reserve,
     resolve_member,
+    risk_summary,
     summary_with_percentiles,
     write_batch_manifest,
 )
@@ -823,33 +827,9 @@ def ensemble_create(
     )
 
 
-@ensemble_group_command.command("summary")
-@click.argument("scenario_name")
-@click.option(
-    "--runs-dir",
-    type=click.Path(file_okay=False, path_type=Path),
-    default=None,
-    help="Default: data-repo state/runs when activated, else state/runs.",
-)
-@click.option(
-    "--data-dir",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    default=None,
-    help="Data repo (default: $ANALYSIS_DATA_DIR)",
-)
-@click.option(
-    "--batch", default=None,
-    help="Which generated batch (a 'sim run' timestamp) to summarize; default: the latest.",
-)
-def ensemble_summary(
-    scenario_name: str, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
-) -> None:
-    """Mean/median/SD and 5th/20th/.../95th percentiles of year-end net
-    worth across SCENARIO_NAME's members."""
-    data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
-    resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
-    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
-    recipe_runs_dir = resolved_runs_dir / scenario_name
+def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -> Path:
+    """The Monte Carlo batch ``sim ensemble summary``/``compare`` report on."""
+    recipe_runs_dir = runs_dir / scenario_name
     batch_dir = (
         recipe_runs_dir / batch if batch
         else latest_ensemble_batch(recipe_runs_dir, mode="monte_carlo")
@@ -862,31 +842,194 @@ def ensemble_summary(
             f"{batch_dir.name} is a sensitivity batch; use "
             f"'sim ensemble sensitivity {scenario_name} --batch {batch_dir.name}'"
         )
+    return batch_dir
 
+
+def _echo_year_table(table: pd.DataFrame) -> None:
+    """One header row over right-aligned columns, the same columns the
+    notebook's table shows: with nine statistics a row, key=value fields
+    made it hard to tell this was the same data (#155). Shares (a ``P(``
+    or ``_reserve`` column) print as percents, the rest as dollars."""
+
+    def cell(column: str, value: float) -> str:
+        if column.startswith("P(") or column.endswith("_reserve"):
+            return f"{value:.0%}"
+        return f"{value:,.0f}"
+
+    header = ["year", *table.columns]
+    rows = [
+        [str(year), *(cell(c, v) for c, v in zip(table.columns, row, strict=True))]
+        for year, row in table.iterrows()
+    ]
+    widths = [max(len(cell) for cell in column) for column in zip(header, *rows, strict=True)]
+    for line in (header, *rows):
+        click.echo("  " + "  ".join(cell.rjust(width) for cell, width in zip(line, widths, strict=True)))
+
+
+def _close_all(connections: dict[str, RunConnection]) -> None:
+    for con in connections.values():
+        con.close()
+
+
+_ENSEMBLE_RUNS_DIR_OPTION = click.option(
+    "--runs-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Default: data-repo state/runs when activated, else state/runs.",
+)
+_ENSEMBLE_DATA_DIR_OPTION = click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Data repo (default: $ANALYSIS_DATA_DIR)",
+)
+_ENSEMBLE_ACCOUNT_OPTION = click.option(
+    "--account", default=None,
+    help="Report one account's balance instead of net worth.",
+)
+_ENSEMBLE_RESERVE_OPTION = click.option(
+    "--reserve", default=None,
+    help="Reserve in CPI-constant dollars (e.g. 250000) for what's reported, "
+         "overriding the recipe's scenario.meta_json reserve (which applies to "
+         "net worth only).",
+)
+
+
+def _resolve_runs_dir(runs_dir: Path | None, data_dir: Path | None) -> Path:
+    data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
+    resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
+    return _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
+
+
+def _reserve_dollars(
+    reserve: str | None, connections: dict[str, RunConnection], account: str | None,
+) -> float | None:
+    """``--reserve``, applied to whatever is reported; without it, the
+    recipe's own reserve, which is a net-worth floor and so applies to net
+    worth only."""
+    if reserve is None:
+        return recipe_reserve(connections) if account is None else None
+    try:
+        return units.dollars_to_cents(reserve) / 100
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--reserve") from exc
+
+
+def _member_frame(
+    connections: dict[str, RunConnection], account: str | None, mode: DollarMode,
+) -> pd.DataFrame:
+    try:
+        return members_balance_by_month(connections, account, mode)
+    except EnsembleError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@ensemble_group_command.command("summary")
+@click.argument("scenario_name")
+@_ENSEMBLE_RUNS_DIR_OPTION
+@_ENSEMBLE_DATA_DIR_OPTION
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp) to summarize; default: the latest.",
+)
+@_ENSEMBLE_ACCOUNT_OPTION
+@_ENSEMBLE_RESERVE_OPTION
+def ensemble_summary(
+    scenario_name: str, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    account: str | None, reserve: str | None,
+) -> None:
+    """Mean/median/SD, 5th/20th/.../95th percentiles and the mean of the
+    worst 5% and 20% (CVaR) of year-end net worth (or --account's balance)
+    across SCENARIO_NAME's members, and the share below the reserve when
+    one is set."""
+    batch_dir = _ensemble_batch_dir(_resolve_runs_dir(runs_dir, data_dir), scenario_name, batch)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
     connections = load_ensemble(batch_dir)
     try:
-        table = year_end_values(summary_with_percentiles(members_net_worth_by_month(connections)))
+        frame = _member_frame(connections, account, DollarMode.NOMINAL)
+        reserve_dollars = _reserve_dollars(reserve, connections, account)
+        cpi_frame = (
+            None if reserve_dollars is None
+            else _member_frame(connections, account, DollarMode.CPI_CONSTANT)
+        )
+        table = year_end_values(pd.concat(
+            [summary_with_percentiles(frame), risk_summary(frame, reserve_dollars, cpi_frame)],
+            axis=1,
+        ))
         click.echo(
             f"ensemble {scenario_name} ({batch_dir.name}): {len(connections)} succeeded "
             f"member(s), {len(failed)} failed"
+            + (f"; account {account}" if account else "")
+            + ("" if reserve_dollars is None
+               else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)")
         )
-        # One header row over right-aligned columns, the same columns the
-        # notebook's table shows: with nine statistics a row, key=value
-        # fields made it hard to tell this was the same data (#155).
-        header = ["year", *table.columns]
-        rows = [[str(year), *(f"{value:,.0f}" for value in row)] for year, row in table.iterrows()]
-        widths = [max(len(cell) for cell in column) for column in zip(header, *rows, strict=True)]
-        for line in (header, *rows):
-            click.echo("  " + "  ".join(cell.rjust(width) for cell, width in zip(line, widths, strict=True)))
+        _echo_year_table(table)
         if failed:
             click.echo(f"  {len(failed)} failed member(s), excluded above:")
             for stem in failed:
                 click.echo(f"    {stem}: {statuses[stem]}")
     finally:
-        for con in connections.values():
-            con.close()
+        _close_all(connections)
+
+
+@ensemble_group_command.command("compare")
+@click.argument("baseline")
+@click.argument("variant")
+@_ENSEMBLE_RUNS_DIR_OPTION
+@_ENSEMBLE_DATA_DIR_OPTION
+@_ENSEMBLE_ACCOUNT_OPTION
+@_ENSEMBLE_RESERVE_OPTION
+@click.option(
+    "--dollars", type=click.Choice([m.value for m in DollarMode]),
+    default=DollarMode.CPI_CONSTANT.value, show_default=True,
+    help="Dollars the percentiles and tail means are reported in.",
+)
+def ensemble_compare(
+    baseline: str, variant: str, runs_dir: Path | None, data_dir: Path | None,
+    account: str | None, reserve: str | None, dollars: str,
+) -> None:
+    """Compare VARIANT's ensemble with BASELINE's on risk (#163), each from
+    its latest batch: by year end, each percentile breakpoint's delta, the
+    delta in the mean of the worst 5% and 20% of members (CVaR), and, when
+    the two recipes share a seed, the share of paired futures where VARIANT
+    comes out ahead. Then each recipe's tail means and, when a reserve is
+    set, the share of members below it."""
+    resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
+    mode = DollarMode(dollars)
+    sides: dict[str, dict[str, RunConnection]] = {}
+    try:
+        for name in (baseline, variant):
+            sides[name] = load_ensemble(_ensemble_batch_dir(resolved_runs_dir, name, None))
+        base_conns, variant_conns = sides[baseline], sides[variant]
+        frames = {name: _member_frame(conns, account, mode) for name, conns in sides.items()}
+        pairs, unpaired = member_pairs(base_conns, variant_conns)
+        reserve_dollars = _reserve_dollars(reserve, base_conns, account)
+        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        subject = f"account {account}" if account else "net worth"
+        click.echo(
+            f"{variant} vs {baseline}: {subject}, {mode_label} dollars; "
+            f"{len(base_conns)} and {len(variant_conns)} member(s)"
+        )
+        click.echo(
+            f"  paired: {len(pairs)} future(s)" if pairs else f"  not paired: {unpaired}"
+        )
+        click.echo(f"{variant} − {baseline}, year end:")
+        _echo_year_table(year_end_values(comparison_deltas(frames[baseline], frames[variant], pairs)))
+
+        reserve_note = (
+            "" if reserve_dollars is None
+            else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)"
+        )
+        for name, conns in sides.items():
+            cpi_frame = None
+            if reserve_dollars is not None and mode != DollarMode.CPI_CONSTANT:
+                cpi_frame = _member_frame(conns, account, DollarMode.CPI_CONSTANT)
+            click.echo(f"{name} tail, year end{reserve_note}:")
+            _echo_year_table(year_end_values(risk_summary(frames[name], reserve_dollars, cpi_frame)))
+    finally:
+        for conns in sides.values():
+            _close_all(conns)
 
 
 @ensemble_group_command.command("sensitivity")

@@ -1415,6 +1415,7 @@ def test_sim_ensemble_summary_prints_a_header_row_with_percentile_breakpoints(
     lines = result.output.splitlines()
     assert lines[1].split() == [
         "year", "mean", "median", "std", "p05", "p20", "p40", "p60", "p80", "p95",
+        "cvar05", "cvar20",
     ]
     years = [line.split()[0] for line in lines[2:]]
     assert years[0] == "2026" and "2040" in years
