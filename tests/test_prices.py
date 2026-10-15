@@ -152,7 +152,7 @@ def test_fetched_files_feed_the_opening_balance(
     con = sqlite3.connect(load_test_copy().intent_path)
     try:
         balance = con.execute(
-            "SELECT opening_balance FROM account_model_member WHERE lot = 'x'").fetchone()[0]
+            "SELECT opening_balance FROM account_lot WHERE lot = 'x'").fetchone()[0]
     finally:
         con.close()
     assert balance == 11500  # 10 shares at the 2026-05-29 close, the last on or before the start

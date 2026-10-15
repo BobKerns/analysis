@@ -314,7 +314,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
 
 
 SCENARIO_HEADER: tuple[str, ...] = (
-    "name", "description", "account_model", "start", "end", "seed",
+    "name", "description", "start", "end", "seed",
     "parent_scenario", "created_by", "meta_json",
 )
 

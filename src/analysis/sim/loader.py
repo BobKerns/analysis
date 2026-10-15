@@ -641,7 +641,7 @@ def _read_scenario_inputs(
     scenarios_dir = Path(scenarios_dir or (data_dir / "scenarios"))
     scenario_row: dict[str, str] = {}
     accounts: list[dict[str, str]] = []
-    model_rows: list[dict[str, str]] = []
+    value_rows: list[dict[str, str]] = []
     scheduled_rows: list[dict[str, str]] = []
     calendar_rows: list[dict[str, str]] = []
     lifespan_rows: list[dict[str, str]] = []
@@ -715,8 +715,8 @@ def _read_scenario_inputs(
         accounts = _merge_scenario_rows(
             accounts, read_overlay("accounts.csv", required=True), ("name",)
         )
-        model_rows = _merge_scenario_rows(
-            model_rows, _default_lots(
+        value_rows = _merge_scenario_rows(
+            value_rows, _default_lots(
                 read_overlay("account_values.csv", required=True), issues,
                 {a["name"] for a in accounts if a.get("subkind") in INVESTMENT_ASSET_SUBKINDS},
             ),
@@ -739,7 +739,7 @@ def _read_scenario_inputs(
     scenario_row["name"] = scenario_name
     scenario_row["meta_json"] = json.dumps(meta, separators=(",", ":"))
     return (
-        scenario_row, accounts, model_rows, scheduled_rows,
+        scenario_row, accounts, value_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
     )
 
@@ -821,7 +821,7 @@ def load_scenario(
     _normalize_month_columns(allocations, "allocations.csv", issues)
     _validate_allocations(allocations, issues)
     (
-        scenario_row, accounts, model_rows, scheduled_rows,
+        scenario_row, accounts, value_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
     ) = _read_scenario_inputs(data_dir,
                               scenario_name,
@@ -851,16 +851,16 @@ def load_scenario(
         aux_files, issues, data_dir=data_dir, money_resolver=money_resolver,
     )
 
-    _derive_opening_balances(model_rows, aux_rows, scenario_row, issues)
+    _derive_opening_balances(value_rows, aux_rows, scenario_row, issues)
     _expand_account_growth(
-        accounts, model_rows, scheduled_rows, scenario_row, aux_rows, issues,
+        accounts, value_rows, scheduled_rows, scenario_row, aux_rows, issues,
         allocations=allocations, warnings=warnings,
     )
 
-    leaves = _leaf_index(accounts, model_rows)
+    leaves = _leaf_index(accounts, value_rows)
     _validate_accounts(accounts, issues, money_resolver=money_resolver)
-    _validate_account_model_money(
-        model_rows,
+    _validate_lot_money(
+        value_rows,
         issues,
         money_resolver=money_resolver,
         accounts=accounts,
@@ -875,8 +875,8 @@ def load_scenario(
     _validate_series_references(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, warnings,
     )
-    _validate_chains(chains, model_rows, leaves, issues, money_resolver=money_resolver)
-    _validate_chain_roles(chains, scheduled_rows, calendar_rows, model_rows, issues)
+    _validate_chains(chains, value_rows, leaves, issues, money_resolver=money_resolver)
+    _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
     _validate_lifespan(lifespan_rows, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
@@ -915,8 +915,7 @@ def load_scenario(
             securities=securities,
             allocations=allocations,
             accounts=accounts,
-            account_model_name="",  # obsolete
-            account_model_rows=model_rows,
+            value_rows=value_rows,
             aux_rows=aux_rows,
             scenario_row=scenario_row,
             parents=parents,
@@ -1363,10 +1362,10 @@ class _LeafIndex(NamedTuple):
 
 
 def _leaf_index(
-    accounts: list[dict[str, str]], model_rows: list[dict[str, str]],
+    accounts: list[dict[str, str]], value_rows: list[dict[str, str]],
 ) -> _LeafIndex:
     labels: dict[str, list[str]] = {}
-    for m in model_rows:
+    for m in value_rows:
         labels.setdefault(m.get("account_name", ""), []).append(
             m.get("lot") or registries.DEFAULT_LOT
         )
@@ -1472,7 +1471,7 @@ def growth_rule_name(account: str, lot: str, taken: Collection[str] = ()) -> str
 
 def _expand_account_growth(
     accounts: list[dict[str, str]],
-    model_rows: list[dict[str, str]],
+    value_rows: list[dict[str, str]],
     scheduled_rows: list[dict[str, str]],
     scenario_row: dict[str, str],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
@@ -1496,7 +1495,7 @@ def _expand_account_growth(
     rate_series = {series for kind, series, *_ in aux_rows if kind == "rate"}
     weight_sets = _allocation_weight_sets(allocations)
     lots_by_account: dict[str, list[dict[str, str]]] = {}
-    for m in model_rows:
+    for m in value_rows:
         lots_by_account.setdefault(m.get("account_name", ""), []).append(m)
     start = scenario_row.get("start", "")
     for where, row in _located(accounts, "accounts.csv"):
@@ -1548,7 +1547,7 @@ def _expand_account_growth(
                     separators=(",", ":"),
                 ),
             })
-            model_rows.append({
+            value_rows.append({
                 "account_name": counterparty.name, "opening_balance": "0.00",
             })
         for lot, series, blend in lot_series:
@@ -1864,7 +1863,7 @@ def _validate_scheduled(
         _validate_tags(where, name, row.get("tags", ""), issues)
 
 
-def _validate_account_model_money(
+def _validate_lot_money(
     rows: list[dict[str, str]],
     issues: list[str],
     *,
@@ -1997,7 +1996,7 @@ def _dollars_to_micros(raw: str) -> int:
 
 
 def _derive_opening_balances(
-    model_rows: list[dict[str, str]],
+    value_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     scenario_row: dict[str, str],
     issues: list[str],
@@ -2011,7 +2010,7 @@ def _derive_opening_balances(
     for kind, series, payload, effective in aux_rows:
         if kind == "security_price":
             prices.setdefault(series or "", []).append((effective, payload["price_micros"]))
-    for where, row in _located(model_rows, "account_values.csv"):
+    for where, row in _located(value_rows, "account_values.csv"):
         if row.get("opening_balance") or not row.get("quantity"):
             continue
         name, symbol = row.get("account_name", ""), row.get("symbol", "")
@@ -2040,8 +2039,8 @@ def _derive_opening_balances(
     if not start:
         return
     prior_dec = f"{int(start[:4]) - 1}-12-31"
-    used = {r.get("account_name", "") for r in model_rows if r.get("prior_year_end_balance")}
-    for row in model_rows:
+    used = {r.get("account_name", "") for r in value_rows if r.get("prior_year_end_balance")}
+    for row in value_rows:
         symbol = row.get("symbol", "")
         if (row.get("prior_year_end_balance") or row.get("account_name", "") not in used
                 or not symbol or not row.get("quantity")):
@@ -2888,7 +2887,7 @@ def _validate_chain_roles(
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     scheduled_rows: list[dict[str, str]],
     calendar_rows: list[dict[str, str]],
-    model_rows: list[dict[str, str]],
+    value_rows: list[dict[str, str]],
     issues: list[str],
 ) -> None:
     """Each named chain is used the way its role says (ADR-003 §4.7): a
@@ -2910,7 +2909,7 @@ def _validate_chain_roles(
             where = f"{where} ({row.get('name', '')})" if row.get("name") else where
             check(where, from_col, row.get(from_col, ""), "source")
             check(where, to_col, row.get(to_col, ""), "destination")
-    for where, row in _located(model_rows, "account_values.csv"):
+    for where, row in _located(value_rows, "account_values.csv"):
         where = f"{where} ({row.get('account_name', '')})"
         check(where, "refill_chain", row.get("refill_chain", ""), "source")
         check(where, "overflow_chain", row.get("overflow_chain", ""), "destination")
@@ -2963,7 +2962,7 @@ def _path_to(start: str, goal: str, members: dict[str, list[str]]) -> list[str] 
 
 def _validate_chains(
     chains: dict[str, tuple[str, list[dict[str, str]]]],
-    model_rows: list[dict[str, str]],
+    value_rows: list[dict[str, str]],
     leaves: _LeafIndex,
     issues: list[str],
     *,
@@ -3023,7 +3022,7 @@ def _validate_chains(
                 _validate_no_spaces(where, member,
                                     "series", series, issues)
 
-    for where, row in _located(model_rows, "account_values.csv"):
+    for where, row in _located(value_rows, "account_values.csv"):
         holder = leaves.leaf_of.get(
             (row.get("account_name", ""), row.get("lot") or registries.DEFAULT_LOT)
         )
@@ -3109,8 +3108,7 @@ def _write_intent(
     securities: list[dict[str, str]],
     allocations: list[dict[str, str]],
     accounts: list[dict[str, str]],
-    account_model_name: str,
-    account_model_rows: list[dict[str, str]],
+    value_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     scenario_row: dict[str, str],
     parents: list[str],
@@ -3170,17 +3168,11 @@ def _write_intent(
                      "account_tag", "account_id", tag_cache)
     counts["account"] = len(accounts)
 
-    cur = con.execute(
-        "INSERT INTO account_model(name, description, created_at) VALUES (?,?,?)",
-        (account_model_name, None, now),
-    )
-    model_id = inserted_id(cur)
-
-    # One account_model_member row per lot (ADR-005). An account with no
+    # One account_lot row per lot (ADR-005). An account with no
     # account_values.csv row gets a single zero-balance default lot. Rows are
     # written in accounts.csv order so lot ids follow account order.
     rows_by_account: dict[str, list[dict[str, str]]] = {}
-    for m in account_model_rows:
+    for m in value_rows:
         rows_by_account.setdefault(m["account_name"], []).append(m)
     lot_ids: dict[str, int] = {}
     lot_account: dict[str, str] = {}
@@ -3192,14 +3184,13 @@ def _write_intent(
         ]:
             lot = m.get("lot") or registries.DEFAULT_LOT
             cur = con.execute(
-                "INSERT INTO account_model_member("
-                "model_id, account_id, lot, symbol, acquired, quantity_micros, "
+                "INSERT INTO account_lot("
+                "account_id, lot, symbol, acquired, quantity_micros, "
                 "series, opening_balance, opening_cost_basis, "
                 "prior_year_end_balance, minimum_balance_cents, "
                 "maximum_balance_cents, refill_target_cents, refill_amount_cents) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    model_id,
                     account_ids[a["name"]],
                     lot,
                     m.get("symbol") or None,
@@ -3226,7 +3217,7 @@ def _write_intent(
             lot_rows[leaf] = m
             lot_account[leaf] = a["name"]
             member_count += 1
-    counts["account_model_member"] = member_count
+    counts["account_lot"] = member_count
 
     # Liquidity chains (ADR-003 §4.7): one implicit leaf chain per lot, plus
     # one interior chain per chains/<role>/*.csv file, in one shared name space.
@@ -3271,7 +3262,7 @@ def _write_intent(
         overflow = m.get("overflow_chain") or None
         if refill or overflow:
             con.execute(
-                "UPDATE account_model_member SET refill_chain_id = ?, "
+                "UPDATE account_lot SET refill_chain_id = ?, "
                 "overflow_chain_id = ? WHERE id = ?",
                 (
                     chain_ids[refill] if refill else None,
@@ -3339,15 +3330,15 @@ def _write_intent(
         )
         cur = con.execute(
             "INSERT INTO scheduled_transaction("
-            "model_id, name, from_account, to_account, cadence, month_of_year, "
+            "name, from_account, to_account, cadence, month_of_year, "
             "amount_rule_kind, "
             "interest_account, person, series, rate_micros, claim_age, amount_cents, "
             "params_json, base_date, "
             "tax_character, tax_year, start, \"end\", priority, "
             "description, meta_json, ytd_amount, ytd_preroll, inflation_cadence"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                model_id, s["name"],
+                s["name"],
                 chain_ids[s["from_account"]],
                 chain_ids[s["to_account"]],
                 s["cadence"],
@@ -3388,12 +3379,12 @@ def _write_intent(
 
     cur = con.execute(
         "INSERT INTO scenario("
-        "name, description, account_model_id, calendar_id, start, \"end\", "
+        "name, description, calendar_id, start, \"end\", "
         "seed, parents_json, load_order_json, created_at, created_by, meta_json"
-        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (
             scenario_row["name"], scenario_row.get("description") or None,
-            model_id, calendar_id,
+            calendar_id,
             scenario_row["start"], scenario_row["end"],
             int(scenario_row["seed"]) if scenario_row.get("seed") else None,
             json.dumps(parents), json.dumps(lineage_order),

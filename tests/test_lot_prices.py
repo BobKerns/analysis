@@ -24,7 +24,7 @@ def _opening_balance(loaded: LoadResult) -> int:
     con = sqlite3.connect(loaded.intent_path)
     try:
         return con.execute(
-            "SELECT m.opening_balance FROM account_model_member m "
+            "SELECT m.opening_balance FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Brokerage_Joint'"
         ).fetchone()[0]
     finally:
@@ -157,7 +157,7 @@ def test_a_blank_prior_year_end_balance_is_derived_when_a_sibling_states_one(
     con = sqlite3.connect(load_test_copy().intent_path)
     try:
         rows = dict(con.execute(
-            "SELECT m.lot, m.prior_year_end_balance FROM account_model_member m "
+            "SELECT m.lot, m.prior_year_end_balance FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Roth_Alice'"
         ).fetchall())
     finally:
@@ -175,7 +175,7 @@ def test_no_derivation_when_no_lot_of_the_account_states_a_prior_year_end_balanc
     con = sqlite3.connect(load_test_copy().intent_path)
     try:
         values = [r[0] for r in con.execute(
-            "SELECT m.prior_year_end_balance FROM account_model_member m "
+            "SELECT m.prior_year_end_balance FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Roth_Alice'")]
     finally:
         con.close()

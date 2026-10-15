@@ -86,10 +86,10 @@ def test_load_retire_alice(tmp_path: Path) -> None:
             "prior_ltcg_loss_carryforward", -150000, "ltcg", 2025
         ) in [tuple(r) for r in tax_priors]
 
-        # Partial-first-year RMD seed lives on account_model_member now.
+        # Partial-first-year RMD seed lives on account_lot now.
         ira_seed = con.execute("""
             SELECT m.prior_year_end_balance
-            FROM account_model_member m
+            FROM account_lot m
             JOIN account a ON a.id = m.account_id
             WHERE a.name = 'Asset_TraditionalIRA_Alice'
         """).fetchone()[0]
@@ -131,6 +131,24 @@ def test_no_readme_keeps_scenario_csv_description(
     assert description == (df.loc[0, "description"] or None)
 
 
+def test_scenario_csv_with_the_retired_account_model_column_still_loads(
+    test_data_dir: Path, intent_dir: Path,
+) -> None:
+    # #160 dropped the column; data repos written before it still carry one.
+    path = test_data_dir / "scenarios" / "retire_alice" / "scenario.csv"
+    header, row = path.read_text(encoding="utf-8").splitlines()
+    path.write_text(
+        header.replace("description,", "description,account_model,") + "\n"
+        + row.replace(",2026-05-31,", ",standard,2026-05-31,", 1) + "\n",
+        encoding="utf-8",
+    )
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    with sqlite3.connect(result.intent_path) as con:
+        assert con.execute('SELECT start, "end" FROM scenario').fetchone() == (
+            "2026-05-31", "2040-12-31",
+        )
+
+
 def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
@@ -138,8 +156,8 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
     child = repo / "scenarios" / "tight"
     child.mkdir()
     (child / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
-        "tight,,,,,,retire_alice,,\n",
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        "tight,,,,,retire_alice,,\n",
         encoding="utf-8",
     )
     for filename in (
@@ -156,7 +174,7 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
         repo, "tight", intent_dir=tmp_path / "tight", allow_dirty_data=True,
     )
     tables = (
-        "account", "account_model_member", "scheduled_transaction",
+        "account", "account_lot", "scheduled_transaction",
         "calendar_event", "year_to_date",
     )
     with sqlite3.connect(current.intent_path) as current_con, \
@@ -302,7 +320,7 @@ def test_account_series_synthesizes_growth_rule_and_income_account(
             "income", "capital_gain", "tax_deferred",
         )
         opening = con.execute(
-            "SELECT m.opening_balance FROM account_model_member m "
+            "SELECT m.opening_balance FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'deferred_gains'"
         ).fetchone()[0]
         assert opening == 0
@@ -503,8 +521,8 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (scenario_dir / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
-        "x,,m,2026-01-31,2026-12-31,,,test,{}\n",
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        "x,,2026-01-31,2026-12-31,,,test,{}\n",
         encoding="utf-8",
     )
     (scenario_dir / "accounts.csv").write_text(
@@ -681,8 +699,8 @@ def _derive_empty_child(repo: Path, parent_name: str, child_name: str) -> Path:
     child = repo / "scenarios" / child_name
     child.mkdir()
     (child / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
-        f"{child_name},,,,,,{parent_name},,\n",
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        f"{child_name},,,,,{parent_name},,\n",
         encoding="utf-8",
     )
     for filename in (
@@ -1071,7 +1089,7 @@ def test_money_reference_in_account_values_resolves_itemization_sum(
     try:
         got = con.execute(
             "SELECT m.opening_cost_basis "
-            "FROM account_model_member m "
+            "FROM account_lot m "
             "JOIN account a ON a.id = m.account_id "
             "WHERE a.name = 'Asset_Home'"
         ).fetchone()[0]

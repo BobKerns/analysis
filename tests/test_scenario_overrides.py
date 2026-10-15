@@ -26,8 +26,8 @@ def _derive_empty_child(repo: Path, parent_name: str, child_name: str) -> Path:
     child = repo / "scenarios" / child_name
     child.mkdir()
     (child / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
-        f"{child_name},,,,,,{parent_name},,\n",
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        f"{child_name},,,,,{parent_name},,\n",
         encoding="utf-8",
     )
     for filename in (
@@ -178,7 +178,7 @@ def _home_basis(intent_path: Path) -> int:
     con = sqlite3.connect(intent_path)
     try:
         return con.execute(
-            "SELECT m.opening_cost_basis FROM account_model_member m "
+            "SELECT m.opening_cost_basis FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Home'"
         ).fetchone()[0]
     finally:

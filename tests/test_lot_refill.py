@@ -28,11 +28,11 @@ def test_each_lot_keeps_its_own_settings(reserve_lot: None,
     try:
         rows = con.execute(
             "SELECT m.lot, m.minimum_balance_cents, m.refill_chain_id IS NOT NULL "
-            "FROM account_model_member m JOIN account a ON a.id = m.account_id "
+            "FROM account_lot m JOIN account a ON a.id = m.account_id "
             "WHERE a.name = ? ORDER BY m.id", (CHECKING,),
         ).fetchall()
         refill_from = con.execute(
-            "SELECT c.name FROM account_model_member m JOIN chain c ON c.id = m.refill_chain_id "
+            "SELECT c.name FROM account_lot m JOIN chain c ON c.id = m.refill_chain_id "
             "JOIN account a ON a.id = m.account_id WHERE a.name = ? AND m.lot = 'default'",
             (CHECKING,),
         ).fetchone()[0]
@@ -50,7 +50,7 @@ def test_a_lot_is_refilled_from_a_sibling_lot(reserve_lot: None,
     con = sqlite3.connect(run)
     try:
         lots = dict(con.execute(
-            "SELECT m.lot, m.id FROM account_model_member m "
+            "SELECT m.lot, m.id FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = ?", (CHECKING,)))
         refills = con.execute(
             "SELECT from_lot_id, to_lot_id, SUM(amount) FROM transfer_event "

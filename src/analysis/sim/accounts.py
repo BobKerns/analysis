@@ -74,7 +74,7 @@ def _latest_rate_micros(
 def _members_by_account(sc: ScenarioConnection) -> pd.DataFrame:
     """Opening balance and cost basis summed over each account's lots. Basis is
     missing if any lot's basis is."""
-    members = sc.items("account_model_member")
+    members = sc.items("account_lot")
     grouped = members.groupby("account", sort=False)
     return pd.DataFrame({
         "opening_balance": grouped["opening_balance"].sum(),

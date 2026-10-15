@@ -43,7 +43,7 @@ def _rmd_legs(run: Path) -> list[tuple[str, str, int, str]]:
         return con.execute(
             "SELECT te.date, m.lot, te.amount, te.tax_character FROM transfer_event te "
             "JOIN scheduled_transaction st ON st.id = te.reason_id AND te.reason_kind = 'rule' "
-            "JOIN account_model_member m ON m.id = te.from_lot_id "
+            "JOIN account_lot m ON m.id = te.from_lot_id "
             "WHERE st.name = 'rmd_alice' ORDER BY te.id"
         ).fetchall()
     finally:
@@ -89,7 +89,7 @@ def test_a_two_lot_ira_is_drawn_in_the_chains_order(
     try:
         aggregate = con.execute(
             "SELECT SUM(ls.balance) FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
-            "JOIN account_model_member m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
+            "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
             "WHERE a.name = ? AND s.month = '2037-12-31'", (IRA,),
         ).fetchone()[0]
         factor = next(

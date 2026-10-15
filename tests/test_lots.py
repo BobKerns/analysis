@@ -1,4 +1,4 @@
-"""Lot-keyed state (ADR-005): one account_model_member row per lot."""
+"""Lot-keyed state (ADR-005): one account_lot row per lot."""
 
 # Abbreviated growth-series names, asserted verbatim below.
 # cspell:ignore asse brok chec rollov settl
@@ -24,12 +24,12 @@ def test_every_account_has_a_default_lot_and_leaf_chain(retire_alice_intent_file
     try:
         accounts = con.execute("SELECT COUNT(*) FROM account").fetchone()[0]
         lots = con.execute(
-            "SELECT lot, COUNT(*) FROM account_model_member GROUP BY lot"
+            "SELECT lot, COUNT(*) FROM account_lot GROUP BY lot"
         ).fetchall()
         assert lots == [("default", accounts)]
         unlinked = con.execute(
             "SELECT COUNT(*) FROM chain c "
-            "LEFT JOIN account_model_member m ON m.id = c.lot_id AND m.account_id = c.account_id "
+            "LEFT JOIN account_lot m ON m.id = c.lot_id AND m.account_id = c.account_id "
             "WHERE c.account_id IS NOT NULL AND m.id IS NULL"
         ).fetchone()[0]
         assert unlinked == 0
@@ -39,8 +39,8 @@ def test_every_account_has_a_default_lot_and_leaf_chain(retire_alice_intent_file
 
 def test_account_state_view_sums_lots_and_nulls_partial_basis(ledger_con: sqlite3.Connection) -> None:
     ledger_con.execute(
-        "INSERT INTO account_model_member(id, model_id, account_id, lot, opening_balance) "
-        "VALUES (200, 1, 5, 'second', 0)"
+        "INSERT INTO account_lot(id, account_id, lot, opening_balance) "
+        "VALUES (200, 5, 'second', 0)"
     )
     ledger_con.execute(
         "INSERT INTO simulation_step(id, step_index, month) VALUES (1, 0, '2026-05-31')"
@@ -61,8 +61,8 @@ def test_account_state_view_sums_lots_and_nulls_partial_basis(ledger_con: sqlite
 
 def test_post_transfer_records_lot_and_owning_account(ledger_con: sqlite3.Connection) -> None:
     ledger_con.execute(
-        "INSERT INTO account_model_member(id, model_id, account_id, lot, opening_balance) "
-        "VALUES (200, 1, 5, 'second', 0)"
+        "INSERT INTO account_lot(id, account_id, lot, opening_balance) "
+        "VALUES (200, 5, 'second', 0)"
     )
     balances = {200: 1_000, 2: 0}
     _post_transfer(
@@ -146,7 +146,7 @@ def test_two_lot_account_has_a_lot_state_row_per_lot(two_lot_run_file: Path) -> 
     con = sqlite3.connect(two_lot_run_file)
     try:
         lots = dict(con.execute(
-            "SELECT m.lot, m.id FROM account_model_member m "
+            "SELECT m.lot, m.id FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Brokerage_Joint'"
         ).fetchall())
         assert set(lots) == {"a", "b"}
@@ -187,7 +187,7 @@ def test_sale_from_one_lot_leaves_the_other_lots_basis_alone(two_lot_run_file: P
     con = sqlite3.connect(two_lot_run_file)
     try:
         lots = dict(con.execute(
-            "SELECT m.lot, m.id FROM account_model_member m "
+            "SELECT m.lot, m.id FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Brokerage_Joint'"
         ).fetchall())
         def basis(lot: str) -> list[int]:
@@ -228,7 +228,7 @@ def test_sale_reduces_only_that_lots_quantity(two_lot_run_file: Path) -> None:
         def quantities(lot: str) -> list[int]:
             return [r[0] for r in con.execute(
                 "SELECT ls.quantity_micros FROM lot_state ls "
-                "JOIN account_model_member m ON m.id = ls.lot_id "
+                "JOIN account_lot m ON m.id = ls.lot_id "
                 "JOIN account a ON a.id = m.account_id "
                 "WHERE a.name = 'Asset_Brokerage_Joint' AND m.lot = ? "
                 "ORDER BY ls.step_id", (lot,))]
@@ -438,7 +438,7 @@ def test_lot_balance_item_and_member_columns(two_lot_run_file: Path, test_data_d
             assert set(held["lot"]) == {"a", "b"}
             last = held[held["month"] == held["month"].max()].set_index("lot")
             assert last.loc["a", "symbol"] == "AAA" and last.loc["a", "quantity_micros"] > 1_000_000_000
-            members = run.items("account_model_member", symbol="BBB")
+            members = run.items("account_lot", symbol="BBB")
             assert list(members["account"]) == ["Asset_Brokerage_Joint"]
             assert members.iloc[0]["quantity_micros"] == 2_000_500_000
 
@@ -501,7 +501,7 @@ def test_a_lot_declared_for_a_future_purchase_accumulates_basis(
         rows = con.execute(
             "SELECT s.month, ls.balance, ls.cost_basis FROM lot_state ls "
             "JOIN simulation_step s ON s.id = ls.step_id "
-            "JOIN account_model_member m ON m.id = ls.lot_id "
+            "JOIN account_lot m ON m.id = ls.lot_id "
             "JOIN account a ON a.id = m.account_id "
             "WHERE a.name = 'Asset_Brokerage_Joint' AND m.lot = 'new' ORDER BY s.step_index"
         ).fetchall()
@@ -573,7 +573,7 @@ def test_short_term_sales_then_long_term_sales_from_the_same_lot(two_lot_run_fil
     try:
         legs = con.execute(
             "SELECT date, tax_character FROM transfer_event te "
-            "JOIN account_model_member m ON m.id = te.from_lot_id "
+            "JOIN account_lot m ON m.id = te.from_lot_id "
             "WHERE m.lot = 'b' AND te.tax_character IN ('stcg', 'ltcg')"
         ).fetchall()
     finally:

@@ -19,14 +19,14 @@ Every account is one balance with one running cost basis. A brokerage or IRA tha
 
 ## Decision
 
-### 1. A lot is a row of `account_model_member`
+### 1. A lot is a row of `account_lot`
 
-`account_model_member` gains a surrogate `id` and becomes one row per **(model, account, lot)**.
+`account_lot` is one row per **(account, lot)**, with a surrogate `id`.
 
 | column | type | notes |
 | --- | --- | --- |
 | `id` | int PK | the **lot id**; the engine keys balances, basis and quantity on it |
-| `model_id`, `account_id` | int | as today |
+| `account_id` | int | the account the lot belongs to |
 | `lot` | text NOT NULL | free-form label, unique within the account; `'default'` for accounts that are not split. Sequential numbers (`1`, `2`) are a fine convention, and so are acquisition dates or any other name without `:` |
 | `symbol` | text | optional security identifier |
 | `acquired` | text | optional ISO date; enables short/long-term treatment later |
@@ -34,14 +34,14 @@ Every account is one balance with one running cost basis. A brokerage or IRA tha
 | `series` | text | optional growth-rate series override (see §5) |
 | `opening_balance`, `opening_cost_basis`, `prior_year_end_balance` | int | as today, now per lot |
 
-`UNIQUE (model_id, account_id, lot)`. Every account has at least one lot. The `holding` and `lot` tables and `RESERVED_DDL` are removed. A "holding" is `GROUP BY account_id, symbol`. The same symbol in two accounts is two independent lots by construction, since a lot belongs to exactly one account.
+`UNIQUE (account_id, lot)`. Every account has at least one lot. The `holding` and `lot` tables and `RESERVED_DDL` are removed. A "holding" is `GROUP BY account_id, symbol`. The same symbol in two accounts is two independent lots by construction, since a lot belongs to exactly one account.
 
 ### 2. `lot_state` is the ledger's state; `account_state` becomes a view
 
 ```sql
 CREATE TABLE lot_state (
     step_id INTEGER NOT NULL REFERENCES simulation_step(id),
-    lot_id  INTEGER NOT NULL REFERENCES account_model_member(id),
+    lot_id  INTEGER NOT NULL REFERENCES account_lot(id),
     balance INTEGER NOT NULL,
     cost_basis INTEGER,
     quantity_micros INTEGER,
@@ -51,7 +51,7 @@ CREATE VIEW account_state AS
 SELECT ls.step_id, m.account_id, SUM(ls.balance) AS balance,
        CASE WHEN COUNT(ls.cost_basis) < COUNT(*) THEN NULL
             ELSE SUM(ls.cost_basis) END AS cost_basis
-FROM lot_state ls JOIN account_model_member m ON m.id = ls.lot_id
+FROM lot_state ls JOIN account_lot m ON m.id = ls.lot_id
 GROUP BY ls.step_id, m.account_id;
 ```
 
@@ -156,3 +156,4 @@ Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
 
 - [#78](https://github.com/BobKerns/analysis/issues/78): a fund lot can grow at the blend of its allocation slices' rate series (§5).
+- [#160](https://github.com/BobKerns/analysis/issues/160): the table is named `account_lot` (was `account_model_member`) and loses `model_id` with the single-row `account_model` table (§1).
