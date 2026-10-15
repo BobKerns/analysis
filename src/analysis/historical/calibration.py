@@ -715,7 +715,7 @@ def row_values(label: str, annual: pd.Series, hold_years: int = DEFAULT_HOLD_YEA
     shock_sd = single.shock_sd
     # A series that only ever rises (or never moves) estimates persistence 1
     # and no shock, which the loader rejects (0 <= φ < 1, shock > 0). Suggest
-    # no process then, judged on the printed values, so nothing unpasteable
+    # no process then, judged on the printed values, so no row that fails to load
     # is shown.
     if not (round(persistence, 2) < 1 and round(shock_sd, 1) > 0):
         persistence = shock_sd = math.nan
