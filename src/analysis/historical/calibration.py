@@ -711,9 +711,16 @@ def row_values(label: str, annual: pd.Series, hold_years: int = DEFAULT_HOLD_YEA
         return summarize(label, annual, None, window=window).sd if len(annual) >= 2 * window else math.nan
 
     se = single.sd / math.sqrt(single.n) if single.n > 1 else math.nan
+    persistence = max(single.persistence, 0.0) if not math.isnan(single.persistence) else math.nan
+    shock_sd = single.shock_sd
+    # A series that only ever rises (or never moves) estimates persistence 1
+    # and no shock, which the loader rejects (0 <= φ < 1, shock > 0). Suggest
+    # no process then, judged on the printed values, so nothing unpasteable
+    # is shown.
+    if not (round(persistence, 2) < 1 and round(shock_sd, 1) > 0):
+        persistence = shock_sd = math.nan
     return RowValues(label, single.compound, rolling_sd(hold_years), se, rolling_sd(PROCESS_LEVEL_WINDOW),
-                     max(single.persistence, 0.0) if not math.isnan(single.persistence) else math.nan,
-                     single.shock_sd)
+                     persistence, shock_sd)
 
 
 def runs_above(rates: pd.Series, threshold: float) -> list[tuple[int, int, float]]:

@@ -506,6 +506,14 @@ def test_row_values_leave_a_rolling_sd_blank_without_two_whole_windows(hc):
     assert not math.isnan(v.level_sd_high)  # 42 years hold two 10-year windows
 
 
+def test_row_values_suggest_no_process_the_loader_would_reject(hc):
+    # Steadily rising rates: persistence near 1 and almost no shock.
+    annual = pd.Series({1900 + i: 1.0 + 0.1 * i for i in range(20)})
+    v = hc.row_values("x", annual)
+    assert math.isnan(v.persistence) and math.isnan(v.shock_sd)
+    assert hc.row_value_cells(v, 30)[1][4:] == ["—", "—"]
+
+
 def test_row_value_cells_write_percents_as_the_csv_takes_them(hc):
     v = hc.RowValues("x", 10.04, 1.26, 1.9, 5.5, 0.0, 18.94)
     held, process = hc.row_value_cells(v, 30)
