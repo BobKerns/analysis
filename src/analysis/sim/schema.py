@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -203,7 +203,10 @@ CREATE TABLE calendar_event (
     -- set_rate rows by the vary step, as a ramp is.
     vary_process        TEXT,
     vary_persistence    REAL,
-    vary_innovation_sd  INTEGER
+    vary_innovation_sd  INTEGER,
+    -- #165: a `discrete` row's weighted outcomes, each a value or a low..high
+    -- range in the target's stored unit ('30%: 0; 25%: 100000..600000').
+    vary_outcomes       TEXT
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);

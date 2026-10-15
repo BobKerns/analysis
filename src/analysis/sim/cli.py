@@ -46,10 +46,14 @@ from analysis.sim.holdings import (
     symbol_holders,
 )
 from analysis.sim.distributions import (
+    Discrete,
     DistributionError,
+    OutcomeRole,
     TruncatedNormal,
+    parse_outcomes,
     parse_quantiles,
     resolve_truncated_normal_bounds,
+    rewrite_outcomes,
 )
 from analysis.sim.engine import run_scenario
 from analysis.sim.ensemble import (
@@ -99,7 +103,9 @@ from analysis.sim.staging import (
     StagedEdit,
     staged_edit,
 )
-from analysis.sim.dates import MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day
+from analysis.sim.dates import (
+    MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day, parse_vary_date,
+)
 from analysis.sim.lineage import load_order
 from analysis.frames import named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
@@ -1815,7 +1821,7 @@ _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
     "name", "vary_target", "vary_distribution", "vary_low", "vary_high",
     "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
     "vary_correlate_with", "vary_correlation", "vary_tail_dependence",
-    "vary_process", "vary_persistence", "vary_innovation_sd",
+    "vary_process", "vary_persistence", "vary_innovation_sd", "vary_outcomes",
 })
 
 
@@ -2274,6 +2280,12 @@ def _vary_row_options(f):
              "correlation tree (ADR-008). Requires --vary-correlation.",
     )(f)
     f = click.option(
+        "--vary-outcomes", default=None,
+        help="discrete's weighted outcomes, each a value or a low..high range (same unit "
+             "as the value above, or YYYY-MM[-DD] for --vary-target date), weights adding "
+             "to 100%%: e.g. '30%%: 0; 25%%: 1000..6000; 45%%: 6000..20000'.",
+    )(f)
+    f = click.option(
         "--vary-mode", default=None,
         help="triangular's peak, the most likely value (same unit as the value above, "
              "or YYYY-MM[-DD] for --vary-target date; a bare month is mid-month). "
@@ -2376,6 +2388,32 @@ def _correlation_fields(
     }
 
 
+def _outcomes_cell(raw: str | None, vary_target: str, amount_unit: str | None) -> str:
+    """A ``--vary-outcomes`` value (#165), checked whole -- each value parses,
+    the weights add to 100%, nothing overlaps -- and written with each value
+    in its canonical form, the weights as typed."""
+    if raw is None:
+        return ""
+
+    def value(text: str, role: OutcomeRole) -> float:
+        if vary_target == "date":
+            return float(parse_vary_date(text, role).toordinal())
+        assert amount_unit is not None  # an amount target without one is rejected first
+        return float(_AMOUNT_PARSERS[amount_unit](text))
+
+    def canonical(text: str, _role: OutcomeRole) -> str:
+        if vary_target == "date":
+            return _validate_month_date(text)
+        assert amount_unit is not None
+        return units.format_stored(amount_unit, _AMOUNT_PARSERS[amount_unit](text))
+
+    try:
+        Discrete(parse_outcomes(raw, value))
+        return rewrite_outcomes(raw, canonical)
+    except DistributionError as e:
+        raise click.ClickException(f"--vary-outcomes: {e}") from None
+
+
 def _vary_row_fields(
     *,
     row_name: str | None,
@@ -2388,6 +2426,7 @@ def _vary_row_fields(
     vary_skew: str | None,
     vary_tailweight: str | None,
     vary_mode: str | None,
+    vary_outcomes: str | None,
     vary_correlate_with: str | None,
     vary_correlation: str | None,
     vary_tail_dependence: str | None,
@@ -2409,7 +2448,7 @@ def _vary_row_fields(
     if not vary_distribution:
         if any([
             vary_target, vary_low, vary_high, vary_median, vary_sd,
-            vary_skew, vary_tailweight, vary_mode, vary_ramp_months is not None,
+            vary_skew, vary_tailweight, vary_mode, vary_outcomes, vary_ramp_months is not None,
             vary_correlate_with, vary_correlation, vary_tail_dependence,
             vary_process, vary_persistence, vary_innovation_sd,
         ]):
@@ -2430,6 +2469,7 @@ def _vary_row_fields(
         "vary_low": vary_low, "vary_high": vary_high,
         "vary_median": vary_median, "vary_sd": vary_sd, "vary_mode": vary_mode,
         "vary_skew": vary_skew, "vary_tailweight": vary_tailweight,
+        "vary_outcomes": vary_outcomes,
     }
     for col, raw in provided.items():
         if raw is not None and col not in allowed:
@@ -2487,6 +2527,7 @@ def _vary_row_fields(
         "name": row_name,
         "vary_target": vary_target,
         "vary_distribution": vary_distribution,
+        "vary_outcomes": _outcomes_cell(vary_outcomes, vary_target, amount_unit),
         "vary_low": convert(vary_low),
         "vary_high": convert(vary_high),
         "vary_median": convert(vary_median),
@@ -2531,6 +2572,7 @@ def _do_add_transfer(
     vary_skew: str | None,
     vary_tailweight: str | None,
     vary_mode: str | None,
+    vary_outcomes: str | None,
     vary_correlate_with: str | None,
     vary_correlation: str | None,
     vary_tail_dependence: str | None,
@@ -2566,6 +2608,7 @@ def _do_add_transfer(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
+        vary_outcomes=vary_outcomes,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_unit="dollars",
@@ -2644,6 +2687,7 @@ def transfer_add(
     vary_skew: str | None,
     vary_tailweight: str | None,
     vary_mode: str | None,
+    vary_outcomes: str | None,
     vary_correlate_with: str | None,
     vary_correlation: str | None,
     vary_tail_dependence: str | None,
@@ -2657,6 +2701,7 @@ def transfer_add(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
+        vary_outcomes=vary_outcomes,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months,
@@ -2719,7 +2764,7 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
         "vary_distribution": row["vary_distribution"],
         "vary_low": row["vary_low"], "vary_high": row["vary_high"],
         "vary_median": row["vary_median"], "vary_sd": row["vary_sd"],
-        "vary_mode": row["vary_mode"],
+        "vary_mode": row["vary_mode"], "vary_outcomes": row["vary_outcomes"],
         "vary_skew": row["vary_skew"], "vary_tailweight": row["vary_tailweight"],
         "vary_ramp_months": row["vary_ramp_months"],
         "vary_process": row["vary_process"],
@@ -3006,6 +3051,7 @@ def calendar_add_set_rate(
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
     vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
+    vary_outcomes: str | None,
     vary_correlate_with: str | None, vary_correlation: str | None,
     vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
@@ -3031,6 +3077,7 @@ def calendar_add_set_rate(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
+        vary_outcomes=vary_outcomes,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_unit="percent",
@@ -3077,6 +3124,7 @@ def calendar_add_set_amount(
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
     vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
+    vary_outcomes: str | None,
     vary_correlate_with: str | None, vary_correlation: str | None,
     vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
@@ -3110,6 +3158,7 @@ def calendar_add_set_amount(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
+        vary_outcomes=vary_outcomes,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_unit="dollars",
@@ -3146,6 +3195,7 @@ def calendar_add_retire_scheduled(
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
     vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
+    vary_outcomes: str | None,
     vary_correlate_with: str | None, vary_correlation: str | None,
     vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
@@ -3178,6 +3228,7 @@ def calendar_add_retire_scheduled(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
+        vary_outcomes=vary_outcomes,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_unit=None,
@@ -3270,6 +3321,7 @@ def calendar_add_transfer(
     vary_skew: str | None,
     vary_tailweight: str | None,
     vary_mode: str | None,
+    vary_outcomes: str | None,
     vary_correlate_with: str | None,
     vary_correlation: str | None,
     vary_tail_dependence: str | None,
@@ -3283,6 +3335,7 @@ def calendar_add_transfer(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
+        vary_outcomes=vary_outcomes,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months,
@@ -3316,6 +3369,7 @@ def calendar_add_transfer_balance(
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
     vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
+    vary_outcomes: str | None,
     vary_correlate_with: str | None, vary_correlation: str | None,
     vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
@@ -3371,6 +3425,7 @@ def calendar_add_transfer_balance(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
         vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
+        vary_outcomes=vary_outcomes,
         vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_unit=None,

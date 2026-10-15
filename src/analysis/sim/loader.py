@@ -27,10 +27,14 @@ from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, month_end_iso, parse_day, vary_date_iso,
 )
 from analysis.sim.distributions import (
+    Discrete,
     DistributionError,
+    OutcomeRole,
     Triangular,
     TruncatedNormal,
+    parse_outcomes,
     resolve_truncated_normal_bounds,
+    rewrite_outcomes,
 )
 from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents, read_parents
 from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -1118,6 +1122,12 @@ def _normalize_vary_dates(rows: list[dict[str, str]]) -> None:
                     row[col] = vary_date_iso(raw, role)
                 except ValueError:
                     pass
+        raw = (row.get("vary_outcomes") or "").strip()
+        if raw:
+            try:
+                row["vary_outcomes"] = rewrite_outcomes(raw, vary_date_iso)
+            except (ValueError, DistributionError):
+                pass
 
 
 def _find_override_file(
@@ -2207,6 +2217,9 @@ _VARY_BOUND_COLUMNS = ("vary_low", "vary_high", "vary_median", "vary_sd", "vary_
 _VARY_SHAPE_COLUMNS = ("vary_skew", "vary_tailweight")
 """Unitless truncated_normal shape parameters (#31)."""
 
+_VARY_OUTCOMES = "vary_outcomes"
+"""A `discrete` row's weighted outcomes (#165): parsed whole, not as a bound."""
+
 _VARY_PROCESS_COLUMNS = ("vary_process", "vary_persistence", "vary_innovation_sd")
 """A set_rate row's year-by-year path (ADR-006 §4a, #115)."""
 
@@ -2317,7 +2330,9 @@ def _validate_calendar_vary(
     if not distribution:
         if target or ramp_months or any(
             (row.get(c) or "").strip()
-            for c in (*_VARY_BOUND_COLUMNS, *_VARY_SHAPE_COLUMNS, *_VARY_PROCESS_COLUMNS)
+            for c in (
+                *_VARY_BOUND_COLUMNS, *_VARY_SHAPE_COLUMNS, *_VARY_PROCESS_COLUMNS, _VARY_OUTCOMES,
+            )
         ):
             issues.append(f"{where}: vary_* columns set without vary_distribution")
         return
@@ -2350,9 +2365,11 @@ def _validate_calendar_vary(
         if parse_ok or distribution != "truncated_normal" else None
     )
 
+    # A `discrete` outcome of exactly 0 is "nothing happens" (#165), a real
+    # case; only a negative one would reverse the transfer.
     if (
-        target == "amount" and kind == "one_off_transfer"
-        and effective_low is not None and effective_low <= 0
+        target == "amount" and kind == "one_off_transfer" and effective_low is not None
+        and (effective_low < 0 if distribution == "discrete" else effective_low <= 0)
     ):
         # A transfer amount is a real movement of money whose direction is
         # fixed by account_1/account_2; a nonpositive draw would reverse or
@@ -2360,6 +2377,8 @@ def _validate_calendar_vary(
         # *effective* low (given directly, or resolved from mean/sd) so this
         # one rule covers both distributions.
         issues.append(
+            f"{where}: one_off_transfer requires no negative outcome"
+            if distribution == "discrete" else
             f"{where}: one_off_transfer requires vary_low > 0 (given directly, or "
             "implied by vary_median/vary_sd) -- a transfer amount must stay positive"
         )
@@ -2445,7 +2464,7 @@ _FACTOR_FORBIDDEN_COLUMNS = (
     "param_date", "tax_character", "params_json", "tags",
     "vary_target", "vary_distribution", "vary_low", "vary_high",
     "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
-    *_VARY_PROCESS_COLUMNS,
+    *_VARY_PROCESS_COLUMNS, _VARY_OUTCOMES,
 )
 """Columns a ``latent_factor`` row must leave blank: it has no date, amount
 or series meaning, and its value is a standard normal score, not a draw from
@@ -2619,13 +2638,15 @@ def _parse_vary_params(
     parsed: dict[str, int] = {}
     shape: dict[str, float] = {}
     parse_ok = True
-    for col in (*_VARY_BOUND_COLUMNS, *_VARY_SHAPE_COLUMNS):
+    for col in (*_VARY_BOUND_COLUMNS, *_VARY_SHAPE_COLUMNS, _VARY_OUTCOMES):
         raw = (row.get(col) or "").strip()
         if not raw:
             continue
         if col not in allowed:
             issues.append(f"{where}: {col} is not used by {distribution} (ignored by the draw)")
             continue
+        if col == _VARY_OUTCOMES:
+            continue  # read whole by _check_discrete
         try:
             if col in _VARY_SHAPE_COLUMNS:
                 shape[col] = float(raw)
@@ -2643,6 +2664,35 @@ def _parse_vary_params(
     return parsed, shape, parse_ok
 
 
+def _check_discrete(row: dict[str, str], where: str, issues: list[str]) -> float | None:
+    """A `discrete` row's outcomes (#165), already in the stored unit: they
+    parse, the weights add to 100%, and no two overlap. Returns the lowest
+    value, or ``None`` when they can't be read."""
+    raw = (row.get(_VARY_OUTCOMES) or "").strip()
+    if not raw:
+        issues.append(f"{where}: discrete requires {_VARY_OUTCOMES}")
+        return None
+    target = (row.get("vary_target") or "").strip()
+    unreadable = False
+
+    def value(text: str, _role: OutcomeRole) -> float:
+        nonlocal unreadable
+        try:
+            return float(parse_day(text).toordinal() if target == "date" else int(text))
+        except ValueError:
+            unreadable = True
+            raise
+    try:
+        dist = Discrete(parse_outcomes(raw, value))
+    except DistributionError as e:
+        # An amount that isn't an integer by now is one
+        # units.calendar_row_to_storage couldn't read, and already reported.
+        if not (unreadable and target == "amount"):
+            issues.append(f"{where}: {e}")
+        return None
+    return dist.outcomes[0].low
+
+
 def _check_vary_distribution(
     row: dict[str, str], distribution: str, parsed: dict[str, int], shape: dict[str, float],
     where: str, issues: list[str],
@@ -2650,6 +2700,8 @@ def _check_vary_distribution(
     """Per-family checks on a varying row's parsed parameters; returns the
     effective low bound (given, or resolved), for the transfer-positivity
     rule, or ``None`` when it can't be determined."""
+    if distribution == "discrete":
+        return _check_discrete(row, where, issues)
     if distribution in ("uniform", "triangular"):
         for col in registries.DISTRIBUTION_REQUIRED_PARAMS[distribution]:
             if not (row.get(col) or "").strip():
@@ -3293,8 +3345,8 @@ def _write_intent(
             "vary_target, vary_distribution, vary_low, vary_high, vary_median, "
             "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months, "
             "vary_correlate_with, vary_correlation, vary_tail_dependence, "
-            "vary_process, vary_persistence, vary_innovation_sd) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_process, vary_persistence, vary_innovation_sd, vary_outcomes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -3322,6 +3374,7 @@ def _write_intent(
                 ce.get("vary_process") or None,
                 _opt_float(ce.get("vary_persistence")),
                 _opt_int(ce.get("vary_innovation_sd")),
+                ce.get("vary_outcomes") or None,
             ),
         )
         _insert_tags(con, inserted_id(cur), ce.get("tags", ""),

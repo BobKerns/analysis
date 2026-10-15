@@ -30,6 +30,7 @@ import pandas as pd
 
 from analysis.sim.connection import RunConnection
 from analysis.sim.distributions import (
+    Discrete,
     Distribution,
     DistributionError,
     Triangular,
@@ -38,6 +39,7 @@ from analysis.sim.distributions import (
     member_rng,
     path_rng,
     path_tail_rng,
+    parse_outcomes,
     resolve_truncated_normal_bounds,
     tail_rng,
 )
@@ -129,6 +131,11 @@ def build_distribution(row: Mapping[str, Any], target: str) -> Distribution:
         if kind == "uniform":
             return Uniform(low=_required_bound(row, "vary_low", target),
                            high=_required_bound(row, "vary_high", target))
+        if kind == "discrete":
+            raw = row["vary_outcomes"]
+            if not raw:
+                raise DistributionError("discrete requires vary_outcomes")
+            return Discrete(parse_outcomes(raw, lambda text, _role: _bound(text, target) or 0.0))
         if kind == "triangular":
             low = _required_bound(row, "vary_low", target)
             high = _required_bound(row, "vary_high", target)
@@ -368,7 +375,7 @@ def _yearly_shocks(
     return shocks
 
 
-def _discrete(dist: Distribution, row: sqlite3.Row) -> Uniform | Triangular:
+def _discrete(dist: Distribution, row: sqlite3.Row) -> Uniform | Triangular | Discrete:
     """``dist`` for a date target, which needs its whole-day (``*_int``) forms;
     the loader rejects truncated_normal there, which has none."""
     if isinstance(dist, TruncatedNormal):
@@ -595,7 +602,7 @@ def resolve_member(
 
         for row in [r for r in rows if r["vary_target"] == "date"]:
             dist = build_distribution(row, "date")
-            if not isinstance(dist, Uniform | Triangular):
+            if not isinstance(dist, Uniform | Triangular | Discrete):
                 # The loader rejects truncated_normal with a date target (its
                 # sd is a numeric spread, not a date span); this is
                 # unreachable for an intent that passed validation.
@@ -640,7 +647,9 @@ def resolve_member(
                 nu=node_tails.get(row["name"]),
             )
             target = round(value)
-            if row["kind"] == "one_off_transfer" and target <= 0:
+            # A discrete outcome of exactly 0 is "nothing happens" (#165).
+            floor = 0 if row["vary_distribution"] == "discrete" else 1
+            if row["kind"] == "one_off_transfer" and target < floor:
                 # Belt-and-suspenders: the loader already requires a strictly
                 # positive uniform range / truncated_normal clip floor for a
                 # transfer amount, so this should be unreachable -- but a

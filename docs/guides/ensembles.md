@@ -113,7 +113,7 @@ of the completions. So is giving the row a name another row already has.
 A row the scenario inherits from its parent is not listed: edit it in the
 parent, or add a row here that overrides it.
 
-**Choosing a distribution.** Three are available:
+**Choosing a distribution.** Four are available:
 
 - **`uniform`** (`--vary-low`, `--vary-high`): anything in the range is
   equally plausible. Use it when you really have no idea where in the
@@ -146,6 +146,33 @@ parent, or add a row here that overrides it.
   **Parameters** table and ADR-007's parameters view show the mean, SD,
   skewness and excess kurtosis your settings imply, so you can check that
   they mean what you intended.
+
+- **`discrete`** (`--vary-outcomes`): a few separate outcomes with weights,
+  each a single value or a `low..high` range spread evenly. Use it when the
+  future is a handful of distinct cases rather than one smooth range, above
+  all when one case is "nothing happens". Startup stock is the classic
+  example: most likely worth nothing, sometimes a little, now and then a
+  lot.
+
+  ```sh
+  sim calendar add transfer 2031-06-30 Income_Inheritance Asset_Brokerage_Joint 1.00 \
+    --to-lot default --scenario inflation_1 --name stock_exit \
+    --vary-target amount --vary-distribution discrete \
+    --vary-outcomes '30%: 0; 25%: 1000..6000; 25%: 6000..20000; 15%: 20000..55000; 5%: 55000..140000'
+  ```
+
+  The weights carry their `%` and add up to 100%. An outcome of exactly 0 is
+  allowed on a transfer: that member simply gets nothing. With a date target
+  it reads the same way (`'60%: 2028-06; 40%: 2029-01..2029-12'`).
+
+  Expect the summary to look odd at first, and read that as the lesson. The
+  base case (member 0) is the **median**, which for a bet like this is often
+  the zero. The mean sits well above the median, held up by the rare big
+  outcomes. The low percentiles don't move at all, because the worst cases
+  are the ones where nothing came. A bet like this raises the average and the
+  top of the fan chart without improving the bottom.
+  [Startup stock options](startup-stock-options.md) works through this
+  example, from what the shares are worth to reading the results.
 
 `vary_mean` was renamed to `vary_median` (it's the median after the
 bounds clip the distribution, so the base case is exactly what you wrote).

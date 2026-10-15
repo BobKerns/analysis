@@ -335,6 +335,8 @@ CALENDAR_HEADER: tuple[str, ...] = (
     # shape a truncated_normal; vary_mode is a triangular's peak (#31).
     "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_median",
     "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
+    # #165: a `discrete` row's weighted outcomes, '30%: 0; 25%: 1000..6000'.
+    "vary_outcomes",
     # ADR-006 §4a (#115): a set_rate row's year-by-year path around its drawn
     # level -- the process (`ar1`), its persistence phi, and the yearly shock
     # size in micros.
@@ -360,8 +362,10 @@ VARY_TARGETS: set[str] = {"amount", "date"}
 # ADR-006: closed like every other registry; a new family (lognormal, ...)
 # is a one-line addition when a concrete case needs one. `triangular` (#31)
 # is the three-point estimate -- "most likely X, no earlier/lower than A,
-# possibly as late/high as B" -- and the only skewed choice for a date.
-ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal", "triangular"}
+# possibly as late/high as B" -- and a skewed choice for a date. `discrete`
+# (#165) is a few weighted outcomes, each a value or a range: a bet whose
+# outcomes are separate cases, an exact zero among them.
+ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal", "triangular", "discrete"}
 
 # #31: `vary_mean` was renamed to `vary_median` (the truncated distribution's
 # median, so the base case is exactly the authored value). Its meaning
@@ -428,6 +432,7 @@ DISTRIBUTION_PARAMS: dict[str, frozenset[str]] = {
         "vary_median", "vary_sd", "vary_low", "vary_high", "vary_skew", "vary_tailweight",
     }),
     "triangular": frozenset({"vary_low", "vary_high", "vary_mode"}),
+    "discrete": frozenset({"vary_outcomes"}),
 }
 
 # ADR-006: the subset of DISTRIBUTION_PARAMS[dist] that must actually be
@@ -438,6 +443,7 @@ DISTRIBUTION_PARAMS: dict[str, frozenset[str]] = {
 DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
     "uniform": ("vary_low", "vary_high"),
     "triangular": ("vary_low", "vary_high"),
+    "discrete": ("vary_outcomes",),
 }
 
 

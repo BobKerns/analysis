@@ -136,6 +136,7 @@ pyeb
 pypi
 pytestmark
 QQQX
+QSBS
 rcond
 rcpie
 recategorize
