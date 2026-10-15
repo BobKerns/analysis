@@ -13,6 +13,7 @@ from collections.abc import MutableMapping
 from decimal import Decimal
 
 from analysis.sim import registries
+from analysis.sim.distributions import DistributionError, OutcomeRole, rewrite_outcomes
 
 MICROS_PER_PERCENT = 10_000
 
@@ -141,4 +142,34 @@ def calendar_row_to_storage(row: MutableMapping[str, str]) -> list[str]:
             )
             continue
         row[col] = str(value)
+    if unit is not None and (row.get("vary_target") or "").strip() == "amount":
+        problem = _outcomes_to_storage(row, unit, kind)
+        if problem:
+            problems.append(problem)
     return problems
+
+
+def _outcomes_to_storage(row: MutableMapping[str, str], unit: str, kind: str) -> str | None:
+    """A `discrete` row's ``vary_outcomes`` (#165) with each value converted
+    like ``amount``, the weights kept; a problem, and the cell left as it
+    was, when one doesn't parse."""
+    raw = (row.get("vary_outcomes") or "").strip()
+    if not raw:
+        return None
+
+    def convert(text: str, _role: OutcomeRole) -> str:
+        value = parse(unit, text)
+        if (
+            unit == "percent" and kind in registries.RATE_MICROS_CALENDAR_KINDS
+            and abs(value) > MAX_RATE_PERCENT * MICROS_PER_PERCENT
+        ):
+            raise ValueError(f"{text} is over {MAX_RATE_PERCENT}%")
+        return str(value)
+
+    try:
+        row["vary_outcomes"] = rewrite_outcomes(raw, convert)
+    except ValueError as e:
+        return f"vary_outcomes {e}"
+    except DistributionError:
+        pass  # malformed outcomes: the loader's own check reports them in context
+    return None

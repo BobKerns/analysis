@@ -177,7 +177,8 @@ _DISTRIBUTION_HELP = (
     "uniform: anywhere between low and high, equally likely. "
     "triangular: a most likely value, with a low and a high. "
     "truncated_normal: a bell curve around a median, clipped to low and high "
-    "(amounts only)."
+    "(amounts only). "
+    "discrete: a few separate outcomes with weights, such as an exact zero."
 )
 
 
@@ -235,6 +236,12 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
             "vary_mode", "most likely value", type="value", option="--vary-mode",
             required=False, applies=_uses("vary_mode"),
             help="Defaults to midway between low and high.",
+        ),
+        Field(
+            "vary_outcomes", "outcomes", option="--vary-outcomes",
+            required=_needs("vary_outcomes"), applies=_uses("vary_outcomes"),
+            help="Weighted outcomes, each a value or a low..high range, weights adding "
+                 "to 100%: e.g. '30%: 0; 25%: 1000..6000; 45%: 6000..20000'.",
         ),
         Field(
             "vary_skew", "skew", type="number", option="--vary-skew", required=False,

@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 34) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 36) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -313,7 +313,10 @@ CREATE TABLE calendar_event (
     -- set_rate rows by the vary step, as a ramp is.
     vary_process        TEXT,
     vary_persistence    REAL,
-    vary_innovation_sd  INTEGER
+    vary_innovation_sd  INTEGER,
+    -- #165: a `discrete` row's weighted outcomes, each a value or a low..high
+    -- range in the target's stored unit ('30%: 0; 25%: 100000..600000').
+    vary_outcomes       TEXT
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
@@ -837,3 +840,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#115](https://github.com/BobKerns/analysis/issues/115): `calendar_event.vary_process`, `vary_persistence` and `vary_innovation_sd` (schema 33).
 - [#143](https://github.com/BobKerns/analysis/issues/143): `chain.kind` replaced by `chain.role` (`source`/`destination`, NULL for a leaf) (schema 34).
 - [#160](https://github.com/BobKerns/analysis/issues/160): the single-row `account_model` table and every `model_id`/`account_model_id` column are dropped, and `account_model_member` is renamed `account_lot` (Intent layer DDL, placement summary, `schema_overview`; schema 35).
+- [#165](https://github.com/BobKerns/analysis/issues/165): `calendar_event.vary_outcomes` (Intent layer DDL; schema 36).

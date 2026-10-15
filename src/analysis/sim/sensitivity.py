@@ -28,7 +28,7 @@ from scipy.stats import t as student_t
 from analysis.frames import index_years
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.correlation import Link, implied_correlation, rho_from_kendall_tau, tree_root
-from analysis.sim.distributions import Distribution, Triangular, TruncatedNormal, moments
+from analysis.sim.distributions import Discrete, Distribution, Triangular, TruncatedNormal, moments
 from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
 from analysis.sim.registries import format_calendar_amount
 from analysis.sim.types import DollarMode
@@ -1036,6 +1036,13 @@ def _describe(dist: Distribution, kind: str, target: str) -> dict[str, str]:
             shape.append(f"skew {dist.skew:g}")
         if dist.tailweight != 1:
             shape.append(f"tail weight {dist.tailweight:g}")
+    elif isinstance(dist, Discrete):
+        low, high = dist.outcomes[0].low, dist.outcomes[-1].high
+        shape = [
+            f"{o.weight * 100:g}% {show(o.low)}" if o.low == o.high
+            else f"{o.weight * 100:g}% {show(o.low)}..{show(o.high)}"
+            for o in dist.outcomes
+        ]
     else:
         low, high = dist.low, dist.high
         shape = [f"mode {show(dist.mode)}"] if isinstance(dist, Triangular) else []
@@ -1065,7 +1072,7 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
     (``kind``, ``affects``), which column varies (``target``), its
     ``distribution``, ``range`` and ``center`` (the base / member-0 value:
     the median), its ``shape`` (a ``truncated_normal``'s sd and any skew or
-    tail weight; a ``triangular``'s mode), the implied ``moments`` (mean, sd,
+    tail weight; a ``triangular``'s mode; a ``discrete`` row's outcomes), the implied ``moments`` (mean, sd,
     skewness, excess kurtosis -- what the shape parameters mean in
     practice, #31), ``ramp_months``, its year-by-year ``process`` (ADR-006
     §4a: persistence and yearly shock), the author's ``description``, and its

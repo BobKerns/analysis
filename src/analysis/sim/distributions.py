@@ -1,7 +1,8 @@
 """ADR-006: ensemble variation distributions -- pure functions, no I/O.
 
-Three families (`registries.ENSEMBLE_DISTRIBUTIONS`): `uniform`,
-`truncated_normal` (optionally skewed / heavy-tailed, #31) and `triangular`.
+Four families (`registries.ENSEMBLE_DISTRIBUTIONS`): `uniform`,
+`truncated_normal` (optionally skewed / heavy-tailed, #31), `triangular`, and
+`discrete` (weighted outcomes, each a value or a range, #165).
 Every family exposes ``quantile(q)``, which sensitivity analysis (ADR-007)
 and correlated draws (#30) are built on.
 """
@@ -11,11 +12,14 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from statistics import NormalDist
+from typing import Literal
 
 __all__ = [
-    "DistributionError", "Uniform", "TruncatedNormal", "Triangular", "Distribution",
+    "DistributionError", "Uniform", "TruncatedNormal", "Triangular", "Discrete", "Outcome",
+    "OutcomeRole", "Distribution", "parse_outcomes", "rewrite_outcomes",
     "Moments", "moments", "member_rng", "tail_rng", "path_rng", "path_tail_rng",
     "DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD", "resolve_truncated_normal_bounds",
     "parse_quantiles",
@@ -379,7 +383,161 @@ class Triangular:
         return round(self.central())
 
 
-Distribution = Uniform | TruncatedNormal | Triangular
+@dataclass(frozen=True)
+class Outcome:
+    """One of a ``Discrete`` distribution's outcomes: probability ``weight``
+    (a fraction) on the single value ``low`` when ``low == high``, otherwise
+    spread evenly over ``[low, high]``."""
+
+    weight: float
+    low: float
+    high: float
+
+
+@dataclass(frozen=True)
+class Discrete:
+    """A few distinct outcomes with weights (#165), each a single value or a
+    range spread evenly -- "30% nothing, 25% a little, ..." -- for a bet whose
+    outcomes are separate cases rather than one continuum: an exact zero
+    can carry real probability, which no continuous family can give.
+
+    The outcomes are kept in value order, so ``quantile`` is monotone: a step
+    at a single value, linear across a range. That makes sensitivity
+    (ADR-007) and correlated draws (ADR-008) work as for any family. Its
+    center is its median."""
+
+    outcomes: tuple[Outcome, ...]
+
+    def __post_init__(self) -> None:
+        if not self.outcomes:
+            raise DistributionError("discrete: vary_outcomes needs at least one outcome")
+        for o in self.outcomes:
+            if not all(math.isfinite(v) for v in (o.weight, o.low, o.high)):
+                raise DistributionError("discrete: weights and values must be finite numbers")
+            if not o.weight > 0:
+                raise DistributionError("discrete: every outcome's weight must be above 0%")
+            if o.low > o.high:
+                raise DistributionError("discrete: a range's low end must come first (low..high)")
+        if abs(math.fsum(o.weight for o in self.outcomes) - 1.0) > _WEIGHT_TOLERANCE:
+            total = math.fsum(o.weight for o in self.outcomes) * 100
+            raise DistributionError(f"discrete: outcome weights must add up to 100% (got {total:g}%)")
+        ordered = tuple(sorted(self.outcomes, key=lambda o: (o.low, o.high)))
+        for a, b in zip(ordered, ordered[1:], strict=False):
+            # Ranges may share an end; anything else overlapping would make
+            # the order (and so the quantile function) ambiguous.
+            if b.low < a.high or (a.low == a.high == b.low == b.high):
+                raise DistributionError("discrete: outcomes overlap; give each its own value or range")
+        object.__setattr__(self, "outcomes", ordered)
+
+    def quantile(self, q: float) -> float:
+        _check_quantile(q)
+        below = 0.0
+        for o in self.outcomes:
+            if q <= below + o.weight or o is self.outcomes[-1]:
+                share = (q - below) / o.weight
+                if share >= 1.0 - _WEIGHT_TOLERANCE:  # the top end exactly, despite round-off
+                    return o.high
+                return o.low + max(0.0, share) * (o.high - o.low)
+            below += o.weight
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def quantile_int(self, q: float) -> int:
+        """``quantile`` rounded to a day ordinal, for a date target."""
+        return round(self.quantile(q))
+
+    def draw(self, rng: random.Random) -> float:
+        return self.quantile(rng.random())
+
+    def draw_int(self, rng: random.Random) -> int:
+        return round(self.draw(rng))
+
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
+    def value_at_int(self, u: float) -> int:
+        """A date as a correlated draw resolves it, rounded like ``draw_int``."""
+        return round(self.value_at(u))
+
+    def central(self) -> float:
+        """The median (ADR-006 §9's base case)."""
+        return self.quantile(0.5)
+
+    def central_int(self) -> int:
+        return round(self.central())
+
+
+_WEIGHT_TOLERANCE = 1e-9
+
+OutcomeRole = Literal["low", "high", "point"]
+"""Where an outcome's value sits: a single value, or a range's low or high
+end. A bare month needs it (#34); ``dates.VaryBoundRole`` is the same."""
+
+_RANGE = ".."
+
+
+def _split_outcomes(text: str) -> list[tuple[str, str, str | None]]:
+    """``vary_outcomes`` text as ``(weight, low, high or None)`` strings."""
+    parts = [p.strip() for p in text.split(";")]
+    if not any(parts):
+        raise DistributionError("discrete: vary_outcomes is empty")
+    result = []
+    for part in parts:
+        if not part:
+            continue  # a trailing ';' is harmless
+        weight, sep, value = part.partition(":")
+        if not sep or not value.strip():
+            raise DistributionError(
+                f"discrete: outcome '{part}' isn't 'weight%: value' or 'weight%: low..high'"
+            )
+        low, dots, high = value.partition(_RANGE)
+        result.append((weight.strip(), low.strip(), high.strip() if dots else None))
+    return result
+
+
+def _parse_weight(text: str) -> float:
+    if not text.endswith("%"):
+        raise DistributionError(f"discrete: weight '{text}' needs a '%' (e.g. 25%)")
+    try:
+        return float(text[:-1]) / 100
+    except ValueError:
+        raise DistributionError(f"discrete: weight '{text}' is not a percent") from None
+
+
+def parse_outcomes(text: str, value: Callable[[str, OutcomeRole], float]) -> tuple[Outcome, ...]:
+    """``vary_outcomes`` (``"30%: 0; 25%: 1000..6000"``) as ``Outcome``s.
+    ``value(text, role)`` reads one value in the target's unit; ``role`` is
+    ``"point"``, ``"low"`` or ``"high"``, which a bare month needs (#34).
+    Raises ``DistributionError``, including for a value ``value`` rejects
+    with ``ValueError``."""
+    outcomes = []
+    for weight, low, high in _split_outcomes(text):
+        try:
+            if high is None:
+                v = value(low, "point")
+                outcomes.append(Outcome(_parse_weight(weight), v, v))
+            else:
+                outcomes.append(Outcome(_parse_weight(weight), value(low, "low"), value(high, "high")))
+        except ValueError as e:
+            raise DistributionError(f"discrete: {e}") from None
+    return tuple(outcomes)
+
+
+def rewrite_outcomes(text: str, convert: Callable[[str, OutcomeRole], str]) -> str:
+    """``vary_outcomes`` with every value rewritten by ``convert(text, role)``
+    -- from authored text (dollars, a percent, a bare month) to the stored
+    form -- and the weights kept as written. Raises ``DistributionError``
+    for a malformed outcome; ``convert``'s ``ValueError`` propagates."""
+    parts = []
+    for weight, low, high in _split_outcomes(text):
+        if high is None:
+            parts.append(f"{weight}: {convert(low, 'point')}")
+        else:
+            parts.append(f"{weight}: {convert(low, 'low')}{_RANGE}{convert(high, 'high')}")
+    return "; ".join(parts)
+
+
+Distribution = Uniform | TruncatedNormal | Triangular | Discrete
 
 
 @dataclass(frozen=True)

@@ -244,7 +244,7 @@ def test_guide_does_not_offer_a_distribution_that_cannot_draw_a_date(
     ])
 
     assert result.exit_code == 0, result.output
-    assert "choices: triangular, uniform" in result.output
+    assert "choices: discrete, triangular, uniform" in result.output
     assert calendar_rows().query("name == 'raise_vary'").iloc[0]["vary_distribution"] == "uniform"
 
 
