@@ -104,6 +104,8 @@ def test_dates_merge_down_the_load_order_and_say_whether_inherited(
     derive_scenario("longer", "retire_alice", end="2045-06")
     derive_scenario("mix", "base", start="2027-01-15")
     derive_scenario("combo", "longer:mix")
+    # The loader blanks a date it can't parse, so the parent's shows through.
+    derive_scenario("typo", "base", end="2040-13")
     by_name = {s.name: s for s in scenario_summaries(test_data_dir)}
     assert by_name["base"].start == ScenarioDate("2026-05", inherited=False)
     assert by_name["retire_alice"].end == ScenarioDate("2040-12", inherited=False)
@@ -112,6 +114,7 @@ def test_dates_merge_down_the_load_order_and_say_whether_inherited(
     # A mix-in's non-blank field overrides the main parent's, as in the load.
     assert by_name["combo"].start == ScenarioDate("2027-01", inherited=True)
     assert by_name["combo"].end == ScenarioDate("2045-06", inherited=True)
+    assert by_name["typo"].end == ScenarioDate("2040-12", inherited=True)
 
 
 def test_verbose_list_brackets_inherited_dates(

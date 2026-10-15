@@ -177,17 +177,19 @@ def _scenario_row(scenario_dir: Path) -> dict[str, str]:
 
 
 def _merged_date(rows: dict[str, dict[str, str]], name: str, col: str) -> ScenarioDate | None:
-    """The last non-blank ``col`` in load order (``rows`` is root first), as
+    """The last valid ``col`` in load order (``rows`` is root first), as
     ``YYYY-MM``; the loader pins a month column to its last day, so the day
-    adds nothing. Left as written when it doesn't parse."""
+    adds nothing. Like the loader, which reports and blanks a date that
+    doesn't parse, an invalid one lets the ancestor's show through."""
     for owner, row in reversed(rows.items()):
         raw = (row.get(col) or "").strip()
-        if raw:
-            try:
-                month = month_end_iso(raw)[:len("YYYY-MM")]
-            except ValueError:
-                month = raw
-            return ScenarioDate(month, inherited=owner != name)
+        if not raw:
+            continue
+        try:
+            month = month_end_iso(raw)[:len("YYYY-MM")]
+        except ValueError:
+            continue
+        return ScenarioDate(month, inherited=owner != name)
     return None
 
 
