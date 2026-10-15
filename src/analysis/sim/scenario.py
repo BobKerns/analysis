@@ -16,7 +16,8 @@ import pandas as pd
 
 from analysis.sim.loader import LoadError
 from analysis.sim import chain_edit, registries
-from analysis.sim.lineage import read_parents
+from analysis.sim.dates import month_end_iso
+from analysis.sim.lineage import load_order, read_parents
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.readme import parse_readme_summary
 from analysis.sim import cli
@@ -118,35 +119,79 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
 
 
 @dataclass(frozen=True)
+class ScenarioDate:
+    """A scenario's ``start`` or ``end`` month as the load would merge it,
+    and whether it came from an ancestor rather than the scenario itself."""
+
+    month: str
+    inherited: bool
+
+
+@dataclass(frozen=True)
 class ScenarioSummary:
     """One scenario folder, as ``sim scenario list --verbose`` shows it."""
 
     name: str
     parents: list[str]
     description: str
+    start: ScenarioDate | None = None
+    end: ScenarioDate | None = None
 
 
 def scenario_summaries(data_dir: Path, scenarios_dir: Path | None = None) -> list[ScenarioSummary]:
-    """Every scenario folder's name, parents and one-line description, sorted.
+    """Every scenario folder's name, parents, one-line description, and start
+    and end months, sorted.
 
     Read straight from the folders rather than loaded, so it is quick and
     still lists a scenario that wouldn't load. The description follows the
     loader's rule (ADR-003 §4.1e), cut to one line: the README.md title
     (unless it just restates the name), else its first paragraph, else
-    scenario.csv's own ``description``.
+    scenario.csv's own ``description``. The dates follow the loader's
+    field-by-field merge down the load order (ADR-003 §4.5).
     """
     scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
-    return [
-        ScenarioSummary(
+    summaries = []
+    for name in list_scenario_names(data_dir, scenarios):
+        rows = {n: _scenario_row(scenarios / n) for n in load_order(scenarios, name)}
+        summaries.append(ScenarioSummary(
             name=name,
             parents=read_parents(scenarios / name),
-            description=_one_line_description(scenarios / name),
-        )
-        for name in list_scenario_names(data_dir, scenarios)
-    ]
+            description=_one_line_description(scenarios / name, rows[name]),
+            start=_merged_date(rows, name, "start"),
+            end=_merged_date(rows, name, "end"),
+        ))
+    return summaries
 
 
-def _one_line_description(scenario_dir: Path) -> str:
+def _scenario_row(scenario_dir: Path) -> dict[str, str]:
+    """scenario.csv's data row, or {} -- tolerant, like read_parents:
+    reporting a malformed scenario.csv is the loader's job, and a listing
+    shouldn't fail on one."""
+    try:
+        with (scenario_dir / "scenario.csv").open(newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                return {k: v or "" for k, v in row.items() if k is not None}
+    except (OSError, UnicodeDecodeError, csv.Error):
+        pass
+    return {}
+
+
+def _merged_date(rows: dict[str, dict[str, str]], name: str, col: str) -> ScenarioDate | None:
+    """The last non-blank ``col`` in load order (``rows`` is root first), as
+    ``YYYY-MM``; the loader pins a month column to its last day, so the day
+    adds nothing. Left as written when it doesn't parse."""
+    for owner, row in reversed(rows.items()):
+        raw = (row.get(col) or "").strip()
+        if raw:
+            try:
+                month = month_end_iso(raw)[:len("YYYY-MM")]
+            except ValueError:
+                month = raw
+            return ScenarioDate(month, inherited=owner != name)
+    return None
+
+
+def _one_line_description(scenario_dir: Path, row: dict[str, str]) -> str:
     readme = scenario_dir / "README.md"
     if readme.is_file():
         try:
@@ -161,15 +206,7 @@ def _one_line_description(scenario_dir: Path) -> str:
                 title = ""
             if title or summary.paragraph:
                 return title or summary.paragraph
-    # Tolerant, like read_parents: reporting a malformed scenario.csv is the
-    # loader's job, and a listing shouldn't fail on one.
-    try:
-        with (scenario_dir / "scenario.csv").open(newline="", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
-                return " ".join((row.get("description") or "").split())
-    except (OSError, UnicodeDecodeError, csv.Error):
-        pass
-    return ""
+    return " ".join(row.get("description", "").split())
 
 
 def _name_key(text: str) -> str:

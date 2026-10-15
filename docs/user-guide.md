@@ -79,10 +79,12 @@ To see which scenarios the data repo has:
 
 ```sh
 sim scenario list            # names only, one per line, for scripts
-sim scenario list --verbose  # a table with each one's parents and description
+sim scenario list --verbose  # a table with each one's parents, dates and description
 ```
 
-The verbose table marks your current scenario with `*`.
+The verbose table marks your current scenario with `*`, and shows each
+scenario's start and end months, in `[brackets]` when the scenario inherits
+that date rather than setting it itself.
 
 Everything below works the same way, whether you are editing `base` directly,
 or editing a derived scenario's own files.
