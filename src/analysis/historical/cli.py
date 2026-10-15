@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from analysis.historical.calibration import DEFAULT_CACHE, DataError, Fetcher, default_contact, run
+from analysis.historical.calibration import DEFAULT_CACHE, DEFAULT_HOLD_YEARS, DataError, Fetcher, default_contact, run
 
 
 @click.command(name="historical", epilog=(
@@ -20,6 +20,8 @@ from analysis.historical.calibration import DEFAULT_CACHE, DataError, Fetcher, d
                    "(default: the guide's episodes and the full history).")
 @click.option("--window", type=click.IntRange(min=1), default=1, show_default=True,
               help="Summarize rolling N-year compound rates instead of single years.")
+@click.option("--hold-years", type=click.IntRange(min=2), default=DEFAULT_HOLD_YEARS, show_default=True,
+              help="Years a held row keeps its draw, for the suggested held vary_sd.")
 @click.option("--basis", type=click.Choice(["dec", "average"]), default="dec", show_default=True,
               help="Annual rate of a monthly level: December over December, "
                    "or annual average over annual average.")
@@ -34,18 +36,20 @@ from analysis.historical.calibration import DEFAULT_CACHE, DataError, Fetcher, d
               help="Email for the User-Agent (BLS requires one); "
                    "$HISTORICAL_CALIBRATION_CONTACT overrides git's.")
 def historical_command(series: tuple[str, ...], reference: str | None, periods: tuple[str, ...],
-                       window: int, basis: str, runs_above: float | None, fmt: str, cache: Path,
+                       window: int, hold_years: int, basis: str, runs_above: float | None, fmt: str, cache: Path,
                        refresh: bool, contact: str | None) -> None:
     """Summarize public price and return series for calibrating rates.
 
     SERIES are [LABEL=]SOURCE:ID[@rate|@index]. For each one and each period
     this prints the compound mean rate, median, SD, range, persistence, and the
-    correlation and gap against --reference.
+    correlation and gap against --reference, then the values each series
+    suggests for a varying set_rate row, under calendar.csv's column names,
+    and a legend tying those names to the tables' headings.
     """
     if runs_above is not None and fmt == "csv":
         raise click.UsageError("--runs-above prints a Markdown table; it can't be combined with --format csv")
     try:
-        run(series, reference_arg=reference, period_args=periods, window=window, basis=basis,
+        run(series, reference_arg=reference, period_args=periods, window=window, hold_years=hold_years, basis=basis,
             runs_above_pct=runs_above, fmt=fmt, cache=cache, refresh=refresh, contact=contact)
     except DataError as exc:
         raise click.ClickException(str(exc)) from exc

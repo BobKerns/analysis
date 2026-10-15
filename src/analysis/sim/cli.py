@@ -6850,12 +6850,13 @@ def scenario_group_command() -> None:
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 @click.option("-v", "--verbose", is_flag=True, default=False,
-              help="Show a table with each scenario's parents and description.")
+              help="Show a table with each scenario's parents, dates and description.")
 def scenario_list(data_dir: Path | None, verbose: bool) -> None:
     """List the data repo's scenarios.
 
     Plain output is just the names, one per line, for scripts. --verbose adds
-    parents and description, and marks the current scenario with *.
+    parents, start and end months, and description, and marks the current
+    scenario with *. A date in [brackets] is inherited from an ancestor.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     try:
@@ -6871,18 +6872,28 @@ def scenario_list(data_dir: Path | None, verbose: bool) -> None:
         return
 
     from rich.console import Console
+    from rich.markup import escape
     from rich.table import Table
 
+    def date_cell(d: sc.ScenarioDate | None) -> str:
+        if d is None:
+            return ""
+        return escape(f"[{d.month}]") if d.inherited else escape(d.month)
+
     current = read_current_scenario(data_dir_p)
-    table = Table(title=f"scenarios ({data_dir_p.name})")
+    table = Table(title=f"scenarios ({data_dir_p.name})",
+                  caption=escape("[dates] are inherited"))
     table.add_column("", no_wrap=True)
     table.add_column("scenario", no_wrap=True)
     table.add_column("parents")
+    table.add_column("start", no_wrap=True)
+    table.add_column("end", no_wrap=True)
     table.add_column("description")
     for s in summaries:
         table.add_row(
             "*" if s.name == current else "",
-            s.name, " + ".join(s.parents), s.description,
+            s.name, " + ".join(s.parents), date_cell(s.start), date_cell(s.end),
+            escape(s.description),
         )
     Console().print(table)
 

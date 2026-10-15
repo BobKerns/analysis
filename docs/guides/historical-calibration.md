@@ -39,6 +39,73 @@ Correlations are left blank for fewer than eight years in common, and
 persistence for fewer than eight pairs of consecutive years, where they're
 noise.
 
+### Suggested row values
+
+Under each period's table, `analysis historical` prints what that history
+suggests for a varying `set_rate` row, headed by the `calendar.csv` column
+each value goes in and written the way the CSV takes it (`18.9%`). Every
+series gets two rows: one for a **held** rate (one draw kept for
+`--hold-years`, 30 by default) and one for a **process** (`vary_process`
+`ar1`, a path that moves every year; see [A rate that moves every
+year](#a-rate-that-moves-every-year)). The suggestions always come from
+single years, whatever `--window` the table above them uses.
+
+For example, stocks and CPI-U over their whole history:
+
+```sh
+analysis historical --period "All=1900-" Stocks=damodaran:sp500 CPI-U=CUUR0000SA0
+```
+
+| Series | Row           | amount, vary_median | vary_sd      | vary_persistence | vary_innovation_sd |
+| ------ | ------------- | ------------------- | ------------ | ---------------: | ------------------ |
+| Stocks | held 30 yr    | 10.0%               | 1.3%         |                — | —                  |
+| Stocks | process (ar1) | 10.0%               | 2.0% to 5.5% |             0.00 | 18.9%              |
+| CPI-U  | held 30 yr    | 3.2%                | 1.3%         |                — | —                  |
+| CPI-U  | process (ar1) | 3.2%                | 0.4% to 2.6% |             0.65 | 3.5%               |
+
+The stock row as a process, taking the low end of the level's range, is
+then this `calendar.csv` row (with its `vary_correlate_with` and the rest
+as the recipe needs):
+
+```csv
+date,kind,name,series,amount,vary_target,vary_distribution,vary_median,vary_sd,vary_process,vary_persistence,vary_innovation_sd
+2026-10,set_rate,vary_stock,stock,10.0%,amount,truncated_normal,10.0%,2.0%,ar1,0,18.9%
+```
+
+and CPI-U, held, is
+`2026-10,set_rate,vary_cpi,cpi,3.2%,amount,truncated_normal,3.2%,1.3%,,,`.
+
+Things that are easy to get wrong:
+
+- **A process row's `vary_sd` is a range.** It's the uncertainty about the
+  long-run rate only, since the path adds every year's spread itself. The
+  low end is the standard error of the historical mean (single-year SD /
+  √N), which assumes the future draws from the same history; the high end
+  is the SD of rolling 10-year rates. How far the future's long-run rate
+  may stray from the past's is your judgment.
+- **The single-year SD goes in no column.** On a held row it would make
+  every member keep one year's worth of luck for decades; on a process row
+  it counts the yearly spread twice.
+- **Negative persistence is entered as 0.** Returns' persistence is near 0
+  and sometimes slightly negative, which a process row can't take.
+- **A rolling SD needs two whole windows.** It's left blank (`—`) when the
+  period is shorter than that, since overlapping windows over too few years
+  share most of their years and understate the spread.
+
+After the tables comes a legend, one line per name a value goes by:
+
+| calendar.csv column | sim calendar add flag | Plain name | From these tables | Meaning |
+| --- | --- | --- | --- | --- |
+| `amount` | RATE_PERCENT argument | the rate | Compound % | The row's rate; on a varying row, a placeholder the draw replaces. |
+| `vary_median` | `--vary-median` | long-run rate (L) | Compound % | The median draw: the rate a held row keeps, or the rate a process path compounds to in the median future. |
+| `vary_sd` (held row) | `--vary-sd` | spread of the held rate | held row's `vary_sd` | SD of rolling compound rates over the years the row holds (`--hold-years`). |
+| `vary_sd` (process row) | `--vary-sd` | uncertainty about the long-run rate | process row's `vary_sd` | SD of the level only; from the standard error of the mean up to the 10-year rolling SD. |
+| `vary_process` | `--vary-process` | year-by-year path | — | `ar1` for a path that moves every year around L; blank to hold one draw. |
+| `vary_persistence` | `--vary-persistence` | persistence (φ) | Persistence | How much of one year's deviation carries into the next; a negative value is entered as 0. |
+| `vary_innovation_sd` | `--vary-innovation-sd` | yearly shock size (σ) | Shock SD | SD of one year's surprise in log growth, as a percent. In a tree with tail dependence ν, divide by √(ν / (ν − 2)). |
+| `vary_low`, `vary_high` | `--vary-low`, `--vary-high` | bounds on the draw | — | Bound the drawn rate, or a process's level, not its yearly path. Min % and Max % are single years' extremes. |
+| — | — | single-year spread | SD, Median %, Min %, Max % | For reading history; no column takes the single-year SD directly. |
+
 ## Turning history into `vary_*` settings
 
 A varying `set-rate` row is drawn once per member and then holds until the
@@ -695,8 +762,8 @@ the main series.
 
 ```sh
 uv run analysis historical [--reference SERIES] [--period NAME=FIRST-LAST ...] \
-  [--window N] [--basis dec|average] [--runs-above PCT] [--format markdown|csv] \
-  SERIES ...
+  [--window N] [--hold-years N] [--basis dec|average] [--runs-above PCT] \
+  [--format markdown|csv] SERIES ...
 ```
 
 - A series is `[LABEL=]SOURCE:ID`, with sources `bls`, `bea`, `rcpie`,
@@ -716,3 +783,7 @@ uv run analysis historical [--reference SERIES] [--period NAME=FIRST-LAST ...] \
   there is trusted.
 - `--runs-above` lists stretches over every year a series has, whatever
   `--period` says.
+- `--hold-years` (default 30) is how long a held row keeps its draw, which
+  sets the held row's suggested `vary_sd` (see [Suggested row
+  values](#suggested-row-values)). The suggestions and the legend are printed
+  only with `--format markdown`.
