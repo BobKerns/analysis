@@ -376,6 +376,9 @@ def test_ensemble_compare_figure_skips_the_paired_panel_when_unpaired() -> None:
                                      [("member_0000", "member_0000")], "nominal")
     unpaired = ensemble_compare_figure("a", "b", baseline, baseline + 1, [], "nominal")
     assert (len(paired.axes), len(unpaired.axes)) == (3, 2)
+    with_reserve = ensemble_compare_figure("a", "b", baseline, baseline + 1, [], "nominal", 2.5)
+    assert len(with_reserve.axes) == 3
+    assert "reserve" in with_reserve.axes[-1].get_title()
 
 
 def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_sided_deltas(

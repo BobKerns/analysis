@@ -361,9 +361,12 @@ def ensemble_widget(*_,
     return widgets.VBox([dropdown, pickers, out])
 
 
-def _delta_lines(deltas: pd.DataFrame, columns: list[str], ax: Any, title: str) -> None:
+def _delta_lines(
+    deltas: pd.DataFrame, columns: list[str], ax: Any, title: str, shares: bool = False,
+) -> None:
     """One line per column of ``deltas``, light to dark, labelled at the
-    right end, over a zero rule."""
+    right end, over a zero rule; dollars, or percentage points for
+    ``shares``."""
     shades = plt.get_cmap("Blues")
     for i, column in enumerate(columns):
         color = shades(0.35 + 0.6 * i / max(len(columns) - 1, 1))
@@ -372,7 +375,9 @@ def _delta_lines(deltas: pd.DataFrame, columns: list[str], ax: Any, title: str) 
                     xytext=(4, 0), textcoords="offset points", va="center", fontsize=8)
     ax.axhline(0, color="gray", linewidth=0.8)
     ax.set_title(title)
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(
+        (lambda v, _: f"{v * 100:+.0f} pts") if shares else (lambda v, _: f"${v:,.0f}")
+    ))
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend(framealpha=FRAME_ALPHA, ncol=4, fontsize=8)
 
@@ -381,12 +386,16 @@ def ensemble_compare_figure(
     baseline: str, variant: str,
     baseline_frame: pd.DataFrame, variant_frame: pd.DataFrame,
     pairs: list[tuple[str, str]], mode_label: str,
+    reserve: float | None = None,
+    cpi_frames: tuple[pd.DataFrame, pd.DataFrame] | None = None,
 ) -> Figure:
     """The comparison's panels, top to bottom (#163): each percentile
     breakpoint's delta; the fan of paired per-future deltas when the
-    recipes pair; the delta in each tail mean (CVaR)."""
-    deltas = comparison_deltas(baseline_frame, variant_frame)
-    panels = 3 if pairs else 2
+    recipes pair; the delta in each tail mean (CVaR); and, given a
+    ``reserve``, the change in the shares below it (see
+    ``comparison_deltas`` for ``cpi_frames``)."""
+    deltas = comparison_deltas(baseline_frame, variant_frame, reserve=reserve, cpi_frames=cpi_frames)
+    panels = 2 + bool(pairs) + (reserve is not None)
     fig = Figure(figsize=(10, 4 * panels))
     axes = list(fig.subplots(panels, 1, sharex=True))
     _delta_lines(
@@ -401,9 +410,15 @@ def ensemble_compare_figure(
         )
         axes[1].set_xlabel("")
     _delta_lines(
-        deltas, [c for c in deltas.columns if c.startswith("Δcvar")], axes[-1],
+        deltas, [c for c in deltas.columns if c.startswith("Δcvar")], axes[1 + bool(pairs)],
         f"{variant} − {baseline}: mean of the worst 5% and 20% (CVaR)",
     )
+    if reserve is not None:
+        _delta_lines(
+            deltas, ["Δbelow_reserve", "Δever_below_reserve"], axes[-1],
+            f"{variant} − {baseline}: share of members below the ${reserve:,.0f} reserve",
+            shares=True,
+        )
     axes[-1].tick_params(axis="x", labelrotation=90)
     fig.tight_layout()
     return fig
@@ -495,12 +510,13 @@ def ensemble_compare_widget(*_,
                 outputs.append(StyledMarkdown(
                     f"### {variant} vs {baseline}\n\n{len(sides[variant])} members, {note}."
                 ))
+                cpi_pair = (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None
                 outputs.append(_png(ensemble_compare_figure(
                     baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
+                    reserve, cpi_pair,
                 )))
                 table = year_end_values(comparison_deltas(
-                    frames[baseline], frames[variant], pairs, reserve,
-                    (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
+                    frames[baseline], frames[variant], pairs, reserve, cpi_pair,
                 ))
                 table.index.name = "year"
                 outputs.append(table.style.format(_share_format(table.columns)))
