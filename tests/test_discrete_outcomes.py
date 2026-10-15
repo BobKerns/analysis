@@ -78,6 +78,21 @@ def test_discrete_rejects_bad_outcomes(outcomes: tuple[Outcome, ...], message: s
         Discrete(outcomes)
 
 
+def test_discrete_moments_count_a_tiny_point_outcome() -> None:
+    """A fixed quadrature grid could step over a 0.01% outcome entirely."""
+    m = moments(Discrete((Outcome(0.0001, 0, 0), Outcome(0.9999, 1_000_000, 1_000_000))))
+    assert m.mean == pytest.approx(999_900)
+
+
+def test_discrete_date_range_draws_each_day_equally() -> None:
+    """A range's end days are as likely as its middle ones, as for uniform."""
+    dist = Discrete((Outcome(1.0, 738_000, 738_002),))
+    assert [dist.value_at_int(u) for u in (0.0, 0.34, 0.67, 1.0)] == [
+        738_000, 738_001, 738_002, 738_002,
+    ]
+    assert moments(dist, whole_days=True).mean == pytest.approx(738_001)
+
+
 def test_discrete_allows_ranges_that_share_an_end() -> None:
     Discrete((Outcome(0.5, 0, 10), Outcome(0.5, 10, 20)))
 
@@ -93,6 +108,7 @@ def test_parse_outcomes_reads_values_ranges_and_weights() -> None:
     ("lots%: 0", "is not a percent"),
     ("100%: much", "could not convert"),
     ("  ", "is empty"),
+    ("100%: 10..10", "low end below its high end"),
 ])
 def test_parse_outcomes_rejects_malformed_text(text: str, message: str) -> None:
     with pytest.raises(DistributionError, match=message):

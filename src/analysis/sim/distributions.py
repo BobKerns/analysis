@@ -429,17 +429,22 @@ class Discrete:
                 raise DistributionError("discrete: outcomes overlap; give each its own value or range")
         object.__setattr__(self, "outcomes", ordered)
 
-    def quantile(self, q: float) -> float:
-        _check_quantile(q)
+    def _locate(self, q: float) -> tuple[Outcome, float]:
+        """The outcome probability ``q`` falls in, and how far through its
+        weight it falls (0 to 1)."""
         below = 0.0
         for o in self.outcomes:
             if q <= below + o.weight or o is self.outcomes[-1]:
                 share = (q - below) / o.weight
-                if share >= 1.0 - _WEIGHT_TOLERANCE:  # the top end exactly, despite round-off
-                    return o.high
-                return o.low + max(0.0, share) * (o.high - o.low)
+                # The top end exactly, despite round-off in the running total.
+                return o, 1.0 if share >= 1.0 - _WEIGHT_TOLERANCE else max(0.0, share)
             below += o.weight
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def quantile(self, q: float) -> float:
+        _check_quantile(q)
+        o, share = self._locate(q)
+        return o.low + share * (o.high - o.low)
 
     def quantile_int(self, q: float) -> int:
         """``quantile`` rounded to a day ordinal, for a date target."""
@@ -449,15 +454,27 @@ class Discrete:
         return self.quantile(rng.random())
 
     def draw_int(self, rng: random.Random) -> int:
-        return round(self.draw(rng))
+        return self.value_at_int(rng.random())
 
     def value_at(self, u: float) -> float:
         """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
         return self.quantile(_clamp_unit(u))
 
     def value_at_int(self, u: float) -> int:
-        """A date as a correlated draw resolves it, rounded like ``draw_int``."""
-        return round(self.value_at(u))
+        """A date as drawn: a range gives each of its whole days equal weight,
+        as ``Uniform.value_at_int`` does (rounding a continuous draw would
+        give its end days half weight)."""
+        o, share = self._locate(_clamp_unit(u))
+        low, high = round(o.low), round(o.high)
+        return min(high, low + int(share * (high - low + 1)))
+
+    def _days(self) -> list[tuple[float, int]]:
+        """``(weight, day)`` for every whole day a date draw can land on."""
+        result = []
+        for o in self.outcomes:
+            low, high = round(o.low), round(o.high)
+            result += [(o.weight / (high - low + 1), day) for day in range(low, high + 1)]
+        return result
 
     def central(self) -> float:
         """The median (ADR-006 §9's base case)."""
@@ -517,7 +534,13 @@ def parse_outcomes(text: str, value: Callable[[str, OutcomeRole], float]) -> tup
                 v = value(low, "point")
                 outcomes.append(Outcome(_parse_weight(weight), v, v))
             else:
-                outcomes.append(Outcome(_parse_weight(weight), value(low, "low"), value(high, "high")))
+                lo, hi = value(low, "low"), value(high, "high")
+                if not lo < hi:
+                    raise DistributionError(
+                        f"discrete: range '{low}..{high}' needs its low end below its high end "
+                        "(write a single value without '..')"
+                    )
+                outcomes.append(Outcome(_parse_weight(weight), lo, hi))
         except ValueError as e:
             raise DistributionError(f"discrete: {e}") from None
     return tuple(outcomes)
@@ -568,6 +591,8 @@ def moments(
     ``rounded`` describes an amount target as stored: resolved amounts are
     rounded to whole cents or micros (``resolve_member``), whatever the
     family. Negligible for any realistic spread, but exact."""
+    if isinstance(dist, Discrete):
+        return _weighted_moments(_discrete_points(dist, points, whole_days=whole_days, rounded=rounded))
     if whole_days and isinstance(dist, Uniform):
         values = [float(day) for day in range(round(dist.low), round(dist.high) + 1)]
     else:
@@ -583,6 +608,39 @@ def moments(
         return Moments(mean, 0.0, 0.0, 0.0)
     skewness = math.fsum(c**3 for c in centered) / count / sd**3
     kurtosis = math.fsum(c**4 for c in centered) / count / variance**2 - 3.0
+    return Moments(mean, sd, skewness, kurtosis)
+
+
+def _discrete_points(
+    dist: Discrete, points: int, *, whole_days: bool, rounded: bool,
+) -> list[tuple[float, float]]:
+    """``(weight, value)`` pairs for a ``Discrete``'s moments: each single
+    value at its own weight, so even a tiny one counts (a fixed quadrature
+    grid could step over it), and each range by midpoints within it -- or,
+    for a date, every whole day."""
+    if whole_days:
+        return [(w, float(day)) for w, day in dist._days()]
+    pairs: list[tuple[float, float]] = []
+    for o in dist.outcomes:
+        if o.low == o.high:
+            pairs.append((o.weight, float(round(o.low)) if rounded else o.low))
+            continue
+        n = max(1, round(points * o.weight))
+        for i in range(n):
+            v = o.low + (i + 0.5) / n * (o.high - o.low)
+            pairs.append((o.weight / n, float(round(v)) if rounded else v))
+    return pairs
+
+
+def _weighted_moments(pairs: list[tuple[float, float]]) -> Moments:
+    total = math.fsum(w for w, _ in pairs)
+    mean = math.fsum(w * v for w, v in pairs) / total
+    variance = math.fsum(w * (v - mean) ** 2 for w, v in pairs) / total
+    sd = math.sqrt(variance)
+    if sd == 0:
+        return Moments(mean, 0.0, 0.0, 0.0)
+    skewness = math.fsum(w * (v - mean) ** 3 for w, v in pairs) / total / sd**3
+    kurtosis = math.fsum(w * (v - mean) ** 4 for w, v in pairs) / total / variance**2 - 3.0
     return Moments(mean, sd, skewness, kurtosis)
 
 
