@@ -69,6 +69,7 @@ import pytest
 from analysis.sim import scenario
 from analysis.sim.connection import RunConnection, ScenarioConnection, open_scenario, open_run
 from analysis.sim.engine import run_scenario
+from analysis.sim.ensemble import resolve_member
 from analysis.sim.schema import apply_run_schema
 from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
@@ -927,6 +928,40 @@ def ensemble_recipe(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> st
          "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
          "--allow-dirty-data")
     return name
+
+
+@pytest.fixture(scope="function")
+def seeded_ensemble_batch(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    intent_dir: Path, runs_dir: Path,
+) -> Callable[[str, int], Path]:
+    """A function building a 3-member Monte Carlo batch of retire_alice with
+    a widely varied checking rate under ``runs_dir/<name>/``, drawn with
+    ``seed``, and returning the batch dir: two names with one seed stand for
+    a recipe and an unchanged child (their members pair, #163); with two
+    seeds, for unrelated recipes."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="0%", vary_high="40%",
+    )
+    recipe = load_test_copy().intent_path
+
+    def _batch(name: str, seed: int) -> Path:
+        batch_dir = runs_dir / name / "2026-01-01T000000Z"
+        for i in range(3):
+            member_intent = resolve_member(
+                recipe, intent_dir / f"{name}_member_{i}.sqlite3",
+                seed=seed, member_index=i, member_count=3, recipe_tree_id="deadbeef",
+            )
+            run_scenario(
+                member_intent, batch_dir / f"member_{i:04d}.sqlite3",
+                run_by="test", allow_dirty_data=True,
+            )
+        return batch_dir
+
+    return _batch
 
 
 def _load_and_run_batch(

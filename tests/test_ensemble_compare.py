@@ -1,0 +1,243 @@
+"""#163: comparing ensembles on risk -- tail means (CVaR), reserve shares,
+percentile-breakpoint deltas and paired per-future deltas, and the
+``sim ensemble compare`` command that prints them."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from pathlib import Path
+
+import pandas as pd
+import pytest
+from click.testing import CliRunner
+
+from analysis.cli import main
+from analysis.sim.connection import RunConnection
+from analysis.sim.ensemble import (
+    comparison_deltas,
+    load_ensemble,
+    member_pairs,
+    members_balance_by_month,
+    members_net_worth_by_month,
+    paired_deltas,
+    quantile_deltas,
+    reserve_shares,
+    risk_summary,
+    tail_means,
+)
+from analysis.sim.types import DollarMode
+
+MONTHS = pd.date_range("2027-01-31", periods=3, freq="ME")
+
+
+def _members(rows: list[list[float]]) -> pd.DataFrame:
+    """A month x member frame, one list of member values per month."""
+    return pd.DataFrame(
+        rows, index=MONTHS[:len(rows)],
+        columns=[f"member_{i:04d}" for i in range(len(rows[0]))],
+    )
+
+
+def test_tail_means_average_the_worst_share_rounded_up_to_whole_members() -> None:
+    frame = _members([list(range(1, 21))])  # 1..20, shuffled order irrelevant
+    tails = tail_means(frame)
+    assert list(tails.columns) == ["cvar05", "cvar20"]
+    assert tails["cvar05"].iloc[0] == 1  # 5% of 20 is one member
+    assert tails["cvar20"].iloc[0] == (1 + 2 + 3 + 4) / 4
+    # 5% of 30 is 1.5 members: rounded up to two, never down to one.
+    assert tail_means(_members([list(range(1, 31))]))["cvar05"].iloc[0] == 1.5
+    # 20% of 80 is exactly 16, despite 0.2 * 80 not being exact in floating point.
+    assert tail_means(_members([list(range(1, 81))]))["cvar20"].iloc[0] == 8.5
+
+
+def test_tail_means_take_at_least_one_member() -> None:
+    assert tail_means(_members([[7.0, 9.0]]))["cvar05"].iloc[0] == 7.0
+
+
+def test_reserve_shares_count_members_below_now_and_ever() -> None:
+    frame = _members([[50.0, 150.0, 200.0, 300.0], [150.0, 150.0, 90.0, 300.0]])
+    shares = reserve_shares(frame, 100.0)
+    assert list(shares["below_reserve"]) == [0.25, 0.25]
+    # The first member recovered, but it has been below: path-dependent.
+    assert list(shares["ever_below_reserve"]) == [0.25, 0.5]
+
+
+def test_risk_summary_measures_the_reserve_on_the_cpi_constant_frame() -> None:
+    nominal = _members([[150.0, 300.0]])
+    cpi_constant = _members([[90.0, 200.0]])
+    assert list(risk_summary(nominal).columns) == ["cvar05", "cvar20"]
+    summary = risk_summary(nominal, 100.0, cpi_constant)
+    assert summary["cvar05"].iloc[0] == 150.0  # tails stay in the shown dollars
+    assert summary["below_reserve"].iloc[0] == 0.5
+
+
+def test_quantile_deltas_compare_each_breakpoint_with_the_same_breakpoint() -> None:
+    baseline = _members([[10.0, 20.0, 30.0, 40.0, 50.0]])
+    deltas = quantile_deltas(baseline, baseline + 7)
+    assert list(deltas.columns) == ["p05", "p20", "p40", "p60", "p80", "p95"]
+    assert (deltas == 7).all().all()
+
+
+def test_comparison_deltas_add_tail_deltas_and_the_paired_share_ahead() -> None:
+    baseline = _members([[10.0, 20.0, 30.0, 40.0]])
+    variant = _members([[15.0, 18.0, 35.0, 40.0]])
+    pairs = [(c, c) for c in baseline.columns]
+    deltas = comparison_deltas(baseline, variant, pairs)
+    assert list(deltas.columns) == [
+        "Δp05", "Δp20", "Δp40", "Δp60", "Δp80", "Δp95", "Δcvar05", "Δcvar20", "P(ahead)",
+    ]
+    assert deltas["Δcvar05"].iloc[0] == 15.0 - 10.0
+    # Ahead in two of four futures; a tie isn't ahead.
+    assert deltas["P(ahead)"].iloc[0] == 0.5
+    assert "P(ahead)" not in comparison_deltas(baseline, variant).columns
+    assert list(paired_deltas(baseline, variant, pairs).iloc[0]) == [5.0, -2.0, 5.0, 0.0]
+
+
+def test_members_with_one_seed_pair_and_draw_the_same_future(
+    seeded_ensemble_batch: Callable[..., Path],
+) -> None:
+    baseline = load_ensemble(seeded_ensemble_batch("baseline", 1))
+    child = load_ensemble(seeded_ensemble_batch("child", 1))
+    other = load_ensemble(seeded_ensemble_batch("other", 2))
+    try:
+        pairs, reason = member_pairs(baseline, child)
+        assert reason is None
+        assert pairs == [(f"member_{i:04d}", f"member_{i:04d}") for i in range(3)]
+        deltas = paired_deltas(
+            members_net_worth_by_month(baseline), members_net_worth_by_month(child), pairs,
+        )
+        assert (deltas.abs() < 1e-6).all().all()
+
+        pairs, reason = member_pairs(baseline, other)
+        assert pairs == []
+        assert reason is not None and "different seeds" in reason
+    finally:
+        for conns in (baseline, child, other):
+            for con in conns.values():
+                con.close()
+
+
+def test_one_accounts_balance_matches_the_runs_own_balance_pivot(
+    seeded_ensemble_batch: Callable[..., Path],
+) -> None:
+    connections = load_ensemble(seeded_ensemble_batch("baseline", 1))
+    try:
+        con: RunConnection = connections["member_0001"]
+        for mode, pivot in (
+            (DollarMode.NOMINAL, con.balance_pivot()),
+            (DollarMode.CPI_CONSTANT, con.cpi_balance_pivot()),
+        ):
+            balance = con.account_balance("Asset_Checking", mode)
+            pd.testing.assert_series_equal(
+                balance, pivot["Asset_Checking"], check_names=False, check_freq=False,
+            )
+        frame = members_balance_by_month(connections, "Asset_Checking")
+        assert list(frame.columns) == sorted(connections)
+        assert con.account_balance("No_Such_Account").empty
+        with pytest.raises(Exception, match="no account 'No_Such_Account'"):
+            members_balance_by_month(connections, "No_Such_Account")
+    finally:
+        for con in connections.values():
+            con.close()
+
+
+def test_sim_ensemble_compare_prints_deltas_and_each_recipes_tail(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("child", 1)
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child",
+        "--runs-dir", str(runs_dir), "--reserve", "1000000",
+    ])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0].startswith("child vs baseline: net worth, CPI-constant dollars; 3 and 3")
+    assert lines[1] == "  paired: 3 future(s)"
+    assert lines[3].split() == [
+        "year", "Δp05", "Δp20", "Δp40", "Δp60", "Δp80", "Δp95", "Δcvar05", "Δcvar20",
+        "Δbelow_reserve", "Δever_below_reserve", "P(ahead)",
+    ]
+    assert "baseline tail, year end; reserve $1,000,000 (CPI-constant):" in lines
+    tail_header = lines[lines.index("child tail, year end; reserve $1,000,000 (CPI-constant):") + 1]
+    assert tail_header.split() == [
+        "year", "cvar05", "cvar20", "below_reserve", "ever_below_reserve",
+    ]
+
+
+def test_sim_ensemble_compare_says_why_recipes_dont_pair(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("other", 2)
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "other", "--runs-dir", str(runs_dir),
+        "--account", "Asset_Checking", "--dollars", "nominal",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "account Asset_Checking, nominal dollars" in result.output
+    assert "not paired: the recipes have different seeds" in result.output
+    assert "P(ahead)" not in result.output
+
+
+def test_sim_ensemble_summary_reports_one_account(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "summary", "baseline", "--runs-dir", str(runs_dir),
+        "--account", "Asset_Checking", "--reserve", "5000",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "account Asset_Checking; reserve $5,000 (CPI-constant)" in result.output
+    assert result.output.splitlines()[1].split()[-2:] == ["below_reserve", "ever_below_reserve"]
+
+
+def test_sim_ensemble_compare_rejects_a_reserve_that_is_not_dollars(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("child", 1)
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child", "--runs-dir", str(runs_dir),
+        "--reserve", "lots",
+    ])
+    assert result.exit_code != 0
+    assert "--reserve" in result.output
+
+
+def test_comparison_deltas_add_reserve_share_deltas_given_a_reserve() -> None:
+    baseline = _members([[50.0, 150.0, 200.0, 300.0], [150.0, 150.0, 90.0, 300.0]])
+    variant = baseline + 100
+    deltas = comparison_deltas(baseline, variant, reserve=100.0)
+    assert list(deltas.columns)[-2:] == ["Δbelow_reserve", "Δever_below_reserve"]
+    assert list(deltas["Δbelow_reserve"]) == [-0.25, -0.25]
+    assert list(deltas["Δever_below_reserve"]) == [-0.25, -0.5]
+    # Measured on the CPI-constant pair when given, not the frames shown.
+    cpi = comparison_deltas(baseline, variant, reserve=100.0, cpi_frames=(variant, baseline))
+    assert list(cpi["Δbelow_reserve"]) == [0.25, 0.25]
+
+
+def _rename_account(batch_dir: Path, old: str, new: str) -> None:
+    """Stand in for a recipe without ``old``: rename it in every member."""
+    import sqlite3
+
+    for member in batch_dir.glob("member_*.sqlite3"):
+        with sqlite3.connect(member) as con:
+            con.execute("UPDATE account SET name = ? WHERE name = ?", (new, old))
+
+
+def test_sim_ensemble_compare_shows_a_one_sided_account_without_deltas(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    _rename_account(seeded_ensemble_batch("child", 1), "Asset_Checking", "Asset_Renamed")
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child", "--runs-dir", str(runs_dir),
+        "--account", "Asset_Renamed",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "only one side: baseline has no account Asset_Renamed" in result.output
+    assert "Δp05" not in result.output
+    assert "child tail, year end:" in result.output
+    assert "baseline tail" not in result.output
