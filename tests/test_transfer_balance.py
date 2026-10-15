@@ -42,7 +42,7 @@ def _lot_balances(run: Path, account: str) -> dict[str, int]:
         return dict(con.execute(
             "SELECT s.month, ls.balance FROM lot_state ls "
             "JOIN simulation_step s ON s.id = ls.step_id "
-            "JOIN account_model_member m ON m.id = ls.lot_id "
+            "JOIN account_lot m ON m.id = ls.lot_id "
             "JOIN account a ON a.id = m.account_id "
             "WHERE a.name = ? AND m.lot = 'default'",
             (account,),

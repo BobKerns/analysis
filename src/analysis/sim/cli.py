@@ -1352,12 +1352,12 @@ def explain(runfile: Path) -> None:
         lots = con.execute(
             "SELECT a.name, a.subkind, m.lot, m.symbol, ls.quantity_micros, "
             "       ls.balance, ls.cost_basis "
-            "FROM account_model_member m "
+            "FROM account_lot m "
             "JOIN account a ON a.id = m.account_id "
             "JOIN lot_state ls ON ls.lot_id = m.id AND ls.step_id = "
             "  (SELECT id FROM simulation_step ORDER BY step_index DESC LIMIT 1) "
             "WHERE a.subkind IN ({}) OR a.id IN "
-            "  (SELECT account_id FROM account_model_member "
+            "  (SELECT account_id FROM account_lot "
             "   GROUP BY account_id HAVING COUNT(*) > 1) "
             "ORDER BY a.name, m.id".format(
                 ",".join("?" * len(INVESTMENT_ASSET_SUBKINDS))
@@ -1449,7 +1449,7 @@ def items(
         lot_id = None
         if lot is not None:
             lot_row = con.execute(
-                "SELECT id FROM account_model_member WHERE account_id = ? AND lot = ?",
+                "SELECT id FROM account_lot WHERE account_id = ? AND lot = ?",
                 (account_id, lot),
             ).fetchone()
             if lot_row is None:
@@ -1463,8 +1463,8 @@ def items(
             "FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account "
             "JOIN account ta ON ta.id = te.to_account "
-            "JOIN account_model_member fm ON fm.id = te.from_lot_id "
-            "JOIN account_model_member tm ON tm.id = te.to_lot_id "
+            "JOIN account_lot fm ON fm.id = te.from_lot_id "
+            "JOIN account_lot tm ON tm.id = te.to_lot_id "
             "LEFT JOIN scheduled_transaction s "
             "  ON s.id = te.reason_id AND te.reason_kind IN ('rule', 'ytd_rule') "
             "WHERE ((? IS NULL AND ? IN (te.from_account, te.to_account)) "
@@ -1866,7 +1866,7 @@ def _lot_info(con: sqlite3.Connection) -> dict[str, tuple[bool, list[str]]]:
     """Per account: (is an investment account, its lot labels)."""
     info: dict[str, tuple[bool, list[str]]] = {}
     for name, subkind, lot in con.execute(
-        "SELECT a.name, a.subkind, m.lot FROM account_model_member m "
+        "SELECT a.name, a.subkind, m.lot FROM account_lot m "
         "JOIN account a ON a.id = m.account_id ORDER BY m.id"
     ):
         info.setdefault(name, (subkind in INVESTMENT_ASSET_SUBKINDS, []))[1].append(lot)
@@ -2604,7 +2604,7 @@ def _guide_context(
             series={
                 "rate": sorted({
                     *column(con, aux, "rate"),
-                    *column(con, "SELECT series FROM account_model_member"),
+                    *column(con, "SELECT series FROM account_lot"),
                 }),
                 "inflation": sorted({
                     *column(con, aux, "inflation"),
@@ -3634,7 +3634,7 @@ def account_group_command() -> None:
               help="Close date (YYYY-MM or YYYY-MM-DD), if any.")
 @click.option("--opening-balance", default=None,
               help="Initial balance in dollars; appended to the scenario's "
-                   "account_model file.")
+                   "account_values.csv.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (for opening-balance lookup).")
 @click.option("--data-dir",
@@ -3861,7 +3861,7 @@ def _own_growth_series(con: sqlite3.Connection, name: str, series: str) -> str |
         "WHERE st.series = :series "
         "AND coalesce(cf.account_id, -1) NOT IN (SELECT id FROM gone) "
         "AND coalesce(ct.account_id, -1) NOT IN (SELECT id FROM gone) "
-        "UNION ALL SELECT 1 FROM account_model_member m "
+        "UNION ALL SELECT 1 FROM account_lot m "
         "WHERE m.series = :series AND m.account_id NOT IN (SELECT id FROM gone)",
         {"name": name, "series": series},
     ).fetchone()
@@ -4795,7 +4795,7 @@ def _lot_guide_context(
         rate_series = sorted({
             r[0] for r in con.execute(
                 "SELECT series FROM aux_table WHERE kind = 'rate' "
-                "UNION SELECT series FROM account_model_member"
+                "UNION SELECT series FROM account_lot"
             ) if r[0]
         })
         return calendar_guide.GuideContext(
@@ -5539,10 +5539,10 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
             "       m2.lot AS lot_2 "
             "FROM calendar_event ce "
             "LEFT JOIN chain c1 ON c1.name = ce.account_1 "
-            "LEFT JOIN account_model_member m1 ON m1.id = c1.lot_id "
+            "LEFT JOIN account_lot m1 ON m1.id = c1.lot_id "
             "LEFT JOIN account a1 ON a1.id = c1.account_id "
             "LEFT JOIN chain c2 ON c2.name = ce.account_2 "
-            "LEFT JOIN account_model_member m2 ON m2.id = c2.lot_id "
+            "LEFT JOIN account_lot m2 ON m2.id = c2.lot_id "
             "LEFT JOIN account a2 ON a2.id = c2.account_id "
             "WHERE ce.kind IN ('one_off_transfer', 'transfer_balance') "
         ):
@@ -5566,10 +5566,10 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
             "       c2.name AS chain_2, a2.name AS name_2, a2.subkind AS subkind_2, m2.lot AS lot_2 "
             "FROM scheduled_transaction s "
             "JOIN chain c1 ON c1.id = s.from_account "
-            "LEFT JOIN account_model_member m1 ON m1.id = c1.lot_id "
+            "LEFT JOIN account_lot m1 ON m1.id = c1.lot_id "
             "LEFT JOIN account a1 ON a1.id = c1.account_id "
             "JOIN chain c2 ON c2.id = s.to_account "
-            "LEFT JOIN account_model_member m2 ON m2.id = c2.lot_id "
+            "LEFT JOIN account_lot m2 ON m2.id = c2.lot_id "
             "LEFT JOIN account a2 ON a2.id = c2.account_id "
             "WHERE s.cadence = 'one_off' AND s.created_by_event_id IS NULL"
         ):

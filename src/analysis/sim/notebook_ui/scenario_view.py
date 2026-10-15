@@ -62,7 +62,7 @@ def _chain_targets(sc: ScenarioConnection) -> Callable[[object], tuple[str, str]
     rather than 'default' avoids confusion when one of several is named default.
     """
     by_name = sc.items("chain").set_index("name")
-    lot_counts = sc.items("account_model_member").groupby("account").size()
+    lot_counts = sc.items("account_lot").groupby("account").size()
 
     def resolve(chain_name: object) -> tuple[str, str]:
         if pd.isna(chain_name) or chain_name not in by_name.index:

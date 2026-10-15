@@ -1,2 +1,2 @@
-name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json
-retire_alice,Alice retires 2028; Bill retires 2030; covers RMD onset at age 73 in 2038.,standard,2026-05-31,2040-12-31,42,base,alice,{}
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+retire_alice,Alice retires 2028; Bill retires 2030; covers RMD onset at age 73 in 2038.,2026-05-31,2040-12-31,42,base,alice,{}

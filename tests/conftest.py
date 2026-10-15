@@ -508,8 +508,8 @@ def ledger_con() -> Generator[sqlite3.Connection]:
     con = sqlite3.connect(":memory:")
     apply_run_schema(con)
     con.executemany(
-        "INSERT INTO account_model_member(id, model_id, account_id, lot, opening_balance) "
-        "VALUES (?, 1, ?, 'default', 0)",
+        "INSERT INTO account_lot(id, account_id, lot, opening_balance) "
+        "VALUES (?, ?, 'default', 0)",
         [(i, i) for i in range(1, 100)],
     )
     try:

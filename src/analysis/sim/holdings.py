@@ -68,7 +68,7 @@ def lots_frame(
     quantity (shares), price (implied by balance and quantity), balance,
     cost_basis and unrealized_gain (dollars), and ``as_of``.
     """
-    members = source.items("account_model_member")
+    members = source.items("account_lot")
     members = members[members["kind"].isin(_BALANCE_SHEET_KINDS)]
     if isinstance(source, RunConnection):
         balances = source.items("lot_balance")

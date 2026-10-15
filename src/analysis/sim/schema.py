@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -77,7 +77,7 @@ CREATE TABLE chain (
     name       TEXT NOT NULL UNIQUE,
     role       TEXT CHECK (role IN ('source', 'destination')),
     account_id INTEGER REFERENCES account(id),
-    lot_id     INTEGER REFERENCES account_model_member(id),
+    lot_id     INTEGER REFERENCES account_lot(id),
     CHECK ((account_id IS NULL) = (role IS NOT NULL))
 );
 CREATE INDEX idx_chain_account ON chain(account_id);
@@ -107,13 +107,6 @@ CREATE TABLE chain_steps (
     UNIQUE (chain_id, step_order)
 );
 
-CREATE TABLE account_model (
-    id          INTEGER PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
-    description TEXT,
-    created_at  TEXT NOT NULL
-);
-
 -- One row per lot (ADR-005): a lot is a position inside one account, and the
 -- engine keys balances, basis and quantity on `id`. Accounts that are not split
 -- have a single lot labelled 'default'.
@@ -128,9 +121,8 @@ CREATE TABLE account_model (
 -- refills to that fixed level, the latter by that fixed amount (or enough to
 -- reach minimum_balance_cents if that is greater); neither set means refill
 -- exactly to minimum_balance_cents.
-CREATE TABLE account_model_member (
+CREATE TABLE account_lot (
     id                      INTEGER PRIMARY KEY,
-    model_id                INTEGER NOT NULL REFERENCES account_model(id),
     account_id              INTEGER NOT NULL REFERENCES account(id),
     lot                     TEXT NOT NULL DEFAULT 'default',
     symbol                  TEXT,
@@ -146,7 +138,7 @@ CREATE TABLE account_model_member (
     refill_amount_cents     INTEGER,
     maximum_balance_cents   INTEGER,
     overflow_chain_id       INTEGER REFERENCES chain(id),
-    UNIQUE (model_id, account_id, lot)
+    UNIQUE (account_id, lot)
 );
 
 CREATE TABLE calendar (
@@ -218,7 +210,6 @@ CREATE INDEX idx_calevt_kind ON calendar_event(kind);
 
 CREATE TABLE scheduled_transaction (
     id                      INTEGER PRIMARY KEY,
-    model_id                INTEGER NOT NULL REFERENCES account_model(id),
     name                    TEXT NOT NULL,
     from_account            INTEGER NOT NULL REFERENCES chain(id),
     to_account              INTEGER NOT NULL REFERENCES chain(id),
@@ -252,7 +243,7 @@ CREATE TABLE scheduled_transaction (
     ytd_preroll             INTEGER NOT NULL DEFAULT 0,
     inflation_cadence       TEXT CHECK (inflation_cadence IN ('monthly','annual')),
     tax_year                INTEGER,
-    UNIQUE (model_id, name)
+    UNIQUE (name)
 );
 CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
 CREATE INDEX idx_sched_created_by ON scheduled_transaction(created_by_event_id);
@@ -271,7 +262,6 @@ CREATE TABLE scenario (
     id                INTEGER PRIMARY KEY,
     name              TEXT NOT NULL UNIQUE,
     description       TEXT,
-    account_model_id  INTEGER NOT NULL REFERENCES account_model(id),
     calendar_id       INTEGER NOT NULL REFERENCES calendar(id),
     start             TEXT NOT NULL,
     "end"             TEXT NOT NULL,
@@ -305,7 +295,7 @@ CREATE TABLE person_lifespan (
 -- `prior_tax_activity`: wages/withholding YTD, loss carryforwards from a
 -- fully-prior tax year). Posted as balance-neutral transfer_event rows
 -- (reason_kind='ytd') so tax/reporting queries see them without double-
--- counting against account_model_member.opening_balance. `year` defaults to
+-- counting against account_lot.opening_balance. `year` defaults to
 -- scenario.start's year (dated the month before start); an explicit
 -- different year is dated that year's Dec 31.
 CREATE TABLE year_to_date (
@@ -314,8 +304,8 @@ CREATE TABLE year_to_date (
     name          TEXT NOT NULL,
     from_account  INTEGER NOT NULL REFERENCES account(id),
     to_account    INTEGER NOT NULL REFERENCES account(id),
-    from_lot_id   INTEGER NOT NULL REFERENCES account_model_member(id),
-    to_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
+    from_lot_id   INTEGER NOT NULL REFERENCES account_lot(id),
+    to_lot_id     INTEGER NOT NULL REFERENCES account_lot(id),
     amount        INTEGER NOT NULL,
     tax_character TEXT NOT NULL CHECK (tax_character IN
                         ('ordinary','ltcg','stcg','gains','deferred',
@@ -449,7 +439,7 @@ CREATE INDEX idx_step_month ON simulation_step(month);
 
 CREATE TABLE lot_state (
     step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
-    lot_id          INTEGER NOT NULL REFERENCES account_model_member(id),
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
     balance         INTEGER NOT NULL,
     cost_basis      INTEGER,
     quantity_micros INTEGER,
@@ -464,7 +454,7 @@ SELECT ls.step_id, m.account_id, SUM(ls.balance) AS balance,
        CASE WHEN COUNT(ls.cost_basis) < COUNT(*) THEN NULL
             ELSE SUM(ls.cost_basis) END AS cost_basis
 FROM lot_state ls
-JOIN account_model_member m ON m.id = ls.lot_id
+JOIN account_lot m ON m.id = ls.lot_id
 GROUP BY ls.step_id, m.account_id;
 
 CREATE TABLE transfer_event (
@@ -494,8 +484,8 @@ CREATE TABLE transfer_event (
     -- at the refill leg that triggered it). The refill posts first, so its
     -- parent has the higher id.
     parent_event_id INTEGER REFERENCES transfer_event(id),
-    from_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
-    to_lot_id       INTEGER NOT NULL REFERENCES account_model_member(id),
+    from_lot_id     INTEGER NOT NULL REFERENCES account_lot(id),
+    to_lot_id       INTEGER NOT NULL REFERENCES account_lot(id),
     meta_json       TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
@@ -579,7 +569,7 @@ SELECT s.month, a.id AS account_id, a.name AS account, m.id AS lot_id, m.lot,
        m.symbol, a.kind, a.subkind, ls.balance, ls.cost_basis, ls.quantity_micros
 FROM simulation_step s
 JOIN lot_state ls ON ls.step_id = s.id
-JOIN account_model_member m ON m.id = ls.lot_id
+JOIN account_lot m ON m.id = ls.lot_id
 JOIN account a ON a.id = m.account_id
 WHERE a.kind IN ('asset','liability');
 
@@ -643,8 +633,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "account",
     "chain",
     "chain_steps",
-    "account_model",
-    "account_model_member",
+    "account_lot",
     "calendar",
     "calendar_event",
     "scheduled_transaction",

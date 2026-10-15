@@ -86,7 +86,7 @@ type ItemType = Literal[
     "net_worth_constant_cpi",
     "account_balance",
     "lot_balance",
-    "account_model_member",
+    "account_lot",
     "aux_table",
     "scenario",
     "tax_year_summary",

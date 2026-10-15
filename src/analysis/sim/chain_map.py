@@ -118,7 +118,7 @@ def chain_map(sc: ScenarioConnection) -> ChainMap:
     """Every chain of the scenario open on ``sc``, its steps, the policies of
     the lots it reaches, and its uses."""
     chains = sc.items("chain")
-    members = sc.items("account_model_member")
+    members = sc.items("account_lot")
     lot_counts = members.groupby("account").size()
     subkinds = dict(zip(members["account"], members["subkind"], strict=False))
     cmap = ChainMap(multi_lot=frozenset(
