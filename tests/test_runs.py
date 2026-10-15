@@ -59,7 +59,7 @@ def test_open_run_file_snapshots_intent_and_writes_simulation_run(tmp_path: Path
         assert run["data_repo_path"] == m["data_repo_path"]
         assert run["data_repo_name"] == m["data_repo_name"]
 
-        for tbl in ("person", "account", "account_model", "account_model_member",
+        for tbl in ("person", "account", "account_lot",
                     "scheduled_transaction", "scenario"):
             src = sqlite3.connect(intent_path).execute(
                 f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]

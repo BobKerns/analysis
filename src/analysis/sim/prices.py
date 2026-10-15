@@ -358,7 +358,7 @@ def check_prices(source: ScenarioConnection, tolerance: float = 0.01) -> pd.Data
             (row.effective_date, json.loads(row.payload_json)["price_micros"] / 1_000_000)
         )
     rows = []
-    for lot in named_rows(source.items("account_model_member")):
+    for lot in named_rows(source.items("account_lot")):
         if not (isinstance(lot.symbol, str) and lot.symbol and pd.notna(lot.quantity_micros)):
             continue
         quantity = lot.quantity_micros / 1_000_000

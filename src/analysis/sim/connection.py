@@ -186,7 +186,7 @@ _ITEM_SQL: dict[str, str] = {
         "SELECT c.*, a.name AS account_name, a.kind AS account_kind, m.lot AS lot "
         "FROM chain c "
         "LEFT JOIN account a ON a.id = c.account_id "
-        "LEFT JOIN account_model_member m ON m.id = c.lot_id "
+        "LEFT JOIN account_lot m ON m.id = c.lot_id "
         "ORDER BY c.id"
     ),
     "chain_steps": (
@@ -220,8 +220,8 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN simulation_step s ON s.id = te.step_id "
         "JOIN account fa ON fa.id = te.from_account "
         "JOIN account ta ON ta.id = te.to_account "
-        "JOIN account_model_member fm ON fm.id = te.from_lot_id "
-        "JOIN account_model_member tm ON tm.id = te.to_lot_id "
+        "JOIN account_lot fm ON fm.id = te.from_lot_id "
+        "JOIN account_lot tm ON tm.id = te.to_lot_id "
         "LEFT JOIN scheduled_transaction rule "
         "  ON te.reason_kind = 'rule' AND rule.id = te.reason_id "
         "ORDER BY te.id"
@@ -236,9 +236,9 @@ _ITEM_SQL: dict[str, str] = {
         "       ta.name AS to_name, tm.lot AS to_lot "
         "FROM year_to_date y "
         "JOIN account fa ON fa.id = y.from_account "
-        "JOIN account_model_member fm ON fm.id = y.from_lot_id "
+        "JOIN account_lot fm ON fm.id = y.from_lot_id "
         "JOIN account ta ON ta.id = y.to_account "
-        "JOIN account_model_member tm ON tm.id = y.to_lot_id"
+        "JOIN account_lot tm ON tm.id = y.to_lot_id"
     ),
     "tax_year_summary": "SELECT * FROM tax_year_summary ORDER BY year, bucket",
     "account_balance": (
@@ -250,7 +250,7 @@ _ITEM_SQL: dict[str, str] = {
         "ORDER BY s.month, a.name"
     ),
     "lot_balance": "SELECT * FROM balance_by_lot ORDER BY month, account, lot_id",
-    "account_model_member": (
+    "account_lot": (
         "SELECT a.name AS account, m.lot, m.symbol, m.acquired, m.quantity_micros, "
         "       m.series, a.kind, a.subkind, a.tax_treatment, "
         "       m.opening_balance, m.opening_cost_basis, "
@@ -261,14 +261,14 @@ _ITEM_SQL: dict[str, str] = {
         "         AS refill_chain, rm.lot AS refill_lot, "
         "       CASE WHEN oc.account_id IS NULL THEN oc.name ELSE oa.name END "
         "         AS overflow_chain, om.lot AS overflow_lot "
-        "FROM account_model_member m "
+        "FROM account_lot m "
         "JOIN account a ON a.id = m.account_id "
         "LEFT JOIN chain rc ON rc.id = m.refill_chain_id "
         "LEFT JOIN account ra ON ra.id = rc.account_id "
-        "LEFT JOIN account_model_member rm ON rm.id = rc.lot_id "
+        "LEFT JOIN account_lot rm ON rm.id = rc.lot_id "
         "LEFT JOIN chain oc ON oc.id = m.overflow_chain_id "
         "LEFT JOIN account oa ON oa.id = oc.account_id "
-        "LEFT JOIN account_model_member om ON om.id = oc.lot_id "
+        "LEFT JOIN account_lot om ON om.id = oc.lot_id "
         "ORDER BY a.name, m.id"
     ),
     "aux_table": "SELECT * FROM aux_table ORDER BY kind, series, effective_date",

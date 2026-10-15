@@ -18,7 +18,6 @@ SQL schema alongside the source CSV.
     activate-analysis             # sourced shell script ([ADR-004](../docs/architecture/ADR-004-reproducibility-and-activation.md) §4)
     persons.csv                   # household owners + operator identities ($ANALYSIS_USER)
     accounts.csv                  # chart of accounts
-    account_models/<name>.csv     # opening balances per model
     itemizations/<name>.csv       # optional money rollups referenced as @<name>
     aux/<kind>[__<series>].csv    # tax-law aux tables; one per kind ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4)
     prices/security_price__<SYMBOL>.csv  # security price histories, shared ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4)

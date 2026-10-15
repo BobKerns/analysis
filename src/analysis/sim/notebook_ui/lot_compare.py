@@ -108,7 +108,7 @@ def _definition_values(connection: RunConnection, excluded: set[str]) -> pd.Seri
         put(row.name, "", _EXISTS, "yes")
         for field in _ACCOUNT_FIELDS:
             put(row.name, "", field, _text(getattr(row, field)))
-    for row in named_rows(connection.items("account_model_member")):
+    for row in named_rows(connection.items("account_lot")):
         if row.account in excluded:
             continue
         put(row.account, row.lot, _EXISTS, "yes")
@@ -223,7 +223,7 @@ def account_definitions_widget(
 
 def _lots_by_account(connection: RunConnection) -> dict[str, set[str]]:
     """Asset account -> its lot labels (``Account/lot``), from the run."""
-    members = connection.items("account_model_member")
+    members = connection.items("account_lot")
     members = members[members["kind"] == "asset"]
     grouped: dict[str, set[str]] = {}
     for account, lot in zip(members["account"], members["lot"], strict=True):

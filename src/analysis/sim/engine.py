@@ -78,26 +78,25 @@ def run_scenario(
     )
     try:
         scenario = con.execute(
-            'SELECT start, "end", account_model_id FROM scenario'
+            'SELECT start, "end" FROM scenario'
         ).fetchone()
         if scenario is None:
             raise EngineError("scenario table is empty in intent snapshot")
-        start_s, end_s, model_id = scenario
+        start_s, end_s = scenario
         months = list(_month_ends(_parse_date(start_s), _parse_date(end_s)))
         if not months:
             raise EngineError(f"scenario range is empty: start={start_s} end={end_s}")
 
         # The engine's nodes are lots (ADR-005): every dict below is keyed by
-        # account_model_member.id, with each lot inheriting its account's kind,
+        # account_lot.id, with each lot inheriting its account's kind,
         # subkind, tax treatment, owner and name.
         lots = con.execute(
             "SELECT m.id, m.opening_balance, m.opening_cost_basis, "
             "       m.prior_year_end_balance, a.kind, a.subkind, a.tax_treatment, "
             "       a.owner, m.quantity_micros, a.name, m.acquired "
-            "FROM account_model_member m "
+            "FROM account_lot m "
             "JOIN account a ON a.id = m.account_id "
-            "WHERE m.model_id = ? ORDER BY m.id",
-            (model_id,),
+            "ORDER BY m.id"
         ).fetchall()
         balances: dict[int, int] = {r[0]: r[1] for r in lots}
         cost_bases: dict[int, int | None] = {r[0]: r[2] for r in lots}
@@ -156,9 +155,8 @@ def run_scenario(
                 '       rate_micros, claim_age, amount_cents, params_json, '
                 '       tax_character, tax_year, start, "end", priority, base_date, '
                 '       ytd_amount, ytd_preroll, inflation_cadence '
-                'FROM scheduled_transaction WHERE model_id = ? '
-                'ORDER BY priority, id',
-                (model_id,),
+                'FROM scheduled_transaction '
+                'ORDER BY priority, id'
             ).fetchall()
         ]
         txn_by_name: dict[str, list[Any]] = {
@@ -254,7 +252,7 @@ def run_scenario(
                         _p_param_date, _p_tax_char, ev_payload_json,
                     ),
                     txns, txn_by_name, aux, chain_id_by_name, account_kinds,
-                    balances, step_id, month_s, model_id, refill_ctx=refill_ctx,
+                    balances, step_id, month_s, refill_ctx=refill_ctx,
                     vary_distribution=ev_vary_distribution,
                 )
                 con.execute(
@@ -802,8 +800,8 @@ def _post_transfer(
         "  amount, requested_cents, remainder_cents, tax_character, tax_year, "
         "  reason_kind, reason_id, parent_event_id"
         ") VALUES (?, ?, "
-        "  (SELECT account_id FROM account_model_member WHERE id = ?), "
-        "  (SELECT account_id FROM account_model_member WHERE id = ?), "
+        "  (SELECT account_id FROM account_lot WHERE id = ?), "
+        "  (SELECT account_id FROM account_lot WHERE id = ?), "
         "  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (step_id, month_s, from_id, to_id, from_id, to_id, amount, requested,
          remainder, tax_char, tax_year, reason_kind, reason_id, parent_event_id),
@@ -957,8 +955,8 @@ def _post_ytd_transfer(
         "  amount, requested_cents, remainder_cents, tax_character, reason_kind, "
         "  reason_id, parent_event_id"
         ") VALUES (?, ?, "
-        "  (SELECT account_id FROM account_model_member WHERE id = ?), "
-        "  (SELECT account_id FROM account_model_member WHERE id = ?), "
+        "  (SELECT account_id FROM account_lot WHERE id = ?), "
+        "  (SELECT account_id FROM account_lot WHERE id = ?), "
         "  ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (step_id, date_s, from_id, to_id, from_id, to_id, amount, amount, 0,
          tax_char, reason_kind, reason_id, parent_event_id),
@@ -1735,7 +1733,7 @@ def _load_chain_graph(con) -> ChainGraph:
         "SELECT id, minimum_balance_cents, refill_chain_id, "
         "       refill_target_cents, refill_amount_cents, "
         "       maximum_balance_cents, overflow_chain_id "
-        "FROM account_model_member"
+        "FROM account_lot"
     ):
         minimum_of[a_id] = minimum
         refill_chain_of[a_id] = refill
@@ -2670,19 +2668,19 @@ def _cadence_count(
 
 
 def _synthesize_one_off_rule(
-    con, model_id: int, name: str, from_id: int, to_id: int, amount: int,
+    con, name: str, from_id: int, to_id: int, amount: int,
     tax_char: str, ev_date: str, ev_id: int, description: str | None,
 ) -> int:
     """Insert the cadence='one_off' fixed_amount rule a rule-synthesizing
     calendar event fires through (ADR-003 \u00a73), and return its id."""
     cur = con.execute(
         "INSERT INTO scheduled_transaction("
-        "  model_id, name, from_account, to_account, cadence, "
+        "  name, from_account, to_account, cadence, "
         "  amount_rule_kind, amount_cents, tax_character, start, \"end\", "
         "  priority, created_by_event_id, description"
-        ") VALUES (?, ?, ?, ?, 'one_off', 'fixed_amount', ?, ?, ?, ?, "
+        ") VALUES (?, ?, ?, 'one_off', 'fixed_amount', ?, ?, ?, ?, "
         "  200, ?, ?)",
-        (model_id, name, from_id, to_id, amount, tax_char, ev_date, ev_date, ev_id,
+        (name, from_id, to_id, amount, tax_char, ev_date, ev_date, ev_id,
          description),
     )
     return inserted_id(cur)
@@ -2697,7 +2695,7 @@ def _apply_calendar_event(
     chain_id_by_name: dict[str, int],
     account_kinds: dict[int, str],
     balances: dict[int, int],
-    step_id: int, month_s: str, model_id: int,
+    step_id: int, month_s: str,
     *, refill_ctx: RefillContext, vary_distribution: str | None = None,
 ) -> None:
     """Expand one calendar_event per ADR-003 \u00a73."""
@@ -2782,7 +2780,7 @@ def _apply_calendar_event(
                     f"(account_1={frm_name!r} or account_2={to_name!r})"
                 )
             tid = _synthesize_one_off_rule(
-                con, model_id, f"oneoff_evt_{ev_id}", from_id, to_id, int(amount),
+                con, f"oneoff_evt_{ev_id}", from_id, to_id, int(amount),
                 tax_char, ev_date, ev_id, payload.get("description"),
             )
             _post_fixed_amount(
@@ -2826,7 +2824,7 @@ def _apply_calendar_event(
             # A fixed_amount of the balance, so it routes exactly as the same
             # one_off_transfer would and its transfer_event traces to the row.
             tid = _synthesize_one_off_rule(
-                con, model_id, f"balance_evt_{ev_id}", from_id, to_id, amount,
+                con, f"balance_evt_{ev_id}", from_id, to_id, amount,
                 tax_char, ev_date, ev_id, description,
             )
             # Emptying the lot is the point, so its refill look-ahead must not

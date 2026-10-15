@@ -308,7 +308,7 @@ def test_sim_scenario_create_derives_and_activates(test_data_dir: Path, tmp_path
         return (scenario_dir / name).read_text(encoding="utf-8").splitlines()
 
     scenario_rows = header_of("scenario.csv")
-    assert scenario_rows[0].startswith("name,description,account_model")
+    assert scenario_rows[0].startswith("name,description,start")
     assert scenario_rows[1].startswith("late,Derived from retire_alice")
     assert "retire_alice" in scenario_rows[1]
 
@@ -325,7 +325,7 @@ def test_sim_scenario_create_derives_and_activates(test_data_dir: Path, tmp_path
     child = load_scenario(
         data, "late", intent_dir=tmp_path / "c", allow_dirty_data=True,
     )
-    for table in ("account", "scheduled_transaction", "account_model_member"):
+    for table in ("account", "scheduled_transaction", "account_lot"):
         with sqlite3.connect(parent.intent_path) as pcon, \
                 sqlite3.connect(child.intent_path) as ccon:
             assert (
