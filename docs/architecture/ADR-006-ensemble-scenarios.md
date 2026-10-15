@@ -176,8 +176,10 @@ by_month = summary_with_percentiles(wide)    # mean, median, std, p05, p20…p80
 **Comparing ensembles.** Comparing two recipes' member 0s compares their centers, not their risk; `scenario_compare.ipynb` still does that, which stays useful for checking a recipe's configuration. The ensemble notebook's comparison (`ensemble_compare_widget`) and `sim ensemble compare <baseline> <variant>` compare whole ensembles, net worth or one account, each variant against the baseline:
 
 - **Percentile deltas** (`quantile_deltas`): each `pNN` minus the same `pNN` of the baseline, month by month. Valid for any two ensembles, but the members at a breakpoint are different futures on each side.
-- **Paired deltas** (`member_pairs`, `paired_deltas`): draws are keyed by (seed, member, row name) (§3) and a child inherits its parent's seed (§7), so member *i* of each recipe drew the same value for every row they share. Pairing members by index when their recorded seeds match makes `variant − baseline` a per-future difference: its own fan, and `P(ahead)`, the share of futures where the variant comes out ahead. Recipes with different seeds don't pair, and the comparison says so and shows the rest.
-- **Tail-mean deltas**: `Δcvar05`, `Δcvar20`, and each recipe's own tail means and reserve shares.
+- **Paired deltas** (`member_pairs`, `paired_deltas`): draws are keyed by (seed, member, row name) (§3) and a child inherits its parent's seed (§7), so member *i* of each recipe drew the same value for every row they share. Pairing members by index when their recorded seeds match makes `variant − baseline` a per-future difference: its own fan, and `P(ahead)`, the share of futures where the variant comes out ahead. A row only one recipe has draws on its own stream, so it is part of the difference being measured, not a break in the pairing; for the same reason, two member counts pair over the indexes both have. Recipes with different seeds don't pair, and the comparison says so and shows the rest.
+- **Tail deltas**: `Δcvar05`, `Δcvar20`, with a reserve `Δbelow_reserve` and `Δever_below_reserve`, and each recipe's own tail means and reserve shares.
+
+The account choices are every account any compared recipe has. An account only one side has can't be subtracted: that pair gets a note and the side that has it its own fan and tail table.
 
 No confidence bands are drawn on any of these: they don't read well over a fan, and the remedy for a noisy difference is more members (see `docs/guides/ensembles.md` for sizing).
 

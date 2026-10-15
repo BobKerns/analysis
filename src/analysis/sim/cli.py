@@ -1002,31 +1002,53 @@ def ensemble_compare(
         for name in (baseline, variant):
             sides[name] = load_ensemble(_ensemble_batch_dir(resolved_runs_dir, name, None))
         base_conns, variant_conns = sides[baseline], sides[variant]
-        frames = {name: _member_frame(conns, account, mode) for name, conns in sides.items()}
-        pairs, unpaired = member_pairs(base_conns, variant_conns)
+        # An account only one recipe has gets that recipe's own tail table
+        # below, with no deltas: there is nothing to subtract it from.
+        frames: dict[str, pd.DataFrame] = {}
+        for name, conns in sides.items():
+            try:
+                frames[name] = members_balance_by_month(conns, account, mode)
+            except EnsembleError:
+                pass
+        if not frames:
+            raise click.ClickException(f"no account {account!r} in {baseline} or {variant}")
         reserve_dollars = _reserve_dollars(reserve, base_conns, account)
+        cpi_frames = {
+            name: (
+                frames[name] if mode == DollarMode.CPI_CONSTANT
+                else members_balance_by_month(sides[name], account, DollarMode.CPI_CONSTANT)
+            )
+            for name in frames
+        } if reserve_dollars is not None else {}
         mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
         subject = f"account {account}" if account else "net worth"
         click.echo(
             f"{variant} vs {baseline}: {subject}, {mode_label} dollars; "
             f"{len(base_conns)} and {len(variant_conns)} member(s)"
         )
-        click.echo(
-            f"  paired: {len(pairs)} future(s)" if pairs else f"  not paired: {unpaired}"
-        )
-        click.echo(f"{variant} − {baseline}, year end:")
-        _echo_year_table(year_end_values(comparison_deltas(frames[baseline], frames[variant], pairs)))
+        if len(frames) == 2:
+            pairs, unpaired = member_pairs(base_conns, variant_conns)
+            click.echo(
+                f"  paired: {len(pairs)} future(s)" if pairs else f"  not paired: {unpaired}"
+            )
+            click.echo(f"{variant} − {baseline}, year end:")
+            _echo_year_table(year_end_values(comparison_deltas(
+                frames[baseline], frames[variant], pairs, reserve_dollars,
+                (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
+            )))
+        else:
+            missing = variant if baseline in frames else baseline
+            click.echo(f"  only one side: {missing} has no account {account}")
 
         reserve_note = (
             "" if reserve_dollars is None
             else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)"
         )
-        for name, conns in sides.items():
-            cpi_frame = None
-            if reserve_dollars is not None and mode != DollarMode.CPI_CONSTANT:
-                cpi_frame = _member_frame(conns, account, DollarMode.CPI_CONSTANT)
+        for name, frame in frames.items():
             click.echo(f"{name} tail, year end{reserve_note}:")
-            _echo_year_table(year_end_values(risk_summary(frames[name], reserve_dollars, cpi_frame)))
+            _echo_year_table(year_end_values(
+                risk_summary(frame, reserve_dollars, cpi_frames.get(name))
+            ))
     finally:
         for conns in sides.values():
             _close_all(conns)

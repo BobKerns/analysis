@@ -155,7 +155,8 @@ def test_sim_ensemble_compare_prints_deltas_and_each_recipes_tail(
     assert lines[0].startswith("child vs baseline: net worth, CPI-constant dollars; 3 and 3")
     assert lines[1] == "  paired: 3 future(s)"
     assert lines[3].split() == [
-        "year", "Δp05", "Δp20", "Δp40", "Δp60", "Δp80", "Δp95", "Δcvar05", "Δcvar20", "P(ahead)",
+        "year", "Δp05", "Δp20", "Δp40", "Δp60", "Δp80", "Δp95", "Δcvar05", "Δcvar20",
+        "Δbelow_reserve", "Δever_below_reserve", "P(ahead)",
     ]
     assert "baseline tail, year end; reserve $1,000,000 (CPI-constant):" in lines
     tail_header = lines[lines.index("child tail, year end; reserve $1,000,000 (CPI-constant):") + 1]
@@ -203,3 +204,40 @@ def test_sim_ensemble_compare_rejects_a_reserve_that_is_not_dollars(
     ])
     assert result.exit_code != 0
     assert "--reserve" in result.output
+
+
+def test_comparison_deltas_add_reserve_share_deltas_given_a_reserve() -> None:
+    baseline = _members([[50.0, 150.0, 200.0, 300.0], [150.0, 150.0, 90.0, 300.0]])
+    variant = baseline + 100
+    deltas = comparison_deltas(baseline, variant, reserve=100.0)
+    assert list(deltas.columns)[-2:] == ["Δbelow_reserve", "Δever_below_reserve"]
+    assert list(deltas["Δbelow_reserve"]) == [-0.25, -0.25]
+    assert list(deltas["Δever_below_reserve"]) == [-0.25, -0.5]
+    # Measured on the CPI-constant pair when given, not the frames shown.
+    cpi = comparison_deltas(baseline, variant, reserve=100.0, cpi_frames=(variant, baseline))
+    assert list(cpi["Δbelow_reserve"]) == [0.25, 0.25]
+
+
+def _rename_account(batch_dir: Path, old: str, new: str) -> None:
+    """Stand in for a recipe without ``old``: rename it in every member."""
+    import sqlite3
+
+    for member in batch_dir.glob("member_*.sqlite3"):
+        with sqlite3.connect(member) as con:
+            con.execute("UPDATE account SET name = ? WHERE name = ?", (new, old))
+
+
+def test_sim_ensemble_compare_shows_a_one_sided_account_without_deltas(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    _rename_account(seeded_ensemble_batch("child", 1), "Asset_Checking", "Asset_Renamed")
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child", "--runs-dir", str(runs_dir),
+        "--account", "Asset_Renamed",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "only one side: baseline has no account Asset_Renamed" in result.output
+    assert "Δp05" not in result.output
+    assert "child tail, year end:" in result.output
+    assert "baseline tail" not in result.output

@@ -241,5 +241,7 @@ yticklabels
 yticks
 zorder
 zpln
+Δbelow
 Δcvar
+Δever
 Δvariant

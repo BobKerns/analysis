@@ -809,7 +809,11 @@ differences, and `P(ahead)` is the share of futures where the variant
 comes out ahead. A plan can lose in most futures and still be the safer
 one, if the futures it wins are the bad ones: compare the low end of the
 fan with the high end. Recipes with their own seeds don't pair, and the
-comparison says so.
+comparison says so. A row only the variant has is the change you're
+measuring, so it doesn't break the pairing.
+
+An account only one recipe has (one the variant opens, say) can't be
+compared; that recipe's own fan and tail table are shown instead.
 
 **Tail means.** `cvar05` and `cvar20` are the mean of the worst 5% and the
 worst 20% of members, and `Δcvar05`, `Δcvar20` the variant's change in
@@ -817,6 +821,8 @@ them. A tail's mean moves less from run to run than a single percentile,
 and it measures how bad the bad futures are, not just where they begin.
 The two levels are fixed on purpose: with one standard pair there's no
 choosing a level until the comparison looks good.
+With a reserve set, `Δbelow_reserve` and `Δever_below_reserve` are the
+change in the shares below it.
 
 **A reserve.** Put the net worth you never want to fall below in the
 recipe's `scenario.csv`, in today's (CPI-constant) dollars:

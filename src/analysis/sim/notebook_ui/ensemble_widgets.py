@@ -20,6 +20,7 @@ from IPython.display import Image, clear_output, display
 from analysis.sim import units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
+    EnsembleError,
     comparison_deltas,
     latest_ensemble_batch,
     load_ensemble,
@@ -168,10 +169,13 @@ def _png(fig: Figure) -> Image:
 NET_WORTH = "Net worth"
 
 
-def _account_options(connections: dict[str, RunConnection]) -> list[str]:
-    """``NET_WORTH`` first, then every account in one member, by name."""
-    con = next(iter(connections.values()))
-    return [NET_WORTH, *sorted(con.account_kinds().index)]
+def _account_options(*ensembles: dict[str, RunConnection]) -> list[str]:
+    """``NET_WORTH`` first, then every account any of ``ensembles`` has (one
+    member of each, since a recipe's members share their accounts), by name."""
+    accounts: set[str] = set()
+    for connections in ensembles:
+        accounts.update(next(iter(connections.values())).account_kinds().index)
+    return [NET_WORTH, *sorted(accounts)]
 
 
 def _account(choice: str | None) -> str | None:
@@ -447,15 +451,26 @@ def ensemble_compare_widget(*_,
                 batch_dir = latest_ensemble_batch(runs_dir / name, mode="monte_carlo")
                 assert batch_dir is not None  # listed recipes all have a batch
                 sides[name] = load_ensemble(batch_dir)
-            _sync_options(account_picker, _account_options(sides[baseline]), _redraw)
+            _sync_options(account_picker, _account_options(*sides.values()), _redraw)
             account = _account(account_picker.value)
             mode = dollar_picker.value
             mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
             reserve = _reserve(reserve_field, sides[baseline], account)
-            frames = {
-                name: members_balance_by_month(conns, account, mode)
-                for name, conns in sides.items()
-            }
+            # The picker lists every recipe's accounts, so an account may be
+            # missing on some sides: those get a note, not a delta.
+            frames: dict[str, pd.DataFrame] = {}
+            for name, conns in sides.items():
+                try:
+                    frames[name] = members_balance_by_month(conns, account, mode)
+                except EnsembleError:
+                    pass
+            cpi_frames = {
+                name: (
+                    frame if mode == DollarMode.CPI_CONSTANT
+                    else members_balance_by_month(sides[name], account, DollarMode.CPI_CONSTANT)
+                )
+                for name, frame in frames.items()
+            } if reserve is not None else {}
             outputs: list[Any] = []
             heading = (
                 f"**{account or NET_WORTH}**, {mode_label} dollars; baseline "
@@ -465,6 +480,13 @@ def ensemble_compare_widget(*_,
                 heading += f"; reserve ${reserve:,.0f} (CPI-constant)"
             outputs.append(StyledMarkdown(heading))
             for variant in variants:
+                if baseline not in frames or variant not in frames:
+                    missing = baseline if baseline not in frames else variant
+                    outputs.append(StyledMarkdown(
+                        f"### {variant} vs {baseline}\n\n`{missing}` has no account "
+                        f"{account}, so there is nothing to compare; its tail is below."
+                    ))
+                    continue
                 pairs, unpaired = member_pairs(sides[baseline], sides[variant])
                 note = (
                     f"paired over {len(pairs)} futures" if pairs
@@ -476,17 +498,26 @@ def ensemble_compare_widget(*_,
                 outputs.append(_png(ensemble_compare_figure(
                     baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
                 )))
-                table = year_end_values(comparison_deltas(frames[baseline], frames[variant], pairs))
+                table = year_end_values(comparison_deltas(
+                    frames[baseline], frames[variant], pairs, reserve,
+                    (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
+                ))
                 table.index.name = "year"
                 outputs.append(table.style.format(_share_format(table.columns)))
-            tails = []
-            for name, conns in sides.items():
-                cpi_frame = (
-                    members_balance_by_month(conns, account, DollarMode.CPI_CONSTANT)
-                    if reserve is not None and mode != DollarMode.CPI_CONSTANT else None
-                )
-                tails.append(risk_summary(frames[name], reserve, cpi_frame))
-            tail_table = year_end_values(pd.concat(tails, axis=1, keys=list(sides)))
+            # A one-sided account's own spread, where no delta shows it:
+            # each variant that has it when the baseline doesn't, or the
+            # baseline when no variant has it.
+            compared = baseline in frames and any(v in frames for v in variants)
+            if not compared:
+                for name, frame in frames.items():
+                    fig = Figure(figsize=(10, 4))
+                    ax = fig.subplots()
+                    ensemble_fan_chart(summary_with_percentiles(frame), ax=ax)
+                    ax.set_title(f"{account} fan chart ({mode_label}) ({name})")
+                    outputs.append(_png(fig))
+            tails = [risk_summary(frame, reserve, cpi_frames.get(name))
+                     for name, frame in frames.items()]
+            tail_table = year_end_values(pd.concat(tails, axis=1, keys=list(frames)))
             tail_table.index.name = "year"
             outputs.append(StyledMarkdown("### Tail and reserve, by recipe"))
             outputs.append(tail_table.style.format(_share_format(tail_table.columns)))

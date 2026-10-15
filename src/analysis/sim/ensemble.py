@@ -1030,16 +1030,21 @@ def risk_summary(
 
 def comparison_deltas(
     baseline: pd.DataFrame, variant: pd.DataFrame,
-    pairs: list[tuple[str, str]] | None = None,
+    pairs: list[tuple[str, str]] | None = None, reserve: float | None = None,
+    cpi_frames: tuple[pd.DataFrame, pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Month by month, ``variant`` against ``baseline``: each percentile
     breakpoint's delta (``Δp05`` ...), each tail mean's (``Δcvar05``,
-    ``Δcvar20``), and, given ``member_pairs``, the share of paired futures
+    ``Δcvar20``), given a ``reserve`` the change in each reserve share
+    (``Δbelow_reserve``, ``Δever_below_reserve``; measured on
+    ``cpi_frames``, the two sides in CPI-constant dollars, when the frames
+    are nominal), and, given ``member_pairs``, the share of paired futures
     where the variant comes out ahead (``P(ahead)``) (#163)."""
-    deltas = pd.concat(
-        [quantile_deltas(baseline, variant), tail_means(variant) - tail_means(baseline)],
-        axis=1,
-    ).add_prefix("Δ")
+    parts = [quantile_deltas(baseline, variant), tail_means(variant) - tail_means(baseline)]
+    if reserve is not None:
+        base_cpi, variant_cpi = cpi_frames or (baseline, variant)
+        parts.append(reserve_shares(variant_cpi, reserve) - reserve_shares(base_cpi, reserve))
+    deltas = pd.concat(parts, axis=1).add_prefix("Δ")
     if pairs:
         deltas["P(ahead)"] = (paired_deltas(baseline, variant, pairs) > 0).mean(axis=1)
     return deltas
