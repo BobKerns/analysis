@@ -59,7 +59,7 @@ from analysis.sim.types import DollarMode
 __all__ = [
     "EnsembleError", "resolve_member", "load_ensemble", "member_run_statuses",
     "latest_ensemble_batch", "members_net_worth_by_month", "summary",
-    "QUINTILES", "percentiles",
+    "QUINTILES", "REPORT_PERCENTILES", "percentiles", "summary_with_percentiles",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
     "factor_reach", "process_path",
 ]
@@ -871,12 +871,32 @@ def summary(frame: pd.DataFrame) -> pd.DataFrame:
 
 QUINTILES = (0.2, 0.4, 0.6, 0.8)
 
+# The quintile breakpoints plus a 5th/95th-percentile envelope: what the
+# ensemble table and fan chart report in place of min/max (#155).
+REPORT_PERCENTILES = (0.05, *QUINTILES, 0.95)
+
 
 def percentiles(frame: pd.DataFrame, qs: tuple[float, ...] = QUINTILES) -> pd.DataFrame:
     """The ``qs`` quantiles across ``frame``'s columns (one column per
-    member), row by row, as columns ``p20``, ``p40``, ... -- the inner band
-    edges of a fan chart, whose outer edges are ``summary()``'s min/max."""
+    member), row by row, as columns ``p05``, ``p20``, ... (at least two
+    digits, so they line up and sort as text) -- a fan chart's band edges."""
     return pd.DataFrame(
-        {f"p{q * 100:g}": frame.quantile(q, axis=1) for q in qs},
+        {f"p{q * 100:02g}": frame.quantile(q, axis=1) for q in qs},
         index=frame.index,
+    )
+
+
+def summary_with_percentiles(
+    frame: pd.DataFrame, qs: tuple[float, ...] = REPORT_PERCENTILES,
+) -> pd.DataFrame:
+    """``summary()``'s mean/median/std, then the ``qs`` percentiles low to
+    high: the one frame the notebook's year-end table, its fan chart and
+    ``sim ensemble summary`` all report (#155). Min and max are left out:
+    with a large ensemble they sit far beyond where most members land and
+    read as typical outcomes when they're one member's luck, so the outer
+    edge is the 5th/95th percentile instead. ``qs`` is sorted, so a row
+    stays low to high whatever order a caller gives."""
+    return pd.concat(
+        [summary(frame)[["mean", "median", "std"]], percentiles(frame, tuple(sorted(qs)))],
+        axis=1,
     )

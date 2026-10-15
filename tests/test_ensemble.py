@@ -24,6 +24,7 @@ from analysis.sim.ensemble import (
     read_batch_manifest,
     resolve_member,
     summary,
+    summary_with_percentiles,
     write_batch_manifest,
 )
 from analysis.sim.loader import LoadResult
@@ -845,3 +846,18 @@ def test_percentiles_names_columns_by_percent_and_interpolates() -> None:
     assert list(result.columns) == ["p20", "p40", "p60", "p80"]
     assert result.iloc[0].tolist() == pytest.approx([10.0, 20, 30, 40])
     assert list(percentiles(members, (0.25,)).columns) == ["p25"]
+    assert list(percentiles(members, (0.05, 0.95)).columns) == ["p05", "p95"]
+
+
+def test_summary_with_percentiles_reports_p05_to_p95_instead_of_min_and_max() -> None:
+    members = pd.DataFrame(
+        [[float(v) for v in range(0, 101, 5)]],  # 0, 5, ..., 100
+        index=pd.date_range("2026-01-31", periods=1, freq="ME"),
+    )
+    result = summary_with_percentiles(members)
+    assert list(result.columns) == [
+        "mean", "median", "std", "p05", "p20", "p40", "p60", "p80", "p95",
+    ]
+    row = result.iloc[0]
+    assert [row["p05"], row["p20"], row["p80"], row["p95"]] == pytest.approx([5.0, 20, 80, 95])
+    assert list(summary_with_percentiles(members, (0.8, 0.2)).columns)[3:] == ["p20", "p80"]

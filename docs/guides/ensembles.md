@@ -163,7 +163,12 @@ member instead of a single run, under `state/runs/inflation_1/<timestamp>/
 member_NNNN.sqlite3`. Look at the result with `sim ensemble summary
 inflation_1` (a terminal table) or `notebooks/ensemble.ipynb` (the Monte
 Carlo "fan chart" — mean/median over quintile bands, shaded darker toward
-the middle fifth of members and lightest out at the min–max range).
+the middle fifth of members and lightest out at the 5th–95th percentile
+envelope). Both show the same year-end table: mean, median, SD, and the
+`p05`, `p20`, `p40`, `p60`, `p80` and `p95` percentiles. Neither shows the
+min or max: with many members those are one member's extreme luck, far
+outside where most members land, and easy to mistake for a likely
+outcome.
 
 ### Member 0 is always a deterministic base case
 
