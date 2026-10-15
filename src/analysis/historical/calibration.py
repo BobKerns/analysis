@@ -670,6 +670,59 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
                    persistence, shock_sd, rho_tau, pearson, gap)
 
 
+# A process row's level SD is bracketed by these: the spread of rolling
+# compound rates over this many years is an upper bound (ADR-006 §4a: the
+# level is uncertainty about the long run, which a decade's average
+# overstates), and the standard error of the long-run mean a lower one.
+PROCESS_LEVEL_WINDOW = 10
+DEFAULT_HOLD_YEARS = 30
+
+
+@dataclass
+class RowValues:
+    """What one series' history suggests for a varying ``set_rate`` row's
+    ``calendar.csv`` columns, held or as a ``vary_process=ar1`` path."""
+    label: str
+    rate: float
+    held_sd: float
+    level_sd_low: float
+    level_sd_high: float
+    persistence: float
+    shock_sd: float
+
+
+def row_values(label: str, annual: pd.Series, hold_years: int = DEFAULT_HOLD_YEARS) -> RowValues:
+    """Suggested row values from single-year rates, whatever ``--window``
+    the summary uses. A held row's ``vary_sd`` is the spread of rolling
+    ``hold_years`` compound rates, since a held draw stands for the average
+    over the span it holds. A process row's level ``vary_sd`` is a range, the
+    standard error of the mean (single-year SD / sqrt(N)) up to the rolling
+    ``PROCESS_LEVEL_WINDOW``-year SD, because how far the future's long-run
+    rate may differ from the past's is a judgment the data can't make.
+    Persistence is floored at 0, as a process row can't take a negative one.
+
+    A rolling SD is left blank unless the period spans at least two whole
+    windows: overlapping windows over fewer years share most of their years,
+    so their SD comes out far too small (a 30-year SD from 42 years of CPI
+    is 0.1 points)."""
+    single = summarize(label, annual, None)
+
+    def rolling_sd(window: int) -> float:
+        return summarize(label, annual, None, window=window).sd if len(annual) >= 2 * window else math.nan
+
+    se = single.sd / math.sqrt(single.n) if single.n > 1 else math.nan
+    persistence = max(single.persistence, 0.0) if not math.isnan(single.persistence) else math.nan
+    shock_sd = single.shock_sd
+    # A series that only ever rises (or never moves) estimates persistence 1
+    # and no shock, which the loader rejects (0 <= φ < 1, shock > 0). Suggest
+    # no process then, judged on the printed values, so no row that fails to load
+    # is shown.
+    if not (round(persistence, 2) < 1 and round(shock_sd, 1) > 0):
+        persistence = shock_sd = math.nan
+    return RowValues(label, single.compound, rolling_sd(hold_years), se, rolling_sd(PROCESS_LEVEL_WINDOW),
+                     persistence, shock_sd)
+
+
 def runs_above(rates: pd.Series, threshold: float) -> list[tuple[int, int, float]]:
     """Maximal stretches of consecutive years above ``threshold`` percent:
     (first year, last year, compound rate over the stretch)."""
@@ -708,6 +761,61 @@ def summary_cells(s: Summary) -> list[str]:
             _fmt(s.pearson, 2), _fmt(s.gap, 2)]
 
 
+def _pct(x: float) -> str:
+    """A percent cell as calendar.csv takes it: ``4.5%``."""
+    return "—" if math.isnan(x) else f"{x:.1f}%"
+
+
+ROW_VALUE_COLUMNS = ["Series", "Row", "amount, vary_median", "vary_sd", "vary_persistence",
+                     "vary_innovation_sd"]
+
+
+def row_value_cells(v: RowValues, hold_years: int) -> list[list[str]]:
+    """Two rows per series: held, and as an ``ar1`` process."""
+    if math.isnan(v.level_sd_low) and math.isnan(v.level_sd_high):
+        level = "—"
+    elif math.isnan(v.level_sd_high):
+        level = f"{_pct(v.level_sd_low)} or more"
+    else:
+        level = f"{_pct(v.level_sd_low)} to {_pct(v.level_sd_high)}"
+    return [[v.label, f"held {hold_years} yr", _pct(v.rate), _pct(v.held_sd), "—", "—"],
+            [v.label, "process (ar1)", _pct(v.rate), level, _fmt(v.persistence, 2), _pct(v.shock_sd)]]
+
+
+# Every name a calibrated value goes by, so a value can be followed from
+# this command's tables to the CSV, the CLI and the guides (#156).
+LEGEND_COLUMNS = ["calendar.csv column", "sim calendar add flag", "Plain name", "From these tables",
+                  "Meaning"]
+LEGEND = [
+    ["amount", "RATE_PERCENT argument", "the rate", "Compound %",
+     "The row's rate; on a varying row, a placeholder the draw replaces."],
+    ["vary_median", "--vary-median", "long-run rate (L)", "Compound %",
+     "The median draw: the rate a held row keeps, or the rate a process path compounds to "
+     "in the median future."],
+    ["vary_sd (held row)", "--vary-sd", "spread of the held rate", "held row's vary_sd",
+     "SD of the draw. A held rate stands for the average over the years it holds, so this is "
+     "the SD of rolling compound rates over that many years (--hold-years), not the "
+     "single-year SD. Blank when the period is shorter than two such spans."],
+    ["vary_sd (process row)", "--vary-sd", "uncertainty about the long-run rate",
+     "process row's vary_sd",
+     "SD of the level L only; the path adds the yearly spread. Low end: the standard error "
+     "of the mean; high end: the 10-year rolling SD. Where in between is a judgment."],
+    ["vary_process", "--vary-process", "year-by-year path", "—",
+     "ar1 for a path that moves every year around L; blank to hold one draw."],
+    ["vary_persistence", "--vary-persistence", "persistence (φ)", "Persistence",
+     "How much of one year's deviation carries into the next. A negative value is entered as 0."],
+    ["vary_innovation_sd", "--vary-innovation-sd", "yearly shock size (σ)", "Shock SD",
+     "SD of one year's surprise in log growth, written as a percent (18.9 → 18.9%). In a tree "
+     "with vary_tail_dependence ν, divide by √(ν / (ν − 2))."],
+    ["vary_low, vary_high", "--vary-low, --vary-high", "bounds on the draw", "—",
+     "Bound the drawn rate, or a process's level L, not its yearly path. Min % and Max % are "
+     "single years' extremes; don't use them here."],
+    ["—", "—", "single-year spread", "SD, Median %, Min %, Max %",
+     "Of single years (or --window N rolling rates). For reading history; no column takes the "
+     "single-year SD directly."],
+]
+
+
 def _md_cell(text: str) -> str:
     return " ".join(text.split()).replace("|", "\\|")
 
@@ -742,6 +850,7 @@ def parse_period(arg: str) -> tuple[str, int | None, int | None]:
 
 def run(series_args: Sequence[str], *, reference_arg: str | None = None, period_args: Sequence[str] = (),
         window: int = 1, basis: str = "dec", runs_above_pct: float | None = None,
+        hold_years: int = DEFAULT_HOLD_YEARS,
         fmt: str = "markdown", cache: Path = DEFAULT_CACHE, refresh: bool = False,
         contact: str | None = None) -> None:
     """Print the summary tables for ``analysis historical``; raises
@@ -760,8 +869,8 @@ def run(series_args: Sequence[str], *, reference_arg: str | None = None, period_
     csv_rows = []
     for name, first, last in periods:
         ref = in_period(ref_rates, first, last) if ref_rates is not None else None
-        summaries = [summarize(s.label, in_period(annual_rates(s, basis), first, last), ref, window)
-                     for s in series]
+        annuals = [(s.label, in_period(annual_rates(s, basis), first, last)) for s in series]
+        summaries = [summarize(label, annual, ref, window) for label, annual in annuals]
         if fmt == "csv":
             csv_rows += [[name, *summary_cells(s)] for s in summaries]
             continue
@@ -769,6 +878,11 @@ def run(series_args: Sequence[str], *, reference_arg: str | None = None, period_
         unit = f", rolling {window}-year compound rates" if window > 1 else ""
         print(f"### {name} ({span}{unit})\n")
         print(markdown_table(SUMMARY_COLUMNS, [summary_cells(s) for s in summaries]))
+        print()
+        print(f"Suggested calendar.csv values ({name}, from single years; see the legend below):\n")
+        print(markdown_table(ROW_VALUE_COLUMNS, [
+            cells for label, annual in annuals
+            for cells in row_value_cells(row_values(label, annual, hold_years), hold_years)]))
         print()
     if fmt == "csv":
         writer = csv.writer(sys.stdout, lineterminator="\n")
@@ -781,6 +895,9 @@ def run(series_args: Sequence[str], *, reference_arg: str | None = None, period_
         print(markdown_table(["Series", "Years", "Length", "Compound %"], rows) if rows else "None.")
         print()
     if fmt == "markdown":
+        print("### Legend\n")
+        print(markdown_table(LEGEND_COLUMNS, LEGEND))
+        print()
         print("Sources:\n")
         for spec, s in {s.spec: s for s in loaded}.items():
             print(f"- {s.label}: {s.title or spec}")
