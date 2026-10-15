@@ -310,10 +310,20 @@ def test_ensemble_widget_account_picker_lists_net_worth_then_accounts(
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
     _dropdown, pickers, _out = box.children
     account_picker = pickers.children[2]
-    assert account_picker.options[0] == ensemble_widgets.NET_WORTH
-    assert "Asset_Checking" in account_picker.options
+    assert account_picker.label == ensemble_widgets.NET_WORTH
+    assert ("Asset_Checking", "Asset_Checking") in account_picker.options
     account_picker.value = "Asset_Checking"
     assert axes[-1].get_title().startswith("Asset_Checking fan chart")
+
+
+def test_account_named_net_worth_is_not_mistaken_for_net_worth() -> None:
+    """The picker's net-worth value is a sentinel, not its label, so an
+    account that happens to be named "Net worth" can still be picked."""
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    (_, net_worth), = ensemble_widgets._account_picker().options
+    assert ensemble_widgets._account(net_worth) is None
+    assert ensemble_widgets._account(ensemble_widgets.NET_WORTH) == ensemble_widgets.NET_WORTH
 
 
 def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
@@ -406,7 +416,7 @@ def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_side
     account_picker = pickers.children[1]
     baseline_picker.value = "baseline"
     variant_picker.value = ("child",)
-    assert {"Asset_Checking", "Asset_Renamed"} <= set(account_picker.options)
+    assert {"Asset_Checking", "Asset_Renamed"} <= {label for label, _ in account_picker.options}
     shown.clear()
     account_picker.value = "Asset_Renamed"
     headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]

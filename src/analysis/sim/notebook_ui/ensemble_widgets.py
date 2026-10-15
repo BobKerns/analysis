@@ -167,20 +167,32 @@ def _png(fig: Figure) -> Image:
 
 
 NET_WORTH = "Net worth"
+# The account picker's value for net worth. Not the label: an account may
+# itself be named "Net worth", and must still be selectable.
+_NET_WORTH_CHOICE = object()
 
 
-def _account_options(*ensembles: dict[str, RunConnection]) -> list[str]:
-    """``NET_WORTH`` first, then every account any of ``ensembles`` has (one
-    member of each, since a recipe's members share their accounts), by name."""
+def _account_options(
+    *ensembles: dict[str, RunConnection],
+) -> list[tuple[str, object]]:
+    """Net worth first, then every account any of ``ensembles`` has (one
+    member of each, since a recipe's members share their accounts), by name,
+    as the picker's ``(label, value)`` pairs."""
     accounts: set[str] = set()
     for connections in ensembles:
         accounts.update(next(iter(connections.values())).account_kinds().index)
-    return [NET_WORTH, *sorted(accounts)]
+    return [(NET_WORTH, _NET_WORTH_CHOICE), *((a, a) for a in sorted(accounts))]
 
 
-def _account(choice: str | None) -> str | None:
+def _account_picker() -> widgets.Dropdown:
+    return widgets.Dropdown(
+        options=[(NET_WORTH, _NET_WORTH_CHOICE)], description="Account:",
+    )
+
+
+def _account(choice: object) -> str | None:
     """The account a picker value names, or None for net worth."""
-    return None if choice in (None, NET_WORTH) else choice
+    return choice if isinstance(choice, str) else None
 
 
 def _reserve_field() -> widgets.Text:
@@ -209,14 +221,16 @@ def _reserve(
 
 
 def _sync_options(
-    dropdown: widgets.Dropdown, options: list[str], redraw: Callable[..., None],
+    dropdown: widgets.Dropdown, options: list[tuple[str, object]],
+    redraw: Callable[..., None],
 ) -> None:
     """Swap ``dropdown``'s options, keeping its value where it still exists,
     without firing ``redraw``: the caller is mid-draw and already reads the
     new value, so a nested redraw would only draw everything twice."""
     if list(dropdown.options) == options:
         return
-    keep = dropdown.value if dropdown.value in options else options[0]
+    values = [value for _, value in options]
+    keep = dropdown.value if dropdown.value in values else values[0]
     dropdown.unobserve(redraw, names="value")
     try:
         dropdown.options = options
@@ -254,7 +268,7 @@ def ensemble_widget(*_,
     dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
     log_linear_picker = log_linear_mode or LogLinearModePicker()
     dollar_picker = dollar_mode or DollarModePicker()
-    account_picker = widgets.Dropdown(options=[NET_WORTH], description="Account:")
+    account_picker = _account_picker()
     reserve_field = _reserve_field()
     out = widgets.Output()
 
@@ -445,7 +459,7 @@ def ensemble_compare_widget(*_,
     # Default dollars are CPI-constant here: a comparison over decades, and
     # the reserve, are in today's dollars.
     dollar_picker = dollar_mode or DollarModePicker(DollarMode.CPI_CONSTANT)
-    account_picker = widgets.Dropdown(options=[NET_WORTH], description="Account:")
+    account_picker = _account_picker()
     reserve_field = _reserve_field()
     out = widgets.Output()
 
