@@ -32,7 +32,8 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | one-time transfers | `analysis sim transfer list` |
 | a run's year-end net worth, and lots | `analysis sim explain <runfile>` |
 | every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
-| an ensemble's mean/median/SD and 5th–95th percentiles by year | `analysis sim ensemble summary <recipe>` |
+| an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth or one account | `analysis sim ensemble summary <recipe> [--account NAME]` |
+| two ensembles compared on risk: percentile, paired and tail-mean deltas | `analysis sim ensemble compare <baseline> <variant>` |
 | which varying rows matter, and when (`sensitivity.ipynb`) | `analysis sim ensemble sensitivity <recipe>` |
 
 Views with no terminal equivalent yet are listed in [TODO.md](../TODO.md), which also asks for a periodic review of what is missing.

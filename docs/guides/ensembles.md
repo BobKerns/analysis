@@ -802,6 +802,74 @@ where you mainly want "is this even in the right ballpark," the default of
 report a specific number (a percentile, a probability of running out of
 money by some date) rather than just eyeballing a chart.
 
+## Comparing two ensembles on risk
+
+Comparing two recipes in `scenario_compare.ipynb` compares their member 0s,
+the central case. That's the right check that a recipe is set up as
+intended, but it says nothing about risk: two plans can have the same
+center and very different bad years. The comparison in
+`notebooks/ensemble.ipynb`, and `sim ensemble compare`, compare the whole
+ensembles:
+
+```sh
+sim run retire_alice
+sim run conservative          # a child that changes only the return row
+sim ensemble compare retire_alice conservative
+sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint
+```
+
+It reads in three parts.
+
+**Percentile deltas.** Each breakpoint of the variant minus the same
+breakpoint of the baseline, `Δp05` up to `Δp95`, by year (a line each in
+the notebook). `Δp05` above zero with `Δp95` below it means the variant
+raises the floor and gives up the top; lines spreading apart mean the
+variant widens the range of outcomes, lines closing in that it narrows
+it. The members at a breakpoint are different futures on each side, so
+this compares the two distributions, not what happens to any one future.
+
+**Future by future.** When the two recipes share a seed, which a child
+inherits from its parent, member *i* of each drew the same value for
+every row they share, so the variant's member *i* minus the baseline's is
+what the change did in that one future. The notebook draws a fan of those
+differences, and `P(ahead)` is the share of futures where the variant
+comes out ahead. A plan can lose in most futures and still be the safer
+one, if the futures it wins are the bad ones: compare the low end of the
+fan with the high end. Recipes with their own seeds don't pair, and the
+comparison says so. A row only the variant has is the change you're
+measuring, so it doesn't break the pairing.
+
+An account only one recipe has (one the variant opens, say) can't be
+compared; that recipe's own fan and tail table are shown instead.
+
+**Tail means.** `cvar05` and `cvar20` are the mean of the worst 5% and the
+worst 20% of members, and `Δcvar05`, `Δcvar20` the variant's change in
+them. A tail's mean moves less from run to run than a single percentile,
+and it measures how bad the bad futures are, not just where they begin.
+The two levels are fixed on purpose: with one standard pair there's no
+choosing a level until the comparison looks good.
+With a reserve set, `Δbelow_reserve` and `Δever_below_reserve` are the
+change in the shares below it.
+
+**A reserve.** Put the net worth you never want to fall below in the
+recipe's `scenario.csv`, in today's (CPI-constant) dollars:
+
+```csv
+name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json
+base,...,...,...,...,42,,alice,"{""reserve"":250000}"
+```
+
+Every scenario that inherits from it gets the same reserve. The tables
+then add `below_reserve`, the share of members below it at each year end,
+and `ever_below_reserve`, the share that have been below it at any month
+so far, which counts a dip that later recovered. The recipe's reserve
+applies to net worth only; the notebook's Reserve field and `--reserve`
+set one for a single report, for whatever is shown.
+
+With a few dozen members, the low percentiles and their differences are
+noisy. Rerun with more members rather than reading a small difference:
+about 80 is enough for a quick comparison, and 400 to confirm one.
+
 ## Which varying rows matter, and when? (sensitivity)
 
 Before you run a big Monte Carlo, it's worth asking which of your

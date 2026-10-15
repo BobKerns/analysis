@@ -96,3 +96,24 @@ def test_sim_run_on_a_child_of_a_recipe_uses_the_recipes_member_count(
     )
     assert result.exit_code == 0, result.output
     assert "2/2 member(s) succeeded" in result.output
+
+
+@pytest.mark.parametrize("reserve", ["250000", '"250000.00"'])
+def test_a_reserve_in_whole_dollars_or_a_cents_string_loads(
+    derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
+    reserve: str,
+) -> None:
+    derive_scenario("cushioned", ROOT, meta_json=f'{{"reserve":{reserve}}}')
+    assert "reserve" in _meta(load_test_scenario("cushioned"))
+
+
+@pytest.mark.parametrize("reserve", ["250000.5", '"lots"', "true"])
+def test_a_reserve_that_is_not_dollars_fails_the_load(
+    derive_scenario: Callable[..., Path], test_data_dir: Path, tmp_path: Path, reserve: str,
+) -> None:
+    """#163: a float would leak binary fractions into money, so a JSON
+    reserve is whole dollars or a dollar string, like a CSV dollar cell."""
+    derive_scenario("bad", ROOT, meta_json=f'{{"reserve":{reserve}}}')
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "bad", intent_dir=tmp_path, allow_dirty_data=True)
+    assert any(issue.startswith("bad: ") and "reserve" in issue for issue in ei.value.issues)

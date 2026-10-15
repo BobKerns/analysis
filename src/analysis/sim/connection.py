@@ -14,6 +14,7 @@ on as notebook/CLI needs grow.
 from __future__ import annotations
 
 from abc import abstractmethod
+import json
 import sqlite3
 import tempfile
 import threading
@@ -21,14 +22,14 @@ import warnings
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal, overload
+from typing import Any, Literal, overload
 
 import pandas as pd
 import traitlets
 
 from analysis.frames import index_years
 from analysis.sim import accounts
-from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, ItemType
+from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, DollarMode, ItemType
 
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
@@ -671,6 +672,48 @@ class RunConnection(Connection):
             return self.to_cpi_constant(balances)
         monthly_flows = balances.diff().fillna(balances)
         return self.to_cpi_constant(monthly_flows).cumsum()
+
+    def account_balance(self, account: str, mode: DollarMode = DollarMode.NOMINAL) -> pd.Series:
+        """One account's month-indexed balance in dollars, signed and
+        converted as ``balance_pivot``/``cpi_balance_pivot`` would show it,
+        read with its own query rather than the whole ``account_balance``
+        table: an ensemble reads one account from hundreds of member files
+        (#163). Empty when this run has no such account."""
+        df = self._read_sql(
+            "SELECT s.month, a.kind, ast.balance "
+            "FROM account_state ast "
+            "JOIN simulation_step s ON s.id = ast.step_id "
+            "JOIN account a         ON a.id = ast.account_id "
+            "WHERE a.name = ? ORDER BY s.month",
+            (account,),
+        )
+        balance = pd.Series(
+            df["balance"].to_numpy() / 100, index=pd.to_datetime(df["month"]), name=account,
+        )
+        kind = df["kind"].iloc[0] if len(df) else None
+        if kind == "income":
+            balance = -balance
+        if mode != DollarMode.CPI_CONSTANT or balance.empty:
+            return balance
+        if kind not in accounts.CASHFLOW_KINDS:
+            return self.to_cpi_constant(balance)
+        return self.to_cpi_constant(balance.diff().fillna(balance)).cumsum()
+
+    def ensemble_member(self) -> tuple[int, int | None] | None:
+        """``(member_index, seed)`` from this run's ``ensemble_manifest``, or
+        None for a run that isn't an ensemble member."""
+        row = self._read_sql("SELECT member_index, seed FROM ensemble_manifest")
+        if row.empty:
+            return None
+        seed = row["seed"].iloc[0]
+        return int(row["member_index"].iloc[0]), None if pd.isna(seed) else int(seed)
+
+    def scenario_meta(self) -> dict[str, Any]:
+        """The run's merged ``scenario.meta_json`` (ADR-003 §4.5)."""
+        row = self._read_sql("SELECT meta_json FROM scenario")
+        if row.empty or not row["meta_json"].iloc[0]:
+            return {}
+        return json.loads(row["meta_json"].iloc[0])
 
     LOT_MEASURES = ("balance", "cost_basis", "quantity")
 

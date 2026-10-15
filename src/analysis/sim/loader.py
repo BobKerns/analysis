@@ -740,6 +740,12 @@ def _read_scenario_inputs(
         ytd_rows = _merge_scenario_rows(
             ytd_rows, read_overlay("year_to_date.csv"), ("name",),
         )
+    if "reserve" in meta:
+        # #163: the ensemble reports' reserve, in CPI-constant dollars.
+        try:
+            units.json_dollars_to_cents(meta["reserve"])
+        except ValueError as exc:
+            issues.append(f"{scenario_name}: scenario.csv meta_json reserve: {exc}")
     scenario_row["name"] = scenario_name
     scenario_row["meta_json"] = json.dumps(meta, separators=(",", ":"))
     return (

@@ -41,6 +41,7 @@ corrcoef
 counterclock
 cpus
 Damodaran
+darkorange
 dasharray
 dataviz
 dateutil
@@ -109,6 +110,7 @@ multimonth
 munknown
 nanmax
 nbstripout
+ncol
 networth
 nextstrain
 NOCASE
@@ -240,4 +242,7 @@ yticklabels
 yticks
 zorder
 zpln
+Δbelow
+Δcvar
+Δever
 Δvariant

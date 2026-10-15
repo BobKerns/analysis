@@ -78,6 +78,18 @@ def dollars_to_cents(text: str) -> int:
     return int(Decimal(stripped) * 100)
 
 
+def json_dollars_to_cents(value: object) -> int:
+    """A dollar amount stored in JSON (a ``meta_json`` key): a whole-dollar
+    JSON integer, or a string in ``dollars_to_cents``' own syntax for cents.
+    A JSON float is refused, as a bare ``.99`` is in a CSV cell: binary
+    fractions are how floats leak into money."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value * 100
+    if isinstance(value, str):
+        return dollars_to_cents(value)
+    raise ValueError(f"invalid dollar value {value!r}: write it like 250000 or \"250000.00\"")
+
+
 def cents_to_dollars(cents: int) -> str:
     """Integer cents as CSV dollars: ``123456`` -> ``1234.56``."""
     sign = "-" if cents < 0 else ""
