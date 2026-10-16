@@ -108,6 +108,29 @@ def _stable_code_stamps() -> Generator[None]:
         yield
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _no_sqlite_fsync() -> Generator[None]:
+    """Open every SQLite database without fsync or an on-disk rollback journal.
+
+    Each commit otherwise waits for an fsync and creates and deletes a
+    journal file, and the suite commits thousands of times into throwaway
+    temp dirs: on a disk-backed ``/tmp`` (CI, cloud containers) that was
+    about 45% of the suite's wall time. A test database never needs to
+    survive a crash, and rollback still works with the journal in memory.
+    """
+    connect = sqlite3.connect
+
+    def _connect(*args, **kwargs) -> sqlite3.Connection:
+        con = connect(*args, **kwargs)
+        con.execute("PRAGMA synchronous = OFF")
+        con.execute("PRAGMA journal_mode = MEMORY")
+        return con
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sqlite3, "connect", _connect)
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _no_current_scenario_writes(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
@@ -761,14 +784,17 @@ def append_calendar_row(retire_alice_csv: Callable[[str], Path]) -> Callable[...
     """Append a row to the private copy's calendar.csv, by column name
     (ADR-006 ``vary_*``/``name`` columns included)."""
     def _add(**fields: str) -> None:
-        path = retire_alice_csv("calendar.csv")
-        df = pd.read_csv(path, dtype=str, keep_default_na=False)
-        df = df.reindex(columns=CALENDAR_HEADER, fill_value="")
-        unknown = set(fields) - set(CALENDAR_HEADER)
-        assert not unknown, f"unknown calendar.csv columns: {sorted(unknown)}"
-        df.loc[len(df)] = [fields.get(column, "") for column in CALENDAR_HEADER]
-        df.to_csv(path, index=False)
+        _append_calendar_row_to(retire_alice_csv("calendar.csv"), **fields)
     return _add
+
+
+def _append_calendar_row_to(path: Path, **fields: str) -> None:
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df = df.reindex(columns=CALENDAR_HEADER, fill_value="")
+    unknown = set(fields) - set(CALENDAR_HEADER)
+    assert not unknown, f"unknown calendar.csv columns: {sorted(unknown)}"
+    df.loc[len(df)] = [fields.get(column, "") for column in CALENDAR_HEADER]
+    df.to_csv(path, index=False)
 
 
 @pytest.fixture(scope="function")
@@ -1044,76 +1070,104 @@ def _load_and_run_batch(
     return run.output
 
 
-@pytest.fixture(scope="function")
-def oat_batch(
-    test_data_dir: Path, append_calendar_row: Callable[..., None],
-    intent_dir: Path, runs_dir: Path,
-) -> Path:
-    """An OAT sensitivity batch (default p10/p90) over a varying gift and a
-    varying retirement date on the private retire_alice copy: 5 members."""
-    from analysis.sim.loader import latest_ensemble_batch
-
-    _add_varying_gift_and_retirement(append_calendar_row)
-    output = _load_and_run_batch(test_data_dir, intent_dir, runs_dir, "--sensitivity")
-    assert "5/5 member(s) succeeded" in output, output
-    batch = latest_ensemble_batch(runs_dir / "retire_alice", mode="sensitivity")
-    assert batch is not None
-    return batch
-
-
-@pytest.fixture(scope="function")
-def ladder_batch(
-    test_data_dir: Path, append_calendar_row: Callable[..., None],
-    intent_dir: Path, runs_dir: Path,
-) -> Path:
-    """Like ``oat_batch``, but a 4-rung quantile ladder: 9 members."""
-    from analysis.sim.loader import latest_ensemble_batch
-
-    _add_varying_gift_and_retirement(append_calendar_row)
-    output = _load_and_run_batch(
-        test_data_dir, intent_dir, runs_dir, "--sensitivity", "--quantiles", "0.1,0.25,0.75,0.9",
-    )
-    assert "9/9 member(s) succeeded" in output, output
-    batch = latest_ensemble_batch(runs_dir / "retire_alice", mode="sensitivity")
-    assert batch is not None
-    return batch
-
-
-@pytest.fixture(scope="function")
-def mc_batch(
-    test_data_dir: Path, append_calendar_row: Callable[..., None],
-    intent_dir: Path, runs_dir: Path,
-) -> Path:
-    """An 8-member Monte Carlo batch over the same two varying rows as
-    ``oat_batch`` (seed 7)."""
-    from analysis.sim.loader import latest_ensemble_batch
-
-    _add_varying_gift_and_retirement(append_calendar_row)
-    _load_and_run_batch(test_data_dir, intent_dir, runs_dir, "--ensemble-size", "8")
-    batch = latest_ensemble_batch(runs_dir / "retire_alice", mode="monte_carlo")
-    assert batch is not None
-    return batch
-
-
-@pytest.fixture(scope="function")
-def inflation_batch(
-    test_data_dir: Path, append_calendar_row: Callable[..., None],
-    intent_dir: Path, runs_dir: Path,
-) -> Path:
-    """An OAT batch (p10/p90) perturbing the CPI inflation rate itself: 3 members."""
-    from analysis.sim.loader import latest_ensemble_batch
-
+def _add_varying_cpi(append_calendar_row: Callable[..., None]) -> None:
+    """The CPI inflation rate itself, uncertain between 1.5% and 3.5%."""
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="cpi_vary", series="cpi",
         amount="2.5%", params_json='{"aux_kind": "inflation"}',
         vary_target="amount", vary_distribution="uniform",
         vary_low="1.5%", vary_high="3.5%",
     )
-    output = _load_and_run_batch(test_data_dir, intent_dir, runs_dir, "--sensitivity")
-    assert "3/3 member(s) succeeded" in output, output
-    batch = latest_ensemble_batch(runs_dir / "retire_alice", mode="sensitivity")
+
+
+# name -> (calendar edits, `sim run` arguments, member count or None, batch mode)
+_SHARED_BATCHES: dict[str, tuple[Callable[[Callable[..., None]], None], tuple[str, ...], int | None, str]] = {
+    "oat": (_add_varying_gift_and_retirement, ("--sensitivity",), 5, "sensitivity"),
+    "ladder": (_add_varying_gift_and_retirement,
+               ("--sensitivity", "--quantiles", "0.1,0.25,0.75,0.9"), 9, "sensitivity"),
+    "mc": (_add_varying_gift_and_retirement, ("--ensemble-size", "8"), None, "monte_carlo"),
+    "inflation": (_add_varying_cpi, ("--sensitivity",), 3, "sensitivity"),
+}
+
+
+@pytest.fixture(scope="session")
+def _built_batches(
+    tmp_path_factory: pytest.TempPathFactory, prototype_data: Path,
+) -> Callable[[str], Path]:
+    """Build each of ``_SHARED_BATCHES`` at most once per session (once per
+    xdist worker), returning the state dir (``intent/``, ``runs/``) it was
+    built into. Never hand this dir to a test: ``_copy_batch`` gives each
+    test a private copy, since some tests edit or delete a batch's files.
+
+    A session fixture is set up before the function-scoped autouse fixtures
+    apply, so the build repeats their policies itself: in-process members,
+    no ``.current_scenario`` writes, and a negative balance is an error.
+    """
+    built: dict[str, Path] = {}
+
+    def _build(name: str) -> Path:
+        if name in built:
+            return built[name]
+        edit, run_args, members, _mode = _SHARED_BATCHES[name]
+        root = tmp_path_factory.mktemp(f"batch_{name}")
+        data = root / "data"
+        shutil.copytree(prototype_data, data)
+        calendar = data / "scenarios" / "retire_alice" / "calendar.csv"
+        edit(lambda **fields: _append_calendar_row_to(calendar, **fields))
+        state = root / "state"
+        intent, runs = state / "intent", state / "runs"
+        intent.mkdir(parents=True)
+        runs.mkdir()
+        with pytest.MonkeyPatch.context() as patch, warnings.catch_warnings():
+            patch.setattr("analysis.sim.cli._available_cpus", lambda: 1)
+            patch.setattr("analysis.sim.cli.write_current_scenario", lambda *args, **kwargs: None)
+            warnings.filterwarnings("error", category=RuntimeWarning, message=".*went negative.*")
+            output = _load_and_run_batch(data, intent, runs, *run_args)
+        if members is not None:
+            assert f"{members}/{members} member(s) succeeded" in output, output
+        built[name] = state
+        return state
+
+    return _build
+
+
+def _copy_batch(built_batches: Callable[[str], Path], name: str, state_dir: Path) -> Path:
+    """Copy a shared batch's ``intent/`` and ``runs/`` into the test's own
+    ``state_dir`` (where ``intent_dir`` and ``runs_dir`` point), returning the
+    copied batch dir."""
+    from analysis.sim.loader import latest_ensemble_batch
+
+    shutil.copytree(built_batches(name), state_dir, dirs_exist_ok=True)
+    batch = latest_ensemble_batch(state_dir / "runs" / "retire_alice", mode=_SHARED_BATCHES[name][3])
     assert batch is not None
     return batch
+
+
+@pytest.fixture(scope="function")
+def oat_batch(_built_batches: Callable[[str], Path], state_dir: Path) -> Path:
+    """An OAT sensitivity batch (default p10/p90) over a varying gift and a
+    varying retirement date on a copy of retire_alice: 5 members, in this
+    test's ``runs_dir``."""
+    return _copy_batch(_built_batches, "oat", state_dir)
+
+
+@pytest.fixture(scope="function")
+def ladder_batch(_built_batches: Callable[[str], Path], state_dir: Path) -> Path:
+    """Like ``oat_batch``, but a 4-rung quantile ladder: 9 members."""
+    return _copy_batch(_built_batches, "ladder", state_dir)
+
+
+@pytest.fixture(scope="function")
+def mc_batch(_built_batches: Callable[[str], Path], state_dir: Path) -> Path:
+    """An 8-member Monte Carlo batch over the same two varying rows as
+    ``oat_batch`` (seed 7)."""
+    return _copy_batch(_built_batches, "mc", state_dir)
+
+
+@pytest.fixture(scope="function")
+def inflation_batch(_built_batches: Callable[[str], Path], state_dir: Path) -> Path:
+    """An OAT batch (p10/p90) perturbing the CPI inflation rate itself: 3 members."""
+    return _copy_batch(_built_batches, "inflation", state_dir)
 
 
 @pytest.fixture(scope="function")

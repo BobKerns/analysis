@@ -63,6 +63,7 @@ def test_probability_and_score_at_invert_each_other_under_t() -> None:
     assert score_at(0.9, 4.0) > score_at(0.9)  # t is wider than the normal
 
 
+@pytest.mark.slow
 def test_tail_scale_has_the_inverse_chi2_mean() -> None:
     """``S^2 = nu / W`` with ``W ~ chi2(nu)`` has mean ``nu / (nu - 2)``."""
     rng = random.Random(3)
@@ -83,6 +84,7 @@ def test_kendall_tau_and_rho_are_inverses(rho: float) -> None:
     assert rho_from_kendall_tau(expected_kendall_tau(rho)) == pytest.approx(rho)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("nu", [None, 30.0, 3.0])
 def test_every_marginal_stays_uniform(nu: float | None) -> None:
     """Each node's ``u`` is uniform under any nu, so each row keeps exactly
@@ -92,6 +94,7 @@ def test_every_marginal_stays_uniform(nu: float | None) -> None:
         assert kstest(sample[node], "uniform").statistic < 0.015
 
 
+@pytest.mark.slow
 def test_joint_extremes_get_likelier_as_nu_falls() -> None:
     """Both siblings above their 95th percentile at once: rarer under the
     Gaussian copula than under t, and more common as nu falls."""
@@ -103,6 +106,7 @@ def test_joint_extremes_get_likelier_as_nu_falls() -> None:
     assert joint[-1] > 1.4 * joint[0], joint
 
 
+@pytest.mark.slow
 def test_kendall_tau_still_follows_rho_under_t() -> None:
     """``(2/pi)·asin(rho)`` holds for every elliptical copula, so the
     siblings' implied 0.36 shows up in tau under t as under the Gaussian."""
@@ -111,6 +115,7 @@ def test_kendall_tau_still_follows_rho_under_t() -> None:
     assert tau == pytest.approx(expected_kendall_tau(0.36), abs=0.03)
 
 
+@pytest.mark.slow
 def test_score_correlations_reads_rho_through_kendall_tau() -> None:
     """The achieved-correlation check holds up on heavy-tailed t scores,
     where a Pearson correlation would be dominated by a few members."""

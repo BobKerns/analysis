@@ -76,14 +76,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The base commit, to list the changed files.
+          fetch-depth: 0
+
+      # A change that only touches prose or editor settings can't change a
+      # test, lint or type result, so the rest of the job is skipped. The job
+      # itself still runs and passes: it is a required check, and a check
+      # skipped by a workflow-level paths filter never reports at all. The
+      # list names what may skip, not what must run, so a new directory is
+      # tested by default.
+      - name: Changed files
+        id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.after }}
+        run: |
+          needed=false
+          # With no usable base (a force push, the first push) the change is
+          # unknown: run everything.
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+              needed=true
+          else
+              changed=$(git diff --name-only "$BASE...$HEAD")
+              while IFS= read -r path; do
+                  case "$path" in
+                      "") ;;
+                      docs/*|.cspell/*|.vscode/*|.cursor/*|.serena/*) ;;
+                      .github/copilot-instructions.md) ;;
+                      cspell.json|.markdownlint.json|.markdownlintignore) ;;
+                      analysis.code-workspace|LICENSE) ;;
+                      # Markdown elsewhere (a scenario's README.md) is data.
+                      */*) needed=true ;;
+                      *.md) ;;
+                      *) needed=true ;;
+                  esac
+              done <<< "$changed"
+          fi
+          echo "Tests needed: $needed"
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
 
       - uses: astral-sh/setup-uv@v7
+        if: steps.changes.outputs.needed == 'true'
         with:
           # Pinned: an unpinned setup asks the GitHub API for the latest
           # release on every run, and fails the job when that times out.
           version: "0.12.23"
 
       - name: Install Python and dependencies
+        if: steps.changes.outputs.needed == 'true'
         # uv reads the pinned version from .python-version.
         run: |
           uv python install
@@ -91,17 +132,20 @@ jobs:
 
       # The same data/shared layout a developer has, from templates/.
       - name: Template data repo
+        if: steps.changes.outputs.needed == 'true'
         run: scripts/link-data.sh --template
 
       - name: Tests
+        if: steps.changes.outputs.needed == 'true'
         run: uv run --no-sync python -m pytest -q -n auto
 
       - name: Lint
+        if: steps.changes.outputs.needed == 'true'
         run: uv run --no-sync ruff check src tests
 
       - name: Types
         # Run even when lint fails, so one run reports both.
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.changes.outputs.needed == 'true' }}
         run: uv run --no-sync ty check
 
   docs:

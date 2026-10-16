@@ -2109,6 +2109,7 @@ def _batch_results(runs_dir: Path) -> dict[str, tuple[list, list]]:
     return results
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("mode_args", [("--ensemble-size", "3"), ("--sensitivity",)])
 def test_sim_run_jobs_matches_sequential(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
@@ -2136,6 +2137,7 @@ def test_sim_run_jobs_matches_sequential(
     assert len(results["2"]) == (3 if "--ensemble-size" in mode_args else 5)
 
 
+@pytest.mark.slow
 def test_sim_run_jobs_reports_failures_without_taking_down_the_pool(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
     update_account_value: Callable[..., None], intent_dir: Path, runs_dir: Path,

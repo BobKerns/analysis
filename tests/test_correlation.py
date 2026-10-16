@@ -685,6 +685,7 @@ def test_parameters_show_parents_rho_and_factors(correlated_mc_batch: Path) -> N
     assert table.loc["economy", "nu"] == ""  # a Gaussian tree
 
 
+@pytest.mark.slow
 def test_monte_carlo_report_ranks_by_srrc_and_shows_factors_and_scores(
     correlated_mc_batch: Path, runs_dir: Path,
 ) -> None:

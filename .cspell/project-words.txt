@@ -228,6 +228,7 @@ worktree
 worktrees
 xdata
 xdate
+xdist
 xerr
 xfer
 xfers

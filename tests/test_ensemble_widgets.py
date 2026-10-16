@@ -326,6 +326,7 @@ def test_account_named_net_worth_is_not_mistaken_for_net_worth() -> None:
     assert ensemble_widgets._account(ensemble_widgets.NET_WORTH) == ensemble_widgets.NET_WORTH
 
 
+@pytest.mark.slow
 def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
     small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -348,6 +349,7 @@ def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
     assert list(tables[-1].columns)[-2:] == ["below_reserve", "ever_below_reserve"]
 
 
+@pytest.mark.slow
 def test_ensemble_compare_widget_draws_one_section_per_variant(
     seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -393,6 +395,7 @@ def test_ensemble_compare_figure_skips_the_paired_panel_when_unpaired() -> None:
     assert "reserve" in with_reserve.axes[-1].get_title()
 
 
+@pytest.mark.slow
 def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_sided_deltas(
     seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -427,6 +430,7 @@ def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_side
     assert sum(isinstance(item, Image) for item in shown) == 1  # the child's own fan
 
 
+@pytest.mark.slow
 def test_ensemble_compare_widget_says_so_when_no_shown_recipe_has_the_account(
     seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

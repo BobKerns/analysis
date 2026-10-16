@@ -109,7 +109,7 @@ Five gates should pass before reporting any change done, plus a sixth for
 changes to the simulator or its loader:
 
 ```sh
-.venv/bin/python -m pytest -q                     # tests
+.venv/bin/python -m pytest -q -n auto -m "not slow"  # tests, less the slow ones
 .venv/bin/python -m ruff check src tests          # lint
 .venv/bin/ty check                                # types (ty; src and tests, per pyproject.toml)
 npm run spell                                     # spelling (cspell)
@@ -120,10 +120,22 @@ npm run markdownlint                              # markdown (markdownlint)
 `cspell` and `markdownlint` are pinned in `package.json` and installed by
 `scripts/setup.sh` (`npm ci`); see [`docs/SETUP.md`](../docs/SETUP.md).
 
-[`.github/workflows/gates.yml`](workflows/gates.yml) runs the first five gates
-and the blocked-keyword check on every pull request and push to `main`. It is
-a backstop, not a substitute: run the gates locally before pushing, since every
-push to a pull request also triggers a Copilot review.
+[`.github/workflows/gates.yml`](workflows/gates.yml) runs the first five gates,
+with every test including the slow ones, and the blocked-keyword check on every
+pull request and push to `main`. It skips the tests, lint and types when a
+change touches only prose or editor settings (the list is in the workflow).
+
+Tests marked `@pytest.mark.slow` (about a second or more each) are left to CI.
+When a change touches a slow test or the code it exercises, run that test
+locally too (`-m slow`, or the test by name). Mark a new test `slow` when it
+takes about a second on its own.
+
+Copilot reviews a pull request when it leaves draft, and every push after
+that. So open pull requests as drafts, let CI run the slow tests, fix anything
+red, and mark the pull request ready only once CI is green. When a ready pull
+request needs several more pushes (a merge from `main`, a batch of review
+fixes), turn it back into a draft first, push, and mark it ready again once CI
+is green: one review per return to ready, not one per push.
 
 Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_name -q`
 (or `-k pattern` to match by substring).

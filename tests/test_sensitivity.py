@@ -513,6 +513,7 @@ def test_score_correlations_skip_uncorrelated_pairs() -> None:
     assert pairs.empty and list(pairs.columns)[:3] == ["a", "b", "kind"]
 
 
+@pytest.mark.slow
 def test_cli_reports_monte_carlo_batch(mc_batch: Path, runs_dir: Path) -> None:
     result = CliRunner().invoke(main, [
         "sim", "ensemble", "sensitivity", "retire_alice", "--runs-dir", str(runs_dir),

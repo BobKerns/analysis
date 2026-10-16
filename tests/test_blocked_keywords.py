@@ -55,12 +55,14 @@ def _stage(repo: Path, name: str, text: str) -> None:
     subprocess.run(["git", "add", name], cwd=repo, check=True)
 
 
+@pytest.mark.slow
 def test_no_tracked_file_contains_a_blocked_keyword() -> None:
     result = _check(REPO, "--all")
 
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.slow
 def test_all_ignores_notebook_outputs_but_not_source(scratch_repo: Path) -> None:
     # A run notebook holds outputs that nbstripout keeps out of commits, so
     # --all reads notebooks through the same textconv `nbstripout --install`
