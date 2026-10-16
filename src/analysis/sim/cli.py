@@ -2029,6 +2029,11 @@ def _append_and_validate(
 # validates the row exactly as it does for ``add``.
 _CALENDAR_REPLACE_ROW = "analysis.sim.calendar.replace_row"
 
+# Under ``sim calendar edit`` of a row the scenario inherits: that row, merged
+# as the load leaves it, and the scenario it comes from. The kind's command
+# then appends its row as an override instead (#202).
+_CALENDAR_OVERRIDE_ROW = "analysis.sim.calendar.override_row"
+
 # params_json keys each kind's command writes itself. Any other key in a row
 # being replaced was put there by hand and is kept -- including one of these
 # names on a kind whose command does not write it.
@@ -2047,6 +2052,61 @@ def _read_calendar_rows(path: Path) -> list[dict[str, str]]:
         {column: row.get(column, "") for column in registries.CALENDAR_HEADER}
         for row in df.to_dict("records")
     ]
+
+
+class _CalendarRow(NamedTuple):
+    """One calendar.csv row of a scenario, as its load order leaves it."""
+    row: dict[str, str]  # merged down the load order, every CALENDAR_HEADER column
+    index: int | None  # its data row (0-based) in this scenario's own file, if there
+    inherited_from: str | None  # the last scenario before this one to have it
+
+
+def _scenario_calendar_rows(scenario_dir: Path) -> list[_CalendarRow]:
+    """Every calendar row of the scenario, its own and inherited, overlaid
+    down its load order the way ``_merge_calendar_rows`` overlays them: by
+    name where a row has one the inherited calendar knows, else by its key
+    columns. In the order they first appear (#202)."""
+    name = scenario_dir.name
+    entries: list[_CalendarRow] = []
+    by_key: dict[tuple[str, ...], int] = {}
+    by_name: dict[str, int] = {}
+
+    def full(row: dict[str, str]) -> dict[str, str]:
+        return {column: row.get(column, "") for column in registries.CALENDAR_HEADER}
+
+    for scenario_name in load_order(scenario_dir.parent, name):
+        path = scenario_dir.parent / scenario_name / "calendar.csv"
+        if not path.exists() or path.stat().st_size == 0:
+            continue
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        own = scenario_name == name
+        for index, record in enumerate(frame.to_dict("records")):
+            # Only the file's own columns: one it leaves out is inherited.
+            row = {str(k): str(v).strip() for k, v in record.items()}
+            row_name = row.get("name", "")
+            position = by_name.get(row_name) if row_name else None
+            if position is None:
+                position = by_key.get(calendar_row_key(full(row)))
+            if position is None:
+                merged = full(row)
+                prior_from = None
+                position = len(entries)
+                entries.append(_CalendarRow(merged, None, None))
+            else:
+                old = entries[position]
+                merged = full({**old.row, **row})
+                prior_from = old.inherited_from
+                by_key.pop(calendar_row_key(old.row), None)
+                if old.row["name"] and old.row["name"] != merged["name"]:
+                    by_name.pop(old.row["name"], None)
+            by_key[calendar_row_key(merged)] = position
+            if merged["name"]:
+                by_name[merged["name"]] = position
+            entries[position] = (
+                _CalendarRow(merged, index, prior_from) if own
+                else _CalendarRow(merged, None, scenario_name)
+            )
+    return entries
 
 
 def _calendar_row_label(row: dict[str, str]) -> str:
@@ -2069,12 +2129,80 @@ def _calendar_row_label(row: dict[str, str]) -> str:
     return "  ".join(part for part in parts if part.strip())
 
 
+def _keep_unexpressed(row: dict[str, str], chosen: dict[str, str]) -> dict[str, str]:
+    """``row`` as a kind's command built it, plus what the command has no way
+    to express that the ``chosen`` row it replaces or overrides had: its tags,
+    and params_json keys put there by hand."""
+    row = dict(row)
+    if "tags" not in row or (row["kind"] == "one_off_transfer" and not row["tags"]):
+        row["tags"] = chosen["tags"]
+    old_params = json.loads(chosen["params_json"]) if chosen["params_json"] else {}
+    new_params = json.loads(row["params_json"]) if row.get("params_json") else {}
+    own = _CALENDAR_OWN_PARAM_KEYS.get(row["kind"], frozenset())
+    # A transfer's command copies its description into params_json; a row
+    # that kept it only in the description column goes on doing so.
+    if "description" in own and "description" not in old_params:
+        new_params.pop("description", None)
+    params = {**{k: v for k, v in old_params.items() if k not in own}, **new_params}
+    row["params_json"] = json.dumps(params, separators=(",", ":")) if params else ""
+    return row
+
+
+def _write_calendar_override(
+    staged: Path, path: Path, row: dict[str, str], chosen: dict[str, str], origin: str,
+) -> bool:
+    """Append ``row`` to the staged calendar.csv as an override of the
+    inherited ``chosen`` row, from scenario ``origin`` (#202), unless it
+    changes nothing. Whether it was written.
+
+    The loader matches a named row to its override by name, and an unnamed
+    one by its key columns (``_merge_calendar_rows``), so the override must
+    keep the name, or, for an unnamed row, every key column; otherwise it
+    would be a second event beside the inherited one.
+    """
+    name = chosen["name"].strip()
+    if name and row.get("name", "").strip() != name:
+        raise click.ClickException(
+            f"row {name!r} comes from scenario {origin!r}; `sim calendar rename` "
+            "renames it there and in every scenario built on it. Nothing was written."
+        )
+    if not name and calendar_row_key(row) != calendar_row_key(chosen):
+        changed = [
+            column for column in registries.CALENDAR_KEY_COLUMNS
+            if calendar_row_key({**chosen, column: row.get(column, "")}) != calendar_row_key(chosen)
+        ]
+        raise click.ClickException(
+            f"this row comes from scenario {origin!r} and has no name, so an override "
+            f"is matched to it by its {', '.join(changed) or 'key fields'}, which this "
+            f"edit changes: it would add a second event instead. Give the row a name "
+            f"in {origin!r} first (`sim calendar edit --scenario {origin}`). "
+            "Nothing was written."
+        )
+    for other_index, other in enumerate(_read_calendar_rows(staged)):
+        same_name = name and other["name"].strip() == name
+        if same_name or calendar_row_key(other) == calendar_row_key(row):
+            raise click.ClickException(
+                f"row {other_index + 1} of {path.name} ({_calendar_row_label(other)}) "
+                "already overrides or duplicates it; edit that row instead. Nothing was written."
+            )
+    row = _keep_unexpressed(row, chosen)
+    if calendar_row_key(row) == calendar_row_key(chosen) and all(
+        row.get(column, "").strip() == chosen.get(column, "").strip()
+        for column in registries.CALENDAR_HEADER
+        if column not in registries.CALENDAR_KEY_COLUMNS
+    ):
+        return False
+    _append_csv_row(staged, registries.CALENDAR_HEADER, row)
+    return True
+
+
 def _write_calendar_row(
     path: Path, row: dict[str, str], *, data_dir: Path, scenario_name: str,
 ) -> str:
     """Append ``row`` to the scenario's calendar.csv -- or, under ``sim
-    calendar edit``, replace the row being edited -- if the scenario still
-    loads with it. Returns "appended" or "updated".
+    calendar edit``, replace the row being edited, or override the inherited
+    row being edited -- if the scenario still loads with it. Returns
+    "appended", "updated", or how an override went.
 
     An edited row may not end up alike in every key column to another row of
     the same file: the loader would treat the two as one event, so the edit
@@ -2082,9 +2210,15 @@ def _write_calendar_row(
     an existing row is given a name and a variation, ADR-006.)
     """
     context = click.get_current_context(silent=True)
-    replacing = context.meta.get(_CALENDAR_REPLACE_ROW) if context is not None else None
+    meta = context.meta if context is not None else {}
+    replacing = meta.get(_CALENDAR_REPLACE_ROW)
+    overriding = meta.get(_CALENDAR_OVERRIDE_ROW)
     with _scenario_edit(data_dir, scenario_name) as edit:
         staged = edit.path(path)
+        if overriding is not None:
+            if _write_calendar_override(staged, path, row, *overriding):
+                return "wrote an override:"
+            return "nothing changed; no override written for"
         if replacing is None:
             _append_csv_row(staged, registries.CALENDAR_HEADER, row)
             return "appended"
@@ -2103,20 +2237,9 @@ def _write_calendar_row(
                     f"this would duplicate row {other_index + 1} of {path.name} "
                     f"({_calendar_row_label(other)}); change one of them. Nothing was written."
                 )
-        row = dict(row)
-        # Keep what the kind's command has no way to express.
-        if "tags" not in row or (row["kind"] == "one_off_transfer" and not row["tags"]):
-            row["tags"] = chosen["tags"]
-        old_params = json.loads(chosen["params_json"]) if chosen["params_json"] else {}
-        new_params = json.loads(row["params_json"]) if row.get("params_json") else {}
-        own = _CALENDAR_OWN_PARAM_KEYS.get(row["kind"], frozenset())
-        # A transfer's command copies its description into params_json; a row
-        # that kept it only in the description column goes on doing so.
-        if "description" in own and "description" not in old_params:
-            new_params.pop("description", None)
-        params = {**{k: v for k, v in old_params.items() if k not in own}, **new_params}
-        row["params_json"] = json.dumps(params, separators=(",", ":")) if params else ""
-        _append_csv_row(staged, registries.CALENDAR_HEADER, row, replace=index)
+        _append_csv_row(
+            staged, registries.CALENDAR_HEADER, _keep_unexpressed(row, chosen), replace=index,
+        )
     return "updated"
 
 
@@ -3033,10 +3156,15 @@ def _echo_guided_scenario(name: str, path: Path, *, defaulted: bool) -> None:
     click.echo(f"  {path}")
 
 
-def _select_calendar_row(rows: list[dict[str, str]], wanted: str | None) -> int:
+def _select_calendar_row(
+    rows: list[dict[str, str]], wanted: str | None, notes: list[str] | None = None,
+) -> int:
     """Narrow ``rows`` to one, by its number, its name, or text it contains;
-    asks (again) while that leaves more or fewer than one."""
+    asks (again) while that leaves more or fewer than one. ``notes``, one
+    per row, are added to the rows' labels."""
     labels = [_calendar_row_label(row) for row in rows]
+    if notes is not None:
+        labels = [f"{label}  {note}" if note else label for label, note in zip(labels, notes, strict=True)]
     candidates = list(range(len(rows)))
     while True:
         if wanted is None:
@@ -3073,42 +3201,65 @@ def _select_calendar_row(rows: list[dict[str, str]], wanted: str | None) -> int:
 def calendar_edit(
     ctx: click.Context, row: str | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Change one row of the scenario's own calendar.csv.
+    """Change one row of the scenario's calendar, its own or inherited.
 
     ROW is the row's number, its name, or text that picks it out; without it,
     or if it matches several rows, the rows are listed to choose from. The
     row's fields are then shown: name one to change it, as often as needed,
     and write when done. The row keeps its kind and its place in the file.
 
+    A row the scenario inherits is changed here by an override: the whole
+    row, edited, appended to this scenario's calendar.csv; the parent keeps
+    its own. The override keeps the row's name (`sim calendar rename`
+    renames it everywhere), and one of an unnamed row keeps its date, kind,
+    accounts, series and amount, which are how the load finds the row it
+    overrides.
+
     A change that would make the row a copy of another row, or reuse another
-    row's name, is refused. Rows inherited from a parent scenario are edited
-    in that scenario.
+    row's name, is refused.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
     _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
-    rows = _read_calendar_rows(path)
-    if not rows:
-        raise click.ClickException(
-            f"scenario {scenario_name!r} has no calendar rows of its own to edit "
-            "(rows it inherits are edited in the parent scenario)"
-        )
-    index = _select_calendar_row(rows, row)
+    # Its own rows first, numbered as in its own file; then those it inherits.
+    overlaid = _scenario_calendar_rows(scenario_dir)
+    entries = [
+        *sorted((e for e in overlaid if e.index is not None), key=lambda e: e.index or 0),
+        *(e for e in overlaid if e.index is None),
+    ]
+    if not entries:
+        raise click.ClickException(f"scenario {scenario_name!r} has no calendar rows to edit")
+    rows = [entry.row for entry in entries]
+    # The own rows as the file has them, which the write checks are still there.
+    own_rows = _read_calendar_rows(path)
+    notes = [
+        f"[inherited from {entry.inherited_from}]" if entry.index is None
+        else f"[overrides {entry.inherited_from}]" if entry.inherited_from
+        else ""
+        for entry in entries
+    ]
+    index = _select_calendar_row(rows, row, notes)
+    chosen = entries[index]
     converted = _calendar_row_answers(rows[index])
     if converted is None:
+        where = path if chosen.index is not None else f"scenario {chosen.inherited_from!r}"
         raise click.ClickException(
             f"row {index + 1} is a {rows[index]['kind']!r} row, which this command "
-            f"cannot edit; change it in {path}"
+            f"cannot edit; change it in {where}"
         )
     spec, answers = converted
-    click.echo(f"Editing row {index + 1}: {_calendar_row_label(rows[index])}")
+    click.echo(f"Editing row {index + 1}: {_calendar_row_label(rows[index])}  {notes[index]}".rstrip())
     context = _guide_context(data_dir_p, scenario_name, rows=rows, editing=index)
     guide = _calendar_guide()
     guide.complete(spec, context, answers)
 
     def submit(params: dict[str, object]) -> None:
-        ctx.meta[_CALENDAR_REPLACE_ROW] = (index, rows[index])
+        if chosen.index is None:
+            key, value = _CALENDAR_OVERRIDE_ROW, (rows[index], chosen.inherited_from)
+        else:
+            key, value = _CALENDAR_REPLACE_ROW, (chosen.index, own_rows[chosen.index])
+        ctx.meta[key] = value
         try:
             # The scenario announced above, by name: a defaulted scenario is
             # not resolved again, in case the default changed meanwhile.
@@ -3117,7 +3268,7 @@ def calendar_edit(
                 scenario=scenario_name, data_dir=data_dir_p, **params,
             )
         finally:
-            del ctx.meta[_CALENDAR_REPLACE_ROW]
+            del ctx.meta[key]
 
     if not guide.review(spec, context, answers, submit, show_command=False):
         ctx.exit(1)
@@ -4222,6 +4373,43 @@ def _is_growth_rate_row(row: pd.Series, series: str | None) -> bool:
     return params.get("aux_kind", "rate") == "rate"
 
 
+class _Overlaid(NamedTuple):
+    """One row of a scenario's table, as its load order leaves it."""
+    row: dict[str, str]  # merged down the load order, as the loader merges it
+    index: int | None  # its data row (0-based) in this scenario's own file, if there
+    inherited_from: str | None  # the last scenario before this one to have it
+
+
+def _overlay_rows(scenario_dir: Path, filename: str, key: str = "name") -> dict[str, _Overlaid]:
+    """Every row of the scenario's ``filename`` (accounts.csv, scheduled.csv)
+    by ``key``, overlaid down its load order as ``_merge_scenario_rows`` does:
+    a later scenario's row with the same key updates the earlier one, cell by
+    cell. So an edit can find a row the scenario inherits, and write it back
+    as an override (#202)."""
+    name = scenario_dir.name
+    rows: dict[str, _Overlaid] = {}
+    for scenario_name in load_order(scenario_dir.parent, name):
+        path = scenario_dir.parent / scenario_name / filename
+        if not path.exists() or path.stat().st_size == 0:
+            continue
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        if key not in frame.columns:
+            continue
+        for index, record in enumerate(frame.to_dict("records")):
+            # Stripped, as the loader reads every cell.
+            row = {str(k): str(v).strip() for k, v in record.items()}
+            if not row[key]:
+                continue
+            prior = rows.get(row[key])
+            merged = {**prior.row, **row} if prior is not None else row
+            if scenario_name != name:
+                rows[row[key]] = _Overlaid(merged, None, scenario_name)
+            else:
+                inherited_from = prior.inherited_from if prior is not None else None
+                rows[row[key]] = _Overlaid(merged, index, inherited_from)
+    return rows
+
+
 def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = None) -> list[str]:
     """Return direct CSV references to an account in deterministic display order,
     plus calendar.csv's set_rate rows for its own growth ``series``."""
@@ -4325,6 +4513,28 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
         raise click.ClickException(f"accounts.csv not found: {accounts_path}")
 
     df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    found = _overlay_rows(scenario_dir, "accounts.csv").get(name)
+    if found is not None and found.inherited_from is not None and found.index is not None:
+        # Deleting an override restores the inherited row; the account and
+        # everything that uses it stay (#202).
+        with _scenario_edit(data_dir_p, scenario_name) as edit:
+            staged = edit.path(accounts_path)
+            own = pd.read_csv(staged, dtype=str, keep_default_na=False)
+            own.drop(index=own.index[found.index]).to_csv(staged, index=False)
+        click.echo(
+            f"deleted this scenario's override of account '{name}' from {accounts_path}; "
+            f"it is inherited from {found.inherited_from!r} again"
+        )
+        return
+    if found is not None and found.inherited_from is not None:
+        # The loader has no way for a scenario to drop a row it inherits, and
+        # the account's inherited chains, rules and lots would still name it.
+        # Deleting it where it is defined is safer.
+        raise click.ClickException(
+            f"account {name!r} comes from scenario {found.inherited_from!r}, "
+            f"and {scenario_name!r} can't remove what it inherits; delete it in "
+            f"{found.inherited_from!r} to remove it from every scenario built on it"
+        )
     if "name" not in df.columns or not (df["name"] == name).any():
         raise click.ClickException(f"unknown account: {name!r}")
 
@@ -4374,21 +4584,30 @@ def edit_account(
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """Edit an account's fields, prompting with current values as defaults when needed."""
+    """Edit an account's fields, prompting with current values as defaults when needed.
+
+    An account the scenario inherits is changed here by an override: its
+    whole row, edited, written to this scenario's accounts.csv. The parent
+    keeps its own. A new name renames the account everywhere it is shared,
+    as ``sim account rename`` does.
+    """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     accounts_path = scenario_dir / "accounts.csv"
-    if not accounts_path.exists():
-        raise click.ClickException(f"accounts.csv not found: {accounts_path}")
 
-    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
-    if "name" not in df.columns:
-        raise click.ClickException(f"accounts.csv missing 'name' column: {accounts_path}")
-    matches = df.index[df["name"] == name].tolist()
-    if not matches:
+    chosen = _overlay_rows(scenario_dir, "accounts.csv").get(name)
+    if chosen is None:
         raise click.ClickException(f"unknown account: {name!r}")
-    idx = matches[0]
-    current = df.loc[idx].to_dict()
+    if chosen.index is None:
+        if accounts_path.exists() and accounts_path.stat().st_size > 0:
+            df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+        else:
+            df = pd.DataFrame(columns=list(registries.ACCOUNTS_CSV_HEADER))
+        idx = None
+    else:
+        df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+        idx = df.index[chosen.index]
+    current = chosen.row
 
     with _intent_db(data_dir_p, scenario_name) as (con, _name):
         persons = [r[0] for r in con.execute("SELECT id FROM person ORDER BY id")]
@@ -4482,15 +4701,35 @@ def edit_account(
     # The row and the references must carry the same name; references are
     # renamed to the stripped one.
     new_name = new_name.strip()
-    df.loc[idx, [
-        "name", "kind", "subkind", "owner", "tax_treatment",
-        "opened", "closed", "meta_json", "tags",
-    ]] = [
-        new_name, kind, subkind, owner, tax_treatment,
-        opened, closed, meta_json, tags,
-    ]
+    fields = {
+        "name": new_name, "kind": kind, "subkind": subkind, "owner": owner,
+        "tax_treatment": tax_treatment, "opened": opened, "closed": closed,
+        "meta_json": meta_json, "tags": tags,
+    }
     if new_name != name and new_name in existing:
         raise click.ClickException(f"account already exists: {new_name!r}")
+    if idx is None:
+        # An override carries the whole row, so what it means doesn't hang on
+        # how the loader merges a blank cell over the parent's value.
+        row = {**current, **fields}
+        override = any(row[k] != current.get(k, "") for k in fields if k != "name")
+        with _scenario_edit(data_dir_p, scenario_name) as edit:
+            if new_name != name:
+                _rename_account(edit, name, new_name)
+            if override:
+                _append_csv_row(edit.path(accounts_path), tuple(df.columns), row)
+        if override:
+            click.echo(
+                f"wrote an override of account '{new_name}' "
+                f"(inherited from {chosen.inherited_from!r}) to {accounts_path}"
+            )
+        else:
+            click.echo(
+                f"renamed account '{name}' to '{new_name}' where it is defined, "
+                f"in {chosen.inherited_from!r}"
+            )
+        return
+    df.loc[idx, list(fields)] = list(fields.values())
     with _scenario_edit(data_dir_p, scenario_name) as edit:
         if new_name != name:
             # Renames the references everywhere the account is shared; the

@@ -98,7 +98,8 @@ a date:
 sim calendar edit --scenario inflation_1
 ```
 
-It lists the scenario's own calendar rows and asks which one. Answer with
+It lists the scenario's calendar rows, its own first and then those it
+inherits, and asks which one. Answer with
 the row's number or its name, or type any text to narrow the list (`retire`,
 `2029`, an account) until one row is left. You can also name the row on the
 command line: `sim calendar edit fund_vary`.
@@ -113,8 +114,13 @@ are the same event to the simulator, so an edit that would make this row a
 copy of another is refused, and the choice that would cause it is left out
 of the completions. So is giving the row a name another row already has.
 
-A row the scenario inherits from its parent is not listed: edit it in the
-parent, or add a row here that overrides it.
+A row the scenario inherits is marked with the scenario it comes from.
+Editing it writes the whole edited row into this scenario's `calendar.csv`
+as an override; the parent keeps its own row. The override keeps the row's
+name (`sim calendar rename` renames it everywhere). A row with no name is
+matched to its override by its date, kind, accounts, lots, series and
+amount, so changing one of those is refused: name the row in the scenario
+it comes from first.
 
 **Choosing a distribution.** Four are available:
 

@@ -68,6 +68,14 @@ or inflation series it changes. It checks that the scenario loads, and makes it 
 scenario. You then add only the rows that need to be different — the rest of
 this guide shows what to put in them.
 
+You can also start from what the scenario inherits: `sim account edit`,
+`sim account lot edit` and `sim calendar edit` on an inherited item write
+the edited row into the derived scenario as an override, and leave the
+parent alone. A derived scenario can't remove what it inherits, so
+`sim account delete` refuses an inherited account (delete it in the scenario
+that defines it); deleting the derived scenario's override brings back the
+inherited row. Renames always reach every scenario sharing the name.
+
 A scenario made this way is never an ensemble, even when its parent is
 one: it runs once, with each varying row at its central value. Use
 `sim ensemble create` (§4.10) for an ensemble.

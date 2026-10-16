@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import sqlite3
 from collections.abc import Callable
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from analysis.cli import main
 from analysis.sim import registries
@@ -557,6 +558,62 @@ def test_sim_account_edit_updates_owner_with_prompt_defaults(test_data_dir: Path
     ) as fh:
         rows = {r["name"]: r for r in csv.DictReader(fh)}
     assert rows["Asset_Checking"]["owner"] == "alice"
+
+
+
+def _accounts(scenario_dir: Path) -> dict[str, dict[str, str]]:
+    with (scenario_dir / "accounts.csv").open(newline="", encoding="utf-8") as fh:
+        return {row["name"]: row for row in csv.DictReader(fh)}
+
+
+def _account_cmd(data: Path, *args: str) -> Result:
+    return CliRunner().invoke(
+        main, ["sim", "account", *args, "--scenario", "child", "--data-dir", str(data)],
+    )
+
+
+def test_editing_an_inherited_account_writes_a_whole_row_override(
+    test_data_dir: Path, test_child_scenario: Path,
+) -> None:
+    parent_dir = test_data_dir / "scenarios" / "retire_alice"
+    parent = _accounts(parent_dir)
+
+    result = _account_cmd(test_data_dir, "edit", "Asset_Checking", "--owner", "alice")
+
+    assert result.exit_code == 0, result.output
+    assert "wrote an override of account 'Asset_Checking' (inherited from 'retire_alice')" in result.output
+    assert _accounts(test_child_scenario) == {
+        "Asset_Checking": {**parent["Asset_Checking"], "owner": "alice"},
+    }
+    assert _accounts(parent_dir) == parent
+
+
+def test_renaming_an_inherited_account_renames_it_where_it_is_defined(
+    test_data_dir: Path, test_child_scenario: Path,
+) -> None:
+    result = _account_cmd(test_data_dir, "edit", "Asset_Checking", "--new-name", "Asset_Spending")
+
+    assert result.exit_code == 0, result.output
+    assert "where it is defined, in 'retire_alice'" in result.output
+    assert _accounts(test_child_scenario) == {}
+    assert "Asset_Spending" in _accounts(test_data_dir / "scenarios" / "retire_alice")
+
+
+def test_deleting_an_inherited_account_is_refused_but_an_override_goes(
+    test_data_dir: Path, test_child_scenario: Path,
+) -> None:
+    refused = _account_cmd(test_data_dir, "delete", "Asset_Checking")
+
+    assert refused.exit_code != 0
+    assert "delete it in 'retire_alice'" in refused.output
+    assert "Asset_Checking" in _accounts(test_data_dir / "scenarios" / "retire_alice")
+
+    assert _account_cmd(test_data_dir, "edit", "Asset_Checking", "--owner", "alice").exit_code == 0
+    restored = _account_cmd(test_data_dir, "delete", "Asset_Checking")
+
+    assert restored.exit_code == 0, restored.output
+    assert "inherited from 'retire_alice' again" in restored.output
+    assert _accounts(test_child_scenario) == {}
 
 
 def test_sim_account_rename_updates_references(test_data_dir: Path) -> None:
