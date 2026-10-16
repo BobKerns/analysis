@@ -602,6 +602,9 @@ def test_renaming_an_inherited_account_renames_it_where_it_is_defined(
 def test_deleting_an_inherited_account_is_refused_but_an_override_goes(
     test_data_dir: Path, test_child_scenario: Path,
 ) -> None:
+    # A derived scenario may leave accounts.csv out entirely.
+    (test_child_scenario / "accounts.csv").unlink()
+
     refused = _account_cmd(test_data_dir, "delete", "Asset_Checking")
 
     assert refused.exit_code != 0

@@ -3212,7 +3212,7 @@ def calendar_edit(
     row, edited, appended to this scenario's calendar.csv; the parent keeps
     its own. The override keeps the row's name (`sim calendar rename`
     renames it everywhere), and one of an unnamed row keeps its date, kind,
-    accounts, series and amount, which are how the load finds the row it
+    rule, accounts, lots, series and amount, which are how the load finds the row it
     overrides.
 
     A change that would make the row a copy of another row, or reuse another
@@ -4509,10 +4509,7 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     accounts_path = scenario_dir / "accounts.csv"
-    if not accounts_path.exists():
-        raise click.ClickException(f"accounts.csv not found: {accounts_path}")
-
-    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    # Looked up first: a derived scenario may leave accounts.csv out entirely.
     found = _overlay_rows(scenario_dir, "accounts.csv").get(name)
     if found is not None and found.inherited_from is not None and found.index is not None:
         # Deleting an override restores the inherited row; the account and
@@ -4535,9 +4532,10 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
             f"and {scenario_name!r} can't remove what it inherits; delete it in "
             f"{found.inherited_from!r} to remove it from every scenario built on it"
         )
-    if "name" not in df.columns or not (df["name"] == name).any():
+    if found is None:
         raise click.ClickException(f"unknown account: {name!r}")
 
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
     own_series = df.loc[df["name"] == name, "series"].iloc[0] if "series" in df.columns else ""
     with _intent_db(data_dir_p, scenario_name) as (con, _name):
         series = _own_growth_series(con, name, own_series)

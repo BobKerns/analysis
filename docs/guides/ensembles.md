@@ -118,8 +118,8 @@ A row the scenario inherits is marked with the scenario it comes from.
 Editing it writes the whole edited row into this scenario's `calendar.csv`
 as an override; the parent keeps its own row. The override keeps the row's
 name (`sim calendar rename` renames it everywhere). A row with no name is
-matched to its override by its date, kind, accounts, lots, series and
-amount, so changing one of those is refused: name the row in the scenario
+matched to its override by its date, kind, rule, accounts, lots, series
+and amount, so changing one of those is refused: name the row in the scenario
 it comes from first.
 
 **Choosing a distribution.** Four are available:
