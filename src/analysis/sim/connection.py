@@ -33,6 +33,7 @@ from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, DollarMode, It
 
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
+from .schema import connect_sim_file
 
 # Category-bucketing defaults for RunConnection's derived-data methods below.
 # Notebooks may pass their own mapping/set to override any of these.
@@ -323,7 +324,7 @@ class _TagReader:
                 "the connection; using a temporary read-only connection",
                 RuntimeWarning, stacklevel=2,
             )
-            temp = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+            temp = connect_sim_file(f"file:{self._db_path}?mode=ro", uri=True)
             try:
                 return pd.read_sql_query(sql, temp, params=list(params))
             finally:
@@ -569,7 +570,7 @@ class RunConnection(Connection):
             self._scenario = scenario
 
         self.run_path = Path(run_path)
-        self._con = sqlite3.connect(self.run_path)
+        self._con = connect_sim_file(self.run_path)
         self._con.row_factory = sqlite3.Row
 
     @property
@@ -1134,7 +1135,7 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
             scenarios_dir=self.scenarios_dir,
             compute_stamps=False, allow_dirty_data=True,
         )
-        con = sqlite3.connect(self._intent_dir / f"{self._scenario_name}.sqlite3")
+        con = connect_sim_file(self._intent_dir / f"{self._scenario_name}.sqlite3")
         con.row_factory = sqlite3.Row
         self._con = con
         self._invalidate_items_cache()

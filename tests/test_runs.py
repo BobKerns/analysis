@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -147,3 +149,19 @@ def test_run_stamps_use_the_stubbed_code_version(retire_alice_run_file: Path) ->
         ).fetchone() == ("0" * 40, 0, "CODE_REPO")
     finally:
         con.close()
+
+
+def test_sim_files_skip_fsync_but_keep_the_journal_on_disk(tmp_path: Path) -> None:
+    # In a fresh interpreter: conftest turns off fsync and the on-disk journal
+    # for every connection the suite opens, which would hide both settings.
+    script = (
+        "import sys; from analysis.sim.schema import connect_sim_file; "
+        "con = connect_sim_file(sys.argv[1]); "
+        "print(con.execute('PRAGMA synchronous').fetchone()[0], "
+        "con.execute('PRAGMA journal_mode').fetchone()[0])"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "x.sqlite3")],
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert out == ["0", "delete"]

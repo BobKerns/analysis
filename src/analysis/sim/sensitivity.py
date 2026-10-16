@@ -32,6 +32,7 @@ from analysis.sim.distributions import Discrete, Distribution, Triangular, Trunc
 from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
 from analysis.sim.registries import format_calendar_amount
 from analysis.sim.types import DollarMode
+from analysis.sim.schema import connect_sim_file
 
 __all__ = [
     "OatMember", "MEASURES", "RELATIVE_NEAR_ZERO_DOLLARS", "ASYMMETRY_RATIO", "BEND_FACTOR",
@@ -119,7 +120,7 @@ def oat_members(connections: dict[str, RunConnection]) -> list[OatMember]:
     the base. Self-documenting -- nothing is inferred from file order."""
     members = []
     for stem, rc in connections.items():
-        con = sqlite3.connect(rc.run_path)
+        con = connect_sim_file(rc.run_path)
         try:
             row = con.execute(
                 "SELECT d.calendar_event_name, d.quantile, d.vary_target, d.drawn_value, c.kind "
@@ -387,7 +388,7 @@ def _cumulative_flows(rc: RunConnection, by: str) -> pd.DataFrame:
     without moving balances (``engine._post_ytd_transfer``), so they're
     excluded."""
     key = "name" if by == "flow_account" else "subkind"
-    con = sqlite3.connect(rc.run_path)
+    con = connect_sim_file(rc.run_path)
     try:
         events = pd.read_sql_query(
             f"""
@@ -415,7 +416,7 @@ def _cumulative_flows(rc: RunConnection, by: str) -> pd.DataFrame:
 def _holdings(rc: RunConnection) -> pd.DataFrame:
     """Year-end balance (dollars) per asset/liability account, liabilities
     negative -- the same signs the ``net_worth`` view sums."""
-    con = sqlite3.connect(rc.run_path)
+    con = connect_sim_file(rc.run_path)
     try:
         balances = pd.read_sql_query(
             "SELECT month, name, CASE WHEN kind = 'liability' THEN -balance ELSE balance END "
@@ -548,7 +549,7 @@ def _member_draws(
     scores: dict[str, dict[str, float]] = {}
     factors: set[str] = set()
     for stem, rc in connections.items():
-        con = sqlite3.connect(rc.run_path)
+        con = connect_sim_file(rc.run_path)
         try:
             index = con.execute("SELECT member_index FROM ensemble_manifest").fetchone()
             columns = {c[1] for c in con.execute("PRAGMA table_info(ensemble_draw)")}
@@ -785,7 +786,7 @@ def classify(
 def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str], set[str]]:
     """A member run file's correlation links (ADR-008), its modeled
     (non-factor) varying rows, and the roots of its t-copula trees (#68)."""
-    con = sqlite3.connect(run_path)
+    con = connect_sim_file(run_path)
     try:
         columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
         links = {} if "vary_correlate_with" not in columns else {
@@ -1088,7 +1089,7 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
 
     connections = load_ensemble(batch_dir)
     try:
-        con = sqlite3.connect(next(iter(connections.values())).run_path)
+        con = connect_sim_file(next(iter(connections.values())).run_path)
         con.row_factory = sqlite3.Row
         try:
             has_distribution = any(

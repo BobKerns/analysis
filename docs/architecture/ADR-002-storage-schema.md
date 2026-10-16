@@ -82,6 +82,7 @@ state/
 - **Dates:** `TEXT` in ISO 8601. Month-grain dates are always pinned to the last day of the month at load time (see [ADR-001](ADR-001-overall-architecture.md) cross-cutting principle 2).
 - **JSON:** `TEXT` columns named `*_json`, parsed by the application layer.
 - **Foreign keys:** declared with `REFERENCES … ON DELETE RESTRICT`. `PRAGMA foreign_keys = ON` set on every connection. No `ON DELETE CASCADE` is needed — deletion is per-file.
+- **Durability:** intent and run files are opened through `schema.connect_sim_file`, which sets `PRAGMA synchronous = OFF`. Both are rebuilt from the data repo (`sim load`, `sim run`), so surviving a power loss or OS crash isn't worth an fsync per commit. The rollback journal stays on disk, so an application crash or Ctrl-C still leaves the file intact.
 - **Identifiers:** integer surrogate `id` primary keys for everything addressable. Authored names are unique-indexed (`account.name`) so CSVs can reference by name and the loader resolves to ids. Ids assigned in the intent file are preserved in the run file's snapshot, keeping ledger FKs valid.
 - **Append-only ledger:** ledger rows are written once and never updated.
 - **No stored computed columns.** Anything derivable (net worth, totals, "is tax-deferred") is a view or query.
@@ -841,3 +842,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#143](https://github.com/BobKerns/analysis/issues/143): `chain.kind` replaced by `chain.role` (`source`/`destination`, NULL for a leaf) (schema 34).
 - [#160](https://github.com/BobKerns/analysis/issues/160): the single-row `account_model` table and every `model_id`/`account_model_id` column are dropped, and `account_model_member` is renamed `account_lot` (Intent layer DDL, placement summary, `schema_overview`; schema 35).
 - [#165](https://github.com/BobKerns/analysis/issues/165): `calendar_event.vary_outcomes` (Intent layer DDL; schema 36).
+- [#181](https://github.com/BobKerns/analysis/issues/181): intent and run files are written without fsync (Conventions).

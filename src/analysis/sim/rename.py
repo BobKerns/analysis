@@ -20,7 +20,6 @@ import csv
 import json
 import os
 import re
-import sqlite3
 import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -28,6 +27,7 @@ from pathlib import Path
 from analysis.sim import chain_edit, registries
 from analysis.sim.lineage import load_order, parse_parents
 from analysis.sim.loader import CURRENT_SCENARIO_FILE, LoadError, load_scenario
+from analysis.sim.schema import connect_sim_file
 
 __all__ = [
     "ACCOUNT_COLUMNS", "CALENDAR_ROW_COLUMNS", "RESERVED_ACCOUNTS", "SCHEDULED_COLUMNS",
@@ -168,7 +168,7 @@ def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str
                                    compute_stamps=False, allow_dirty_data=True)
         except LoadError:
             return {}
-        con = sqlite3.connect(result.intent_path)
+        con = connect_sim_file(result.intent_path)
         try:
             rows = con.execute(_GROWTH_RULES.format(", ".join("?" * len(RESERVED_ACCOUNTS))),
                                sorted(RESERVED_ACCOUNTS)).fetchall()
