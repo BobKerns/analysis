@@ -3222,9 +3222,9 @@ def _validate_chain_tax_steps(
                 "tax_character, or the gain would be characterized as basis"
             )
         after_basis_step = False
+        if row.get("basis_of_lot") and not basis_of:
+            issues.append(f"{where}: basis_of_lot needs basis_of")
         if not character and not basis_of:
-            if row.get("basis_of_lot"):
-                issues.append(f"{where}: basis_of_lot needs basis_of")
             continue
         if role != "destination":
             issues.append(

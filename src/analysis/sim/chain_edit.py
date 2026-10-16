@@ -18,9 +18,9 @@ from analysis.sim import registries
 from analysis.sim.lineage import load_order
 
 __all__ = [
-    "CHAIN_COLUMNS", "REFERENCE_COLUMNS", "TAX_COLUMNS", "chain_file", "chain_files", "defining_scenario",
-    "descendants", "new_chain_file", "read_steps", "rename_cells", "rename_references", "shares_to_percents",
-    "write_steps",
+    "ACCOUNT_COLUMNS", "CHAIN_COLUMNS", "LOT_COLUMNS", "REFERENCE_COLUMNS", "TAX_COLUMNS", "chain_file",
+    "chain_files", "defining_scenario", "descendants", "new_chain_file", "read_steps", "rename_cells",
+    "rename_references", "shares_to_percents", "write_steps",
 ]
 
 TAX_COLUMNS = ("tax_character", "basis_of", "basis_of_lot")
@@ -29,6 +29,12 @@ whose steps use them, so other chain files keep their header."""
 
 CHAIN_COLUMNS = ("account_name", "lot", "maximum", "percent", "series", "cadence", *TAX_COLUMNS)
 """A chain file's columns (ADR-003 §4.7), in the order they are written."""
+
+ACCOUNT_COLUMNS = ("account_name", "basis_of")
+"""A chain file's columns that may name an account, for renames and deletes."""
+
+LOT_COLUMNS = (("account_name", "lot"), ("basis_of", "basis_of_lot"))
+"""A chain file's (account, lot) column pairs, for lot renames and deletes."""
 
 REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     "scheduled.csv": ("from_account", "to_account"),

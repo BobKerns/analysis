@@ -2019,9 +2019,15 @@ def _chain_sweep(
         return put
     total = 0
     character = source_tax_character
+    # Money out of a basis-tracked lot keeps _post_withdrawal's pro-rata
+    # split unless a basis step for that lot says how much is basis; a
+    # chain's characters alone would tax the basis as gain.
+    keeps_split = _sale is None and registries.withdrawal_tax_character(
+        account_tax_treatment.get(source_account_id), account_subkind.get(source_account_id, ""),
+    ) is None
     for number, (draw_into_id, step_maximum, step_percent, step_series, step_cadence,
                  step_character, basis_of) in enumerate(graph.members.get(chain_id, []), 1):
-        if step_character is not None:
+        if step_character is not None and not keeps_split:
             character = step_character
         recovers = basis_of is not None and step_character in registries.BASIS_TAX_CHARACTERS
         remaining = amount_available - total

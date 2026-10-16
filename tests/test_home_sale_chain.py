@@ -151,6 +151,22 @@ def test_an_investment_sold_at_a_loss_records_the_basis_it_could_not_recover(
     assert _last_state(run, "Asset_Brokerage_Joint", "2027-01-31") == (0, 0)
 
 
+def test_a_lot_swept_through_a_chain_without_a_basis_step_is_split_as_usual(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    """With no basis step to size the basis, the chain's ltcg would tax the
+    lot's basis as gain; the withdrawal's pro-rata split stands instead."""
+    _set_value(retire_alice_csv, "Asset_Brokerage_Joint", maximum_balance="250000.00",
+               overflow_chain="brokerage_trim")
+    _chain(retire_alice_csv, "destination", "brokerage_trim", [
+        {"account_name": "Asset_Savings", "tax_character": "ltcg"},
+    ])
+    legs = _legs_out_of(_run(load_test_copy, runs_dir), "Asset_Brokerage_Joint")
+    assert legs.get("return_of_capital", 0) > 0
+    assert legs.get("ltcg", 0) > 0
+
+
 def test_a_capital_improvement_adds_to_the_basis(
     retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
@@ -275,6 +291,8 @@ def test_the_tax_summary_shows_the_deduction_and_the_carryover(
     ([{"account_name": "Asset_Checking", "tax_character": "home_sale", "basis_of": "Asset_Home"},
       {"account_name": "Asset_Savings"}],
      "the step after a basis step must set its own tax_character"),
+    ([{"account_name": "Asset_Checking", "tax_character": "ltcg", "basis_of_lot": "default"}],
+     "basis_of_lot needs basis_of"),
     ([{"account_name": "Asset_Checking", "tax_character": "bogus"}],
      "unknown tax_character 'bogus'"),
     ([{"account_name": "Asset_Checking", "tax_character": "home_sale",
@@ -340,4 +358,35 @@ def test_chain_commands_write_and_keep_the_tax_columns(
     assert [(r["tax_character"], r["basis_of"]) for r in rows] == [
         ("home_sale", "Asset_Home"), ("ltcg", ""),
     ]
+    load_test_copy()
+
+
+def _sim_ok(data_dir: Path, *args: str) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", *args, "--data-dir", str(data_dir), "--scenario", "retire_alice",
+    ])
+    assert result.exit_code == 0, result.output
+
+
+def _steps(path: Path) -> list[tuple[str, str]]:
+    with path.open() as fh:
+        return [(row["basis_of"], row["basis_of_lot"]) for row in csv.DictReader(fh)]
+
+
+def test_renaming_an_account_or_lot_follows_the_basis_columns(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    _home_sale_chain(retire_alice_csv)
+    _chain(retire_alice_csv, "destination", "brokerage_sale", [
+        {"account_name": "Asset_Savings", "tax_character": "return_of_capital",
+         "basis_of": "Asset_Brokerage_Joint", "basis_of_lot": "default"},
+        {"account_name": "Asset_Savings", "tax_character": "ltcg"},
+    ])
+    _sim_ok(test_data_dir, "account", "rename", "Asset_Home", "Asset_House")
+    _sim_ok(test_data_dir, "account", "lot", "rename", "Asset_Brokerage_Joint", "default", "core")
+    assert _steps(retire_alice_csv("chains/destination/home_sale.csv"))[0] == ("Asset_House", "")
+    assert _steps(retire_alice_csv("chains/destination/brokerage_sale.csv"))[0] == (
+        "Asset_Brokerage_Joint", "core",
+    )
     load_test_copy()

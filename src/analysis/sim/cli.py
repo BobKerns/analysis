@@ -4245,7 +4245,7 @@ def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = 
         (scenario_dir / filename, fields)
         for filename, fields in _ACCOUNT_REFERENCE_FIELDS
     ]
-    paths.extend((path, ("account_name",)) for path in chain_edit.chain_files(scenario_dir))
+    paths.extend((path, chain_edit.ACCOUNT_COLUMNS) for path in chain_edit.chain_files(scenario_dir))
 
     for path, fields in paths:
         if not path.exists():
@@ -4271,7 +4271,7 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
         (scenario_dir / filename, fields)
         for filename, fields in _ACCOUNT_REFERENCE_FIELDS
     ]
-    paths.extend((path, ("account_name",)) for path in chain_edit.chain_files(scenario_dir))
+    paths.extend((path, chain_edit.ACCOUNT_COLUMNS) for path in chain_edit.chain_files(scenario_dir))
 
     for path, fields in paths:
         if not path.exists():
@@ -4928,7 +4928,7 @@ def _names_lot(row: dict[str, str] | pd.Series, account_field: str, lot_field: s
 
 def _lot_reference_files(scenario_dir: Path) -> list[tuple[Path, tuple[tuple[str, str], ...]]]:
     paths = [(scenario_dir / name, pairs) for name, pairs in _LOT_REFERENCE_FIELDS]
-    paths.extend((path, (("account_name", "lot"),)) for path in chain_edit.chain_files(scenario_dir))
+    paths.extend((path, chain_edit.LOT_COLUMNS) for path in chain_edit.chain_files(scenario_dir))
     return [(path, pairs) for path, pairs in paths if path.exists() and path.stat().st_size > 0]
 
 
