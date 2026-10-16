@@ -6,12 +6,11 @@ instead of pre-built pandas structures.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
 from IPython.display import clear_output, display
 from ipywidgets import widgets
-from analysis.sim.notebook_ui.pickers import AccountKindPicker
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -19,9 +18,9 @@ from analysis.sim.accounts import CASHFLOW_KINDS, KIND_LABELS, account_summary_b
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.plotting import include_zero
-from analysis.sim.types import AccountKind, DollarMode, ValuePlotMode
+from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.pickers import (
-    DollarModePicker, ValuePlotModePicker, YAxisPlotModePicker,
+    AccountPicker, DollarModePicker, ValuePlotModePicker, YAxisPlotModePicker,
 )
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
@@ -43,6 +42,8 @@ def account_balance_history_widget(
     dollar_mode: DollarModePicker | None = None,
     value_mode: ValuePlotModePicker | None = None,
     y_axis_mode: YAxisPlotModePicker | None = None,
+    lots_by_account: Mapping[str, Sequence[str]] | None = None,
+    lot_balance: Callable[[str, str, DollarMode], pd.Series] | None = None,
 ) -> widgets.VBox:
     """Build a Kind + Accounts + Output widget set that plots on selection change.
 
@@ -51,31 +52,29 @@ def account_balance_history_widget(
     widget covers asset/liability/income/expense instead of one apiece
     (unlike kinds stay off the same axis this way). Income/expense get an
     automatic cumulative-totals note; other kinds don't need one.
+    Given ``lots_by_account`` and ``lot_balance``, a single account with
+    several lots can be drilled into: picked lots plot one line apiece in
+    place of the account's (#170).
     Returns the combined ``ipywidgets.VBox``; it is not displayed here, because
     ``Connections.show`` displays what a widget function returns.
     """
 
-    kind_picker = AccountKindPicker(kind)
+    def _plottable(kind: AccountKindAny) -> list[str]:
+        return plottable_accounts(balance_pivot_by_kind(cast(AccountKind, kind)), account_kinds, kind)
+
+    picker = AccountPicker(
+        kind=kind, accounts_by_kind=_plottable, initial_count=initial_count,
+        lots_by_account=lots_by_account if lot_balance is not None else None,
+    )
 
     def _kind() -> AccountKind:
         # No "Any" option here, so the picker always holds a single kind.
-        return cast(AccountKind, kind_picker.value)
-    picker = widgets.SelectMultiple(
-        description="Accounts:", layout=widgets.Layout(width="50%"),
-    )
+        return cast(AccountKind, picker.kind)
     value_mode = value_mode or ValuePlotModePicker()
     dollar_mode = dollar_mode or DollarModePicker()
     y_axis_mode = y_axis_mode or YAxisPlotModePicker()
     caveat_out = widgets.Output()
     out = widgets.Output()
-
-    def _sync_accounts_options(*_):
-        plottable = plottable_accounts(
-            balance_pivot_by_kind(_kind()), account_kinds, _kind(),
-        )
-        picker.rows = min(15, max(5, len(plottable)))
-        picker.options = plottable
-        picker.value = tuple(plottable[:initial_count])
 
     def _redraw_caveat(*_):
         with caveat_out:
@@ -83,16 +82,26 @@ def account_balance_history_widget(
             if _kind() in _CUMULATIVE_KINDS:
                 display(StyledMarkdown(_CUMULATIVE_CAVEAT))
 
-    def _redraw(*_):
-        selected = list(picker.value)
-        mode = dollar_mode.value
-        zero_anchor = y_axis_mode.value
-        values = value_mode.value
+    def _pivot(mode: DollarMode) -> tuple[pd.DataFrame, list[str]]:
+        """The balances to plot and the columns selected in them: the
+        picked lots' own series when there are any, else the accounts'."""
+        accounts, lots = picker.selection
+        if lots and lot_balance is not None:
+            (account,) = accounts
+            series = [lot_balance(account, lot, mode) for lot in lots]
+            return pd.concat(series, axis=1), [str(s.name) for s in series]
         pivot = (
             cpi_balance_pivot_by_kind(_kind())
             if mode == DollarMode.CPI_CONSTANT and cpi_balance_pivot_by_kind is not None
             else balance_pivot_by_kind(_kind())
         )
+        return pivot, list(accounts)
+
+    def _redraw(*_):
+        mode = dollar_mode.value
+        zero_anchor = y_axis_mode.value
+        values = value_mode.value
+        pivot, selected = _pivot(mode)
         with out:
             clear_output(wait=True)
             mode_title = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
@@ -110,14 +119,8 @@ def account_balance_history_widget(
             display(fig)
             plt.close(fig)
 
-    def _on_kind_change(*_):
-        _redraw_caveat()
-        _sync_accounts_options()
-
-    # Fill the picker before observing it, so setting its options does not draw.
-    _sync_accounts_options()
-    kind_picker.observe(_on_kind_change, names="value")
-    picker.observe(_redraw, names="value")
+    picker.observe(_redraw_caveat, names="kind")
+    picker.observe(_redraw, names="selection")
     dollar_mode.observe(_redraw, names="value")
     y_axis_mode.observe(_redraw, names="value")
     value_mode.observe(_redraw, names="value")
@@ -128,7 +131,7 @@ def account_balance_history_widget(
     box = widgets.VBox([
         *( [scenario_picker] if scenario_picker is not None else () ),
         widgets.HBox([value_mode, dollar_mode, y_axis_mode]),
-        kind_picker, picker, out, caveat_out,
+        picker, out, caveat_out,
     ])
     return box
 
@@ -144,7 +147,8 @@ def account_history_widget(
 
     ``kind`` only sets the Kind dropdown's initial selection
     (asset/liability/income/expense); switching it repopulates the Accounts
-    picker instead of needing a separate widget per kind.
+    picker instead of needing a separate widget per kind. A single account
+    with several lots can be drilled into, lot by lot (#170).
     """
     title = f"{title} - {rc.label}"
     return account_balance_history_widget(
@@ -154,6 +158,8 @@ def account_history_widget(
         dollar_mode=dollar_mode,
         value_mode=value_mode,
         y_axis_mode=y_axis_mode,
+        lots_by_account=rc.lots_by_account(),
+        lot_balance=rc.lot_balance,
     )
 
 

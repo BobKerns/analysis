@@ -1,7 +1,11 @@
-"""Scenario-compare widgets for lots: definition differences and lot balance diffs."""
+"""Scenario-compare widgets for lots: definition differences, and the account
+diffs' lot drill-down with its Measure toggle."""
 
 from __future__ import annotations
 
+from typing import Any
+
+import ipywidgets as widgets
 import matplotlib
 import pytest
 
@@ -10,11 +14,9 @@ matplotlib.use("Agg")
 from analysis.sim.connection import RunConnection
 from analysis.sim.notebook_ui.lot_compare import (
     account_definition_differences,
-    differing_lots,
-    lot_frame,
-    show_lot_balance_diffs,
     year_to_date_differences,
 )
+from analysis.sim.notebook_ui.pickers import AccountPicker
 
 BROKERAGE = "Asset_Brokerage_Joint"
 SCENARIOS = ["retire_alice", "variant"]
@@ -62,17 +64,46 @@ def test_year_to_date_rows_are_compared_by_name(lot_variant_runs: Runs) -> None:
     assert diff.iloc[0].to_list() == ["$62,000.00", "$70,000.00"]
 
 
-def test_lots_worth_comparing_come_from_accounts_with_several_lots(lot_variant_runs: Runs) -> None:
-    base, variants = lot_variant_runs
-    labels, added, deleted = differing_lots(base, variants)
-    assert labels == [f"{BROKERAGE}/b", f"{BROKERAGE}/c"]  # a is unchanged; single-lot accounts are out
-    assert added == {"variant": [f"{BROKERAGE}/c"]} and deleted == {"variant": []}
+def _account_diffs(runs: Runs, monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
+    """The account diffs widget, its account picker and Measure toggle, and
+    the list its tables are displayed into."""
+    from analysis.sim.notebook_ui import compare_plots
+
+    base, variants = runs
+    shown: list[Any] = []
+    monkeypatch.setattr(compare_plots, "display", lambda *args, **_: shown.extend(args))
+    box = compare_plots.show_account_balance_diffs(None, "retire_alice", base, variants, **kwargs)
+    picker = next(child for child in box.children if isinstance(child, AccountPicker))
+    modes = next(child for child in box.children
+                 if isinstance(child, widgets.HBox) and not isinstance(child, AccountPicker))
+    measure = modes.children[-1]
+    picker.kind_picker.value = "asset"
+    picker.account_picker.value = (BROKERAGE,)
+    return picker, measure, shown
+
+
+def test_account_diffs_measure_sits_right_of_the_modes(
+    lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui.pickers import DollarModePicker, ValuePlotModePicker
+
+    dollars, values = DollarModePicker(), ValuePlotModePicker()
+    picker, measure, _shown = _account_diffs(lot_variant_runs, monkeypatch,
+                                              dollar_mode=dollars, value_mode=values)
+    assert isinstance(picker.account_picker, widgets.Dropdown)  # one account at a time
+    assert measure.description == "Measure:" and measure.value == "balance"
+    assert [key for _text, key in measure.options] == ["balance", "cost_basis", "quantity"]
+    assert measure.layout.border == dollars.layout.border == values.layout.border
 
 
 @pytest.mark.parametrize("measure", ["balance", "cost_basis", "quantity"])
-def test_lot_frame_shows_the_month_by_month_difference(lot_variant_runs: Runs, measure: str) -> None:
-    base, variants = lot_variant_runs
-    frame = lot_frame(base, variants, f"{BROKERAGE}/b", measure)
+def test_account_diffs_show_one_lots_measure_month_by_month(
+    lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch, measure: str,
+) -> None:
+    picker, measure_picker, shown = _account_diffs(lot_variant_runs, monkeypatch)
+    picker.lot_picker.picker.value = ("b",)
+    measure_picker.value = measure
+    frame = shown[-1].data
     assert list(frame.columns) == ["baseline", "variant", "Δvariant"]
     assert not frame.empty
     assert (frame["Δvariant"] == frame["variant"] - frame["baseline"]).all()
@@ -82,52 +113,50 @@ def test_lot_frame_shows_the_month_by_month_difference(lot_variant_runs: Runs, m
     assert first["Δvariant"] < 0 and abs(first["Δvariant"] - expected_start) < abs(expected_start) * 0.5
 
 
-def test_a_lot_the_baseline_lacks_counts_as_zero_there(lot_variant_runs: Runs) -> None:
-    base, variants = lot_variant_runs
-    frame = lot_frame(base, variants, f"{BROKERAGE}/c", "cost_basis")
+def test_a_lot_the_baseline_lacks_counts_as_zero_there(
+    lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    picker, measure_picker, shown = _account_diffs(lot_variant_runs, monkeypatch)
+    picker.lot_picker.picker.value = ("c",)
+    measure_picker.value = "cost_basis"
+    frame = shown[-1].data
     assert (frame["baseline"] == 0).all()
     assert frame["variant"].iloc[0] == 20_000.0
 
 
-def test_cpi_dollars_and_monthly_changes(lot_variant_runs: Runs) -> None:
-    base, variants = lot_variant_runs
-    nominal = lot_frame(base, variants, f"{BROKERAGE}/b", "balance")
-    real = lot_frame(base, variants, f"{BROKERAGE}/b", "balance", cpi=True)
+def test_cpi_dollars_leave_quantities_alone(
+    lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui.pickers import DollarModePicker
+    from analysis.sim.types import DollarMode
+
+    dollars = DollarModePicker(DollarMode.NOMINAL)
+    picker, measure_picker, shown = _account_diffs(lot_variant_runs, monkeypatch,
+                                                   dollar_mode=dollars)
+    picker.lot_picker.picker.value = ("b",)
+    nominal = shown[-1].data
+    dollars.value = DollarMode.CPI_CONSTANT
+    real = shown[-1].data
     assert real["baseline"].iloc[-1] < nominal["baseline"].iloc[-1]  # inflation shrinks later dollars
-    shares = lot_frame(base, variants, f"{BROKERAGE}/b", "quantity", cpi=True)
-    assert shares["baseline"].iloc[0] == lot_frame(base, variants, f"{BROKERAGE}/b", "quantity")["baseline"].iloc[0]
-    monthly = lot_frame(base, variants, f"{BROKERAGE}/c", "balance", monthly=True)
-    assert monthly["variant"].abs().max() < 25_000.0  # changes, not levels
+    measure_picker.value = "quantity"
+    shares_real = shown[-1].data
+    dollars.value = DollarMode.NOMINAL
+    assert shares_real["baseline"].equals(shown[-1].data["baseline"])
 
 
-def test_the_widget_offers_the_differing_lots_and_measures(lot_variant_runs: Runs) -> None:
-    base, variants = lot_variant_runs
-    box = show_lot_balance_diffs(None, baseline="retire_alice", baseline_rc=base, variant_rcs=variants)
-    lot_picker, measure_picker = box.children[1].children
-    assert lot_picker.description == "Lot:"
-    assert list(lot_picker.options) == [f"{BROKERAGE}/b", f"{BROKERAGE}/c"]
-    assert [key for _text, key in measure_picker.options] == ["balance", "cost_basis", "quantity"]
-    for label in lot_picker.options:
-        lot_picker.value = label
-        for _text, key in measure_picker.options:
-            measure_picker.value = key  # must not raise
+def test_measure_appears_only_for_a_picked_lot(
+    lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Summed over an account's lots, basis and quantity would mislead, so
+    Measure shows only once one lot is picked, and All lots is a balance."""
+    from analysis.sim.notebook_ui import compare_plots
 
-
-def test_the_widget_says_so_when_nothing_differs(lot_variant_runs: Runs) -> None:
-    base, _ = lot_variant_runs
-    box = show_lot_balance_diffs(None, baseline="a", baseline_rc=base, variant_rcs={"b": base})
-    assert len(box.children) == 3  # mode toggles, heading, and the message: no pickers
-
-
-def test_the_definitions_widget_shows_both_tables(lot_variant_runs: Runs, capsys) -> None:
-    from types import SimpleNamespace
-
-    from analysis.sim.notebook_ui.lot_compare import account_definitions_widget
-
-    account_definitions_widget(
-        SimpleNamespace(ok=True),  # ty: ignore[invalid-argument-type]  # stands in for the container
-        _connections(lot_variant_runs), SCENARIOS, ["variant"],
-        baseline="retire_alice",
-    )
-    shown = capsys.readouterr().out
-    assert "opening_balance" in shown and "prior_ordinary_wages" in shown
+    picker, measure_picker, shown = _account_diffs(lot_variant_runs, monkeypatch)
+    assert measure_picker.layout.display == "none"
+    picker.lot_picker.picker.value = ("b",)
+    assert measure_picker.layout.display is None
+    measure_picker.value = "quantity"
+    monkeypatch.setattr(compare_plots, "to_markdown", lambda *lines: "\n".join(lines))
+    picker.lot_picker.picker.value = ()
+    assert measure_picker.layout.display == "none"
+    assert shown[-2] == f"### {BROKERAGE}"  # the account's balance, not a quantity

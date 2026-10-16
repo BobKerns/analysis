@@ -951,6 +951,40 @@ def ensemble_recipe(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> st
 
 
 @pytest.fixture(scope="function")
+def two_lot_ensemble_runs_dir(
+    set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], intent_dir: Path, runs_dir: Path,
+) -> Path:
+    """``runs_dir`` holding a 2-member Monte Carlo batch of a retire_alice copy
+    whose brokerage is split into lots ``a`` and ``b``, with a varied
+    checking rate: an ensemble with an account to drill into (#170)."""
+    set_brokerage_lots([
+        {"lot": "a", "opening_balance": "100000.00", "opening_cost_basis": "60000.00"},
+        {"lot": "b", "opening_balance": "200000.00", "opening_cost_basis": "140000.00"},
+    ])
+    calendar = retire_alice_csv("calendar.csv")
+    calendar.write_text(calendar.read_text().replace(
+        ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,a,"))
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
+    )
+    recipe = load_test_copy().intent_path
+    batch_dir = runs_dir / "two_lot" / "2026-01-01T000000Z"
+    for i in range(2):
+        member_intent = resolve_member(
+            recipe, intent_dir / f"two_lot_member_{i}.sqlite3",
+            seed=1, member_index=i, member_count=2, recipe_tree_id="deadbeef",
+        )
+        run_scenario(member_intent, batch_dir / f"member_{i:04d}.sqlite3",
+                     run_by="test", allow_dirty_data=True)
+    return runs_dir
+
+
+@pytest.fixture(scope="function")
 def seeded_ensemble_batch(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     intent_dir: Path, runs_dir: Path,

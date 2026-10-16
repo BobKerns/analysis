@@ -24,6 +24,7 @@ from analysis.sim.holdings import (
     security_names,
 )
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+from analysis.sim.notebook_ui.pickers import AccountDropdown
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = [
@@ -111,23 +112,21 @@ def account_holdings_widget(
     accounts = holding_accounts(source)
     if not accounts:
         return _empty("no account has any lots")
-    account_picker = widgets.Dropdown(
-        options=accounts, value=account if account in accounts else accounts[0],
-        description="Account:",
-    )
+    # Each lot is already a row here, so no lot picker.
+    account_picker = AccountDropdown(accounts, account)
     month_picker = _month_dropdown(source)
     out = widgets.Output()
 
     def _redraw(*_):
         month = month_picker.value if month_picker is not None else None
-        heading, shown = account_holdings_view(source, account_picker.value, month)
+        heading, shown = account_holdings_view(source, account_picker.account, month)
         with out:
             display(StyledMarkdown(heading), clear=True)
             display(_styled(shown))
 
-    for picker in (account_picker, month_picker):
-        if picker is not None:
-            picker.observe(_redraw, names="value")
+    account_picker.observe(_redraw, names="selection")
+    if month_picker is not None:
+        month_picker.observe(_redraw, names="value")
     _redraw()
     box = widgets.VBox([
         widgets.HBox([p for p in (account_picker, month_picker) if p is not None]), out,

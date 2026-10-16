@@ -699,6 +699,46 @@ class RunConnection(Connection):
             return self.to_cpi_constant(balance)
         return self.to_cpi_constant(balance.diff().fillna(balance)).cumsum()
 
+    def lot_balance(
+        self, account: str, lot: str, mode: DollarMode = DollarMode.NOMINAL,
+    ) -> pd.Series:
+        """One lot's month-indexed balance in dollars, like ``account_balance``
+        for one of the account's lots (#170): its own query, so an ensemble
+        reads one lot cheaply from every member. Empty when this run has no
+        such lot."""
+        df = self._read_sql(
+            "SELECT month, balance FROM balance_by_lot "
+            "WHERE account = ? AND lot = ? ORDER BY month",
+            (account, lot),
+        )
+        balance = pd.Series(
+            df["balance"].to_numpy() / 100, index=pd.to_datetime(df["month"]),
+            name=f"{account}/{lot}",
+        )
+        if mode != DollarMode.CPI_CONSTANT or balance.empty:
+            return balance
+        return self.to_cpi_constant(balance)
+
+    def lots_by_account(self, *, single: bool = False) -> dict[str, list[str]]:
+        """Account name -> its lot labels in definition order, for the asset
+        and liability accounts that have more than one lot: the ones a lot
+        picker can drill into (#170). Income and expense accounts are flows,
+        tracked as a single lot. ``single`` keeps single-lot accounts too,
+        for a union across runs: an account split into lots in one run may
+        have one lot of its own in another."""
+
+        def _build() -> dict[str, list[str]]:
+            df = self._read_sql(
+                "SELECT a.name AS account, m.lot FROM account_lot m "
+                "JOIN account a ON a.id = m.account_id "
+                "WHERE a.kind IN ('asset', 'liability') ORDER BY a.name, m.id"
+            )
+            lots = df.groupby("account", sort=True)["lot"].agg(list)
+            return {account: names for account, names in lots.items()
+                    if single or len(names) > 1}
+
+        return self._cached(f"lots_by_account_{single}", _build)
+
     def ensemble_member(self) -> tuple[int, int | None] | None:
         """``(member_index, seed)`` from this run's ``ensemble_manifest``, or
         None for a run that isn't an ensemble member."""

@@ -92,6 +92,7 @@ liab
 libedit
 linalg
 linestyle
+linthresh
 lognormal
 lotb
 lstsq
@@ -183,6 +184,7 @@ subkind
 subkinds
 subshell
 subshells
+symlog
 tailnet
 tailweight
 taxchar

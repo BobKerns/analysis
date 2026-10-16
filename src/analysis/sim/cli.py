@@ -966,6 +966,10 @@ _ENSEMBLE_ACCOUNT_OPTION = click.option(
     "--account", default=None,
     help="Report one account's balance instead of net worth.",
 )
+_ENSEMBLE_LOT_OPTION = click.option(
+    "--lot", default=None,
+    help="With --account: report one lot of the account instead of its total.",
+)
 _ENSEMBLE_RESERVE_OPTION = click.option(
     "--reserve", default=None,
     help="Reserve in CPI-constant dollars (e.g. 250000) for what's reported, "
@@ -996,11 +1000,24 @@ def _reserve_dollars(
 
 def _member_frame(
     connections: dict[str, RunConnection], account: str | None, mode: DollarMode,
+    lot: str | None = None,
 ) -> pd.DataFrame:
     try:
-        return members_balance_by_month(connections, account, mode)
+        return members_balance_by_month(connections, account, mode, lot)
     except EnsembleError as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+def _check_lot_has_account(account: str | None, lot: str | None) -> None:
+    if lot is not None and account is None:
+        raise click.UsageError("--lot needs --account")
+
+
+def _subject(account: str | None, lot: str | None) -> str:
+    """What an ensemble report is about, for its heading."""
+    if account is None:
+        return "net worth"
+    return f"account {account}" + (f" lot {lot}" if lot is not None else "")
 
 
 @ensemble_group_command.command("summary")
@@ -1012,25 +1029,27 @@ def _member_frame(
     help="Which generated batch (a 'sim run' timestamp) to summarize; default: the latest.",
 )
 @_ENSEMBLE_ACCOUNT_OPTION
+@_ENSEMBLE_LOT_OPTION
 @_ENSEMBLE_RESERVE_OPTION
 def ensemble_summary(
     scenario_name: str, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
-    account: str | None, reserve: str | None,
+    account: str | None, lot: str | None, reserve: str | None,
 ) -> None:
     """Mean/median/SD, 5th/20th/.../95th percentiles and the mean of the
-    worst 5% and 20% (CVaR) of year-end net worth (or --account's balance)
-    across SCENARIO_NAME's members, and the share below the reserve when
-    one is set."""
+    worst 5% and 20% (CVaR) of year-end net worth (or --account's balance,
+    or one --lot of it) across SCENARIO_NAME's members, and the share below
+    the reserve when one is set."""
+    _check_lot_has_account(account, lot)
     batch_dir = _ensemble_batch_dir(_resolve_runs_dir(runs_dir, data_dir), scenario_name, batch)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
     connections = load_ensemble(batch_dir)
     try:
-        frame = _member_frame(connections, account, DollarMode.NOMINAL)
+        frame = _member_frame(connections, account, DollarMode.NOMINAL, lot)
         reserve_dollars = _reserve_dollars(reserve, connections, account)
         cpi_frame = (
             None if reserve_dollars is None
-            else _member_frame(connections, account, DollarMode.CPI_CONSTANT)
+            else _member_frame(connections, account, DollarMode.CPI_CONSTANT, lot)
         )
         table = year_end_values(pd.concat(
             [summary_with_percentiles(frame), risk_summary(frame, reserve_dollars, cpi_frame)],
@@ -1039,7 +1058,7 @@ def ensemble_summary(
         click.echo(
             f"ensemble {scenario_name} ({batch_dir.name}): {len(connections)} succeeded "
             f"member(s), {len(failed)} failed"
-            + (f"; account {account}" if account else "")
+            + (f"; {_subject(account, lot)}" if account else "")
             + ("" if reserve_dollars is None
                else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)")
         )
@@ -1058,6 +1077,7 @@ def ensemble_summary(
 @_ENSEMBLE_RUNS_DIR_OPTION
 @_ENSEMBLE_DATA_DIR_OPTION
 @_ENSEMBLE_ACCOUNT_OPTION
+@_ENSEMBLE_LOT_OPTION
 @_ENSEMBLE_RESERVE_OPTION
 @click.option(
     "--dollars", type=click.Choice([m.value for m in DollarMode]),
@@ -1066,7 +1086,7 @@ def ensemble_summary(
 )
 def ensemble_compare(
     baseline: str, variant: str, runs_dir: Path | None, data_dir: Path | None,
-    account: str | None, reserve: str | None, dollars: str,
+    account: str | None, lot: str | None, reserve: str | None, dollars: str,
 ) -> None:
     """Compare VARIANT's ensemble with BASELINE's on risk (#163), each from
     its latest batch: by year end, each percentile breakpoint's delta, the
@@ -1074,6 +1094,7 @@ def ensemble_compare(
     the two recipes share a seed, the share of paired futures where VARIANT
     comes out ahead. Then each recipe's tail means and, when a reserve is
     set, the share of members below it."""
+    _check_lot_has_account(account, lot)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     mode = DollarMode(dollars)
     sides: dict[str, dict[str, RunConnection]] = {}
@@ -1086,21 +1107,21 @@ def ensemble_compare(
         frames: dict[str, pd.DataFrame] = {}
         for name, conns in sides.items():
             try:
-                frames[name] = members_balance_by_month(conns, account, mode)
+                frames[name] = members_balance_by_month(conns, account, mode, lot)
             except EnsembleError:
                 pass
+        subject = _subject(account, lot)
         if not frames:
-            raise click.ClickException(f"no account {account!r} in {baseline} or {variant}")
+            raise click.ClickException(f"no {subject} in {baseline} or {variant}")
         reserve_dollars = _reserve_dollars(reserve, base_conns, account)
         cpi_frames = {
             name: (
                 frames[name] if mode == DollarMode.CPI_CONSTANT
-                else members_balance_by_month(sides[name], account, DollarMode.CPI_CONSTANT)
+                else members_balance_by_month(sides[name], account, DollarMode.CPI_CONSTANT, lot)
             )
             for name in frames
         } if reserve_dollars is not None else {}
         mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-        subject = f"account {account}" if account else "net worth"
         click.echo(
             f"{variant} vs {baseline}: {subject}, {mode_label} dollars; "
             f"{len(base_conns)} and {len(variant_conns)} member(s)"
@@ -1117,7 +1138,7 @@ def ensemble_compare(
             )))
         else:
             missing = variant if baseline in frames else baseline
-            click.echo(f"  only one side: {missing} has no account {account}")
+            click.echo(f"  only one side: {missing} has no {subject}")
 
         reserve_note = (
             "" if reserve_dollars is None
