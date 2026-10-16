@@ -252,10 +252,10 @@ def test_ensemble_widgets_share_controls_and_start_on_the_default(
         runs_dir=two_lot_ensemble_runs_dir, controls=controls, default="base_ensemble")
     assert fan.children[0].value == "two_lot"
     assert compare.children[0].children[0].value == "base_ensemble"
-    assert fan.children[1] is controls and compare.children[1] is controls
+    assert fan.children[1].controls is controls and compare.children[1].controls is controls
 
     controls.account_picker.account_picker.value = BROKERAGE
-    fan.children[2].picker.value = ("b",)  # the fan's own Lot dropdown
+    fan.children[1].lot_picker.picker.value = ("b",)  # the fan's own Lot dropdown
     assert titles[-1].get_title().startswith(f"{BROKERAGE} lot b fan chart")
 
 
@@ -277,7 +277,8 @@ def test_lot_picker_offers_only_the_shown_recipes_lots(
     _copy_recipe(two_lot_ensemble_runs_dir, "base_ensemble", rename_lot="a")
     fan = ensemble_widgets.ensemble_widget(runs_dir=two_lot_ensemble_runs_dir,
                                            default="base_ensemble")
-    dropdown, controls, lot_picker, _out = fan.children
+    dropdown, row, _out = fan.children
+    controls, lot_picker = row.controls, row.lot_picker
     controls.account_picker.account_picker.value = BROKERAGE
     assert [label for label, _ in lot_picker.picker.options] == [ALL_LOTS, "renamed", "b"]
     lot_picker.picker.value = ("renamed",)
@@ -305,7 +306,8 @@ def test_compare_lots_are_the_baseline_and_variants_own(
                                            controls=controls, default="base_ensemble")
     compare = ensemble_widgets.ensemble_compare_widget(
         runs_dir=two_lot_ensemble_runs_dir, controls=controls, default="base_ensemble")
-    recipe_pickers, _controls, lot_picker, _out = compare.children
+    recipe_pickers, row, _out = compare.children
+    lot_picker = row.lot_picker
     controls.account_picker.account_picker.value = BROKERAGE
 
     def offered(picker) -> list[str]:
@@ -314,8 +316,8 @@ def test_compare_lots_are_the_baseline_and_variants_own(
     assert offered(lot_picker) == [ALL_LOTS, "renamed", "b"]  # baseline only
     recipe_pickers.children[1].value = ("two_lot",)
     assert offered(lot_picker) == [ALL_LOTS, "renamed", "b", "a"]
-    assert offered(fan.children[2]) == [ALL_LOTS, "renamed", "b"]
-    assert fan.children[2] is controls.recipe_lot_picker
+    assert offered(fan.children[1].lot_picker) == [ALL_LOTS, "renamed", "b"]
+    assert fan.children[1].lot_picker is controls.recipe_lot_picker
     assert lot_picker is controls.compare_lot_picker
     shown.clear()
     lot_picker.picker.value = ("a",)
@@ -335,8 +337,8 @@ def test_widgets_of_one_kind_share_a_lot_picker(two_lot_ensemble_runs_dir: Path)
                      for _ in range(2))
     compare = ensemble_widgets.ensemble_compare_widget(runs_dir=two_lot_ensemble_runs_dir,
                                                        controls=controls)
-    assert first.children[2] is second.children[2] is controls.recipe_lot_picker
-    assert compare.children[2] is controls.compare_lot_picker
+    assert first.children[1].lot_picker is second.children[1].lot_picker is controls.recipe_lot_picker
+    assert compare.children[1].lot_picker is controls.compare_lot_picker
     assert controls.recipe_lot_picker is not controls.compare_lot_picker
 
 
@@ -358,8 +360,27 @@ def test_compare_widget_log_scale_uses_symlog(
     seeded_ensemble_batch("baseline", 1)
     seeded_ensemble_batch("child", 1)
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir, default="baseline")
-    recipe_pickers, controls, _lot_picker, _out = box.children
+    recipe_pickers, row, _out = box.children
+    controls = row.controls
     recipe_pickers.children[1].value = ("child",)
     assert figures[-1].axes[0].get_yscale() == "linear"
     controls.log_linear_picker.value = LogLinearMode.LOG
     assert figures[-1].axes[0].get_yscale() == "symlog"
+
+
+def test_each_widget_stacks_its_lot_picker_under_account(
+    two_lot_ensemble_runs_dir: Path,
+) -> None:
+    """The shared controls appear in each widget's own row, with that
+    widget's Lot dropdown in a column under Account."""
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    controls = ensemble_widgets.EnsembleControls(runs_dir=two_lot_ensemble_runs_dir)
+    fan = ensemble_widgets.ensemble_widget(runs_dir=two_lot_ensemble_runs_dir, controls=controls)
+    compare = ensemble_widgets.ensemble_compare_widget(runs_dir=two_lot_ensemble_runs_dir,
+                                                       controls=controls)
+    for box, lot_picker in ((fan, controls.recipe_lot_picker),
+                            (compare, controls.compare_lot_picker)):
+        _scale, _dollars, account_column, reserve = box.children[1].children
+        assert account_column.children == (controls.account_picker, lot_picker)
+        assert reserve is controls.reserve_field

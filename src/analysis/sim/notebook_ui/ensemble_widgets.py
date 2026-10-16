@@ -220,7 +220,7 @@ def _reserve_field() -> widgets.Text:
     )
 
 
-class EnsembleControls(widgets.HBox):
+class EnsembleControls:
     """Scale, dollars, account (and its lots) and reserve: the controls the
     ensemble widgets draw by (#171). Build one and hand it to each widget
     as ``controls=``, and one change redraws them all; a widget given none
@@ -232,7 +232,8 @@ class EnsembleControls(widgets.HBox):
     The Lot dropdown can't be shared across both kinds of widget, since each
     offers only the lots of the recipes it shows, so there are two: the
     single-recipe widgets share ``recipe_lot_picker`` and the comparisons
-    share ``compare_lot_picker``.
+    share ``compare_lot_picker``. So each widget lays out its own row of
+    the shared controls (``row``), with its Lot dropdown under Account.
     """
 
     def __init__(self, *,
@@ -253,8 +254,6 @@ class EnsembleControls(widgets.HBox):
         self.reserve_field = _reserve_field()
         self.recipe_lot_picker = self._lot_picker()
         self.compare_lot_picker = self._lot_picker()
-        super().__init__([self.log_linear_picker, self.dollar_picker,
-                          self.account_picker, self.reserve_field])
 
     @property
     def account(self) -> str | None:
@@ -280,11 +279,30 @@ class EnsembleControls(widgets.HBox):
         picker.follow(self.account)
         return picker.lots != before
 
+    def row(self, lot_picker: LotPicker) -> ControlsRow:
+        """One widget's row of these controls, ``lot_picker`` under Account."""
+        return ControlsRow(self, lot_picker)
+
     def observe_all(self, redraw: Callable[..., None]) -> None:
         """Call ``redraw`` whenever any control changes."""
         for picker in (self.log_linear_picker, self.dollar_picker, self.reserve_field):
             picker.observe(redraw, names="value")
         self.account_picker.observe(redraw, names="selection")
+
+
+class ControlsRow(widgets.HBox):
+    """A widget's view of shared ``controls``: the same control instances,
+    so a change in any row reaches every widget, with the widget's own Lot
+    dropdown stacked under Account."""
+
+    def __init__(self, controls: EnsembleControls, lot_picker: LotPicker):
+        self.controls = controls
+        self.lot_picker = lot_picker
+        super().__init__([
+            controls.log_linear_picker, controls.dollar_picker,
+            widgets.VBox([controls.account_picker, lot_picker]),
+            controls.reserve_field,
+        ])
 
 
 def _subject(account: str | None, lot: str | None) -> str:
@@ -470,7 +488,7 @@ def ensemble_widget(*_,
     lot_picker.observe(_redraw, names="lots")
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
-    return widgets.VBox([dropdown, controls, lot_picker, out])
+    return widgets.VBox([dropdown, controls.row(lot_picker), out])
 
 
 def _symlog(ax: Any, values: pd.DataFrame) -> None:
@@ -700,5 +718,5 @@ def ensemble_compare_widget(*_,
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
     return widgets.VBox([
-        widgets.HBox([baseline_picker, variant_picker]), controls, lot_picker, out,
+        widgets.HBox([baseline_picker, variant_picker]), controls.row(lot_picker), out,
     ])
