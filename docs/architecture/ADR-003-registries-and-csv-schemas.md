@@ -835,8 +835,9 @@ inherited along the parent chain.
 The CSVs are the source of truth and the loader is their only validator, so
 every `analysis sim` command that edits scenario CSVs (`calendar add|edit`,
 `transfer add`, `scheduled add`/`import-baseline`, `account
-add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|delete`,
-the `tag` commands, `scenario create`, `ensemble create`) goes through one staged edit
+add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|rename|delete`,
+the `tag` commands, `chain` and `series` edits, the other `rename` commands,
+`scenario create|rename`, `ensemble create|rename`) goes through one staged edit
 (`analysis.sim.staging.staged_edit`):
 
 1. **Preflight.** The scenario being edited (or a new scenario's parent) is
@@ -863,6 +864,30 @@ some files new and some old. `account delete` also removes `calendar.csv`
 `set_rate` rows for the account's own growth series when nothing else reads
 that series, since the loader would otherwise warn about them as dead (§3.1).
 
+**Renames reach every scenario sharing the name.** `account`, `chain`,
+`scheduled`, `calendar` (a row's `name`), `series` and `account lot` each have
+a `rename` that rewrites the name and every column naming it (an account's
+also an RMD rule's `params_json` `subject_account`), not only in the
+scenario given but in every scenario that shares it
+(`analysis.sim.rename.scope`): each scenario in its load order that defines
+the name, every scenario inheriting from one of those, and again for any
+mix-in of those that defines the same name. Run from a child, a rename of an
+inherited name therefore starts at the parent that defines it. A new name
+that already applies in any of those scenarios is refused, as is an
+account or chain named for a built-in growth account (`interest_income`
+...). Renaming an account or lot also renames the calendar rows naming a
+growth rule the loader generates for it: each affected scenario is loaded
+before and after, so the names are the ones the loader actually gives
+(widened where they collide), and a row naming an authored rule is left
+alone. A series with a file in the shared `aux/` (`cpi`), an asset class's
+series, and one named for a symbol or `<symbol>.<class>` (read by lots by
+name, ADR-005 §5) are not renamed; only `rate__`/`inflation__` files are a
+series' files. `scenario rename` (the same command as `ensemble rename`)
+moves the folder and rewrites its `scenario.csv` name, every `parent_scenario` naming
+it, `.current_scenario`, and the links to it in the data repo's markdown
+files (`scenarios/**` and the top level); runs already made keep the old
+name.
+
 `calendar edit` chooses its row before its prompts, which can stay open a
 long time, and stages only when the answer is submitted. So inside the staged
 edit it first confirms the file still has the chosen row at that position,
@@ -888,7 +913,8 @@ refused. An account left with no lots loads with an empty `default` lot,
 as an account with no `account_values.csv` row always has.
 
 A lot the scenario inherits is edited by writing an override of the whole
-row into the scenario's own file (§4.5), and its rename is refused. Since an
+row into the scenario's own file (§4.5); `lot edit` won't rename it, and
+`lot rename` renames it where it is defined (below). Since an
 overlay can't remove a row, deleting an inherited lot writes an override
 with a zero balance, shares and basis and no balance management. The
 commands treat an inherited lot overridden that way, empty in all of those,
@@ -914,12 +940,10 @@ always a lot, never a chain (§3.11); `transfer list` shows its amount as
 
 `chain add|step add|step edit|step move|step rm|rename|delete` edit one
 chain file (§4.7). Editing an inherited chain writes the scenario's own
-copy of the whole file, as for a lot. A rename is refused except in the
-scenario where the chain first appears, since renaming only a copy would
-leave the parent's chain in place under the old name; from there it renames
-the file and every reference (`from_account`/`to_account`,
+copy of the whole file, as for a lot. A rename, run from any scenario,
+renames the file and every reference (`from_account`/`to_account`,
 `account_1`/`account_2`, `refill_chain`/`overflow_chain`, other chains'
-steps) in that scenario and every scenario inheriting from it. `delete` is
+steps) in every scenario sharing the chain, as for every rename (above). `delete` is
 refused while anything in the scenario uses the chain, and deleting a
 scenario's copy of an inherited chain lets the parent's apply again. The
 guided `chain add` asks whether the chain is a source or a destination
@@ -1004,3 +1028,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#163](https://github.com/BobKerns/analysis/issues/163): `scenario.meta_json` may carry a `reserve`, checked as dollars at load (§4.5).
 - [#165](https://github.com/BobKerns/analysis/issues/165): `calendar.csv` gains `vary_outcomes` for the new `discrete` distribution (§4.8).
 - [#168](https://github.com/BobKerns/analysis/issues/168), [#169](https://github.com/BobKerns/analysis/issues/169): `scenario create` writes `ensemble_size` 0, so it never makes an ensemble; `ensemble create` takes mix-ins; `ensemble_size` is checked at load (§4.5).
+- [#177](https://github.com/BobKerns/analysis/issues/177): renames reach every scenario sharing the name; `scenario|ensemble rename`, and `rename` for scheduled rules, calendar rows, series and lots (§7).

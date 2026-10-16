@@ -92,6 +92,32 @@ scenario's start and end months, seed and ensemble size, in `[brackets]`
 when the scenario inherits the value rather than setting it itself. A blank
 size means the scenario is not an ensemble.
 
+To rename a scenario (or an ensemble; the two commands are the same):
+
+```sh
+sim scenario rename <old> <new>
+```
+
+This moves its folder and repoints everything that names it: the scenarios
+built on it (as parent or mix-in), your current scenario, and links to it
+in the data repo's `README.md` files. Runs you already made keep the old
+name.
+
+Renaming anything else a scenario can share works the same way: the
+`rename` commands for accounts, chains, scheduled rules, calendar rows,
+series and lots change the name in every scenario that shares it, not just
+the one you name, so a scenario built on another never ends up naming
+something that is no longer there:
+
+```sh
+sim account rename <old> <new>
+sim account lot rename <account> <old> <new>
+sim chain rename <old> <new>
+sim scheduled rename <old> <new>
+sim calendar rename <old> <new>      # a row's name, and rows correlated with it
+sim series rename <old> <new>        # its series/ files too
+```
+
 Everything below works the same way, whether you are editing `base` directly,
 or editing a derived scenario's own files.
 
@@ -296,7 +322,9 @@ Asset_Brokerage_Joint,inherited_2029,AAA,2029-03-15,500,,,50000.00
   one to change it, and `write` when you are done. `add` prints the
   equivalent command, to reuse in a script.
 - Renaming a lot (`edit --new-lot`, or its `lot` field) also renames it
-  everywhere the scenario, and any scenario built on it, names it. Deleting
+  everywhere the scenario, and any scenario built on it, names it. `edit`
+  won't rename a lot the scenario inherits; `sim account lot rename`
+  renames one wherever it is defined. Deleting
   one lists the rows that move money in or out of it, and removes them if you
   say yes. If the lot is a chain's only step, change or delete the chain
   first.

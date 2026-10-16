@@ -124,11 +124,15 @@ def test_rename_follows_every_reference(guide_chains: Path, test_scenarios_dir: 
     load_test_copy()
 
 
-def test_a_copy_is_renamed_where_the_chain_starts(guide_chains: Path, derive_scenario) -> None:
+def test_a_rename_from_a_child_starts_where_the_chain_does(guide_chains: Path, test_scenarios_dir: Path,
+                                                           derive_scenario) -> None:
     derive_scenario("kid", "retire_alice", files={
         "chains/source/bridge.csv": "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"})
     result = _sim(guide_chains, "rename", "bridge", "gap", scenario="kid")
-    assert result.exit_code != 0 and "bridge comes from retire_alice; rename it there" in result.output
+    assert result.exit_code == 0, result.output
+    assert "retire_alice: chains/source/bridge.csv -> chains/source/gap.csv" in result.output
+    assert "kid: chains/source/bridge.csv -> chains/source/gap.csv" in result.output
+    assert _steps(test_scenarios_dir, "retirement_draw")[0][0] == "gap"
 
 
 def test_editing_an_inherited_chain_writes_a_copy(test_data_dir: Path, test_scenarios_dir: Path,
@@ -316,16 +320,20 @@ def test_two_files_for_one_chain_are_refused(test_data_dir: Path, retire_alice_c
     assert (retire_alice_csv("chains/source") / "asset_checking_liquidity.csv").exists()
 
 
-def test_rename_refuses_when_a_mix_in_shadows_the_chain(test_data_dir: Path, test_scenarios_dir: Path,
-                                                        derive_scenario) -> None:
+def test_rename_reaches_a_mix_in_with_the_same_chain(test_data_dir: Path, test_scenarios_dir: Path,
+                                                    derive_scenario) -> None:
+    # kid gets the chain from mix, which retire_alice's rename alone would
+    # miss, leaving kid's rules naming a chain that's no longer there.
     derive_scenario("mix", "base", files={
         "chains/source/asset_checking_liquidity.csv":
             "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n"})
     derive_scenario("kid", "retire_alice:mix")
     result = _sim(test_data_dir, "rename", "asset_checking_liquidity", "liquidity")
-    assert result.exit_code != 0
-    assert "kid gets asset_checking_liquidity from mix" in result.output
-    assert chain_edit.chain_file(test_scenarios_dir / "retire_alice", "asset_checking_liquidity") is not None
+    assert result.exit_code == 0, result.output
+    assert "mix: chains/source/asset_checking_liquidity.csv -> chains/source/liquidity.csv" in result.output
+    for scenario in ("retire_alice", "mix"):
+        assert chain_edit.chain_file(test_scenarios_dir / scenario, "asset_checking_liquidity") is None
+        assert chain_edit.chain_file(test_scenarios_dir / scenario, "liquidity") is not None
 
 
 def test_an_underscore_template_is_not_a_chain(test_scenarios_dir: Path,

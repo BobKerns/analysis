@@ -88,7 +88,7 @@ sim chain step add checking_backup Asset_Roth_Alice --lot default --position 1
 sim chain step edit checking_backup 2 --maximum 500      # '' clears a column
 sim chain step move checking_backup 1 3
 sim chain step rm checking_backup 3
-sim chain rename checking_backup cash_backup             # and every reference to it
+sim chain rename checking_backup cash_backup             # and every reference, in every scenario sharing it
 sim chain delete cash_backup                             # refused while anything uses it
 ```
 

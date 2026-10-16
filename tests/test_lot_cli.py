@@ -208,7 +208,7 @@ def test_renaming_an_inherited_lot_is_refused(
     result = lot("edit", BROKERAGE, "default", "--new-lot", "core", scenario="child")
 
     assert result.exit_code != 0
-    assert "rename it there" in result.output
+    assert "`sim account lot rename` renames it there" in result.output
     assert values("child").empty
 
 

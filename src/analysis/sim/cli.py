@@ -32,7 +32,7 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, registries, sensitivity,
+    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, registries, rename, sensitivity,
     symbols, units,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
@@ -86,6 +86,7 @@ from analysis.sim.loader import (
     load_scenario,
     open_intent_db,
     find_state_dir,
+    latest_run_path,
     read_current_scenario,
     write_current_scenario,
 )
@@ -4077,63 +4078,6 @@ def add_account(
         )
 
 
-def _rename_account_row_values(path: Path, field_names: tuple[str, ...], old_name: str, new_name: str) -> bool:
-    """Rename a CSV field value across one scenario file if the column exists."""
-    if not path.exists():
-        return False
-    df = pd.read_csv(path, dtype=str, keep_default_na=False)
-    changed = False
-    for field in field_names:
-        if field not in df.columns:
-            continue
-        before = df[field].copy()
-        df[field] = df[field].map(lambda v: new_name if v == old_name else v)
-        changed = changed or not before.equals(df[field])
-    if changed:
-        df.to_csv(path, index=False)
-    return changed
-
-
-def _rename_account_in_scenario(data_dir: Path, scenario: str | None, old_name: str, new_name: str) -> None:
-    """Rename an account and update references across scenario CSV files."""
-    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir, scenario)
-    with _scenario_edit(data_dir, scenario_name) as edit:
-        existing = {r[0] for r in edit.con.execute("SELECT name FROM account")}
-        if old_name not in existing:
-            raise click.ClickException(f"unknown account: {old_name!r}")
-        if new_name in existing and old_name != new_name:
-            raise click.ClickException(f"account already exists: {new_name!r}")
-        if not _rename_account_files(edit.scenario_dir, old_name, new_name):
-            raise click.ClickException(f"account not found in scenario files: {old_name!r}")
-
-    click.echo(f"renamed account '{old_name}' to '{new_name}' in {scenario_dir}")
-
-
-def _rename_account_files(scenario_dir: Path, old_name: str, new_name: str) -> bool:
-    """Rename an account's references across one scenario folder's CSVs;
-    whether anything changed."""
-    changed = False
-    accounts_path = scenario_dir / "accounts.csv"
-    changed |= _rename_account_row_values(accounts_path, ("name",), old_name, new_name)
-    changed |= _rename_account_row_values(
-        scenario_dir / "account_values.csv",
-        ("account_name", "refill_chain", "overflow_chain"), old_name, new_name,
-    )
-    changed |= _rename_account_row_values(scenario_dir / "scheduled.csv",
-                                          ("from_account", "to_account", "interest_account"),
-                                          old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "calendar.csv", ("account_1", "account_2"), old_name, new_name)
-    for chain_path in chain_edit.chain_files(scenario_dir):
-        changed |= _rename_account_row_values(chain_path, ("account_name",), old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "quicken_account_map.csv",
-                                          ("account_name",),
-                                          old_name, new_name)
-    changed |= _rename_account_row_values(scenario_dir / "year_to_date.csv",
-                                          ("from_account", "to_account"),
-                                          old_name, new_name)
-    return changed
-
-
 _LOT_CHAIN_FIELDS = ("refill_chain", "overflow_chain")
 
 # A lot's chain column, and the columns that mean nothing without it:
@@ -4450,6 +4394,9 @@ def edit_account(
     if tags:
         registries.parse_tags(tags)
 
+    # The row and the references must carry the same name; references are
+    # renamed to the stripped one.
+    new_name = new_name.strip()
     df.loc[idx, [
         "name", "kind", "subkind", "owner", "tax_treatment",
         "opened", "closed", "meta_json", "tags",
@@ -4460,10 +4407,11 @@ def edit_account(
     if new_name != name and new_name in existing:
         raise click.ClickException(f"account already exists: {new_name!r}")
     with _scenario_edit(data_dir_p, scenario_name) as edit:
-        df.to_csv(edit.path(accounts_path), index=False)
         if new_name != name:
-            # accounts.csv already carries new_name; this renames the references.
-            _rename_account_files(edit.scenario_dir, name, new_name)
+            # Renames the references everywhere the account is shared; the
+            # write below then carries this scenario's other changes.
+            _rename_account(edit, name, new_name)
+        df.to_csv(edit.path(accounts_path), index=False)
 
     click.echo(f"updated account '{new_name}' in {accounts_path}")
 
@@ -4482,7 +4430,9 @@ def rename_account(
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """Rename an account and update references across the scenario CSVs."""
+    """Rename account OLD_NAME to NEW_NAME, and every reference to it, in
+    every scenario that shares the account: where it is defined, a parent or
+    a mix-in included, and every scenario built on those."""
     old_name = old_name.strip()
     new_name = new_name.strip()
     if not old_name:
@@ -4490,8 +4440,9 @@ def rename_account(
     if not new_name:
         raise click.ClickException("new account name required")
 
-    data_dir_p = _resolve_data_dir(data_dir)
-    _rename_account_in_scenario(data_dir_p, scenario, old_name, new_name)
+    with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
+        changed = _rename_account(edit, old_name, new_name)
+    _echo_renamed("account", old_name, new_name, changed)
 
 
 def _default_tax_treatment(kind: str, subkind: str) -> str:
@@ -5366,7 +5317,8 @@ def lot_edit(
     Renaming the lot (--new-lot, or its lot field) also renames this
     scenario's references to it. A lot inherited from a parent scenario is
     changed by writing an override of the whole lot into this scenario;
-    renaming one is refused, since the parent's lot would remain.
+    renaming one is refused, since the parent's lot would remain: `sim
+    account lot rename` renames it everywhere it is shared.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
@@ -5382,7 +5334,8 @@ def lot_edit(
         if renamed and chosen.inherited_from:
             raise click.ClickException(
                 f"lot {chosen.lot!r} of {chosen.account!r} comes from scenario "
-                f"{chosen.inherited_from!r}; rename it there"
+                f"{chosen.inherited_from!r}; `sim account lot rename` renames it there "
+                "and in every scenario built on it"
             )
         row = _lot_row(params, chosen.row, investment=_is_investment(context, chosen.account))
         if row == chosen.row and chosen.index is not None:
@@ -6913,58 +6866,31 @@ def chain_step_move_command(
 @_scenario_options
 def chain_rename_command(old: str | None, new: str | None, scenario: str | None, data_dir: Path | None) -> None:
     """Rename chain OLD to NEW, and every reference to it: rules, calendar
-    transfers, lots' refill and overflow, and other chains' steps, here and in
-    every scenario that inherits from this one. Either name left out is
-    asked for."""
+    transfers, lots' refill and overflow, and other chains' steps, in every
+    scenario that shares the chain -- where it is defined, a parent or a
+    mix-in included, and every scenario built on those. Either name left out
+    is asked for."""
     data = _resolve_data_dir(data_dir)
     with _scenario_edit(data, scenario) as edit:
         if old is None:
             old = _ask_chain(edit.con, "chain to rename")
-        scenarios = edit.data_dir / "scenarios"
-        owner = chain_edit.defining_scenario(scenarios, edit.name, old)
-        if owner is None:
-            raise click.ClickException(_no_chain(edit.con, old, edit.name))
-        first = next(each for each in load_order(scenarios, edit.name)
-                     if chain_edit.chain_file(scenarios / each, old) is not None)
-        if first != edit.name:
-            # Renaming only a copy would leave the parent's chain in place
-            # under the old name, so a rename starts where the chain does.
-            raise click.ClickException(
-                f"{old} comes from {first}; rename it there (--scenario {first}), "
-                "and the scenarios built on it follow")
         taken = {r[0] for r in edit.con.execute("SELECT name FROM chain UNION SELECT name FROM account")}
         if new is None:
             new = _ask_new_chain_name(taken, f"new name for {old} (one word, no spaces)")
         elif problem := chain_edit.name_problem(new):
             raise click.ClickException(problem)
+        elif new in rename.RESERVED_ACCOUNTS:
+            _not_reserved(new)
         elif new in taken:
             raise click.ClickException(f"{new!r} is already a chain or an account's name")
-        affected = (edit.name, *chain_edit.descendants(scenarios, edit.name))
-        # A scenario here that gets OLD from a mix-in outside this lineage
-        # keeps that chain, so renaming its references would point them at
-        # the wrong one.
-        if shadowed := {each: source for each in affected
-                        if (source := chain_edit.defining_scenario(scenarios, each, old)) not in affected}:
-            raise click.ClickException(
-                "; ".join(f"{each} gets {old} from {source}" for each, source in shadowed.items())
-                + f", which a rename in {edit.name} doesn't reach; rename it there first")
-        # A scenario built on this one may already have a chain called NEW,
-        # its own or one from a mix-in, which the rename would overwrite or
-        # shadow; check before touching anything.
-        clashes = {each: source for each in affected
-                   if (source := chain_edit.defining_scenario(scenarios, each, new)) is not None}
-        if clashes:
-            raise click.ClickException(
-                f"a chain {new!r} already applies in "
-                + ", ".join(each if source == each else f"{each} (from {source})"
-                            for each, source in clashes.items())
-                + "; rename or delete it first")
-        changed = []
-        for each in affected:
-            changed += [f"{each}: {c}" for c in chain_edit.rename_references(scenarios / each, old, new)]
-    click.echo(f"renamed chain {old} to {new}")
-    for line in changed:
-        click.echo(f"  {line}")
+        _not_reserved(new)  # also when asked: this scenario may not have made it
+        changed = _rename_across(
+            edit, "chain", old, new, defines=_chain_defined,
+            taken=lambda name: _either(_chain_defined(name), rename.account_defined(name)),
+            rewrite=chain_edit.rename_references,
+            missing=lambda: _no_chain(edit.con, old, edit.name),
+        )
+    _echo_renamed("chain", old, new, changed)
 
 
 @chain_group_command.command("delete")
@@ -7367,6 +7293,249 @@ def tags_items(
                 click.echo(f"{it:<14}  {getattr(row, label_col)}")
         if not found:
             click.echo(f"(tag {tag_token} not present)")
+
+
+# ---------- renames shared across scenarios (#177) ----------
+
+def _either(*defines: rename.Defines) -> rename.Defines:
+    return lambda scenario_dir: any(each(scenario_dir) for each in defines)
+
+
+def _chain_defined(name: str) -> rename.Defines:
+    return lambda scenario_dir: chain_edit.chain_file(scenario_dir, name) is not None
+
+
+def _account_or_chain_defined(name: str) -> rename.Defines:
+    # One namespace: every account is also its own one-step chain.
+    return _either(rename.account_defined(name), _chain_defined(name))
+
+
+def _not_reserved(new: str) -> None:
+    if new.strip() in rename.RESERVED_ACCOUNTS:
+        raise click.ClickException(f"{new.strip()!r} is a built-in account's name")
+
+
+def _rename_with_growth_rules(
+    edit: StagedEdit, what: str, old: str, new: str, *,
+    defines: Callable[[str], rename.Defines], rewrite: Callable[[Path, str, str], list[str]],
+    moved: Callable[[str, str], tuple[str, str] | None],
+    taken: Callable[[str], rename.Defines] | None = None, missing: Callable[[], str] | None = None,
+) -> list[str]:
+    """``_rename_across``, and then the calendar rows naming a growth rule the
+    loader generated for an (account, lot) that ``moved`` renames: that
+    rule's name follows them. The names are read from loads before and after,
+    in each affected scenario, as they depend on its other rules."""
+    scenarios = edit.data_dir / "scenarios"
+    affected = rename.scope(scenarios, edit.name, defines(old.strip()))
+    before = {each: rename.generated_growth_rules(edit.data_dir, each) for each in affected}
+    changed = _rename_across(edit, what, old, new, defines=defines, rewrite=rewrite, taken=taken, missing=missing)
+    for each in affected:
+        after = rename.generated_growth_rules(edit.data_dir, each)
+        rules = {name: after[target] for key, name in before[each].items()
+                 if (target := moved(*key)) is not None and target in after}
+        changed += [f"{each}: {c}" for c in rename.rename_growth_rules(scenarios / each, rules)]
+    return list(dict.fromkeys(changed))
+
+
+def _rename_account(edit: StagedEdit, old: str, new: str) -> list[str]:
+    _not_reserved(new)
+    old, new = old.strip(), new.strip()
+    return _rename_with_growth_rules(
+        edit, "account", old, new, defines=rename.account_defined, taken=_account_or_chain_defined,
+        rewrite=rename.rename_account, moved=lambda account, lot: (new, lot) if account == old else None)
+
+
+def _rename_across(
+    edit: StagedEdit, what: str, old: str, new: str, *,
+    defines: Callable[[str], rename.Defines],
+    rewrite: Callable[[Path, str, str], list[str]],
+    taken: Callable[[str], rename.Defines] | None = None,
+    missing: Callable[[], str] | None = None,
+) -> list[str]:
+    """Rename ``what`` ``old`` to ``new`` in every scenario of the staged edit
+    that shares it (``rename.scope``), refusing a ``new`` that already applies
+    in any of them; what changed, as ``scenario: file`` lines."""
+    old, new = old.strip(), new.strip()
+    if not old or not new:
+        raise click.ClickException(f"both the old and the new {what} name are required")
+    if old == new:
+        raise click.ClickException(f"{what} is already called {new!r}")
+    scenarios = edit.data_dir / "scenarios"
+    affected = rename.scope(scenarios, edit.name, defines(old))
+    if not affected:
+        raise click.ClickException(
+            missing() if missing else f"no {what} {old!r} in {edit.name} or the scenarios it builds on")
+    if found := rename.clashes(scenarios, affected, (taken or defines)(new)):
+        raise click.ClickException(
+            f"{'an' if what.startswith(('a', 'e', 'i', 'o', 'u')) else 'a'} {what} {new!r} already applies in "
+            f"{rename.describe_clashes(found)}; rename or delete it first")
+    try:
+        return list(dict.fromkeys(
+            f"{each}: {change}" for each in affected for change in rewrite(scenarios / each, old, new)))
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from None
+
+
+def _echo_renamed(what: str, old: str, new: str, changed: list[str]) -> None:
+    click.echo(f"renamed {what} {old} to {new}")
+    for line in changed:
+        click.echo(f"  {line}")
+
+
+@scheduled_group_command.command("rename")
+@click.argument("old")
+@click.argument("new")
+@_scenario_options
+def scheduled_rename(old: str, new: str, scenario: str | None, data_dir: Path | None) -> None:
+    """Rename scheduled rule OLD to NEW, and the calendar rows that name it
+    (set_amount, retire_scheduled), in every scenario that shares the rule:
+    where it is defined, a parent or a mix-in included, and every scenario
+    built on those."""
+    with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
+        changed = _rename_across(edit, "scheduled rule", old, new, defines=rename.scheduled_defined,
+                                 rewrite=rename.rename_scheduled)
+    _echo_renamed("scheduled rule", old, new, changed)
+
+
+@calendar_group_command.command("rename")
+@click.argument("old")
+@click.argument("new")
+@_scenario_options
+def calendar_rename(old: str, new: str, scenario: str | None, data_dir: Path | None) -> None:
+    """Rename the calendar row (or latent factor) named OLD to NEW, and the
+    rows naming it as their correlation parent (vary_correlate_with), in
+    every scenario that shares it."""
+    with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
+        changed = _rename_across(edit, "calendar row", old, new, defines=rename.calendar_row_defined,
+                                 rewrite=rename.rename_calendar_row)
+    _echo_renamed("calendar row", old, new, changed)
+
+
+@sim_group_command.group(name="series")
+def series_group_command() -> None:
+    """Growth-rate and inflation series."""
+
+
+@series_group_command.command("rename")
+@click.argument("old")
+@click.argument("new")
+@_scenario_options
+def series_rename(old: str, new: str, scenario: str | None, data_dir: Path | None) -> None:
+    """Rename series OLD to NEW in every scenario that shares it: its rate
+    files (series/<kind>__OLD.csv and a scenario's aux/<kind>__OLD.csv), and
+    every column naming it -- accounts', lots', rules', calendar rows' and
+    chain steps' series.
+
+    A series with a file in the shared aux/ folder (cpi) is read by every
+    scenario and isn't renamed here, nor is an asset class's series, or one
+    named for a symbol (or <symbol>.<class>), which lots read by name."""
+    old, new = old.strip(), new.strip()
+    if problem := rename.name_problem("series", new):
+        raise click.ClickException(problem)
+    for name in (old, new):
+        if name in registries.ASSET_CLASSES:
+            raise click.ClickException(
+                f"{name!r} is an asset class, whose series name fund allocations rely on; it can't be renamed")
+    data = _resolve_data_dir(data_dir)
+    for name in (old, new):
+        if why := rename.symbol_series(data, name):
+            raise click.ClickException(f"{why}; it can't be renamed")
+        if shared := rename.shared_series_files(data, name):
+            raise click.ClickException(
+                f"series {name!r} has rates in the shared {', '.join(f'aux/{p.name}' for p in shared)}, "
+                "which every scenario reads; it can't be renamed")
+    with _scenario_edit(data, scenario) as edit:
+        changed = _rename_across(edit, "series", old, new, defines=rename.series_mentioned,
+                                 rewrite=rename.rename_series)
+    _echo_renamed("series", old, new, changed)
+
+
+def _lot_defined(account: str, lot: str) -> rename.Defines:
+    return lambda scenario_dir: any(
+        _names_lot(row, "account_name", "lot", account, lot)
+        for row in _read_values_rows(scenario_dir / "account_values.csv"))
+
+
+@lot_group_command.command("rename")
+@click.argument("account", shell_complete=_complete_account)
+@click.argument("lot")
+@click.argument("new_lot")
+@_scenario_options
+def lot_rename(account: str, lot: str, new_lot: str, scenario: str | None, data_dir: Path | None) -> None:
+    """Rename ACCOUNT's LOT to NEW_LOT, and every reference to it, in every
+    scenario that shares the lot: where it is defined, a parent or a mix-in
+    included, and every scenario built on those."""
+    account, lot, new_lot = account.strip(), lot.strip(), _check_lot_label(new_lot)
+
+    def rewrite(scenario_dir: Path, old: str, new: str) -> list[str]:
+        lines = [line.strip() for line in _lot_reference_rows(scenario_dir, account, old, own_row=True)]
+        _rewrite_lot_references(scenario_dir, account, old, new, own_row=True)
+        return lines
+
+    with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
+        changed = _rename_with_growth_rules(
+            edit, f"lot of {account}", lot, new_lot,
+            defines=lambda name: _lot_defined(account, name), rewrite=rewrite,
+            missing=lambda: (f"{account!r} has no lot {lot!r} in account_values.csv, in {edit.name} "
+                             "or the scenarios it builds on"),
+            moved=lambda owner, label: (account, new_lot) if (owner, label) == (account, lot) else None,
+        )
+    _echo_renamed(f"lot of {account}", lot, new_lot, changed)
+
+
+def _rename_scenario(old: str, new: str, data_dir: Path | None) -> None:
+    """``sim scenario rename`` and ``sim ensemble rename``."""
+    data = _resolve_data_dir(data_dir)
+    old, new = old.strip(), new.strip()
+    # Only a folder's own name: anything else (a path, '..') could reach
+    # outside scenarios/.
+    if old not in list_scenario_names(data):
+        raise click.ClickException(f"scenario not found: {data / 'scenarios' / old}")
+    if not registries.SCENARIO_NAME_RE.match(new):
+        raise click.ClickException(
+            f"invalid scenario name: {new!r} (lowercase letters, digits, '_' and '-', "
+            "starting with a letter or digit)")
+    if (data / "scenarios" / new).exists():
+        raise click.ClickException(f"scenario already exists: {data / 'scenarios' / new}")
+    with _scenario_edit(data, old) as edit:
+        try:
+            changed = rename.rename_scenario(edit.data_dir, old, new)
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(str(exc).replace(str(edit.data_dir), str(data))) from None
+    # The commit removes the old folder's files; a folder it leaves holding
+    # only empty folders (an emptied series/, say) goes too.
+    leftover = data / "scenarios" / old
+    if leftover.is_dir() and not any(path.is_file() or path.is_symlink() for path in leftover.rglob("*")):
+        shutil.rmtree(leftover)
+    _echo_renamed("scenario", old, new, changed)
+    runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
+    if latest_run_path(runs, old) or (runs / old).is_dir():
+        click.echo(f"  runs already made of {old} keep that name; `sim run {new}` makes new ones")
+
+
+@scenario_group_command.command("rename")
+@click.argument("old")
+@click.argument("new")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def scenario_rename(old: str, new: str, data_dir: Path | None) -> None:
+    """Rename scenario OLD to NEW: its folder and scenario.csv name, every
+    scenario naming it as a parent or mix-in, the current scenario if it is
+    OLD, and the data repo's README links and mentions (`OLD`,
+    scenarios/OLD). Same as `sim ensemble rename`."""
+    _rename_scenario(old, new, data_dir)
+
+
+@ensemble_group_command.command("rename")
+@click.argument("old")
+@click.argument("new")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def ensemble_rename(old: str, new: str, data_dir: Path | None) -> None:
+    """Rename ensemble OLD to NEW; the same as `sim scenario rename`."""
+    _rename_scenario(old, new, data_dir)
 
 
 # ---------- Silent alias: accounts -> account ----------

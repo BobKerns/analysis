@@ -112,11 +112,13 @@ sim account sync                          # scaffold missing account_values rows
 sim account lot list [<account>]          # an account's lots, and where each comes from
 sim account lot add <account> <lot> [--symbol ...] [--opening-balance ...]
 sim account lot edit <account> <lot>      # change a lot's fields, or rename it
+sim account lot rename <account> <lot> <new>  # in every scenario sharing it
 sim account lot delete <account> <lot>    # with the rows that reference it
 sim transfer list                         # one-off calendar transfers
 sim transfer add <date> <from> <to> <amount>
 sim scheduled list                        # recurring scheduled transfers
 sim scheduled add <start> <from> <to> <amount> [--cadence monthly]
+sim scenario rename <old> <new>           # also: account, chain, scheduled, calendar, series rename
 ```
 
 The CLI is interactive (tab completion on account names, prompts when arguments are omitted) and validates against the registries in [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) before writing. Prefer it when you want precise control or want to script the same edit across scenarios; ask the assistant when the change is exploratory or spans many rows.
@@ -200,7 +202,8 @@ investment-asset restriction.
 
 **Bookkeeping:** `sim account rename` and `sim account edit --new-name` already update
 `quicken_account_map.csv`'s `account_name` column alongside `accounts.csv`,
-`account_values.csv`, `scheduled.csv`, `calendar.csv`, and `waterfall_sources.csv` — no
-manual edit of the map is needed after a rename. If you add a new account, add its
+`account_values.csv`, `scheduled.csv`, `calendar.csv`, `year_to_date.csv` and chain
+files, in every scenario that shares the account — no manual edit of the map is needed
+after a rename. If you add a new account, add its
 `quicken_account_map.csv` row (or a `skip` row with a `note` explaining why) before the
 next import.
