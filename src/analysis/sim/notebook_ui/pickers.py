@@ -1086,7 +1086,9 @@ class AccountPicker(widgets.HBox):
         self.account_column = widgets.VBox(
             [self.account_picker,
              *((self.lot_picker,) if self.lot_picker is not None else ())],
-            layout=widgets.Layout(width="50%"),
+            # Boxes scroll on overflow, and a full-width dropdown's margins
+            # overflow by a few pixels: let them, rather than show a scrollbar.
+            layout=widgets.Layout(width="50%", overflow="visible"),
         )
         parts: list[widgets.Widget] = [self.kind_picker] if show_kind else []
         parts.append(self.account_column)

@@ -110,6 +110,7 @@ def test_account_picker_publishes_one_selection_per_change() -> None:
     # The lot is dropped with its account in the same, single, change.
     assert seen == [(("Brokerage",), ("a",)), (("Checking",), ())]
     assert picker.account_column.children == (picker.account_picker, picker.lot_picker)
+    assert picker.account_column.layout.overflow == "visible"  # no stray scrollbar
     assert picker.lot_picker.layout.display == "none"
 
 
