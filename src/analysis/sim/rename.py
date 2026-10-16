@@ -27,10 +27,10 @@ from analysis.sim.lineage import load_order, parse_parents
 from analysis.sim.loader import CURRENT_SCENARIO_FILE
 
 __all__ = [
-    "ACCOUNT_COLUMNS", "CALENDAR_ROW_COLUMNS", "SCHEDULED_COLUMNS", "SERIES_COLUMNS",
+    "ACCOUNT_COLUMNS", "CALENDAR_ROW_COLUMNS", "SCHEDULED_COLUMNS", "SERIES_COLUMNS", "SERIES_KINDS",
     "account_defined", "calendar_row_defined", "clashes", "describe_clashes", "relink_markdown", "rename_account",
     "name_problem", "rename_calendar_row", "rename_scenario", "rename_scheduled", "rename_series", "scenario_folders",
-    "scheduled_defined", "scope", "series_mentioned", "shared_series_files",
+    "scheduled_defined", "scope", "series_mentioned", "shared_series_files", "symbol_series",
 ]
 
 Defines = Callable[[Path], bool]
@@ -189,12 +189,18 @@ have a ``series`` column too."""
 _SERIES_FOLDERS = ("series", "aux")
 
 
+SERIES_KINDS = ("rate", "inflation")
+"""The aux kinds whose ``<kind>__<name>.csv`` files are a series' rates.
+Other kinds' suffixes (a symbol's prices, a state's brackets) aren't series."""
+
+
 def _series_files(folder: Path, name: str) -> list[Path]:
-    """``<kind>__<name>.csv`` files in one folder: a series' rates, whatever
-    its aux kind. Names compared, not globbed: a name may hold '[' or '*'."""
+    """Series ``name``'s rate files in one folder. Names compared, not
+    globbed: a name may hold '[' or '*'."""
     if not folder.is_dir():
         return []
-    return sorted(path for path in folder.glob("*__*.csv") if path.stem.split("__", 1)[1] == name)
+    return sorted(path for kind in SERIES_KINDS for path in folder.glob(f"{kind}__*.csv")
+                  if path.stem == f"{kind}__{name}")
 
 
 def shared_series_files(data_dir: Path, name: str) -> list[Path]:
@@ -220,7 +226,7 @@ def rename_series(scenario_dir: Path, old: str, new: str) -> list[str]:
     changed: list[str] = []
     for folder in _SERIES_FOLDERS:
         for path in _series_files(scenario_dir / folder, old):
-            target = path.with_name(f"{path.stem.split('__', 1)[0]}__{new}.csv")
+            target = path.with_name(f"{path.stem.split('__', 1)[0]}__{new}.csv")  # kind kept
             if target.exists():
                 raise FileExistsError(f"{scenario_dir.name} already has {folder}/{target.name}")
             path.rename(target)
@@ -377,3 +383,21 @@ def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
         current.write_text(f"{new}\n", encoding="utf-8")
         changed.append(CURRENT_SCENARIO_FILE)
     return changed
+
+
+def symbol_series(data_dir: Path, name: str) -> str | None:
+    """Why series ``name`` is read by name rather than through a column, or
+    None. A lot holding a symbol grows at the series named for it, or for
+    each asset class it holds at ``<symbol>.<class>`` (ADR-005 §5), with no
+    cell naming the series; renaming one would quietly cut it off."""
+    symbols = _cells(data_dir / "securities.csv", ("symbol",))
+    scenarios = data_dir / "scenarios"
+    for each in scenario_folders(scenarios):
+        symbols |= _cells(scenarios / each / "account_values.csv", ("symbol",))
+    symbols.discard("")
+    if name in symbols:
+        return f"{name!r} is a symbol, and lots holding it read its series by that name"
+    symbol, _, asset_class = name.rpartition(".")
+    if symbol and asset_class in registries.ASSET_CLASSES:
+        return f"{name!r} is a <symbol>.<asset class> series, which fund lots read by that name"
+    return None

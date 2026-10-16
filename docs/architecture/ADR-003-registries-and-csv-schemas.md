@@ -873,8 +873,9 @@ the name, every scenario inheriting from one of those, and again for any
 mix-in of those that defines the same name. Run from a child, a rename of an
 inherited name therefore starts at the parent that defines it. A new name
 that already applies in any of those scenarios is refused. A series with a
-file in the shared `aux/` (`cpi`), and an asset class's series, are not
-renamed. `scenario rename` (the same command as `ensemble rename`) moves the
+file in the shared `aux/` (`cpi`), an asset class's series, and one named
+for a symbol or `<symbol>.<class>` (read by lots by name, ADR-005 §5) are not
+renamed; only `rate__`/`inflation__` files are a series' files. `scenario rename` (the same command as `ensemble rename`) moves the
 folder and rewrites its `scenario.csv` name, every `parent_scenario` naming
 it, `.current_scenario`, and the links to it in the data repo's markdown
 files (`scenarios/**` and the top level); runs already made keep the old
@@ -905,7 +906,8 @@ refused. An account left with no lots loads with an empty `default` lot,
 as an account with no `account_values.csv` row always has.
 
 A lot the scenario inherits is edited by writing an override of the whole
-row into the scenario's own file (§4.5), and its rename is refused. Since an
+row into the scenario's own file (§4.5); `lot edit` won't rename it, and
+`lot rename` renames it where it is defined (below). Since an
 overlay can't remove a row, deleting an inherited lot writes an override
 with a zero balance, shares and basis and no balance management. The
 commands treat an inherited lot overridden that way, empty in all of those,
@@ -931,12 +933,10 @@ always a lot, never a chain (§3.11); `transfer list` shows its amount as
 
 `chain add|step add|step edit|step move|step rm|rename|delete` edit one
 chain file (§4.7). Editing an inherited chain writes the scenario's own
-copy of the whole file, as for a lot. A rename is refused except in the
-scenario where the chain first appears, since renaming only a copy would
-leave the parent's chain in place under the old name; from there it renames
-the file and every reference (`from_account`/`to_account`,
+copy of the whole file, as for a lot. A rename, run from any scenario,
+renames the file and every reference (`from_account`/`to_account`,
 `account_1`/`account_2`, `refill_chain`/`overflow_chain`, other chains'
-steps) in that scenario and every scenario inheriting from it. `delete` is
+steps) in every scenario sharing the chain, as for every rename (above). `delete` is
 refused while anything in the scenario uses the chain, and deleting a
 scenario's copy of an inherited chain lets the parent's apply again. The
 guided `chain add` asks whether the chain is a source or a destination

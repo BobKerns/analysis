@@ -7387,8 +7387,8 @@ def series_rename(old: str, new: str, scenario: str | None, data_dir: Path | Non
     chain steps' series.
 
     A series with a file in the shared aux/ folder (cpi) is read by every
-    scenario and isn't renamed here, nor is an asset class's series, whose
-    name the fund allocations fix."""
+    scenario and isn't renamed here, nor is an asset class's series, or one
+    named for a symbol (or <symbol>.<class>), which lots read by name."""
     old, new = old.strip(), new.strip()
     if problem := rename.name_problem("series", new):
         raise click.ClickException(problem)
@@ -7398,6 +7398,8 @@ def series_rename(old: str, new: str, scenario: str | None, data_dir: Path | Non
                 f"{name!r} is an asset class, whose series name fund allocations rely on; it can't be renamed")
     data = _resolve_data_dir(data_dir)
     for name in (old, new):
+        if why := rename.symbol_series(data, name):
+            raise click.ClickException(f"{why}; it can't be renamed")
         if shared := rename.shared_series_files(data, name):
             raise click.ClickException(
                 f"series {name!r} has rates in the shared {', '.join(f'aux/{p.name}' for p in shared)}, "
@@ -7444,6 +7446,10 @@ def _rename_scenario(old: str, new: str, data_dir: Path | None) -> None:
     """``sim scenario rename`` and ``sim ensemble rename``."""
     data = _resolve_data_dir(data_dir)
     old, new = old.strip(), new.strip()
+    # Only a folder's own name: anything else (a path, '..') could reach
+    # outside scenarios/.
+    if old not in list_scenario_names(data):
+        raise click.ClickException(f"scenario not found: {data / 'scenarios' / old}")
     if not registries.SCENARIO_NAME_RE.match(new):
         raise click.ClickException(
             f"invalid scenario name: {new!r} (lowercase letters, digits, '_' and '-', "

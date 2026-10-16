@@ -122,9 +122,12 @@ def test_scenario_rename_refuses(test_data_dir: Path, test_scenarios_dir: Path, 
     assert (test_scenarios_dir / "retire_alice" / "scenario.csv").is_file()
 
 
-def test_scenario_rename_of_a_missing_scenario(test_data_dir: Path) -> None:
-    result = _sim(test_data_dir, "scenario", "rename", "nobody", "somebody", scenario=None)
+@pytest.mark.parametrize("old", ["nobody", "../scenarios/retire_alice", "retire_alice/series"])
+def test_scenario_rename_takes_only_a_scenario_folder_name(test_data_dir: Path, test_scenarios_dir: Path,
+                                                           old: str) -> None:
+    result = _sim(test_data_dir, "scenario", "rename", old, "somebody", scenario=None)
     assert result.exit_code != 0 and "scenario not found" in result.output
+    assert not (test_scenarios_dir / "somebody").exists()
 
 
 # ---------- names shared across scenarios ----------
@@ -205,6 +208,30 @@ def test_series_rename_leaves_a_same_named_account_alone(test_data_dir: Path, te
 def test_series_rename_refuses(test_data_dir: Path, old: str, new: str, message: str) -> None:
     result = _sim(test_data_dir, "series", "rename", old, new)
     assert result.exit_code != 0 and message in result.output, result.output
+
+
+@pytest.mark.parametrize(("name", "message"), [
+    ("VTI", "'VTI' is a symbol"),
+    ("VTI.stock_us", "<symbol>.<asset class> series"),
+])
+def test_series_rename_refuses_a_series_read_by_name(test_data_dir: Path, write_series, name: str,
+                                                      message: str) -> None:
+    (test_data_dir / "securities.csv").write_text("symbol,name\nVTI,Total market fund\n")
+    write_series(name, "2026-01-31,7%")
+    for old, new in ((name, "renamed"), ("food", name)):
+        result = _sim(test_data_dir, "series", "rename", old, new)
+        assert result.exit_code != 0 and message in result.output, result.output
+
+
+def test_series_rename_leaves_other_aux_kinds_alone(test_scenarios_dir: Path) -> None:
+    # A symbol's prices or a state's brackets end in __<name> too, but aren't a series.
+    folder = test_scenarios_dir / "base"
+    (folder / "aux").mkdir(exist_ok=True)
+    prices = folder / "aux" / "security_price__food.csv"
+    prices.write_text("date,price\n")
+    changed = rename.rename_series(folder, "food", "groceries")
+    assert "series/inflation__food.csv -> series/inflation__groceries.csv" in changed
+    assert prices.exists()
 
 
 def test_lot_rename_reaches_every_scenario(test_data_dir: Path, test_scenarios_dir: Path, derive_scenario,
