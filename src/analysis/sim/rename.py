@@ -19,17 +19,19 @@ from __future__ import annotations
 import csv
 import os
 import re
+import sqlite3
+import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from analysis.sim import chain_edit, registries
 from analysis.sim.lineage import load_order, parse_parents
-from analysis.sim.loader import CURRENT_SCENARIO_FILE, growth_rule_name
+from analysis.sim.loader import CURRENT_SCENARIO_FILE, LoadError, load_scenario
 
 __all__ = [
     "ACCOUNT_COLUMNS", "CALENDAR_ROW_COLUMNS", "RESERVED_ACCOUNTS", "SCHEDULED_COLUMNS",
-    "SERIES_COLUMNS", "SERIES_KINDS", "account_defined", "account_lots", "calendar_row_defined",
-    "clashes", "describe_clashes", "growth_rules", "name_problem", "relink_markdown",
+    "SERIES_COLUMNS", "SERIES_KINDS", "account_defined", "calendar_row_defined",
+    "clashes", "describe_clashes", "generated_growth_rules", "name_problem", "relink_markdown",
     "rename_account", "rename_calendar_row", "rename_growth_rules", "rename_scenario",
     "rename_scheduled", "rename_series", "scenario_folders", "scheduled_defined", "scope",
     "series_mentioned", "shared_series_files", "symbol_series",
@@ -140,30 +142,64 @@ RESERVED_ACCOUNTS = frozenset(c.name for c in registries.GROWTH_COUNTERPARTY_ACC
 a rename onto one of these names would turn an account into the built-in."""
 
 
-def account_lots(scenarios_dir: Path, account: str) -> set[str]:
-    """Every lot ``account`` has in any scenario, and ``default``."""
-    lots = {registries.DEFAULT_LOT}
-    for each in scenario_folders(scenarios_dir):
-        path = scenarios_dir / each / "account_values.csv"
-        if path.is_file() and path.stat().st_size:
-            with path.open(newline="", encoding="utf-8") as fh:
-                lots |= {(row.get("lot") or "").strip() or registries.DEFAULT_LOT
-                         for row in csv.DictReader(fh) if (row.get("account_name") or "").strip() == account}
-    return lots
+_GROWTH_RULES = """
+SELECT st.name, a.name, l.lot
+FROM scheduled_transaction st
+JOIN chain f ON f.id = st.from_account JOIN account fa ON fa.id = f.account_id
+JOIN chain t ON t.id = st.to_account JOIN account a ON a.id = t.account_id
+JOIN account_lot l ON l.id = t.lot_id
+WHERE fa.name IN ({})
+"""
 
 
-def growth_rules(renamed: Iterable[tuple[str, str, str, str]]) -> dict[str, str]:
-    """The generated growth rules' old and new names, for (old account, old
-    lot, new account, new lot) pairs: a calendar row may name one (a
-    set_amount or retire_scheduled), and the name follows the account and
-    lot (``loader.growth_rule_name``)."""
-    return {growth_rule_name(a, lot): growth_rule_name(b, new_lot) for a, lot, b, new_lot in renamed}
+def generated_growth_rules(data_dir: Path, scenario: str) -> dict[tuple[str, str], str]:
+    """The growth rule the loader generates for each (account, lot) of
+    ``scenario``, by name: read from a load, since the name depends on what
+    other rules the scenario has (``loader.growth_rule_name``). {} if the
+    scenario doesn't load; the staged edit reports that."""
+    scenarios = data_dir / "scenarios"
+    authored = set()
+    for each in load_order(scenarios, scenario):
+        authored |= _cells(scenarios / each / "scheduled.csv", ("name",))
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            result = load_scenario(data_dir, scenario, intent_dir=Path(td),
+                                   compute_stamps=False, allow_dirty_data=True)
+        except LoadError:
+            return {}
+        con = sqlite3.connect(result.intent_path)
+        try:
+            rows = con.execute(_GROWTH_RULES.format(", ".join("?" * len(RESERVED_ACCOUNTS))),
+                               sorted(RESERVED_ACCOUNTS)).fetchall()
+        finally:
+            con.close()
+    return {(account, lot): name for name, account, lot in rows if name not in authored}
 
 
 def rename_growth_rules(scenario_dir: Path, rules: dict[str, str]) -> list[str]:
-    changed = [chain_edit.rename_cells(scenario_dir / "calendar.csv", ("scheduled_name",), old, new)
-               for old, new in rules.items() if old != new]
-    return ["calendar.csv"] if any(changed) else []
+    """Point calendar rows naming a generated growth rule (a set_amount or
+    retire_scheduled) at its new name, all at once, so one rule taking
+    another's old name can't be renamed twice."""
+    path = scenario_dir / "calendar.csv"
+    rules = {old: new for old, new in rules.items() if old != new}
+    if not rules or not path.is_file() or path.stat().st_size == 0:
+        return []
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        header = list(reader.fieldnames or [])
+        rows = list(reader)
+    changed = False
+    for row in rows:
+        if (name := (row.get("scheduled_name") or "").strip()) in rules:
+            row["scheduled_name"] = rules[name]
+            changed = True
+    if not changed:
+        return []
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    return ["calendar.csv"]
 
 
 def rename_account(scenario_dir: Path, old: str, new: str) -> list[str]:

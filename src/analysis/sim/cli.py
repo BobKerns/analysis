@@ -4407,8 +4407,7 @@ def edit_account(
         if new_name != name:
             # Renames the references everywhere the account is shared; the
             # write below then carries this scenario's other changes.
-            _rename_across(edit, "account", name, new_name, defines=rename.account_defined,
-                           taken=_account_or_chain_defined, rewrite=_account_rewrite(edit, name, new_name))
+            _rename_account(edit, name, new_name)
         df.to_csv(edit.path(accounts_path), index=False)
 
     click.echo(f"updated account '{new_name}' in {accounts_path}")
@@ -4439,9 +4438,7 @@ def rename_account(
         raise click.ClickException("new account name required")
 
     with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
-        changed = _rename_across(edit, "account", old_name, new_name, defines=rename.account_defined,
-                                 taken=_account_or_chain_defined,
-                                 rewrite=_account_rewrite(edit, old_name, new_name))
+        changed = _rename_account(edit, old_name, new_name)
     _echo_renamed("account", old_name, new_name, changed)
 
 
@@ -7315,15 +7312,34 @@ def _not_reserved(new: str) -> None:
         raise click.ClickException(f"{new.strip()!r} is a built-in account's name")
 
 
-def _account_rewrite(edit: StagedEdit, old: str, new: str) -> Callable[[Path, str, str], list[str]]:
-    """``rename.rename_account``, and the calendar rows naming the account's
-    generated growth rules, whose names follow it. The lots are read before
-    anything is rewritten."""
+def _rename_with_growth_rules(
+    edit: StagedEdit, what: str, old: str, new: str, *,
+    defines: Callable[[str], rename.Defines], rewrite: Callable[[Path, str, str], list[str]],
+    moved: Callable[[str, str], tuple[str, str] | None],
+    taken: Callable[[str], rename.Defines] | None = None, missing: Callable[[], str] | None = None,
+) -> list[str]:
+    """``_rename_across``, and then the calendar rows naming a growth rule the
+    loader generated for an (account, lot) that ``moved`` renames: that
+    rule's name follows them. The names are read from loads before and after,
+    in each affected scenario, as they depend on its other rules."""
+    scenarios = edit.data_dir / "scenarios"
+    affected = rename.scope(scenarios, edit.name, defines(old.strip()))
+    before = {each: rename.generated_growth_rules(edit.data_dir, each) for each in affected}
+    changed = _rename_across(edit, what, old, new, defines=defines, rewrite=rewrite, taken=taken, missing=missing)
+    for each in affected:
+        after = rename.generated_growth_rules(edit.data_dir, each)
+        rules = {name: after[target] for key, name in before[each].items()
+                 if (target := moved(*key)) is not None and target in after}
+        changed += [f"{each}: {c}" for c in rename.rename_growth_rules(scenarios / each, rules)]
+    return list(dict.fromkeys(changed))
+
+
+def _rename_account(edit: StagedEdit, old: str, new: str) -> list[str]:
     _not_reserved(new)
-    lots = rename.account_lots(edit.data_dir / "scenarios", old.strip())
-    rules = rename.growth_rules((old.strip(), lot, new.strip(), lot) for lot in lots)
-    return lambda scenario_dir, old, new: [*rename.rename_account(scenario_dir, old, new),
-                                           *rename.rename_growth_rules(scenario_dir, rules)]
+    old, new = old.strip(), new.strip()
+    return _rename_with_growth_rules(
+        edit, "account", old, new, defines=rename.account_defined, taken=_account_or_chain_defined,
+        rewrite=rename.rename_account, moved=lambda account, lot: (new, lot) if account == old else None)
 
 
 def _rename_across(
@@ -7448,19 +7464,18 @@ def lot_rename(account: str, lot: str, new_lot: str, scenario: str | None, data_
     included, and every scenario built on those."""
     account, lot, new_lot = account.strip(), lot.strip(), _check_lot_label(new_lot)
 
-    rules = rename.growth_rules([(account, lot, account, new_lot)])
-
     def rewrite(scenario_dir: Path, old: str, new: str) -> list[str]:
         lines = [line.strip() for line in _lot_reference_rows(scenario_dir, account, old, own_row=True)]
         _rewrite_lot_references(scenario_dir, account, old, new, own_row=True)
-        return [*lines, *rename.rename_growth_rules(scenario_dir, rules)]
+        return lines
 
     with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
-        changed = _rename_across(
+        changed = _rename_with_growth_rules(
             edit, f"lot of {account}", lot, new_lot,
             defines=lambda name: _lot_defined(account, name), rewrite=rewrite,
             missing=lambda: (f"{account!r} has no lot {lot!r} in account_values.csv, in {edit.name} "
                              "or the scenarios it builds on"),
+            moved=lambda owner, label: (account, new_lot) if (owner, label) == (account, lot) else None,
         )
     _echo_renamed(f"lot of {account}", lot, new_lot, changed)
 

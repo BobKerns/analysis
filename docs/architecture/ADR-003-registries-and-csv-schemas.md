@@ -874,12 +874,15 @@ mix-in of those that defines the same name. Run from a child, a rename of an
 inherited name therefore starts at the parent that defines it. A new name
 that already applies in any of those scenarios is refused, as is an
 account or chain named for a built-in growth account (`interest_income`
-...). Renaming an account or lot also renames the calendar rows naming its
-generated growth rule, whose name follows them. A series with a
-file in the shared `aux/` (`cpi`), an asset class's series, and one named
-for a symbol or `<symbol>.<class>` (read by lots by name, ADR-005 §5) are not
-renamed; only `rate__`/`inflation__` files are a series' files. `scenario rename` (the same command as `ensemble rename`) moves the
-folder and rewrites its `scenario.csv` name, every `parent_scenario` naming
+...). Renaming an account or lot also renames the calendar rows naming a
+growth rule the loader generates for it: each affected scenario is loaded
+before and after, so the names are the ones the loader actually gives
+(widened where they collide), and a row naming an authored rule is left
+alone. A series with a file in the shared `aux/` (`cpi`), an asset class's
+series, and one named for a symbol or `<symbol>.<class>` (read by lots by
+name, ADR-005 §5) are not renamed; only `rate__`/`inflation__` files are a
+series' files. `scenario rename` (the same command as `ensemble rename`)
+moves the folder and rewrites its `scenario.csv` name, every `parent_scenario` naming
 it, `.current_scenario`, and the links to it in the data repo's markdown
 files (`scenarios/**` and the top level); runs already made keep the old
 name.

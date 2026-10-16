@@ -179,6 +179,25 @@ def test_account_rename_follows_its_generated_growth_rule(
     loads("retire_alice")
 
 
+def test_account_rename_leaves_an_authored_rule_with_a_growth_rule_name(
+    test_data_dir: Path, test_scenarios_dir: Path, retire_alice_csv: Callable[[str], Path],
+    append_calendar_row, loads: Callable[[str], None],
+) -> None:
+    # An authored rule that takes the generated name pushes the growth rule to a
+    # wider one; the calendar row names the authored rule, so it must not move.
+    rule = growth_rule_name("Asset_Checking", "default")
+    scheduled = retire_alice_csv("scheduled.csv")
+    scheduled.write_text(scheduled.read_text() + f"{rule},Income_Salary_Alice,,Asset_Checking,,"
+                         "monthly,,fixed_amount,,,cpi,,,10.00,2026-05-31,,ordinary,,2026-05-31,,"
+                         "200,,,authored,{},,\n")
+    append_calendar_row(date="2030-01-31", kind="retire_scheduled", scheduled_name=rule)
+    result = _sim(test_data_dir, "account", "rename", "Asset_Checking", "Asset_Spending")
+    assert result.exit_code == 0, result.output
+    assert rule in _column(test_scenarios_dir / "retire_alice" / "calendar.csv", "scheduled_name")
+    assert rule in _column(test_scenarios_dir / "retire_alice" / "scheduled.csv", "name")
+    loads("retire_alice")
+
+
 def test_scheduled_rename_follows_calendar_rows(test_data_dir: Path, test_scenarios_dir: Path,
                                                 loads: Callable[[str], None]) -> None:
     result = _sim(test_data_dir, "scheduled", "rename", "salary_alice", "wages_alice")
