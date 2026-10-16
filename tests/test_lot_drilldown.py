@@ -13,6 +13,7 @@ import matplotlib
 import pandas as pd
 import pytest
 from click.testing import CliRunner
+from ipywidgets import widgets
 
 matplotlib.use("Agg")
 
@@ -96,6 +97,7 @@ def test_account_picker_publishes_one_selection_per_change() -> None:
     picker.account_picker.value = ("Checking",)
     # The lot is dropped with its account in the same, single, change.
     assert seen == [(("Brokerage",), ("a",)), (("Checking",), ())]
+    assert picker.account_column.children == (picker.account_picker, picker.lot_picker)
     assert picker.lot_picker.layout.display == "none"
 
 
@@ -110,6 +112,9 @@ def test_account_dropdown_follows_the_account_with_its_lots() -> None:
     picker.account_picker.value = "Brokerage"
     picker.lot_picker.picker.value = ("b",)
     assert picker.selection == ("Brokerage", ("b",))
+    # Stacked: the lot picker sits under the account it drills into.
+    assert isinstance(picker, widgets.VBox)
+    assert picker.children == (picker.account_picker, picker.lot_picker)
 
 
 def test_merged_lots_by_account_keeps_every_runs_lots(

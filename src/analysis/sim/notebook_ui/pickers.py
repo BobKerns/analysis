@@ -1060,16 +1060,21 @@ class AccountPicker(widgets.HBox):
         )
         self.account_picker = widgets.SelectMultiple(
             description="Accounts:",
-            layout=widgets.Layout(width="50%"),
+            layout=widgets.Layout(width="100%"),
         )
         self.lot_picker = (
             LotPicker(lots_by_account, multiple=lot_multiple)
             if lots_by_account is not None else None
         )
+        # The lot picker sits under the accounts it drills into: narrower,
+        # and it reads as belonging to them.
+        self.account_column = widgets.VBox(
+            [self.account_picker,
+             *((self.lot_picker,) if self.lot_picker is not None else ())],
+            layout=widgets.Layout(width="50%"),
+        )
         parts: list[widgets.Widget] = [self.kind_picker] if show_kind else []
-        parts.append(self.account_picker)
-        if self.lot_picker is not None:
-            parts.append(self.lot_picker)
+        parts.append(self.account_column)
         super().__init__(parts)
         self._fill(cast(AccountKindAny, self.kind_picker.value), accounts)
         traitlets.link((self.kind_picker, "value"), (self, "kind"))
@@ -1126,9 +1131,9 @@ class AccountPicker(widgets.HBox):
         self.selection = (accounts, self.lots)
 
 
-class AccountDropdown(widgets.HBox):
+class AccountDropdown(widgets.VBox):
     """One account from a dropdown, and -- given ``lots_by_account`` -- one of
-    its lots or all of them (#170).
+    its lots or all of them (#170), under it.
 
     ``options`` are account names or ``(label, value)`` pairs, so a choice
     that isn't an account (net worth, say) can lead the list. ``selection``
