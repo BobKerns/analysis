@@ -1,6 +1,7 @@
 """``scenario.meta_json`` inherits key by key down a scenario's lineage
 (issue #74, ADR-003 §4.5), so a child of an ensemble recipe keeps the recipe's
-``ensemble_size`` even though ``sim scenario create`` writes its own ``{}``."""
+``ensemble_size`` unless it sets its own -- as ``sim scenario create``'s 0
+does, making the child a plain scenario (#169)."""
 
 from __future__ import annotations
 
@@ -65,10 +66,12 @@ def test_a_meta_json_that_is_not_an_object_fails_the_load(
     assert any(issue.startswith("bad: ") and message in issue for issue in ei.value.issues)
 
 
-def test_sim_run_on_a_child_of_a_recipe_uses_the_recipes_member_count(
+def _create_child_and_run(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
-    intent_dir: Path, runs_dir: Path,
-) -> None:
+    intent_dir: Path, runs_dir: Path, group: str,
+) -> str:
+    """Derive ``what_if`` with ``sim <group> create`` from a two-member recipe
+    with one varying row, then ``sim run`` it; returns the run's output."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
         series="Asset_Checking", amount="4.5%",
@@ -79,7 +82,7 @@ def test_sim_run_on_a_child_of_a_recipe_uses_the_recipes_member_count(
     data = ["--data-dir", str(test_data_dir)]
     for args in (
         ["sim", "ensemble", "create", "recipe", ROOT, "--size", "2", *data],
-        ["sim", "scenario", "create", "what_if", "recipe", *data],
+        ["sim", group, "create", "what_if", "recipe", *data],
         ["sim", "load", "what_if", *data, "--intent-dir", str(intent_dir),
          "--allow-dirty-data", "--no-run"],
     ):
@@ -95,7 +98,40 @@ def test_sim_run_on_a_child_of_a_recipe_uses_the_recipes_member_count(
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "2/2 member(s) succeeded" in result.output
+    return result.output
+
+
+def test_sim_run_on_an_ensemble_child_of_a_recipe_uses_the_recipes_member_count(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    output = _create_child_and_run(
+        test_data_dir, append_calendar_row, intent_dir, runs_dir, "ensemble",
+    )
+    assert "2/2 member(s) succeeded" in output
+
+
+def test_sim_run_on_a_scenario_child_of_a_recipe_runs_its_base_case(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    intent_dir: Path, runs_dir: Path,
+) -> None:
+    """#169: ``sim scenario create`` never makes an ensemble, so its child of
+    a recipe runs once, at member 0's central values, to an ordinary run file."""
+    output = _create_child_and_run(
+        test_data_dir, append_calendar_row, intent_dir, runs_dir, "scenario",
+    )
+    assert "what_if is not an ensemble: running its base case" in output
+    run_files = list(runs_dir.glob("*_what_if_*.sqlite3"))
+    assert len(run_files) == 1
+    assert not (runs_dir / "what_if").exists()
+    query = ("SELECT amount, vary_distribution FROM calendar_event "
+             "WHERE name = 'checking_rate_vary'")
+    with sqlite3.connect(intent_dir / "what_if.sqlite3") as con:
+        (authored, vary) = con.execute(query).fetchone()
+    assert vary == "uniform"  # the load's own intent keeps the varying row
+    # Resolved to the uniform's midpoint, 4.5%: the authored amount.
+    with sqlite3.connect(run_files[0]) as con:
+        assert con.execute(query).fetchone() == (authored, None)
 
 
 @pytest.mark.parametrize("reserve", ["250000", '"250000.00"'])
@@ -117,3 +153,43 @@ def test_a_reserve_that_is_not_dollars_fails_the_load(
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "bad", intent_dir=tmp_path, allow_dirty_data=True)
     assert any(issue.startswith("bad: ") and "reserve" in issue for issue in ei.value.issues)
+
+
+def test_sim_run_reads_a_string_zero_size_as_not_an_ensemble(
+    derive_scenario: Callable[..., Path], test_data_dir: Path,
+    append_calendar_row: Callable[..., None], intent_dir: Path, runs_dir: Path,
+) -> None:
+    """``"0"`` means no ensemble to ``sim run`` as it does to ``sim scenario list``."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
+    )
+    derive_scenario("quoted", ROOT, meta_json='{"ensemble_size":"0"}')
+    result = CliRunner().invoke(main, [
+        "sim", "run", "quoted", "--data-dir", str(test_data_dir),
+        "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+        "--allow-dirty-data",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "quoted is not an ensemble: running its base case" in result.output
+
+
+@pytest.mark.parametrize("size", ['"abc"', "5.5", "true", "-1"])
+def test_an_ensemble_size_that_is_not_a_count_fails_the_load(
+    derive_scenario: Callable[..., Path], test_data_dir: Path, tmp_path: Path, size: str,
+) -> None:
+    """#169: a float or boolean would be truncated to a member count, and a
+    non-number would crash ``sim run``, so the load refuses both."""
+    derive_scenario("bad", ROOT, meta_json=f'{{"ensemble_size":{size}}}')
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "bad", intent_dir=tmp_path, allow_dirty_data=True)
+    assert any(issue.startswith("bad: ") and "ensemble_size" in issue for issue in ei.value.issues)
+
+
+def test_a_string_ensemble_size_is_stored_as_its_int(
+    derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
+) -> None:
+    derive_scenario("quoted", ROOT, meta_json='{"ensemble_size":"12"}')
+    assert _meta(load_test_scenario("quoted"))["ensemble_size"] == 12

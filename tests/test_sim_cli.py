@@ -1195,7 +1195,7 @@ def test_sim_run_generates_and_runs_ensemble_for_a_recipe(
         con.close()
 
 
-def test_sim_run_ensemble_requires_size(
+def test_sim_run_without_a_size_runs_the_base_case(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
     intent_dir: Path, runs_dir: Path,
 ) -> None:
@@ -1217,8 +1217,10 @@ def test_sim_run_ensemble_requires_size(
             "--allow-dirty-data",
         ],
     )
-    assert result.exit_code != 0
-    assert "ensemble recipe requires --ensemble-size" in result.output
+    # #169: no ensemble_size means not an ensemble, so it runs once.
+    assert result.exit_code == 0, result.output
+    assert "retire_alice is not an ensemble: running its base case" in result.output
+    assert len(list(runs_dir.glob("*_retire_alice_*.sqlite3"))) == 1
 
 
 def test_sim_run_ensemble_rejects_zero_ensemble_size(
@@ -1248,9 +1250,9 @@ def test_sim_run_ensemble_rejects_zero_ensemble_size(
     assert not (runs_dir / "retire_alice").exists()
 
 
-def test_sim_run_ensemble_rejects_negative_metadata_size(
+def test_sim_load_rejects_a_negative_metadata_size(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
-    retire_alice_csv: Callable[[str], Path], intent_dir: Path, runs_dir: Path,
+    retire_alice_csv: Callable[[str], Path], intent_dir: Path,
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
@@ -1263,20 +1265,10 @@ def test_sim_run_ensemble_rejects_negative_metadata_size(
     df.loc[0, "meta_json"] = json.dumps({"ensemble_size": -3})
     df.to_csv(scenario_csv, index=False)
 
-    runner = CliRunner()
-    load_result = _sim_load(test_data_dir, intent_dir, runner)
-    assert load_result.exit_code == 0, load_result.output
-
-    result = runner.invoke(
-        main,
-        [
-            "sim", "run", "retire_alice",
-            "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-            "--allow-dirty-data",
-        ],
-    )
-    assert result.exit_code != 0
-    assert "scenario.meta_json.ensemble_size must be a positive integer" in result.output
+    # #169: checked at load, before `sim run` ever reads it.
+    load_result = _sim_load(test_data_dir, intent_dir, CliRunner())
+    assert load_result.exit_code != 0
+    assert "invalid ensemble_size -3" in load_result.output
 
 
 def test_sim_ensemble_create_writes_the_series_readme(test_data_dir: Path) -> None:
