@@ -153,3 +153,24 @@ def test_a_reserve_that_is_not_dollars_fails_the_load(
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "bad", intent_dir=tmp_path, allow_dirty_data=True)
     assert any(issue.startswith("bad: ") and "reserve" in issue for issue in ei.value.issues)
+
+
+def test_sim_run_reads_a_string_zero_size_as_not_an_ensemble(
+    derive_scenario: Callable[..., Path], test_data_dir: Path,
+    append_calendar_row: Callable[..., None], intent_dir: Path, runs_dir: Path,
+) -> None:
+    """``"0"`` means no ensemble to ``sim run`` as it does to ``sim scenario list``."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
+    )
+    derive_scenario("quoted", ROOT, meta_json='{"ensemble_size":"0"}')
+    result = CliRunner().invoke(main, [
+        "sim", "run", "quoted", "--data-dir", str(test_data_dir),
+        "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+        "--allow-dirty-data",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "quoted is not an ensemble: running its base case" in result.output

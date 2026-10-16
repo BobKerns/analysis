@@ -521,10 +521,18 @@ def _has_unresolved_vary(intent_path: Path) -> bool:
 
 
 def _recorded_ensemble_size(intent_path: Path) -> object:
-    """The intent's merged ``scenario.meta_json.ensemble_size``, as authored
-    (``None`` when absent); absent or 0 means not an ensemble (ADR-006 §7)."""
+    """The intent's merged ``scenario.meta_json.ensemble_size`` (``None`` when
+    absent); absent or 0 means not an ensemble (ADR-006 §7). A numeric string
+    becomes its int, as ``sim scenario list`` reads it; anything else is
+    returned as authored, for ``_run_ensemble`` to reject."""
     _seed, meta_json, _tree_id = _recipe_identity(intent_path)
-    return json.loads(meta_json or "{}").get("ensemble_size")
+    size = json.loads(meta_json or "{}").get("ensemble_size")
+    if isinstance(size, str):
+        try:
+            return int(size)
+        except ValueError:
+            pass
+    return size
 
 
 def _resolve_base_case(scenario_name: str, intent_path: Path, intent_dir: Path) -> Path:
