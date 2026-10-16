@@ -1195,7 +1195,7 @@ def test_sim_run_generates_and_runs_ensemble_for_a_recipe(
         con.close()
 
 
-def test_sim_run_ensemble_requires_size(
+def test_sim_run_without_a_size_runs_the_base_case(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
     intent_dir: Path, runs_dir: Path,
 ) -> None:
@@ -1217,8 +1217,10 @@ def test_sim_run_ensemble_requires_size(
             "--allow-dirty-data",
         ],
     )
-    assert result.exit_code != 0
-    assert "ensemble recipe requires --ensemble-size" in result.output
+    # #169: no ensemble_size means not an ensemble, so it runs once.
+    assert result.exit_code == 0, result.output
+    assert "retire_alice is not an ensemble: running its base case" in result.output
+    assert len(list(runs_dir.glob("*_retire_alice_*.sqlite3"))) == 1
 
 
 def test_sim_run_ensemble_rejects_zero_ensemble_size(

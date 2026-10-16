@@ -139,9 +139,9 @@ Consequences worth knowing:
 - **Adding, removing or reordering a row doesn't disturb any other row's
   draws.** Each row's numbers depend only on the seed, the member and its
   own name.
-- **Comparisons are fair.** A child scenario inherits its parent's seed, so
-  member 3 of the child draws the same future as member 3 of the parent for
-  every row they share. The difference between the two ensembles is the
+- **Comparisons are fair.** An ensemble made with `sim ensemble create`
+  from another ensemble inherits its seed, so member 3 of the child draws
+  the same future as member 3 of the parent for every row they share. The difference between the two ensembles is the
   change you made, not fresh noise. Statisticians call this **common random
   numbers**; it lets a comparison show a real difference with far fewer
   members than independent runs would need.

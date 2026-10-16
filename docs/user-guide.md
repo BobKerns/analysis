@@ -68,6 +68,10 @@ or inflation series it changes. It checks that the scenario loads, and makes it 
 scenario. You then add only the rows that need to be different — the rest of
 this guide shows what to put in them.
 
+A scenario made this way is never an ensemble, even when its parent is
+one: it runs once, with each varying row at its central value. Use
+`sim ensemble create` (§4.10) for an ensemble.
+
 Add a `README.md` in the scenario's own folder to describe what it's for —
 its title and first paragraph show up wherever a scenario's description
 does (the scenario picker, `scenario_overview.ipynb`), and travel with every
@@ -79,12 +83,14 @@ To see which scenarios the data repo has:
 
 ```sh
 sim scenario list            # names only, one per line, for scripts
-sim scenario list --verbose  # a table with each one's parents, dates and description
+sim scenario list --verbose  # a table with each one's parents, dates, seed, size and description
+sim ensemble list            # just the ensembles (also takes --verbose)
 ```
 
 The verbose table marks your current scenario with `*`, and shows each
-scenario's start and end months, in `[brackets]` when the scenario inherits
-that date rather than setting it itself.
+scenario's start and end months, seed and ensemble size, in `[brackets]`
+when the scenario inherits the value rather than setting it itself. A blank
+size means the scenario is not an ensemble.
 
 Everything below works the same way, whether you are editing `base` directly,
 or editing a derived scenario's own files.
