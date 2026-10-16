@@ -872,7 +872,10 @@ scenario given but in every scenario that shares it
 the name, every scenario inheriting from one of those, and again for any
 mix-in of those that defines the same name. Run from a child, a rename of an
 inherited name therefore starts at the parent that defines it. A new name
-that already applies in any of those scenarios is refused. A series with a
+that already applies in any of those scenarios is refused, as is an
+account or chain named for a built-in growth account (`interest_income`
+...). Renaming an account or lot also renames the calendar rows naming its
+generated growth rule, whose name follows them. A series with a
 file in the shared `aux/` (`cpi`), an asset class's series, and one named
 for a symbol or `<symbol>.<class>` (read by lots by name, ADR-005 §5) are not
 renamed; only `rate__`/`inflation__` files are a series' files. `scenario rename` (the same command as `ensemble rename`) moves the

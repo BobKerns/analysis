@@ -12,7 +12,7 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim import rename
 from analysis.sim.lineage import read_parents
-from analysis.sim.loader import load_scenario
+from analysis.sim.loader import growth_rule_name, load_scenario
 
 
 def _sim(data_dir: Path, *args: str, scenario: str | None = "retire_alice"):
@@ -122,6 +122,11 @@ def test_scenario_rename_refuses(test_data_dir: Path, test_scenarios_dir: Path, 
     assert (test_scenarios_dir / "retire_alice" / "scenario.csv").is_file()
 
 
+def test_rename_scenario_takes_only_a_folder_name(test_data_dir: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="scenario not found"):
+        rename.rename_scenario(test_data_dir, "../scenarios/retire_alice", "somebody")
+
+
 @pytest.mark.parametrize("old", ["nobody", "../scenarios/retire_alice", "retire_alice/series"])
 def test_scenario_rename_takes_only_a_scenario_folder_name(test_data_dir: Path, test_scenarios_dir: Path,
                                                            old: str) -> None:
@@ -153,6 +158,25 @@ def test_account_rename_refuses_a_name_a_child_uses(test_data_dir: Path, test_sc
     assert result.exit_code != 0
     assert "an account 'Asset_Reserve' already applies in kid" in result.output
     assert "Asset_Savings" in _column(test_scenarios_dir / "retire_alice" / "accounts.csv", "name")
+
+
+@pytest.mark.parametrize("command", [("account", "rename", "Asset_Savings"),
+                                     ("chain", "rename", "asset_checking_liquidity")])
+def test_a_rename_onto_a_built_in_account_is_refused(test_data_dir: Path, command: tuple[str, ...]) -> None:
+    result = _sim(test_data_dir, *command, "interest_income")
+    assert result.exit_code != 0 and "'interest_income' is a built-in account's name" in result.output
+
+
+def test_account_rename_follows_its_generated_growth_rule(
+    test_data_dir: Path, test_scenarios_dir: Path, append_calendar_row, loads: Callable[[str], None],
+) -> None:
+    rule = growth_rule_name("Asset_Checking", "default")
+    append_calendar_row(date="2030-01-31", kind="retire_scheduled", scheduled_name=rule)
+    result = _sim(test_data_dir, "account", "rename", "Asset_Checking", "Asset_Spending")
+    assert result.exit_code == 0, result.output
+    scheduled = _column(test_scenarios_dir / "retire_alice" / "calendar.csv", "scheduled_name")
+    assert rule not in scheduled and growth_rule_name("Asset_Spending", "default") in scheduled
+    loads("retire_alice")
 
 
 def test_scheduled_rename_follows_calendar_rows(test_data_dir: Path, test_scenarios_dir: Path,

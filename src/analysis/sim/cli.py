@@ -4408,7 +4408,7 @@ def edit_account(
             # Renames the references everywhere the account is shared; the
             # write below then carries this scenario's other changes.
             _rename_across(edit, "account", name, new_name, defines=rename.account_defined,
-                           taken=_account_or_chain_defined, rewrite=rename.rename_account)
+                           taken=_account_or_chain_defined, rewrite=_account_rewrite(edit, name, new_name))
         df.to_csv(edit.path(accounts_path), index=False)
 
     click.echo(f"updated account '{new_name}' in {accounts_path}")
@@ -4440,7 +4440,8 @@ def rename_account(
 
     with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
         changed = _rename_across(edit, "account", old_name, new_name, defines=rename.account_defined,
-                                 taken=_account_or_chain_defined, rewrite=rename.rename_account)
+                                 taken=_account_or_chain_defined,
+                                 rewrite=_account_rewrite(edit, old_name, new_name))
     _echo_renamed("account", old_name, new_name, changed)
 
 
@@ -6878,8 +6879,11 @@ def chain_rename_command(old: str | None, new: str | None, scenario: str | None,
             new = _ask_new_chain_name(taken, f"new name for {old} (one word, no spaces)")
         elif problem := chain_edit.name_problem(new):
             raise click.ClickException(problem)
+        elif new in rename.RESERVED_ACCOUNTS:
+            _not_reserved(new)
         elif new in taken:
             raise click.ClickException(f"{new!r} is already a chain or an account's name")
+        _not_reserved(new)  # also when asked: this scenario may not have made it
         changed = _rename_across(
             edit, "chain", old, new, defines=_chain_defined,
             taken=lambda name: _either(_chain_defined(name), rename.account_defined(name)),
@@ -7306,6 +7310,22 @@ def _account_or_chain_defined(name: str) -> rename.Defines:
     return _either(rename.account_defined(name), _chain_defined(name))
 
 
+def _not_reserved(new: str) -> None:
+    if new.strip() in rename.RESERVED_ACCOUNTS:
+        raise click.ClickException(f"{new.strip()!r} is a built-in account's name")
+
+
+def _account_rewrite(edit: StagedEdit, old: str, new: str) -> Callable[[Path, str, str], list[str]]:
+    """``rename.rename_account``, and the calendar rows naming the account's
+    generated growth rules, whose names follow it. The lots are read before
+    anything is rewritten."""
+    _not_reserved(new)
+    lots = rename.account_lots(edit.data_dir / "scenarios", old.strip())
+    rules = rename.growth_rules((old.strip(), lot, new.strip(), lot) for lot in lots)
+    return lambda scenario_dir, old, new: [*rename.rename_account(scenario_dir, old, new),
+                                           *rename.rename_growth_rules(scenario_dir, rules)]
+
+
 def _rename_across(
     edit: StagedEdit, what: str, old: str, new: str, *,
     defines: Callable[[str], rename.Defines],
@@ -7331,7 +7351,8 @@ def _rename_across(
             f"{'an' if what.startswith(('a', 'e', 'i', 'o', 'u')) else 'a'} {what} {new!r} already applies in "
             f"{rename.describe_clashes(found)}; rename or delete it first")
     try:
-        return [f"{each}: {change}" for each in affected for change in rewrite(scenarios / each, old, new)]
+        return list(dict.fromkeys(
+            f"{each}: {change}" for each in affected for change in rewrite(scenarios / each, old, new)))
     except (OSError, ValueError) as exc:
         raise click.ClickException(str(exc)) from None
 
@@ -7427,10 +7448,12 @@ def lot_rename(account: str, lot: str, new_lot: str, scenario: str | None, data_
     included, and every scenario built on those."""
     account, lot, new_lot = account.strip(), lot.strip(), _check_lot_label(new_lot)
 
+    rules = rename.growth_rules([(account, lot, account, new_lot)])
+
     def rewrite(scenario_dir: Path, old: str, new: str) -> list[str]:
         lines = [line.strip() for line in _lot_reference_rows(scenario_dir, account, old, own_row=True)]
         _rewrite_lot_references(scenario_dir, account, old, new, own_row=True)
-        return lines
+        return [*lines, *rename.rename_growth_rules(scenario_dir, rules)]
 
     with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
         changed = _rename_across(

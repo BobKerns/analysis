@@ -24,13 +24,15 @@ from pathlib import Path
 
 from analysis.sim import chain_edit, registries
 from analysis.sim.lineage import load_order, parse_parents
-from analysis.sim.loader import CURRENT_SCENARIO_FILE
+from analysis.sim.loader import CURRENT_SCENARIO_FILE, growth_rule_name
 
 __all__ = [
-    "ACCOUNT_COLUMNS", "CALENDAR_ROW_COLUMNS", "SCHEDULED_COLUMNS", "SERIES_COLUMNS", "SERIES_KINDS",
-    "account_defined", "calendar_row_defined", "clashes", "describe_clashes", "relink_markdown", "rename_account",
-    "name_problem", "rename_calendar_row", "rename_scenario", "rename_scheduled", "rename_series", "scenario_folders",
-    "scheduled_defined", "scope", "series_mentioned", "shared_series_files", "symbol_series",
+    "ACCOUNT_COLUMNS", "CALENDAR_ROW_COLUMNS", "RESERVED_ACCOUNTS", "SCHEDULED_COLUMNS",
+    "SERIES_COLUMNS", "SERIES_KINDS", "account_defined", "account_lots", "calendar_row_defined",
+    "clashes", "describe_clashes", "growth_rules", "name_problem", "relink_markdown",
+    "rename_account", "rename_calendar_row", "rename_growth_rules", "rename_scenario",
+    "rename_scheduled", "rename_series", "scenario_folders", "scheduled_defined", "scope",
+    "series_mentioned", "shared_series_files", "symbol_series",
 ]
 
 Defines = Callable[[Path], bool]
@@ -131,6 +133,37 @@ which has the account's name; chain files' steps are handled with them."""
 
 def account_defined(name: str) -> Defines:
     return lambda scenario_dir: name in _cells(scenario_dir / "accounts.csv", ("name",))
+
+
+RESERVED_ACCOUNTS = frozenset(c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values())
+"""Accounts the loader makes for declared growth when no scenario has one;
+a rename onto one of these names would turn an account into the built-in."""
+
+
+def account_lots(scenarios_dir: Path, account: str) -> set[str]:
+    """Every lot ``account`` has in any scenario, and ``default``."""
+    lots = {registries.DEFAULT_LOT}
+    for each in scenario_folders(scenarios_dir):
+        path = scenarios_dir / each / "account_values.csv"
+        if path.is_file() and path.stat().st_size:
+            with path.open(newline="", encoding="utf-8") as fh:
+                lots |= {(row.get("lot") or "").strip() or registries.DEFAULT_LOT
+                         for row in csv.DictReader(fh) if (row.get("account_name") or "").strip() == account}
+    return lots
+
+
+def growth_rules(renamed: Iterable[tuple[str, str, str, str]]) -> dict[str, str]:
+    """The generated growth rules' old and new names, for (old account, old
+    lot, new account, new lot) pairs: a calendar row may name one (a
+    set_amount or retire_scheduled), and the name follows the account and
+    lot (``loader.growth_rule_name``)."""
+    return {growth_rule_name(a, lot): growth_rule_name(b, new_lot) for a, lot, b, new_lot in renamed}
+
+
+def rename_growth_rules(scenario_dir: Path, rules: dict[str, str]) -> list[str]:
+    changed = [chain_edit.rename_cells(scenario_dir / "calendar.csv", ("scheduled_name",), old, new)
+               for old, new in rules.items() if old != new]
+    return ["calendar.csv"] if any(changed) else []
 
 
 def rename_account(scenario_dir: Path, old: str, new: str) -> list[str]:
@@ -348,7 +381,8 @@ def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
             "starting with a letter or digit)")
     scenarios = data_dir / "scenarios"
     old_dir, new_dir = scenarios / old, scenarios / new
-    if not old_dir.is_dir():
+    # Only a folder's own name: a path or '..' could reach outside scenarios/.
+    if old not in scenario_folders(scenarios):
         raise FileNotFoundError(f"scenario not found: {old_dir}")
     if new_dir.exists():
         raise FileExistsError(f"scenario already exists: {new_dir}")
