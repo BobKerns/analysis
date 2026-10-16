@@ -1,12 +1,10 @@
-"""Scenario-compare widgets for lots (ADR-005).
+"""Scenario-compare widget for lots (ADR-005), called like the widgets in
+:mod:`compare_plots` (``CONNECTIONS.show(widget, ...)``).
 
-Two views, called like the widgets in :mod:`compare_plots`
-(``CONNECTIONS.show(widget, ...)``):
-
-* :func:`account_definitions_widget` -- how accounts, their lots and the
-  year-to-date rows are *defined* differently across scenarios.
-* :func:`show_lot_balance_diffs` -- how lot balances, cost basis and
-  quantities *evolve* differently, for accounts with more than one lot.
+:func:`account_definitions_widget` shows how accounts, their lots and the
+year-to-date rows are *defined* differently across scenarios. How they
+*evolve* differently (balance, cost basis, quantity) is
+:func:`compare_plots.show_account_balance_diffs`, which drills into lots.
 """
 
 from __future__ import annotations
@@ -14,34 +12,24 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 
-import ipywidgets as widgets
 import pandas as pd
-from IPython.display import clear_output, display
+from IPython.display import display
 
 from analysis.sim.connection import RunConnection
 from analysis.frames import named_rows
-from analysis.sim.notebook_ui.compare_plots import _observe_dollar_mode
 from analysis.sim.notebook_ui.pickers import (
-    DollarModePicker,
     MultiScenarioConnections,
-    ValuePlotModePicker,
     display_warning,
-    to_markdown,
 )
-from analysis.sim.types import DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = [
     "account_definition_differences",
     "account_definitions_widget",
-    "differing_lots",
-    "lot_frame",
-    "show_lot_balance_diffs",
     "year_to_date_differences",
 ]
 
 ABSENT = "—"
-LOT_MEASURE_LABELS = {"balance": "Balance", "cost_basis": "Cost basis", "quantity": "Quantity"}
 
 _ACCOUNT_TEXT_FIELDS = ("kind", "subkind", "owner", "tax_treatment", "opened", "closed")
 _ACCOUNT_FIELDS = (*_ACCOUNT_TEXT_FIELDS, "tags")
@@ -216,162 +204,3 @@ def account_definitions_widget(
         else:
             display(StyledMarkdown("### Year-to-date rows"))
             display(year_to_date.fillna(ABSENT))
-
-
-# ---------- lot balances ----------
-
-
-def _lots_by_account(connection: RunConnection) -> dict[str, set[str]]:
-    """Asset account -> its lot labels (``Account/lot``), from the run."""
-    members = connection.items("account_lot")
-    members = members[members["kind"] == "asset"]
-    grouped: dict[str, set[str]] = {}
-    for account, lot in zip(members["account"], members["lot"], strict=True):
-        grouped.setdefault(account, set()).add(f"{account}/{lot}")
-    return grouped
-
-
-def _eligible_labels(connections: Mapping[str, RunConnection]) -> set[str]:
-    """Lots of every asset account that has more than one lot in some scenario."""
-    per_scenario = [_lots_by_account(connection) for connection in connections.values()]
-    multi = {a for lots in per_scenario for a, labels in lots.items() if len(labels) > 1}
-    return {label for lots in per_scenario for a in multi for label in lots.get(a, ())}
-
-
-def _measure_pivot(connection: RunConnection, measure: str, cpi: bool) -> pd.DataFrame:
-    return (
-        connection.cpi_lot_balance_pivot(measure) if cpi
-        else connection.lot_balance_pivot(measure)
-    )
-
-
-def differing_lots(
-    baseline_rc: RunConnection, variant_rcs: Mapping[str, RunConnection],
-) -> tuple[list[str], dict[str, list[str]], dict[str, list[str]]]:
-    """``(labels, added, deleted)``: the ``Account/lot`` labels to compare, and per
-    variant the lots it adds and deletes. A lot is worth comparing if its balance,
-    basis or quantity differs in any variant, or it exists in only some scenarios.
-    Only accounts with more than one lot in some scenario are considered."""
-    runs = {"baseline": baseline_rc, **variant_rcs}
-    eligible = _eligible_labels(runs)
-    base_labels = {
-        label for lots in _lots_by_account(baseline_rc).values() for label in lots
-    } & eligible
-    differing: set[str] = set()
-    added: dict[str, list[str]] = {}
-    deleted: dict[str, list[str]] = {}
-    for name, variant in variant_rcs.items():
-        labels = {
-            label for lots in _lots_by_account(variant).values() for label in lots
-        } & eligible
-        added[name] = sorted(labels - base_labels)
-        deleted[name] = sorted(base_labels - labels)
-        differing |= labels ^ base_labels
-        for measure in RunConnection.LOT_MEASURES:
-            base_pivot = baseline_rc.lot_balance_pivot(measure)
-            variant_pivot = variant.lot_balance_pivot(measure)
-            for label in labels & base_labels:
-                index = base_pivot.index.union(variant_pivot.index)
-                if not base_pivot[label].reindex(index).equals(variant_pivot[label].reindex(index)):
-                    differing.add(label)
-    return sorted(differing), added, deleted
-
-
-def lot_frame(
-    baseline_rc: RunConnection,
-    variant_rcs: Mapping[str, RunConnection],
-    label: str,
-    measure: str,
-    *,
-    cpi: bool = False,
-    monthly: bool = False,
-    baseline_name: str = "baseline",
-) -> pd.DataFrame:
-    """Months x (baseline, each variant, ``Δvariant``) for one ``Account/lot`` and
-    measure, showing only the months where some variant differs. A lot a scenario
-    does not have counts as zero; an untracked basis or quantity stays missing."""
-    runs = {baseline_name: baseline_rc, **variant_rcs}
-    pivots = {name: _measure_pivot(rc, measure, cpi) for name, rc in runs.items()}
-    months = pd.DatetimeIndex(sorted(set().union(*(p.index for p in pivots.values()))))
-    frame = pd.DataFrame({
-        name: pivot[label].reindex(months) if label in pivot else pd.Series(0.0, index=months)
-        for name, pivot in pivots.items()
-    })
-    for name in variant_rcs:
-        frame[f"Δ{name}"] = frame[name] - frame[baseline_name]
-    if monthly:
-        frame = frame.diff()
-    deltas = [f"Δ{name}" for name in variant_rcs]
-    return frame.loc[frame[deltas].fillna(0).ne(0).any(axis=1)]
-
-
-def _format(measure: str):
-    if measure == "quantity":
-        return lambda v: "-" if pd.isna(v) else (f"{v:,.6f}".rstrip("0").rstrip(".") or "0")
-    return lambda v: "-" if pd.isna(v) else f"${v:,.2f}"
-
-
-def show_lot_balance_diffs(
-    _,
-    baseline: str,
-    baseline_rc: RunConnection,
-    variant_rcs: Mapping[str, RunConnection],
-    dollar_mode: DollarModePicker | None = None,
-    value_mode: ValuePlotModePicker | None = None,
-    scenario_picker: widgets.Widget | None = None,
-    **__,
-) -> widgets.VBox:
-    """Balance, cost basis and quantity of each lot, baseline against variants,
-    for accounts with more than one lot. Pick one ``Account/lot`` and a measure."""
-    dollar_mode = dollar_mode or DollarModePicker()
-    value_mode = value_mode or ValuePlotModePicker()
-    heading = to_markdown(f"## Lot Diffs for Baseline `{baseline}`")
-    picker = (scenario_picker,) if scenario_picker is not None else ()
-    labels, added, deleted = differing_lots(baseline_rc, variant_rcs)
-    if not labels:
-        return widgets.VBox([
-            *picker, widgets.HBox([dollar_mode, value_mode]), heading,
-            to_markdown("_No lot differences._"),
-        ])
-
-    lot_picker = widgets.Dropdown(options=labels, value=labels[0], description="Lot:",
-                                  layout=widgets.Layout(width="max-content"))
-    measure_picker = widgets.ToggleButtons(
-        options=[(text, key) for key, text in LOT_MEASURE_LABELS.items()],
-        value="balance", description="Measure:",
-    )
-    notes = "\n".join(
-        f"-- {kind} lots in `{variant}`: {', '.join(names)}"
-        for kind, by_variant in (("Added", added), ("Deleted", deleted))
-        for variant, names in by_variant.items() if names
-    )
-    output = widgets.Output()
-
-    def _redraw(*_):
-        frame = lot_frame(
-            baseline_rc, variant_rcs, lot_picker.value, measure_picker.value,
-            cpi=dollar_mode.value == DollarMode.CPI_CONSTANT,
-            monthly=value_mode.value == ValuePlotMode.MONTHLY,
-            baseline_name="baseline",
-        )
-        with output:
-            clear_output(wait=True)
-            display(StyledMarkdown(
-                f"### {lot_picker.value} - {LOT_MEASURE_LABELS[measure_picker.value]}"
-            ))
-            if frame.empty:
-                display(StyledMarkdown("_No difference in this measure._"))
-            else:
-                display(frame.style.format(_format(measure_picker.value)))
-
-    lot_picker.observe(_redraw, names="value")
-    measure_picker.observe(_redraw, names="value")
-    value_mode.observe(_redraw, names="value")
-    _observe_dollar_mode(dollar_mode, "lot_diffs", _redraw)
-    _redraw()
-
-    return widgets.VBox([
-        *picker, heading, widgets.HBox([lot_picker, measure_picker]),
-        widgets.HBox([dollar_mode, value_mode]),
-        *((to_markdown(notes),) if notes else ()), output,
-    ])
