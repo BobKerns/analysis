@@ -4394,6 +4394,9 @@ def edit_account(
     if tags:
         registries.parse_tags(tags)
 
+    # The row and the references must carry the same name; references are
+    # renamed to the stripped one.
+    new_name = new_name.strip()
     df.loc[idx, [
         "name", "kind", "subkind", "owner", "tax_treatment",
         "opened", "closed", "meta_json", "tags",

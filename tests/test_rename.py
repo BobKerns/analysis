@@ -198,6 +198,29 @@ def test_account_rename_leaves_an_authored_rule_with_a_growth_rule_name(
     loads("retire_alice")
 
 
+def test_account_rename_follows_an_rmd_subject_account(
+    test_data_dir: Path, test_scenarios_dir: Path, retire_alice_csv: Callable[[str], Path],
+    loads: Callable[[str], None],
+) -> None:
+    scheduled = retire_alice_csv("scheduled.csv")
+    scheduled.write_text(scheduled.read_text().replace(
+        "Alice RMD from IRA,{},,",
+        'Alice RMD from IRA,{},"{""subject_account"": ""Asset_TraditionalIRA_Alice""}",'))
+    result = _sim(test_data_dir, "account", "rename", "Asset_TraditionalIRA_Alice", "Asset_IRA_Alice")
+    assert result.exit_code == 0, result.output
+    params = _column(test_scenarios_dir / "retire_alice" / "scheduled.csv", "params_json")
+    assert '{"subject_account": "Asset_IRA_Alice"}' in params
+    loads("retire_alice")
+
+
+def test_account_edit_strips_a_new_name(test_data_dir: Path, test_scenarios_dir: Path,
+                                        loads: Callable[[str], None]) -> None:
+    result = _sim(test_data_dir, "account", "edit", "Asset_Checking", "--new-name", " Asset_Spending ")
+    assert result.exit_code == 0, result.output
+    assert "Asset_Spending" in _column(test_scenarios_dir / "retire_alice" / "accounts.csv", "name")
+    loads("retire_alice")
+
+
 def test_scheduled_rename_follows_calendar_rows(test_data_dir: Path, test_scenarios_dir: Path,
                                                 loads: Callable[[str], None]) -> None:
     result = _sim(test_data_dir, "scheduled", "rename", "salary_alice", "wages_alice")

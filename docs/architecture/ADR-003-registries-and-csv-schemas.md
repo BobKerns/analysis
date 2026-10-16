@@ -866,7 +866,8 @@ that series, since the loader would otherwise warn about them as dead (§3.1).
 
 **Renames reach every scenario sharing the name.** `account`, `chain`,
 `scheduled`, `calendar` (a row's `name`), `series` and `account lot` each have
-a `rename` that rewrites the name and every column naming it, not only in the
+a `rename` that rewrites the name and every column naming it (an account's
+also an RMD rule's `params_json` `subject_account`), not only in the
 scenario given but in every scenario that shares it
 (`analysis.sim.rename.scope`): each scenario in its load order that defines
 the name, every scenario inheriting from one of those, and again for any

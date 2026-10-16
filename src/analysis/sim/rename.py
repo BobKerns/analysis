@@ -17,6 +17,7 @@ A scenario itself is renamed with :func:`rename_scenario`: its folder, its
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import sqlite3
@@ -205,8 +206,38 @@ def rename_growth_rules(scenario_dir: Path, rules: dict[str, str]) -> list[str]:
 def rename_account(scenario_dir: Path, old: str, new: str) -> list[str]:
     """Rename account ``old`` to ``new`` throughout one scenario folder;
     returns the files changed, relative to it."""
-    return [*_rename_in(scenario_dir, ACCOUNT_COLUMNS, old, new),
-            *_rename_in_chains(scenario_dir, "account_name", old, new)]
+    changed = [*_rename_in(scenario_dir, ACCOUNT_COLUMNS, old, new),
+               *_rename_in_chains(scenario_dir, "account_name", old, new)]
+    if _rename_subject_account(scenario_dir / "scheduled.csv", old, new) and "scheduled.csv" not in changed:
+        changed.append("scheduled.csv")
+    return changed
+
+
+def _rename_subject_account(path: Path, old: str, new: str) -> bool:
+    """Rename an RMD rule's ``params_json`` ``subject_account`` (the account
+    the RMD is for, when it draws from another); whether it changed."""
+    if not path.is_file() or path.stat().st_size == 0:
+        return False
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        header = list(reader.fieldnames or [])
+        rows = list(reader)
+    changed = False
+    for row in rows:
+        try:
+            params = json.loads(row.get("params_json") or "{}")
+        except json.JSONDecodeError:
+            continue  # the load that follows reports it
+        if isinstance(params, dict) and str(params.get("subject_account", "")).strip() == old:
+            params["subject_account"] = new
+            row["params_json"] = json.dumps(params)
+            changed = True
+    if changed:
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+    return changed
 
 
 # ---------- scheduled rules ----------
