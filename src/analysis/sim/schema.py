@@ -3,8 +3,24 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+from typing import Any
 
 SCHEMA_VERSION = 36
+
+
+def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
+    """Open an intent or run file, without an fsync on every commit.
+
+    Both are rebuilt from the data repo's CSVs (``sim load``, ``sim run``),
+    so durability across a power loss or OS crash isn't worth the fsync,
+    which was about 30% of an ensemble run's time on a container's disk.
+    An application crash or Ctrl-C still leaves the file intact: the
+    rollback journal stays on disk.
+    """
+    con = sqlite3.connect(path, **kwargs)
+    con.execute("PRAGMA synchronous = OFF")
+    return con
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """

@@ -50,7 +50,7 @@ from analysis.sim.provenance import (
 )
 from analysis.sim.readme import readme_description
 from analysis.sim.runs import insert_run_metadata
-from analysis.sim.schema import SCHEMA_VERSION, apply_run_schema, inserted_id
+from analysis.sim.schema import SCHEMA_VERSION, apply_run_schema, inserted_id, connect_sim_file
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
@@ -209,7 +209,7 @@ def batch_mode(batch_dir: Path) -> str:
         return json.loads(path.read_text()).get("mode", "monte_carlo")
     for member in sorted(Path(batch_dir).glob("member_*.sqlite3")):
         try:
-            con = sqlite3.connect(f"file:{member}?mode=ro", uri=True)
+            con = connect_sim_file(f"file:{member}?mode=ro", uri=True)
             try:
                 row = con.execute("SELECT mode FROM ensemble_manifest").fetchone()
             finally:
@@ -778,7 +778,7 @@ def open_intent_db(
             data_dir, name, intent_dir=Path(td),
             compute_stamps=False, allow_dirty_data=True,
         )
-        con = sqlite3.connect(Path(td) / f"{name}.sqlite3")
+        con = connect_sim_file(Path(td) / f"{name}.sqlite3")
         con.row_factory = sqlite3.Row
         try:
             yield con, name
@@ -920,7 +920,7 @@ def load_scenario(
         intent_path.unlink()
 
 
-    con = sqlite3.connect(intent_path)
+    con = connect_sim_file(intent_path)
     try:
         con.execute("PRAGMA locking_mode = EXCLUSIVE")
         con.execute("PRAGMA foreign_keys = ON")

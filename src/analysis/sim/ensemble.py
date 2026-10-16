@@ -59,6 +59,7 @@ from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
 from analysis.sim import units
 from analysis.sim.registries import ENSEMBLE_MODES, LATENT_FACTOR_KIND, PROCESS_SHOCK_CLAMP
 from analysis.sim.types import DollarMode
+from analysis.sim.schema import connect_sim_file
 
 __all__ = [
     "EnsembleError", "resolve_member", "load_ensemble", "member_run_statuses",
@@ -580,7 +581,7 @@ def resolve_member(
     member_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(recipe_intent_path, member_path)
 
-    con = sqlite3.connect(member_path)
+    con = connect_sim_file(member_path)
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(
@@ -715,7 +716,7 @@ def factor_reach(intent_path: Path) -> dict[str, int]:
     varying rows perturbing it would move: its varying descendants, through
     any sub-factors, other than those it reaches only through a zero rho. A
     factor that moves none is a no-op to perturb."""
-    con = sqlite3.connect(intent_path)
+    con = connect_sim_file(intent_path)
     try:
         links, factors = _correlation_links(con)
         varying = {name for (name,) in con.execute(
@@ -828,7 +829,7 @@ def member_run_statuses(batch_dir: Path) -> dict[str, str]:
     """
     statuses: dict[str, str] = {}
     for p in sorted(Path(batch_dir).glob("member_*.sqlite3")):
-        con = sqlite3.connect(p)
+        con = connect_sim_file(p)
         try:
             row = con.execute("SELECT status FROM simulation_run").fetchone()
         finally:

@@ -110,6 +110,7 @@ from analysis.sim.dates import (
 from analysis.sim.lineage import load_order
 from analysis.frames import named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
+from analysis.sim.schema import connect_sim_file
 
 
 def _resolve_state_dir(
@@ -511,7 +512,7 @@ def _available_cpus() -> int:
 def _has_unresolved_vary(intent_path: Path) -> bool:
     """ADR-006: whether ``intent_path`` still has any calendar_event row with
     `vary_distribution` set, i.e. is a recipe that hasn't been resolved."""
-    con = sqlite3.connect(intent_path)
+    con = connect_sim_file(intent_path)
     try:
         row = con.execute(
             "SELECT 1 FROM calendar_event WHERE vary_distribution IS NOT NULL LIMIT 1"
@@ -644,7 +645,7 @@ def _run_sensitivity(
 
 def _recipe_identity(recipe_intent_path: Path) -> tuple[int | None, str | None, str]:
     """(scenario.seed, scenario.meta_json, intent_manifest.scenario_tree_id)."""
-    con = sqlite3.connect(recipe_intent_path)
+    con = connect_sim_file(recipe_intent_path)
     try:
         return con.execute(
             "SELECT scenario.seed, scenario.meta_json, intent_manifest.scenario_tree_id "
@@ -655,7 +656,7 @@ def _recipe_identity(recipe_intent_path: Path) -> tuple[int | None, str | None, 
 
 
 def _unresolved_vary_names(intent_path: Path) -> list[str]:
-    con = sqlite3.connect(intent_path)
+    con = connect_sim_file(intent_path)
     try:
         return [r[0] for r in con.execute(
             "SELECT name FROM calendar_event WHERE vary_distribution IS NOT NULL ORDER BY name"
@@ -1531,7 +1532,7 @@ def all_scenarios(
 
 
 def _read_data_version(intent_path: Path) -> str | None:
-    con = sqlite3.connect(intent_path)
+    con = connect_sim_file(intent_path)
     try:
         row = con.execute(
             "SELECT data_version FROM intent_manifest WHERE id = 1"
@@ -1563,7 +1564,7 @@ def list_runs(runs_dir: Path | None) -> None:
     click.echo("-" * len(header))
     for f in files:
         try:
-            con = sqlite3.connect(f"file:{f}?mode=ro", uri=True)
+            con = connect_sim_file(f"file:{f}?mode=ro", uri=True)
             try:
                 row = con.execute(
                     "SELECT status, scenario_name, finished_at, run_by "
@@ -1587,7 +1588,7 @@ def list_runs(runs_dir: Path | None) -> None:
 @click.argument("runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 def explain(runfile: Path) -> None:
     """Dump scenario name, versions, year-end net worth, counts. Sanity dump."""
-    con = sqlite3.connect(f"file:{runfile}?mode=ro", uri=True)
+    con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
     try:
         run = con.execute(
             "SELECT scenario_name, status, started_at, finished_at, failure_reason, "
@@ -1706,7 +1707,7 @@ def items(
                 f"no runs for {scenario_ref.name!r} in {resolved_runs_dir}; run `sim run` first"
             )
 
-    con = sqlite3.connect(f"file:{runfile}?mode=ro", uri=True)
+    con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
     try:
         account_row = con.execute("SELECT id FROM account WHERE name = ?", (account,)).fetchone()
         if account_row is None:

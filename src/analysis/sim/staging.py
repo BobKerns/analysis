@@ -33,6 +33,7 @@ from analysis.sim.loader import (
     load_scenario,
     resolve_scenario_name,
 )
+from analysis.sim.schema import connect_sim_file
 
 SCENARIOS = "scenarios"
 
@@ -264,7 +265,7 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedE
             raise ScenarioAlreadyBroken(
                 name, [f"loader failed: {type(exc).__name__}: {exc}"]
             ) from exc
-        con = sqlite3.connect(pre.intent_path)
+        con = connect_sim_file(pre.intent_path)
         con.row_factory = sqlite3.Row
         stack.callback(con.close)
 
