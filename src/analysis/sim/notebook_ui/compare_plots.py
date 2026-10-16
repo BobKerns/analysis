@@ -24,6 +24,7 @@ from analysis.sim.notebook_ui.pickers import (
     MultiScenarioConnections,
     ValuePlotModePicker,
     display_warning,
+    merged_lots_by_account,
     to_markdown,
 )
 from analysis.sim.plotting import FRAME_ALPHA, include_zero
@@ -706,16 +707,23 @@ def _show_account_balance_diffs(
         allow_kind=tuple(accounts_by_kind),
         accounts_by_kind=accounts_by_kind,
         max_accounts=1,
+        lots_by_account=merged_lots_by_account(rc, *variant_rcs.values()),
+        lot_multiple=False,
     )
     account_output = widgets.Output()
 
-    def display_frame(account: str) -> pd.DataFrame:
+    def display_frame(account: str, lot: str | None = None) -> pd.DataFrame:
         raw = diffs[account]
         dates = pd.PeriodIndex(raw.index, freq="M").to_timestamp("M")
         kind = account_kinds[account]
         mode = dollar_mode.value
         values = {}
         for name, connection in (("baseline", rc), *variant_rcs.items()):
+            if lot is not None:
+                # One lot of the account (#170); absent from a scenario, it's zero.
+                series = connection.lot_balance(account, lot, mode)
+                values[name] = series.reindex(dates).fillna(0)
+                continue
             pivot = (
                 connection.cpi_balance_pivot(kind)
                 if mode == DollarMode.CPI_CONSTANT
@@ -734,18 +742,19 @@ def _show_account_balance_diffs(
         return frame
 
     def show_selected(*_):
-        selected = account_picker.accounts
+        selected, lots = account_picker.selection
         if not selected:
             return
         account = selected[0]
-        df = display_frame(account)
+        lot = lots[0] if lots else None
+        df = display_frame(account, lot)
         df = df.loc[df.fillna(0).ne(0).any(axis=1)].style.format("${:.2f}")
         with account_output:
             clear_output(wait=True)
-            display(to_markdown(f"### {account}"))
+            display(to_markdown(f"### {account}" + (f", lot {lot}" if lot else "")))
             display(df)
 
-    account_picker.account_picker.observe(show_selected, names="value")
+    account_picker.observe(show_selected, names="selection")
     _observe_dollar_mode(dollar_mode, "account_diffs", show_selected)
     value_mode.observe(show_selected, names="value")
     show_selected()

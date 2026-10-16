@@ -12,7 +12,7 @@ from ipywidgets import widgets
 
 from analysis.sim import registries
 from analysis.sim.connection import RunConnection
-from analysis.sim.notebook_ui.pickers import DateRangeSlider
+from analysis.sim.notebook_ui.pickers import AccountPicker, DateRangeSlider
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = ["events_view", "events_widget", "run_date_bounds"]
@@ -46,20 +46,26 @@ def events_view(
     tax_characters: tuple[str, ...] = (),
     start: date | None = None,
     end: date | None = None,
+    lots: tuple[str, ...] = (),
 ) -> tuple[str, pd.DataFrame]:
     """Heading and table of ``transfer_event`` rows matching the filters.
 
     An empty ``accounts``/``reason_kinds``/``tax_characters`` means no filter
     on that axis. ``accounts`` matches a row where the account is *either*
     end of the transfer (its lot is shown alongside it when the account has
-    more than one).
+    more than one). ``lots``, with exactly one account, narrows that to rows
+    where one of those lots of the account is an end (#170), as
+    ``sim items --lot`` does.
 
     The table is indexed by event id. ``caused_by`` is the event a leg
     derives from, such as the debit that set off a refill. ``requested`` and
     ``remainder`` are filled in only where a request was split across legs
     or fell short; the table shows them as '-' elsewhere. With exactly one
     asset or liability account picked, a ``balance`` column gives that
-    account's balance after each row, and rows are in posting order."""
+    account's balance after each row, and rows are in posting order; not
+    with ``lots``, since that balance is the whole account's."""
+    if lots and len(accounts) != 1:
+        raise ValueError("lots narrow a single account")
     filters: dict[str, Any] = {}
     if reason_kinds:
         filters["reason_kind"] = list(reason_kinds)
@@ -68,11 +74,15 @@ def events_view(
     frame = rc.items("transfer_event", **filters)
     if accounts:
         frame = frame[frame["from_name"].isin(accounts) | frame["to_name"].isin(accounts)]
+    if lots:
+        (account,) = accounts
+        frame = frame[((frame["from_name"] == account) & frame["from_lot"].isin(lots))
+                      | ((frame["to_name"] == account) & frame["to_lot"].isin(lots))]
     if start is not None:
         frame = frame[frame["date"] >= start.isoformat()]
     if end is not None:
         frame = frame[frame["date"] <= end.isoformat()]
-    balance = _running_balance(rc, accounts[0]) if len(accounts) == 1 else None
+    balance = _running_balance(rc, accounts[0]) if len(accounts) == 1 and not lots else None
     if balance is not None:
         # The balance accumulates in posting order, so the table follows it;
         # a debit posted after a later-dated one would otherwise read as a jump.
@@ -84,6 +94,8 @@ def events_view(
 
     total = frame["amount"].sum() / 100
     heading = f"**{len(frame):,} event(s)**, ${total:,.2f} total ({rc.label})"
+    if lots:
+        heading += f"; lot(s) {', '.join(lots)} of {accounts[0]}"
     if balance is not None:
         heading += f"; running balance of {accounts[0]}, in posting order"
     shown = frame[[c for c in _DISPLAY_COLUMNS if c in frame.columns]].rename(columns=_RENAME)
@@ -140,10 +152,15 @@ def events_widget(rc: RunConnection, **_) -> widgets.VBox:
     account, and date range."""
     everything = rc.items("transfer_event")
     accounts = sorted(set(everything["from_name"]) | set(everything["to_name"]))
-    account_picker = widgets.SelectMultiple(
-        description="Accounts:", options=accounts,
-        rows=min(10, max(4, len(accounts))), layout=widgets.Layout(width="45%"),
+    # Every kind in one list, nothing picked (no filter) to start; a single
+    # account with several lots can be narrowed to some of them (#170).
+    account_picker = AccountPicker(
+        kind="any", allow_any=True, show_kind=False, accounts_by_kind={"any": accounts},
+        initial_count=0, lots_by_account=rc.lots_by_account(),
     )
+    account_picker.account_picker.rows = min(10, max(4, len(accounts)))
+    account_picker.account_picker.layout.width = "60%"
+    account_picker.layout = widgets.Layout(width="45%")
     reason_picker = widgets.SelectMultiple(
         description="Reason:",
         options=[r for r in registries.REASON_KINDS if r in set(everything["reason_kind"])],
@@ -159,7 +176,8 @@ def events_widget(rc: RunConnection, **_) -> widgets.VBox:
 
     def _redraw(*_):
         heading, table = events_view(
-            rc, accounts=account_picker.value, reason_kinds=reason_picker.value,
+            rc, accounts=account_picker.selection[0], lots=account_picker.selection[1],
+            reason_kinds=reason_picker.value,
             tax_characters=tax_picker.value, start=date_picker.value[0], end=date_picker.value[1],
         )
         out.clear_output(wait=True)
@@ -167,7 +185,8 @@ def events_widget(rc: RunConnection, **_) -> widgets.VBox:
             display(StyledMarkdown(heading))
             display(_styled(table))
 
-    for control in (account_picker, reason_picker, tax_picker, date_picker):
+    account_picker.observe(_redraw, names="selection")
+    for control in (reason_picker, tax_picker, date_picker):
         control.observe(_redraw, names="value")
     _redraw()
     box = widgets.VBox([

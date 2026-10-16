@@ -918,18 +918,28 @@ def summary_with_percentiles(
 
 def members_balance_by_month(
     connections: dict[str, RunConnection], account: str | None = None,
-    mode: DollarMode = DollarMode.NOMINAL,
+    mode: DollarMode = DollarMode.NOMINAL, lot: str | None = None,
 ) -> pd.DataFrame:
     """One account's balance (USD) by month, one column per member, or net
-    worth when ``account`` is None (#163). Each member converts its own
-    series to CPI-constant dollars, since its inflation path is its own."""
+    worth when ``account`` is None (#163), or one ``lot`` of the account
+    (#170). Each member converts its own series to CPI-constant dollars,
+    since its inflation path is its own."""
     if account is None:
+        if lot is not None:
+            raise EnsembleError("a lot needs its account")
         return members_net_worth_by_month(connections, mode)
+    if lot is None:
+        frame = pd.DataFrame({
+            name: con.account_balance(account, mode) for name, con in connections.items()
+        })
+        if frame.empty:
+            raise EnsembleError(f"no account {account!r} in these members")
+        return frame
     frame = pd.DataFrame({
-        name: con.account_balance(account, mode) for name, con in connections.items()
+        name: con.lot_balance(account, lot, mode) for name, con in connections.items()
     })
     if frame.empty:
-        raise EnsembleError(f"no account {account!r} in these members")
+        raise EnsembleError(f"no lot {lot!r} of account {account!r} in these members")
     return frame
 
 

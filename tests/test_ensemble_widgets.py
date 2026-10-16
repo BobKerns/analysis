@@ -207,15 +207,15 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
     modes_seen: list[DollarMode] = []
     real = ensemble_widgets.members_balance_by_month
 
-    def _spy(connections, account=None, mode=DollarMode.NOMINAL):
+    def _spy(connections, account=None, mode=DollarMode.NOMINAL, lot=None):
         modes_seen.append(mode)
-        return real(connections, account, mode=mode)
+        return real(connections, account, mode, lot)
 
     monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
     dollar_mode = DollarModePicker()
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir, dollar_mode=dollar_mode)
-    _dropdown, pickers, _out = box.children
-    assert dollar_mode in pickers.children
+    _dropdown, controls, _out = box.children
+    assert dollar_mode in controls.children
     assert modes_seen[-1] == DollarMode.NOMINAL
 
     dollar_mode.value = DollarMode.CPI_CONSTANT
@@ -308,8 +308,8 @@ def test_ensemble_widget_account_picker_lists_net_worth_then_accounts(
 
     monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
-    _dropdown, pickers, _out = box.children
-    account_picker = pickers.children[2]
+    _dropdown, controls, _out = box.children
+    account_picker = controls.account_picker.account_picker
     assert account_picker.label == ensemble_widgets.NET_WORTH
     assert ("Asset_Checking", "Asset_Checking") in account_picker.options
     account_picker.value = "Asset_Checking"
@@ -321,8 +321,7 @@ def test_account_named_net_worth_is_not_mistaken_for_net_worth() -> None:
     account that happens to be named "Net worth" can still be picked."""
     from analysis.sim.notebook_ui import ensemble_widgets
 
-    (_, net_worth), = ensemble_widgets._account_picker().options
-    assert ensemble_widgets._account(net_worth) is None
+    assert ensemble_widgets._account(ensemble_widgets._NET_WORTH_CHOICE) is None
     assert ensemble_widgets._account(ensemble_widgets.NET_WORTH) == ensemble_widgets.NET_WORTH
 
 
@@ -341,9 +340,9 @@ def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
 
     monkeypatch.setattr(ensemble_widgets, "ensemble_summary_view", _spy_view)
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
-    _dropdown, pickers, _out = box.children
+    _dropdown, controls, _out = box.children
     assert list(tables[-1].columns)[-2:] == ["cvar05", "cvar20"]
-    pickers.children[3].value = "1000000"  # the reserve field
+    controls.reserve_field.value = "1000000"
     assert list(tables[-1].columns)[-2:] == ["below_reserve", "ever_below_reserve"]
 
 
@@ -411,9 +410,9 @@ def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_side
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
-    recipe_pickers, pickers, _out = box.children
+    recipe_pickers, controls, _out = box.children
     baseline_picker, variant_picker = recipe_pickers.children
-    account_picker = pickers.children[1]
+    account_picker = controls.account_picker.account_picker
     baseline_picker.value = "baseline"
     variant_picker.value = ("child",)
     assert {"Asset_Checking", "Asset_Renamed"} <= {label for label, _ in account_picker.options}

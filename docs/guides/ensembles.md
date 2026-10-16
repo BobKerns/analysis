@@ -816,7 +816,13 @@ sim run retire_alice
 sim run conservative          # a child that changes only the return row
 sim ensemble compare retire_alice conservative
 sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint
+sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint --lot a
 ```
+
+`--lot` narrows an account to one of its lots. In the notebook, a Lot
+dropdown appears beside Account when the account has more than one, and
+the browser and the comparison share their scale, dollars, account and
+reserve controls, so a change in one redraws both.
 
 It reads in three parts.
 

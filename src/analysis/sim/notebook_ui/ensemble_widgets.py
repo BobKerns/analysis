@@ -34,6 +34,7 @@ from analysis.sim.ensemble import (
 )
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.notebook_ui.pickers import (
+    AccountDropdown,
     DollarModePicker,
     LogLinearModePicker,
     find_data_dir,
@@ -47,6 +48,7 @@ from analysis.sim.notebook_ui.styled import StyledMarkdown
 __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget", "NET_WORTH",
+    "EnsembleControls", "recipe_accounts",
 ]
 
 
@@ -172,27 +174,38 @@ NET_WORTH = "Net worth"
 _NET_WORTH_CHOICE = object()
 
 
-def _account_options(
-    *ensembles: dict[str, RunConnection],
-) -> list[tuple[str, object]]:
-    """Net worth first, then every account any of ``ensembles`` has (one
-    member of each, since a recipe's members share their accounts), by name,
-    as the picker's ``(label, value)`` pairs."""
-    accounts: set[str] = set()
-    for connections in ensembles:
-        accounts.update(next(iter(connections.values())).account_kinds().index)
-    return [(NET_WORTH, _NET_WORTH_CHOICE), *((a, a) for a in sorted(accounts))]
-
-
-def _account_picker() -> widgets.Dropdown:
-    return widgets.Dropdown(
-        options=[(NET_WORTH, _NET_WORTH_CHOICE)], description="Account:",
-    )
-
-
 def _account(choice: object) -> str | None:
     """The account a picker value names, or None for net worth."""
     return choice if isinstance(choice, str) else None
+
+
+def recipe_accounts(
+    runs_dir: Path, recipes: list[str],
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Every account any of ``recipes`` has, by name, and the lots of those
+    with several (#170), read from one member of each recipe's latest batch,
+    since a recipe's members share their accounts."""
+    accounts: set[str] = set()
+    lots: dict[str, list[str]] = {}
+    for recipe in recipes:
+        batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
+        if batch_dir is None:
+            continue
+        member = next(
+            (stem for stem, status in member_run_statuses(batch_dir).items()
+             if status == "succeeded"), None,
+        )
+        if member is None:
+            continue
+        con = RunConnection(batch_dir / f"{member}.sqlite3")
+        try:
+            accounts.update(con.account_kinds().index)
+            for account, names in con.lots_by_account().items():
+                seen = lots.setdefault(account, [])
+                seen.extend(lot for lot in names if lot not in seen)
+        finally:
+            con.close()
+    return sorted(accounts), lots
 
 
 def _reserve_field() -> widgets.Text:
@@ -205,6 +218,61 @@ def _reserve_field() -> widgets.Text:
         # on every keystroke.
         continuous_update=False,
     )
+
+
+class EnsembleControls(widgets.HBox):
+    """Scale, dollars, account (and its lots) and reserve: the controls the
+    ensemble widgets draw by (#171). Build one and hand it to each widget
+    as ``controls=``, and one change redraws them all; a widget given none
+    builds its own.
+
+    The account list is every account any recipe under ``runs_dir`` has,
+    fixed when built, like the widgets' recipe lists: one recipe may lack
+    an account another has, and the widgets say so rather than draw it.
+    """
+
+    def __init__(self, *,
+                 data_dir: Path | str | None = None,
+                 state_dir: Path | None = None,
+                 runs_dir: Path | str | None = None,
+                 dollar_mode: DollarMode = DollarMode.CPI_CONSTANT,
+                 log_linear_mode: LogLinearMode = LogLinearMode.LINEAR,
+                 log_linear_picker: LogLinearModePicker | None = None,
+                 dollar_picker: DollarModePicker | None = None):
+        resolved = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
+        accounts, lots = recipe_accounts(resolved, list_ensemble_recipes(resolved))
+        self.log_linear_picker = log_linear_picker or LogLinearModePicker(log_linear_mode)
+        self.dollar_picker = dollar_picker or DollarModePicker(dollar_mode)
+        self.account_picker = AccountDropdown(
+            [(NET_WORTH, _NET_WORTH_CHOICE), *((a, a) for a in accounts)],
+            lots_by_account=lots,
+        )
+        self.reserve_field = _reserve_field()
+        super().__init__([self.log_linear_picker, self.dollar_picker,
+                          self.account_picker, self.reserve_field])
+
+    @property
+    def account(self) -> str | None:
+        """The picked account, or None for net worth."""
+        return _account(self.account_picker.account)
+
+    @property
+    def lot(self) -> str | None:
+        """The picked lot of the account, or None for all of it."""
+        lots = self.account_picker.lots
+        return lots[0] if lots else None
+
+    def subject(self) -> str:
+        """What's shown: net worth, an account, or one lot of it."""
+        if self.account is None:
+            return NET_WORTH
+        return self.account + (f" lot {self.lot}" if self.lot is not None else "")
+
+    def observe_all(self, redraw: Callable[..., None]) -> None:
+        """Call ``redraw`` whenever any control changes."""
+        for picker in (self.log_linear_picker, self.dollar_picker, self.reserve_field):
+            picker.observe(redraw, names="value")
+        self.account_picker.observe(redraw, names="selection")
 
 
 def _reserve(
@@ -220,23 +288,15 @@ def _reserve(
     return units.dollars_to_cents(text) / 100
 
 
-def _sync_options(
-    dropdown: widgets.Dropdown, options: list[tuple[str, object]],
-    redraw: Callable[..., None],
-) -> None:
-    """Swap ``dropdown``'s options, keeping its value where it still exists,
-    without firing ``redraw``: the caller is mid-draw and already reads the
-    new value, so a nested redraw would only draw everything twice."""
-    if list(dropdown.options) == options:
-        return
-    values = [value for _, value in options]
-    keep = dropdown.value if dropdown.value in values else values[0]
-    dropdown.unobserve(redraw, names="value")
-    try:
-        dropdown.options = options
-        dropdown.value = keep
-    finally:
-        dropdown.observe(redraw, names="value")
+def _described(subject: str) -> str:
+    """``subject`` in a sentence: "net worth", or "account <name>"."""
+    return "net worth" if subject == NET_WORTH else f"account {subject}"
+
+
+def _default(recipes: list[str], default: str | None) -> str | None:
+    """``default`` when it's one of ``recipes``; else None, leaving a
+    dropdown on its first recipe."""
+    return default if default in recipes else None
 
 
 def _share_format(columns: Any) -> dict[Any, str | Callable[..., Any] | None]:
@@ -257,19 +317,29 @@ def ensemble_widget(*_,
                     log_linear_mode: LogLinearModePicker | None = None,
                     dollar_mode: DollarModePicker | None = None,
                     show_description: bool = False,
+                    controls: EnsembleControls | None = None,
+                    default: str | None = None,
                     **__,
                     ) -> widgets.VBox:
     """Recipe dropdown + fan chart + year-end summary table for an ensemble
     already generated and run via ``sim run <recipe> --ensemble-size N``:
-    net worth, or any one account's balance (#163)."""
+    net worth, or any one account's balance (#163), or one lot of it
+    (#170). ``controls`` shares scale, dollars, account and reserve with
+    other ensemble widgets (#171); ``default`` is the recipe to start on,
+    when it has a batch."""
     resolved_data_dir = find_data_dir(data_dir)
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
     recipes = list_ensemble_recipes(runs_dir)
     dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
-    log_linear_picker = log_linear_mode or LogLinearModePicker()
-    dollar_picker = dollar_mode or DollarModePicker()
-    account_picker = _account_picker()
-    reserve_field = _reserve_field()
+    if _default(recipes, default) is not None:
+        dropdown.value = default
+    controls = controls or EnsembleControls(
+        runs_dir=runs_dir, dollar_mode=DollarMode.NOMINAL,
+        log_linear_picker=log_linear_mode, dollar_picker=dollar_mode,
+    )
+    log_linear_picker = controls.log_linear_picker
+    dollar_picker = controls.dollar_picker
+    reserve_field = controls.reserve_field
     out = widgets.Output()
 
     def _redraw(*_: object) -> None:
@@ -294,19 +364,24 @@ def ensemble_widget(*_,
         failed_count = sum(1 for status in statuses.values() if status != "succeeded")
         connections = load_ensemble(batch_dir)
         try:
-            _sync_options(account_picker, _account_options(connections), _redraw)
-            account = _account(account_picker.value)
-            subject = account or "Net worth"
+            account, lot = controls.account, controls.lot
+            subject = controls.subject()
             mode = dollar_picker.value
             mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
             # Each member's own series is converted before aggregating, not
             # the aggregate after the fact: a member's CPI-constant series
             # reflects its own inflation path, which can differ member to
             # member when the varying row is itself inflation/CPI-linked.
-            frame = members_balance_by_month(connections, account, mode=mode)
+            try:
+                frame = members_balance_by_month(connections, account, mode, lot)
+            except EnsembleError:
+                # The account list spans every recipe; this one lacks it.
+                clear_output(wait=True)
+                display(StyledMarkdown(f"**{recipe} has no {_described(subject)}.**"))
+                return
             reserve = _reserve(reserve_field, connections, account)
             cpi_frame = (
-                members_balance_by_month(connections, account, DollarMode.CPI_CONSTANT)
+                members_balance_by_month(connections, account, DollarMode.CPI_CONSTANT, lot)
                 if reserve is not None and mode != DollarMode.CPI_CONSTANT else None
             )
             monthly_summary = summary_with_percentiles(frame)
@@ -366,21 +441,28 @@ def ensemble_widget(*_,
                 con.close()
 
     dropdown.observe(_redraw, names="value")
-    log_linear_picker.observe(_redraw, names="value")
-    dollar_picker.observe(_redraw, names="value")
-    account_picker.observe(_redraw, names="value")
-    reserve_field.observe(_redraw, names="value")
+    controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
-    pickers = widgets.HBox([log_linear_picker, dollar_picker, account_picker, reserve_field])
-    return widgets.VBox([dropdown, pickers, out])
+    return widgets.VBox([dropdown, controls, out])
+
+
+def _symlog(ax: Any, values: pd.DataFrame) -> None:
+    """A log scale for deltas, which run both ways: symmetric log, linear
+    within 1% of the largest swing of ``values`` so small deltas near zero
+    don't explode. Set before drawing: matplotlib resets the formatter."""
+    peak = float(values.abs().max().max()) if values.size else 0.0
+    ax.set_yscale("symlog", linthresh=max(peak / 100, 1.0))
 
 
 def _delta_lines(
     deltas: pd.DataFrame, columns: list[str], ax: Any, title: str, shares: bool = False,
+    log_scale: bool = False,
 ) -> None:
     """One line per column of ``deltas``, light to dark, labelled at the
     right end, over a zero rule; dollars, or percentage points for
-    ``shares``."""
+    ``shares``, on a symmetric log scale for ``log_scale`` (dollars only)."""
+    if log_scale and not shares:
+        _symlog(ax, deltas[columns])
     shades = plt.get_cmap("Blues")
     for i, column in enumerate(columns):
         color = shades(0.35 + 0.6 * i / max(len(columns) - 1, 1))
@@ -402,12 +484,14 @@ def ensemble_compare_figure(
     pairs: list[tuple[str, str]], mode_label: str,
     reserve: float | None = None,
     cpi_frames: tuple[pd.DataFrame, pd.DataFrame] | None = None,
+    log_scale: bool = False,
 ) -> Figure:
     """The comparison's panels, top to bottom (#163): each percentile
     breakpoint's delta; the fan of paired per-future deltas when the
     recipes pair; the delta in each tail mean (CVaR); and, given a
     ``reserve``, the change in the shares below it (see
-    ``comparison_deltas`` for ``cpi_frames``)."""
+    ``comparison_deltas`` for ``cpi_frames``). ``log_scale`` puts the dollar
+    panels on a symmetric log scale (#171), since deltas run both ways."""
     deltas = comparison_deltas(baseline_frame, variant_frame, reserve=reserve, cpi_frames=cpi_frames)
     panels = 2 + bool(pairs) + (reserve is not None)
     fig = Figure(figsize=(10, 4 * panels))
@@ -415,9 +499,12 @@ def ensemble_compare_figure(
     _delta_lines(
         deltas, [c for c in deltas.columns if c.startswith("Δp")], axes[0],
         f"{variant} − {baseline}: each percentile vs the same percentile ({mode_label})",
+        log_scale=log_scale,
     )
     if pairs:
         paired = summary_with_percentiles(paired_deltas(baseline_frame, variant_frame, pairs))
+        if log_scale:
+            _symlog(axes[1], paired)
         ensemble_fan_chart(paired, ax=axes[1])
         axes[1].set_title(
             f"{variant} − {baseline}, future by future ({len(pairs)} paired members)"
@@ -426,6 +513,7 @@ def ensemble_compare_figure(
     _delta_lines(
         deltas, [c for c in deltas.columns if c.startswith("Δcvar")], axes[1 + bool(pairs)],
         f"{variant} − {baseline}: mean of the worst 5% and 20% (CVaR)",
+        log_scale=log_scale,
     )
     if reserve is not None:
         _delta_lines(
@@ -443,24 +531,35 @@ def ensemble_compare_widget(*_,
                             state_dir: Path | None = None,
                             runs_dir: Path | str | None = None,
                             dollar_mode: DollarModePicker | None = None,
+                            log_linear_mode: LogLinearModePicker | None = None,
+                            controls: EnsembleControls | None = None,
+                            default: str | None = None,
                             **__,
                             ) -> widgets.VBox:
     """Compare ensembles on risk (#163): a baseline recipe and one or more
     variants, net worth or one account, each variant against the baseline
     as percentile-breakpoint deltas, paired per-future deltas (when the
     recipes share a seed), and tail-mean (CVaR) deltas, with year-end
-    tables of the deltas and of each recipe's tail and reserve shares."""
+    tables of the deltas and of each recipe's tail and reserve shares; or
+    one lot of the account (#170). ``controls`` shares scale, dollars,
+    account and reserve with other ensemble widgets (#171); ``default`` is
+    the baseline to start on, when it has a batch."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
     recipes = list_ensemble_recipes(runs_dir)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
+    if _default(recipes, default) is not None:
+        baseline_picker.value = default
     variant_picker = widgets.SelectMultiple(
         options=recipes, description="Variants:", rows=min(max(len(recipes), 2), 8),
     )
     # Default dollars are CPI-constant here: a comparison over decades, and
     # the reserve, are in today's dollars.
-    dollar_picker = dollar_mode or DollarModePicker(DollarMode.CPI_CONSTANT)
-    account_picker = _account_picker()
-    reserve_field = _reserve_field()
+    controls = controls or EnsembleControls(
+        runs_dir=runs_dir, dollar_mode=DollarMode.CPI_CONSTANT,
+        log_linear_picker=log_linear_mode, dollar_picker=dollar_mode,
+    )
+    dollar_picker = controls.dollar_picker
+    reserve_field = controls.reserve_field
     out = widgets.Output()
 
     def _redraw(*_: object) -> None:
@@ -480,8 +579,9 @@ def ensemble_compare_widget(*_,
                 batch_dir = latest_ensemble_batch(runs_dir / name, mode="monte_carlo")
                 assert batch_dir is not None  # listed recipes all have a batch
                 sides[name] = load_ensemble(batch_dir)
-            _sync_options(account_picker, _account_options(*sides.values()), _redraw)
-            account = _account(account_picker.value)
+            account, lot = controls.account, controls.lot
+            subject = controls.subject()
+            log_scale = controls.log_linear_picker.value == LogLinearMode.LOG
             mode = dollar_picker.value
             mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
             reserve = _reserve(reserve_field, sides[baseline], account)
@@ -490,19 +590,21 @@ def ensemble_compare_widget(*_,
             frames: dict[str, pd.DataFrame] = {}
             for name, conns in sides.items():
                 try:
-                    frames[name] = members_balance_by_month(conns, account, mode)
+                    frames[name] = members_balance_by_month(conns, account, mode, lot)
                 except EnsembleError:
                     pass
             cpi_frames = {
                 name: (
                     frame if mode == DollarMode.CPI_CONSTANT
-                    else members_balance_by_month(sides[name], account, DollarMode.CPI_CONSTANT)
+                    else members_balance_by_month(
+                        sides[name], account, DollarMode.CPI_CONSTANT, lot,
+                    )
                 )
                 for name, frame in frames.items()
             } if reserve is not None else {}
             outputs: list[Any] = []
             heading = (
-                f"**{account or NET_WORTH}**, {mode_label} dollars; baseline "
+                f"**{subject}**, {mode_label} dollars; baseline "
                 f"`{baseline}` ({len(sides[baseline])} members)"
             )
             if reserve is not None:
@@ -512,8 +614,8 @@ def ensemble_compare_widget(*_,
                 if baseline not in frames or variant not in frames:
                     missing = baseline if baseline not in frames else variant
                     outputs.append(StyledMarkdown(
-                        f"### {variant} vs {baseline}\n\n`{missing}` has no account "
-                        f"{account}, so there is nothing to compare; its tail is below."
+                        f"### {variant} vs {baseline}\n\n`{missing}` has no "
+                        f"{_described(subject)}, so there is nothing to compare; its tail is below."
                     ))
                     continue
                 pairs, unpaired = member_pairs(sides[baseline], sides[variant])
@@ -527,7 +629,7 @@ def ensemble_compare_widget(*_,
                 cpi_pair = (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None
                 outputs.append(_png(ensemble_compare_figure(
                     baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
-                    reserve, cpi_pair,
+                    reserve, cpi_pair, log_scale,
                 )))
                 table = year_end_values(comparison_deltas(
                     frames[baseline], frames[variant], pairs, reserve, cpi_pair,
@@ -542,8 +644,10 @@ def ensemble_compare_widget(*_,
                 for name, frame in frames.items():
                     fig = Figure(figsize=(10, 4))
                     ax = fig.subplots()
+                    if log_scale and (frame > 0).all().all():
+                        ax.set_yscale("log")
                     ensemble_fan_chart(summary_with_percentiles(frame), ax=ax)
-                    ax.set_title(f"{account} fan chart ({mode_label}) ({name})")
+                    ax.set_title(f"{subject} fan chart ({mode_label}) ({name})")
                     outputs.append(_png(fig))
             tails = [risk_summary(frame, reserve, cpi_frames.get(name))
                      for name, frame in frames.items()]
@@ -559,8 +663,8 @@ def ensemble_compare_widget(*_,
                 for con in conns.values():
                     con.close()
 
-    for picker in (baseline_picker, variant_picker, dollar_picker, account_picker, reserve_field):
+    for picker in (baseline_picker, variant_picker):
         picker.observe(_redraw, names="value")
+    controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
-    pickers = widgets.HBox([dollar_picker, account_picker, reserve_field])
-    return widgets.VBox([widgets.HBox([baseline_picker, variant_picker]), pickers, out])
+    return widgets.VBox([widgets.HBox([baseline_picker, variant_picker]), controls, out])

@@ -142,6 +142,6 @@ def test_events_widget_account_filter_narrows_the_table(two_lot_run: RunConnecti
     widget = events_widget(two_lot_run)
     selectors, _date_picker, _out = widget.children
     account_picker, reason_picker, _tax_picker = selectors.children
-    assert "Asset_Checking" in account_picker.options
-    account_picker.value = ("Asset_Checking",)  # must not raise
+    assert "Asset_Checking" in account_picker.account_picker.options
+    account_picker.account_picker.value = ("Asset_Checking",)  # must not raise
     reason_picker.value = ("ytd",)

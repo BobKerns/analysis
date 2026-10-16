@@ -201,10 +201,10 @@ def test_account_holdings_widget_redraws_when_the_account_or_month_changes(
     widget = account_holdings_widget(two_lot_run, BROKERAGE)
     selectors, _out = widget.children
     account_picker, month_picker = selectors.children
-    assert account_picker.value == BROKERAGE and month_picker.value == current_month(holding_months(two_lot_run))
-    account_picker.value = "Asset_Roth_Alice"  # must not raise
+    assert account_picker.account == BROKERAGE and month_picker.value == current_month(holding_months(two_lot_run))
+    account_picker.account_picker.value = "Asset_Roth_Alice"  # must not raise
     month_picker.value = holding_months(two_lot_run)[0]
-    assert (account_picker.value, month_picker.value) == (
+    assert (account_picker.account, month_picker.value) == (
         "Asset_Roth_Alice", holding_months(two_lot_run)[0],
     )
 
