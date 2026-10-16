@@ -64,6 +64,7 @@ markers = [
     "uses_current_scenario_write: exempt from the no-op write_current_scenario fixture (see tests/conftest.py)",
     "allow_negative_balance: exempt from the negative-balance-is-an-error fixture (see tests/conftest.py)",
     "uses_real_cpu_count: exempt from the one-CPU sim run --jobs default fixture (see tests/conftest.py)",
+    "slow: takes about a second or more; the local gate runs -m 'not slow', CI runs everything",
 ]
 
 [tool.ruff]

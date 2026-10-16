@@ -231,6 +231,7 @@ def _copy_recipe(runs_dir: Path, name: str, rename_lot: str | None = None) -> No
             con.execute("UPDATE account_lot SET lot = 'renamed' WHERE lot = ?", (rename_lot,))
 
 
+@pytest.mark.slow
 def test_ensemble_widgets_share_controls_and_start_on_the_default(
     two_lot_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -267,6 +268,7 @@ def test_unknown_default_recipe_keeps_the_first(two_lot_ensemble_runs_dir: Path)
     assert fan.children[0].value == "two_lot"
 
 
+@pytest.mark.slow
 def test_lot_picker_offers_only_the_shown_recipes_lots(
     two_lot_ensemble_runs_dir: Path,
 ) -> None:
@@ -291,6 +293,7 @@ def test_lot_picker_offers_only_the_shown_recipes_lots(
     assert lot_picker.lots == ("b",)  # kept: this recipe has it too
 
 
+@pytest.mark.slow
 def test_compare_lots_are_the_baseline_and_variants_own(
     two_lot_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -327,6 +330,7 @@ def test_compare_lots_are_the_baseline_and_variants_own(
                for item in shown)
 
 
+@pytest.mark.slow
 def test_widgets_of_one_kind_share_a_lot_picker(two_lot_ensemble_runs_dir: Path) -> None:
     """Two single-recipe widgets on one set of controls share its Lot
     dropdown; a comparison gets the other one."""
@@ -343,6 +347,7 @@ def test_widgets_of_one_kind_share_a_lot_picker(two_lot_ensemble_runs_dir: Path)
     assert controls.recipe_lot_picker is not controls.compare_lot_picker
 
 
+@pytest.mark.slow
 def test_compare_widget_log_scale_uses_symlog(
     seeded_ensemble_batch, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

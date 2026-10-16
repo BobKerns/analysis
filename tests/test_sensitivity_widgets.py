@@ -222,6 +222,7 @@ def _titles(body: widgets.VBox) -> list[str]:
     return [section.children[0].value for section in body.children]
 
 
+@pytest.mark.slow
 def test_sensitivity_widget_oat_batch(oat_batch: Path, runs_dir: Path,
                                       monkeypatch: pytest.MonkeyPatch) -> None:
     shown = _quiet(monkeypatch)
@@ -247,6 +248,7 @@ def test_sensitivity_widget_oat_batch(oat_batch: Path, runs_dir: Path,
     assert not [s for s in shown if isinstance(s, str) and "Error" in s]
 
 
+@pytest.mark.slow
 def test_sensitivity_widget_ladder_adds_response_curve(ladder_batch: Path, runs_dir: Path,
                                                        monkeypatch: pytest.MonkeyPatch) -> None:
     _quiet(monkeypatch)

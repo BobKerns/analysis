@@ -93,6 +93,7 @@ def test_comparison_deltas_add_tail_deltas_and_the_paired_share_ahead() -> None:
     assert list(paired_deltas(baseline, variant, pairs).iloc[0]) == [5.0, -2.0, 5.0, 0.0]
 
 
+@pytest.mark.slow
 def test_members_with_one_seed_pair_and_draw_the_same_future(
     seeded_ensemble_batch: Callable[..., Path],
 ) -> None:

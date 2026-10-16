@@ -93,6 +93,7 @@ def typed_at_a_terminal():
         child.wait()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(("keys", "answer"), [
     (b"set-a\t\n", "set-amount"),
     (b"set-r\t\n", "set-rate"),

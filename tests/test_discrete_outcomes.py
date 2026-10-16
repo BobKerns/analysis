@@ -201,6 +201,7 @@ def test_vary_outcomes_rejected_on_another_distribution(
 # --- members and a run -----------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_members_draw_outcomes_and_run_through_a_zero(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,
