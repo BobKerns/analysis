@@ -483,6 +483,31 @@ KINDS: tuple[KindSpec, ...] = (
         ),
     ),
     KindSpec(
+        "swap-aux-table", "an aux table is replaced by another, as in a move",
+        key=("date", "aux_kind", "series"),
+        fields=(
+            _DATE,
+            Field(
+                "aux_kind", "kind of table", strict=True,
+                choices=lambda ctx, answers: sorted(registries.SWAPPABLE_AUX_KINDS),  # noqa: ARG005
+                help="state_brackets for a move to another state.",
+            ),
+            Field(
+                "source_series", "replacement series",
+                choices=lambda ctx, answers: list(ctx.series.get(answers.get("aux_kind", ""), ())),
+                help="The table that takes over, aux/<kind>__<series>.csv or "
+                     "series/<kind>__<series>.csv.",
+            ),
+            Field(
+                "series", "series replaced", option="--series", required=False,
+                choices=lambda ctx, answers: list(ctx.series.get(answers.get("aux_kind", ""), ())),
+                help="Blank for a kind without a series, such as federal_brackets.",
+            ),
+            _DESCRIPTION, _TAGS,
+            *_vary_fields(targets=("date",), ramp=False),
+        ),
+    ),
+    KindSpec(
         "latent-factor", "a shared influence that varying rows correlate with",
         fields=(
             Field("name", "factor name", unique=True),

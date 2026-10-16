@@ -4,11 +4,11 @@
 - **Date:** 2026-09-23
 - **Supersedes:** the reserved `holding` / `lot` tables and `transfer_event.from_holding_id` / `to_holding_id` ([ADR-002](ADR-002-storage-schema.md) §Reserved schema); the account-level running cost basis that [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7 (withdrawing from a taxable lot) now describes per lot.
 - **Amended:** see [Amendments](#amendments) at the end.
-- **Related:** [ADR-001](ADR-001-overall-architecture.md) (domain objects, `AccountState`), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries, CSV layouts, chains §4.7, `rmd` §2.3, `sell_asset` §3.7).
+- **Related:** [ADR-001](ADR-001-overall-architecture.md) (domain objects, `AccountState`), [ADR-002](ADR-002-storage-schema.md) (storage schema), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries, CSV layouts, chains §4.7, `rmd` §2.3).
 
 ## Context
 
-Every account is one balance with one running cost basis. A brokerage or IRA that holds several securities bought at different times cannot be modelled below the account: a withdrawal blends the whole account's basis pro-rata (`engine._post_withdrawal`), a `sell_asset` liquidates the entire account, and growth is one rate per account. We want to:
+Every account is one balance with one running cost basis. A brokerage or IRA that holds several securities bought at different times cannot be modelled below the account: a withdrawal blends the whole account's basis pro-rata (`engine._post_withdrawal`), and growth is one rate per account. We want to:
 
 1. Track individual positions (lots) inside investment accounts, including IRAs, and say which lot a sale comes from.
 2. Model growth per security rather than per account.
@@ -114,7 +114,7 @@ Symbols get names from `securities.csv` (`symbol,name`), at the top of the data 
 
 ### 7. Sales and withdrawals
 
-A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, [ADR-003](ADR-003-registries-and-csv-schemas.md) #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. `sell_asset` on an investment account names a lot and liquidates that lot. Liquidating an account is one `sell_asset` per lot.
+A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, [ADR-003](ADR-003-registries-and-csv-schemas.md) #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. A `transfer_balance` calendar event (ADR-003 §3.7) names a lot and empties it; emptying an account is one such event per lot.
 
 Money moved *into* a lot that tracks cost basis is a purchase: its basis rises by the amount and, if shares are tracked, they rise at the lot's implied price (balance ÷ quantity). This covers purchases from cash, inheritances, and proceeds moved from another taxable lot. Growth generated from `accounts.csv` series (from the built-in counterparty accounts) is appreciation and changes neither. A taxable asset lot with a zero opening balance and no stated basis starts at basis 0, so a lot can be declared up front for a purchase the scenario makes later (with its `acquired` date), and taxable growth is total return: reinvested dividends are not split out, so tax on distributions is deferred to the sale.
 
@@ -134,7 +134,7 @@ On an account with several lots a single-lot source is a load error, as is a cha
 Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage-schema.md) and [ADR-003](ADR-003-registries-and-csv-schemas.md) (Phase 6).
 
 - [ADR-002](ADR-002-storage-schema.md): replace the `holding`/`lot` reserved schema and `schema_overview` rows with the §1–§2 DDL; `account_model_member` and `transfer_event` changes; `account_state` view; `SCHEMA_VERSION` 17 → 18.
-- [ADR-003](ADR-003-registries-and-csv-schemas.md): §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §3.7 `sell_asset` requires a lot; §2.3 interim `rmd` guard; §4.7 taxable-lot withdrawals made per lot.
+- [ADR-003](ADR-003-registries-and-csv-schemas.md): §4.3 new columns and overlay key; §4.7 leaf chains per lot and the lot columns; §2.3 interim `rmd` guard; §4.7 taxable-lot withdrawals made per lot.
 - [ADR-001](ADR-001-overall-architecture.md): `AccountState` row in the domain-object table becomes a view over per-lot state.
 - [ADR-003](ADR-003-registries-and-csv-schemas.md): the `tax_character` registry gains `stcg`; §4.4 gains the `ltcg_brackets` aux kind; the `tax_accumulator` rule (§2.6) taxes long-term gains at those rates when present.
 
@@ -142,7 +142,7 @@ Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage
 
 - Positive: lot-level sales and per-security growth with no price path in the engine; reporting is untouched through the view; one file (`account_values.csv`) carries opening state; the ledger stays zero-sum and event-sourced.
 - Negative: every engine site keyed on account id changes to lot id; existing data needs a `lot` column on `account_values.csv` and chain files, and `from_lot`/`to_lot`/`lot_1`/`lot_2` columns filled in for investment accounts; row counts in `lot_state` scale with lots × months.
-- Runtime lot creation (a `buy_asset` into a brokerage opening a new lot) is not supported; buys add to a named existing lot.
+- Runtime lot creation is not supported: money moved into an account goes to a named existing lot.
 
 ## Open questions deferred
 
@@ -157,3 +157,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 
 - [#78](https://github.com/BobKerns/analysis/issues/78): a fund lot can grow at the blend of its allocation slices' rate series (§5).
 - [#160](https://github.com/BobKerns/analysis/issues/160): the table is named `account_lot` (was `account_model_member`) and loses `model_id` with the single-row `account_model` table (§1).
+- [#197](https://github.com/BobKerns/analysis/issues/197): the `sell_asset` and `buy_asset` calendar kinds are dropped, so nothing here refers to them (Context, Consequences).
