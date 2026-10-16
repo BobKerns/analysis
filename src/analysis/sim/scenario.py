@@ -6,6 +6,7 @@ within the simulation framework.
 """
 
 import csv
+import json
 import os
 import re
 from collections.abc import Sequence
@@ -15,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.sim.loader import LoadError
-from analysis.sim import chain_edit, registries
+from analysis.sim import chain_edit, registries, units
 from analysis.sim.dates import month_end_iso
 from analysis.sim.lineage import load_order, read_parents
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
@@ -52,12 +53,18 @@ Details: ADR-003 sections 4.1d and 4.4 in the analysis code repository.
 def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
                     description: str | None = None,
                     intent_dir: Path | None = None,
-                    mixins: Sequence[str] = ()) -> Path:
+                    mixins: Sequence[str] = (),
+                    ensemble_size: int | None = None) -> Path:
     """
     Create a new scenario with the given name, parent, and optional description.
 
     ``mixins`` are further parents applied after ``parent``'s line, in order
     (ADR-003 §4.5); ``parent_scenario`` records them colon-separated.
+
+    ``ensemble_size`` is written to ``meta_json`` when given; left out, it is
+    inherited from the parents (ADR-006 §7), and 0 makes a scenario that is
+    not an ensemble even under an ensemble parent. The seed is left blank,
+    so it inherits.
 
     Returns the path to the created scenario.
     """
@@ -73,6 +80,8 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
     mixin_names = [
         resolve_scenario_name(data_dir, mixin, intent_dir=intent_dir).name for mixin in mixins
     ]
+    if ensemble_size is not None and ensemble_size < 0:
+        raise LoadError(f"ensemble_size must be 0 or positive (got {ensemble_size})")
     target = data_dir / "scenarios" / name
     if target.exists():
         raise LoadError(f"scenario already exists: {target}")
@@ -109,7 +118,10 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
             "created_by": os.environ.get("ANALYSIS_USER")
             or os.environ.get("USER")
             or "unknown",
-            "meta_json": "{}",
+            "meta_json": json.dumps(
+                {} if ensemble_size is None else {"ensemble_size": ensemble_size},
+                separators=(",", ":"),
+            ),
         },
     )
     for filename, header in skeletons.items():
@@ -128,6 +140,15 @@ class ScenarioDate:
 
 
 @dataclass(frozen=True)
+class ScenarioValue:
+    """A ``scenario.csv`` value as the load would merge it, and whether it
+    came from an ancestor rather than the scenario itself."""
+
+    value: int
+    inherited: bool
+
+
+@dataclass(frozen=True)
 class ScenarioSummary:
     """One scenario folder, as ``sim scenario list --verbose`` shows it."""
 
@@ -136,6 +157,14 @@ class ScenarioSummary:
     description: str
     start: ScenarioDate | None = None
     end: ScenarioDate | None = None
+    seed: ScenarioValue | None = None
+    ensemble_size: ScenarioValue | None = None
+    """``None`` when the merged ``meta_json.ensemble_size`` is absent or 0:
+    the scenario is not an ensemble (ADR-006 §7)."""
+
+    @property
+    def is_ensemble(self) -> bool:
+        return self.ensemble_size is not None
 
 
 def scenario_summaries(data_dir: Path, scenarios_dir: Path | None = None) -> list[ScenarioSummary]:
@@ -159,8 +188,20 @@ def scenario_summaries(data_dir: Path, scenarios_dir: Path | None = None) -> lis
             description=_one_line_description(scenarios / name, rows[name]),
             start=_merged_date(rows, name, "start"),
             end=_merged_date(rows, name, "end"),
+            seed=_merged_seed(rows, name),
+            ensemble_size=_merged_ensemble_size(rows, name),
         ))
     return summaries
+
+
+def ensemble_settings(
+    data_dir: Path, name: str,
+) -> tuple[ScenarioValue | None, ScenarioValue | None]:
+    """Scenario ``name``'s merged ``(seed, ensemble_size)``, as
+    :func:`scenario_summaries` reports them."""
+    scenarios = Path(data_dir) / "scenarios"
+    rows = {n: _scenario_row(scenarios / n) for n in load_order(scenarios, name)}
+    return _merged_seed(rows, name), _merged_ensemble_size(rows, name)
 
 
 def _scenario_row(scenario_dir: Path) -> dict[str, str]:
@@ -190,6 +231,42 @@ def _merged_date(rows: dict[str, dict[str, str]], name: str, col: str) -> Scenar
         except ValueError:
             continue
         return ScenarioDate(month, inherited=owner != name)
+    return None
+
+
+def _merged_seed(rows: dict[str, dict[str, str]], name: str) -> ScenarioValue | None:
+    """The last ``seed`` in load order, merged field by field like the
+    loader's; one that isn't an integer is the loader's to report."""
+    for owner, row in reversed(rows.items()):
+        raw = (row.get("seed") or "").strip()
+        if not raw:
+            continue
+        try:
+            return ScenarioValue(int(raw), inherited=owner != name)
+        except ValueError:
+            return None
+    return None
+
+
+def _merged_ensemble_size(
+    rows: dict[str, dict[str, str]], name: str,
+) -> ScenarioValue | None:
+    """The last ``meta_json.ensemble_size`` in load order, merged key by key
+    like the loader's (ADR-003 §4.5), or ``None`` when it is absent or 0:
+    then the scenario is not an ensemble. An invalid one is the loader's to
+    report; here it is ``None`` too."""
+    for owner, row in reversed(rows.items()):
+        try:
+            meta = json.loads(row.get("meta_json") or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(meta, dict) or "ensemble_size" not in meta:
+            continue
+        try:
+            size = units.json_ensemble_size(meta["ensemble_size"])
+        except ValueError:
+            return None
+        return ScenarioValue(size, inherited=owner != name) if size > 0 else None
     return None
 
 

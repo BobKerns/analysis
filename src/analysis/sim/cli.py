@@ -386,8 +386,11 @@ def run(
     this only needs the already-built intent file, unchanged.
 
     If the loaded intent still has any unresolved ``vary_distribution`` row
-    (ADR-006), this generates and runs an ensemble instead of a single run;
-    with ``--sensitivity``, a one-at-a-time sensitivity batch (ADR-007).
+    (ADR-006) and is an ensemble (a positive ``ensemble_size``, or
+    ``--ensemble-size``), this generates and runs an ensemble instead of a
+    single run; with ``--sensitivity``, a one-at-a-time sensitivity batch
+    (ADR-007). A scenario with varying rows that is not an ensemble runs its
+    base case, each varying row at its central value.
     """
     quantiles, only_names, jobs = _batch_options(
         sensitivity=sensitivity, ensemble_size=ensemble_size, only=only,
@@ -440,13 +443,20 @@ def run(
         return
 
     if _has_unresolved_vary(intent_path):
-        _run_ensemble(
-            scenario_name, intent_path,
-            resolved_intent_dir, resolved_runs_dir,
-            ensemble_size=ensemble_size, run_by=resolved_by,
-            allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code, jobs=jobs,
+        if ensemble_size is not None or _recorded_ensemble_size(intent_path):
+            _run_ensemble(
+                scenario_name, intent_path,
+                resolved_intent_dir, resolved_runs_dir,
+                ensemble_size=ensemble_size, run_by=resolved_by,
+                allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
+                jobs=jobs,
+            )
+            return
+        click.echo(
+            f"{scenario_name} is not an ensemble: running its base case, each varying "
+            "row at its central value (--ensemble-size N runs it as an ensemble)"
         )
-        return
+        intent_path = _resolve_base_case(scenario_name, intent_path, resolved_intent_dir)
 
     data_version = _read_data_version(intent_path)
     short = data_version[:7] if data_version else "nodata"
@@ -510,6 +520,26 @@ def _has_unresolved_vary(intent_path: Path) -> bool:
     return row is not None
 
 
+def _recorded_ensemble_size(intent_path: Path) -> int:
+    """The intent's merged ``scenario.meta_json.ensemble_size``, which the
+    loader checked and stored as an int; absent or 0 means not an ensemble
+    (ADR-006 §7)."""
+    _seed, meta_json, _tree_id = _recipe_identity(intent_path)
+    return json.loads(meta_json or "{}").get("ensemble_size", 0)
+
+
+def _resolve_base_case(scenario_name: str, intent_path: Path, intent_dir: Path) -> Path:
+    """ADR-006 §7: a scenario that has varying rows but is not an ensemble
+    runs as its member 0, each row at its central value. The resolved intent
+    goes beside the scenario's ensemble batches, so the intent the load
+    built keeps its varying rows."""
+    seed, _meta_json, recipe_tree_id = _recipe_identity(intent_path)
+    return resolve_member(
+        intent_path, intent_dir / scenario_name / "base_case.sqlite3",
+        seed=seed, member_index=0, member_count=1, recipe_tree_id=recipe_tree_id,
+    )
+
+
 def _run_ensemble(
     scenario_name: str,
     recipe_intent_path: Path,
@@ -537,13 +567,9 @@ def _run_ensemble(
         member_count = ensemble_size
         source = "--ensemble-size"
     else:
-        meta_size = json.loads(meta_json or "{}").get("ensemble_size")
-        if meta_size is None:
-            raise click.ClickException(
-                f"{scenario_name}: ensemble recipe requires --ensemble-size or "
-                "scenario.meta_json.ensemble_size"
-            )
-        member_count = int(meta_size)
+        # `run` only gets here with a recorded size, which the loader made
+        # a positive int.
+        member_count = json.loads(meta_json or "{}")["ensemble_size"]
         source = "scenario.meta_json.ensemble_size"
     if member_count <= 0:
         raise click.ClickException(
@@ -767,70 +793,117 @@ def ensemble_group_command() -> None:
 @ensemble_group_command.command("create")
 @click.argument("name")
 @click.argument("parent")
+@click.argument("mixins", nargs=-1)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-@click.option("--description", default=None, help="Default: 'Derived from <parent>'.")
+@click.option("--description", default=None,
+              help="Default: 'Derived from <parent> + <mixin>...'.")
 @click.option(
     "--seed", type=int, default=None,
-    help="Ensemble master seed (default: a random 31-bit int, printed on creation).",
+    help="Ensemble master seed. Default: inherited when a parent is an ensemble, "
+         "so the two pair member by member; otherwise a random 31-bit int, "
+         "printed on creation.",
 )
 @click.option(
-    "--size", "ensemble_size", type=int, default=registries.DEFAULT_ENSEMBLE_SIZE,
-    show_default=True,
+    "--new-seed", is_flag=True, default=False,
+    help="Draw a fresh random seed even when a parent is an ensemble.",
+)
+@click.option(
+    "--size", "ensemble_size", type=int, default=None,
     help="Default member count (scenario.meta_json.ensemble_size), so "
          "'sim run'/'sim all' can generate and run this recipe without "
          "--ensemble-size on every invocation; 'sim run --ensemble-size' "
-         "can still override it per invocation. See docs/guides/ensembles.md "
-         "for what size is actually appropriate for this recipe.",
+         "can still override it per invocation. Default: inherited when a "
+         f"parent is an ensemble, otherwise {registries.DEFAULT_ENSEMBLE_SIZE}. "
+         "See docs/guides/ensembles.md for what size is actually appropriate "
+         "for this recipe.",
 )
 def ensemble_create(
     name: str,
     parent: str,
+    mixins: tuple[str, ...],
     data_dir: Path | None,
     description: str | None,
     seed: int | None,
-    ensemble_size: int,
+    new_seed: bool,
+    ensemble_size: int | None,
 ) -> None:
-    """Create ensemble recipe NAME deriving from PARENT scenario (ADR-006).
+    """Create ensemble recipe NAME deriving from PARENT, and make it current (ADR-006).
+
+    Each MIXIN is applied on top of PARENT, as for ``sim scenario create``.
+    When the parents already make an ensemble, NAME inherits its seed and
+    member count, so member N of each draws the same future for every row
+    they share; --seed, --new-seed and --size override that.
 
     A recipe is an ordinary scenario until a calendar.csv row is marked
     varying (``sim calendar add <kind> ... --vary-distribution ...``);
     ``sim run NAME`` then generates and runs every member instead of a
-    single run, using --size's recorded member count unless overridden by
+    single run, using the recorded member count unless overridden by
     ``sim run NAME --ensemble-size N``.
     """
-    if ensemble_size <= 0:
+    if ensemble_size is not None and ensemble_size <= 0:
         raise click.ClickException(f"--size must be a positive integer (got {ensemble_size})")
+    if seed is not None and new_seed:
+        raise click.UsageError("--seed and --new-seed are exclusive")
     data_dir_p = _resolve_data_dir(data_dir)
-    seed = seed if seed is not None else secrets.randbelow(2**31)
     # Preflights PARENT, then creates and validates the recipe in a staged copy.
     with _scenario_edit(data_dir_p, parent) as edit:
         try:
-            staged = sc.create_scenario(edit.data_dir, name, parent, description=description)
+            staged = sc.create_scenario(
+                edit.data_dir, name, parent, description=description, mixins=mixins,
+            )
         except Exception as exc:
             raise click.ClickException(f"failed to create scenario {name}: {exc}") from None
+        # With nothing of its own yet, the new scenario's merged values are
+        # exactly what it would inherit.
+        inherited_seed, inherited_size = sc.ensemble_settings(edit.data_dir, name)
+        from_ensemble = inherited_size is not None
+        if seed is None and (new_seed or not from_ensemble or inherited_seed is None):
+            seed = secrets.randbelow(2**31)
+        if ensemble_size is None and not from_ensemble:
+            ensemble_size = registries.DEFAULT_ENSEMBLE_SIZE
 
         scenario_csv = staged / "scenario.csv"
         df = pd.read_csv(scenario_csv, dtype=str, keep_default_na=False)
-        meta = json.loads(df.loc[0, "meta_json"] or "{}")
-        meta["ensemble_size"] = ensemble_size
-        df.loc[0, "seed"] = str(seed)
-        df.loc[0, "meta_json"] = json.dumps(meta, separators=(",", ":"))
+        if seed is not None:
+            df.loc[0, "seed"] = str(seed)
+        if ensemble_size is not None:
+            meta = json.loads(df.loc[0, "meta_json"] or "{}")
+            meta["ensemble_size"] = ensemble_size
+            df.loc[0, "meta_json"] = json.dumps(meta, separators=(",", ":"))
         df.to_csv(scenario_csv, index=False)
     target = data_dir_p / "scenarios" / name
 
-    parent_ref = _resolve_scenario(data_dir_p, parent)
+    inherits = [_resolve_scenario(data_dir_p, p).name for p in (parent, *mixins)]
     write_current_scenario(data_dir_p, name)
     click.echo(f"created ensemble recipe {target}")
-    click.echo(f"  inherits: {parent_ref.name}")
-    click.echo(f"  seed: {seed}")
-    click.echo(f"  ensemble_size: {ensemble_size}")
+    click.echo(f"  inherits: {' + '.join(inherits)}")
+    for label, own, inherited in (
+        ("seed", seed, inherited_seed), ("ensemble_size", ensemble_size, inherited_size),
+    ):
+        if own is not None:
+            click.echo(f"  {label}: {own}")
+        elif inherited is not None:
+            click.echo(f"  {label}: {inherited.value} (inherited)")
     click.echo(f"  current scenario: {name}")
     click.echo(
         "  next: sim calendar add <kind> ... --vary-distribution ... to mark rows as "
-        f"varying, then sim run {name} --ensemble-size N"
+        f"varying, then sim run {name}"
     )
+
+
+@ensemble_group_command.command("list")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+@click.option("-v", "--verbose", is_flag=True, default=False,
+              help="Show a table with each ensemble's parents, dates, seed, "
+                   "ensemble size and description.")
+def ensemble_list(data_dir: Path | None, verbose: bool) -> None:
+    """List the data repo's ensembles: ``sim scenario list``, keeping only
+    the scenarios whose merged ensemble_size is positive."""
+    _list_scenarios(data_dir, verbose, ensembles_only=True)
 
 
 def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -> Path:
@@ -7091,49 +7164,72 @@ def scenario_group_command() -> None:
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
 @click.option("-v", "--verbose", is_flag=True, default=False,
-              help="Show a table with each scenario's parents, dates and description.")
+              help="Show a table with each scenario's parents, dates, seed, "
+                   "ensemble size and description.")
 def scenario_list(data_dir: Path | None, verbose: bool) -> None:
     """List the data repo's scenarios.
 
     Plain output is just the names, one per line, for scripts. --verbose adds
-    parents, start and end months, and description, and marks the current
-    scenario with *. A date in [brackets] is inherited from an ancestor.
+    parents, start and end months, seed, ensemble size, and description, and
+    marks the current scenario with *. A value in [brackets] is inherited
+    from an ancestor; a blank size means the scenario is not an ensemble.
     """
+    _list_scenarios(data_dir, verbose, ensembles_only=False)
+
+
+def _list_scenarios(data_dir: Path | None, verbose: bool, *, ensembles_only: bool) -> None:
+    """``sim scenario list``, or with ``ensembles_only`` ``sim ensemble list``."""
     data_dir_p = _resolve_data_dir(data_dir)
     try:
-        if not verbose:
+        if not verbose and not ensembles_only:
             for name in list_scenario_names(data_dir_p):
                 click.echo(name)
             return
         summaries = sc.scenario_summaries(data_dir_p)
     except LoadError as exc:
         raise click.ClickException("; ".join(exc.issues)) from None
+    if ensembles_only:
+        summaries = [s for s in summaries if s.is_ensemble]
+    kind = "ensembles" if ensembles_only else "scenarios"
     if not summaries:
-        click.echo(f"(no scenarios in {data_dir_p / 'scenarios'})")
+        click.echo(f"(no {kind} in {data_dir_p / 'scenarios'})")
+        return
+    if not verbose:
+        for s in summaries:
+            click.echo(s.name)
         return
 
     from rich.console import Console
     from rich.markup import escape
     from rich.table import Table
 
-    def date_cell(d: sc.ScenarioDate | None) -> str:
-        if d is None:
+    def cell(value: object | None, inherited: bool) -> str:
+        if value is None:
             return ""
-        return escape(f"[{d.month}]") if d.inherited else escape(d.month)
+        return escape(f"[{value}]") if inherited else escape(str(value))
+
+    def date_cell(d: sc.ScenarioDate | None) -> str:
+        return cell(d and d.month, bool(d and d.inherited))
+
+    def value_cell(v: sc.ScenarioValue | None) -> str:
+        return cell(v and v.value, bool(v and v.inherited))
 
     current = read_current_scenario(data_dir_p)
-    table = Table(title=f"scenarios ({data_dir_p.name})",
-                  caption=escape("[dates] are inherited"))
+    table = Table(title=f"{kind} ({data_dir_p.name})",
+                  caption=escape("[values] are inherited"))
     table.add_column("", no_wrap=True)
     table.add_column("scenario", no_wrap=True)
     table.add_column("parents")
     table.add_column("start", no_wrap=True)
     table.add_column("end", no_wrap=True)
+    table.add_column("seed", no_wrap=True, justify="right")
+    table.add_column("size", no_wrap=True, justify="right")
     table.add_column("description")
     for s in summaries:
         table.add_row(
             "*" if s.name == current else "",
             s.name, " + ".join(s.parents), date_cell(s.start), date_cell(s.end),
+            value_cell(s.seed), value_cell(s.ensemble_size),
             escape(s.description),
         )
     Console().print(table)
@@ -7162,6 +7258,10 @@ def scenario_create(
     PARENT, in order, down to the first ancestor already inherited -- usually
     just the mix-in itself, stopping at the shared base. See ADR-003 §4.5 for
     merge semantics.
+
+    NAME is never an ensemble: it records ``ensemble_size`` 0, so under an
+    ensemble parent ``sim run NAME`` runs the base case, each varying row at
+    its central value. Use ``sim ensemble create`` for an ensemble.
     """
 
     skeletons: dict[str, tuple[str, ...]] = {
@@ -7176,6 +7276,7 @@ def scenario_create(
         with _scenario_edit(data_dir_p, parent) as edit:
             sc.create_scenario(
                 edit.data_dir, name, parent, description=description, mixins=mixins,
+                ensemble_size=0,
             )
         target = data_dir_p / "scenarios" / name
 

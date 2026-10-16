@@ -175,7 +175,7 @@ paths under one market factor have correlated years. Member 0's path is
 flat at its level.
 
 ```sh
-sim scenario create stock_paths retire_alice
+sim ensemble create stock_paths retire_alice
 sim calendar add set-rate 2027-01-31 brokerage_growth 6 --scenario stock_paths \
   --name brokerage_path --vary-target amount \
   --vary-distribution truncated_normal --vary-median 6 --vary-sd 2 \
@@ -236,7 +236,7 @@ the ensembles guide, as a separate scenario so it can be compared with the
 recipe, or used as a mix-in:
 
 ```sh
-sim scenario create great_inflation inflation_drivers
+sim ensemble create great_inflation inflation_drivers
 sim calendar add set-rate 2030-01-31 medical 8.2 --aux-kind inflation \
   --scenario great_inflation --name medical_episode \
   --vary-target date --vary-distribution uniform \

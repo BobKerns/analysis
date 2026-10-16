@@ -30,7 +30,10 @@ sim ensemble create inflation_1 base
 
 This prints a seed and a default member count (`30` unless you pass
 `--size`) and records both on the new scenario — `sim run`/`sim all` will
-use them without you having to repeat `--ensemble-size` every time.
+use them without you having to repeat `--ensemble-size` every time. Like
+`sim scenario create`, it takes mix-ins after the parent. When a parent is
+already an ensemble, the new recipe inherits that seed and size instead, so
+the two compare member by member; `--new-seed` or `--size` overrides them.
 
 **2. Mark one or more calendar rows as varying.** An ensemble recipe is an
 ordinary scenario until at least one `calendar.csv` row has
@@ -581,7 +584,7 @@ sim calendar add set-rate 2027-01-31 fuel 3.0 --aux-kind inflation \
   --vary-target amount --vary-distribution truncated_normal \
   --vary-median 3.0 --vary-sd 2.0 --vary-skew 0.6 \
   --vary-correlate-with core_inflation --vary-correlation 0.3
-sim scenario create inflation_tariffs inflation_drivers
+sim ensemble create inflation_tariffs inflation_drivers
 sim calendar add set-rate 2027-01-31 fuel 3.0 --aux-kind inflation \
   --scenario inflation_tariffs --name fuel_vary \
   --vary-target amount --vary-distribution truncated_normal \
@@ -593,16 +596,17 @@ sim run inflation_tariffs
 
 The child's row keeps the parent row's date, series and amount, which is
 what makes it replace that row rather than add a second one; only its
-`vary_*` settings change. The child inherits the recipe's seed and member
-count, so member N of each ensemble draws the same future for every other
-row, and the difference between the two runs is the fuel change alone.
+`vary_*` settings change. `sim ensemble create` gives the child the
+recipe's seed and member count rather than new ones, so member N of each
+ensemble draws the same future for every other row, and the difference
+between the two runs is the fuel change alone.
 
 **A shock factor** makes the shock part of the uncertainty instead of a
 separate case. Put it at the root, above the core factor, with fuel
 directly under the shock at a high ρ:
 
 ```sh
-sim scenario create inflation_shock inflation_drivers
+sim ensemble create inflation_shock inflation_drivers
 sim calendar add latent-factor supply_shock --scenario inflation_shock \
   --description "an energy or supply shock"
 sim calendar add latent-factor core_inflation --scenario inflation_shock \

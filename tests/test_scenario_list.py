@@ -1,5 +1,7 @@
 """``sim scenario list`` (issue #100): bare names for scripts, or with
---verbose a table of parents, dates and descriptions (dates since #159)."""
+--verbose a table of parents, dates and descriptions (dates since #159, seed
+and ensemble size since #169). ``sim ensemble list`` is the same, keeping
+only the ensembles."""
 
 from __future__ import annotations
 
@@ -11,11 +13,14 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim.loader import write_current_scenario
-from analysis.sim.scenario import ScenarioDate, scenario_summaries
+from analysis.sim.scenario import ScenarioDate, ScenarioValue, scenario_summaries
+
+# One more than the verbose table's eight columns.
+ROW_BARS = 9
 
 
-def _list(data_dir: Path, *args: str) -> str:
-    result = CliRunner().invoke(main, ["sim", "scenario", "list", "--data-dir", str(data_dir), *args])
+def _list(data_dir: Path, *args: str, group: str = "scenario") -> str:
+    result = CliRunner().invoke(main, ["sim", group, "list", "--data-dir", str(data_dir), *args])
     assert result.exit_code == 0, result.output
     return result.output
 
@@ -59,7 +64,7 @@ def test_verbose_list_shows_parents_and_description(
     derive_scenario("combo", "retire_alice:mix", description="Retire with the mix")
     derive_scenario("mix", "base", description="A mix-in")
     rows = {line.split("│")[2].strip(): line for line in _list(test_data_dir, "-v").splitlines()
-            if line.count("│") == 7}
+            if line.count("│") == ROW_BARS}
     assert set(rows) == {"base", "combo", "mix", "retire_alice"}
     assert "retire_alice + mix" in rows["combo"]
     assert "Retire with the mix" in rows["combo"]
@@ -70,7 +75,7 @@ def test_verbose_list_marks_the_current_scenario(
     test_data_dir: Path, wide_terminal: None,
 ) -> None:
     write_current_scenario(test_data_dir, "base")
-    rows = [line for line in _list(test_data_dir, "--verbose").splitlines() if line.count("│") == 7]
+    rows = [line for line in _list(test_data_dir, "--verbose").splitlines() if line.count("│") == ROW_BARS]
     marked = [line.split("│")[2].strip() for line in rows if line.split("│")[1].strip() == "*"]
     assert marked == ["base"]
 
@@ -122,7 +127,7 @@ def test_verbose_list_brackets_inherited_dates(
 ) -> None:
     derive_scenario("longer", "retire_alice", end="2045-06")
     rows = {_cells(line)[1]: _cells(line) for line in _list(test_data_dir, "-v").splitlines()
-            if line.count("│") == 7}
+            if line.count("│") == ROW_BARS}
     assert rows["longer"][3:5] == ["[2026-05]", "2045-06"]
     assert rows["base"][3:5] == ["2026-05", "2040-12"]
 
@@ -132,3 +137,48 @@ def test_a_scenario_without_dates_shows_none(test_data_dir: Path) -> None:
     by_name = {s.name: s for s in scenario_summaries(test_data_dir)}
     assert by_name["broken"].start is None
     assert by_name["broken"].end is None
+
+
+def test_seed_and_ensemble_size_merge_down_the_load_order(
+    test_data_dir: Path, derive_scenario: Callable[..., Path],
+) -> None:
+    derive_scenario("recipe", "retire_alice", seed="7", meta_json='{"ensemble_size":5}')
+    derive_scenario("variant", "recipe", meta_json='{"note":"x"}')
+    derive_scenario("plain", "recipe", meta_json='{"ensemble_size":0}')
+    by_name = {s.name: s for s in scenario_summaries(test_data_dir)}
+    assert by_name["retire_alice"].seed == ScenarioValue(42, inherited=False)
+    assert by_name["retire_alice"].ensemble_size is None
+    assert by_name["recipe"].ensemble_size == ScenarioValue(5, inherited=False)
+    assert by_name["variant"].seed == ScenarioValue(7, inherited=True)
+    assert by_name["variant"].ensemble_size == ScenarioValue(5, inherited=True)
+    # A size of 0 is no size: not an ensemble, even under one.
+    assert by_name["plain"].ensemble_size is None
+    assert not by_name["plain"].is_ensemble
+
+
+def test_verbose_list_brackets_an_inherited_seed_and_size(
+    test_data_dir: Path, derive_scenario: Callable[..., Path], wide_terminal: None,
+) -> None:
+    derive_scenario("recipe", "retire_alice", seed="7", meta_json='{"ensemble_size":5}')
+    derive_scenario("variant", "recipe")
+    rows = {_cells(line)[1]: _cells(line) for line in _list(test_data_dir, "-v").splitlines()
+            if line.count("│") == ROW_BARS}
+    assert rows["recipe"][5:7] == ["7", "5"]
+    assert rows["variant"][5:7] == ["[7]", "[5]"]
+    assert rows["retire_alice"][5:7] == ["42", ""]
+
+
+def test_ensemble_list_keeps_only_the_ensembles(
+    test_data_dir: Path, derive_scenario: Callable[..., Path], wide_terminal: None,
+) -> None:
+    derive_scenario("recipe", "retire_alice", seed="7", meta_json='{"ensemble_size":5}')
+    derive_scenario("variant", "recipe")
+    derive_scenario("plain", "recipe", meta_json='{"ensemble_size":0}')
+    assert _list(test_data_dir, group="ensemble").splitlines() == ["recipe", "variant"]
+    rows = {_cells(line)[1] for line in _list(test_data_dir, "-v", group="ensemble").splitlines()
+            if line.count("│") == ROW_BARS}
+    assert rows == {"recipe", "variant"}
+
+
+def test_ensemble_list_without_ensembles_says_so(test_data_dir: Path) -> None:
+    assert _list(test_data_dir, group="ensemble").startswith("(no ensembles in ")

@@ -572,7 +572,8 @@ def resolve_member(
     ``sensitivity`` member records a NULL seed, since it draws nothing, and
     ``seed`` may be ``None`` for one.
     """
-    if mode == "monte_carlo" and seed is None:
+    # Member 0 draws nothing, so a scenario's base case needs no seed.
+    if mode == "monte_carlo" and seed is None and member_index != 0:
         raise EnsembleError("a Monte Carlo member needs the ensemble's seed")
     if mode not in ENSEMBLE_MODES:
         raise EnsembleError(f"unknown ensemble mode {mode!r}")

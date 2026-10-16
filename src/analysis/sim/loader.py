@@ -746,6 +746,12 @@ def _read_scenario_inputs(
             units.json_dollars_to_cents(meta["reserve"])
         except ValueError as exc:
             issues.append(f"{scenario_name}: scenario.csv meta_json reserve: {exc}")
+    if "ensemble_size" in meta:
+        # #169: stored as its int, so `sim run` needn't reparse it.
+        try:
+            meta["ensemble_size"] = units.json_ensemble_size(meta["ensemble_size"])
+        except ValueError as exc:
+            issues.append(f"{scenario_name}: scenario.csv meta_json {exc}")
     scenario_row["name"] = scenario_name
     scenario_row["meta_json"] = json.dumps(meta, separators=(",", ":"))
     return (
