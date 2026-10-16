@@ -37,12 +37,21 @@ def net_worth_by_month(
     container: MultiScenarioConnections,
     mode: DollarMode = DollarMode.NOMINAL,
 ) -> pd.DataFrame:
-    """Net worth (USD) by month, one column per scenario."""
+    """Net worth (USD) by month, one column per scenario.
+
+    A run with no accounts has no net-worth rows; it counts as zero net worth
+    over the others' months (#174), not as missing data.
+    """
     value_column = "cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-    return pd.DataFrame({
+    columns = {
         name: container.connections[name].net_worth_frame()[value_column]
         for name in container.scenarios
-    })
+    }
+    nw = pd.DataFrame(columns)
+    for name, column in columns.items():
+        if column.empty:
+            nw[name] = 0.0
+    return nw
 
 
 def variant_delta(nw: pd.DataFrame, container: MultiScenarioConnections) -> pd.DataFrame:
@@ -576,15 +585,22 @@ def compare_account_balances(_,
     }
     added = {variant: keys - bg_keys for variant, keys in vgs_keys.items()}
     deleted = {variant: bg_keys - keys for variant, keys in vgs_keys.items()}
+    # A scenario without an account (or without any months, like an empty
+    # scenario) holds zero in it, so compare every account over every month.
+    accounts = sorted(bg_keys.union(*vgs_keys.values()))
+    months = sorted(set(bg.index).union(*(groups.index for groups in vgs.values())))
+    bg = bg.reindex(index=months, columns=accounts, fill_value=0)
+    vgs = {
+        variant: groups.reindex(index=months, columns=accounts, fill_value=0)
+        for variant, groups in vgs.items()
+    }
     diff = {
         variant: {
-            acct: (bg[acct], vgs[variant][acct])
-            for acct in bg_keys
-            if (bg[acct] != vgs[variant][acct]).any()
+            acct: (bg[acct], groups[acct])
+            for acct in accounts
+            if (bg[acct] != groups[acct]).any()
         }
-        for variant in vgs_keys.keys()
-        for acct in bg_keys
-        if (bg[acct] != vgs[variant][acct]).any()
+        for variant, groups in vgs.items()
     }
     return (added, deleted, diff, bg)
 
@@ -609,8 +625,11 @@ def account_balance_diffs(baseline: str,
     diff_accounts = set(sorted(diff_accounts))
     diff_months = list(sorted(diff_months))
 
-    accounts = baseline_rc.items("account")
-    accounts = accounts.set_index(accounts["name"], drop=True)
+    # Every scenario's accounts, so a baseline without an account (an empty
+    # one, say) still excludes the variants' builtins.
+    accounts = pd.concat(
+        [connection.items("account") for connection in (baseline_rc, *variant_rcs.values())]
+    ).drop_duplicates("name").set_index("name")
 
     metas = accounts["meta_json"].apply(json.loads)
     builtins = {
