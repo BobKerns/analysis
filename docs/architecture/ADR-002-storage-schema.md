@@ -88,8 +88,7 @@ state/
 - **No stored computed columns.** Anything derivable (net worth, totals, "is tax-deferred") is a view or query.
 - **No `run_id` in the ledger.** Each run file holds exactly one run, so a `run_id` column on every ledger table would be a constant. `simulation_run` is a single-row manifest; the file itself is the run identifier.
 - **One-row manifest tables** are not enforced by CHECK; convention only. The loader/engine write exactly one row.
-- **Reserved account names.** A small set of names is reserved for synthetic accounts the engine references by string:
-  - `Income_LoanOrigination` — the synthetic income-class account credited by `buy_asset` calendar-event expansions when a new liability appears mid-run (see [ADR-003](ADR-003-registries-and-csv-schemas.md) §3.8). The author lists it once in `accounts.csv` with `kind='income'`, `subkind='other_income'` if any scenario uses `buy_asset` with `new_liability_account`. Additional reserved names may be added in later ADRs.
+- **Reserved account names.** The built-in accounts on the far side of account growth (`interest_income`, `capital_gains`, `deferred_gains`, `tax_free_gains`, `depreciation`; `registries.GROWTH_COUNTERPARTY_ACCOUNTS`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §2.2) are created at load when a scenario does not declare them, and `rename` refuses to give an account one of their names.
 
 ### Placement summary
 
@@ -843,3 +842,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#160](https://github.com/BobKerns/analysis/issues/160): the single-row `account_model` table and every `model_id`/`account_model_id` column are dropped, and `account_model_member` is renamed `account_lot` (Intent layer DDL, placement summary, `schema_overview`; schema 35).
 - [#165](https://github.com/BobKerns/analysis/issues/165): `calendar_event.vary_outcomes` (Intent layer DDL; schema 36).
 - [#181](https://github.com/BobKerns/analysis/issues/181): intent and run files are written without fsync (Conventions).
+- [#197](https://github.com/BobKerns/analysis/issues/197): `Income_LoanOrigination` is no longer reserved, since the `buy_asset` kind that used it is dropped; the reserved names are the growth counterparties (Conventions).

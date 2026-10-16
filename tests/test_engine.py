@@ -199,8 +199,6 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         assert "mortgage_payment" not in skipped
         assert "ss_benefit" not in skipped
         assert "rmd" not in skipped
-        skipped_cal = json.loads(run["run_args_json"]).get("skipped_calendar_kinds", {})
-        assert skipped_cal == {}
 
         # ADR-003 §3: all 5 calendar events in retire_alice are supported.
         assert con.execute(
@@ -2034,31 +2032,6 @@ def test_running_unresolved_vary_row_outside_scenario_range_still_raises(
         series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
         vary_low="4%", vary_high="5%",
-    )
-    intent_path = load_scenario(
-        test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,
-    ).intent_path
-    run_path = tmp_path / "r.sqlite3"
-    with pytest.raises(EngineError, match="vary_distribution"):
-        run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
-
-
-def test_running_unresolved_vary_row_of_unsupported_kind_still_raises(
-    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
-    tmp_path: Path,
-) -> None:
-    """ADR-006: the guard must not depend on the row's kind being one the
-    engine actually applies -- an unsupported kind is skipped before ever
-    reaching ``_apply_calendar_event``, so it must be rejected up front.
-
-    ``vary_target='date'`` (not 'amount') because the loader restricts an
-    amount target to the kinds that have a real amount column to vary, which
-    excludes every kind the engine doesn't support in the first place.
-    """
-    append_calendar_row(
-        date="2027-02-28", kind="swap_aux_table", name="unsupported_kind_vary",
-        vary_target="date", vary_distribution="uniform",
-        vary_low="2027-01-01", vary_high="2027-12-31",
     )
     intent_path = load_scenario(
         test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,

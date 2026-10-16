@@ -81,9 +81,8 @@ def withdrawal_tax_character(tax_treatment: str | None, subkind: str) -> str | N
     return TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER.get(tax_treatment or "none", "none")
 
 CALENDAR_EVENT_KINDS: set[str] = {
-    "set_rate", "set_amount", "add_scheduled", "retire_scheduled", "swap_aux_table",
-    "one_off_transfer", "transfer_balance", "sell_asset", "buy_asset",
-    "life_transition", "latent_factor",
+    "set_rate", "set_amount", "retire_scheduled", "swap_aux_table",
+    "one_off_transfer", "transfer_balance", "latent_factor",
 }
 
 # ADR-008 §3: a shared influence (an "inflation regime") that rows correlate
@@ -390,8 +389,8 @@ DEFAULT_SENSITIVITY_QUANTILES: tuple[float, ...] = (0.1, 0.9)
 
 # ADR-006: calendar_event kinds whose `amount` column has a real meaning to
 # vary (a rate in `set_rate`, a new base amount in `set_amount`, a transfer
-# amount in `one_off_transfer`). `retire_scheduled` (and every kind outside
-# SUPPORTED_CALENDAR_KINDS) has no amount column a draw could affect.
+# amount in `one_off_transfer`). The other kinds have no amount column a
+# draw could affect.
 AMOUNT_VARYING_KINDS: set[str] = {"set_rate", "set_amount", "one_off_transfer"}
 
 # What a calendar_event row's `amount` means, by kind: an annual rate in

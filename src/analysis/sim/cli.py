@@ -2819,6 +2819,7 @@ _CALENDAR_COMMAND_OF_KIND = {
     "retire_scheduled": "retire-scheduled",
     "one_off_transfer": "transfer",
     "transfer_balance": "transfer-balance",
+    "swap_aux_table": "swap-aux-table",
     registries.LATENT_FACTOR_KIND: "latent-factor",
 }
 
@@ -2840,6 +2841,7 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
     values = {
         "date": row["date"],
         "aux_kind": str(params.get("aux_kind", "rate")),
+        "source_series": str(params.get("source_series", "")),
         "series": row["series"],
         "rate_percent": row["amount"],
         "scheduled_name": row["scheduled_name"],
@@ -2908,6 +2910,11 @@ def _guide_context(
             chains=_interior_chains(con), chain_roles=_chain_roles(con),
             scheduled_names=column(con, "SELECT name FROM scheduled_transaction"),
             series={
+                # Every loaded table's series, for swap_aux_table (#197).
+                **{
+                    kind: column(con, aux, kind)
+                    for kind in sorted(registries.AUX_KIND_COLUMNS)
+                },
                 "rate": sorted({
                     *column(con, aux, "rate"),
                     *column(con, "SELECT series FROM account_lot"),
@@ -3537,6 +3544,82 @@ def calendar_add_transfer_balance(
     verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
     click.echo(
         f"{verb} transfer_balance {from_account} -> {to_account} on {date} to {path}"
+    )
+
+
+@calendar_add_group_command.command("swap-aux-table")
+@click.argument("date", required=False)
+@click.argument("aux_kind", required=False)
+@click.argument("source_series", required=False)
+@click.option("--series", default="",
+              help="The series replaced; blank for a kind without one (federal_brackets).")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--description", default="", help="Free-text description.")
+@click.option("--tags", default="",
+              help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
+@_vary_row_options
+def calendar_add_swap_aux_table(
+    date: str | None, aux_kind: str | None, source_series: str | None, series: str,
+    scenario: str | None, data_dir: Path | None, description: str, tags: str,
+    row_name: str | None, vary_target: str | None, vary_distribution: str | None,
+    vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
+    vary_skew: str | None, vary_tailweight: str | None, vary_mode: str | None,
+    vary_outcomes: str | None,
+    vary_correlate_with: str | None, vary_correlation: str | None,
+    vary_tail_dependence: str | None,
+    vary_ramp_months: int | None,
+) -> None:
+    """Append a swap_aux_table event (#197): from DATE, the AUX_KIND table
+    --series (blank for a kind without one) is SOURCE_SERIES's table instead
+    -- a move to another state is `swap-aux-table DATE state_brackets WA
+    --series CA`.
+
+    Only --vary-target=date is meaningful here (there is no amount to vary).
+    Arguments left out are asked for.
+    """
+    if vary_target == "amount":
+        raise click.ClickException(
+            "swap_aux_table has no amount to vary; use --vary-target date"
+        )
+    try:
+        registries.parse_tags(tags)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    given = _ask_missing_arguments(
+        "swap-aux-table", data_dir, scenario,
+        date=date, aux_kind=aux_kind, source_series=source_series, series=series,
+    )
+    date, aux_kind, source_series = given["date"], given["aux_kind"], given["source_series"]
+    date = _validate_month_date(date)
+    if aux_kind not in registries.AUX_KIND_COLUMNS:
+        raise click.ClickException(
+            f"unknown aux kind: {aux_kind!r}; allowed: {sorted(registries.AUX_KIND_COLUMNS)}"
+        )
+    vary_fields = _vary_row_fields(
+        row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
+        vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
+        vary_skew=vary_skew, vary_tailweight=vary_tailweight, vary_mode=vary_mode,
+        vary_outcomes=vary_outcomes,
+        vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
+        vary_tail_dependence=vary_tail_dependence,
+        vary_ramp_months=vary_ramp_months, amount_unit=None,
+    )
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    row = {
+        "date": date, "kind": "swap_aux_table", "series": series,
+        "params_json": json.dumps({"aux_kind": aux_kind, "source_series": source_series}),
+        "description": description, "tags": tags, **vary_fields,
+    }
+    path = scenario_dir / "calendar.csv"
+    verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
+    replaced = f"{aux_kind}__{series}" if series else aux_kind
+    click.echo(
+        f"{verb} swap_aux_table {replaced} -> {aux_kind}__{source_series} on {date} to {path}"
     )
 
 

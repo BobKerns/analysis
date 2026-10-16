@@ -48,7 +48,8 @@ SUPPORTED_RULE_KINDS = frozenset(
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
-    {"set_rate", "set_amount", "retire_scheduled", "one_off_transfer", "transfer_balance"}
+    {"set_rate", "set_amount", "retire_scheduled", "swap_aux_table",
+     "one_off_transfer", "transfer_balance"}
 )
 
 # Positions in the `txns` rows loaded by run_scenario, for the fields that
@@ -203,7 +204,6 @@ def run_scenario(
         )
 
         skipped_counts: dict[str, int] = {}
-        skipped_calendar: dict[str, int] = {}
         applied_event_ids: set[int] = set()
 
         previous_step_id: int | None = None
@@ -242,9 +242,11 @@ def run_scenario(
                     applied_event_ids.add(ev_id)
                     continue
                 if ev_kind not in SUPPORTED_CALENDAR_KINDS:
-                    skipped_calendar[ev_kind] = skipped_calendar.get(ev_kind, 0) + 1
-                    applied_event_ids.add(ev_id)
-                    continue
+                    # The loader rejects unknown kinds, so this is an intent
+                    # built some other way (#197: no kind is skipped any more).
+                    raise EngineError(
+                        f"calendar_event id={ev_id}: unsupported kind {ev_kind!r}"
+                    )
                 _apply_calendar_event(
                     con, ev_id, ev_date, ev_kind,
                     _build_cal_payload(
@@ -527,12 +529,6 @@ def run_scenario(
                 "UPDATE simulation_run SET run_args_json = json_set("
                 "  run_args_json, '$.skipped_rule_kinds', json(?)) WHERE id = 1",
                 (json.dumps(skipped_counts, sort_keys=True),),
-            )
-        if skipped_calendar:
-            con.execute(
-                "UPDATE simulation_run SET run_args_json = json_set("
-                "  run_args_json, '$.skipped_calendar_kinds', json(?)) WHERE id = 1",
-                (json.dumps(skipped_calendar, sort_keys=True),),
             )
         if refill_ctx.negative_events:
             con.execute(
@@ -2686,6 +2682,75 @@ def _synthesize_one_off_rule(
     return inserted_id(cur)
 
 
+# Aux kinds a run looks up for months already past: an inflation factor
+# compounds from a rule's base_date. Every other kind is only ever read for
+# the month being stepped (or later).
+_LOOKED_BACK_AUX_KINDS = frozenset({"inflation"})
+
+
+def _swap_aux_table(
+    con, ev_id: int, ev_date: str, payload: dict[str, Any],
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+) -> None:
+    """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
+    (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
+    ``source_series``) would.
+
+    Lookups only move forward, so the target simply becomes a copy of the
+    source -- which keeps each lookup style exact: the latest row, the
+    latest date's row set (brackets), and the latest row per key (RMD
+    factors, energy credits). An inflation series is also read for past
+    months, so it keeps its own rows before ``ev_date``, with the source's
+    row in force on ``ev_date`` taking over then; inflation tables have one
+    row per date, so that splice is exact too.
+    """
+    aux_kind = payload.get("aux_kind")
+    source_series = payload.get("source_series")
+    series = payload.get("series")
+    if not aux_kind or not source_series:
+        raise EngineError(
+            f"swap_aux_table event id={ev_id}: requires params_json aux_kind "
+            "and source_series"
+        )
+    source = aux.get((aux_kind, source_series))
+    if not source:
+        raise EngineError(
+            f"swap_aux_table event id={ev_id}: no aux rows for "
+            f"kind={aux_kind!r} series={source_series!r}"
+        )
+    if source[0][0] > ev_date:
+        raise EngineError(
+            f"swap_aux_table event id={ev_id}: series {source_series!r} has no "
+            f"{aux_kind} row effective on or before {ev_date}, so there is "
+            "nothing to swap in yet"
+        )
+    if aux_kind in _LOOKED_BACK_AUX_KINDS:
+        kept = [row for row in aux.get((aux_kind, series), []) if row[0] < ev_date]
+        in_force = [(ev_date, row[1]) for row in source if row[0] <= ev_date][-1:]
+        written = in_force + [row for row in source if row[0] > ev_date]
+        con.execute(
+            "DELETE FROM aux_table WHERE kind = ? AND series IS ? AND effective_date >= ?",
+            (aux_kind, series, ev_date),
+        )
+    else:
+        kept, written = [], list(source)
+        con.execute(
+            "DELETE FROM aux_table WHERE kind = ? AND series IS ?", (aux_kind, series),
+        )
+    # The run file's aux_table follows, so what reads it after the run (CPI-
+    # constant dollars) sees the table the run actually used.
+    con.executemany(
+        "INSERT INTO aux_table(kind, series, effective_date, payload_json, description) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            (aux_kind, series, effective, json.dumps(row_payload),
+             f"swap_aux_table event id={ev_id} from series {source_series!r}")
+            for effective, row_payload in written
+        ],
+    )
+    aux[(aux_kind, series)] = kept + written
+
+
 def _apply_calendar_event(
     con,
     ev_id: int, ev_date: str, ev_kind: str, payload: dict[str, Any],
@@ -2761,6 +2826,8 @@ def _apply_calendar_event(
                 'UPDATE scheduled_transaction SET "end" = ? WHERE id = ?',
                 (ev_date, rec[0]),
             )
+        case "swap_aux_table":
+            _swap_aux_table(con, ev_id, ev_date, payload, aux)
         case "one_off_transfer":
             frm_name = payload.get("account_1")
             to_name = payload.get("account_2")

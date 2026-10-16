@@ -3,7 +3,6 @@ columns, their validation across scenario inheritance, and load warnings."""
 
 from __future__ import annotations
 
-import json
 import math
 import random
 import sqlite3
@@ -243,18 +242,16 @@ def test_engine_treats_a_factor_as_inert(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     tmp_path: Path,
 ) -> None:
-    """An ordinary (non-recipe) scenario with a factor runs normally, and
-    the factor isn't reported as an unsupported calendar kind."""
+    """An ordinary (non-recipe) scenario with a factor runs normally."""
     _factor(append_calendar_row, "someday")
     run_path = tmp_path / "run.sqlite3"
     run_scenario(load_test_copy().intent_path, run_path, run_by="test", allow_dirty_data=True)
     con = sqlite3.connect(run_path)
     try:
-        status, run_args = con.execute("SELECT status, run_args_json FROM simulation_run").fetchone()
+        (status,) = con.execute("SELECT status FROM simulation_run").fetchone()
     finally:
         con.close()
     assert status == "succeeded"
-    assert "latent_factor" not in json.loads(run_args or "{}").get("skipped_calendar_kinds", {})
 
 
 @pytest.mark.usefixtures("without_prototype_defaults")
@@ -822,7 +819,7 @@ def test_latent_factor_rejects_payload_and_tags(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
     column: str, value: str,
 ) -> None:
-    """ADR-003 §3.10: a factor carries only a name, a description and the
+    """ADR-003 §3.6: a factor carries only a name, a description and the
     correlation pair (PR #37 review: params_json was missing from the check)."""
     _factor(append_calendar_row, "f", **{column: value})
     _varying_rate(append_calendar_row, "rate_a", vary_correlate_with="f", vary_correlation="0.5")

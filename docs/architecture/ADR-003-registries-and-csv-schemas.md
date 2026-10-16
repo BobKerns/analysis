@@ -174,7 +174,7 @@ Monthly P&I against a mortgage liability account.
 - **Emits two events:**
   1. **Interest leg:** `from_account = Asset_Checking` (the row's `from_account`), `to_account = interest_account`, amount = `interest`, tax_character = `'none'`.
   2. **Principal leg:** `from_account = Asset_Checking`, `to_account = <liability>` (the row's `to_account`, reducing the liability balance), amount = `principal`, tax_character = `'none'`, `parent_event_id` linked to the interest leg.
-- **Use:** one row per active mortgage. Retired by a `retire_scheduled` calendar event when the home is sold (see §3.4).
+- **Use:** one row per active mortgage. Retired by a `retire_scheduled` calendar event when the home is sold (see §3.3).
 
 #### 2.9 `on_death` (priority band: author's choice; recommend 900)
 
@@ -187,13 +187,13 @@ Fires once, automatically, the month a person dies -- for one-time death-trigger
 
 ### 3. `calendar_event.kind` registry
 
-Eleven kinds. Per the §2 invariant, calendar events never write to `transfer_event` directly. They fall into three classes:
+Seven kinds. Per the §2 invariant, calendar events never write to `transfer_event` directly. They fall into three classes:
 
-- **Intent-mutating** (no money moves at expansion time; the event amends the in-memory intent — rates, schedules, aux tables): `set_rate`, `set_amount`, `add_scheduled`, `retire_scheduled`, `swap_aux_table`.
-- **Rule-synthesizing** (the event inserts one or more `cadence='one_off'` scheduled_transactions with `created_by_event_id = calendar_event.id`; those rules then fire on `event.date` through the normal monthly step): `one_off_transfer`, `transfer_balance`, `sell_asset`, `buy_asset`, `life_transition`. `life_transition` may also perform intent-mutating sub-actions (e.g. retiring a salary rule).
-- **Inert** (no effect in a run; read only by ensemble resolution): `latent_factor` (§3.10).
+- **Intent-mutating** (no money moves at expansion time; the event amends the in-memory intent — rates, schedules, aux tables): `set_rate`, `set_amount`, `retire_scheduled`, `swap_aux_table`.
+- **Rule-synthesizing** (the event inserts one or more `cadence='one_off'` scheduled_transactions with `created_by_event_id = calendar_event.id`; those rules then fire on `event.date` through the normal monthly step): `one_off_transfer`, `transfer_balance`.
+- **Inert** (no effect in a run; read only by ensemble resolution): `latent_factor` (§3.6).
 
-Where expansions produce multiple synthesized rules, each rule's first (and only) firing is one row in `transfer_event`; linkage across siblings is via the shared `created_by_event_id` on `scheduled_transaction` plus `applied_calendar_event`.
+A synthesized rule fires once, as one row in `transfer_event` (or more, when a chain splits it), traced back to its event through `created_by_event_id` on `scheduled_transaction` and `applied_calendar_event`.
 
 **Ensemble variation ([ADR-006](ADR-006-ensemble-scenarios.md)):** a row may additionally carry `vary_distribution` (and the paired `vary_target`/`vary_low`/etc. columns, §4.8), marking its own `amount` or `date` as drawn per ensemble member rather than literal — the "vary" step resolves every such row (dates first, then amounts/rates) before handing the intent to the ordinary, unmodified run path. A row that still has `vary_distribution` set when it would fire is always a mistake (a recipe run directly, or a resolution step skipped), so the engine raises rather than using the placeholder value underneath it.
 
@@ -206,7 +206,7 @@ Replace one rate aux-table entry effective from this date forward.
 - **Columns:** `series` = rate-series name, `amount` = new value as a percent (e.g. `4.5%`), stored in micros (`45000`). A value beyond ±100% is a load error: it is almost certainly one still in micros.
 - **Expansion:** inserts a new `aux_table` row with `kind = 'rate'`, the given `series`, `effective_date = event.date`, and `payload_json = {"value_micros": amount}`. The original row is **not** deleted; aux lookups use the most-recent-by-`effective_date` row.
 - **Unread series:** a row whose `(aux_kind, series)` no scheduled rule, chain step cap, or account growth series in the scenario reads loads with a warning, not an error: it has no effect there, but a mix-in or parent may set a series only the scenarios inheriting from it read. A rule that reads a series nothing supplies is still a load error, since the run would fail once it reached that rule.
-- **Ramp ([ADR-006](ADR-006-ensemble-scenarios.md), ensemble-only):** a row with `vary_target='amount'` and `vary_ramp_months` set draws its target the same way any `amount` variation does, then the vary step expands it into that many additional ordinary `set_rate` rows, one per month, linearly interpolated from the series' current value up to the drawn target, landing on it at `date + vary_ramp_months` — an "expanding" shape like §3.9's `life_transition`, not a new way of reading `aux_table` (still latest-row-on-or-before-month, no interpolation logic added there). Modeling a sudden jump is rarely the realistic prediction, which is the whole reason the ramp exists — including for a lot's future price expectation, since the engine only ever consults `security_price` once to derive an opening balance ([ADR-005](ADR-005-lots-and-per-lot-state.md) §6), so varying it is really varying this rate assumption.
+- **Ramp ([ADR-006](ADR-006-ensemble-scenarios.md), ensemble-only):** a row with `vary_target='amount'` and `vary_ramp_months` set draws its target the same way any `amount` variation does, then the vary step expands it into that many additional ordinary `set_rate` rows, one per month, linearly interpolated from the series' current value up to the drawn target, landing on it at `date + vary_ramp_months` — an expansion, not a new way of reading `aux_table` (still latest-row-on-or-before-month, no interpolation logic added there). Modeling a sudden jump is rarely the realistic prediction, which is the whole reason the ramp exists — including for a lot's future price expectation, since the engine only ever consults `security_price` once to derive an opening balance ([ADR-005](ADR-005-lots-and-per-lot-state.md) §6), so varying it is really varying this rate assumption.
 - **Process ([ADR-006](ADR-006-ensemble-scenarios.md) §4a, ensemble-only):** a row with `vary_target='amount'` and `vary_process` set draws its level the same way, then the vary step expands it into one ordinary `set_rate` row per year, same month, moving around that level, through the scenario's end or until the next authored `set_rate` row for the same series and `aux_kind`. Like a ramp, it adds nothing to how `aux_table` is read.
 - **Use:** "checking account starts earning 4% in 2027".
 
@@ -218,15 +218,7 @@ Mutate a `ScheduledTransaction.amount` going forward.
 - **Expansion:** updates the named row's `amount` (and `base_date` if given) in the run's in-memory intent. Persisted as an `applied_calendar_event` row; the run's snapshot of `scheduled_transaction` reflects the post-event state.
 - **Use:** "discretionary spending drops to $4,500/mo on retirement".
 
-#### 3.3 `add_scheduled` (primitive)
-
-Introduce a new `ScheduledTransaction` from this date forward.
-
-- **Columns:** all required fields of `scheduled_transaction` (using the same named param columns as §4.6). `start` defaults to `event.date` if omitted. `from_account`/`to_account` may name a chain as well as an account (§4.7).
-- **Expansion:** inserts the row into the in-memory intent.
-- **Use:** "Medicare premium starts at age 65"; "RMD rule activates the year you turn 73".
-
-#### 3.4 `retire_scheduled` (primitive)
+#### 3.3 `retire_scheduled` (primitive)
 
 End an active `ScheduledTransaction`.
 
@@ -234,7 +226,7 @@ End an active `ScheduledTransaction`.
 - **Expansion:** sets `end = event.date` on the named row.
 - **Use:** "salary stops on retirement"; "mortgage rule retires when home is sold".
 
-#### 3.5 `one_off_transfer` (rule-synthesizing)
+#### 3.4 `one_off_transfer` (rule-synthesizing)
 
 A single one-shot movement, expressed as a synthesized rule so the §2 invariant holds.
 
@@ -242,69 +234,31 @@ A single one-shot movement, expressed as a synthesized rule so the §2 invariant
 - **Expansion:** synthesize one `scheduled_transaction` with `amount_rule_kind='fixed_amount'`, `cadence='one_off'`, `start = end = event.date`, `amount` from the payload, fields from payload, `created_by_event_id = calendar_event.id`. The engine fires it on `event.date` and routes it as it does any `fixed_amount` rule: lot to lot directly, or through a chain's sweep or draw, each `transfer_event` traced to that synthesized rule.
 - **Use:** windfalls, gifts, one-time settlements that have no recurring structure.
 
-#### 3.6 `swap_aux_table` (primitive)
+#### 3.5 `swap_aux_table` (primitive)
 
-Replace an entire aux-table series.
+Replace an aux table with another of the same kind from this date forward ([#197](https://github.com/BobKerns/analysis/issues/197)): a move to another state (`state_brackets`, and `state_deductions` if used), a tax law that changes on a known date, a switch to another inflation or rate assumption.
 
-- **Payload:** `{ "aux_kind": "federal_brackets", "series": null, "source": "aux/federal_brackets_2027.csv" }` OR `{ ..., "inline_payload_json": {...} }`.
-- **Expansion:** inserts new `aux_table` rows (or one row, depending on kind) at `effective_date = event.date`. Older rows are left in place; lookups pick by most recent.
-- **Use:** new tax legislation; updated RMD divisor tables.
+- **Columns:** `series` = the series being replaced, blank for a kind without one (`federal_brackets`, `standard_deduction`, ...); `params_json` = `{"aux_kind": "<kind>", "source_series": "<series>"}`, the table that takes its place. The source is an ordinary aux file, `<kind>__<source_series>.csv` in `aux/` or `series/` (§4.4), overridable per scenario like any other (§4.1d), and read only through this row. Every other column is blank. The loader checks that `aux_kind` is a registered kind (§4.4) and that both tables exist; the run fails if the source has no row in force on `date`.
+- **Expansion:** from `date` on, every lookup of (`aux_kind`, `series`) sees exactly what a lookup of the source would: the source's row (or, for brackets, row set) in force on `date` applies from then, and its later rows from their own dates. The replaced table's own later rows no longer apply. An inflation series keeps its rows before `date`, since an inflated amount compounds from its `base_date`. The run file's `aux_table` holds the swapped table, so a report read from it (CPI-constant dollars) sees what the run used.
+- **Ensembles:** `vary_target='date'` draws the date; there is no amount to vary.
+- **Use:** relocating; a scheduled change in tax law. `sim calendar add swap-aux-table DATE AUX_KIND SOURCE_SERIES [--series SERIES]` writes one.
+- **Key:** the row's `aux_kind` is part of its merge key (§4.5), so swaps of two kinds without a series on one date are two events.
 
-#### 3.7 `sell_asset` (rule-synthesizing)
-
-Realize a sale. Each sub-step below is a separately synthesized `cadence='one_off'` rule sharing the same `created_by_event_id`.
-
-- **Payload:** `{ "asset_account": "<real_estate or brokerage account>", "sale_price": <cents>, "cost_basis_override": <cents (optional)>, "proceeds_account": "<asset account>", "selling_costs": <cents>, "associated_liability_account": "<mortgage account (optional)>", "associated_liability_payoff": <cents (optional)>, "tax_character": "ltcg" | "ordinary" | "none" }`.
-- **Expansion** (each item is a synthesized rule; firing order set by `priority`):
-  1. **Basis recognition rule** — `fixed_amount`, `asset_account → proceeds_account`, `amount = cost_basis` (or `cost_basis_override`), `tax_character='return_of_capital'`.
-  2. **Gain/loss rule** — `fixed_amount`, `Income_CapitalGain → proceeds_account` (or `Expense_CapitalLoss` reversed for a loss), `amount = sale_price - cost_basis - selling_costs`, `tax_character` from payload.
-  3. **Selling-costs rule** — `fixed_amount`, `proceeds_account → Expense_Housing` (or appropriate expense), `amount = selling_costs`.
-  4. **Liability-payoff rule** (only if `associated_liability_account` is set) — `fixed_amount`, `proceeds_account → associated_liability_account`, `amount = associated_liability_payoff`, `tax_character='none'`.
-  5. **Asset zero-out** is the side-effect of step 1 (the basis transfer empties the asset) — no extra rule.
-  6. If `associated_liability_account` is set: also emit an intent-mutating side-action equivalent to `retire_scheduled` against the mortgage_payment rule referencing it (recorded as a secondary `applied_calendar_event`).
-- **Use:** home sale; large brokerage liquidation.
-- **Lots ([ADR-005](ADR-005-lots-and-per-lot-state.md)):** for an account that has lots the payload names one (`asset_account` plus its lot), and the sale liquidates that lot; liquidating a whole account is one sale per lot. The engine does not implement `sell_asset` yet (it is skipped), so payload account references are not validated.
-
-#### 3.8 `buy_asset` (rule-synthesizing)
-
-Acquire an asset. As with §3.7, each money-moving sub-step is a synthesized `cadence='one_off'` rule.
-
-- **Payload:** `{ "asset_account": "<name, must exist>", "purchase_price": <cents>, "from_account": "<asset account>", "fees": <cents>, "new_liability_account": "<name (optional)>", "new_liability_principal": <cents (optional)>, "starts_scheduled": ["mortgage_<name>", "property_tax_<name>", ...] }`.
-- **Expansion:**
-  1. **Down-payment rule** — `fixed_amount`, `from_account → asset_account`, `amount = purchase_price - new_liability_principal`, `tax_character='none'`. Sets `asset_account.cost_basis = purchase_price + fees` as a state side-effect at firing time.
-  2. **Fees rule** — `fixed_amount`, `from_account → Expense_Housing`, `amount = fees`.
-  3. **Loan-origination rule** (only if `new_liability_account`) — `fixed_amount`, `Income_LoanOrigination → new_liability_account`, `amount = new_liability_principal`, `tax_character='none'`. (`Income_LoanOrigination` is a synthetic income-class account in the standard chart; reserved name.) This preserves the bookkeeping zero-sum invariant from [ADR-002](ADR-002-storage-schema.md) when a new liability appears mid-run.
-  4. **Activate scheduled rules** — for each name in `starts_scheduled`: an intent-mutating side-action equivalent to `add_scheduled` referencing a prototype row in `scheduled.csv` (prototype rows are flagged `start = NULL` so they don't fire on their own). Not money-moving in itself.
-- **Use:** downsize-to-condo scenario; investment property purchase.
-
-#### 3.9 `life_transition` (expanding)
-
-Author-named bundle of changes that represent a real-world transition. The `kind` is opinionated; the expansion is custom code per kind.
-
-- **Payload:** `{ "transition": "predecease" | "divorce" | "relocate" | "retire" | "long_term_care", "subject_person": "<person_id>", "params_json": { ... transition-specific ... } }`.
-- **Expansion (per transition):**
-  - **`predecease`**: retire the deceased person's salary/pension scheduled rules (intent-mutating); transfer survivor benefit eligibility on SS rule (intent-mutating; params recompute base PIA per survivor rules); merge deceased's accounts into surviving spouse's via synthesized `one_off` fixed_amount rules (rule-synthesizing); switch filing-status aux to `single` (intent-mutating).
-  - **`divorce`**: split asset accounts per a payload-specified percentage; sever shared scheduled rules; switch filing-status aux to `single`.
-  - **`relocate`**: swap state-tax bracket aux to new state; update property-tax rates.
-  - **`retire`**: retire salary rule for the subject person; start Medicare premium rules; flip discretionary-spending `set_amount`.
-  - **`long_term_care`**: add a large `fixed_amount` expense rule with COLA series `cpi_medical`.
-- **Use:** the scenario-as-checklist payoff ([ADR-001](ADR-001-overall-architecture.md) principle 5). The `--check life-transitions` validator flags any expected transition missing from a scenario that runs past a person's life-expectancy threshold.
-
-#### 3.10 `latent_factor` (inert)
+#### 3.6 `latent_factor` (inert)
 
 A shared influence that varying rows correlate with but that isn't itself a modeled value, such as "the inflation regime" ([ADR-008](ADR-008-correlated-parameters.md) §3).
 
 - **Columns:** `name` (required) and `description`; optionally `vary_correlate_with`/`vary_correlation`, to depend on another factor and form a hierarchy, or, on a factor with no parent, `vary_tail_dependence`. Every other column must be blank. `date` may be blank: the loader stores the scenario start as a placeholder, which nothing reads.
 - **Effect:** none in a run (the engine skips it). Ensemble resolution draws its standard normal score, and its dependents' draws correlate with it.
 - **A factor with no dependents** loads with a warning, not an error: it may be work in progress, or meant for child scenarios to use.
-#### 3.11 `transfer_balance` (rule-synthesizing)
+#### 3.7 `transfer_balance` (rule-synthesizing)
 
 Move one lot's whole balance, with the amount the simulated balance when the event fires rather than one written in advance: a 401(k) rolled into an IRA at a future date ([#134](https://github.com/BobKerns/analysis/issues/134)).
 
-- **Columns:** `account_1` (+ `lot_1`) = the source, which must be an asset account's lot, not a chain: "the balance" only means something for one real balance. `account_2` (+ `lot_2`) = the destination, an account's lot or a chain, as for §3.5, but not the source lot itself. `tax_character` defaults to `none`, which is right for a direct rollover between tax-deferred accounts. `amount` must be blank, so `vary_target='amount'` is refused; `vary_target='date'` draws the transfer's date per ensemble member.
-- **Expansion:** calendar events apply at the start of their month, before its rules, in date order, so the amount is the source lot's balance at the previous month end plus whatever calendar events earlier in the month moved into or out of it; that month's growth accrues at the destination. A zero or negative balance is a no-op, as for `on_death` (§2). Otherwise the event synthesizes one `fixed_amount` `cadence='one_off'` rule for that amount, exactly as §3.5 does, so the transfer routes as a `one_off_transfer` of that amount would and its `transfer_event` traces to the synthesized rule. The one difference is that the source's refill look-ahead (§4.7) does not run: emptying the lot is the point, so a source with a `minimum_balance` is not topped up first. A later debit that month still refills it as usual. Basis and share quantity move with the money through the usual lot tracking ([ADR-005](ADR-005-lots-and-per-lot-state.md)).
+- **Columns:** `account_1` (+ `lot_1`) = the source, which must be an asset account's lot, not a chain: "the balance" only means something for one real balance. `account_2` (+ `lot_2`) = the destination, an account's lot or a chain, as for §3.4, but not the source lot itself. `tax_character` defaults to `none`, which is right for a direct rollover between tax-deferred accounts. `amount` must be blank, so `vary_target='amount'` is refused; `vary_target='date'` draws the transfer's date per ensemble member.
+- **Expansion:** calendar events apply at the start of their month, before its rules, in date order, so the amount is the source lot's balance at the previous month end plus whatever calendar events earlier in the month moved into or out of it; that month's growth accrues at the destination. A zero or negative balance is a no-op, as for `on_death` (§2). Otherwise the event synthesizes one `fixed_amount` `cadence='one_off'` rule for that amount, exactly as §3.4 does, so the transfer routes as a `one_off_transfer` of that amount would and its `transfer_event` traces to the synthesized rule. The one difference is that the source's refill look-ahead (§4.7) does not run: emptying the lot is the point, so a source with a `minimum_balance` is not topped up first. A later debit that month still refills it as usual. Basis and share quantity move with the money through the usual lot tracking ([ADR-005](ADR-005-lots-and-per-lot-state.md)).
 - **Lots:** there are no implicit chains ([ADR-005](ADR-005-lots-and-per-lot-state.md) §3), so emptying an account with several lots is one row per lot.
-- **Afterwards:** nothing stops the scenario moving money into the emptied lot later; end the rules that do (contributions, or an RMD rule that would otherwise draw on the old prior year-end balance) with `retire_scheduled` (§3.4) at the same date.
+- **Afterwards:** nothing stops the scenario moving money into the emptied lot later; end the rules that do (contributions, or an RMD rule that would otherwise draw on the old prior year-end balance) with `retire_scheduled` (§3.3) at the same date.
 - **Not covered:** an in-kind transfer between taxable accounts that carries the basis over without realizing gains.
 - **Use:** rolling a 401(k) or 401(a) into an IRA; closing an account into another.
 
@@ -711,7 +665,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `lot_1` | text | | the lot of `account_1`, as for `from_lot` in §4.6 |
 | `account_2` | text | | second event-specific account (e.g. `to_account` for `one_off_transfer` or `transfer_balance`, which may also name a chain, though not when `account_1` does) |
 | `lot_2` | text | | the lot of `account_2` |
-| `series` | text | | rate series name; required for `set_rate` |
+| `series` | text | | rate series name; required for `set_rate`. For `swap_aux_table`, the series being replaced (§3.5) |
 | `amount` | number | | a percent for `set_rate` (`4.5%`), dollars for `one_off_transfer` and `set_amount` (`1234.56`); the loader converts to micros or cents. Blank for `transfer_balance`, which moves whatever the lot holds. A placeholder, unused, when this row's own `vary_target='amount'` |
 | `param_date` | YYYY-MM | | effective date for `set_amount` new base |
 | `tax_character` | enum | | tax character for `one_off_transfer` and `transfer_balance` |
@@ -742,7 +696,7 @@ Lets a scenario play with a person's lifespan without touching the shared `perso
 | `person` | text | ✓ | `person.id`; at most one row per person |
 | `final_month` | YYYY-MM | ✓ | last month this person is alive |
 
-Writes directly into `person_lifespan` (PK `(scenario_id, person)`). At `date > final_month`, the engine stops firing every `scheduled_transaction` **associated with that person** — the row's explicit `person` column (`ss_benefit`, `rmd`), or a row whose `from_account`/`to_account` owner is that person (`salary`, per-person expenses, etc.). Jointly-owned accounts (`owner` blank) are unaffected, so shared expenses and joint-account interest continue for a surviving spouse. **`percent_of_balance` rows are exempt from this gating entirely, solely-owned included** — per §2.2, an asset's growth is a property of the account, not a personal service tied to the living owner, so a solely-owned IRA/checking balance keeps earning interest/appreciating after its owner's death. This is a lighter-weight alternative to a `life_transition: predecease` calendar event — it stops the deceased person's own transfers and, for the `tax_accumulator`, switches a `MFJ`/`MFS` filing status to `Single` from the tax year after `final_month` (the survivor may still file jointly for the year of death; only `role = 'primary'` persons count, or everyone if none is marked). `filing_status.csv` needs no row for that. It does **not** merge accounts or adjust survivor SS benefits; use `life_transition` when those effects matter.
+Writes directly into `person_lifespan` (PK `(scenario_id, person)`). At `date > final_month`, the engine stops firing every `scheduled_transaction` **associated with that person** — the row's explicit `person` column (`ss_benefit`, `rmd`), or a row whose `from_account`/`to_account` owner is that person (`salary`, per-person expenses, etc.). Jointly-owned accounts (`owner` blank) are unaffected, so shared expenses and joint-account interest continue for a surviving spouse. **`percent_of_balance` rows are exempt from this gating entirely, solely-owned included** — per §2.2, an asset's growth is a property of the account, not a personal service tied to the living owner, so a solely-owned IRA/checking balance keeps earning interest/appreciating after its owner's death. It stops the deceased person's own transfers and, for the `tax_accumulator`, switches a `MFJ`/`MFS` filing status to `Single` from the tax year after `final_month` (the survivor may still file jointly for the year of death; only `role = 'primary'` persons count, or everyone if none is marked). `filing_status.csv` needs no row for that. It does **not** merge accounts or adjust survivor SS benefits; model those with transfers and rules of their own.
 
 #### 4.10 Partial-first-year catch-up (`ytd_amount`/`ytd_preroll` on scheduled.csv; `year_to_date.csv`)
 
@@ -935,7 +889,7 @@ takes none. A
 value given on the command line that isn't one of the choices fails; one
 typed at a prompt is asked again. `calendar add transfer-balance` picks its
 destination the same way, but its source only among asset accounts, and
-always a lot, never a chain (§3.11); `transfer list` shows its amount as
+always a lot, never a chain (§3.7); `transfer list` shows its amount as
 `balance`.
 
 `chain add|step add|step edit|step move|step rm|rename|delete` edit one
@@ -964,13 +918,10 @@ columns. A step's `series` and `cadence` are asked only once it has a
 - **One-rule-per-event invariant** makes `explain`, `compare`, and audit trivial: a `transfer_event` always has exactly one `scheduled_transaction` as its origin; group-by `reason_id` is the canonical aggregation. Calendar events route through synthesized rules, so the calendar never short-circuits the rule audit trail.
 - Multi-leg rules are an explicit, named concept (currently only `mortgage_payment`). The "rule emits a list" interface generalizes cleanly when refinancing or escrow accounts are added later.
 - Subkind vocabulary is locked but extensible — adding a new subkind is one row in this ADR plus a code change in the loader's validator, no schema change.
-- The `life_transition` kinds operationalize the "scenario as checklist" principle; `--check life-transitions` becomes an actual lint.
 
 ### Negative / accepted
 
 - Free-text `kind`/`subkind` in the DDL with loader-side validation means a hand-written SQL `INSERT` could bypass the registry. The loader is the only sanctioned writer; ad-hoc edits to `state/intent/*.sqlite3` are out of scope (and would be overwritten on next reload anyway).
-- The `life_transition` expansion code is per-transition. Adding a new transition is a code change, not a data change. That's deliberate — these transitions are rare and high-impact enough to want a code review, not a CSV edit.
-- `sell_asset` requires the author to supply `cost_basis_override` whenever `account_state.cost_basis` is NULL (basis was never tracked). The `--check basis` validator surfaces these cases before a run fails.
 - Account-level state at the scenario start lives as columns on `account_lot` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`), so "what's in the accounts at scenario start" is one file (`account_values.csv`, §4.3), and prior tax-year activity is a thin feed in `year_to_date.csv` (§4.10).
 
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
@@ -980,17 +931,14 @@ These amendments to [ADR-002](ADR-002-storage-schema.md) fall out of the §2 inv
 1. Tightened `transfer_event.reason_kind` CHECK from `('scheduled','calendar','expansion_child','initial')` to `('rule','initial')`.
 2. Updated `transfer_event.reason_id` comment: "scheduled_transaction.id when 'rule'; opaque per-account id when 'initial'."
 3. Added `created_by_event_id INTEGER REFERENCES calendar_event(id)` to `scheduled_transaction` (NULL for rows authored in `scheduled.csv`; populated for rules synthesized by calendar-event expansion) plus its supporting index.
-4. Reserved the `Income_LoanOrigination` account name in the Conventions section, used by `buy_asset` synthesized origination rules.
-5. Added the `account.subkind` CHECK enforcing the §1 vocabulary as a single compound constraint keyed off `kind`.
-6. Added `interest_expense` to the expense subkind vocabulary (in the §1 table and the `account` CHECK).
-7. Dropped the `prior_account_fact` table entirely; added `prior_year_end_balance INTEGER` (nullable) to `account_model_member` to carry the one fact `prior_account_fact` actually drove (partial-first-year RMD's `dec31_prev_year_balance`).
-8. Added `role TEXT` (nullable) to `person`, unifying the former standalone `users.toml` operator list with the persons table. `$ANALYSIS_USER` is now validated against `persons.csv`; `users.toml` is removed from the data-repo layout.
+4. Added the `account.subkind` CHECK enforcing the §1 vocabulary as a single compound constraint keyed off `kind`.
+5. Added `interest_expense` to the expense subkind vocabulary (in the §1 table and the `account` CHECK).
+6. Dropped the `prior_account_fact` table entirely; added `prior_year_end_balance INTEGER` (nullable) to `account_model_member` to carry the one fact `prior_account_fact` actually drove (partial-first-year RMD's `dec31_prev_year_balance`).
+7. Added `role TEXT` (nullable) to `person`, unifying the former standalone `users.toml` operator list with the persons table. `$ANALYSIS_USER` is now validated against `persons.csv`; `users.toml` is removed from the data-repo layout.
 
 ## Open questions deferred
 
 - Vocabulary of `tax_year_summary.bucket` is referenced by `prior_tax_activity` and `tax_accumulator`. Locked when ADR on tax computation lands.
-- Whether `add_scheduled` should reference a prototype row by name (cleaner) or inline the full payload (self-contained). Currently allows both. May restrict to "prototype by name" in v2 if the inline form proves error-prone.
-- Whether `life_transition.predecease` needs separate sub-transitions for survivor-benefit edge cases (e.g. deceased spouse hadn't claimed yet). Will refine when the first realistic scenario exercises it.
 
 ## Amendments
 
@@ -1001,7 +949,7 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior.
 - After acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7).
 - [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8).
-- [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.10), the correlation columns (§4.8), and factors merged by name (§4.5).
+- [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.6), the correlation columns (§4.8), and factors merged by name (§4.5).
 - [#34](https://github.com/BobKerns/analysis/issues/34): month date columns accept `YYYY-MM` or `YYYY-MM-DD`, pinned to month-end; day-precise columns are named, a biweekly rule's dates and a `retire_scheduled` date keep a full date's day, and a date-varying row's bare-month bounds span the month (§4, §4.8).
 - [#44](https://github.com/BobKerns/analysis/issues/44): CLI edits are validated on a staged copy before anything is written (§7).
 - [#56](https://github.com/BobKerns/analysis/issues/56): `calendar edit` replaces a row in place under the same staged edit, after confirming it is still the row that was chosen (§7).
@@ -1011,15 +959,15 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#78](https://github.com/BobKerns/analysis/issues/78): a fund lot grows at the blend of its allocation's slice rates (§2.2, §4.1b).
 - [#92](https://github.com/BobKerns/analysis/issues/92): a `set_rate` row nothing in its scenario reads is a warning, not an error (§3.1).
 - [#91](https://github.com/BobKerns/analysis/issues/91): `scenario create` also writes `series/README.md` (§4.5).
-- [#98](https://github.com/BobKerns/analysis/issues/98): a `one_off_transfer` may name a chain on either side, but no transfer names one on both (§3.5, §4.6, §4.8), and the CLI asks for a lot wherever a blank one would not say which (§7).
+- [#98](https://github.com/BobKerns/analysis/issues/98): a `one_off_transfer` may name a chain on either side, but no transfer names one on both (§3.4, §4.6, §4.8), and the CLI asks for a lot wherever a blank one would not say which (§7).
 - [#101](https://github.com/BobKerns/analysis/issues/101): a `refill_chain` or `overflow_chain` that leads back to its own lot is a load error, and a withdrawal split into basis and gain legs is refilled and checked on its net amount (§4.7).
 - [#104](https://github.com/BobKerns/analysis/issues/104): a refill leg records the debit that triggered it as its `parent_event_id` (§4.7).
 - [#105](https://github.com/BobKerns/analysis/issues/105): a negative-balance warning names the refill chain it tried and what that chain supplied, and `negative_balance_warnings` records the same (§4.7).
 - [#115](https://github.com/BobKerns/analysis/issues/115): `calendar.csv`'s `vary_process`, `vary_persistence` and `vary_innovation_sd` columns (§3.1, §4.8).
 - [#124](https://github.com/BobKerns/analysis/issues/124): `account lot add|edit|delete|list`, which edit an inherited lot by override and delete one by zeroing it (§7).
 - [#131](https://github.com/BobKerns/analysis/issues/131): `home_sale_exclusion.csv` is a registered aux kind, so the shipped template loads (§4.4).
-- [#130](https://github.com/BobKerns/analysis/issues/130): rates are written as percents and factors as plain numbers, and calendar amounts as percents or dollars; every percent takes its `%` sign and dollars take one strict form; the micros columns are renamed and refused (§2, §2.7, §3.1, §3.2, §3.5, §4, §4.1b, §4.4, §4.6, §4.7, §4.8).
-- [#134](https://github.com/BobKerns/analysis/issues/134): the `transfer_balance` kind moves one lot's whole balance on a date, with `calendar add transfer-balance` (§3, new §3.11, §4.8, §7).
+- [#130](https://github.com/BobKerns/analysis/issues/130): rates are written as percents and factors as plain numbers, and calendar amounts as percents or dollars; every percent takes its `%` sign and dollars take one strict form; the micros columns are renamed and refused (§2, §2.7, §3.1, §3.2, §3.4, §4, §4.1b, §4.4, §4.6, §4.7, §4.8).
+- [#134](https://github.com/BobKerns/analysis/issues/134): the `transfer_balance` kind moves one lot's whole balance on a date, with `calendar add transfer-balance` (§3, new §3.7, §4.8, §7).
 - [#136](https://github.com/BobKerns/analysis/issues/136): a child's named `calendar.csv` row overrides the inherited row of that name whatever its other fields; an override keeps the columns its file leaves out; load errors name a row's file and line (§4.5).
 - [#129](https://github.com/BobKerns/analysis/issues/129): `chain add|step|rename|delete` edit chain files, each guided when its arguments are left out (§7).
 - [#143](https://github.com/BobKerns/analysis/issues/143): a chain's role, `source` or `destination`, is the folder its file is in, replacing the `asset`/`income` kind prefix; the loader rejects a chain used against its role (§4.3, §4.5, §4.7, §7).
@@ -1029,3 +977,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#165](https://github.com/BobKerns/analysis/issues/165): `calendar.csv` gains `vary_outcomes` for the new `discrete` distribution (§4.8).
 - [#168](https://github.com/BobKerns/analysis/issues/168), [#169](https://github.com/BobKerns/analysis/issues/169): `scenario create` writes `ensemble_size` 0, so it never makes an ensemble; `ensemble create` takes mix-ins; `ensemble_size` is checked at load (§4.5).
 - [#177](https://github.com/BobKerns/analysis/issues/177): renames reach every scenario sharing the name; `scenario|ensemble rename`, and `rename` for scheduled rules, calendar rows, series and lots (§7).
+- [#197](https://github.com/BobKerns/analysis/issues/197): `add_scheduled`, `sell_asset`, `buy_asset` and `life_transition`, never built, are dropped from the registry, and `swap_aux_table` is implemented, with `calendar add swap-aux-table`; §3 renumbered (§3, §3.1, §3.3–§3.7, §4.8, §4.9).

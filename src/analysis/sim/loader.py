@@ -474,7 +474,20 @@ def calendar_row_key(row: Mapping[str, str]) -> tuple[str, ...]:
     _normalize_units([canonical], "calendar.csv", [])
     if canonical.get("kind") == registries.LATENT_FACTOR_KIND:
         return (registries.LATENT_FACTOR_KIND, canonical.get("name", ""))
-    return tuple(canonical.get(column, "") for column in registries.CALENDAR_KEY_COLUMNS)
+    return (
+        *(canonical.get(column, "") for column in registries.CALENDAR_KEY_COLUMNS),
+        *_swapped_aux_kind(canonical),
+    )
+
+
+def _swapped_aux_kind(row: Mapping[str, str]) -> tuple[str, ...]:
+    """A swap_aux_table row's aux kind, as one more key field (#197): swaps of
+    two kinds without a series (federal brackets and the standard deduction
+    on the day a law changes) are otherwise alike in every key column."""
+    if row.get("kind") != "swap_aux_table":
+        return ()
+    params = _safe_json(row.get("params_json")) or {}
+    return (str(params.get("aux_kind", "")),)
 
 
 def _merge_calendar_rows(
@@ -512,7 +525,7 @@ def _merge_calendar_rows(
         # and a child scenario's factor of the same name overrides its parent's.
         if row.get("kind") == registries.LATENT_FACTOR_KIND:
             return (registries.LATENT_FACTOR_KIND, (row.get("name") or "").strip())
-        return tuple(row.get(c, "") for c in key_columns)
+        return (*(row.get(c, "") for c in key_columns), *_swapped_aux_kind(row))
 
     def name_of(row: dict[str, str]) -> str:
         return (row.get("name") or "").strip()
@@ -891,6 +904,7 @@ def load_scenario(
     _validate_series_references(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, warnings,
     )
+    _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _validate_chains(chains, value_rows, leaves, issues, money_resolver=money_resolver)
     _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
@@ -2252,6 +2266,8 @@ def _validate_calendar(
                 )
         elif kind == "transfer_balance":
             _validate_transfer_balance(row, where, leaves, chain_names, asset_accounts, issues)
+        elif kind == "swap_aux_table":
+            _validate_swap_aux_table_row(row, where, issues)
         params_json = row.get("params_json") or "{}"
         try:
             json.loads(params_json)
@@ -2279,7 +2295,7 @@ def _validate_transfer_balance(
     row: dict[str, str], where: str, leaves: _LeafIndex,
     chain_names: set[str], asset_accounts: frozenset[str], issues: list[str],
 ) -> None:
-    """ADR-003 \u00a73.11: the source is one asset lot, since "the balance" only
+    """ADR-003 \u00a73.7: the source is one asset lot, since "the balance" only
     means something for one real balance; the destination is a lot or a chain,
     as for one_off_transfer; and there is no amount to give."""
     source = row.get("account_1", "")
@@ -2310,6 +2326,62 @@ def _validate_transfer_balance(
             f"{where}: transfer_balance takes no amount (it moves the "
             "whole balance); leave amount blank"
         )
+
+
+def _validate_swap_aux_table_row(
+    row: dict[str, str], where: str, issues: list[str],
+) -> None:
+    """ADR-003 \u00a73.5 (#197): the replacement table is named in params_json;
+    nothing else on the row means anything. Whether both tables exist is
+    checked against the loaded aux files (`_validate_swap_aux_tables`)."""
+    params = _safe_json(row.get("params_json"))
+    if params is None:
+        return  # malformed JSON is reported by _validate_calendar
+    aux_kind = params.get("aux_kind")
+    source = params.get("source_series")
+    if aux_kind not in registries.AUX_KIND_COLUMNS:
+        issues.append(
+            f"{where}: swap_aux_table needs params_json aux_kind, one of "
+            f"{', '.join(sorted(registries.AUX_KIND_COLUMNS))}; got {aux_kind!r}"
+        )
+    if not isinstance(source, str) or not source:
+        issues.append(
+            f"{where}: swap_aux_table needs params_json source_series, the "
+            "series whose table takes over"
+        )
+    elif source == (row.get("series") or ""):
+        issues.append(
+            f"{where}: swap_aux_table source_series '{source}' is the series "
+            "being replaced"
+        )
+    for col in ("amount", "account_1", "account_2", "scheduled_name"):
+        if (row.get(col) or "").strip():
+            issues.append(f"{where}: swap_aux_table takes no {col}; leave it blank")
+
+
+def _validate_swap_aux_tables(
+    calendar_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A swap_aux_table row names two tables that must both be loaded: the one
+    it replaces and the one replacing it, so a misspelt series fails here
+    rather than when the run reaches the row."""
+    supplied = {(kind, series) for kind, series, *_ in aux_rows}
+    for where, row in _located(calendar_rows, "calendar.csv"):
+        if row.get("kind") != "swap_aux_table":
+            continue
+        params = _safe_json(row.get("params_json")) or {}
+        aux_kind, source = params.get("aux_kind"), params.get("source_series")
+        if aux_kind not in registries.AUX_KIND_COLUMNS or not isinstance(source, str):
+            continue  # reported by _validate_swap_aux_table_row
+        for label, series in (("series", row.get("series") or None), ("source_series", source)):
+            if (aux_kind, series) not in supplied:
+                file = f"{aux_kind}__{series}.csv" if series else f"{aux_kind}.csv"
+                issues.append(
+                    f"{where}: swap_aux_table {label} names {file}, which no "
+                    "aux/ or series/ folder this scenario reads supplies"
+                )
 
 
 def _validate_calendar_vary(

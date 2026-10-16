@@ -84,7 +84,7 @@ These are project-wide rules that all subsequent ADRs and code reference:
 2. **Month-granularity authoring; month-end dates internally.** CSVs use `YYYY-MM`. Loader pins to last day of month. No within-month sequencing semantics.
 3. **Intent vs. ledger separation.** If a real-world decision has multiple legs and any leg depends on run-time state, it earns a `CalendarEvent` kind. Otherwise it's a primitive `one_off_transfer`. The set of kinds is bounded and reviewed (see [ADR-003](ADR-003-registries-and-csv-schemas.md)).
 4. **Visible approximation beats invisible omission.** Zero-valued accounts for assets we choose not to model (ISOs, potential JPY inheritance); basis-with-sources lists for the home; `data/known_exclusions.md` for things deliberately out of scope.
-5. **The scenario is a checklist.** Every `ScheduledTransaction` should be referenceable by `life_transition` events; a `--check life_transitions` mode flags omissions without erroring.
+5. **The scenario is a checklist.** Life events are dated rows a reader can scan: a rule's `start`/`end`, `calendar.csv` events (`retire_scheduled`, `set_amount`, `swap_aux_table` for a move), and `lifespan.csv`. A bundled event per transition (retire, predecease, relocate) was planned and dropped: each would be as specific as the rules it stood for.
 6. **Schema is documentation.** Long-narrow tables, descriptive names, a `schema_overview` row per table for LLM priming. See [ADR-002](ADR-002-storage-schema.md).
 7. **Hard errors on impossible states.** Unresolvable references, unknown user, dirty data without override → halt before the run starts, report enough context to fix the scenario. *Amended:* running an account negative is **not** in this category. The draft had insufficient funds halt the run; in practice that made a scenario un-runnable at the first shortfall, which is exactly when you most want to see the projection. A debit that a chain cannot cover posts anyway, drives the balance negative, raises a `RuntimeWarning` once per negative transition, and is recorded under `simulation_run.run_args_json.$.negative_balance_warnings`, with the refill chain it tried and what that chain supplied — visible and queryable, per principle 4, rather than fatal.
 
@@ -121,7 +121,7 @@ src/analysis/sim/
     calendar.py       # Calendar, CalendarEvent
     aux.py            # tax brackets, RMD factors, SS thresholds, inflation series helpers
     rules.py          # amount_rule registry; see [ADR-003](ADR-003-registries-and-csv-schemas.md)
-    expansions.py     # high-level CalendarEvent expanders (sell_asset, life_transition, …)
+    expansions.py     # CalendarEvent expanders (one_off_transfer, transfer_balance, …)
     state.py          # in-memory lot state; invariants
     engine.py         # run(scenario) -> SimulationRun
     storage.py        # per-scenario intent DB + per-run ledger DB, schema, DAOs
@@ -178,3 +178,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 
 - [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots and per-lot state): accounts are split into lots, and the engine's state is per lot.
 - [#105](https://github.com/BobKerns/analysis/issues/105): a negative-balance warning records the refill chain it tried and what that chain supplied (principle 7).
+- [#197](https://github.com/BobKerns/analysis/issues/197): principle 5 no longer relies on `life_transition` events, which are dropped.

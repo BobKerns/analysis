@@ -423,11 +423,6 @@ not the `tax_character` value you write. Naming the lot directly, on a plain
 transfer, would instead use whatever `tax_character` you wrote, with no
 automatic split.
 
-**The `sell_asset` and `buy_asset` event kinds in `calendar.csv` are not built
-yet.** The file format will accept them, but the simulator quietly ignores a
-calendar event of either kind: no error, no effect. Do not use them; use the
-method above instead.
-
 ### 4.6 Chains as default policies
 
 A chain is a named, reusable answer to the question "where does this money
@@ -499,24 +494,36 @@ to `filing_status.csv`.
 ### 4.8 Calendar for more complex changes
 
 `calendar.csv` is for anything that is not a steady, recurring rule: a
-dated, one-time change. Only five kinds are actually built today. Use only
-these:
+dated, one-time change. These are the kinds (plus `latent_factor`, which is
+only for ensembles, Part 4.10):
 
 | Kind | Columns used | Use it for |
 | --- | --- | --- |
 | `set_rate` | `series`, `amount` (a percent with its sign, e.g. `4%`) | "checking starts earning 4% in 2027" |
 | `set_amount` | `scheduled_name`, `amount` (dollars), optional `param_date` | "spending drops to $4,500/mo on retirement" (Part 4.4) |
 | `retire_scheduled` | `scheduled_name` | "salary stops on retirement" |
-| `one_off_transfer` | `account_1`/`lot_1`, `account_2`/`lot_2`, `amount`, `tax_character` | a windfall, a gift, a settlement between two plain accounts (not a chain — see Part 4.5) |
+| `one_off_transfer` | `account_1`/`lot_1`, `account_2`/`lot_2`, `amount`, `tax_character` | a windfall, a gift, a settlement; either side may be a chain (Part 4.5) |
 | `transfer_balance` | `account_1`/`lot_1`, `account_2`/`lot_2`, `tax_character`; `amount` left blank | rolling a 401(k) into an IRA: moves everything the lot holds at the start of that month |
+| `swap_aux_table` | `series` (the table replaced; blank for one without a series), `params_json` naming the kind and the replacement | moving to another state: from that month, the state tax brackets are another state's |
 
-**Not built yet, even though the file format accepts them:**
-`add_scheduled`, `swap_aux_table`, `sell_asset`, `buy_asset`,
-`life_transition`. A calendar row with one of these kinds will load without
-an error, but the simulator quietly does nothing with it when it runs. If you
-want a new rule to start on a future date — which is what `add_scheduled`
-sounds like it is for — just add the row directly to `scheduled.csv` with
-that future `start` date. You do not need a calendar event for this at all.
+A rule that should start on a future date needs no calendar event: give its
+`scheduled.csv` row that `start` date.
+
+For a move, put the new state's brackets beside the old ones, as
+`aux/state_brackets__WA.csv` say, and swap them in on the moving date:
+
+```csv
+date,kind,series,params_json
+2031-07,swap_aux_table,CA,"{""aux_kind"": ""state_brackets"", ""source_series"": ""WA""}"
+```
+
+From July 2031 on, everything that read the `CA` brackets reads the `WA`
+ones instead, including their later dated changes. With two states'
+brackets in `aux/`, the state `tax_accumulator` rule must say which it reads:
+`"bracket_series": "CA"` in its `params_json`. Do the same for
+`state_deductions` if you use it. Any aux table works the same way: a new
+federal bracket table on the date a law takes effect, or another inflation
+series.
 
 ### 4.9 Modeling itemized deductions (for example, a big medical year)
 
