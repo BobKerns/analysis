@@ -1068,9 +1068,14 @@ class AccountPicker(widgets.HBox):
             allow_kind=allow_kind,
             allow_any=allow_any,
         )
-        self.account_picker = widgets.SelectMultiple(
-            description="Accounts:",
-            layout=widgets.Layout(width="100%"),
+        # One account at a time is a dropdown, like the other single-account
+        # pickers; its option values are 1-tuples, so ``value`` reads the same
+        # as the multi-select's either way.
+        self._single = max_accounts == 1
+        self.account_picker: widgets.SelectMultiple | widgets.Dropdown = (
+            widgets.Dropdown(description="Account:", layout=widgets.Layout(width="100%"))
+            if self._single else
+            widgets.SelectMultiple(description="Accounts:", layout=widgets.Layout(width="100%"))
         )
         self.lot_picker = (
             LotPicker(lots_by_account, multiple=lot_multiple)
@@ -1088,7 +1093,6 @@ class AccountPicker(widgets.HBox):
         super().__init__(parts)
         self._fill(cast(AccountKindAny, self.kind_picker.value), accounts)
         traitlets.link((self.kind_picker, "value"), (self, "kind"))
-        traitlets.link((self.account_picker, "value"), (self, "accounts"))
         self.kind_picker.observe(self._on_kind_change, names="value")
         self.account_picker.observe(self._on_accounts_change, names="value")
         if self.lot_picker is not None:
@@ -1113,9 +1117,13 @@ class AccountPicker(widgets.HBox):
         offered = self._offered(kind, accounts)
         self._settling = True
         try:
-            self.account_picker.rows = min(15, max(5, len(offered)))
-            self.account_picker.options = offered
-            self.account_picker.value = tuple(offered[:self._initial_count])
+            if isinstance(self.account_picker, widgets.Dropdown):
+                self.account_picker.options = [(name, (name,)) for name in offered]
+                self.account_picker.value = (offered[0],) if offered else None
+            else:
+                self.account_picker.rows = min(15, max(5, len(offered)))
+                self.account_picker.options = offered
+                self.account_picker.value = tuple(offered[:self._initial_count])
         finally:
             self._settling = False
         self._publish()
@@ -1134,7 +1142,8 @@ class AccountPicker(widgets.HBox):
     def _publish(self, *_: object) -> None:
         if self._settling:
             return
-        accounts = tuple(self.account_picker.value)
+        accounts = tuple(self.account_picker.value or ())
+        self.accounts = list(accounts)
         if self.lot_picker is not None:
             self.lot_picker.follow(accounts[0] if len(accounts) == 1 else None)
         self.lots = self.lot_picker.lots if self.lot_picker is not None else ()

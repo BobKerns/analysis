@@ -88,8 +88,9 @@ def test_account_diffs_measure_sits_right_of_the_modes(
     from analysis.sim.notebook_ui.pickers import DollarModePicker, ValuePlotModePicker
 
     dollars, values = DollarModePicker(), ValuePlotModePicker()
-    _picker, measure, _shown = _account_diffs(lot_variant_runs, monkeypatch,
+    picker, measure, _shown = _account_diffs(lot_variant_runs, monkeypatch,
                                               dollar_mode=dollars, value_mode=values)
+    assert isinstance(picker.account_picker, widgets.Dropdown)  # one account at a time
     assert measure.description == "Measure:" and measure.value == "balance"
     assert [key for _text, key in measure.options] == ["balance", "cost_basis", "quantity"]
     assert measure.layout.border == dollars.layout.border == values.layout.border

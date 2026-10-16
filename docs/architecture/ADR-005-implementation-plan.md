@@ -75,7 +75,7 @@ Exit: tests for derived balance, rounding, missing price, and precedence.
    - *Year-to-date rows*, a second table keyed by the `year_to_date.csv` row name: from and to (account and lot), amount, tax character, year.
    - Needs two small item changes: the `account` item exposes refill/overflow chain names (their ids differ between scenarios), and the `year_to_date` item exposes lot labels.
 
-   **b. `show_lot_balance_diffs`, after "Account Comparisons"**, separate from `show_account_balance_diffs` and modelled on it, but by lot: asset kind only, and the selection is one `Account/Lot`.
+   **b. `show_lot_balance_diffs`, after "Account Comparisons"** (as first built; since #170 its Measure toggle is part of `show_account_balance_diffs` and this widget is gone), separate from `show_account_balance_diffs` and modelled on it, but by lot: asset kind only, and the selection is one `Account/Lot`.
    - *Eligible accounts*: those with more than one lot in any compared scenario (single-lot accounts are already covered by the account diffs). All of an eligible account's lots are listed, including lots that exist in only one scenario.
    - *Controls*: scenario picker, an `Account/Lot` dropdown of the lots whose balance differs, and the shared dollar-basis and total/monthly toggles. Added and deleted lots are listed above the table as in the account diffs.
    - *Table*: months where anything differs, columns baseline, each variant and `Δvariant`.

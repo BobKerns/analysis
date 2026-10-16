@@ -425,3 +425,32 @@ def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_side
     headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
     assert any("`baseline` has no account Asset_Renamed" in h for h in headings)
     assert sum(isinstance(item, Image) for item in shown) == 1  # the child's own fan
+
+
+def test_ensemble_compare_widget_says_so_when_no_shown_recipe_has_the_account(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared account list spans every recipe, so the pick can be in
+    none of the compared ones: a note, not an error from an empty tail table."""
+    import sqlite3
+
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.styled import StyledMarkdown
+
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("other", 1)
+    for member in seeded_ensemble_batch("child", 1).glob("member_*.sqlite3"):
+        with sqlite3.connect(member) as con:
+            con.execute("UPDATE account SET name = 'Asset_Renamed' WHERE name = 'Asset_Checking'")
+    shown: list[object] = []
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
+    recipe_pickers, row, _out = box.children
+    baseline_picker, variant_picker = recipe_pickers.children
+    baseline_picker.value = "baseline"
+    variant_picker.value = ("other",)
+    shown.clear()
+    row.controls.account_picker.account_picker.value = "Asset_Renamed"
+    headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
+    assert any("None of these recipes has account Asset_Renamed" in h for h in headings)

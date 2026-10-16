@@ -659,6 +659,16 @@ def ensemble_compare_widget(*_,
             if reserve is not None:
                 heading += f"; reserve ${reserve:,.0f} (CPI-constant)"
             outputs.append(StyledMarkdown(heading))
+            if not frames:
+                # The shared account list spans every recipe, so the pick may
+                # be in none of these: nothing to compare and no tails.
+                outputs.append(StyledMarkdown(
+                    f"**None of these recipes has {_described(subject)}.**"
+                ))
+                clear_output(wait=True)
+                for item in outputs:
+                    display(item)
+                return
             for variant in variants:
                 if baseline not in frames or variant not in frames:
                     missing = baseline if baseline not in frames else variant

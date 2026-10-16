@@ -158,7 +158,8 @@ def events_widget(rc: RunConnection, **_) -> widgets.VBox:
         kind="any", allow_any=True, show_kind=False, accounts_by_kind={"any": accounts},
         initial_count=0, lots_by_account=rc.lots_by_account(),
     )
-    account_picker.account_picker.rows = min(10, max(4, len(accounts)))
+    if isinstance(account_picker.account_picker, widgets.SelectMultiple):  # not max_accounts=1
+        account_picker.account_picker.rows = min(10, max(4, len(accounts)))
     account_picker.account_column.layout.width = "100%"
     account_picker.layout = widgets.Layout(width="45%")
     reason_picker = widgets.SelectMultiple(
