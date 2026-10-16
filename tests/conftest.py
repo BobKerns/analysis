@@ -480,6 +480,26 @@ def lot_variant_runs(
 
 
 @pytest.fixture(scope="function")
+def empty_scenario_runs(
+    test_data_dir: Path, test_scenarios_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> Generator[tuple[RunConnection, RunConnection]]:
+    """Runs of ``retire_alice`` and of ``empty``, a child of ``base`` with no
+    accounts or transactions: no balance or net-worth rows at all (#174)."""
+    scenario.create_scenario(test_data_dir, "empty", "base")
+    runs = {}
+    for name in ("retire_alice", "empty"):
+        loaded = load_scenario(test_data_dir, name, intent_dir=intent_dir,
+                               scenarios_dir=test_scenarios_dir, allow_dirty_data=True)
+        runs[name] = run_scenario(loaded.intent_path, runs_dir / f"{name}.sqlite3",
+                                  run_by="TEST", allow_dirty_data=True, allow_dirty_code=True)
+    with open_run(runs["retire_alice"], "retire_alice", data_dir=test_data_dir,
+                  scenarios_dir=test_scenarios_dir) as full:
+        with open_run(runs["empty"], "empty", data_dir=test_data_dir,
+                      scenarios_dir=test_scenarios_dir) as empty:
+            yield full, empty
+
+
+@pytest.fixture(scope="function")
 def multi_connections(data_dir: Path,
                       retire_alice_run: RunConnection,
                       variant_a_run: RunConnection) -> MultiScenarioConnections:
