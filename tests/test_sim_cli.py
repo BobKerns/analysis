@@ -575,7 +575,7 @@ def test_sim_account_rename_updates_references(test_data_dir: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "renamed account 'Asset_Checking'" in result.output
+    assert "renamed account Asset_Checking to Asset_Checking_Updated" in result.output
 
     with (data / "scenarios" / "retire_alice" / "accounts.csv").open(
         newline="", encoding="utf-8"

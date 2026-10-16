@@ -835,8 +835,9 @@ inherited along the parent chain.
 The CSVs are the source of truth and the loader is their only validator, so
 every `analysis sim` command that edits scenario CSVs (`calendar add|edit`,
 `transfer add`, `scheduled add`/`import-baseline`, `account
-add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|delete`,
-the `tag` commands, `scenario create`, `ensemble create`) goes through one staged edit
+add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|rename|delete`,
+the `tag` commands, `chain` and `series` edits, the other `rename` commands,
+`scenario create|rename`, `ensemble create|rename`) goes through one staged edit
 (`analysis.sim.staging.staged_edit`):
 
 1. **Preflight.** The scenario being edited (or a new scenario's parent) is
@@ -862,6 +863,22 @@ repo exactly as it was. Only a hard kill during the final renames can leave
 some files new and some old. `account delete` also removes `calendar.csv`
 `set_rate` rows for the account's own growth series when nothing else reads
 that series, since the loader would otherwise warn about them as dead (§3.1).
+
+**Renames reach every scenario sharing the name.** `account`, `chain`,
+`scheduled`, `calendar` (a row's `name`), `series` and `account lot` each have
+a `rename` that rewrites the name and every column naming it, not only in the
+scenario given but in every scenario that shares it
+(`analysis.sim.rename.scope`): each scenario in its load order that defines
+the name, every scenario inheriting from one of those, and again for any
+mix-in of those that defines the same name. Run from a child, a rename of an
+inherited name therefore starts at the parent that defines it. A new name
+that already applies in any of those scenarios is refused. A series with a
+file in the shared `aux/` (`cpi`), and an asset class's series, are not
+renamed. `scenario rename` (the same command as `ensemble rename`) moves the
+folder and rewrites its `scenario.csv` name, every `parent_scenario` naming
+it, `.current_scenario`, and the links to it in the data repo's markdown
+files (`scenarios/**` and the top level); runs already made keep the old
+name.
 
 `calendar edit` chooses its row before its prompts, which can stay open a
 long time, and stages only when the answer is submitted. So inside the staged
@@ -1004,3 +1021,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#163](https://github.com/BobKerns/analysis/issues/163): `scenario.meta_json` may carry a `reserve`, checked as dollars at load (§4.5).
 - [#165](https://github.com/BobKerns/analysis/issues/165): `calendar.csv` gains `vary_outcomes` for the new `discrete` distribution (§4.8).
 - [#168](https://github.com/BobKerns/analysis/issues/168), [#169](https://github.com/BobKerns/analysis/issues/169): `scenario create` writes `ensemble_size` 0, so it never makes an ensemble; `ensemble create` takes mix-ins; `ensemble_size` is checked at load (§4.5).
+- [#177](https://github.com/BobKerns/analysis/issues/177): renames reach every scenario sharing the name; `scenario|ensemble rename`, and `rename` for scheduled rules, calendar rows, series and lots (§7).

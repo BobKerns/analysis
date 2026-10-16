@@ -19,7 +19,7 @@ from analysis.sim.lineage import load_order
 
 __all__ = [
     "CHAIN_COLUMNS", "REFERENCE_COLUMNS", "chain_file", "chain_files", "defining_scenario", "descendants",
-    "new_chain_file", "read_steps", "rename_references", "shares_to_percents", "write_steps",
+    "new_chain_file", "read_steps", "rename_cells", "rename_references", "shares_to_percents", "write_steps",
 ]
 
 CHAIN_COLUMNS = ("account_name", "lot", "maximum", "percent", "series", "cadence")
@@ -106,7 +106,7 @@ def write_steps(path: Path, steps: list[dict[str, str]]) -> None:
         writer.writerows({column: step.get(column, "") for column in CHAIN_COLUMNS} for step in steps)
 
 
-def _rename_cells(path: Path, columns: tuple[str, ...], old: str, new: str) -> bool:
+def rename_cells(path: Path, columns: tuple[str, ...], old: str, new: str) -> bool:
     """Replace ``old`` with ``new`` in ``columns`` of one CSV; whether it changed.
     Other columns, and the file's own column order, are kept."""
     if not path.exists() or path.stat().st_size == 0:
@@ -156,10 +156,10 @@ def rename_references(scenario_dir: Path, old: str, new: str) -> list[str]:
         own.rename(own.with_name(f"{new}.csv"))
         changed.append(f"chains/{role}/{own.name} -> chains/{role}/{new}.csv")
     for filename, columns in REFERENCE_COLUMNS.items():
-        if _rename_cells(scenario_dir / filename, columns, old, new):
+        if rename_cells(scenario_dir / filename, columns, old, new):
             changed.append(filename)
     for path in chain_files(scenario_dir):
-        if _rename_cells(path, ("account_name",), old, new):
+        if rename_cells(path, ("account_name",), old, new):
             changed.append(f"chains/{path.parent.name}/{path.name}")
     return changed
 
