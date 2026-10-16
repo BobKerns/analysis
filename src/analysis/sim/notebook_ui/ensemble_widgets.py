@@ -184,7 +184,8 @@ def recipe_accounts(
     runs_dir: Path, recipes: list[str],
 ) -> tuple[list[str], dict[str, dict[str, list[str]]]]:
     """Every account any of ``recipes`` has, by name, and each recipe's own
-    accounts with several lots, and their lots (#170), read from one member
+    accounts and their lots (#170), single-lot ones included so a union
+    across recipes misses none (a Lot dropdown shows for two or more), read from one member
     of each recipe's latest batch, since a recipe's members share their
     accounts."""
     accounts: set[str] = set()
@@ -202,7 +203,7 @@ def recipe_accounts(
         con = RunConnection(batch_dir / f"{member}.sqlite3")
         try:
             accounts.update(con.account_kinds().index)
-            lots[recipe] = con.lots_by_account()
+            lots[recipe] = con.lots_by_account(single=True)
         finally:
             con.close()
     return sorted(accounts), lots

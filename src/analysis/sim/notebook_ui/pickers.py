@@ -918,13 +918,14 @@ def merged_lots_by_account(
 ) -> dict[str, list[str]]:
     """``lots_by_account()`` across several runs (scenarios being compared,
     say): each account's lots from every run that has them, in first-seen
-    order."""
+    order, for the accounts with more than one lot among them all -- so
+    a run's only lot of an account another run splits is offered too."""
     merged: dict[str, list[str]] = {}
     for connection in connections:
-        for account, lots in connection.lots_by_account().items():
+        for account, lots in connection.lots_by_account(single=True).items():
             seen = merged.setdefault(account, [])
             seen.extend(lot for lot in lots if lot not in seen)
-    return merged
+    return {account: lots for account, lots in merged.items() if len(lots) > 1}
 
 
 def to_markdown(*lines: str) -> widgets.Output:

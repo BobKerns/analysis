@@ -719,11 +719,13 @@ class RunConnection(Connection):
             return balance
         return self.to_cpi_constant(balance)
 
-    def lots_by_account(self) -> dict[str, list[str]]:
+    def lots_by_account(self, *, single: bool = False) -> dict[str, list[str]]:
         """Account name -> its lot labels in definition order, for the asset
         and liability accounts that have more than one lot: the ones a lot
         picker can drill into (#170). Income and expense accounts are flows,
-        tracked as a single lot."""
+        tracked as a single lot. ``single`` keeps single-lot accounts too,
+        for a union across runs: an account split into lots in one run may
+        have one lot of its own in another."""
 
         def _build() -> dict[str, list[str]]:
             df = self._read_sql(
@@ -732,9 +734,10 @@ class RunConnection(Connection):
                 "WHERE a.kind IN ('asset', 'liability') ORDER BY a.name, m.id"
             )
             lots = df.groupby("account", sort=True)["lot"].agg(list)
-            return {account: names for account, names in lots.items() if len(names) > 1}
+            return {account: names for account, names in lots.items()
+                    if single or len(names) > 1}
 
-        return self._cached("lots_by_account", _build)
+        return self._cached(f"lots_by_account_{single}", _build)
 
     def ensemble_member(self) -> tuple[int, int | None] | None:
         """``(member_index, seed)`` from this run's ``ensemble_manifest``, or

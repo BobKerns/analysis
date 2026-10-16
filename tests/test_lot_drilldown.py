@@ -7,7 +7,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import matplotlib
 import pandas as pd
@@ -385,3 +385,27 @@ def test_each_widget_stacks_its_lot_picker_under_account(
         _scale, _dollars, account_column, reserve = box.children[1].children
         assert account_column.children == (controls.account_picker, lot_picker)
         assert reserve is controls.reserve_field
+
+
+
+def test_merged_lots_include_a_runs_only_lot_of_an_account_another_splits(
+    lot_variant_runs: tuple[RunConnection, dict[str, RunConnection]],
+) -> None:
+    """A run's one lot of an account counts in the union when another run
+    splits that account, so it can be picked for comparison; an account no
+    run splits still has no Lot dropdown."""
+    base, _variants = lot_variant_runs
+    single = base.lots_by_account(single=True)
+    assert "Asset_Checking" in single and "Asset_Checking" not in base.lots_by_account()
+
+    class _Run:
+        def __init__(self, lots: dict[str, list[str]]):
+            self._lots = lots
+
+        def lots_by_account(self, *, single: bool = False) -> dict[str, list[str]]:
+            return {a: lots for a, lots in self._lots.items() if single or len(lots) > 1}
+
+    unsplit = _Run({BROKERAGE: ["default"], "Asset_Checking": ["default"]})
+    split = _Run({BROKERAGE: ["a", "b"], "Asset_Checking": ["default"]})
+    merged = merged_lots_by_account(*cast(list[RunConnection], [unsplit, split]))
+    assert merged == {BROKERAGE: ["default", "a", "b"]}
