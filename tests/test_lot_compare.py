@@ -92,6 +92,7 @@ def test_account_diffs_measure_sits_right_of_the_modes(
                                               dollar_mode=dollars, value_mode=values)
     assert measure.description == "Measure:" and measure.value == "balance"
     assert [key for _text, key in measure.options] == ["balance", "cost_basis", "quantity"]
+    assert measure.layout.border == dollars.layout.border == values.layout.border
 
 
 @pytest.mark.parametrize("measure", ["balance", "cost_basis", "quantity"])

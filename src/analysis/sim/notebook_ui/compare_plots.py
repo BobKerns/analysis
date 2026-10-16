@@ -19,6 +19,7 @@ from IPython.display import clear_output, display
 
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.notebook_ui.pickers import (
+    _TOGGLE_LAYOUT,
     AccountPicker,
     DollarModePicker,
     MultiScenarioConnections,
@@ -722,6 +723,7 @@ def _show_account_balance_diffs(
     measure_picker = widgets.ToggleButtons(
         options=[(text, key) for key, text in MEASURE_LABELS.items()],
         value="balance", description="Measure:",
+        layout=widgets.Layout(**_TOGGLE_LAYOUT),  # framed like the dollar and value toggles
     )
     measure_picker.layout.display = "none"
     mode_controls = widgets.HBox([dollar_mode, value_mode, measure_picker])
