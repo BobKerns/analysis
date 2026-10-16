@@ -443,7 +443,7 @@ def run(
         return
 
     if _has_unresolved_vary(intent_path):
-        if ensemble_size is not None or _recorded_ensemble_size(intent_path) not in (None, 0):
+        if ensemble_size is not None or _recorded_ensemble_size(intent_path):
             _run_ensemble(
                 scenario_name, intent_path,
                 resolved_intent_dir, resolved_runs_dir,
@@ -520,19 +520,12 @@ def _has_unresolved_vary(intent_path: Path) -> bool:
     return row is not None
 
 
-def _recorded_ensemble_size(intent_path: Path) -> object:
-    """The intent's merged ``scenario.meta_json.ensemble_size`` (``None`` when
-    absent); absent or 0 means not an ensemble (ADR-006 §7). A numeric string
-    becomes its int, as ``sim scenario list`` reads it; anything else is
-    returned as authored, for ``_run_ensemble`` to reject."""
+def _recorded_ensemble_size(intent_path: Path) -> int:
+    """The intent's merged ``scenario.meta_json.ensemble_size``, which the
+    loader checked and stored as an int; absent or 0 means not an ensemble
+    (ADR-006 §7)."""
     _seed, meta_json, _tree_id = _recipe_identity(intent_path)
-    size = json.loads(meta_json or "{}").get("ensemble_size")
-    if isinstance(size, str):
-        try:
-            return int(size)
-        except ValueError:
-            pass
-    return size
+    return json.loads(meta_json or "{}").get("ensemble_size", 0)
 
 
 def _resolve_base_case(scenario_name: str, intent_path: Path, intent_dir: Path) -> Path:
@@ -574,8 +567,9 @@ def _run_ensemble(
         member_count = ensemble_size
         source = "--ensemble-size"
     else:
-        # `run` only gets here with a recorded size that is set and nonzero.
-        member_count = int(json.loads(meta_json or "{}")["ensemble_size"])
+        # `run` only gets here with a recorded size, which the loader made
+        # a positive int.
+        member_count = json.loads(meta_json or "{}")["ensemble_size"]
         source = "scenario.meta_json.ensemble_size"
     if member_count <= 0:
         raise click.ClickException(

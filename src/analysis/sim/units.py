@@ -90,6 +90,20 @@ def json_dollars_to_cents(value: object) -> int:
     raise ValueError(f"invalid dollar value {value!r}: write it like 250000 or \"250000.00\"")
 
 
+def json_ensemble_size(value: object) -> int:
+    """``meta_json.ensemble_size`` (ADR-006 §7): a JSON integer, or a string
+    of digits, 0 or more; 0 means the scenario is not an ensemble. A float
+    or a boolean is refused rather than truncated to a member count."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    raise ValueError(
+        f"invalid ensemble_size {value!r}: write a whole number of members, "
+        "or 0 for not an ensemble"
+    )
+
+
 def cents_to_dollars(cents: int) -> str:
     """Integer cents as CSV dollars: ``123456`` -> ``1234.56``."""
     sign = "-" if cents < 0 else ""

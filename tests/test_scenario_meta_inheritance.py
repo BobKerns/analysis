@@ -174,3 +174,22 @@ def test_sim_run_reads_a_string_zero_size_as_not_an_ensemble(
     ])
     assert result.exit_code == 0, result.output
     assert "quoted is not an ensemble: running its base case" in result.output
+
+
+@pytest.mark.parametrize("size", ['"abc"', "5.5", "true", "-1"])
+def test_an_ensemble_size_that_is_not_a_count_fails_the_load(
+    derive_scenario: Callable[..., Path], test_data_dir: Path, tmp_path: Path, size: str,
+) -> None:
+    """#169: a float or boolean would be truncated to a member count, and a
+    non-number would crash ``sim run``, so the load refuses both."""
+    derive_scenario("bad", ROOT, meta_json=f'{{"ensemble_size":{size}}}')
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "bad", intent_dir=tmp_path, allow_dirty_data=True)
+    assert any(issue.startswith("bad: ") and "ensemble_size" in issue for issue in ei.value.issues)
+
+
+def test_a_string_ensemble_size_is_stored_as_its_int(
+    derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
+) -> None:
+    derive_scenario("quoted", ROOT, meta_json='{"ensemble_size":"12"}')
+    assert _meta(load_test_scenario("quoted"))["ensemble_size"] == 12

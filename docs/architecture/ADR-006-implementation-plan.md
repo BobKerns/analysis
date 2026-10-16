@@ -39,7 +39,7 @@ Done. Exit: one member intent can be fully resolved from a recipe intent in Pyth
 ## Phase 3 — `sim run` generates the ensemble
 
 1. `cli.py`: after the normal `load_scenario`, check for any unresolved `vary_distribution` row in the loaded intent. If none: `sim run` behaves exactly as today (regression-checked against the existing `test_sim_cli.py` run tests). If any:
-   - Resolve `member_count` (`--ensemble-size N` if given, else `scenario.meta_json.ensemble_size`; a clear error naming which is missing if neither is set) and the ensemble seed (`scenario.seed`; a clear error if unset).
+   - Resolve `member_count` (`--ensemble-size N` if given, else `scenario.meta_json.ensemble_size`; a clear error naming which is missing if neither is set; since #169 neither set means not an ensemble, which runs its base case instead, ADR-006 §7) and the ensemble seed (`scenario.seed`; a clear error if unset).
    - Create `state/intent/<recipe>/` and `state/runs/<recipe>/`.
    - For each member: `resolve_member` (Phase 2), then the ordinary, unmodified `run_scenario(member_intent_path, member_run_path, ...)`. Echo progress.
    - Report a failed member (don't retry, matching `sim all`'s per-scenario tolerance) by index and its intent file path; keep going.

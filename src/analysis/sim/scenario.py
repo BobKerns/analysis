@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.sim.loader import LoadError
-from analysis.sim import chain_edit, registries
+from analysis.sim import chain_edit, registries, units
 from analysis.sim.dates import month_end_iso
 from analysis.sim.lineage import load_order, read_parents
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
@@ -252,8 +252,9 @@ def _merged_ensemble_size(
     rows: dict[str, dict[str, str]], name: str,
 ) -> ScenarioValue | None:
     """The last ``meta_json.ensemble_size`` in load order, merged key by key
-    like the loader's (ADR-003 §4.5), or ``None`` when it is absent, 0, or
-    not a positive integer: then the scenario is not an ensemble."""
+    like the loader's (ADR-003 §4.5), or ``None`` when it is absent or 0:
+    then the scenario is not an ensemble. An invalid one is the loader's to
+    report; here it is ``None`` too."""
     for owner, row in reversed(rows.items()):
         try:
             meta = json.loads(row.get("meta_json") or "{}")
@@ -261,11 +262,8 @@ def _merged_ensemble_size(
             continue
         if not isinstance(meta, dict) or "ensemble_size" not in meta:
             continue
-        size = meta["ensemble_size"]
-        if isinstance(size, bool) or not isinstance(size, int | str):
-            return None
         try:
-            size = int(size)
+            size = units.json_ensemble_size(meta["ensemble_size"])
         except ValueError:
             return None
         return ScenarioValue(size, inherited=owner != name) if size > 0 else None
