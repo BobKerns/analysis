@@ -25,7 +25,7 @@ The architecture has exactly two layers, and the separation is load-bearing:
 1. **Intent layer** — what was *decided*. Authored content: `AccountModel`, `ScheduledTransaction`, `Calendar`, `CalendarEvent`, `AuxiliaryTable`, `Scenario`, `YearToDate`.
 2. **Ledger layer** — what *happened*. Run output: `SimulationRun`, `SimulationStep`, `LotState` (with `AccountState` as a view over it), `TransferEvent`, `TaxYearSummary`.
 
-Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to-account, amount, tax character, reason). Bundled high-level decisions (`sell_asset`, `life_transition`) live in the intent layer and **expand at run-time** into multiple primitive `TransferEvent`s, all linked via `reason_id` so reports can group at either level. Nothing in the ledger is "virtual" or "derived on the fly" — what's in the table is the truth.
+Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to-account, amount, tax character, reason). Rules and calendar events live in the intent layer and **expand at run-time** into primitive `TransferEvent`s (a withdrawal from a basis-tracked lot into its return-of-capital and gain legs, a refill into the legs its chain draws), all linked via `reason_id` and `parent_event_id` so reports can group at either level. Nothing in the ledger is "virtual" or "derived on the fly" — what's in the table is the truth.
 
 ### Domain objects
 

@@ -114,7 +114,7 @@ Symbols get names from `securities.csv` (`symbol,name`), at the top of the data 
 
 ### 7. Sales and withdrawals
 
-A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, [ADR-003](ADR-003-registries-and-csv-schemas.md) #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. `sell_asset` on an investment account names a lot and liquidates that lot. Liquidating an account is one `sell_asset` per lot.
+A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, [ADR-003](ADR-003-registries-and-csv-schemas.md) #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. A `transfer_balance` calendar event (ADR-003 §3.7) names a lot and empties it; emptying an account is one such event per lot.
 
 Money moved *into* a lot that tracks cost basis is a purchase: its basis rises by the amount and, if shares are tracked, they rise at the lot's implied price (balance ÷ quantity). This covers purchases from cash, inheritances, and proceeds moved from another taxable lot. Growth generated from `accounts.csv` series (from the built-in counterparty accounts) is appreciation and changes neither. A taxable asset lot with a zero opening balance and no stated basis starts at basis 0, so a lot can be declared up front for a purchase the scenario makes later (with its `acquired` date), and taxable growth is total return: reinvested dividends are not split out, so tax on distributions is deferred to the sale.
 

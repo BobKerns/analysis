@@ -2270,7 +2270,8 @@ def _validate_calendar(
             _validate_swap_aux_table_row(row, where, issues)
         params_json = row.get("params_json") or "{}"
         try:
-            json.loads(params_json)
+            if not isinstance(json.loads(params_json), dict):
+                issues.append(f"{where}: params_json must be a JSON object")
         except json.JSONDecodeError as e:
             issues.append(f"{where}: params_json invalid: {e}")
         series = row.get("series", "")
@@ -2339,10 +2340,10 @@ def _validate_swap_aux_table_row(
         return  # malformed JSON is reported by _validate_calendar
     aux_kind = params.get("aux_kind")
     source = params.get("source_series")
-    if aux_kind not in registries.AUX_KIND_COLUMNS:
+    if aux_kind not in registries.SWAPPABLE_AUX_KINDS:
         issues.append(
             f"{where}: swap_aux_table needs params_json aux_kind, one of "
-            f"{', '.join(sorted(registries.AUX_KIND_COLUMNS))}; got {aux_kind!r}"
+            f"{', '.join(sorted(registries.SWAPPABLE_AUX_KINDS))}; got {aux_kind!r}"
         )
     if not isinstance(source, str) or not source:
         issues.append(
@@ -2354,7 +2355,8 @@ def _validate_swap_aux_table_row(
             f"{where}: swap_aux_table source_series '{source}' is the series "
             "being replaced"
         )
-    for col in ("amount", "account_1", "account_2", "scheduled_name"):
+    for col in ("amount", "account_1", "lot_1", "account_2", "lot_2",
+                "scheduled_name", "param_date", "tax_character"):
         if (row.get(col) or "").strip():
             issues.append(f"{where}: swap_aux_table takes no {col}; leave it blank")
 
@@ -2373,7 +2375,7 @@ def _validate_swap_aux_tables(
             continue
         params = _safe_json(row.get("params_json")) or {}
         aux_kind, source = params.get("aux_kind"), params.get("source_series")
-        if aux_kind not in registries.AUX_KIND_COLUMNS or not isinstance(source, str):
+        if aux_kind not in registries.SWAPPABLE_AUX_KINDS or not isinstance(source, str):
             continue  # reported by _validate_swap_aux_table_row
         for label, series in (("series", row.get("series") or None), ("source_series", source)):
             if (aux_kind, series) not in supplied:
@@ -2815,14 +2817,15 @@ def _check_vary_distribution(
 
 
 def _safe_json(raw: str | None) -> dict[str, Any] | None:
-    """``json.loads(raw or "{}")``, or ``None`` on invalid JSON -- callers
-    skip rather than re-report, since the owning row's own validator already
-    flags malformed JSON in its column.
+    """``json.loads(raw or "{}")``, or ``None`` on invalid JSON or JSON that
+    isn't an object -- callers skip rather than re-report, since the owning
+    row's own validator already flags malformed JSON in its column.
     """
     try:
-        return json.loads(raw or "{}")
+        parsed = json.loads(raw or "{}")
     except json.JSONDecodeError:
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _validate_series_references(

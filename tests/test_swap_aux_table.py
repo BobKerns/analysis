@@ -55,6 +55,14 @@ def _aux_rows(run: Path, kind: str, series: str) -> list[tuple[str, dict]]:
         ]
 
 
+def _cpi_index(run: Path) -> dict[str, int]:
+    with sqlite3.connect(run) as con:
+        return dict(con.execute(
+            "SELECT st.month, i.cumulative_index_micros FROM inflation_index_state i "
+            "JOIN simulation_step st ON st.id = i.step_id WHERE i.series = 'cpi'"
+        ).fetchall())
+
+
 def test_an_inflation_swap_keeps_the_history_before_it(
     retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
@@ -77,6 +85,11 @@ def test_an_inflation_swap_keeps_the_history_before_it(
     rows = _aux_rows(runs_dir / "after.sqlite3", "inflation", "cpi")
     assert rows[-1] == ("2027-01-31", {"annual_rate_micros": 0})
     assert all(effective < "2027-01-31" for effective, _ in rows[:-1])
+    # The cumulative index stops moving in the swap's own month, as the
+    # salary does.
+    index = _cpi_index(runs_dir / "after.sqlite3")
+    assert index["2027-01-31"] == index["2026-12-31"]
+    assert index["2026-12-31"] > index["2026-11-30"]
 
 
 def test_a_swapped_table_is_the_source_table_from_then_on(
@@ -114,7 +127,11 @@ def test_a_source_with_nothing_yet_in_force_fails_the_run(
     ({"aux_kind": "inflation", "source_series": "cpi"}, {}, "is the series being replaced"),
     ({"aux_kind": "inflation", "source_series": "missing"}, {},
      r"source_series names inflation__missing\.csv"),
+    ({"aux_kind": "security_price", "source_series": "flat"}, {}, "needs params_json aux_kind"),
     ({"aux_kind": "inflation", "source_series": "flat"}, {"amount": "3%"}, "takes no amount"),
+    ({"aux_kind": "inflation", "source_series": "flat"}, {"lot_1": "default"}, "takes no lot_1"),
+    ({"aux_kind": "inflation", "source_series": "flat"}, {"tax_character": "ordinary"},
+     "takes no tax_character"),
 ])
 def test_the_loader_rejects_a_malformed_swap(
     retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
@@ -129,6 +146,14 @@ def test_the_loader_rejects_a_malformed_swap(
         params_json=json.dumps(params), **extra,
     )
     with pytest.raises(LoadError, match=message):
+        load_test_copy()
+
+
+def test_the_loader_rejects_params_that_are_not_an_object(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    append_calendar_row(date="2027-01", kind="swap_aux_table", series="cpi", params_json="[]")
+    with pytest.raises(LoadError, match="params_json must be a JSON object"):
         load_test_copy()
 
 

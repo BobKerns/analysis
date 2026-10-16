@@ -216,10 +216,6 @@ def run_scenario(
                 (step_index, month_s, previous_step_id),
             )
             step_id = inserted_id(cur)
-            _advance_inflation_indexes(
-                con, step_id, month_s, aux, inflation_indexes,
-            )
-
             if step_index == 0:
                 _apply_ytd_catchups(
                     con, step_id, month, txns, year_to_date_rows, chain_graph,
@@ -263,6 +259,13 @@ def run_scenario(
                     (step_id, ev_id),
                 )
                 applied_event_ids.add(ev_id)
+
+            # After the month's calendar events, so a set_rate or swap of an
+            # inflation series dated this month moves this month's index, as
+            # it moves the rules' inflation lookups.
+            _advance_inflation_indexes(
+                con, step_id, month_s, aux, inflation_indexes,
+            )
 
             opening_balances = dict(balances)
 

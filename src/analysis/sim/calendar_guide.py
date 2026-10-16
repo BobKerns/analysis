@@ -489,7 +489,7 @@ KINDS: tuple[KindSpec, ...] = (
             _DATE,
             Field(
                 "aux_kind", "kind of table", strict=True,
-                choices=lambda ctx, answers: sorted(registries.AUX_KIND_COLUMNS),  # noqa: ARG005
+                choices=lambda ctx, answers: sorted(registries.SWAPPABLE_AUX_KINDS),  # noqa: ARG005
                 help="state_brackets for a move to another state.",
             ),
             Field(

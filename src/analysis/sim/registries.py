@@ -271,6 +271,11 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "home_sale_exclusion": ("effective_date", "filing_status", "amount"),
 }
 
+# The aux kinds a swap_aux_table event may replace (ADR-003 §3.5). Security
+# prices are read only at load, to value lots at the scenario start, so a
+# swap of one during the run would change nothing.
+SWAPPABLE_AUX_KINDS: frozenset[str] = frozenset(AUX_KIND_COLUMNS) - {"security_price"}
+
 # Columns authored in a natural unit but stored as integer micros, by kind:
 # {kind: {csv column: (payload key, unit)}} (#130). The unit is `price`
 # (decimal dollars, positive, up to six places: sub-cent precision),

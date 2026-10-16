@@ -3595,9 +3595,10 @@ def calendar_add_swap_aux_table(
     )
     date, aux_kind, source_series = given["date"], given["aux_kind"], given["source_series"]
     date = _validate_month_date(date)
-    if aux_kind not in registries.AUX_KIND_COLUMNS:
+    if aux_kind not in registries.SWAPPABLE_AUX_KINDS:
         raise click.ClickException(
-            f"unknown aux kind: {aux_kind!r}; allowed: {sorted(registries.AUX_KIND_COLUMNS)}"
+            f"aux kind {aux_kind!r} can't be swapped; allowed: "
+            f"{sorted(registries.SWAPPABLE_AUX_KINDS)}"
         )
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
