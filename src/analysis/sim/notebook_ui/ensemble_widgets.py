@@ -6,7 +6,7 @@ breakpoints."""
 from __future__ import annotations
 
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,7 @@ from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.notebook_ui.pickers import (
     AccountDropdown,
     DollarModePicker,
+    LotPicker,
     LogLinearModePicker,
     find_data_dir,
     find_runs_dir,
@@ -181,12 +182,13 @@ def _account(choice: object) -> str | None:
 
 def recipe_accounts(
     runs_dir: Path, recipes: list[str],
-) -> tuple[list[str], dict[str, list[str]]]:
-    """Every account any of ``recipes`` has, by name, and the lots of those
-    with several (#170), read from one member of each recipe's latest batch,
-    since a recipe's members share their accounts."""
+) -> tuple[list[str], dict[str, dict[str, list[str]]]]:
+    """Every account any of ``recipes`` has, by name, and each recipe's own
+    accounts with several lots, and their lots (#170), read from one member
+    of each recipe's latest batch, since a recipe's members share their
+    accounts."""
     accounts: set[str] = set()
-    lots: dict[str, list[str]] = {}
+    lots: dict[str, dict[str, list[str]]] = {}
     for recipe in recipes:
         batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
         if batch_dir is None:
@@ -200,9 +202,7 @@ def recipe_accounts(
         con = RunConnection(batch_dir / f"{member}.sqlite3")
         try:
             accounts.update(con.account_kinds().index)
-            for account, names in con.lots_by_account().items():
-                seen = lots.setdefault(account, [])
-                seen.extend(lot for lot in names if lot not in seen)
+            lots[recipe] = con.lots_by_account()
         finally:
             con.close()
     return sorted(accounts), lots
@@ -229,6 +229,10 @@ class EnsembleControls(widgets.HBox):
     The account list is every account any recipe under ``runs_dir`` has,
     fixed when built, like the widgets' recipe lists: one recipe may lack
     an account another has, and the widgets say so rather than draw it.
+    The Lot dropdown can't be shared across both kinds of widget, since each
+    offers only the lots of the recipes it shows, so there are two: the
+    single-recipe widgets share ``recipe_lot_picker`` and the comparisons
+    share ``compare_lot_picker``.
     """
 
     def __init__(self, *,
@@ -240,14 +244,15 @@ class EnsembleControls(widgets.HBox):
                  log_linear_picker: LogLinearModePicker | None = None,
                  dollar_picker: DollarModePicker | None = None):
         resolved = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-        accounts, lots = recipe_accounts(resolved, list_ensemble_recipes(resolved))
+        accounts, self._recipe_lots = recipe_accounts(resolved, list_ensemble_recipes(resolved))
         self.log_linear_picker = log_linear_picker or LogLinearModePicker(log_linear_mode)
         self.dollar_picker = dollar_picker or DollarModePicker(dollar_mode)
         self.account_picker = AccountDropdown(
             [(NET_WORTH, _NET_WORTH_CHOICE), *((a, a) for a in accounts)],
-            lots_by_account=lots,
         )
         self.reserve_field = _reserve_field()
+        self.recipe_lot_picker = self._lot_picker()
+        self.compare_lot_picker = self._lot_picker()
         super().__init__([self.log_linear_picker, self.dollar_picker,
                           self.account_picker, self.reserve_field])
 
@@ -256,23 +261,41 @@ class EnsembleControls(widgets.HBox):
         """The picked account, or None for net worth."""
         return _account(self.account_picker.account)
 
-    @property
-    def lot(self) -> str | None:
-        """The picked lot of the account, or None for all of it."""
-        lots = self.account_picker.lots
-        return lots[0] if lots else None
+    def _lot_picker(self) -> LotPicker:
+        picker = LotPicker(multiple=False)
+        picker.follow(self.account)
+        return picker
 
-    def subject(self) -> str:
-        """What's shown: net worth, an account, or one lot of it."""
-        if self.account is None:
-            return NET_WORTH
-        return self.account + (f" lot {self.lot}" if self.lot is not None else "")
+    def offer_lots(self, picker: LotPicker, recipes: Sequence[str]) -> bool:
+        """Have ``picker`` offer the shared account's lots in ``recipes`` --
+        the ones its widget shows -- and no others. True when that changed
+        the picked lot, which has already redrawn the widget."""
+        before = picker.lots
+        lots: dict[str, list[str]] = {}
+        for recipe in recipes:
+            for account, names in self._recipe_lots.get(recipe, {}).items():
+                seen = lots.setdefault(account, [])
+                seen.extend(lot for lot in names if lot not in seen)
+        picker.set_lots(lots)
+        picker.follow(self.account)
+        return picker.lots != before
 
     def observe_all(self, redraw: Callable[..., None]) -> None:
         """Call ``redraw`` whenever any control changes."""
         for picker in (self.log_linear_picker, self.dollar_picker, self.reserve_field):
             picker.observe(redraw, names="value")
         self.account_picker.observe(redraw, names="selection")
+
+
+def _subject(account: str | None, lot: str | None) -> str:
+    """What's shown: net worth, an account, or one lot of it."""
+    if account is None:
+        return NET_WORTH
+    return account + (f" lot {lot}" if lot is not None else "")
+
+
+def _lot(picker: LotPicker) -> str | None:
+    return picker.lots[0] if picker.lots else None
 
 
 def _reserve(
@@ -340,6 +363,7 @@ def ensemble_widget(*_,
     log_linear_picker = controls.log_linear_picker
     dollar_picker = controls.dollar_picker
     reserve_field = controls.reserve_field
+    lot_picker = controls.recipe_lot_picker
     out = widgets.Output()
 
     def _redraw(*_: object) -> None:
@@ -349,6 +373,8 @@ def ensemble_widget(*_,
         # loading (seconds for a large ensemble on a cold disk cache) left VS
         # Code showing an empty output on the first switch to a big recipe.
         with out:
+            if controls.offer_lots(lot_picker, [dropdown.value] if dropdown.value else []):
+                return
             if not dropdown.value:
                 clear_output()
                 return
@@ -364,8 +390,8 @@ def ensemble_widget(*_,
         failed_count = sum(1 for status in statuses.values() if status != "succeeded")
         connections = load_ensemble(batch_dir)
         try:
-            account, lot = controls.account, controls.lot
-            subject = controls.subject()
+            account, lot = controls.account, _lot(lot_picker)
+            subject = _subject(account, lot)
             mode = dollar_picker.value
             mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
             # Each member's own series is converted before aggregating, not
@@ -441,9 +467,10 @@ def ensemble_widget(*_,
                 con.close()
 
     dropdown.observe(_redraw, names="value")
+    lot_picker.observe(_redraw, names="lots")
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
-    return widgets.VBox([dropdown, controls, out])
+    return widgets.VBox([dropdown, controls, lot_picker, out])
 
 
 def _symlog(ax: Any, values: pd.DataFrame) -> None:
@@ -560,12 +587,16 @@ def ensemble_compare_widget(*_,
     )
     dollar_picker = controls.dollar_picker
     reserve_field = controls.reserve_field
+    lot_picker = controls.compare_lot_picker
     out = widgets.Output()
 
     def _redraw(*_: object) -> None:
         with out:
             baseline = baseline_picker.value
             variants = [v for v in variant_picker.value if v != baseline]
+            shown = [name for name in (baseline, *variants) if name]
+            if controls.offer_lots(lot_picker, shown):
+                return
             if not baseline or not variants:
                 clear_output()
                 display(StyledMarkdown("_Pick a baseline and at least one other recipe._"))
@@ -579,8 +610,8 @@ def ensemble_compare_widget(*_,
                 batch_dir = latest_ensemble_batch(runs_dir / name, mode="monte_carlo")
                 assert batch_dir is not None  # listed recipes all have a batch
                 sides[name] = load_ensemble(batch_dir)
-            account, lot = controls.account, controls.lot
-            subject = controls.subject()
+            account, lot = controls.account, _lot(lot_picker)
+            subject = _subject(account, lot)
             log_scale = controls.log_linear_picker.value == LogLinearMode.LOG
             mode = dollar_picker.value
             mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
@@ -665,6 +696,9 @@ def ensemble_compare_widget(*_,
 
     for picker in (baseline_picker, variant_picker):
         picker.observe(_redraw, names="value")
+    lot_picker.observe(_redraw, names="lots")
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
-    return widgets.VBox([widgets.HBox([baseline_picker, variant_picker]), controls, out])
+    return widgets.VBox([
+        widgets.HBox([baseline_picker, variant_picker]), controls, lot_picker, out,
+    ])

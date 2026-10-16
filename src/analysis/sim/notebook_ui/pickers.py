@@ -954,6 +954,8 @@ class LotPicker(widgets.HBox):
                  multiple: bool = True):
         self.lots_by_account = dict(lots_by_account or {})
         self.account: str | None = None
+        self._requested: str | None = None
+        self._offered: list[str] = []
         self.picker: widgets.SelectMultiple | widgets.Dropdown = (
             widgets.SelectMultiple(description="Lots:", options=[], rows=4)
             if multiple else
@@ -965,22 +967,30 @@ class LotPicker(widgets.HBox):
 
     def follow(self, account: str | None) -> None:
         """Offer ``account``'s lots, or hide when it has fewer than two
-        (``None`` for no single account). Picking stays as it was while the
-        account is unchanged."""
+        (``None`` for no single account). Picked lots stay picked while the
+        account is unchanged and still has them."""
+        self._requested = account
         lots = list(self.lots_by_account.get(account, ())) if account is not None else []
         if len(lots) < 2:
-            account = None
-        if account == self.account:
+            account, lots = None, []
+        if account == self.account and lots == self._offered:
             return
-        self.account = account
+        keep = tuple(lot for lot in self.lots if lot in lots) if account == self.account else ()
+        self.account, self._offered = account, lots
         self.layout.display = None if account is not None else "none"
         if isinstance(self.picker, widgets.SelectMultiple):
             self.picker.options = lots
-            self.picker.value = ()
+            self.picker.value = keep
         else:
             self.picker.options = [(ALL_LOTS, ()), *((lot, (lot,)) for lot in lots)]
-            self.picker.value = ()
-        self.lots = ()
+            self.picker.value = keep[:1]
+        self.lots = tuple(self.picker.value)
+
+    def set_lots(self, lots_by_account: Mapping[str, Sequence[str]]) -> None:
+        """Offer a different set of lots (another recipe's, say), keeping
+        the followed account and whatever picked lots it still has."""
+        self.lots_by_account = dict(lots_by_account)
+        self.follow(self._requested)
 
     def _on_pick(self, change: dict[str, Any]) -> None:
         self.lots = tuple(change["new"])

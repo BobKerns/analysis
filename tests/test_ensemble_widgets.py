@@ -173,7 +173,7 @@ def test_ensemble_widget_returns_a_box_without_displaying_it(
 
 def test_ensemble_widget_dropdown_lists_the_recipe(small_ensemble_runs_dir: Path) -> None:
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
-    dropdown, _pickers, _out = box.children
+    dropdown, _pickers, _lot_picker, _out = box.children
     assert dropdown.options == ("retire_alice",)
     assert dropdown.value == "retire_alice"
 
@@ -214,7 +214,7 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
     monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
     dollar_mode = DollarModePicker()
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir, dollar_mode=dollar_mode)
-    _dropdown, controls, _out = box.children
+    _dropdown, controls, _lot_picker, _out = box.children
     assert dollar_mode in controls.children
     assert modes_seen[-1] == DollarMode.NOMINAL
 
@@ -308,7 +308,7 @@ def test_ensemble_widget_account_picker_lists_net_worth_then_accounts(
 
     monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
-    _dropdown, controls, _out = box.children
+    _dropdown, controls, _lot_picker, _out = box.children
     account_picker = controls.account_picker.account_picker
     assert account_picker.label == ensemble_widgets.NET_WORTH
     assert ("Asset_Checking", "Asset_Checking") in account_picker.options
@@ -340,7 +340,7 @@ def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
 
     monkeypatch.setattr(ensemble_widgets, "ensemble_summary_view", _spy_view)
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
-    _dropdown, controls, _out = box.children
+    _dropdown, controls, _lot_picker, _out = box.children
     assert list(tables[-1].columns)[-2:] == ["cvar05", "cvar20"]
     controls.reserve_field.value = "1000000"
     assert list(tables[-1].columns)[-2:] == ["below_reserve", "ever_below_reserve"]
@@ -363,7 +363,7 @@ def test_ensemble_compare_widget_draws_one_section_per_variant(
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
-    recipe_pickers, _pickers, _out = box.children
+    recipe_pickers, _pickers, _lot_picker, _out = box.children
     baseline_picker, variant_picker = recipe_pickers.children
     baseline_picker.value = "baseline"
     shown.clear()
@@ -410,7 +410,7 @@ def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_side
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
-    recipe_pickers, controls, _out = box.children
+    recipe_pickers, controls, _lot_picker, _out = box.children
     baseline_picker, variant_picker = recipe_pickers.children
     account_picker = controls.account_picker.account_picker
     baseline_picker.value = "baseline"
