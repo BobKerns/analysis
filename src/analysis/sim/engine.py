@@ -23,9 +23,10 @@ end -- see ``_settle_accounts``.
 from __future__ import annotations
 
 import calendar
+import functools
 import json
 import warnings
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -43,8 +44,7 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance",
-    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death",
-    "home_sale"}
+    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death"}
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
@@ -433,12 +433,6 @@ def run_scenario(
                             con, balances, account_kinds, step_id, month_s,
                             params, from_account, to, person_lifespan,
                             tax_char, tid, refill_ctx=refill_ctx,
-                        )
-                    case "home_sale":
-                        _apply_home_sale(
-                            con, balances, account_kinds, cost_bases, step_id, month_s,
-                            params, p_amount_cents, from_account, to, tid, aux,
-                            tax_year=tax_year, refill_ctx=refill_ctx,
                         )
                     case "tax_accumulator":
                         if cadence != "annual":
@@ -1112,7 +1106,7 @@ def _post_ytd_chain(
         )
         return
     remaining = amount
-    for draw_into_id, step_maximum, step_percent, _series, _cadence in graph.members.get(chain_id, []):
+    for draw_into_id, step_maximum, step_percent, *_rest in graph.members.get(chain_id, []):
         if remaining <= 0:
             break
         allocation = remaining * step_percent // 1_000_000
@@ -1528,7 +1522,7 @@ def _lookup_by_series_key(
 ) -> dict[str, Any] | None:
     """Generic version of ``_lookup_rmd_factor`` for aux kinds keyed by a
     string payload field (e.g. ``filing_status``, ``category``) rather than
-    an integer age -- ``home_sale_exclusion`` and ``energy_credits`` both
+    an integer age -- ``capital_loss_limit`` and ``energy_credits`` both
     fit this shape, as do the existing ``federal_brackets``/
     ``standard_deduction`` tables if they're ever driven through here
     instead of their current bespoke lookups.
@@ -1563,125 +1557,26 @@ def _lookup_energy_credit(
     return _lookup_by_series_key(aux, "energy_credits", "category", category, month_s)
 
 
-def _apply_home_sale(
-    con, balances: dict[int, int], account_kinds: dict[int, str],
-    cost_bases: dict[int, int | None], step_id: int, month_s: str,
-    params: dict[str, Any], amount_cents: int | None,
-    from_id: int | None, to_id: int | None, tid: int,
-    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    *, tax_year: int | None = None, refill_ctx: RefillContext | None = None,
-) -> None:
-    """One-time full(-ish) liquidation of a cost-basis-tracked asset --
-    written for ``real_estate``, but not restricted to it -- applying the
-    IRC §121 home-sale exclusion. Reuses ``_post_withdrawal``'s
-    return-of-capital/gain split (ADR-001), but where that function's
-    brokerage case only ever produces ``return_of_capital`` + ``ltcg``, this
-    one can produce a third leg:
-
-      - ``return_of_capital``: sale proceeds up to cost basis (not gain)
-      - ``excluded_gain``:     gain covered by the §121 exclusion (real
-                                gain, but not taxed)
-      - ``ltcg``:              any gain above the exclusion (taxed)
-
-    ``amount_cents`` is the sale price (the row's own amount_cents column).
-    The exclusion amount comes from ``params["exclusion_cap_cents"]`` if
-    given directly, else from the ``home_sale_exclusion`` aux table keyed
-    by ``params["filing_status"]`` (mirrors ``standard_deduction``'s
-    shape). One row's tax_character is authored as 'none' (enforced by
-    loader validation) since the real split is computed here, not read off
-    the row.
-
-    Does NOT model §121 eligibility (ownership/use tests, once-per-2-years,
-    partial exclusion for hardship) or the surviving-spouse $500k-within-
-    2-years rule under §121(b)(4) -- pass an explicit
-    ``exclusion_cap_cents`` override for scenarios needing those, rather
-    than teaching this function the full statute for a one-time event.
-
-    Unlike ``_post_withdrawal``, this always liquidates the account's full
-    balance -- there's no partial-sale case for a house in this model.
-    """
-    if from_id is None or to_id is None:
-        raise EngineError(
-            f"home_sale id={tid}: from_account and to_account must both be "
-            "concrete accounts, not interior chains"
-        )
-    if amount_cents is None:
-        raise EngineError(f"home_sale id={tid}: missing amount (sale price)")
-    basis = cost_bases.get(from_id)
-    if basis is None:
-        raise EngineError(
-            f"home_sale id={tid}: requires cost-basis tracking, but "
-            "opening_cost_basis was never set -- add it to account_values.csv"
-        )
-
-    sale_price = int(amount_cents)
-    basis_out = min(basis, sale_price)
-    gain = max(0, sale_price - basis)
-
-    exclusion_cap_param = params.get("exclusion_cap_cents")
-    if exclusion_cap_param is not None:
-        exclusion_cap = int(exclusion_cap_param)
-    else:
-        filing_status = params.get("filing_status")
-        if not filing_status:
-            raise EngineError(
-                f"home_sale id={tid}: requires filing_status (or an "
-                "explicit exclusion_cap_cents override)"
-            )
-        row = _lookup_by_series_key(
-            aux, "home_sale_exclusion", "filing_status", filing_status, month_s,
-        )
-        if row is None:
-            raise EngineError(
-                f"home_sale id={tid}: no home_sale_exclusion row for "
-                f"filing_status={filing_status!r} effective on or before {month_s}"
-            )
-        exclusion_cap = int(row["amount"])
-
-    excluded = min(gain, exclusion_cap)
-    taxable_gain = gain - excluded
-
-    parent_id: int | None = None
-    if basis_out > 0:
-        parent_id = _post_transfer(
-            con, balances, account_kinds, step_id, month_s, from_id, to_id,
-            basis_out, "return_of_capital", tid,
-            tax_year=tax_year, refill_ctx=refill_ctx,
-        )
-    if excluded > 0:
-        leg_id = _post_transfer(
-            con, balances, account_kinds, step_id, month_s, from_id, to_id,
-            excluded, "excluded_gain", tid, parent_event_id=parent_id,
-            tax_year=tax_year, refill_ctx=refill_ctx,
-        )
-        parent_id = leg_id if leg_id is not None else parent_id
-    if taxable_gain > 0:
-        _post_transfer(
-            con, balances, account_kinds, step_id, month_s, from_id, to_id,
-            taxable_gain, "ltcg", tid, parent_event_id=parent_id,
-            tax_year=tax_year, refill_ctx=refill_ctx,
-        )
-    cost_bases[from_id] = basis - basis_out
-
-
-type ChainStep = tuple[int, int | None, int, str | None, str | None]
-"""One ``chain_steps`` row: ``(draw_from_chain_id, maximum, percent, series, cadence)``."""
+type ChainStep = tuple[int, int | None, int, str | None, str | None, str | None, int | None]
+"""One ``chain_steps`` row: ``(draw_from_chain_id, maximum, percent, series,
+cadence, tax_character, basis_of_lot_id)``."""
 
 
 class ChainGraph:
     """Resolved ``chain``/``chain_steps`` reference graph (ADR-003 §4.7).
 
     Each ``members`` entry is a ``(draw_from_chain_id, maximum, percent,
-    series, cadence)`` tuple; callers (tests especially) may pass a shorter
-    tuple and have it padded with the same defaults the loader writes
-    (``maximum=None``, ``percent=100%``, ``series=None``, ``cadence=None``).
+    series, cadence, tax_character, basis_of_lot_id)`` tuple; callers (tests
+    especially) may pass a shorter tuple and have it padded with the same
+    defaults the loader writes (``maximum=None``, ``percent=100%``, and None
+    for the rest).
     """
 
     __slots__ = ("members", "leaf_lot", "minimum_of", "refill_chain_of",
                  "refill_target_of", "refill_amount_of",
                  "maximum_of", "overflow_chain_of")
 
-    _STEP_DEFAULTS: tuple = (None, 1_000_000, None, None)
+    _STEP_DEFAULTS: tuple = (None, 1_000_000, None, None, None, None)
 
     def __init__(
         self,
@@ -1709,14 +1604,13 @@ class ChainGraph:
 
 def _load_chain_graph(con) -> ChainGraph:
     members: dict[int, list[ChainStep]] = {}
-    for chain_id, draw_from_id, maximum, percent, series, cadence in con.execute(
+    for chain_id, *step in con.execute(
         "SELECT chain_id, draw_from_chain_id, "
-        "       maximum_cents, percent_micros, series, cadence "
+        "       maximum_cents, percent_micros, series, cadence, "
+        "       tax_character, basis_of_lot_id "
         "FROM chain_steps ORDER BY chain_id, step_order"
     ):
-        members.setdefault(chain_id, []).append(
-            (draw_from_id, maximum, percent, series, cadence)
-        )
+        members.setdefault(chain_id, []).append(tuple(step))
     leaf_lot: dict[int, int] = {
         r[0]: r[1] for r in con.execute(
             "SELECT id, lot_id FROM chain WHERE lot_id IS NOT NULL"
@@ -1996,7 +1890,8 @@ def _chain_draw(
         )
         return take
     total = 0
-    for draw_from_id, step_maximum, step_percent, step_series, step_cadence in graph.members.get(chain_id, []):
+    for draw_from_id, step_maximum, step_percent, step_series, step_cadence, *_tax in (
+            graph.members.get(chain_id, [])):
         remaining = amount_needed - total
         if remaining <= 0:
             break
@@ -2019,6 +1914,44 @@ def _chain_draw(
     return total
 
 
+class _SaleBasis:
+    """The basis a sweep out of a lot carries into a destination chain that
+    has a basis step for that lot (#199): the lot's basis, pro-rata to the
+    share of its balance withdrawn, until the basis step uses it."""
+
+    __slots__ = ("share",)
+
+    def __init__(self, share: int) -> None:
+        self.share = share
+
+
+def _has_basis_step(graph: ChainGraph, chain_id: int, lot_id: int) -> bool:
+    """Whether ``chain_id``, or a chain under it, recovers ``lot_id``'s basis."""
+    for draw_into_id, *_allocation, character, basis_of in graph.members.get(chain_id, []):
+        if basis_of == lot_id and character in registries.BASIS_TAX_CHARACTERS:
+            return True
+        if draw_into_id not in graph.leaf_lot and _has_basis_step(graph, draw_into_id, lot_id):
+            return True
+    return False
+
+
+def _sale_basis(
+    refill_ctx: RefillContext | None, balances: dict[int, int], lot_id: int, amount: int,
+) -> _SaleBasis:
+    """The basis ``amount`` withdrawn from ``lot_id`` carries: the same pro-rata
+    share as ``_post_withdrawal``'s split, so a sale of the whole balance
+    carries all of it."""
+    basis = None if refill_ctx is None else refill_ctx.cost_bases.get(lot_id)
+    if refill_ctx is None or basis is None:
+        name = None if refill_ctx is None else refill_ctx.account_name.get(lot_id)
+        raise EngineError(
+            f"account {name!r}: a chain step recovers its basis, but it has none -- "
+            "set opening_cost_basis in account_values.csv"
+        )
+    prior = balances.get(lot_id, 0)
+    return _SaleBasis(basis if prior <= amount else basis * amount // prior)
+
+
 def _chain_sweep(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     account_tax_treatment: Mapping[int, str | None], account_subkind: dict[int, str],
@@ -2032,6 +1965,7 @@ def _chain_sweep(
     refill_ctx: RefillContext | None = None,
     reason_kind: str = "overflow", reason_id: int | None = None,
     _progress: _ChainProgress | None = None,
+    _sale: _SaleBasis | None = None,
 ) -> int:
     """Recursively sweep up to ``amount_available`` out of ``source_account_id``.
 
@@ -2042,11 +1976,21 @@ def _chain_sweep(
     reports the original ``amount_available`` as ``requested``: each
     destination's own ``maximum_balance_cents`` caps how much it accepts, and
     any remainder falls through to the next step.
+
+    A step's ``tax_character`` characterizes the money it places, and every
+    later step's until another sets one (#199, ADR-003 §4.7). A basis step
+    (``basis_of`` the source lot, character ``return_of_capital`` or
+    ``home_sale``) is sized by the basis the withdrawal carries
+    (``_SaleBasis``) and uses it up; a ``capital_improvement`` step adds what
+    it places to its ``basis_of`` lot's basis.
     """
     if amount_available <= 0:
         return 0
     if _progress is None:
         _progress = _ChainProgress(amount_available)
+        if (graph.leaf_lot.get(chain_id) is None
+                and _has_basis_step(graph, chain_id, source_account_id)):
+            _sale = _sale_basis(refill_ctx, balances, source_account_id, amount_available)
     account_id = graph.leaf_lot.get(chain_id)
     if account_id is not None:
         if account_id == source_account_id:
@@ -2074,28 +2018,92 @@ def _chain_sweep(
         )
         return put
     total = 0
-    for draw_into_id, step_maximum, step_percent, step_series, step_cadence in graph.members.get(chain_id, []):
+    character = source_tax_character
+    for number, (draw_into_id, step_maximum, step_percent, step_series, step_cadence,
+                 step_character, basis_of) in enumerate(graph.members.get(chain_id, []), 1):
+        if step_character is not None:
+            character = step_character
+        recovers = basis_of is not None and step_character in registries.BASIS_TAX_CHARACTERS
         remaining = amount_available - total
-        if remaining <= 0:
+        if remaining <= 0 and not recovers:
             break
-        allocation = _chain_step_allocation(
-            remaining, step_maximum, step_percent, step_series, step_cadence,
-            month_s, aux, chain_base_date, inflation_factor_cache,
-        )
-        if allocation <= 0:
-            continue
-        total += _chain_sweep(
+        if recovers:
+            if _sale is None or basis_of != source_account_id:
+                name = None if refill_ctx is None else refill_ctx.chain_name.get(chain_id)
+                raise EngineError(
+                    f"chain {name!r} step {number}: recovers the basis of "
+                    f"{account_name.get(basis_of)!r}, but the money comes from "
+                    f"{account_name.get(source_account_id)!r}"
+                )
+            allocation = min(remaining, _sale.share)
+        else:
+            allocation = _chain_step_allocation(
+                remaining, step_maximum, step_percent, step_series, step_cadence,
+                month_s, aux, chain_base_date, inflation_factor_cache,
+            )
+        placed = 0 if allocation <= 0 else _chain_sweep(
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, step_id, month_s, graph,
             draw_into_id, allocation, source_account_id,
             aux=aux, chain_base_date=chain_base_date,
             inflation_factor_cache=inflation_factor_cache,
-            source_tax_character=source_tax_character,
+            source_tax_character=character,
             source_tax_year=source_tax_year, refill_ctx=refill_ctx,
             reason_kind=reason_kind, reason_id=reason_id,
-            _progress=_progress,
+            _progress=_progress, _sale=_sale,
         )
+        total += placed
+        if recovers:
+            assert _sale is not None and refill_ctx is not None  # checked above, by _sale_basis
+            _recover_basis(
+                con, refill_ctx, _sale, source_account_id, placed, allocation,
+                step_id, month_s, step_character, source_tax_year,
+                reason_kind, source_account_id if reason_id is None else reason_id,
+            )
+        elif basis_of is not None and placed > 0:
+            _add_basis(refill_ctx, account_name, basis_of, placed)
     return total
+
+
+def _recover_basis(
+    con, ctx: RefillContext, sale: _SaleBasis, lot_id: int, placed: int, allocation: int,
+    step_id: int, month_s: str, character: str | None, tax_year: int | None,
+    reason_kind: str, reason_id: int,
+) -> None:
+    """Close a basis step (#199): the withdrawal's basis share leaves the lot,
+    whether or not the sale recovered it. What it didn't recover is a capital
+    loss for ``return_of_capital``, recorded for the tax accumulator; for
+    ``home_sale`` it is a personal loss, which is not deductible."""
+    if placed < allocation:
+        raise EngineError(
+            f"account {ctx.account_name.get(lot_id)!r}: a basis step placed only "
+            f"{placed / 100:.2f} of {allocation / 100:.2f}; give its destinations room "
+            "(a lot with no maximum_balance) so the gain isn't taken as basis"
+        )
+    share, sale.share = sale.share, 0
+    ctx.cost_bases[lot_id] = (ctx.cost_bases[lot_id] or 0) - share
+    lost = share - placed
+    if lost > 0 and character == "return_of_capital":
+        long_term = _is_long_term(ctx.acquired.get(lot_id), _parse_date(month_s))
+        con.execute(
+            "INSERT INTO capital_loss(step_id, date, lot_id, amount, tax_character, "
+            "tax_year, reason_kind, reason_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (step_id, month_s, lot_id, lost, "ltcg" if long_term else "stcg",
+             tax_year, reason_kind, reason_id),
+        )
+
+
+def _add_basis(
+    ctx: RefillContext | None, account_name: dict[int, str], lot_id: int, amount: int,
+) -> None:
+    """A ``capital_improvement`` step (#199): what it placed raises the lot's basis."""
+    basis = None if ctx is None else ctx.cost_bases.get(lot_id)
+    if ctx is None or basis is None:
+        raise EngineError(
+            f"account {account_name.get(lot_id)!r}: a capital_improvement step adds "
+            "to its basis, but it has none -- set opening_cost_basis in account_values.csv"
+        )
+    ctx.cost_bases[lot_id] = basis + amount
 
 
 def _settle_accounts(
@@ -2223,9 +2231,30 @@ def _apply_tax_accumulator(
                 f"tax_accumulator id={tid}: bracket_series required for state_brackets"
             )
 
-    ordinary_income, ltcg_income, ss_income = _tax_year_income_buckets(
-        con, tax_year=tax_year,
-    )
+    def loss_limit(year: int) -> int:
+        # A carryover from a year before the filing_status table starts (a
+        # year-to-date loss) is limited as if filed with this year's status.
+        status = filing_status if year == tax_year or not _active_aux_rows(
+            aux, filing_status_aux, None, f"{year}-12-31",
+        ) else _active_filing_status(
+            aux, filing_status_aux, year, tid,
+            person_lifespan=person_lifespan, taxpayers=taxpayers,
+        )
+        row = _lookup_by_series_key(
+            aux, "capital_loss_limit", "filing_status", status, f"{year}-12-31",
+        )
+        if row is None:
+            raise EngineError(
+                f"tax_accumulator id={tid}: {year} has a net capital loss, but no "
+                f"capital_loss_limit row for filing_status={status!r} effective on "
+                f"or before {year}-12-31 (aux/capital_loss_limit.csv)"
+            )
+        return int(row["amount"])
+
+    ordinary_income, ss_income = _tax_year_income_buckets(con, tax_year=tax_year)
+    capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit)
+    ordinary_income += capital.stcg - capital.loss_deduction
+    ltcg_income = capital.ltcg
 
     taxable_ss = 0
     if scope == "federal" and ss_income > 0:
@@ -2332,6 +2361,8 @@ def _apply_tax_accumulator(
     summary_rows = {
         f"{scope}_ordinary_income": ordinary_income,
         f"{scope}_ltcg_income": ltcg_income,
+        f"{scope}_capital_loss_deduction": capital.loss_deduction,
+        f"{scope}_capital_loss_carryover": capital.carryover_st + capital.carryover_lt,
         f"{scope}_ss_income": ss_income,
         f"{scope}_taxable_ss": taxable_ss,
         f"{scope}_adjusted_gross_income": ordinary_income + ltcg_income + taxable_ss,
@@ -2353,7 +2384,9 @@ def _apply_tax_accumulator(
         )
 
 
-def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
+def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
+    """A tax year's ordinary income and Social Security benefits. Capital
+    gains and losses are ``_capital_gains``'s."""
     rows = con.execute(
         "SELECT tax_character, COALESCE(SUM(amount), 0) "
         "FROM transfer_event "
@@ -2364,13 +2397,69 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int, int]:
     by_char = {k: int(v or 0) for k, v in rows}
     ordinary = (
         by_char.get("ordinary", 0)
-        + by_char.get("stcg", 0)
         + by_char.get("tax_deferred_out", 0)
         - by_char.get("tax_deferred_in", 0)
     )
-    ltcg = by_char.get("ltcg", 0)
-    ss = by_char.get("ss_benefit", 0)
-    return ordinary, ltcg, ss
+    return ordinary, by_char.get("ss_benefit", 0)
+
+
+class CapitalGains(NamedTuple):
+    """One tax year's capital gains after netting (IRC §1211(b), §1212(b)):
+    the short- and long-term gains taxed, the loss deducted from ordinary
+    income, and the loss carried into the next year, by its character."""
+    stcg: int
+    ltcg: int
+    loss_deduction: int
+    carryover_st: int
+    carryover_lt: int
+
+
+def _net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
+    """Net a year's short- and long-term results, each already less its own
+    carryover: a loss in one offsets a gain in the other, then up to the
+    limit of what's left offsets ordinary income, short-term loss first, and
+    the rest carries forward keeping its character."""
+    if st < 0 < lt or lt < 0 < st:
+        net = st + lt
+        if net >= 0:
+            st, lt = (net, 0) if st > 0 else (0, net)
+        else:
+            st, lt = (net, 0) if st < 0 else (0, net)
+    loss_st, loss_lt = max(0, -st), max(0, -lt)
+    deduction = min(limit(), loss_st + loss_lt) if loss_st + loss_lt else 0
+    used_st = min(loss_st, deduction)
+    return CapitalGains(
+        max(0, st), max(0, lt), deduction,
+        loss_st - used_st, loss_lt - (deduction - used_st),
+    )
+
+
+def _capital_gains(
+    con, *, tax_year: int, loss_limit: Callable[[int], int],
+) -> CapitalGains:
+    """``tax_year``'s capital gains: its ``stcg``/``ltcg`` legs (a withdrawal at
+    a loss posts a negative one) less its ``capital_loss`` records, netted
+    with the carryover from every earlier year, each of which used up to its
+    own year's ``loss_limit``."""
+    year_of = "COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER))"
+    totals: dict[int, list[int]] = {}
+    for table, sign in (("transfer_event", 1), ("capital_loss", -1)):
+        for year, character, amount in con.execute(
+            f"SELECT {year_of} AS y, tax_character, COALESCE(SUM(amount), 0) "
+            f"FROM {table} WHERE tax_character IN ('stcg', 'ltcg') AND {year_of} <= ? "
+            "GROUP BY y, tax_character",
+            (tax_year,),
+        ):
+            totals.setdefault(int(year), [0, 0])[1 if character == "ltcg" else 0] += sign * int(amount)
+    carry_st = carry_lt = 0
+    result = CapitalGains(0, 0, 0, 0, 0)
+    for year in range(min(totals, default=tax_year), tax_year + 1):
+        st, lt = totals.get(year, (0, 0))
+        result = _net_capital(
+            st - carry_st, lt - carry_lt, functools.partial(loss_limit, year),
+        )
+        carry_st, carry_lt = result.carryover_st, result.carryover_lt
+    return result
 
 
 def _active_filing_status(

@@ -90,6 +90,7 @@ type ItemType = Literal[
     "aux_table",
     "scenario",
     "tax_year_summary",
+    "capital_loss",
     "year_to_date",
     "person",
     "security",

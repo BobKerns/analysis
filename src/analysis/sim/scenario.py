@@ -105,7 +105,9 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
         role_dir = target / "chains" / role
         role_dir.mkdir(parents=True)
         (role_dir / ".gitignore").write_text("", encoding="utf-8")
-    pd.DataFrame(columns=list(chain_edit.CHAIN_COLUMNS)).to_csv(
+    pd.DataFrame(columns=[  # the example is a source chain, which takes no tax columns
+        c for c in chain_edit.CHAIN_COLUMNS if c not in chain_edit.TAX_COLUMNS
+    ]).to_csv(
         target / "chains" / "source" / "_example.csv", index=False,
     )
     cli._append_csv_row(
