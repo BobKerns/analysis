@@ -260,6 +260,47 @@ def test_sim_networth_cpi_constant_deflates_later_months(retire_alice_run_file: 
     assert cents(real[-1]) < cents(nominal[-1])
 
 
+def test_sim_networth_says_when_a_run_has_no_cpi_index(
+    retire_alice_run_file: Path, tmp_path: Path,
+) -> None:
+    """A run without a 'cpi' inflation index fails with a hint, rather than
+    printing a header over no rows."""
+    runfile = tmp_path / retire_alice_run_file.name
+    runfile.write_bytes(retire_alice_run_file.read_bytes())
+    con = sqlite3.connect(runfile)
+    try:
+        con.execute("DELETE FROM inflation_index_state WHERE series = 'cpi'")
+        con.commit()
+    finally:
+        con.close()
+    runner = CliRunner()
+    result = runner.invoke(main, ["sim", "networth", "--runfile", str(runfile)])
+    assert result.exit_code != 0
+    assert "no 'cpi' inflation index" in result.output
+    assert "--dollars nominal" in result.output
+    nominal = runner.invoke(
+        main, ["sim", "networth", "--dollars", "nominal", "--runfile", str(runfile)],
+    )
+    assert nominal.exit_code == 0, nominal.output
+
+
+def test_sim_explain_year_end_net_worth_has_both_dollar_modes(
+    retire_alice_run_file: Path,
+) -> None:
+    """explain's year-end rows carry nominal and CPI-constant values, the
+    same figures `sim networth` prints in each mode."""
+    runner = CliRunner()
+    explain = runner.invoke(main, ["sim", "explain", str(retire_alice_run_file)]).output
+    lines = explain.split("year-end net worth:", 1)[1].splitlines()
+    last_year = [line for line in lines if line.startswith("  20")][-1]
+    nominal, real = last_year.split("$")[1:]
+    args = ["sim", "networth", "--runfile", str(retire_alice_run_file)]
+    expected_nominal = runner.invoke(main, [*args, "--dollars", "nominal"]).output
+    expected_real = runner.invoke(main, args).output
+    assert expected_nominal.splitlines()[-1].split("$")[1].strip() == nominal.strip()
+    assert expected_real.splitlines()[-1].split("$")[1].strip() == real.strip()
+
+
 def test_sim_networth_refuses_a_scenario_and_runfile_together(
     retire_alice_run_file: Path,
 ) -> None:

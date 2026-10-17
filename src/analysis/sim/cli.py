@@ -1794,6 +1794,15 @@ def networth_command(
         rows = con.execute(
             f"SELECT month, {column} FROM {view} {where}ORDER BY month"
         ).fetchall()
+        if not rows and view != "net_worth" and con.execute(
+            "SELECT 1 FROM net_worth LIMIT 1"
+        ).fetchone():
+            # The CPI view joins the run's 'cpi' inflation index; a run without
+            # one has net worth but nothing to deflate it by.
+            raise click.ClickException(
+                f"{runfile.name} has no 'cpi' inflation index, so no CPI-constant "
+                "net worth; pass --dollars nominal"
+            )
     finally:
         con.close()
     label = "CPI-constant" if dollars == DollarMode.CPI_CONSTANT else "nominal"
