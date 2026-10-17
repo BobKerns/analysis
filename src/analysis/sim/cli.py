@@ -8996,10 +8996,29 @@ def _person_options(f: Callable[..., None]) -> Callable[..., None]:
     return f
 
 
-def _write_persons(data_dir: Path, scenario: str | None, df: pd.DataFrame) -> None:
-    """persons.csv, written only if every scenario still loads with it."""
+def _file_bytes(path: Path) -> bytes | None:
+    return path.read_bytes() if path.exists() else None
+
+
+def _require_unchanged(edit: StagedEdit, real: Path, before: bytes | None) -> None:
+    """Refuse an edit built from ``real`` as it was (``before``) once the
+    staged copy shows it changed since: writing the frame read then would
+    silently undo that change. ``staged_edit`` only catches changes made
+    after it staged the file."""
+    if _file_bytes(edit.path(real)) != before:
+        raise click.ClickException(
+            f"changed on disk while this edit was in progress; nothing was written: {real}")
+
+
+def _write_persons(
+    data_dir: Path, scenario: str | None, df: pd.DataFrame, before: bytes | None,
+) -> None:
+    """persons.csv, written only if every scenario still loads with it, and
+    only if it is still as it was (``before``) when ``df`` was read."""
+    path = data_dir / "persons.csv"
     with _scenario_edit(data_dir, scenario) as edit:
-        df.to_csv(edit.path(data_dir / "persons.csv"), index=False)
+        _require_unchanged(edit, path, before)
+        df.to_csv(edit.path(path), index=False)
 
 
 @person_group_command.command("add")
@@ -9016,6 +9035,7 @@ def person_add(
     """
     data = _resolve_data_dir(data_dir)
     path = data / "persons.csv"
+    before = _file_bytes(path)
     df = _read_persons(path)
     person_id = person_id.strip()
     if not person_id:
@@ -9027,7 +9047,7 @@ def person_add(
         display=display, birthdate=birthdate, role=role, meta_json=meta_json,
     )
     row = pd.DataFrame([{"id": person_id, **fields}])
-    _write_persons(data, scenario, pd.concat([df, row], ignore_index=True).fillna(""))
+    _write_persons(data, scenario, pd.concat([df, row], ignore_index=True).fillna(""), before)
     click.echo(f"added person '{person_id}' to {path} ({_SHARED_PERSONS_NOTE})")
 
 
@@ -9046,6 +9066,7 @@ def person_edit(
     """
     data = _resolve_data_dir(data_dir)
     path = data / "persons.csv"
+    before = _file_bytes(path)
     df = _read_persons(path)
     matches = df.index[df["id"] == person_id.strip()]
     if len(matches) == 0:
@@ -9063,7 +9084,7 @@ def person_edit(
         return
     for column, value in fields.items():
         df.at[idx, column] = value
-    _write_persons(data, scenario, df)
+    _write_persons(data, scenario, df, before)
     click.echo(f"changed person '{current['id']}' in {path} ({_SHARED_PERSONS_NOTE})")
 
 
@@ -9099,9 +9120,11 @@ def lifespan_set(
     persons = set(_read_persons(data / "persons.csv")["id"])
     if person not in persons:
         raise click.ClickException(f"unknown person {person!r}; persons: {sorted(persons)}")
+    before = _file_bytes(path)
     found = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
     df = _own_lifespans(path)
     with _scenario_edit(data, scenario_name) as edit:
+        _require_unchanged(edit, path, before)
         _append_csv_row(
             edit.path(path), registries.LIFESPAN_CSV_HEADER,
             {"person": person, "final_month": final_month},
@@ -9129,6 +9152,7 @@ def lifespan_clear(person: str, scenario: str | None, data_dir: Path | None) -> 
     scenario_dir, scenario_name = _resolve_scenario_dir(data, scenario)
     path = scenario_dir / "lifespan.csv"
     person = person.strip()
+    before = _file_bytes(path)
     found = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
     if found is None:
         raise click.ClickException(f"{person!r} has no lifespan in scenario {scenario_name!r}")
@@ -9141,6 +9165,7 @@ def lifespan_clear(person: str, scenario: str | None, data_dir: Path | None) -> 
     df = _own_lifespans(path)
     remaining = df.drop(index=df.index[found.index])
     with _scenario_edit(data, scenario_name) as edit:
+        _require_unchanged(edit, path, before)
         if remaining.empty:
             edit.path(path).unlink()
         else:

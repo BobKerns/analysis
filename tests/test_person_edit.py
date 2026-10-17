@@ -108,6 +108,26 @@ def test_person_edit_asks_with_current_values_as_defaults(
         **before, "birthdate": "1967-09-01", "meta_json": '{"note": 1}'}
 
 
+def test_person_edit_refuses_when_persons_csv_changes_meanwhile(
+    sim: Callable[..., Result], test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A change made while the command prompts isn't undone by writing the
+    file as it was read."""
+    persons = test_data_dir / "persons.csv"
+
+    def role_prompt(*_args: object, **_kwargs: object) -> str:
+        persons.write_text(persons.read_text() + "carol,Carol (fake),1995-02-03,,{}\n")
+        return ""
+    monkeypatch.setattr("analysis.sim.cli._prompt_with_completion", role_prompt)
+
+    result = sim("person", "edit", "bill", input="\n1967-09-01\n{}\n")
+
+    assert result.exit_code != 0
+    assert "changed on disk" in result.output
+    assert set(_persons(test_data_dir)) == {"alice", "bill", "joint", "carol"}
+    assert _persons(test_data_dir)["bill"]["birthdate"] == "1967-08-20"
+
+
 def test_person_edit_of_an_unknown_person_fails(sim: Callable[..., Result]) -> None:
     result = sim("person", "edit", "nobody", "--role", "primary")
 
