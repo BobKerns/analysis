@@ -1729,13 +1729,12 @@ def test_sim_calendar_add_set_rate_can_target_an_inflation_series(
     assert row["vary_low"] == "2%" and row["vary_high"] == "4%"
 
 
-def test_sim_calendar_add_set_rate_warns_on_series_nothing_reads(
+def test_only_check_warns_of_a_set_rate_series_nothing_reads(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
-    """Nothing in the scenario reads (inflation, 'no_such_series'), and only
-    the loader knows that, so `calendar add` loads a staged copy (issue #44)
-    and passes on its warning. It still writes the row (issue #92): a mix-in
-    may set a series only the scenarios inheriting from it read."""
+    """Nothing in the scenario reads (inflation, 'no_such_series'). `calendar
+    add` still writes the row (issue #92): a mix-in may set a series only the
+    scenarios inheriting from it read. So only `sim check` warns (#204)."""
     path = retire_alice_csv("calendar.csv")
     runner = CliRunner()
     result = runner.invoke(
@@ -1747,8 +1746,11 @@ def test_sim_calendar_add_set_rate_warns_on_series_nothing_reads(
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "WARN:" in result.output and "is never read" in result.output
+    assert "WARN:" not in result.output
     assert "no_such_series" in path.read_text()
+    check = runner.invoke(main, ["sim", "check", "retire_alice", "--data-dir", str(test_data_dir)])
+    assert check.exit_code == 0, check.output
+    assert "WARN:" in check.output and "is never read" in check.output
 
 
 def test_sim_run_ensemble_resolves_an_inflation_series_vary(

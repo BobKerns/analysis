@@ -1748,7 +1748,7 @@ def test_calendar_set_rate_series_nothing_reads_warns(
     """A set_rate row's (series, aux_kind) pair that no scheduled.csv rule
     (or account growth series) ever reads is a silent no-op at run time --
     its drawn/literal value lands in aux_table but nothing looks it up. It's
-    a warning, not an error (#92): a mix-in may set a series only the
+    an unused warning, not an error (#92): a mix-in may set a series only the
     scenarios inheriting from it read."""
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="typo_series",
@@ -1760,7 +1760,7 @@ def test_calendar_set_rate_series_nothing_reads_warns(
     assert any(
         "set_rate series 'mutual_fund' under aux_kind 'inflation' is never read"
         in warning
-        for warning in result.warnings
+        for warning in result.unused
     )
 
 

@@ -78,7 +78,12 @@ class LoadResult:
     counts: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     """Problems worth telling the author about that don't stop the load
-    (ADR-008: e.g. a latent factor nothing depends on yet)."""
+    (e.g. an allocation with rate series for only some of its classes)."""
+    unused: list[str] = field(default_factory=list)
+    """Things defined but not read yet: a latent factor with no dependents,
+    a set_rate series nothing reads, vary_tail_dependence on a row nothing
+    correlates with. Often deliberate (work in progress, or meant for child
+    scenarios), so only `sim check` prints them (#204)."""
 
 
 class LoadError(ValueError):
@@ -841,6 +846,7 @@ def load_scenario(
 
     issues: list[str] = []
     warnings: list[str] = []
+    unused: list[str] = []
 
     persons = _read_csv(data_dir / "persons.csv", issues)
     _validate_birthdates(persons, issues)
@@ -900,9 +906,9 @@ def load_scenario(
         calendar_rows, leaves, set(chains), issues,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
     )
-    _validate_calendar_correlation(calendar_rows, issues, warnings)
+    _validate_calendar_correlation(calendar_rows, issues, unused)
     _validate_series_references(
-        scheduled_rows, calendar_rows, aux_rows, chains, issues, warnings,
+        scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
     _validate_chains(chains, value_rows, leaves, issues, money_resolver=money_resolver)
@@ -992,7 +998,8 @@ def load_scenario(
     return LoadResult(intent_path=intent_path,
                       scenario_name=scenario_name,
                       counts=counts,
-                      warnings=warnings)
+                      warnings=warnings,
+                      unused=unused)
 
 
 # ---------- CSV reading ----------
@@ -2552,7 +2559,7 @@ an authored distribution (ADR-008 §3)."""
 
 
 def _validate_calendar_correlation(
-    rows: list[dict[str, str]], issues: list[str], warnings: list[str],
+    rows: list[dict[str, str]], issues: list[str], unused_warnings: list[str],
 ) -> None:
     """ADR-008 §4, over the merged calendar (so a child scenario's row can
     name a parent scenario's factor): latent_factor rows are named and carry
@@ -2670,7 +2677,7 @@ def _validate_calendar_correlation(
             )
         elif name not in used and rows[i - 2].get("kind") != registries.LATENT_FACTOR_KIND:
             # (An unused factor gets its own warning below.)
-            warnings.append(
+            unused_warnings.append(
                 f"{_where(rows[i - 2], 'calendar.csv', i)} ({name}): vary_tail_dependence on a row nothing correlates "
                 "with affects nothing yet (it acts only on the rows of the tree below it)"
             )
@@ -2693,14 +2700,14 @@ def _validate_calendar_correlation(
     ]
     if len(unused) == 1:
         name, i = unused[0]
-        warnings.append(
+        unused_warnings.append(
             f"{_where(rows[i - 2], 'calendar.csv', i)} ({name}): latent_factor has no dependents yet, so it "
             "affects nothing (fine for work in progress, or a factor for child scenarios)"
         )
     elif unused:
         # One line, not one per factor: a scenario that defines a factor
         # structure for its children (#80) has many, and they'd bury the rest.
-        warnings.append(
+        unused_warnings.append(
             f"calendar.csv: {len(unused)} latent_factors have no dependents yet, so they "
             "affect nothing (fine for work in progress, or factors for child scenarios): "
             + ", ".join(name for name, _ in unused)
@@ -2834,7 +2841,7 @@ def _validate_series_references(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     issues: list[str],
-    warnings: list[str],
+    unused_warnings: list[str],
 ) -> None:
     """Cross-check every `(aux_kind, series)` pair a scheduled.csv rule or a
     chains/*.csv step reads against every pair something actually supplies,
@@ -2851,10 +2858,10 @@ def _validate_series_references(
     literal value lands in `aux_table` but nothing ever looks it up, so it
     never affects a run (this is what varying the wrong `series`/`aux_kind`
     pair under ADR-006 looks like -- every member ends up bit-identical).
-    That direction is only a warning (#92): a mix-in or base scenario can
-    set a series that only the scenarios inheriting from it read, and each
-    scenario is validated on its own. A
-    chain step's own `series` (inflating its `maximum` cap over time --
+    That direction is only a warning, which only `sim check` prints (#92,
+    #204): a mix-in or base scenario can set a series that only the
+    scenarios inheriting from it read, and each scenario is validated on its
+    own. A chain step's own `series` (inflating its `maximum` cap over time --
     `engine._chain_step_allocation`) always reads `aux_kind='inflation'`,
     same as `fixed_amount`/`ss_benefit`, and only actually gets read when
     `maximum` is also set (`_validate_chains` separately flags `series`
@@ -2932,7 +2939,7 @@ def _validate_series_references(
             continue
         aux_kind = params.get("aux_kind", "rate")
         if (aux_kind, series) not in demanded:
-            warnings.append(
+            unused_warnings.append(
                 f"{where}: set_rate series '{series}' under "
                 f"aux_kind '{aux_kind}' is never read by any scheduled.csv "
                 "row (percent_of_balance/fixed_amount/ss_benefit) or "

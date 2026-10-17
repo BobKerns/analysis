@@ -277,14 +277,16 @@ def _check_scenario(data_dir: Path, name: str) -> None:
             for issue in exc.issues:
                 click.echo(f"  error: {issue}", err=True)
             raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
-    _echo_load_warnings(result)
+    _echo_load_warnings(result, unused=True)
     click.echo("ok")
 
 
-def _echo_load_warnings(result: LoadResult) -> None:
-    """Print a load's non-fatal warnings (ADR-008: e.g. an unused latent
-    factor) to stderr, the way errors are printed, without failing."""
-    for warning in result.warnings:
+def _echo_load_warnings(result: LoadResult, *, unused: bool = False) -> None:
+    """Print a load's non-fatal warnings to stderr, the way errors are
+    printed, without failing. Warnings about things defined but not read yet
+    (an unused latent factor or set_rate series) are often deliberate, so
+    only `sim check` asks for them (``unused=True``, #204)."""
+    for warning in [*result.warnings, *(result.unused if unused else ())]:
         click.echo(f"WARN: {warning}", err=True)  # ADR-004 §6's format
 
 
@@ -3519,8 +3521,8 @@ def calendar_add_latent_factor(
     inflation regime") that varying rows correlate with through
     --vary-correlate-with, but that isn't itself a modeled value.
 
-    A factor with no dependents yet loads with a warning. NAME is asked for
-    if left out.
+    A factor with no dependents yet affects nothing; `sim check` warns of
+    it. NAME is asked for if left out.
     """
     name = _ask_missing_arguments("latent-factor", data_dir, scenario, name=name)["name"]
     data_dir_p = _resolve_data_dir(data_dir)

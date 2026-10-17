@@ -299,8 +299,8 @@ tabulates the correlations, medians and spreads of inflation categories and
 returns over the past century and in named episodes, and has a script to
 compute them for other series and years.
 
-A factor nothing depends on yet loads with a `WARN:` line rather than an
-error. That's fine for work in progress, or for a factor defined in a
+A factor nothing depends on yet loads without error, and `sim check` notes
+it with a `WARN:` line. That's fine for work in progress, or for a factor defined in a
 parent scenario for its child scenarios to use.
 
 ### Joint extremes (tail dependence)
@@ -360,7 +360,7 @@ sim calendar add latent-factor economy --scenario inflation_1 \
   it. On a row with a parent it's a load error naming the tree's root. On a
   final rate with no parent and nothing under it, it would only stretch
   that one rate's score, which is mapped straight back to the rate's own
-  range, so it does nothing (and loads with a `WARN:` line).
+  range, so it does nothing (and `sim check` notes it with a `WARN:` line).
 - **Each row still keeps exactly its own distribution.** Only how often
   the rows' extremes coincide changes.
 - **Lower ν means more tail dependence.** About 3 (strong) to 30 (barely

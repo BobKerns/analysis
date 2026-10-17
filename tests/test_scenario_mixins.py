@@ -220,12 +220,12 @@ def test_a_mixins_set_rate_warns_alone_and_is_read_by_its_child(
     derive_scenario("combo", f"{PARENT}:mix_housing",
                     {"scheduled.csv": living.to_csv(index=False)})
 
-    def _warnings(name: str) -> list[str]:
+    def _unused(name: str) -> list[str]:
         return load_scenario(test_data_dir, name, intent_dir=intent_dir / name,
-                             allow_dirty_data=True).warnings
+                             allow_dirty_data=True).unused
 
-    assert any("'housing'" in w and "is never read" in w for w in _warnings("mix_housing"))
-    assert not any("'housing'" in w for w in _warnings("combo"))
+    assert any("'housing'" in w and "is never read" in w for w in _unused("mix_housing"))
+    assert not any("'housing'" in w for w in _unused("combo"))
 
 
 # -- provenance and staging -------------------------------------------------
