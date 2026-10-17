@@ -137,16 +137,17 @@ def _regenerate_more_link(description: str, data_dir: Path) -> str:
 
 def readme_description(scenario_dir: Path, data_dir: Path) -> str | None:
     """``scenario_dir/README.md``'s title + first paragraph, formatted for
-    ``scenario.description`` -- ``None`` if there's no README.md (or it has
-    nothing to extract), so the caller keeps ``scenario.csv``'s own
-    description unchanged.
+    ``scenario.description`` -- ``None`` if there's no README.md, so the
+    caller keeps ``scenario.csv``'s own description. A README.md with nothing
+    to extract still wins: its description is "" (ADR-003 §4.1e), not
+    scenario.csv's.
     """
     path = Path(scenario_dir) / "README.md"
     if not path.is_file():
         return None
     summary = parse_readme_summary(path.read_text(encoding="utf-8"))
     if not summary.title and not summary.paragraph:
-        return None
+        return ""
     parts = []
     if summary.title:
         parts.append(f"# {summary.title}")

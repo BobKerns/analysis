@@ -237,3 +237,14 @@ def test_scenario_show_inherits_the_description_and_skips_a_plain_scenarios_batc
 
     assert shown.description == "The parent's words."
     assert shown.latest_batch is None
+
+
+def test_scenario_show_takes_a_blank_readme_over_scenario_csv(
+    derive_scenario: Callable[..., Path], runs_dir: Path,
+) -> None:
+    child = derive_scenario("child", "retire_alice", files={"README.md": "\n"},
+                            description="Not shown: the README.md wins.")
+
+    shown = setup_listings.scenario_show(child.parent.parent, child, runs_dir)
+
+    assert shown.description == ""
