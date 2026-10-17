@@ -23,6 +23,12 @@ class ScenarioCycleError(ValueError):
         self.path = path
 
 
+def default_description(parents: list[str]) -> str:
+    """The ``description`` ``scenario create`` writes when given none; a
+    rename or a parents edit keeps it in step with the parents it names."""
+    return f"Derived from {' + '.join(parents)}"
+
+
 def parse_parents(value: str | None) -> list[str]:
     """The names in a ``parent_scenario`` cell, main parent first."""
     return [name for name in (part.strip() for part in (value or "").split(":")) if name]
