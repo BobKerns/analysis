@@ -122,6 +122,12 @@ matched to its override by its date, kind, rule, accounts, lots, series
 and amount, so changing one of those is refused: name the row in the scenario
 it comes from first.
 
+`sim calendar delete` picks a row the same way and deletes it once you
+confirm. A row that other rows correlate with is refused until they no
+longer name it, and so is an inherited row (delete it where it comes from);
+deleting this scenario's override of an inherited row brings that row
+back. `sim calendar tag add|rm ROW TAG...` changes a row's tags.
+
 **Choosing a distribution.** Four are available:
 
 - **`uniform`** (`--vary-low`, `--vary-high`): anything in the range is
