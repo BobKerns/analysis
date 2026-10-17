@@ -1,5 +1,6 @@
 # Scenario descriptions for the notebook UI
 
+import functools
 import html
 from collections.abc import Collection
 
@@ -10,7 +11,7 @@ from IPython.display import Markdown, display
 from ipywidgets import widgets
 
 from analysis.sim import chain_map
-from analysis.sim.chain_graph import MERMAID_URL
+from analysis.sim.chain_graph import MERMAID_SCRIPT
 from analysis.sim.notebook_ui.scenario_view import UNUSED, calendar_view, chain_table
 
 
@@ -86,50 +87,89 @@ def show_chains(sc, **_):
     return scrollable(_fit_to_width(styled, nowrap=["step", "maximum", "percent", "cadence"]))
 
 
+@functools.cache
+def _mermaid_gz() -> bytes:
+    return MERMAID_SCRIPT.read_bytes()
+
+
 class MermaidWidget(anywidget.AnyWidget):
     """Draws the Mermaid source ``chart``, again whenever it changes. A widget
     carries its own JavaScript, so it draws in VS Code, which runs no script
-    an Output widget's HTML holds, as well as in JupyterLab."""
+    an Output widget's HTML holds, as well as in JupyterLab.
+
+    It draws with the Mermaid the CLI uses, shipped with the package, so it
+    needs no network (issue #176). The gzipped script (about 1 MB) goes to
+    the front end with each widget, as a binary buffer; the first widget on
+    the page unpacks and runs it, and the rest reuse that copy."""
 
     # VS Code's widget renderer loads RequireJS, so a global ``define`` is
     # there, and the UMD-wrapped libraries Mermaid bundles call it instead
     # of filling in their exports: 11.17.2 fails as it loads (issue #153).
-    # Hiding ``define`` during the import sends them down their CommonJS
+    # Hiding ``define`` while the script runs sends them down their CommonJS
     # path, as in JupyterLab. Each widget runs this module afresh, so the
-    # import is shared through the page: a second widget loading while the
+    # load is shared through the page: a second widget loading while the
     # first waits would otherwise save the hidden ``undefined`` and restore it.
-    _esm = f"""
+    # The script is npm's classic one, which leaves Mermaid on
+    # ``globalThis.mermaid``; run as a module, its top-level names would stay
+    # in the module and it fails. So it runs from a <script> tag, with a
+    # blob: URL, which a page's content security policy treats like the
+    # blob: URL anywidget imports this module from.
+    _esm = """
     const loading = Symbol.for("analysis.MermaidWidget.mermaid");
-    globalThis[loading] ??= (async () => {{
-        const define = globalThis.define;
-        globalThis.define = undefined;
-        try {{
-            return (await import("{MERMAID_URL}")).default;
-        }} finally {{
-            globalThis.define = define;
-        }}
-    }})();
-    const mermaid = await globalThis[loading];
-    mermaid.initialize({{startOnLoad: false}});
+    function load(model) {
+        globalThis[loading] ??= (async () => {
+            const gzipped = new Blob([model.get("_mermaid_gz")]);
+            const script = await new Response(
+                gzipped.stream().pipeThrough(new DecompressionStream("gzip"))).text();
+            const url = URL.createObjectURL(new Blob([script], {type: "text/javascript"}));
+            const tag = document.createElement("script");
+            tag.src = url;
+            const define = globalThis.define;
+            globalThis.define = undefined;
+            try {
+                await new Promise((resolve, reject) => {
+                    tag.onload = resolve;
+                    tag.onerror = () => reject(new Error("couldn't run the Mermaid script"));
+                    document.head.append(tag);
+                });
+            } finally {
+                globalThis.define = define;
+                tag.remove();
+                URL.revokeObjectURL(url);
+            }
+            // A script that throws still fires onload, and leaves no Mermaid.
+            const mermaid = globalThis.mermaid;
+            if (!mermaid) throw new Error("the Mermaid script didn't load");
+            mermaid.initialize({startOnLoad: false});
+            return mermaid;
+        })();
+        return globalThis[loading];
+    }
     let drawn = 0;
-    function render({{model, el}}) {{
-        async function draw() {{
+    function render({model, el}) {
+        async function draw() {
             const chart = model.get("chart");
-            try {{
-                const {{svg}} = await mermaid.render(`chain-flow-${{++drawn}}`, chart);
+            try {
+                const mermaid = await load(model);
+                const {svg} = await mermaid.render(`chain-flow-${++drawn}`, chart);
                 el.innerHTML = svg;
-            }} catch (error) {{
+            } catch (error) {
                 // Show the source, so a chart Mermaid can't draw is still readable.
-                el.textContent = `${{error}}\n\n${{chart}}`;
+                el.textContent = `${error}\n\n${chart}`;
                 el.style.whiteSpace = "pre";
-            }}
-        }}
+            }
+        }
         model.on("change:chart", draw);
         draw();
-    }}
-    export default {{render}};
+    }
+    export default {render};
     """
     chart = traitlets.Unicode("").tag(sync=True)
+    _mermaid_gz = traitlets.Bytes().tag(sync=True)
+
+    @traitlets.default("_mermaid_gz")
+    def _default_mermaid_gz(self) -> bytes:
+        return _mermaid_gz()
 
 
 def show_chain_flow(sc, chain: str | None = None, **_):
