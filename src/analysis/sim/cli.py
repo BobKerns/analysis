@@ -108,7 +108,7 @@ from analysis.sim.staging import (
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day, parse_vary_date,
 )
-from analysis.sim.lineage import load_order, parse_parents
+from analysis.sim.lineage import default_description, load_order, parse_parents, read_parents
 from analysis.frames import named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
 from analysis.sim.schema import connect_sim_file
@@ -8626,10 +8626,6 @@ def _edit_scenario(
         raise click.UsageError("--seed and --new-seed are exclusive")
     values: dict[str, str] = {}
     meta: dict[str, object | None] = {}
-    if description is not None:
-        if not description.strip():
-            raise click.BadParameter("a description can't be blank", param_hint="--description")
-        values["description"] = description.strip()
     for column, given in (("start", start), ("end", end)):
         if given is not None:
             values[column] = _validate_month_date(given) if given.strip() else ""
@@ -8643,6 +8639,19 @@ def _edit_scenario(
         if len(set(names)) != len(names):
             raise click.BadParameter("a scenario is named twice", param_hint="--parents")
         values["parent_scenario"] = ":".join(names)
+    if description is not None:
+        if description.strip():
+            values["description"] = description.strip()
+        else:
+            # Blank: back to the default `scenario create` writes. Not the
+            # parent's own, which a blank cell would inherit and which
+            # describes the parent.
+            builds_on = parse_parents(values["parent_scenario"]) if "parent_scenario" in values \
+                else read_parents(data / "scenarios" / name)
+            if not builds_on:
+                raise click.BadParameter("a root scenario has no default description; give one",
+                                         param_hint="--description")
+            values["description"] = default_description(builds_on)
     if seed is not None:
         parsed = _blank_or(seed, _whole_number, "--seed")
         values["seed"] = "" if parsed is None else str(parsed)
@@ -8681,7 +8690,8 @@ def _edit_scenario(
 def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
     options = [
         click.argument("name"),
-        click.option("--description", default=None, help="The scenario's description."),
+        click.option("--description", default=None,
+                     help="The scenario's description; '' restores the default, 'Derived from <parents>'."),
         click.option("--start", default=None, help=f"First month ({MONTH_FORMAT_HINT}); '' inherits."),
         click.option("--end", default=None, help=f"Last month ({MONTH_FORMAT_HINT}); '' inherits."),
         click.option("--parents", default=None, metavar="PARENT[:MIXIN...]",

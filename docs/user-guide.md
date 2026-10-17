@@ -119,6 +119,7 @@ command):
 
 ```sh
 sim scenario edit <name> --description "Bill works two more years"
+sim scenario edit <name> --description ''           # back to "Derived from <parents>"
 sim scenario edit <name> --start 2027-01 --end ''   # '' inherits the value again
 sim scenario edit <name> --parents base:high_inflation
 sim scenario edit <name> --size 200 --new-seed --reserve 250000

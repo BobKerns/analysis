@@ -145,6 +145,20 @@ def test_root_parents_keep_the_description(test_child_scenario: Path) -> None:
     assert "Builds on no other scenario." in (test_child_scenario / "README.md").read_text()
 
 
+def test_blank_description_restores_the_default(test_data_dir: Path, test_child_scenario: Path) -> None:
+    assert _sim(test_data_dir, "scenario", "edit", "child", "--description", "Mine").exit_code == 0
+    result = _sim(test_data_dir, "scenario", "edit", "child", "--description", "")
+    assert result.exit_code == 0, result.output
+    assert _row(test_child_scenario)["description"] == "Derived from retire_alice"
+    assert parse_readme_summary((test_child_scenario / "README.md").read_text()).paragraph == (
+        "Derived from `retire_alice`.")
+
+
+def test_blank_description_on_a_root_scenario_is_refused(test_data_dir: Path, test_scenarios_dir: Path) -> None:
+    result = _sim(test_data_dir, "scenario", "edit", "base", "--description", "")
+    assert result.exit_code != 0 and "no default description" in result.output, result.output
+
+
 @pytest.mark.parametrize(("args", "message"), [
     ((), "nothing to change"),
     (("--start", "May 2027"), "date must be"),
@@ -152,7 +166,6 @@ def test_root_parents_keep_the_description(test_child_scenario: Path) -> None:
     (("--seed", "1", "--new-seed"), "exclusive"),
     (("--size", "-1"), "negative"),
     (("--reserve", "1.5%"), "percent"),
-    (("--description", " "), "can't be blank"),
     (("--parents", "nobody"), "scenario not found"),
     (("--parents", "child"), "can't build on itself"),
 ])
