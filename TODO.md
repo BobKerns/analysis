@@ -15,10 +15,6 @@ walk the notebooks and `analysis.sim.notebook_ui`, check each view against `anal
 
 Known gaps (last reviewed 2026-10-17; each has an issue):
 
-- net worth by month, and in CPI-constant dollars: `sim explain` prints year-end values
-  only, and needs a run file's path (#186)
-- negative-balance warnings after a run: printed once while it runs, nothing reads them
-  back (#186)
 - account and lot balance history (`notebooks/accounts.ipynb`): no terminal equivalent (#187)
 - income, expenses by category, realized and unrealized gains, tax by year
   (`notebooks/net_worth.ipynb`): no terminal equivalent (#187)

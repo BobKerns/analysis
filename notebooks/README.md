@@ -35,7 +35,8 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | calendar events of every kind, with their variation | `analysis sim calendar list [--kind KIND] [--tag TAG]` |
 | year-to-date rows | `analysis sim ytd list` |
 | itemizations, their totals and what references them | `analysis sim itemization list`, `analysis sim itemization show NAME` |
-| a run's year-end net worth, and lots | `analysis sim explain <runfile>` |
+| a run's summary: provenance, lots, year-end net worth, negative-balance warnings | `analysis sim explain [SCENARIO \| RUNFILE]` |
+| net worth by year or month, nominal or CPI-constant | `analysis sim networth [SCENARIO] [--monthly] [--dollars nominal\|cpi_constant]` |
 | every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
 | an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]]` |
 | two ensembles compared on risk: percentile, paired and tail-mean deltas | `analysis sim ensemble compare <baseline> <variant> [--account NAME [--lot LOT]]` |
