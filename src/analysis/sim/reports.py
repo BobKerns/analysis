@@ -22,6 +22,7 @@ from analysis.sim.connection import (
     INCOME_SUBKIND_TO_CATEGORY,
     NON_CASH_EXPENSE_ACCOUNTS,
     RunConnection,
+    event_month,
     year_end_values,
 )
 from analysis.sim.types import DollarMode
@@ -50,16 +51,10 @@ _RULE_REASONS = ("rule", "ytd_rule")
 
 def _cpi(rc: RunConnection, frame, mode: DollarMode, *, annual: bool = False):
     """``frame`` in ``mode`` dollars: month-indexed, or year-indexed with
-    ``annual`` (each year's year-end CPI). A month or year before the run's
-    first, such as a year-to-date row's, takes the first one's CPI: the run
-    has no index for earlier ones."""
+    ``annual`` (each year's year-end CPI)."""
     if mode != DollarMode.CPI_CONSTANT:
         return frame
-    cpi = rc.cpi_index().dropna()
-    if annual:
-        cpi = cpi.groupby(index_years(cpi)).last()
-    lookup = pd.Series(frame.index).clip(cpi.index.min(), cpi.index.max())
-    return frame.mul(1_000_000 / cpi.reindex(lookup).to_numpy(), axis=0)
+    return rc.to_cpi_constant_annual(frame) if annual else rc.to_cpi_constant(frame)
 
 
 def account_history(
@@ -145,7 +140,7 @@ def _flow_events(rc: RunConnection, side: FlowSide) -> pd.DataFrame:
         prefix = "to"
     events = events.rename(columns={f"{prefix}_name": "account", f"{prefix}_subkind": "subkind"})
     events = events[["date", "amount", "reason_kind", "reason_id", "account", "subkind"]].copy()
-    events["month"] = pd.to_datetime(events["date"]) + pd.offsets.MonthEnd(0)
+    events["month"] = event_month(events)
     return events.drop(columns="date")
 
 

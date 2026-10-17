@@ -75,6 +75,10 @@ def test_gains_count_a_prior_years_catch_up_in_that_year(report_run: RunConnecti
     assert gains.loc[2025, "unrealized"] == pytest.approx(-1_500)  # it never reaches cash
     constant = reports.gains_by_year(report_run, DollarMode.CPI_CONSTANT)
     assert constant.loc[2025].notna().all()
+    # Expenses count by date too, so each year's coverage matches the expense report.
+    expenses = reports.flows_by_year(report_run, "expenses")["total"]
+    assert gains["expenses"].to_numpy() == pytest.approx(
+        expenses.reindex(gains.index).fillna(0).to_numpy())
 
 
 def test_tax_by_year_leaves_after_tax_income(report_run: RunConnection) -> None:
