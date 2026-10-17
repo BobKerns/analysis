@@ -106,11 +106,13 @@ def test_readme_description_no_pointer_when_its_the_whole_document(tmp_path: Pat
     assert readme_description(scenario_dir, data_dir=tmp_path) == "# Base\n\nThe primary plan."
 
 
-def test_readme_description_none_for_an_empty_readme(tmp_path: Path) -> None:
+def test_readme_description_blank_for_an_empty_readme(tmp_path: Path) -> None:
+    # An existing README.md wins even when blank; scenario.csv's description
+    # is only for a scenario with no README.md at all (ADR-003 §4.1e).
     scenario_dir = tmp_path / "scenarios/empty"
     scenario_dir.mkdir(parents=True)
     (scenario_dir / "README.md").write_text("\n")
-    assert readme_description(scenario_dir, data_dir=tmp_path) is None
+    assert readme_description(scenario_dir, data_dir=tmp_path) == ""
 
 
 def test_regenerate_more_link_repoints_a_markdown_link_at_a_new_data_dir(
