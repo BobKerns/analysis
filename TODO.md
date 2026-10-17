@@ -19,9 +19,6 @@ Known gaps (last reviewed 2026-10-17; each has an issue):
   only, and needs a run file's path (#186)
 - negative-balance warnings after a run: printed once while it runs, nothing reads them
   back (#186)
-- account and lot balance history (`notebooks/accounts.ipynb`): no terminal equivalent (#187)
-- income, expenses by category, realized and unrealized gains, tax by year
-  (`notebooks/net_worth.ipynb`): no terminal equivalent (#187)
 - plain-run scenario comparison (account and lot definition differences, rule and event
   differences, net worth differences, break-even): only `sim ensemble compare`, which is
   ensembles' risk only (#188)

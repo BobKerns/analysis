@@ -36,6 +36,10 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | year-to-date rows | `analysis sim ytd list` |
 | itemizations, their totals and what references them | `analysis sim itemization list`, `analysis sim itemization show NAME` |
 | a run's year-end net worth, and lots | `analysis sim explain <runfile>` |
+| balance history of an account or lot (`accounts.ipynb`) | `analysis sim account history ACCOUNT [--lot LOT] [--yearly]` |
+| income and expenses by category (`net_worth.ipynb`) | `analysis sim report income`, `analysis sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
+| realized vs. unrealized gains (`net_worth.ipynb`) | `analysis sim report gains` |
+| after-tax income and tax reconciliation (`net_worth.ipynb`) | `analysis sim report tax [--reconciliation]` |
 | every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
 | an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]]` |
 | two ensembles compared on risk: percentile, paired and tail-mean deltas | `analysis sim ensemble compare <baseline> <variant> [--account NAME [--lot LOT]]` |
