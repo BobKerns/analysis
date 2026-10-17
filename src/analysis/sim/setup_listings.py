@@ -277,6 +277,36 @@ class ItemizationReference:
     column: str
 
 
+# The columns whose cells the loader reads as money, by file name, so an
+# ``@name`` there is an itemization reference. Anywhere else ``@name`` is
+# plain text to the loader, not a reference.
+_LOT_MONEY_COLUMNS = frozenset({
+    "opening_balance", "opening_cost_basis", "prior_year_end_balance",
+    "minimum_balance", "maximum_balance", "refill_target", "refill_amount",
+})
+_MONEY_COLUMNS_BY_FILE: dict[str, frozenset[str]] = {
+    "accounts.csv": _LOT_MONEY_COLUMNS,
+    "account_values.csv": _LOT_MONEY_COLUMNS,
+    "scheduled.csv": frozenset({"amount", "ytd_amount"}),
+    "year_to_date.csv": frozenset({"amount"}),
+}
+
+
+def _money_columns(path: Path) -> frozenset[str]:
+    """The columns of ``path`` the loader reads ``@name`` in: a lot's
+    balances, a rule's and a year-to-date row's amounts, a chain step's
+    ``maximum``, an aux table's money columns, an itemization's ``Value``."""
+    folder = path.parent.name
+    if folder in ("aux", "series", "prices"):
+        kind = path.stem.split("__", 1)[0]
+        return registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
+    if folder == "itemizations":
+        return frozenset({"Value"})
+    if path.parent.parent.name == "chains":
+        return frozenset({"maximum"})
+    return _MONEY_COLUMNS_BY_FILE.get(path.name, frozenset())
+
+
 def _referencing_files(data_dir: Path, scenario_dir: Path) -> Iterable[Path]:
     for folder in _lineage_dirs(scenario_dir):
         yield from sorted(folder.rglob("*.csv"))
@@ -286,13 +316,15 @@ def _referencing_files(data_dir: Path, scenario_dir: Path) -> Iterable[Path]:
 
 
 def itemization_references(data_dir: Path, scenario_dir: Path) -> dict[str, list[ItemizationReference]]:
-    """Every ``@name`` cell in the CSVs the scenario reads -- its lineage's
-    folders (aux/, account_values.csv, scheduled.csv, year_to_date.csv,
-    calendar.csv, itemizations/, ...) and the shared aux/ and itemizations/
-    -- by the name it references. A row a later scenario overrides is still
-    reported, in its own file."""
+    """Every ``@name`` in a money column (``_money_columns``) of the CSVs
+    the scenario reads -- its lineage's folders and the shared aux/ and
+    itemizations/ -- by the name it references. A row a later scenario
+    overrides is still reported, in its own file."""
     found: dict[str, list[ItemizationReference]] = {}
     for path in _referencing_files(data_dir, scenario_dir):
+        money = _money_columns(path)
+        if not money:
+            continue
         try:
             with path.open(newline="", encoding="utf-8") as fh:
                 reader = csv.reader(fh)
@@ -300,7 +332,7 @@ def itemization_references(data_dir: Path, scenario_dir: Path) -> dict[str, list
                 for line, cells in enumerate(reader, start=2):
                     for column, cell in zip(header, cells, strict=False):
                         cell = cell.strip()
-                        if cell.startswith("@") and len(cell) > 1:
+                        if column.strip() in money and cell.startswith("@") and len(cell) > 1:
                             found.setdefault(cell[1:], []).append(
                                 ItemizationReference(path, line, column),
                             )
