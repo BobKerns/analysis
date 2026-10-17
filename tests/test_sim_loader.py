@@ -1747,21 +1747,45 @@ def test_calendar_set_rate_series_nothing_reads_warns(
 ) -> None:
     """A set_rate row's (series, aux_kind) pair that no scheduled.csv rule
     (or account growth series) ever reads is a silent no-op at run time --
-    its drawn/literal value lands in aux_table but nothing looks it up. It's
-    an unused warning, not an error (#92): a mix-in may set a series only the
-    scenarios inheriting from it read."""
+    its drawn/literal value lands in aux_table but nothing looks it up. When
+    the series has a file, it's an unused warning, not an error (#92): a
+    mix-in may set a series only the scenarios inheriting from it read."""
     append_calendar_row(
-        date="2027-01-31", kind="set_rate", name="typo_series",
-        series="mutual_fund", amount="3%",
+        date="2027-01-31", kind="set_rate", name="apparel_2027",
+        series="apparel", amount="3%",
         params_json='{"aux_kind": "inflation"}',
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
     assert any(
-        "set_rate series 'mutual_fund' under aux_kind 'inflation' is never read"
+        "set_rate series 'apparel' under aux_kind 'inflation' is never read"
         in warning
         for warning in result.unused
     )
+
+
+def test_calendar_set_rate_series_with_no_file_rejected(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """set_rate adjusts an existing series; it doesn't create one. A pair
+    with no series/aux/prices file is an unresolved reference (#204): here a
+    typo, and the wrong aux_kind for a series that does exist."""
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="typo_series",
+        series="mutual_fund", amount="3%",
+        params_json='{"aux_kind": "inflation"}',
+    )
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="wrong_kind",
+        series="Asset_Checking", amount="3%",
+        params_json='{"aux_kind": "inflation"}',
+    )
+    with pytest.raises(LoadError) as raised:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                      allow_dirty_data=True)
+    issues = raised.value.issues
+    assert any("'mutual_fund' under aux_kind 'inflation' doesn't exist" in i for i in issues)
+    assert any("'Asset_Checking' under aux_kind 'inflation' doesn't exist" in i for i in issues)
 
 
 def test_scheduled_percent_of_balance_series_with_no_supplier_rejected(

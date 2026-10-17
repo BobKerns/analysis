@@ -81,9 +81,9 @@ class LoadResult:
     (e.g. an allocation with rate series for only some of its classes)."""
     unused: list[str] = field(default_factory=list)
     """Things defined but not read yet: a latent factor with no dependents,
-    a set_rate series nothing reads, vary_tail_dependence on a row nothing
-    correlates with. Often deliberate (work in progress, or meant for child
-    scenarios), so only `sim check` prints them (#204)."""
+    or vary_tail_dependence on a row nothing correlates with. Often
+    deliberate (work in progress, or meant for child scenarios), so only
+    `sim check` prints them (#204)."""
 
 
 class LoadError(ValueError):
@@ -2858,28 +2858,23 @@ def _validate_series_references(
     literal value lands in `aux_table` but nothing ever looks it up, so it
     never affects a run (this is what varying the wrong `series`/`aux_kind`
     pair under ADR-006 looks like -- every member ends up bit-identical).
-    That direction is only a warning, which only `sim check` prints (#92,
-    #204): a mix-in or base scenario can set a series that only the
-    scenarios inheriting from it read, and each scenario is validated on its
-    own. A chain step's own `series` (inflating its `maximum` cap over time --
+    A set_rate row adjusts a series; it doesn't create one. So its
+    `(aux_kind, series)` must have a series/aux/prices file in the scenario's
+    lineage, or it's an unresolved reference -- a typo, or the wrong
+    `aux_kind` -- and a load error (#204). One with a file that nothing
+    reads is only a warning, which only `sim check` prints (#92, #204): a
+    mix-in or base scenario can set a series that only the scenarios
+    inheriting from it read, and each scenario is validated on its own. A
+    chain step's own `series` (inflating its `maximum` cap over time --
     `engine._chain_step_allocation`) always reads `aux_kind='inflation'`,
     same as `fixed_amount`/`ss_benefit`, and only actually gets read when
     `maximum` is also set (`_validate_chains` separately flags `series`
     without `maximum`).
     """
+    # Only a file supplies a series; a set_rate row adjusts one (#204).
     supplied: set[tuple[str, str]] = {
         (kind, series) for kind, series, *_ in aux_rows if series is not None
     }
-    for row in calendar_rows:
-        if row.get("kind") != "set_rate":
-            continue
-        series = row.get("series", "")
-        if not series:
-            continue
-        params = _safe_json(row.get("params_json"))
-        if params is None:
-            continue  # malformed JSON already reported by _validate_calendar
-        supplied.add((params.get("aux_kind", "rate"), series))
 
     demanded: set[tuple[str, str]] = set()
     for name, (role, rows) in chains.items():
@@ -2923,9 +2918,9 @@ def _validate_series_references(
             issues.append(
                 f"{where} ({name}): references series "
                 f"'{series}' under aux_kind '{aux_kind}', but nothing "
-                "supplies it -- no series/aux/prices file and no "
-                "calendar.csv set_rate row for that (aux_kind, series) pair; "
-                "this would fail at run time with 'no aux row' once reached"
+                "supplies it -- no series/aux/prices file for that "
+                "(aux_kind, series) pair; this would fail at run time with "
+                "'no aux row' once reached"
             )
 
     for where, row in _located(calendar_rows, "calendar.csv"):
@@ -2938,13 +2933,20 @@ def _validate_series_references(
         if params is None:
             continue
         aux_kind = params.get("aux_kind", "rate")
-        if (aux_kind, series) not in demanded:
+        if (aux_kind, series) not in supplied:
+            issues.append(
+                f"{where}: set_rate series '{series}' under aux_kind "
+                f"'{aux_kind}' doesn't exist -- no series/aux/prices file for "
+                "that (aux_kind, series) pair in this scenario or a parent "
+                f"(e.g. series/{aux_kind}__{series}.csv)"
+            )
+        elif (aux_kind, series) not in demanded:
             unused_warnings.append(
                 f"{where}: set_rate series '{series}' under "
                 f"aux_kind '{aux_kind}' is never read by any scheduled.csv "
-                "row (percent_of_balance/fixed_amount/ss_benefit) or "
-                "account growth series -- this value has no effect here, "
-                "unless a scenario inheriting from this one reads it"
+                "row (percent_of_balance/fixed_amount/ss_benefit), chain step "
+                "cap or account growth series -- this value has no effect "
+                "here, unless a scenario inheriting from this one reads it"
             )
 
 

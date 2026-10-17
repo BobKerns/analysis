@@ -1729,25 +1729,42 @@ def test_sim_calendar_add_set_rate_can_target_an_inflation_series(
     assert row["vary_low"] == "2%" and row["vary_high"] == "4%"
 
 
+def test_sim_calendar_add_set_rate_refuses_a_series_with_no_file(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """(inflation, 'no_such_series') has no series file, so the row is an
+    unresolved reference -- a typo -- and nothing is written (#204)."""
+    path = retire_alice_csv("calendar.csv")
+    result = CliRunner().invoke(main, [
+        "sim", "calendar", "add", "set-rate", "2028-01-31", "no_such_series", "3.5",
+        "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
+        "--scenario", "retire_alice",
+    ])
+    assert result.exit_code != 0
+    assert "'no_such_series' under aux_kind 'inflation' doesn't exist" in result.output
+    assert "no_such_series" not in path.read_text()
+
+
 def test_only_check_warns_of_a_set_rate_series_nothing_reads(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
-    """Nothing in the scenario reads (inflation, 'no_such_series'). `calendar
-    add` still writes the row (issue #92): a mix-in may set a series only the
-    scenarios inheriting from it read. So only `sim check` warns (#204)."""
+    """Base has an apparel inflation series, but nothing in retire_alice
+    reads it. `calendar add` writes the row without a word (a mix-in may set
+    a series only the scenarios inheriting from it read, #92); only `sim
+    check` warns (#204)."""
     path = retire_alice_csv("calendar.csv")
     runner = CliRunner()
     result = runner.invoke(
         main,
         [
-            "sim", "calendar", "add", "set-rate", "2028-01-31", "no_such_series", "3.5",
+            "sim", "calendar", "add", "set-rate", "2028-01-31", "apparel", "3.5",
             "--aux-kind", "inflation", "--data-dir", str(test_data_dir),
-            "--scenario", "retire_alice",
+            "--scenario", "retire_alice", "--name", "apparel_2028",
         ],
     )
     assert result.exit_code == 0, result.output
     assert "WARN:" not in result.output
-    assert "no_such_series" in path.read_text()
+    assert "apparel_2028" in path.read_text()
     check = runner.invoke(main, ["sim", "check", "retire_alice", "--data-dir", str(test_data_dir)])
     assert check.exit_code == 0, check.output
     assert "WARN:" in check.output and "is never read" in check.output
@@ -2202,10 +2219,16 @@ def test_sim_run_jobs_matches_sequential(
 @pytest.mark.slow
 def test_sim_run_jobs_reports_failures_without_taking_down_the_pool(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
-    update_account_value: Callable[..., None], intent_dir: Path, runs_dir: Path,
+    update_account_value: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+    intent_dir: Path, runs_dir: Path,
 ) -> None:
     """A ramp on a series with no baseline rate fails in resolve_member for
     every member -- in worker processes, each is still reported."""
+    # The series' file (#204) starts after the ramp, so there's nothing to
+    # ramp from.
+    retire_alice_csv("series/rate__never_before_seen_series.csv").write_text(
+        "effective_date,annual_rate\n2035-01-31,3%\n"
+    )
     update_account_value("Asset_Brokerage_Joint", "default", series="never_before_seen_series")
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="no_baseline_ramp",

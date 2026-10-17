@@ -349,11 +349,14 @@ def test_resolve_member_ramp_without_baseline_rate_raises(
     append_calendar_row: Callable[..., None],
     update_account_value: Callable[..., None],
     load_test_copy: Callable[[], LoadResult],
+    retire_alice_csv: Callable[[str], Path],
     tmp_path: Path,
 ) -> None:
-    # A series with no consumer would fail the loader's own "nothing reads
-    # this" check before ramping is even reached, so give it one: retarget
-    # Asset_Brokerage_Joint's growth at this new series instead.
+    # The series needs a file (#204) and a reader to load; its file starts
+    # after the ramp, so there's no rate yet to ramp from.
+    retire_alice_csv("series/rate__never_before_seen_series.csv").write_text(
+        "effective_date,annual_rate\n2035-01-31,3%\n"
+    )
     update_account_value(
         "Asset_Brokerage_Joint", "default", series="never_before_seen_series",
     )
