@@ -364,17 +364,21 @@ def scenario_show(data_dir: Path, scenario_dir: Path, runs_dir: Path | None) -> 
 
     name = scenario_dir.name
     summary = next(s for s in scenario_summaries(data_dir, scenario_dir.parent) if s.name == name)
-    rows = _read_rows(scenario_dir / "scenario.csv")
-    description = (
-        readme.readme_description(scenario_dir, data_dir)
-        or (rows[0].get("description", "") if rows else "")
-    )
     parents = read_parents(scenario_dir)
     lineage = _lineage_dirs(scenario_dir)
+    # As the loader has it: the scenario's own README.md, else scenario.csv's
+    # description merged field by field down the load order.
+    description = readme.readme_description(scenario_dir, data_dir) or next(
+        (desc for folder in reversed(lineage)
+         for row in _read_rows(folder / "scenario.csv")[:1]
+         if (desc := row.get("description", ""))),
+        "",
+    )
     latest = latest_batch = None
     if runs_dir is not None:
         latest = _stamped(latest_run_path(runs_dir, name))
-        latest_batch = _stamped(latest_ensemble_batch(runs_dir / name))
+        if summary.is_ensemble:
+            latest_batch = _stamped(latest_ensemble_batch(runs_dir / name))
     return ScenarioShow(
         name=name, path=scenario_dir, description=description,
         parent=parents[0] if parents else None, mixins=parents[1:],

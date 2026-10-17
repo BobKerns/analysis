@@ -221,3 +221,19 @@ def test_scenario_show_marks_inherited_settings_and_finds_the_latest_run(
     assert "reserve: $250,000.00 (inherited)" in output
     assert "seed: 7\n" in output
     assert "A child of the recipe." in output
+
+
+def test_scenario_show_inherits_the_description_and_skips_a_plain_scenarios_batch(
+    derive_scenario: Callable[..., Path], runs_dir: Path,
+) -> None:
+    derive_scenario("parent", "retire_alice", description="The parent's words.")
+    child = derive_scenario("child", "parent")
+    # A batch folder left from when the child was an ensemble.
+    batch = runs_dir / "child" / "20260101T000000"
+    batch.mkdir(parents=True)
+    (batch / "member_0000.sqlite3").write_bytes(b"")
+
+    shown = setup_listings.scenario_show(child.parent.parent, child, runs_dir)
+
+    assert shown.description == "The parent's words."
+    assert shown.latest_batch is None
