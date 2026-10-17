@@ -8964,8 +8964,9 @@ def _person_fields(
         "birthdate": _check_birthdate(
             birthdate if birthdate is not None else current.get("birthdate", "")),
         "role": (role if role is not None else current.get("role", "")).strip(),
-        "meta_json": _check_meta_json(
-            meta_json if meta_json is not None else current.get("meta_json") or "{}"),
+        # An edit leaves a meta_json it wasn't given exactly as it is, blank included.
+        "meta_json": _check_meta_json(meta_json) if meta_json is not None
+        else current.get("meta_json", "{}"),
     }
     if not fields["display"]:
         raise click.ClickException("display is required")

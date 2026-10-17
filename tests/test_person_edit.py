@@ -95,6 +95,18 @@ def test_person_edit_option_changes_only_that_field(
     assert _persons(test_data_dir)["bill"] == {**before, "role": "secondary"}
 
 
+def test_person_edit_option_keeps_a_blank_meta_json(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    persons = test_data_dir / "persons.csv"
+    persons.write_text(persons.read_text() + "carol,Carol (fake),1995-02-03,,\n")
+
+    result = sim("person", "edit", "carol", "--role", "secondary")
+
+    assert result.exit_code == 0, result.output
+    assert _persons(test_data_dir)["carol"]["meta_json"] == ""
+
+
 def test_person_edit_asks_with_current_values_as_defaults(
     sim: Callable[..., Result], test_data_dir: Path,
 ) -> None:
