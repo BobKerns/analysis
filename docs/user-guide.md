@@ -770,8 +770,9 @@ scenario's latest run: whether it finished successfully, the lots at the end
 of the run, net worth at each year end, and every time an account went
 negative (with what its refill chain did about it). This is the fastest way
 to check "did this do roughly what I expected" before opening a notebook.
-`sim networth [scenario] --monthly` shows net worth month by month, and
-`--dollars cpi_constant` shows it with inflation taken out.
+`sim networth [scenario]` shows net worth by year (`--monthly` for every
+month) with inflation taken out, so decades compare at a glance;
+`--dollars nominal` shows the inflated figures instead.
 
 ### The notebooks
 
@@ -811,7 +812,7 @@ machine too small for a notebook comfortably.
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
-| net worth by year or month, nominal or CPI-constant | `sim networth [scenario] [--monthly] [--dollars cpi_constant]` |
+| net worth by year or month, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal]` |
 
 [notebooks/README.md](../notebooks/README.md) keeps the full, up-to-date list, including which
 notebook views don't have a terminal command yet.

@@ -1710,18 +1710,19 @@ def explain(
                 )
 
         click.echo("")
-        click.echo("year-end net worth:")
+        click.echo(f"year-end net worth:  {'nominal':>18}  {'CPI-constant':>18}")
         rows = con.execute(
             "WITH year_end AS ("
             "  SELECT substr(month,1,4) AS year, MAX(month) AS m "
             "  FROM simulation_step GROUP BY substr(month,1,4)"
             ") "
-            "SELECT y.year, nw.net_worth "
+            "SELECT y.year, nw.net_worth, cpi.constant_cents "
             "FROM year_end y JOIN net_worth nw ON nw.month = y.m "
+            "LEFT JOIN net_worth_constant_cpi cpi ON cpi.month = y.m "
             "ORDER BY y.year"
         ).fetchall()
-        for year, nw in rows:
-            click.echo(f"  {year}  {_fmt_cents(nw)}")
+        for year, nw, real in rows:
+            click.echo(f"  {year}  {'':13}{_fmt_cents(nw)}  {_fmt_cents(real):>18}")
 
         click.echo("")
         _echo_negative_balance_warnings(con)
@@ -1758,8 +1759,9 @@ def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
 @click.option("--yearly", "period", flag_value="yearly", default=True,
               help="One row per year, at its last month (the default).")
 @click.option("--dollars", type=click.Choice([m.value for m in DollarMode]),
-              default=DollarMode.NOMINAL.value, show_default=True,
-              help="nominal, or cpi_constant (deflated by the run's CPI series).")
+              default=DollarMode.CPI_CONSTANT.value, show_default=True,
+              help="cpi_constant (deflated by the run's CPI series, so decades "
+                   "compare at a glance), or nominal.")
 @_run_target_options
 def networth_command(
     scenario: str | None, period: str, dollars: str,

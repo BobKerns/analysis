@@ -224,7 +224,9 @@ def test_sim_networth_yearly_and_monthly(retire_alice_run_file: Path) -> None:
     finally:
         con.close()
     runner = CliRunner()
-    yearly = runner.invoke(main, ["sim", "networth", "--runfile", str(retire_alice_run_file)])
+    yearly = runner.invoke(
+        main, ["sim", "networth", "--dollars", "nominal", "--runfile", str(retire_alice_run_file)],
+    )
     assert yearly.exit_code == 0, yearly.output
     lines = yearly.output.splitlines()
     assert lines[0].startswith("net worth, nominal dollars (retire_alice")
@@ -232,7 +234,8 @@ def test_sim_networth_yearly_and_monthly(retire_alice_run_file: Path) -> None:
     assert [line.split()[0] for line in lines[1:]] == years
 
     monthly = runner.invoke(
-        main, ["sim", "networth", "--monthly", "--runfile", str(retire_alice_run_file)],
+        main, ["sim", "networth", "--monthly", "--dollars", "nominal",
+               "--runfile", str(retire_alice_run_file)],
     )
     assert monthly.exit_code == 0, monthly.output
     rows = monthly.output.splitlines()[1:]
@@ -242,12 +245,12 @@ def test_sim_networth_yearly_and_monthly(retire_alice_run_file: Path) -> None:
 
 
 def test_sim_networth_cpi_constant_deflates_later_months(retire_alice_run_file: Path) -> None:
-    """--dollars cpi_constant reads the CPI view: later months come out
-    smaller than nominal under positive inflation."""
+    """CPI-constant dollars are the default (Bob: inflated future numbers
+    mislead): later months come out smaller than nominal under inflation."""
     runner = CliRunner()
     args = ["sim", "networth", "--monthly", "--runfile", str(retire_alice_run_file)]
-    nominal = runner.invoke(main, args).output.splitlines()
-    real = runner.invoke(main, [*args, "--dollars", "cpi_constant"]).output.splitlines()
+    nominal = runner.invoke(main, [*args, "--dollars", "nominal"]).output.splitlines()
+    real = runner.invoke(main, args).output.splitlines()
     assert real[0].startswith("net worth, CPI-constant dollars")
     assert [r.split()[0] for r in real[1:]] == [n.split()[0] for n in nominal[1:]]
 
