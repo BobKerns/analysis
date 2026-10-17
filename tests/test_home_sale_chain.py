@@ -198,6 +198,36 @@ def test_a_basis_step_for_another_lot_fails_the_run(
         _run(load_test_copy, runs_dir)
 
 
+def test_a_basis_step_an_earlier_step_starves_fails_the_run(
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    _chain(retire_alice_csv, "destination", "home_sale", [
+        {"account_name": "Asset_Checking", "tax_character": "ltcg"},
+        {"account_name": "Asset_Checking", "tax_character": "home_sale", "basis_of": "Asset_Home"},
+        {"account_name": "Asset_Checking", "tax_character": "ltcg"},
+    ])
+    append_calendar_row(**SALE)
+    with pytest.raises(EngineError, match="a basis step must take the sale's first money"):
+        _run(load_test_copy, runs_dir)
+
+
+def test_a_basis_step_no_money_reaches_fails_the_run(
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    _chain(retire_alice_csv, "destination", "basis_first", [
+        {"account_name": "Asset_Checking", "tax_character": "home_sale", "basis_of": "Asset_Home"},
+        {"account_name": "Asset_Checking", "tax_character": "ltcg"},
+    ])
+    _chain(retire_alice_csv, "destination", "home_sale", [
+        {"account_name": "Asset_Checking"}, {"account_name": "basis_first"},
+    ])
+    append_calendar_row(**SALE)
+    with pytest.raises(EngineError, match="its basis step for 'Asset_Home' was never reached"):
+        _run(load_test_copy, runs_dir)
+
+
 def _gain(con: sqlite3.Connection, year: int, character: str, amount: int) -> None:
     con.execute(
         "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "

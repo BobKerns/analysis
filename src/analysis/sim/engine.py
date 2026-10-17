@@ -1919,10 +1919,11 @@ class _SaleBasis:
     has a basis step for that lot (#199): the lot's basis, pro-rata to the
     share of its balance withdrawn, until the basis step uses it."""
 
-    __slots__ = ("share",)
+    __slots__ = ("recovered", "share")
 
     def __init__(self, share: int) -> None:
         self.share = share
+        self.recovered = False
 
 
 def _has_basis_step(graph: ChainGraph, chain_id: int, lot_id: int) -> bool:
@@ -1990,7 +1991,28 @@ def _chain_sweep(
         _progress = _ChainProgress(amount_available)
         if (graph.leaf_lot.get(chain_id) is None
                 and _has_basis_step(graph, chain_id, source_account_id)):
-            _sale = _sale_basis(refill_ctx, balances, source_account_id, amount_available)
+            sale = _sale_basis(refill_ctx, balances, source_account_id, amount_available)
+            placed = _chain_sweep(
+                con, balances, account_kinds, account_tax_treatment, account_subkind,
+                account_name, step_id, month_s, graph,
+                chain_id, amount_available, source_account_id,
+                aux=aux, chain_base_date=chain_base_date,
+                inflation_factor_cache=inflation_factor_cache,
+                source_tax_character=source_tax_character,
+                source_tax_year=source_tax_year, refill_ctx=refill_ctx,
+                reason_kind=reason_kind, reason_id=reason_id,
+                _progress=_progress, _sale=sale,
+            )
+            # Sale mode bypassed the withdrawal's own split, so a basis step
+            # that earlier steps starved would leave the basis where it was.
+            if not sale.recovered:
+                name = None if refill_ctx is None else refill_ctx.chain_name.get(chain_id)
+                raise EngineError(
+                    f"chain {name!r}: its basis step for "
+                    f"{account_name.get(source_account_id)!r} was never reached; "
+                    "an earlier step took the whole amount"
+                )
+            return placed
     account_id = graph.leaf_lot.get(chain_id)
     if account_id is not None:
         if account_id == source_account_id:
@@ -2041,6 +2063,13 @@ def _chain_sweep(
                     f"{account_name.get(basis_of)!r}, but the money comes from "
                     f"{account_name.get(source_account_id)!r}"
                 )
+            if _progress.fulfilled > 0:
+                name = None if refill_ctx is None else refill_ctx.chain_name.get(chain_id)
+                raise EngineError(
+                    f"chain {name!r} step {number}: a basis step must take the sale's "
+                    f"first money, but earlier steps already placed "
+                    f"{_progress.fulfilled / 100:.2f}"
+                )
             allocation = min(remaining, _sale.share)
         else:
             allocation = _chain_step_allocation(
@@ -2087,6 +2116,7 @@ def _recover_basis(
             "(a lot with no maximum_balance) so the gain isn't taken as basis"
         )
     share, sale.share = sale.share, 0
+    sale.recovered = True
     ctx.cost_bases[lot_id] = (ctx.cost_bases[lot_id] or 0) - share
     lost = share - placed
     if lost > 0 and character == "return_of_capital":
