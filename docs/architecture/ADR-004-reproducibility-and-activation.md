@@ -139,9 +139,9 @@ This is the operational definition of "reproducible from stamps."
 - [ADR-003](ADR-003-registries-and-csv-schemas.md) §3: every `calendar_event.kind` is registered; every payload validates; rule-synthesizing events reference accounts that exist.
 - ADR-004 §1: a `--check stamps` mode dry-runs the stamp computation and reports what `scenario_tree_id` would be, so authors can confirm scope before committing.
 
-Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only warnings.
+Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only warnings. Warnings about something defined but not read yet (an unused latent factor, a `set_rate` row nothing reads) are printed only by `sim check`; the other commands that load leave them out.
 
-`analysis sim check --all` checks every scenario in the data repo in turn, each under a `Checking <scenario>` line. A failing scenario doesn't stop the rest; the command ends with a summary and exits `1` if any scenario failed. Giving both a scenario name and `--all` is a usage error.
+`analysis sim check --all` checks every scenario in the data repo in turn, each under a `Checking <scenario>` line. A failing scenario doesn't stop the rest; the command ends with a summary and exits `1` if any scenario failed. Giving both a scenario name and `--all` is a usage error. `--all` leaves out the defined-but-not-read warnings, which base and mix-in scenarios have many of by design, unless `--verbose` is given.
 
 ### 7. Comparison across runs
 
@@ -200,3 +200,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#59](https://github.com/BobKerns/analysis/issues/59): the scenario tree id covers mix-in scenarios' folders too.
 - [#106](https://github.com/BobKerns/analysis/issues/106): `sim check --all`.
 - [#131](https://github.com/BobKerns/analysis/issues/131): `scripts/link-data.sh` links the data repo at `data/shared` or builds template data there, and the user prompt lists the primary persons (§4).
+- [#204](https://github.com/BobKerns/analysis/issues/204): only `sim check` prints defined-but-not-read warnings, and `sim check --all` only with `--verbose` (§6).

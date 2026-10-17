@@ -368,6 +368,23 @@ def test_sim_check_all_checks_every_scenario(test_data_dir: Path) -> None:
     assert "all 2 scenario(s) ok" in result.output
 
 
+def test_sim_check_all_warns_of_unused_items_only_when_verbose(test_data_dir: Path) -> None:
+    """base defines latent factors for the scenarios built on it (#80). A
+    single check warns of them; --all only with --verbose (#204)."""
+    runner = CliRunner()
+    single = runner.invoke(main, ["sim", "check", "base", "--data-dir", str(test_data_dir)])
+    assert single.exit_code == 0, single.output
+    assert "no dependents" in single.output
+    quiet = runner.invoke(main, ["sim", "check", "--all", "--data-dir", str(test_data_dir)])
+    assert quiet.exit_code == 0, quiet.output
+    assert "no dependents" not in quiet.output
+    verbose = runner.invoke(
+        main, ["sim", "check", "--all", "--verbose", "--data-dir", str(test_data_dir)]
+    )
+    assert verbose.exit_code == 0, verbose.output
+    assert "no dependents" in verbose.output
+
+
 def test_sim_check_all_keeps_going_past_a_failure_and_exits_nonzero(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
