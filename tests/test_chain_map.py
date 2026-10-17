@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import time
+import base64
+import gzip
 from collections.abc import Callable, Generator
 from pathlib import Path
 
@@ -14,7 +15,8 @@ from rich.console import Console
 from analysis.cli import main
 from analysis.sim import chain_map
 from analysis.sim.connection import open_scenario
-from analysis.sim.notebook_ui.scenario_plots import MERMAID_URL, MermaidWidget, show_chain_flow
+from analysis.sim.chain_graph import MERMAID_SCRIPT
+from analysis.sim.notebook_ui.scenario_plots import MermaidWidget, show_chain_flow
 
 
 @pytest.fixture
@@ -338,43 +340,54 @@ def test_flowchart_in_the_notebook_shows_one_chain(guide_chains: Path) -> None:
     assert chart.chart == chain_map.mermaid(cmap, ["ss_split"], rules=True) != chain_map.mermaid(cmap, ["ss_split"])
     depth.value = "1"  # and so does limiting its depth
     assert chart.chart == chain_map.mermaid(cmap, ["ss_split"], rules=True, depth="1")
-    # The widget draws itself, so VS Code (which runs no script in an Output) draws it too.
-    assert f'await import("{MERMAID_URL}")' in MermaidWidget._esm
+    # The widget draws itself, so VS Code (which runs no script in an Output) draws it too,
+    # with the Mermaid shipped beside the CLI, so it needs no network (#176).
+    assert chart._mermaid_gz == MERMAID_SCRIPT.read_bytes()
+    assert "https:" not in MermaidWidget._esm
 
 
-# Stands in for Mermaid: like the UMD libraries it bundles, it takes the AMD
-# path when a global ``define`` is there, and then has nothing to export.
+# Stands in for the vendored Mermaid script: like the UMD libraries it
+# bundles, it takes the AMD path when a global ``define`` is there, and then
+# has nothing to give; otherwise it leaves Mermaid on the global, as the real
+# script does.
 _STUB_MERMAID = """
 if (typeof define === "function") throw new TypeError("took the AMD path");
-export default {
+globalThis.mermaid = {
     initialize() {},
     async render(id, chart) { return {svg: `<svg id="${id}"></svg>`}; },
 };
 """
 
-# Two widgets loading at once, as anywidget runs the module, under VS Code's
-# RequireJS ``define``.
-_TWO_WIDGETS = """async (esm) => {
+# Widgets loading at once, as anywidget runs the module, under VS Code's
+# RequireJS ``define``. The model hands over the script as ipywidgets does a
+# binary buffer: a DataView.
+_WIDGETS = """async ([esm, gzipped, chart, count]) => {
     const define = function () {};
     define.amd = {};
     globalThis.define = define;
+    const bytes = Uint8Array.from(atob(gzipped), (c) => c.charCodeAt(0));
+    const buffer = new DataView(bytes.buffer);
+    const state = {chart, _mermaid_gz: buffer};
     const load = () => import(URL.createObjectURL(new Blob([esm], {type: "text/javascript"})));
-    const widgets = await Promise.all([load(), load()]);
+    const widgets = await Promise.all(Array.from({length: count}, load));
     const drawn = widgets.map(({default: widget}) => {
         const el = document.createElement("div");
-        widget.render({model: {get: () => "flowchart LR", on() {}}, el});
+        widget.render({model: {get: (key) => state[key], on() {}}, el});
         return el;
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const done = () => drawn.every((el) => el.innerHTML);
+    for (let tries = 0; !done() && tries < 200; tries++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     return {drawn: drawn.map((el) => el.innerHTML), restored: globalThis.define === define};
 }"""
 
 
-def test_flowchart_widget_loads_beside_vs_codes_amd_define() -> None:
-    """VS Code's widget renderer leaves RequireJS's ``define`` on the page,
-    which broke Mermaid's bundled libraries (issue #153): the widget hides it
-    while Mermaid loads, and gives the same one back, however many load."""
-    from playwright.sync_api import Error, Route, sync_playwright
+@pytest.fixture
+def offline_page():
+    """A blank page in Chromium that may fetch nothing, and the list of what
+    it tried: every request but the page itself is refused."""
+    from playwright.sync_api import Error, sync_playwright
 
     with sync_playwright() as playwright:
         try:
@@ -386,20 +399,42 @@ def test_flowchart_widget_loads_beside_vs_codes_amd_define() -> None:
                 pytest.skip(f"no browser: {error.message.splitlines()[0]}")
         try:
             page = browser.new_page()
+            fetched: list[str] = []
 
-            def mermaid(route: Route) -> None:
-                time.sleep(0.5)  # a slow network: the second widget starts while the first waits
-                route.fulfill(body=_STUB_MERMAID, content_type="text/javascript",
-                              headers={"access-control-allow-origin": "*"})
+            def refuse(route) -> None:
+                fetched.append(route.request.url)
+                route.abort()
 
-            page.route(MERMAID_URL, mermaid)
+            page.route("**/*", refuse)
             page.route("https://notebook.test/", lambda route: route.fulfill(body="<html></html>",
                                                                              content_type="text/html"))
             page.goto("https://notebook.test/")
-            result = page.evaluate(_TWO_WIDGETS, MermaidWidget._esm)
+            yield page, fetched
         finally:
             browser.close()
+
+
+def test_flowchart_widget_loads_beside_vs_codes_amd_define(offline_page) -> None:
+    """VS Code's widget renderer leaves RequireJS's ``define`` on the page,
+    which broke Mermaid's bundled libraries (issue #153): the widget hides it
+    while Mermaid loads, and gives the same one back, however many load."""
+    page, _ = offline_page
+    stub = base64.b64encode(gzip.compress(_STUB_MERMAID.encode())).decode()
+    result = page.evaluate(_WIDGETS, [MermaidWidget._esm, stub, "flowchart LR", 2])
     assert result == {"drawn": ['<svg id="chain-flow-1"></svg>'] * 2, "restored": True}
+
+
+@pytest.mark.slow
+def test_flowchart_widget_draws_with_the_vendored_mermaid_offline(offline_page, cmap) -> None:
+    """The real script, as the widget sends it, draws a chart on a page that
+    can't reach the network (#176), with VS Code's ``define`` in place."""
+    chart = chain_map.mermaid(cmap, ["bridge"])
+    widget = MermaidWidget(chart=chart)
+    page, fetched = offline_page
+    script = base64.b64encode(widget._mermaid_gz).decode()
+    result = page.evaluate(_WIDGETS, [widget._esm, script, chart, 1])
+    assert result["restored"] and result["drawn"][0].startswith("<svg")
+    assert fetched == []
 
 
 def test_calendar_transfers_use_chains(guide_chains: Path, append_calendar_row) -> None:
