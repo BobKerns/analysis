@@ -30,6 +30,11 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | chains, as a table and one chain at a time as a flowchart | `analysis sim chain list`, `analysis sim chain show CHAIN [--graph \| --mermaid]` |
 | scheduled transactions | `analysis sim scheduled list` |
 | one-time transfers | `analysis sim transfer list` |
+| the scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `analysis sim scenario show [SCENARIO]` |
+| persons and their lifespans | `analysis sim person list` |
+| calendar events of every kind, with their variation | `analysis sim calendar list [--kind KIND] [--tag TAG]` |
+| year-to-date rows | `analysis sim ytd list` |
+| itemizations, their totals and what references them | `analysis sim itemization list`, `analysis sim itemization show NAME` |
 | a run's year-end net worth, and lots | `analysis sim explain <runfile>` |
 | every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
 | an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]]` |
