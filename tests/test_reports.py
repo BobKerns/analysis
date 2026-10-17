@@ -17,11 +17,10 @@ from analysis.sim.types import DollarMode
 BROKERAGE = "Asset_Brokerage_Joint"
 
 
-def _invoke(*args: str, run_file: Path, data_dir: Path):
-    return CliRunner().invoke(main, [
-        "sim", *args, "--scenario", "retire_alice",
-        "--data-dir", str(data_dir), "--runfile", str(run_file),
-    ], env={"COLUMNS": "250"})
+def _invoke(*args: str, run_file: Path):
+    """A report command on ``run_file`` alone: no data repo or scenario."""
+    return CliRunner().invoke(main, ["sim", *args, "--runfile", str(run_file)],
+                              env={"COLUMNS": "250"})
 
 
 def test_income_by_category_keeps_other_and_adds_up(report_run: RunConnection) -> None:
@@ -99,9 +98,9 @@ def test_income_account_history_changes_are_the_flows(two_lot_run: RunConnection
         income["Income_Salary_Bill"].reindex(history.index).to_numpy())
 
 
-def test_report_commands_print_their_tables(report_run_file: Path, test_data_dir: Path) -> None:
+def test_report_commands_print_their_tables(report_run_file: Path) -> None:
     def run(*args: str):
-        result = _invoke(*args, run_file=report_run_file, data_dir=test_data_dir)
+        result = _invoke(*args, run_file=report_run_file)
         assert result.exit_code == 0, result.output
         return result.output
 
@@ -117,21 +116,22 @@ def test_report_commands_print_their_tables(report_run_file: Path, test_data_dir
     assert "Liability_Mortgage, nominal dollars" in history and "-$" in history
 
 
-def test_report_command_errors_are_clear(report_run_file: Path, test_data_dir: Path) -> None:
+def test_report_command_errors_are_clear(report_run_file: Path) -> None:
     def fails(*args: str) -> str:
-        result = _invoke(*args, run_file=report_run_file, data_dir=test_data_dir)
+        result = _invoke(*args, run_file=report_run_file)
         assert result.exit_code != 0
         return result.output
 
     assert "--by must be" in fails("report", "income", "--by", "tag:")
     assert "no expenses in 1999" in fails("report", "expenses", "--year", "1999")
     assert "unknown account in run: 'Nope'" in fails("account", "history", "Nope")
+    assert "cannot be combined with --runfile" in fails("report", "gains", "--scenario", "x")
     assert "--end must be on or after --start" in fails(
         "account", "history", BROKERAGE, "--start", "2028-01", "--end", "2027-01")
 
 
-def test_tax_report_says_when_no_tax_was_computed(two_lot_run_file: Path,
-                                                  test_data_dir: Path) -> None:
-    result = _invoke("report", "tax", run_file=two_lot_run_file, data_dir=test_data_dir)
+def test_tax_report_says_when_no_tax_was_computed(two_lot_run_file: Path) -> None:
+    result = _invoke("report", "tax", run_file=two_lot_run_file)
     assert result.exit_code == 0, result.output
     assert "no tax was computed" in result.output
+

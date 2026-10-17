@@ -5606,14 +5606,23 @@ def _report_run(
     scenario: str | None, data_dir: Path | None, runfile: Path | None,
 ) -> Generator[tuple[RunConnection, str]]:
     """The run a report reads (``--runfile``, else the scenario's latest), and
-    a description of it for the report's title."""
+    a description of it for the report's title.
+
+    A run file is a snapshot holding everything a report reads, so
+    ``--runfile`` needs no data repo and no scenario: the run names its own.
+    """
+    if runfile is not None:
+        if scenario is not None:
+            raise click.ClickException("--scenario cannot be combined with --runfile")
+        with RunConnection(runfile) as rc:
+            yield rc, f"{rc.name}, run {runfile.name}"
+        return
     data_dir_p = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data_dir_p, scenario)
-    run_path = runfile or ref.run_path
+    run_path = ref.run_path
     if run_path is None:
         raise click.ClickException(f"no runs for {ref.name!r}; run `sim run` first")
-    with open_scenario(data_dir_p, ref.name, scenarios_dir=ref.scenarios_dir) as sc_conn, \
-            open_run(run_path, sc_conn, scenarios_dir=ref.scenarios_dir) as rc:
+    with RunConnection(run_path, ref.name) as rc:
         yield rc, f"{ref.name}, run {Path(run_path).name}"
 
 
