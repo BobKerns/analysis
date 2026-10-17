@@ -229,9 +229,13 @@ def test_member_zero_writes_a_flat_yearly_path_to_the_scenario_end(
 
 def test_a_path_stops_before_the_next_authored_rate_for_its_series(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
-    tmp_path: Path,
+    retire_alice_csv: Callable[[str], Path], tmp_path: Path,
 ) -> None:
     _process_rate(append_calendar_row, "stock_path")
+    # set_rate only adjusts a series that has a file (#204).
+    retire_alice_csv("series/inflation__Asset_Checking.csv").write_text(
+        "effective_date,annual_rate\n2026-01-31,3%\n"
+    )
     append_calendar_row(date="2031-02-28", kind="set_rate", series="Asset_Checking",
                         amount="3%", description="authored later")
     # A different aux_kind on the same series name doesn't cut the path.

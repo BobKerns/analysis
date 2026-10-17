@@ -68,7 +68,7 @@ def test_two_level_tree_loads_and_is_stored(
         vary_correlation="-0.4",
     )
     result = load_test_copy()
-    assert result.warnings == []
+    assert result.warnings == [] and result.unused == []
     con = sqlite3.connect(result.intent_path)
     try:
         rows = dict(
@@ -133,7 +133,7 @@ def test_child_scenario_overrides_and_uses_a_parent_factor(
     child.to_csv(test_scenarios_dir / "variant" / "calendar.csv", index=False)
     result = load_scenario(test_data_dir, "variant", intent_dir=intent_dir,
                            scenarios_dir=test_scenarios_dir, allow_dirty_data=True)
-    assert result.warnings == []  # the parent's factor now has a dependent
+    assert result.unused == []  # the parent's factor now has a dependent
     con = sqlite3.connect(result.intent_path)
     try:
         factors = con.execute(
@@ -204,8 +204,9 @@ def test_the_prototypes_default_factors_load_with_one_warning(
     """#80: retire_alice defines a factor structure with no varying rows.
     Its idle factors are one warning line, not one each."""
     result = load_test_copy()
-    assert len(result.warnings) == 1
-    warning = result.warnings[0]
+    assert result.warnings == []
+    assert len(result.unused) == 1
+    warning = result.unused[0]
     assert "latent_factors have no dependents yet" in warning
     assert "stock_us_factor" in warning and "fuel_factor" in warning
     assert "medical_factor" not in warning  # the Part B premium's factor depends on it
@@ -234,8 +235,9 @@ def test_unused_factor_is_a_warning_not_an_error(
 ) -> None:
     _factor(append_calendar_row, "someday")
     result = load_test_copy()
-    assert len(result.warnings) == 1 and "someday" in result.warnings[0]
-    assert "no dependents" in result.warnings[0]
+    assert result.warnings == []
+    assert len(result.unused) == 1 and "someday" in result.unused[0]
+    assert "no dependents" in result.unused[0]
 
 
 def test_engine_treats_a_factor_as_inert(
@@ -255,12 +257,13 @@ def test_engine_treats_a_factor_as_inert(
 
 
 @pytest.mark.usefixtures("without_prototype_defaults")
-def test_cli_prints_a_warning_once(
+def test_only_check_warns_of_an_unused_factor(
     append_calendar_row: Callable[..., None], test_data_dir: Path,
     intent_dir: Path, runs_dir: Path,
 ) -> None:
-    """`sim check` prints WARN: lines and exits 0 (ADR-004 §6); `sim load`,
-    which goes on to run (and so loads again), prints each warning once."""
+    """`sim check` prints WARN: lines and exits 0 (ADR-004 §6). An unused
+    factor is often deliberate, so `sim load` (and the run it goes on to)
+    doesn't mention it (#204)."""
     _factor(append_calendar_row, "someday")
     runner = CliRunner()
     check = runner.invoke(main, ["sim", "check", "retire_alice", "--data-dir", str(test_data_dir)])
@@ -271,7 +274,7 @@ def test_cli_prints_a_warning_once(
         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir), "--allow-dirty-data",
     ])
     assert load.exit_code == 0, load.output
-    assert load.output.count("WARN:") == 1
+    assert "WARN:" not in load.output
 
 
 # --- Phase 1: the copula math (pure) -----------------------------------------------
@@ -600,7 +603,7 @@ def test_cli_adds_a_factor_and_a_correlated_row(test_data_dir: Path) -> None:
         "--description", "the broad economy",
     ])
     assert factor.exit_code == 0, factor.output
-    assert "WARN:" in factor.output and "no dependents" in factor.output  # not yet used
+    assert "WARN:" not in factor.output  # unused, but only `sim check` says so (#204)
     rate = runner.invoke(main, [
         "sim", "calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
         "--data-dir", str(test_data_dir), "--name", "rate_vary",

@@ -145,7 +145,7 @@ def test_a_root_factor_carries_nu_into_the_intent(
     _correlated_recipe(append_calendar_row)
     _set_nu(test_data_dir, "economy", "4")
     result = load_test_copy()
-    assert not result.warnings
+    assert not result.warnings and not result.unused
     con = sqlite3.connect(result.intent_path)
     try:
         assert con.execute(
@@ -201,8 +201,9 @@ def test_nu_on_a_lone_row_is_a_warning(
 ) -> None:
     _varying_rate(append_calendar_row, "rate", vary_tail_dependence="4")
     result = load_test_copy()
-    assert len(result.warnings) == 1 and "rate" in result.warnings[0]
-    assert "affects nothing yet" in result.warnings[0]
+    assert result.warnings == []
+    assert len(result.unused) == 1 and "rate" in result.unused[0]
+    assert "affects nothing yet" in result.unused[0]
 
 
 # --- resolution ----------------------------------------------------------------------

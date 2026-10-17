@@ -234,14 +234,26 @@ def load(
     "--all", "check_all", is_flag=True, default=False,
     help="Check every scenario in the data repo, continuing past failures.",
 )
-def check(scenario_name: str | None, data_dir: Path | None, check_all: bool) -> None:
-    """Validate the scenario's CSVs without producing a persistent intent file."""
+@click.option(
+    "-v", "--verbose", is_flag=True, default=False,
+    help="With --all, also warn of things defined but not read yet (unused "
+    "latent factors, set_rate rows nothing reads), as a single check does.",
+)
+def check(
+    scenario_name: str | None, data_dir: Path | None, check_all: bool, verbose: bool,
+) -> None:
+    """Validate the scenario's CSVs without producing a persistent intent file.
+
+    A single scenario's check also warns of things defined but not read yet;
+    --all leaves those out unless --verbose is given (#204), since base and
+    mix-in scenarios define many on purpose for the scenarios built on them.
+    """
     if check_all and scenario_name is not None:
         raise click.UsageError("give a scenario name or --all, not both")
     resolved = _resolve_data_dir(data_dir)
     if not check_all:
         ref = _resolve_scenario(resolved, scenario_name)
-        _check_scenario(resolved, ref.name)
+        _check_scenario(resolved, ref.name, unused=True)
         return
     try:
         names = list_scenario_names(resolved)
@@ -253,7 +265,7 @@ def check(scenario_name: str | None, data_dir: Path | None, check_all: bool) -> 
     for name in names:
         click.echo(f"Checking {name}")
         try:
-            _check_scenario(resolved, name)
+            _check_scenario(resolved, name, unused=verbose)
         except click.ClickException:
             failed.append(name)  # its issues are already printed
     click.echo()
@@ -265,9 +277,10 @@ def check(scenario_name: str | None, data_dir: Path | None, check_all: bool) -> 
     click.echo(f"all {len(names)} scenario(s) ok")
 
 
-def _check_scenario(data_dir: Path, name: str) -> None:
+def _check_scenario(data_dir: Path, name: str, *, unused: bool) -> None:
     """Load one scenario into a throwaway intent file, printing its issues and
-    warnings; a failed load raises ClickException."""
+    warnings (with ``unused``, the unused ones too); a failed load raises
+    ClickException."""
     with tempfile.TemporaryDirectory() as td:
         try:
             result = load_scenario(
@@ -277,14 +290,16 @@ def _check_scenario(data_dir: Path, name: str) -> None:
             for issue in exc.issues:
                 click.echo(f"  error: {issue}", err=True)
             raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
-    _echo_load_warnings(result)
+    _echo_load_warnings(result, unused=unused)
     click.echo("ok")
 
 
-def _echo_load_warnings(result: LoadResult) -> None:
-    """Print a load's non-fatal warnings (ADR-008: e.g. an unused latent
-    factor) to stderr, the way errors are printed, without failing."""
-    for warning in result.warnings:
+def _echo_load_warnings(result: LoadResult, *, unused: bool = False) -> None:
+    """Print a load's non-fatal warnings to stderr, the way errors are
+    printed, without failing. Warnings about things defined but not read yet
+    (an unused latent factor or set_rate series) are often deliberate, so
+    only `sim check` asks for them (``unused=True``, #204)."""
+    for warning in [*result.warnings, *(result.unused if unused else ())]:
         click.echo(f"WARN: {warning}", err=True)  # ADR-004 §6's format
 
 
@@ -3519,8 +3534,8 @@ def calendar_add_latent_factor(
     inflation regime") that varying rows correlate with through
     --vary-correlate-with, but that isn't itself a modeled value.
 
-    A factor with no dependents yet loads with a warning. NAME is asked for
-    if left out.
+    A factor with no dependents yet affects nothing; `sim check` warns of
+    it. NAME is asked for if left out.
     """
     name = _ask_missing_arguments("latent-factor", data_dir, scenario, name=name)["name"]
     data_dir_p = _resolve_data_dir(data_dir)
