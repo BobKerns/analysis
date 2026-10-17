@@ -758,6 +758,12 @@ def _read_scenario_inputs(
         ytd_rows = _merge_scenario_rows(
             ytd_rows, read_overlay("year_to_date.csv"), ("name",),
         )
+    for col in ("start", "end"):
+        if not scenario_row.get(col):
+            # Blank all the way down (a root scenario's own blank, say): the
+            # run has no span. Said here rather than tripping later (#190).
+            issues.append(f"{scenario_name}: scenario.csv {col} is blank here and in every scenario it builds on")
+            scenario_row[col] = ""
     if "reserve" in meta:
         # #163: the ensemble reports' reserve, in CPI-constant dollars.
         try:
