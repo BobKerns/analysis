@@ -4172,6 +4172,17 @@ def _check_scheduled_row(row: dict[str, str], context: calendar_guide.GuideConte
                 raise click.ClickException(f"{field_.name}: {error.format_message()}") from None
             except ValueError as error:  # parse_tags says what is wrong this way
                 raise click.ClickException(f"{field_.name}: {error}") from None
+    if row["amount"].strip() and _parse_amount_cents(row["amount"]) <= 0:
+        raise click.ClickException(f"amount must be positive: {row['amount']!r}")
+    if kind == "rmd" and row["from_account"] in context.chains:
+        subject = _check_json_object(row["params_json"] or "{}").get("subject_account")
+        if not subject:
+            raise click.ClickException(
+                f"an rmd drawing from chain {row['from_account']!r} needs --params-json "
+                '\'{"subject_account": "<the account the RMD is for>"}\''
+            )
+        if subject not in context.accounts:
+            raise click.ClickException(f"unknown subject_account: {subject!r}")
     _pick_endpoints(
         endpoints, row["from_account"], row["from_lot"] or None,
         row["to_account"], row["to_lot"] or None,

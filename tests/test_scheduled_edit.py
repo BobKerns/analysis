@@ -425,3 +425,27 @@ def test_edit_with_a_malformed_tag_is_a_clean_error(test_data_dir: Path) -> None
     assert result.exit_code != 0
     assert "tags: invalid tag 'untagged'" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_edit_refuses_an_amount_that_is_not_positive(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
+) -> None:
+    before = scheduled()
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "living", "--amount", "-1")
+
+    assert result.exit_code != 0
+    assert "amount must be positive: '-1.00'" in result.output
+    pd.testing.assert_frame_equal(scheduled(), before)
+
+
+def test_an_rmd_drawing_from_a_chain_needs_its_subject_account(test_data_dir: Path) -> None:
+    result = _sim(
+        test_data_dir, "retire_alice", "add", "2027-01", "asset_checking_liquidity",
+        "Asset_Savings", "--kind", "rmd", "--person", "alice",
+    )
+
+    assert result.exit_code != 0
+    assert "an rmd drawing from chain 'asset_checking_liquidity' needs --params-json" in (
+        result.output
+    )
