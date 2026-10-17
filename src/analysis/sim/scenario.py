@@ -18,7 +18,7 @@ import pandas as pd
 from analysis.sim.loader import LoadError
 from analysis.sim import chain_edit, registries, units
 from analysis.sim.dates import month_end_iso
-from analysis.sim.lineage import load_order, read_parents
+from analysis.sim.lineage import default_description, load_order, parse_parents, read_parents
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.readme import parse_readme_summary
 from analysis.sim import cli
@@ -48,6 +48,45 @@ lives in `aux/inflation__cpi.csv`, not here.
 
 Details: ADR-003 sections 4.1d and 4.4 in the analysis code repository.
 """
+
+
+# The placeholder section of a new scenario's README.md (#190), for the
+# author to replace with what the scenario is for.
+README_PURPOSE = """\
+## Purpose
+
+_What is this scenario for, and what does it change from what it builds on?
+Replace this paragraph; the title and first paragraph above are what scenario
+listings and notebooks show._
+"""
+
+
+def readme_paragraph(description: str, parents: list[str]) -> str:
+    """A generated README.md's first paragraph: the scenario's description,
+    the default one with its parents in `code`, so a rename follows them."""
+    if description == default_description(parents):
+        return f"Derived from {' + '.join(f'`{p}`' for p in parents)}."
+    return description
+
+
+def readme_parents_line(parents: list[str]) -> str:
+    """A generated README.md's line naming what the scenario builds on."""
+    if not parents:
+        return "Builds on no other scenario."
+    line = f"Builds on `{parents[0]}`"
+    if parents[1:]:
+        line += f", with mix-in{'s' if len(parents) > 2 else ''} " + ", ".join(f"`{m}`" for m in parents[1:])
+    return line + "."
+
+
+def scenario_readme(name: str, description: str, parents: list[str]) -> str:
+    """The README.md ``scenario create`` writes (ADR-003 §4.1e): the name as
+    its title, the description as its first paragraph (which the loader then
+    takes as ``scenario.description``), the parents, and a placeholder for
+    what the scenario is for."""
+    return "\n\n".join((
+        f"# {name}", readme_paragraph(description, parents), readme_parents_line(parents), README_PURPOSE,
+    ))
 
 
 def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
@@ -105,6 +144,9 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
         role_dir = target / "chains" / role
         role_dir.mkdir(parents=True)
         (role_dir / ".gitignore").write_text("", encoding="utf-8")
+    description = description or default_description(parents)
+    (target / "README.md").write_text(scenario_readme(name, description, parents), encoding="utf-8")
+
     pd.DataFrame(columns=[  # the example is a source chain, which takes no tax columns
         c for c in chain_edit.CHAIN_COLUMNS if c not in chain_edit.TAX_COLUMNS
     ]).to_csv(
@@ -115,7 +157,7 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
         registries.SCENARIO_HEADER,
         {
             "name": name,
-            "description": description or f"Derived from {' + '.join(parents)}",
+            "description": description,
             "parent_scenario": ":".join(parents),
             "created_by": os.environ.get("ANALYSIS_USER")
             or os.environ.get("USER")
@@ -292,3 +334,109 @@ def _one_line_description(scenario_dir: Path, row: dict[str, str]) -> str:
 
 def _name_key(text: str) -> str:
     return re.sub(r"[\s_-]+", "", text).casefold()
+
+
+# ---------- editing and deleting a scenario (#190) ----------
+
+@dataclass(frozen=True)
+class FieldChange:
+    """One ``scenario.csv`` value (or ``meta_json`` key) an edit changed; a
+    blank one inherits."""
+
+    field: str
+    old: str
+    new: str
+
+
+def edit_scenario_row(
+    scenario_dir: Path, values: dict[str, str], meta: dict[str, object | None],
+) -> list[FieldChange]:
+    """Set ``scenario_dir/scenario.csv``'s ``values`` (a blank one inherits)
+    and its ``meta_json`` keys (``None`` drops one, so it inherits); what
+    changed. A column the file lacks is added. The default description
+    follows a change of parents, as it does a rename's."""
+    path = scenario_dir / "scenario.csv"
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        header = list(reader.fieldnames or [])
+        rows = list(reader)
+    if len(rows) != 1:
+        raise LoadError(f"{path}: expected exactly one row, found {len(rows)}")
+    row = {k: v or "" for k, v in rows[0].items() if k is not None}
+    before = dict(row)
+    values = dict(values)
+    new_parents = parse_parents(values.get("parent_scenario"))
+    # A root scenario derives from nothing, so the old description stays.
+    if new_parents and "description" not in values:
+        old_parents = parse_parents(row.get("parent_scenario"))
+        if row.get("description", "").strip() == default_description(old_parents):
+            values["description"] = default_description(new_parents)
+    row.update(values)
+    if meta:
+        try:
+            meta_json = json.loads(row.get("meta_json") or "{}")
+        except json.JSONDecodeError as exc:
+            raise LoadError(f"{path}: meta_json is not valid JSON: {exc}") from None
+        if not isinstance(meta_json, dict):
+            raise LoadError(f"{path}: meta_json must be a JSON object")
+        for key, value in meta.items():
+            if value is None:
+                meta_json.pop(key, None)
+            else:
+                meta_json[key] = value
+        row["meta_json"] = json.dumps(meta_json, separators=(",", ":"))
+    for column in registries.SCENARIO_HEADER:
+        if column in row and column not in header:
+            header.append(column)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
+        writer.writeheader()
+        writer.writerow(row)
+    changes = [FieldChange(column, before.get(column, ""), row[column])
+               for column in header if column != "meta_json" and before.get(column, "") != row.get(column, "")]
+    if meta:
+        old_meta = json.loads(before.get("meta_json") or "{}")
+        new_meta = json.loads(row["meta_json"])
+        changes += [FieldChange(f"meta_json {key}", _shown(old_meta.get(key)), _shown(new_meta.get(key)))
+                    for key in meta if old_meta.get(key) != new_meta.get(key)]
+    return changes
+
+
+def _shown(value: object) -> str:
+    return "" if value is None else str(value)
+
+
+def follow_readme(scenario_dir: Path, old: dict[str, str], new: dict[str, str]) -> bool | None:
+    """Keep a README.md that ``scenario create`` wrote in step with an edit
+    of ``scenario.csv`` (``old`` and ``new`` are its rows): its generated
+    first paragraph follows the description, and its "Builds on" line the
+    parents, while they still read as generated. Text somebody wrote is left
+    alone. ``None`` if there is no README.md or nothing it shows changed,
+    else whether it now matches."""
+    readme = scenario_dir / "README.md"
+    old_parents, new_parents = (parse_parents(row.get("parent_scenario")) for row in (old, new))
+    swaps = [
+        (readme_paragraph(old.get("description", ""), old_parents),
+         readme_paragraph(new.get("description", ""), new_parents)),
+        (readme_parents_line(old_parents), readme_parents_line(new_parents)),
+    ]
+    swaps = [(was, now) for was, now in swaps if was != now]
+    if not readme.is_file() or not swaps:
+        return None
+    # Only whole paragraphs, as generated: one line, blank lines around. If
+    # any has been reworded, the README is somebody's own; none is touched.
+    blocks = readme.read_text(encoding="utf-8").split("\n\n")
+    if not all(was in blocks for was, _ in swaps):
+        return False
+    for was, now in swaps:
+        blocks[blocks.index(was)] = now
+    readme.write_text("\n\n".join(blocks), encoding="utf-8")
+    return True
+
+
+def dependents(scenarios_dir: Path, name: str) -> list[str]:
+    """The scenarios naming ``name`` as their parent or a mix-in, sorted."""
+    return sorted(
+        other for other in list_scenario_names(scenarios_dir.parent, scenarios_dir)
+        if other != name and name in read_parents(scenarios_dir / other)
+    )

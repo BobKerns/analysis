@@ -151,6 +151,11 @@ narrow `# ty: ignore[<rule>]` with a reason is the last resort.
 
 ## Conventions
 
+- **`edit` means guided.** A `sim <type> edit` command prompts, with
+  completion, for whatever its arguments and options leave out (with no
+  options, it shows the fields and asks which to change). A command that only
+  takes its changes as options is named `sim <type> change` instead, so the
+  name says which kind it is.
 - `uv` manages the environment; the venv is `.venv/`. Prefer `.venv/bin/...` or
   `uv run ...` over a bare `python`.
 - Notebooks are stripped with `nbstripout`. Don't commit output cells or churn

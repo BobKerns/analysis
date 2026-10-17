@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from analysis.sim import chain_edit, registries
-from analysis.sim.lineage import load_order, parse_parents
+from analysis.sim.lineage import default_description, load_order, parse_parents
 from analysis.sim.loader import CURRENT_SCENARIO_FILE, LoadError, load_scenario
 from analysis.sim.schema import connect_sim_file
 
@@ -357,11 +357,6 @@ def _rewrite_scenario_csv(path: Path, edit: Callable[[dict[str, str]], None]) ->
     return True
 
 
-def _default_description(parents: list[str]) -> str:
-    # What ``scenario.create_scenario`` writes when given no description.
-    return f"Derived from {' + '.join(parents)}"
-
-
 def _repoint_parents(old: str, new: str) -> Callable[[dict[str, str]], None]:
     def edit(row: dict[str, str]) -> None:
         parents = parse_parents(row.get("parent_scenario"))
@@ -371,8 +366,8 @@ def _repoint_parents(old: str, new: str) -> Callable[[dict[str, str]], None]:
         row["parent_scenario"] = ":".join(renamed)
         # A description `scenario create` made up says which scenarios it
         # derives from, so it follows them; one somebody wrote is left be.
-        if (row.get("description") or "").strip() == _default_description(parents):
-            row["description"] = _default_description(renamed)
+        if (row.get("description") or "").strip() == default_description(parents):
+            row["description"] = default_description(renamed)
     return edit
 
 
@@ -469,6 +464,15 @@ def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
             changed.append(after(path))
     old_dir.rename(new_dir)
     changed.insert(0, f"scenarios/{old}/ -> scenarios/{new}/")
+    # The title `scenario create` gives its README is the scenario's name.
+    readme = new_dir / "README.md"
+    if readme.is_file():
+        text = readme.read_text(encoding="utf-8")
+        title, sep, rest = text.partition("\n")
+        if title.strip() == f"# {old}":
+            readme.write_text(f"# {new}{sep}{rest}", encoding="utf-8")
+            if f"scenarios/{new}/README.md" not in changed:
+                changed.append(f"scenarios/{new}/README.md")
 
     def rename_self(row: dict[str, str]) -> None:
         if (row.get("name") or "").strip() == old:
@@ -502,3 +506,16 @@ def symbol_series(data_dir: Path, name: str) -> str | None:
     if symbol and asset_class in registries.ASSET_CLASSES:
         return f"{name!r} is a <symbol>.<asset class> series, which fund lots read by that name"
     return None
+
+
+def scenario_mentions(data_dir: Path, name: str) -> list[Path]:
+    """The markdown files outside scenario ``name``'s own folder that a
+    rename of it would relink: those that link to it or mention it by name.
+    ``sim scenario delete`` lists them, as they then point at nothing."""
+    scenarios = data_dir / "scenarios"
+    old_dir = scenarios / name
+    # Any name no folder has: what matters is whether anything would change.
+    gone = scenarios / f"{name}\0"
+    return [path for path in _markdown_files(data_dir)
+            if old_dir not in path.parents
+            and relink_markdown(text := path.read_text(encoding="utf-8"), path, old_dir, gone) != text]
