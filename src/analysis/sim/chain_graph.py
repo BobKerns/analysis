@@ -9,8 +9,9 @@ protocol it takes, and :func:`kitty_sequence` / :func:`iterm_sequence`
 wrap the PNG for it.
 
 The chart never leaves the machine, and drawing it needs no network: the
-Mermaid script ships with the package (``vendor/``, the release the notebook
-loads, gzipped), and the page drawing the chart may fetch nothing.
+Mermaid script ships with the package (``vendor/``, gzipped; the notebook's
+flowchart widget draws with the same copy), and the page drawing the chart
+may fetch nothing.
 """
 
 from __future__ import annotations
@@ -26,17 +27,16 @@ from pathlib import Path
 from typing import Literal
 
 __all__ = [
-    "MERMAID_URL", "GraphError", "fit_columns", "iterm_sequence",
+    "MERMAID_SCRIPT", "GraphError", "fit_columns", "iterm_sequence",
     "kitty_sequence", "render", "terminal_protocol",
 ]
 
 MERMAID_VERSION = "11.17.2"
-MERMAID_URL = f"https://cdn.jsdelivr.net/npm/mermaid@{MERMAID_VERSION}/dist/mermaid.esm.min.mjs"
-"""Where the notebook's flowchart widget imports Mermaid from."""
 MERMAID_SCRIPT = Path(__file__).parent / "vendor" / f"mermaid-{MERMAID_VERSION}.min.js.gz"
 """The same release as a plain script, as npm publishes it, gzipped: the
 minified script's short names trip the blocked-keyword check, which skips a
-binary file. To upgrade, replace it, change ``MERMAID_VERSION``, and update
+binary file. The CLI and the notebook's flowchart widget both draw with it,
+so neither needs the network. To upgrade, replace it, change ``MERMAID_VERSION``, and update
 the hash in ``tests/test_chain_graph.py``."""
 
 type Protocol = Literal["kitty", "iterm"]

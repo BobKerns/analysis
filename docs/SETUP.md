@@ -100,8 +100,8 @@ Chromium once:
 uv run playwright install chromium
 ```
 
-Mermaid's script (the release the notebooks load) ships with the code, so
-`--graph` works offline, and the chart never leaves your machine.
+Mermaid's script ships with the code, so `--graph` and the notebooks'
+flowchart work offline, and the chart never leaves your machine.
 
 **A terminal that shows images.** Recommended, all free:
 

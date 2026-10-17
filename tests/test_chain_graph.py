@@ -201,7 +201,6 @@ MERMAID_SHA256 = "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390e
 def test_the_shipped_mermaid_script_is_the_vetted_one() -> None:
     # The script sees the chart: a changed copy must be vetted again, and this hash updated.
     assert chain_graph.MERMAID_SCRIPT.name == f"mermaid-{chain_graph.MERMAID_VERSION}.min.js.gz"
-    assert f"mermaid@{chain_graph.MERMAID_VERSION}/" in chain_graph.MERMAID_URL
     script = gzip.decompress(chain_graph.MERMAID_SCRIPT.read_bytes())
     assert hashlib.sha256(script).hexdigest() == MERMAID_SHA256
 
