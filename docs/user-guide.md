@@ -103,6 +103,14 @@ scenario's start and end months, seed and ensemble size, in `[brackets]`
 when the scenario inherits the value rather than setting it itself. A blank
 size means the scenario is not an ensemble.
 
+Your current scenario is the one `sim` commands work on when you don't name
+one. Naming a scenario on any command that lets you leave it out (as an
+argument or `--scenario`) makes it current. When you leave it out, the command
+first prints `Using scenario <name>`; with no current scenario (a fresh data
+repo, or after deleting it) the command asks you to name one. The shell
+prompt that `activate-analysis` sets shows it, as
+`[analysis:<data repo>:<you>:<scenario>]`.
+
 To rename a scenario (or an ensemble; the two commands are the same):
 
 ```sh

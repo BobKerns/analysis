@@ -385,7 +385,7 @@ def test_edit_says_which_scenario_before_asking_anything(
     )
 
     assert defaulted.output.startswith(
-        "Scenario: retire_alice (the default; use --scenario for another)\n"
+        "Using scenario retire_alice\n  "
     )
 
 
