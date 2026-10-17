@@ -13,14 +13,18 @@ walk the notebooks and `analysis.sim.notebook_ui`, check each view against `anal
 --help`, and add the missing command or note why there isn't one. Update the table in
 [notebooks/README.md](notebooks/README.md) when a command is added.
 
-Known gaps (last reviewed 2026-09-24):
+Known gaps (last reviewed 2026-10-17; each has an issue):
 
-- persons and lifespans: no listing command
-- `year_to_date.csv` rows: no `sim ytd list`
-- calendar events other than one-time transfers: no listing command
-- scenario comparison (account and lot definition differences, lot balance differences,
-  net worth differences): no terminal equivalent
-- net worth by month: `sim explain` prints year-end values only
+- net worth by month, and in CPI-constant dollars: `sim explain` prints year-end values
+  only, and needs a run file's path (#186)
+- negative-balance warnings after a run: printed once while it runs, nothing reads them
+  back (#186)
+- account and lot balance history (`notebooks/accounts.ipynb`): no terminal equivalent (#187)
+- income, expenses by category, realized and unrealized gains, tax by year
+  (`notebooks/net_worth.ipynb`): no terminal equivalent (#187)
+- plain-run scenario comparison (account and lot definition differences, rule and event
+  differences, net worth differences, break-even): only `sim ensemble compare`, which is
+  ensembles' risk only (#188)
 - events (`notebooks/events.ipynb`): filtering the full `transfer_event` ledger by reason
-  kind/tax character/account/date range has no terminal equivalent; `sim transfer list`
-  only covers one-time transfers from the intent, not a run's actual ledger
+  kind/tax character/account/date range; `sim items` covers one account and a date range
+  only (#189)

@@ -327,8 +327,8 @@ def _one_line_description(scenario_dir: Path, row: dict[str, str]) -> str:
             title = summary.title
             if title and _name_key(title) == _name_key(scenario_dir.name):
                 title = ""
-            if title or summary.paragraph:
-                return title or summary.paragraph
+            # A README.md wins even when blank (ADR-003 §4.1e).
+            return title or summary.paragraph
     return " ".join(row.get("description", "").split())
 
 

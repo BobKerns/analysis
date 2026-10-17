@@ -16,7 +16,7 @@ import tempfile
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 import pandas as pd
@@ -32,8 +32,8 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, registries, rename,
-    scenario_guide, scheduled_guide, sensitivity, symbols, units,
+    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, readme, registries,
+    rename, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols, units,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -109,9 +109,18 @@ from analysis.sim.dates import (
     MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day, parse_vary_date,
 )
 from analysis.sim.lineage import default_description, load_order, parse_parents, read_parents
+from analysis.sim.overlay import (
+    CalendarRow as _CalendarRow,
+    Overlaid as _Overlaid,
+    overlay_rows as _overlay_rows,
+    scenario_calendar_rows as _scenario_calendar_rows,
+)
 from analysis.frames import named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
 from analysis.sim.schema import connect_sim_file
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
 
 
 def _resolve_state_dir(
@@ -2074,61 +2083,6 @@ def _read_calendar_rows(path: Path) -> list[dict[str, str]]:
         {column: row.get(column, "") for column in registries.CALENDAR_HEADER}
         for row in df.to_dict("records")
     ]
-
-
-class _CalendarRow(NamedTuple):
-    """One calendar.csv row of a scenario, as its load order leaves it."""
-    row: dict[str, str]  # merged down the load order, every CALENDAR_HEADER column
-    index: int | None  # its data row (0-based) in this scenario's own file, if there
-    inherited_from: str | None  # the last scenario before this one to have it
-
-
-def _scenario_calendar_rows(scenario_dir: Path) -> list[_CalendarRow]:
-    """Every calendar row of the scenario, its own and inherited, overlaid
-    down its load order the way ``_merge_calendar_rows`` overlays them: by
-    name where a row has one the inherited calendar knows, else by its key
-    columns. In the order they first appear (#202)."""
-    name = scenario_dir.name
-    entries: list[_CalendarRow] = []
-    by_key: dict[tuple[str, ...], int] = {}
-    by_name: dict[str, int] = {}
-
-    def full(row: dict[str, str]) -> dict[str, str]:
-        return {column: row.get(column, "") for column in registries.CALENDAR_HEADER}
-
-    for scenario_name in load_order(scenario_dir.parent, name):
-        path = scenario_dir.parent / scenario_name / "calendar.csv"
-        if not path.exists() or path.stat().st_size == 0:
-            continue
-        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-        own = scenario_name == name
-        for index, record in enumerate(frame.to_dict("records")):
-            # Only the file's own columns: one it leaves out is inherited.
-            row = {str(k): str(v).strip() for k, v in record.items()}
-            row_name = row.get("name", "")
-            position = by_name.get(row_name) if row_name else None
-            if position is None:
-                position = by_key.get(calendar_row_key(full(row)))
-            if position is None:
-                merged = full(row)
-                prior_from = None
-                position = len(entries)
-                entries.append(_CalendarRow(merged, None, None))
-            else:
-                old = entries[position]
-                merged = full({**old.row, **row})
-                prior_from = old.inherited_from
-                by_key.pop(calendar_row_key(old.row), None)
-                if old.row["name"] and old.row["name"] != merged["name"]:
-                    by_name.pop(old.row["name"], None)
-            by_key[calendar_row_key(merged)] = position
-            if merged["name"]:
-                by_name[merged["name"]] = position
-            entries[position] = (
-                _CalendarRow(merged, index, prior_from) if own
-                else _CalendarRow(merged, None, scenario_name)
-            )
-    return entries
 
 
 def _calendar_row_label(row: dict[str, str]) -> str:
@@ -5064,43 +5018,6 @@ def _is_growth_rate_row(row: pd.Series, series: str | None) -> bool:
     except json.JSONDecodeError:
         return False
     return params.get("aux_kind", "rate") == "rate"
-
-
-class _Overlaid(NamedTuple):
-    """One row of a scenario's table, as its load order leaves it."""
-    row: dict[str, str]  # merged down the load order, as the loader merges it
-    index: int | None  # its data row (0-based) in this scenario's own file, if there
-    inherited_from: str | None  # the last scenario before this one to have it
-
-
-def _overlay_rows(scenario_dir: Path, filename: str, key: str = "name") -> dict[str, _Overlaid]:
-    """Every row of the scenario's ``filename`` (accounts.csv, scheduled.csv)
-    by ``key``, overlaid down its load order as ``_merge_scenario_rows`` does:
-    a later scenario's row with the same key updates the earlier one, cell by
-    cell. So an edit can find a row the scenario inherits, and write it back
-    as an override (#202)."""
-    name = scenario_dir.name
-    rows: dict[str, _Overlaid] = {}
-    for scenario_name in load_order(scenario_dir.parent, name):
-        path = scenario_dir.parent / scenario_name / filename
-        if not path.exists() or path.stat().st_size == 0:
-            continue
-        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-        if key not in frame.columns:
-            continue
-        for index, record in enumerate(frame.to_dict("records")):
-            # Stripped, as the loader reads every cell.
-            row = {str(k): str(v).strip() for k, v in record.items()}
-            if not row[key]:
-                continue
-            prior = rows.get(row[key])
-            merged = {**prior.row, **row} if prior is not None else row
-            if scenario_name != name:
-                rows[row[key]] = _Overlaid(merged, None, scenario_name)
-            else:
-                inherited_from = prior.inherited_from if prior is not None else None
-                rows[row[key]] = _Overlaid(merged, index, inherited_from)
-    return rows
 
 
 def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = None) -> list[str]:
@@ -8845,6 +8762,315 @@ def scenario_delete(name: str, yes: bool, data_dir: Path | None) -> None:
 def ensemble_delete(name: str, yes: bool, data_dir: Path | None) -> None:
     """Delete ensemble NAME; the same as `sim scenario delete`."""
     _delete_scenario(name, data_dir, yes)
+
+
+# ---------- setup listings (#185) ----------
+
+_LISTING_SCENARIO_OPTION = click.option(
+    "--scenario", default=None,
+    help="Scenario folder name (default: the current scenario).",
+)
+_LISTING_DATA_DIR_OPTION = click.option(
+    "--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).",
+)
+
+
+def _print_wide(table: RenderableType) -> None:
+    """Print a rich table, widening the console rather than cropping names,
+    as `sim chain list` does."""
+    from rich.console import Console
+    from rich.measure import Measurement
+
+    console = Console()
+    needed = Measurement.get(console, console.options.update(max_width=10_000), table).maximum
+    if needed > console.width:
+        console = Console(width=min(needed, max(console.width, 160)))
+    console.print(table)
+
+
+def _tag_matches(tags: str, wanted: str) -> bool:
+    """Whether a ``tags`` cell carries ``wanted`` (``role:name``, or
+    ``role:*`` for any name in the role)."""
+    role, _, name = wanted.partition(":")
+    try:
+        pairs = registries.parse_tags(tags)
+    except ValueError:
+        return False
+    return any(r == role and (name == "*" or n == name) for r, n in pairs)
+
+
+_CALENDAR_LIST_KINDS = sorted({*registries.CALENDAR_EVENT_KINDS, *_CALENDAR_COMMAND_OF_KIND.values()})
+
+
+@calendar_group_command.command("list")
+@click.option("--kind", type=click.Choice(_CALENDAR_LIST_KINDS), default=None,
+              help="Only rows of this kind (the CSV kind, or its add command's name).")
+@click.option("--tag", default=None,
+              help="Only rows carrying this tag ('role:name', or 'role:*' for a whole role).")
+@click.option("-v", "--verbose", is_flag=True, default=False,
+              help="Also show each row's description and params_json.")
+@_LISTING_SCENARIO_OPTION
+@_LISTING_DATA_DIR_OPTION
+def calendar_list(
+    kind: str | None, tag: str | None, verbose: bool,
+    scenario: str | None, data_dir: Path | None,
+) -> None:
+    """List the scenario's calendar rows, its own and inherited, by date.
+
+    # is the number `sim calendar edit` and `sim calendar delete` take.
+    Amounts are as written in calendar.csv. Varies sums up a varying row's
+    or latent factor's vary_* cells; "~ name rho" is what it correlates
+    with. Defined in says where each row comes from: this scenario, the
+    ancestor it is inherited from, or "overrides <ancestor>".
+    """
+    from rich.markup import escape
+    from rich.table import Table
+
+    if tag is not None and ":" not in tag:
+        raise click.UsageError("--tag takes 'role:name' or 'role:*'")
+    if kind is not None:
+        kind = next((k for k, c in _CALENDAR_COMMAND_OF_KIND.items() if c == kind), kind)
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    rows = [
+        entry for entry in setup_listings.calendar_listing(ref.path)
+        if (kind is None or entry.row["kind"] == kind)
+        and (tag is None or _tag_matches(entry.row["tags"], tag))
+    ]
+    if not rows:
+        click.echo(f"no calendar rows in {ref.name}" + (" match" if kind or tag else ""))
+        return
+    table = Table(title=f"calendar ({ref.name})", header_style="bold")
+    columns = ["#", "Date", "Kind", "Name", "Target", "Amount", "Varies", "Tags", "Defined in"]
+    if verbose:
+        columns += ["Description", "params_json"]
+    for column in columns:
+        table.add_column(column, justify="right" if column in ("#", "Amount") else "left")
+    for entry in rows:
+        row = entry.row
+        amount = row["amount"] or ("balance" if row["kind"] == "transfer_balance" else "")
+        cells = [
+            str(entry.number), row["date"], row["kind"], row["name"],
+            setup_listings.calendar_target(row), amount,
+            setup_listings.vary_summary(row), row["tags"], entry.defined_in,
+        ]
+        if verbose:
+            cells += [row["description"], row["params_json"]]
+        table.add_row(*(escape(cell) for cell in cells))
+    _print_wide(table)
+
+
+@sim_group_command.group(name="person")
+def person_group_command() -> None:
+    """See the household's persons and the scenario's lifespans."""
+
+
+@person_group_command.command("list")
+@_LISTING_SCENARIO_OPTION
+@_LISTING_DATA_DIR_OPTION
+def person_list(scenario: str | None, data_dir: Path | None) -> None:
+    """List persons.csv's persons, with each one's lifespan in the scenario.
+
+    Final month is lifespan.csv's final_month, the last month the person's
+    rules still fire; blank when the scenario sets none. Defined in says
+    which scenario's lifespan.csv sets it.
+    """
+    from rich.markup import escape
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    persons = setup_listings.person_listing(data, ref.path)
+    if not persons:
+        click.echo(f"no persons in {data / 'persons.csv'}")
+        return
+    table = Table(title=f"persons ({ref.name})", header_style="bold")
+    for column in ("Id", "Display", "Birthdate", "Role", "Final month", "Defined in"):
+        table.add_column(column)
+    for person in persons:
+        row = person.row
+        table.add_row(*(escape(cell) for cell in (
+            row.get("id", ""), row.get("display", ""), row.get("birthdate", ""),
+            row.get("role", ""), person.final_month, person.lifespan_defined_in,
+        )))
+    _print_wide(table)
+
+
+@sim_group_command.group(name="ytd")
+def ytd_group_command() -> None:
+    """See the scenario's year-to-date catch-up rows (ADR-003 §4.10)."""
+
+
+@ytd_group_command.command("list")
+@_LISTING_SCENARIO_OPTION
+@_LISTING_DATA_DIR_OPTION
+def ytd_list(scenario: str | None, data_dir: Path | None) -> None:
+    """List year_to_date.csv's rows, then the scheduled rows carrying a
+    ytd_amount or ytd_preroll.
+
+    Amounts are as written: dollars, an @itemization, or "preroll" for a
+    scheduled row whose first year is pre-rolled. Year is year_to_date.csv's
+    year, or a scheduled row's tax_year.
+    """
+    from rich.markup import escape
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    rows = setup_listings.ytd_listing(ref.path)
+    if not rows:
+        click.echo(f"no year-to-date rows in {ref.name}")
+        return
+    table = Table(title=f"year to date ({ref.name})", header_style="bold")
+    for column in ("Name", "Source", "From", "To", "Amount", "Tax", "Year",
+                   "Description", "Defined in"):
+        table.add_column(column, justify="right" if column == "Amount" else "left")
+    for row in rows:
+        table.add_row(*(escape(cell) for cell in (
+            row.name, row.source, row.from_account, row.to_account, row.amount,
+            row.tax_character, row.year, row.description, row.defined_in,
+        )))
+    _print_wide(table)
+
+
+@sim_group_command.group(name="itemization")
+def itemization_group_command() -> None:
+    """See the itemizations an @name money cell sums (ADR-003 §4.1c).
+
+    The files themselves are edited as spreadsheets.
+    """
+
+
+def _fmt_total(item: setup_listings.Itemization) -> str:
+    if item.total_cents is None:
+        return "error"
+    sign = "-" if item.total_cents < 0 else ""
+    dollars, cents = divmod(abs(item.total_cents), 100)
+    return f"{sign}${dollars:,}.{cents:02d}"
+
+
+@itemization_group_command.command("list")
+@_LISTING_SCENARIO_OPTION
+@_LISTING_DATA_DIR_OPTION
+def itemization_list(scenario: str | None, data_dir: Path | None) -> None:
+    """List the itemizations the scenario can reference, with their totals.
+
+    A scenario's own itemizations/ hides an ancestor's file of the same name,
+    and an ancestor's hides the shared one, as the loader looks them up.
+    Refs counts the @name cells referencing each (`sim itemization show`
+    lists them).
+    """
+    from rich.markup import escape
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    items = setup_listings.itemizations(data, ref.path)
+    if not items:
+        click.echo(f"no itemizations for {ref.name}")
+        return
+    references = setup_listings.itemization_references(data, ref.path)
+    table = Table(title=f"itemizations ({ref.name})", header_style="bold")
+    for column, justify in (("Name", "left"), ("Rows", "right"), ("Total", "right"),
+                            ("Refs", "right"), ("Defined in", "left")):
+        table.add_column(column, justify=justify)
+    for item in items:
+        table.add_row(
+            escape(item.name), str(len(item.rows)), escape(_fmt_total(item)),
+            str(len(references.get(item.name, []))), escape(item.defined_in),
+        )
+    _print_wide(table)
+    for item in items:
+        if item.error:
+            click.echo(f"{item.name}: {item.error}", err=True)
+
+
+@itemization_group_command.command("show")
+@click.argument("name")
+@_LISTING_SCENARIO_OPTION
+@_LISTING_DATA_DIR_OPTION
+def itemization_show(name: str, scenario: str | None, data_dir: Path | None) -> None:
+    """Show itemization NAME's rows, its total, and what references it."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
+    name = name.removeprefix("@")
+    item = next((i for i in setup_listings.itemizations(data, ref.path) if i.name == name), None)
+    if item is None:
+        raise click.ClickException(f"no itemization {name!r} for {ref.name}")
+    click.echo(f"@{item.name} ({item.defined_in}): {item.path}")
+    table = Table(header_style="bold")
+    columns = list(item.rows[0]) if item.rows else ["Value"]
+    for column in columns:
+        table.add_column(column, justify="right" if column == "Value" else "left")
+    for row in item.rows:
+        table.add_row(*(escape(row.get(column, "")) for column in columns))
+    _print_wide(table)
+    if item.error:
+        click.echo(f"total: cannot be computed: {item.error}")
+    else:
+        click.echo(f"total: {_fmt_total(item)}")
+    references = setup_listings.itemization_references(data, ref.path).get(name, [])
+    if not references:
+        click.echo("referenced by: nothing")
+        return
+    click.echo("referenced by:")
+    for found in references:
+        try:
+            shown = found.path.relative_to(data)
+        except ValueError:
+            shown = found.path
+        click.echo(f"  {shown} line {found.line}, {found.column}")
+
+
+@scenario_group_command.command("show")
+@click.argument("name", required=False)
+@_LISTING_DATA_DIR_OPTION
+@click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Where run files are (default: state/runs beside the data repo).")
+def scenario_show(name: str | None, data_dir: Path | None, runs_dir: Path | None) -> None:
+    """Show scenario NAME (default: the current one): its description,
+    lineage, dates, seed, ensemble size, reserve, and latest run.
+
+    A value marked (inherited) comes from an ancestor in the load order.
+    """
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, name)
+    shown = setup_listings.scenario_show(data, ref.path, _resolve_runs_dir(runs_dir, data))
+
+    def mark(value: object, inherited: bool) -> str:
+        return f"{value} (inherited)" if inherited else str(value)
+
+    click.echo(f"scenario: {shown.name}")
+    click.echo(f"  folder: {shown.path}")
+    if shown.parent is None:
+        click.echo("  parent: none (a root scenario)")
+    else:
+        click.echo(f"  parent: {shown.parent}")
+    if shown.mixins:
+        click.echo(f"  mix-ins: {', '.join(shown.mixins)}")
+    click.echo(f"  load order: {' -> '.join(shown.load_order)}")
+    for label, month in (("start", shown.start), ("end", shown.end)):
+        click.echo(f"  {label}: {mark(month.month, month.inherited) if month else '(not set)'}")
+    click.echo(f"  seed: {mark(shown.seed.value, shown.seed.inherited) if shown.seed else '(not set)'}")
+    size = shown.ensemble_size
+    click.echo(f"  ensemble size: {mark(size.value, size.inherited) if size else '0 (not an ensemble)'}")
+    reserve = shown.reserve
+    click.echo(f"  reserve: {mark(*reserve) if reserve else '(not set)'}")
+    if shown.latest_run is None:
+        click.echo("  latest run: none")
+    else:
+        path, when = shown.latest_run
+        click.echo(f"  latest run: {path.name} ({when:%Y-%m-%d %H:%M})")
+    if shown.latest_batch is not None:
+        path, when = shown.latest_batch
+        click.echo(f"  latest ensemble batch: {path.name} ({when:%Y-%m-%d %H:%M})")
+    if shown.description:
+        click.echo()
+        click.echo(readme.relevel_heading(shown.description, 1))
 
 
 # ---------- Silent alias: accounts -> account ----------

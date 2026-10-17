@@ -147,6 +147,7 @@ reentrancy
 relativedelta
 relevel
 relevels
+renderable
 repoints
 reprompts
 rerunnable

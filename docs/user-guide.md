@@ -832,6 +832,11 @@ machine too small for a notebook comfortably.
 | the portfolio by asset class | `sim allocation` |
 | scheduled transactions | `sim scheduled list` |
 | one-time transfers | `sim transfer list` |
+| a scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `sim scenario show [scenario]` |
+| persons and their lifespans | `sim person list` |
+| calendar rows of every kind, with where each is defined | `sim calendar list [--kind KIND] [--tag TAG]` |
+| year-to-date rows | `sim ytd list` |
+| itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
 | a run's year-end net worth, and its lots | `sim explain <runfile>` |
 
 [notebooks/README.md](../notebooks/README.md) keeps the full, up-to-date list, including which
