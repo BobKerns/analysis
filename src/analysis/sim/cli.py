@@ -4053,6 +4053,10 @@ def _scheduled_row(
     or it is a lot, which follows its account. An unchanged cell is kept as
     authored; money and rates are written in the CSV's units."""
     kind = str(answers.get("amount_rule_kind") or "fixed_amount").strip()
+    if kind not in registries.AMOUNT_RULE_KINDS:
+        raise click.ClickException(
+            f"unknown rule kind {kind!r}; allowed: {sorted(registries.AMOUNT_RULE_KINDS)}"
+        )
     kind_changed = kind != base.get("amount_rule_kind", "").strip()
     text = {column: str(answers.get(column, "") or "").strip() for column in scheduled_guide.RULE_COLUMNS}
     row = {column: base.get(column, "") for column in registries.SCHEDULED_CSV_HEADER}

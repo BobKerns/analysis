@@ -343,3 +343,26 @@ def test_edit_keeps_a_spelled_out_default_lot_it_did_not_ask_about(
     assert result.exit_code == 0, result.output
     assert "no change; nothing was written" in result.output
     pd.testing.assert_frame_equal(scheduled(), before)
+
+
+def test_edit_to_an_unknown_kind_is_a_clean_error(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
+) -> None:
+    before = scheduled()
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "living", "--kind", "not_a_kind")
+
+    assert result.exit_code != 0
+    assert "unknown rule kind 'not_a_kind'" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    pd.testing.assert_frame_equal(scheduled(), before)
+
+
+def test_a_percent_of_balance_rule_needs_its_rate_series(test_data_dir: Path) -> None:
+    result = _sim(
+        test_data_dir, "retire_alice", "edit", "living", "--kind", "percent_of_balance",
+        "--series", "",
+    )
+
+    assert result.exit_code != 0
+    assert "rule kind percent_of_balance needs --series" in result.output

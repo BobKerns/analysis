@@ -25,7 +25,7 @@ KIND_COLUMNS: dict[str, dict[str, bool]] = {
         "amount": True, "series": False, "base_date": False, "inflation_cadence": False,
         "ytd_preroll": False,
     },
-    "percent_of_balance": {"series": False},
+    "percent_of_balance": {"series": True},  # its rate series; the engine has no default
     "rmd": {"person": True},
     "ss_benefit": {"person": True, "claim_age": True, "amount": True, "series": True},
     "tax_accumulator": {"params_json": True},
