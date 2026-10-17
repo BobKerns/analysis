@@ -57,7 +57,7 @@ def test_person_add_with_options_writes_the_row(
 def test_person_add_asks_for_what_is_missing(
     sim: Callable[..., Result], test_data_dir: Path,
 ) -> None:
-    result = sim("person", "add", "carol", input="Carol (fake)\n1995-02-03\n\n")
+    result = sim("person", "add", "carol", input="Carol (fake)\n1995-02-03\n\n\n")
 
     assert result.exit_code == 0, result.output
     carol = _persons(test_data_dir)["carol"]
@@ -100,11 +100,12 @@ def test_person_edit_asks_with_current_values_as_defaults(
 ) -> None:
     before = _persons(test_data_dir)["bill"]
 
-    # Keep display and role; change the birthdate.
-    result = sim("person", "edit", "bill", input="\n1967-09-01\n\n")
+    # Keep display and role; change the birthdate and meta_json.
+    result = sim("person", "edit", "bill", input='\n1967-09-01\n\n{"note": 1}\n')
 
     assert result.exit_code == 0, result.output
-    assert _persons(test_data_dir)["bill"] == {**before, "birthdate": "1967-09-01"}
+    assert _persons(test_data_dir)["bill"] == {
+        **before, "birthdate": "1967-09-01", "meta_json": '{"note": 1}'}
 
 
 def test_person_edit_of_an_unknown_person_fails(sim: Callable[..., Result]) -> None:

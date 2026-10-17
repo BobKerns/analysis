@@ -8957,6 +8957,8 @@ def _person_fields(
             role = _prompt_with_completion(
                 "role (blank for none)", roles, default=current.get("role") or "",
             )
+        if meta_json is None:
+            meta_json = click.prompt("meta_json", default=current.get("meta_json") or "{}")
     fields = {
         "display": (display if display is not None else current.get("display", "")).strip(),
         "birthdate": _check_birthdate(
@@ -9008,7 +9010,7 @@ def person_add(
     meta_json: str | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Add a person to persons.csv, asking for a display name and birthdate
-    not given (and then the role).
+    not given (and then the role and meta_json).
 
     persons.csv is shared by every scenario, at the data repo's top level.
     """
