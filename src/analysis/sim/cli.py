@@ -4433,7 +4433,7 @@ def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = 
         (scenario_dir / filename, fields)
         for filename, fields in _ACCOUNT_REFERENCE_FIELDS
     ]
-    paths.extend((path, ("account_name",)) for path in chain_edit.chain_files(scenario_dir))
+    paths.extend((path, chain_edit.ACCOUNT_COLUMNS) for path in chain_edit.chain_files(scenario_dir))
 
     for path, fields in paths:
         if not path.exists():
@@ -4459,7 +4459,7 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
         (scenario_dir / filename, fields)
         for filename, fields in _ACCOUNT_REFERENCE_FIELDS
     ]
-    paths.extend((path, ("account_name",)) for path in chain_edit.chain_files(scenario_dir))
+    paths.extend((path, chain_edit.ACCOUNT_COLUMNS) for path in chain_edit.chain_files(scenario_dir))
 
     for path, fields in paths:
         if not path.exists():
@@ -5165,7 +5165,7 @@ def _names_lot(row: dict[str, str] | pd.Series, account_field: str, lot_field: s
 
 def _lot_reference_files(scenario_dir: Path) -> list[tuple[Path, tuple[tuple[str, str], ...]]]:
     paths = [(scenario_dir / name, pairs) for name, pairs in _LOT_REFERENCE_FIELDS]
-    paths.extend((path, (("account_name", "lot"),)) for path in chain_edit.chain_files(scenario_dir))
+    paths.extend((path, chain_edit.LOT_COLUMNS) for path in chain_edit.chain_files(scenario_dir))
     return [(path, pairs) for path, pairs in paths if path.exists() and path.stat().st_size > 0]
 
 
@@ -6632,12 +6632,19 @@ _STEP_OPTIONS_HELP = {
     "maximum": "Most the step supplies or takes, in dollars (default: no limit).",
     "series": "Inflation series that grows --maximum from the scenario start, e.g. cpi.",
     "cadence": "How --series compounds: monthly or annual.",
+    "basis_of_lot": "The lot of --basis-of, for an account with several.",
+    "basis_of": "Asset whose cost basis the step recovers (a sale) or adds to (a capital improvement).",
+    "tax_character": ("Tax character of the money the step places, and of later steps' until another sets "
+                      "one; a destination chain's (e.g. home_sale, excluded_gain, ltcg)."),
 }
+
+_STEP_TAX_COLUMNS = chain_edit.TAX_COLUMNS
 
 
 def _step_options(f):
-    for option in ("cadence", "series", "maximum", "percent", "lot"):
-        f = click.option(f"--{option}", default=None, help=_STEP_OPTIONS_HELP[option])(f)
+    for option in ("basis_of_lot", "basis_of", "tax_character", "cadence", "series", "maximum", "percent", "lot"):
+        f = click.option(f"--{option.replace('_', '-')}", option, default=None,
+                         help=_STEP_OPTIONS_HELP[option])(f)
     return f
 
 
@@ -6651,6 +6658,7 @@ def _scenario_options(f):
 def _step_row(
     chain: str, account: str | None, lot: str | None, percent: str | None, maximum: str | None,
     series: str | None, cadence: str | None, endpoints: _Endpoints, role: str,
+    tax: Mapping[str, str | None] | None = None,
 ) -> dict[str, str]:
     """One step of a ``role`` chain as its CSV row, checked: a known account
     (and lot) or chain of the same role, and the percent and dollars in the
@@ -6661,7 +6669,12 @@ def _step_row(
                                 lot_info=endpoints.lot_info, chains=endpoints.chains_for(role),
                                 lot_option="--lot", roles=endpoints.roles, role=role)
     row = {"account_name": name, "lot": lot_, "percent": "", "maximum": "",
-           "series": series or "", "cadence": cadence or ""}
+           "series": series or "", "cadence": cadence or "",
+           **{column: (tax or {}).get(column) or "" for column in _STEP_TAX_COLUMNS}}
+    if row["tax_character"] and row["tax_character"] not in registries.TAX_CHARACTERS:
+        raise click.ClickException(
+            f"unknown tax character {row['tax_character']!r}; "
+            f"one of {', '.join(sorted(registries.TAX_CHARACTERS))}")
     try:
         if percent:
             row["percent"] = _step_percent(percent)
@@ -6761,6 +6774,11 @@ def _step_summary(row: Mapping[str, str]) -> str:
     if row.get("maximum"):
         grows = f", grown by {row['series']} ({row.get('cadence') or 'monthly'})" if row.get("series") else ""
         parts.append(f"at most {row['maximum']}{grows}")
+    if row.get("tax_character"):
+        parts.append(f"taxed as {row['tax_character']}")
+    if row.get("basis_of"):
+        lot = f" ({row['basis_of_lot']})" if row.get("basis_of_lot") else ""
+        parts.append(f"basis of {row['basis_of']}{lot}")
     return ", ".join([_step_label(row), *filter(None, parts)])
 
 
@@ -6789,9 +6807,9 @@ def _echo_equivalent(words: list[str]) -> None:
 def _step_words(row: Mapping[str, str]) -> list[str]:
     """``row``'s step as command-line words: the account, then its options."""
     words = [row["account_name"]]
-    for column in ("lot", "percent", "maximum", "series", "cadence"):
+    for column in ("lot", "percent", "maximum", "series", "cadence", *_STEP_TAX_COLUMNS):
         if row.get(column):
-            words += [f"--{column}", row[column]]
+            words += [f"--{column.replace('_', '-')}", row[column]]
     return words
 
 
@@ -6870,6 +6888,7 @@ def _step_index(steps: list[dict[str, str]], number: int, name: str) -> int:
 def chain_add_command(
     name: str | None, account: str | None, role: str | None,
     lot: str | None, percent: str | None, maximum: str | None, series: str | None, cadence: str | None,
+    tax_character: str | None, basis_of: str | None, basis_of_lot: str | None,
     scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Make a new chain, with ACCOUNT (or another chain) as its first step.
@@ -6903,7 +6922,9 @@ def chain_add_command(
                 role = _ask_role()
             if account is None:
                 _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains_for(role))
-            steps = [_step_row(name, account, lot, percent, maximum, series, cadence, endpoints, role)]
+            steps = [_step_row(name, account, lot, percent, maximum, series, cadence, endpoints, role,
+                               tax={"tax_character": tax_character, "basis_of": basis_of,
+                                    "basis_of_lot": basis_of_lot})]
         assert name is not None
         chain_edit.write_steps(chain_edit.new_chain_file(edit.scenario_dir, role, name), steps)
     click.echo(f"added {role} chain {name} ({len(steps)} step(s)) in {scenario_name}")
@@ -7036,6 +7057,7 @@ def chain_step_group() -> None:
 def chain_step_add_command(
     name: str | None, account: str | None, position: int | None,
     lot: str | None, percent: str | None, maximum: str | None, series: str | None, cadence: str | None,
+    tax_character: str | None, basis_of: str | None, basis_of_lot: str | None,
     scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Add a step to chain NAME: ACCOUNT (and its lot), or another chain.
@@ -7053,7 +7075,9 @@ def chain_step_add_command(
             _echo_steps(name, steps)
             _echo_endpoints(endpoints.accounts, endpoints.lot_info, endpoints.chains_for(endpoints.roles[name]))
         row = _step_row(name, account, lot, percent, maximum, series, cadence, endpoints,
-                        endpoints.roles[name])
+                        endpoints.roles[name],
+                        tax={"tax_character": tax_character, "basis_of": basis_of,
+                             "basis_of_lot": basis_of_lot})
         if guided:
             given = {k for k, v in
                      {"percent": percent, "maximum": maximum, "series": series, "cadence": cadence}.items()
@@ -7088,6 +7112,7 @@ def _step_label(row: Mapping[str, str]) -> str:
 def chain_step_edit_command(
     name: str | None, number: int | None,
     lot: str | None, percent: str | None, maximum: str | None, series: str | None, cadence: str | None,
+    tax_character: str | None, basis_of: str | None, basis_of_lot: str | None,
     scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Change step NUMBER of chain NAME. Each option given replaces that
@@ -7098,7 +7123,8 @@ def chain_step_edit_command(
     equivalent command.
     """
     given = {k: v for k, v in
-             {"lot": lot, "percent": percent, "maximum": maximum, "series": series, "cadence": cadence}.items()
+             {"lot": lot, "percent": percent, "maximum": maximum, "series": series, "cadence": cadence,
+              "tax_character": tax_character, "basis_of": basis_of, "basis_of_lot": basis_of_lot}.items()
              if v is not None}
     with _editing_chain(data_dir, scenario, name) as (edit, name, steps):
         if number is None:
@@ -7124,17 +7150,17 @@ def chain_step_edit_command(
         steps[index] = _step_row(
             name, merged["account_name"], merged["lot"] or None, merged["percent"] or None,
             merged["maximum"] or None, merged["series"] or None, merged["cadence"] or None,
-            endpoints, endpoints.roles[name],
+            endpoints, endpoints.roles[name], tax=merged,
         )
         after = steps[index]
     click.echo(f"{name}: step {number} is {_step_summary(after)}")
     if not given:
-        changed = [c for c in ("lot", "percent", "maximum", "series", "cadence")
+        changed = [c for c in ("lot", "percent", "maximum", "series", "cadence", *_STEP_TAX_COLUMNS)
                    if before.get(c, "") != after.get(c, "")]
         if changed:
             words = ["sim", "chain", "step", "edit", name, str(number)]
             for column in changed:
-                words += [f"--{column}", after.get(column, "")]
+                words += [f"--{column.replace('_', '-')}", after.get(column, "")]
             _echo_equivalent(words)
         else:
             click.echo("  (nothing changed)")

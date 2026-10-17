@@ -242,6 +242,14 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account_lot tm ON tm.id = y.to_lot_id"
     ),
     "tax_year_summary": "SELECT * FROM tax_year_summary ORDER BY year, bucket",
+    "capital_loss": (
+        "SELECT cl.*, s.month, a.name AS account, m.lot "
+        "FROM capital_loss cl "
+        "JOIN simulation_step s ON s.id = cl.step_id "
+        "JOIN account_lot m ON m.id = cl.lot_id "
+        "JOIN account a ON a.id = m.account_id "
+        "ORDER BY cl.id"
+    ),
     "account_balance": (
         "SELECT s.month, a.id AS account_id, a.name AS account, "
         "       a.kind, a.subkind, ast.balance "
