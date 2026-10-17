@@ -157,6 +157,160 @@ def test_sim_explain_dumps_provenance_and_yearly_nw(tmp_path: Path) -> None:
     assert "  2040  " in out
 
 
+def test_sim_explain_defaults_to_the_scenarios_latest_run(
+    test_data_dir: Path, runs_dir: Path, retire_alice_test_run: Path,
+) -> None:
+    """#186: a scenario name, not a run file, picks that scenario's latest run;
+    a run with no shortfalls says it has no negative-balance warnings."""
+    result = CliRunner().invoke(main, [
+        "sim", "explain", "retire_alice",
+        "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir),
+    ])
+    assert result.exit_code == 0, result.output
+    assert "scenario:       retire_alice" in result.output
+    assert f"file:           {runs_dir}" in result.output
+    assert "negative-balance warnings: none" in result.output
+
+
+def test_sim_explain_refuses_a_scenario_with_no_runs(
+    test_data_dir: Path, runs_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "explain", "retire_alice",
+        "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir),
+    ])
+    assert result.exit_code != 0
+    assert "no runs for 'retire_alice'" in result.output
+
+
+@pytest.mark.allow_negative_balance
+def test_sim_explain_lists_negative_balance_warnings(
+    test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+    append_calendar_row: Callable[..., None],
+) -> None:
+    """#186: the warnings a run recorded are read back, worded as the run's
+    RuntimeWarning was: month, account, balance, and what the refill did."""
+    append_calendar_row(
+        date="2027-03-31", kind="one_off_transfer", name="huge_bill",
+        account_1="Asset_Checking", account_2="Expense_Living",
+        amount="10000000.00", tax_character="none",
+    )
+    runner = CliRunner()
+    loaded = runner.invoke(main, [
+        "sim", "load", "retire_alice", "--data-dir", str(test_data_dir),
+        "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir), "--allow-dirty-data",
+    ])
+    assert loaded.exit_code == 0, loaded.output
+    result = runner.invoke(main, [
+        "sim", "explain", "retire_alice",
+        "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir),
+    ])
+    assert result.exit_code == 0, result.output
+    assert "negative-balance warnings (" in result.output
+    warnings = result.output.split("negative-balance warnings (", 1)[1].splitlines()[1:]
+    first = warnings[0]
+    assert first.startswith("  2027-03-31  Asset_Checking")
+    assert "-$" in first
+    assert "refill chain" in first or "no refill chain configured" in first
+
+
+def test_sim_networth_yearly_and_monthly(retire_alice_run_file: Path) -> None:
+    """#186: year-end rows by default, every month with --monthly, matching
+    the run's net_worth view."""
+    con = sqlite3.connect(retire_alice_run_file)
+    try:
+        months = [m for (m,) in con.execute("SELECT month FROM net_worth ORDER BY month")]
+        first_nw = con.execute("SELECT net_worth FROM net_worth ORDER BY month").fetchone()[0]
+    finally:
+        con.close()
+    runner = CliRunner()
+    yearly = runner.invoke(
+        main, ["sim", "networth", "--dollars", "nominal", "--runfile", str(retire_alice_run_file)],
+    )
+    assert yearly.exit_code == 0, yearly.output
+    lines = yearly.output.splitlines()
+    assert lines[0].startswith("net worth, nominal dollars (retire_alice")
+    years = sorted({m[:4] for m in months})
+    assert [line.split()[0] for line in lines[1:]] == years
+
+    monthly = runner.invoke(
+        main, ["sim", "networth", "--monthly", "--dollars", "nominal",
+               "--runfile", str(retire_alice_run_file)],
+    )
+    assert monthly.exit_code == 0, monthly.output
+    rows = monthly.output.splitlines()[1:]
+    assert [row.split()[0] for row in rows] == months
+    dollars, cents = divmod(abs(first_nw), 100)
+    assert rows[0].replace(" ", "").endswith(f"${dollars:,}.{cents:02d}")
+
+
+def test_sim_networth_cpi_constant_deflates_later_months(retire_alice_run_file: Path) -> None:
+    """CPI-constant dollars are the default (Bob: inflated future numbers
+    mislead): later months come out smaller than nominal under inflation."""
+    runner = CliRunner()
+    args = ["sim", "networth", "--monthly", "--runfile", str(retire_alice_run_file)]
+    nominal = runner.invoke(main, [*args, "--dollars", "nominal"]).output.splitlines()
+    real = runner.invoke(main, args).output.splitlines()
+    assert real[0].startswith("net worth, CPI-constant dollars")
+    assert [r.split()[0] for r in real[1:]] == [n.split()[0] for n in nominal[1:]]
+
+    def cents(line: str) -> int:
+        return int(line.split("$")[1].replace(",", "").replace(".", ""))
+
+    assert cents(real[-1]) < cents(nominal[-1])
+
+
+def test_sim_networth_says_when_a_run_has_no_cpi_index(
+    retire_alice_run_file: Path, tmp_path: Path,
+) -> None:
+    """A run without a 'cpi' inflation index fails with a hint, rather than
+    printing a header over no rows."""
+    runfile = tmp_path / retire_alice_run_file.name
+    runfile.write_bytes(retire_alice_run_file.read_bytes())
+    con = sqlite3.connect(runfile)
+    try:
+        con.execute("DELETE FROM inflation_index_state WHERE series = 'cpi'")
+        con.commit()
+    finally:
+        con.close()
+    runner = CliRunner()
+    result = runner.invoke(main, ["sim", "networth", "--runfile", str(runfile)])
+    assert result.exit_code != 0
+    assert "no 'cpi' inflation index" in result.output
+    assert "--dollars nominal" in result.output
+    nominal = runner.invoke(
+        main, ["sim", "networth", "--dollars", "nominal", "--runfile", str(runfile)],
+    )
+    assert nominal.exit_code == 0, nominal.output
+
+
+def test_sim_explain_year_end_net_worth_has_both_dollar_modes(
+    retire_alice_run_file: Path,
+) -> None:
+    """explain's year-end rows carry nominal and CPI-constant values, the
+    same figures `sim networth` prints in each mode."""
+    runner = CliRunner()
+    explain = runner.invoke(main, ["sim", "explain", str(retire_alice_run_file)]).output
+    lines = explain.split("year-end net worth:", 1)[1].splitlines()
+    last_year = [line for line in lines if line.startswith("  20")][-1]
+    nominal, real = last_year.split("$")[1:]
+    args = ["sim", "networth", "--runfile", str(retire_alice_run_file)]
+    expected_nominal = runner.invoke(main, [*args, "--dollars", "nominal"]).output
+    expected_real = runner.invoke(main, args).output
+    assert expected_nominal.splitlines()[-1].split("$")[1].strip() == nominal.strip()
+    assert expected_real.splitlines()[-1].split("$")[1].strip() == real.strip()
+
+
+def test_sim_networth_refuses_a_scenario_and_runfile_together(
+    retire_alice_run_file: Path,
+) -> None:
+    result = CliRunner().invoke(
+        main, ["sim", "networth", "retire_alice", "--runfile", str(retire_alice_run_file)],
+    )
+    assert result.exit_code != 0
+    assert "not both" in result.output
+
+
 def test_sim_items_shows_account_events_and_originating_rule(tmp_path: Path) -> None:
     _, runfile = _seed_one_run(tmp_path)
     runner = CliRunner()

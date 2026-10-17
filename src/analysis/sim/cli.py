@@ -55,7 +55,7 @@ from analysis.sim.distributions import (
     resolve_truncated_normal_bounds,
     rewrite_outcomes,
 )
-from analysis.sim.engine import run_scenario
+from analysis.sim.engine import describe_negative_balance_event, run_scenario
 from analysis.sim.ensemble import (
     EnsembleError,
     factor_reach,
@@ -1615,10 +1615,54 @@ def list_runs(runs_dir: Path | None) -> None:
         )
 
 
+def _run_target_options(fn):
+    """The options ``sim explain`` and ``sim networth`` share for finding a run."""
+    for option in reversed([
+        click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+                     default=None, help="Run file (default: the scenario's latest run)."),
+        click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+                     default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
+        click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path),
+                     default=None, help="Directory to search for the latest run."),
+    ]):
+        fn = option(fn)
+    return fn
+
+
+def _resolve_run_target(
+    target: str | None, runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
+) -> Path:
+    """The run file a run-summary command reads: ``--runfile``, a TARGET that
+    names an existing file, or else the latest run of the scenario TARGET names
+    (the current scenario when it is omitted)."""
+    if runfile is not None:
+        if target is not None:
+            raise click.ClickException("give a scenario or --runfile, not both")
+        return runfile
+    if target is not None and Path(target).is_file():
+        return Path(target)
+    data_dir_p = _resolve_data_dir(data_dir)
+    try:
+        ref = sc.resolve_scenario_name(data_dir_p, target, runs_dir=runs_dir)
+    except LoadError as exc:
+        raise click.ClickException("; ".join(exc.issues)) from None
+    if ref.run_path is None:
+        raise click.ClickException(
+            f"no runs for {ref.name!r} in {ref.runs_dir}; run `sim run` first"
+        )
+    return ref.run_path
+
+
 @sim_group_command.command()
-@click.argument("runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-def explain(runfile: Path) -> None:
-    """Dump scenario name, versions, year-end net worth, counts. Sanity dump."""
+@click.argument("target", metavar="[SCENARIO | RUNFILE]", required=False)
+@_run_target_options
+def explain(
+    target: str | None, runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
+) -> None:
+    """Dump scenario name, versions, counts, lots, year-end net worth and
+    negative-balance warnings for a run: the scenario's latest (the current
+    scenario's by default), or a run file. Sanity dump."""
+    runfile = _resolve_run_target(target, runfile, data_dir, runs_dir)
     con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
     try:
         run = con.execute(
@@ -1673,20 +1717,99 @@ def explain(runfile: Path) -> None:
                 )
 
         click.echo("")
-        click.echo("year-end net worth:")
+        click.echo(f"year-end net worth:  {'nominal':>18}  {'CPI-constant':>18}")
         rows = con.execute(
             "WITH year_end AS ("
             "  SELECT substr(month,1,4) AS year, MAX(month) AS m "
             "  FROM simulation_step GROUP BY substr(month,1,4)"
             ") "
-            "SELECT y.year, nw.net_worth "
+            "SELECT y.year, nw.net_worth, cpi.constant_cents "
             "FROM year_end y JOIN net_worth nw ON nw.month = y.m "
+            "LEFT JOIN net_worth_constant_cpi cpi ON cpi.month = y.m "
             "ORDER BY y.year"
         ).fetchall()
-        for year, nw in rows:
-            click.echo(f"  {year}  {_fmt_cents(nw)}")
+        for year, nw, real in rows:
+            click.echo(f"  {year}  {'':13}{_fmt_cents(nw)}  {_fmt_cents(real):>18}")
+
+        click.echo("")
+        _echo_negative_balance_warnings(con)
     finally:
         con.close()
+
+
+def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
+    """The run's recorded negative-balance warnings (ADR-003 §4.7): the
+    month each asset account went negative, its balance then, and what its
+    refill chain did, worded as the run's warning was."""
+    (raw,) = con.execute(
+        "SELECT json_extract(run_args_json, '$.negative_balance_warnings') "
+        "FROM simulation_run WHERE id = 1"
+    ).fetchone()
+    events = json.loads(raw) if raw else []
+    if not events:
+        click.echo("negative-balance warnings: none")
+        return
+    click.echo(f"negative-balance warnings ({len(events)}):")
+    width = max(len(str(e.get("account", ""))) for e in events)
+    for event in events:
+        click.echo(
+            f"  {event.get('month', '-')}  {str(event.get('account', '-')):<{width}}"
+            f"  {_fmt_cents(event.get('balance_cents')).strip()}"
+            f"  {describe_negative_balance_event(event)}"
+        )
+
+
+@sim_group_command.command("networth")
+@click.argument("scenario", required=False)
+@click.option("--monthly", "period", flag_value="monthly",
+              help="One row per month.")
+@click.option("--yearly", "period", flag_value="yearly", default=True,
+              help="One row per year, at its last month (the default).")
+@click.option("--dollars", type=click.Choice([m.value for m in DollarMode]),
+              default=DollarMode.CPI_CONSTANT.value, show_default=True,
+              help="cpi_constant (deflated by the run's CPI series, so decades "
+                   "compare at a glance), or nominal.")
+@_run_target_options
+def networth_command(
+    scenario: str | None, period: str, dollars: str,
+    runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
+) -> None:
+    """Net worth by year or month from a run: the scenario's latest (the
+    current scenario's by default), or --runfile. As in net_worth.ipynb."""
+    runfile = _resolve_run_target(scenario, runfile, data_dir, runs_dir)
+    # Nominal reads net_worth itself, so a run without a CPI series still has it.
+    view, column = (("net_worth_constant_cpi", "constant_cents")
+                    if dollars == DollarMode.CPI_CONSTANT else ("net_worth", "net_worth"))
+    if period == "monthly":
+        where = ""
+    else:
+        # A year's row is its last simulated month, as in `sim explain`.
+        where = ("WHERE month IN (SELECT MAX(month) FROM simulation_step "
+                 "GROUP BY substr(month, 1, 4)) ")
+    con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
+    try:
+        (name,) = con.execute(
+            "SELECT scenario_name FROM simulation_run WHERE id = 1"
+        ).fetchone() or ("?",)
+        rows = con.execute(
+            f"SELECT month, {column} FROM {view} {where}ORDER BY month"
+        ).fetchall()
+        if not rows and view != "net_worth" and con.execute(
+            "SELECT 1 FROM net_worth LIMIT 1"
+        ).fetchone():
+            # The CPI view joins the run's 'cpi' inflation index; a run without
+            # one has net worth but nothing to deflate it by.
+            raise click.ClickException(
+                f"{runfile.name} has no 'cpi' inflation index, so no CPI-constant "
+                "net worth; pass --dollars nominal"
+            )
+    finally:
+        con.close()
+    label = "CPI-constant" if dollars == DollarMode.CPI_CONSTANT else "nominal"
+    click.echo(f"net worth, {label} dollars ({name}, run {runfile.name}):")
+    for month, cents in rows:
+        when = month if period == "monthly" else month[:4]
+        click.echo(f"  {when}  {_fmt_cents(cents)}")
 
 
 @sim_group_command.command("items")
