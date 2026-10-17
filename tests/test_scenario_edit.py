@@ -169,8 +169,42 @@ def test_edit_writes_a_readme_a_scenario_lacks(test_data_dir: Path, test_scenari
     assert (summary.title, summary.paragraph) == ("old", "Made before #190")
 
 
+def _guided(data_dir: Path, *args: str, answers: list[str]):
+    return _sim(data_dir, "scenario", "edit", *args, input="".join(f"{a}\n" for a in answers))
+
+
+def test_guided_edit_changes_the_fields_named(test_data_dir: Path, test_child_scenario: Path) -> None:
+    result = _guided(test_data_dir, "child", answers=["start", "2027-01", "seed", "new", "reserve", "1000", "write"])
+    assert result.exit_code == 0, result.output
+    row = _row(test_child_scenario)
+    assert row["start"] == "2027-01" and row["seed"].isdigit()
+    assert json.loads(row["meta_json"]) == {"reserve": 1000}
+    assert "edited scenario child" in result.output
+
+
+def test_guided_edit_asks_again_for_a_bad_answer(test_data_dir: Path, test_child_scenario: Path) -> None:
+    result = _guided(test_data_dir, "child", answers=["size", "-3", "40", "write"])
+    assert result.exit_code == 0, result.output
+    assert "negative" in result.output
+    assert json.loads(_row(test_child_scenario)["meta_json"]) == {"ensemble_size": 40}
+
+
+def test_guided_edit_asks_for_the_scenario(test_data_dir: Path, test_child_scenario: Path) -> None:
+    result = _sim(test_data_dir, "ensemble", "edit", input="nobody\nchild\nend\n2039-12\nwrite\n")
+    assert result.exit_code == 0, result.output
+    assert "not a scenario: 'nobody'" in result.output
+    assert _row(test_child_scenario)["end"] == "2039-12"
+
+
+def test_guided_edit_without_changes_or_cancelled_writes_nothing(test_data_dir: Path,
+                                                                 test_child_scenario: Path) -> None:
+    before = (test_child_scenario / "scenario.csv").read_text()
+    assert "no change" in _guided(test_data_dir, "child", answers=["write"]).output
+    assert "Cancelled" in _guided(test_data_dir, "child", answers=["seed", "5", "cancel"]).output
+    assert (test_child_scenario / "scenario.csv").read_text() == before
+
+
 @pytest.mark.parametrize(("args", "message"), [
-    ((), "nothing to change"),
     (("--start", "May 2027"), "date must be"),
     (("--seed", "x"), "not a whole number"),
     (("--seed", "1", "--new-seed"), "exclusive"),

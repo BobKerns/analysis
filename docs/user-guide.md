@@ -115,7 +115,9 @@ in the data repo's `README.md` files. Runs you already made keep the old
 name.
 
 To change a scenario's own settings (`sim ensemble edit` is the same
-command):
+command), run `sim scenario edit <name>` with no options: it shows the
+fields, and you name one to change it, with tab completion, then write.
+Options make the change at once instead:
 
 ```sh
 sim scenario edit <name> --description "Bill works two more years"

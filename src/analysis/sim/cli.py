@@ -33,7 +33,7 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, registries, rename,
-    scheduled_guide, sensitivity, symbols, units,
+    scenario_guide, scheduled_guide, sensitivity, symbols, units,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -8613,15 +8613,60 @@ def _reserve_json(text: str) -> int | str:
     return int(text) if text.lstrip("-").isdigit() else text
 
 
-def _edit_scenario(
-    name: str, data_dir: Path | None, *, description: str | None, start: str | None, end: str | None,
-    parents: str | None, seed: str | None, new_seed: bool, size: str | None, reserve: str | None,
-) -> None:
-    """``sim scenario edit`` and ``sim ensemble edit``."""
+_SCENARIO_CHECKERS: dict[str, Callable[[str], object]] = {
+    "month": _validate_month_date,
+    "seed": lambda text: text == scenario_guide.NEW_SEED or _whole_number(text),
+    "count": _member_count,
+    "money": _reserve_json,
+}
+
+
+def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, **fields: str | None) -> None:
+    """``sim scenario edit`` and ``sim ensemble edit``: with any option, the
+    change at once; with none, a guided edit of every field."""
     data = _resolve_data_dir(data_dir)
+    names = list_scenario_names(data)
+    if name is None:
+        current = read_current_scenario(data)
+        while (name := _prompt_with_completion(
+                "scenario to edit", choices=names, default=current if current in names else None,
+        ).strip()) not in names:
+            click.echo(f"  not a scenario: {name!r}")
     name = name.strip()
-    if name not in list_scenario_names(data):
+    if name not in names:
         raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
+    if new_seed or any(value is not None for value in fields.values()):
+        _apply_scenario_edit(data, name, new_seed=new_seed, **fields)
+        return
+
+    spec = scenario_guide.spec([n for n in names if n != name])
+    before = scenario_guide.answers_of(sc._scenario_row(data / "scenarios" / name))
+    answers = dict(before)
+    _echo_guided_scenario(name, data / "scenarios" / name / "scenario.csv", defaulted=False)
+    guide = calendar_guide.Guide(
+        ask=lambda text, choices, default: _prompt_with_completion(text, choices=choices, default=default),
+        checkers=_SCENARIO_CHECKERS,
+    )
+
+    def submit(_params: dict[str, object]) -> None:
+        changed = {field: value for field, value in answers.items() if value != before[field]}
+        if not changed:
+            click.echo("no change; nothing was written")
+            return
+        fresh = changed.get("seed") == scenario_guide.NEW_SEED
+        if fresh:
+            del changed["seed"]
+        _apply_scenario_edit(data, name, new_seed=fresh, **changed)
+
+    guide.review(spec, calendar_guide.GuideContext(), answers, submit, show_command=False)
+
+
+def _apply_scenario_edit(
+    data: Path, name: str, *, description: str | None = None, start: str | None = None,
+    end: str | None = None, parents: str | None = None, seed: str | None = None,
+    new_seed: bool = False, size: str | None = None, reserve: str | None = None,
+) -> None:
+    """Set the given fields of scenario ``name``'s scenario.csv; see ``_edit_scenario``."""
     if seed is not None and new_seed:
         raise click.UsageError("--seed and --new-seed are exclusive")
     values: dict[str, str] = {}
@@ -8700,7 +8745,7 @@ def _edit_scenario(
 
 def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
     options = [
-        click.argument("name"),
+        click.argument("name", required=False),
         click.option("--description", default=None,
                      help="The scenario's description; '' restores the default, 'Derived from <parents>'."),
         click.option("--start", default=None, help=f"First month ({MONTH_FORMAT_HINT}); '' inherits."),
@@ -8726,19 +8771,24 @@ def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
 
 @scenario_group_command.command("edit")
 @_edit_options
-def scenario_edit(name: str, data_dir: Path | None, **fields: Any) -> None:
+def scenario_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
     """Change scenario NAME's scenario.csv: its description, start and end
-    months, parents and mix-ins, seed, ensemble size or reserve. A blank
-    value ('') clears that field, so it inherits again. The change is
-    written only if NAME and every scenario built on it still load. A
-    README.md that `scenario create` wrote follows the description and
-    parents. Same as `sim ensemble edit`."""
+    months, parents and mix-ins, seed, ensemble size or reserve.
+
+    Options set those fields and write at once; a blank value ('') clears
+    one, so it inherits again (a blank description restores the default).
+    With none, the fields are shown: name one to change it, with completion,
+    as often as needed, and write when done. Without NAME, it is asked for.
+
+    The change is written only if NAME and every scenario built on it still
+    load. A README.md that `scenario create` wrote follows the description
+    and parents. Same as `sim ensemble edit`."""
     _edit_scenario(name, data_dir, **fields)
 
 
 @ensemble_group_command.command("edit")
 @_edit_options
-def ensemble_edit(name: str, data_dir: Path | None, **fields: Any) -> None:
+def ensemble_edit(name: str | None, data_dir: Path | None, **fields: Any) -> None:
     """Change ensemble NAME's scenario.csv; the same as `sim scenario edit`."""
     _edit_scenario(name, data_dir, **fields)
 
