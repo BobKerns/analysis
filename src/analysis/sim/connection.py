@@ -856,7 +856,9 @@ class RunConnection(Connection):
             gains = self.items("transfer_event")
             gains = gains[gains["reason_kind"] != "initial"].copy()
             gains["month"] = pd.to_datetime(gains["month"])
-            gains["year"] = gains["month"].dt.year
+            # The event's own date, not its step: a prior year's year-to-date
+            # row posts in the first step but belongs to that year.
+            gains["year"] = pd.to_datetime(gains["date"]).dt.year
 
             reaches_cash = gains["to_subkind"].isin(LIQUID_SUBKINDS)
             is_unrealized = (gains["from_kind"] == "income") & ~reaches_cash

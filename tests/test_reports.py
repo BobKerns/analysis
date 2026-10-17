@@ -27,10 +27,15 @@ def test_income_by_category_keeps_other_and_adds_up(report_run: RunConnection) -
     income = reports.flows_by_year(report_run, "income")
     assert list(income.columns) == [*reports.INCOME_REPORT_CATEGORIES, "total"]
     events = report_run.items("transfer_event", from_kind="income")
-    by_year = events.groupby(pd.to_datetime(events["month"]).dt.year)["amount"].sum() / 100
+    by_year = events.groupby(pd.to_datetime(events["date"]).dt.year)["amount"].sum() / 100
     assert income["total"].to_numpy() == pytest.approx(by_year.reindex(income.index).to_numpy())
     # retire_alice's inheritance is other_income, which income_by_category drops.
     assert income.loc[2029, "other"] == pytest.approx(50_000)
+    # Its FY2025 loss carryforward is a year-to-date row dated 2025-12-31,
+    # posted in the run's first step: it counts in 2025, in either dollars.
+    assert income.loc[2025, "investment"] == pytest.approx(-1_500)
+    constant = reports.flows_by_year(report_run, "income", mode=DollarMode.CPI_CONSTANT)
+    assert constant.loc[2025, "total"] == pytest.approx(-1_500, rel=0.05)
 
 
 def test_expenses_by_tag_prefer_the_rules_tag_to_its_accounts(report_run: RunConnection) -> None:
@@ -65,11 +70,19 @@ def test_cpi_constant_flows_convert_each_month(report_run: RunConnection) -> Non
     assert constant.loc[final, "total"] < nominal.loc[final, "total"]
 
 
+def test_gains_count_a_prior_years_catch_up_in_that_year(report_run: RunConnection) -> None:
+    gains = reports.gains_by_year(report_run)
+    assert gains.loc[2025, "unrealized"] == pytest.approx(-1_500)  # it never reaches cash
+    constant = reports.gains_by_year(report_run, DollarMode.CPI_CONSTANT)
+    assert constant.loc[2025].notna().all()
+
+
 def test_tax_by_year_leaves_after_tax_income(report_run: RunConnection) -> None:
     tax = reports.tax_by_year(report_run)
     liability = report_run.tax_liability_by_year()
     assert tax.loc[2026, "total_tax"] == pytest.approx(liability[2026]) and liability[2026] > 0
-    assert (tax["after_tax_income"] == tax["gross_income"] - tax["total_tax"]).dropna().all()
+    taxed = tax.dropna(subset=["total_tax"])
+    assert (taxed["after_tax_income"] == taxed["gross_income"] - taxed["total_tax"]).all()
     expenses = reports.flows_by_year(report_run, "expenses")
     assert tax.loc[2027, "non_tax_expenses"] == pytest.approx(
         expenses.loc[2027, "total"] - expenses.loc[2027, "taxes"])

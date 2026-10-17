@@ -49,9 +49,17 @@ _RULE_REASONS = ("rule", "ytd_rule")
 
 
 def _cpi(rc: RunConnection, frame, mode: DollarMode, *, annual: bool = False):
+    """``frame`` in ``mode`` dollars: month-indexed, or year-indexed with
+    ``annual`` (each year's year-end CPI). A month or year before the run's
+    first, such as a year-to-date row's, takes the first one's CPI: the run
+    has no index for earlier ones."""
     if mode != DollarMode.CPI_CONSTANT:
         return frame
-    return rc.to_cpi_constant_annual(frame) if annual else rc.to_cpi_constant(frame)
+    cpi = rc.cpi_index().dropna()
+    if annual:
+        cpi = cpi.groupby(index_years(cpi)).last()
+    lookup = pd.Series(frame.index).clip(cpi.index.min(), cpi.index.max())
+    return frame.mul(1_000_000 / cpi.reindex(lookup).to_numpy(), axis=0)
 
 
 def account_history(
@@ -122,7 +130,12 @@ def _tag_names(tags: str, role: str) -> str | None:
 def _flow_events(rc: RunConnection, side: FlowSide) -> pd.DataFrame:
     """The run's income (or expense) transfer events with the account each one
     counts against: the income account it is drawn from, or the expense
-    account it is paid into. Depreciation is a book entry, not spending."""
+    account it is paid into. Depreciation is a book entry, not spending.
+
+    ``month`` is the month end of the event's own date, not of the step that
+    posted it: a year-to-date catch-up posts in the first step but is dated
+    before the scenario starts, a prior year's one at that year's Dec 31.
+    """
     if side == "income":
         events = rc.items("transfer_event", from_kind="income")
         prefix = "from"
@@ -131,7 +144,9 @@ def _flow_events(rc: RunConnection, side: FlowSide) -> pd.DataFrame:
         events = events[~events["to_name"].isin(NON_CASH_EXPENSE_ACCOUNTS)]
         prefix = "to"
     events = events.rename(columns={f"{prefix}_name": "account", f"{prefix}_subkind": "subkind"})
-    return events[["month", "amount", "reason_kind", "reason_id", "account", "subkind"]].copy()
+    events = events[["date", "amount", "reason_kind", "reason_id", "account", "subkind"]].copy()
+    events["month"] = pd.to_datetime(events["date"]) + pd.offsets.MonthEnd(0)
+    return events.drop(columns="date")
 
 
 def _groups(rc: RunConnection, events: pd.DataFrame, side: FlowSide, by: str) -> pd.Series:
@@ -176,12 +191,12 @@ def flows_by_year(
 
     ``by`` is ``category`` (the notebooks' buckets, keeping ``other``),
     ``account``, or ``tag:ROLE`` (each event's tag in ROLE, from its rule or
-    else its account). CPI-constant dollars convert each month's flow before
-    summing the year, as the notebooks do.
+    else its account). Each event counts in the year of its own date. CPI-constant
+    dollars convert each month's flow before summing the year, as the
+    notebooks do.
     """
     events = _flow_events(rc, side)
     events["group"] = _groups(rc, events, side, by)
-    events["month"] = pd.to_datetime(events["month"])
     monthly = (events.groupby(["month", "group"])["amount"].sum()
                .unstack("group", fill_value=0) / 100)
     monthly = _cpi(rc, monthly, mode)
