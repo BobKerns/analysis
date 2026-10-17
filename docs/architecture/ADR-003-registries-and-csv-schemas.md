@@ -858,7 +858,7 @@ alone. A series with a file in the shared `aux/` (`cpi`), an asset class's
 series, and one named for a symbol or `<symbol>.<class>` (read by lots by
 name, ADR-005 §5) are not renamed; only `rate__`/`inflation__` files are a
 series' files. `scenario rename` (the same command as `ensemble rename`)
-moves the folder and rewrites its `scenario.csv` name, every `parent_scenario` naming
+moves the folder and rewrites its `scenario.csv` name, its README's title when that is the old name (as `scenario create` writes it), every `parent_scenario` naming
 it, `.current_scenario`, and the links to it in the data repo's markdown
 files (`scenarios/**` and the top level); runs already made keep the old
 name.

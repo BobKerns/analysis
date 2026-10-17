@@ -204,6 +204,23 @@ def test_guided_edit_without_changes_or_cancelled_writes_nothing(test_data_dir: 
     assert (test_child_scenario / "scenario.csv").read_text() == before
 
 
+def test_edit_readme_for_a_blank_description_uses_the_default(test_data_dir: Path, derive_scenario) -> None:
+    folder = derive_scenario("old", "retire_alice")
+    result = _sim(test_data_dir, "scenario", "edit", "old", "--seed", "3")
+    assert result.exit_code == 0, result.output
+    assert parse_readme_summary((folder / "README.md").read_text()).paragraph == "Derived from `retire_alice`."
+
+
+def test_rename_follows_a_generated_readme(test_data_dir: Path, test_scenarios_dir: Path,
+                                           test_child_scenario: Path) -> None:
+    result = _sim(test_data_dir, "scenario", "rename", "child", "kid")
+    assert result.exit_code == 0, result.output
+    summary = parse_readme_summary((test_scenarios_dir / "kid" / "README.md").read_text())
+    assert summary.title == "kid"
+    assert [s.description for s in sc.scenario_summaries(test_data_dir) if s.name == "kid"] == [
+        "Derived from `retire_alice`."]
+
+
 @pytest.mark.parametrize(("args", "message"), [
     (("--start", "May 2027"), "date must be"),
     (("--seed", "x"), "not a whole number"),

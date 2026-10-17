@@ -464,6 +464,15 @@ def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
             changed.append(after(path))
     old_dir.rename(new_dir)
     changed.insert(0, f"scenarios/{old}/ -> scenarios/{new}/")
+    # The title `scenario create` gives its README is the scenario's name.
+    readme = new_dir / "README.md"
+    if readme.is_file():
+        text = readme.read_text(encoding="utf-8")
+        title, sep, rest = text.partition("\n")
+        if title.strip() == f"# {old}":
+            readme.write_text(f"# {new}{sep}{rest}", encoding="utf-8")
+            if f"scenarios/{new}/README.md" not in changed:
+                changed.append(f"scenarios/{new}/README.md")
 
     def rename_self(row: dict[str, str]) -> None:
         if (row.get("name") or "").strip() == old:

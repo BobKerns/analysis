@@ -8719,11 +8719,12 @@ def _apply_scenario_edit(
         except LoadError as exc:
             raise click.ClickException("; ".join(exc.issues)) from None
         new_row = sc._scenario_row(folder)
-        if changes and not (folder / "README.md").exists():
+        builds_on = parse_parents(new_row.get("parent_scenario"))
+        # A blank description reads as the default, as `--description ''` sets it.
+        own = new_row.get("description", "").strip() or (default_description(builds_on) if builds_on else "")
+        if changes and own and not (folder / "README.md").exists():
             # Every scenario has one now (#190); one made before that gets it here.
-            (folder / "README.md").write_text(sc.scenario_readme(
-                name, new_row.get("description", ""), parse_parents(new_row.get("parent_scenario"))),
-                encoding="utf-8")
+            (folder / "README.md").write_text(sc.scenario_readme(name, own, builds_on), encoding="utf-8")
             readme = "written"
         else:
             readme = sc.follow_readme(folder, old_row, new_row)
