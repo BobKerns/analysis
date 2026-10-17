@@ -551,6 +551,12 @@ only for ensembles, Part 4.10):
 | `transfer_balance` | `account_1`/`lot_1`, `account_2`/`lot_2`, `tax_character`; `amount` left blank | rolling a 401(k) into an IRA: moves everything the lot holds at the start of that month |
 | `swap_aux_table` | `series` (the table replaced; blank for one without a series), `params_json` naming the kind and the replacement | moving to another state: from that month, the state tax brackets are another state's |
 
+Leave `tax_character` blank on a `one_off_transfer` or `transfer_balance` out
+of a brokerage lot and the move is a sale: the lot's share of basis comes out
+as `return_of_capital`, the rest as a capital gain, and the lot's basis drops.
+From other accounts a blank means `none`, which suits a rollover between
+tax-deferred accounts. Set `tax_character` to override either.
+
 A rule that should start on a future date needs no calendar event: give its
 `scheduled.csv` row that `start` date.
 
