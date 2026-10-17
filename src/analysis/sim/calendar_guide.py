@@ -62,6 +62,7 @@ class GuideContext:
     subkinds: Mapping[str, str] = field(default_factory=dict)
     tax_treatments: Mapping[str, str] = field(default_factory=dict)
     securities: Sequence[str] = ()
+    persons: Sequence[str] = ()  # person ids, for a scheduled rule's person
 
 
 def _always(ctx: GuideContext, answers: Answers) -> bool:  # noqa: ARG001
@@ -87,6 +88,9 @@ class Field:
     unique: bool = False  # the answer must not be a name another row uses
     applies: Callable[[GuideContext, Answers], bool] = _always
     chain_role: str | None = None  # the role a chain named here must have (#143)
+    # The default offered when it depends on the answers so far (a rule
+    # kind's usual tax character, say); ``default`` when it gives None.
+    suggest: Callable[[GuideContext, Answers], str | None] | None = None
 
     @property
     def name(self) -> str:
@@ -339,13 +343,13 @@ def lot_needed(lots: tuple[bool, Sequence[str]] | None) -> bool:
     return investment or list(labels) != [registries.DEFAULT_LOT]
 
 
-def _lot_asked(account_param: str) -> Callable[[GuideContext, Answers], bool]:
+def lot_asked(account_param: str) -> Callable[[GuideContext, Answers], bool]:
     def applies(ctx: GuideContext, answers: Answers) -> bool:
         return lot_needed(ctx.lots.get(answers.get(account_param, "")))
     return applies
 
 
-def _lots_of(account_param: str) -> Callable[[GuideContext, Answers], Sequence[str]]:
+def lots_of(account_param: str) -> Callable[[GuideContext, Answers], Sequence[str]]:
     def choices(ctx: GuideContext, answers: Answers) -> Sequence[str]:
         return list(ctx.lots.get(answers.get(account_param, ""), (False, ()))[1])
     return choices
@@ -370,7 +374,7 @@ def _chain_problem(ctx: GuideContext, answers: Answers, field_: Field, answer: s
     return f"{answer!r} is a {role} chain; only a {field_.chain_role} chain or an account fits here"
 
 
-def _to_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:
+def to_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:
     """Accounts and destination chains for the to side; no chain when the
     from side is one, since a transfer can't run from one chain into another."""
     if answers.get("from_account", "") in ctx.chains:
@@ -378,7 +382,7 @@ def _to_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:
     return [*ctx.accounts, *chains_of(ctx, "destination")]
 
 
-def _from_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
+def from_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noqa: ARG001
     return [*ctx.accounts, *chains_of(ctx, "source")]
 
 
@@ -429,17 +433,17 @@ KINDS: tuple[KindSpec, ...] = (
         key=("date", "from_account", "from_lot", "to_account", "to_lot", "amount", "series"),
         fields=(
             _DATE,
-            Field("from_account", "from account or chain", choices=_from_endpoints, strict=True,
+            Field("from_account", "from account or chain", choices=from_endpoints, strict=True,
                   chain_role="source"),
             Field(
                 "from_lot", "from lot", option="--from-lot", strict=True,
-                choices=_lots_of("from_account"), applies=_lot_asked("from_account"),
+                choices=lots_of("from_account"), applies=lot_asked("from_account"),
             ),
-            Field("to_account", "to account or chain", choices=_to_endpoints, strict=True,
+            Field("to_account", "to account or chain", choices=to_endpoints, strict=True,
                   chain_role="destination"),
             Field(
                 "to_lot", "to lot", option="--to-lot", strict=True,
-                choices=_lots_of("to_account"), applies=_lot_asked("to_account"),
+                choices=lots_of("to_account"), applies=lot_asked("to_account"),
             ),
             Field("amount", "amount in dollars", type="dollars"),
             Field(
@@ -464,13 +468,13 @@ KINDS: tuple[KindSpec, ...] = (
             ),
             Field(
                 "from_lot", "from lot", option="--from-lot", strict=True,
-                choices=_lots_of("from_account"), applies=_lot_asked("from_account"),
+                choices=lots_of("from_account"), applies=lot_asked("from_account"),
             ),
-            Field("to_account", "to account or chain", choices=_to_endpoints, strict=True,
+            Field("to_account", "to account or chain", choices=to_endpoints, strict=True,
                   chain_role="destination"),
             Field(
                 "to_lot", "to lot", option="--to-lot", strict=True,
-                choices=_lots_of("to_account"), applies=_lot_asked("to_account"),
+                choices=lots_of("to_account"), applies=lot_asked("to_account"),
             ),
             Field(
                 "tax_character", "tax character", option="--tax-character", default="none",
@@ -624,7 +628,11 @@ class Guide:
             self._echo(f"  choices: {', '.join(choices)}")
         elif choices:
             self._echo(f"  {len(choices)} choices; press Tab to complete")
-        default = current if current is not None else field_.default
+        default = current
+        if default is None and field_.suggest is not None:
+            default = field_.suggest(ctx, answers)
+        if default is None:
+            default = field_.default
         text = field_.label
         if field_.type == "yesno":
             text += " (y/n)"

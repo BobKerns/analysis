@@ -156,7 +156,7 @@ def test_tag_that_changes_nothing_writes_nothing(
 
 
 def test_tag_refuses_a_malformed_token(test_data_dir: Path) -> None:
-    result = _run(test_data_dir, "retire_alice", "tag add", "4", "nocolon")
+    result = _run(test_data_dir, "retire_alice", "tag add", "4", "untagged")
 
     assert result.exit_code != 0
-    assert "invalid tag 'nocolon'" in result.output
+    assert "invalid tag 'untagged'" in result.output
