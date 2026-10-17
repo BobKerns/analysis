@@ -32,8 +32,8 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, registries, rename, sensitivity,
-    symbols, units,
+    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, registries, rename,
+    scheduled_guide, sensitivity, symbols, units,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -3205,6 +3205,39 @@ def _select_calendar_row(
             click.echo(f"  no row matches {text!r}")
 
 
+def _calendar_entries(
+    scenario_dir: Path, scenario_name: str, verb: str,
+) -> tuple[list[_CalendarRow], list[str]]:
+    """The scenario's calendar rows for a command to pick from: its own
+    first, numbered as in its own file, then those it inherits; and a note
+    for each saying where an inherited row or an override comes from."""
+    overlaid = _scenario_calendar_rows(scenario_dir)
+    entries = [
+        *sorted((e for e in overlaid if e.index is not None), key=lambda e: e.index or 0),
+        *(e for e in overlaid if e.index is None),
+    ]
+    if not entries:
+        raise click.ClickException(f"scenario {scenario_name!r} has no calendar rows to {verb}")
+    notes = [
+        f"[inherited from {entry.inherited_from}]" if entry.index is None
+        else f"[overrides {entry.inherited_from}]" if entry.inherited_from
+        else ""
+        for entry in entries
+    ]
+    return entries, notes
+
+
+def _check_own_calendar_row(staged: Path, path: Path, index: int, chosen: dict[str, str]) -> None:
+    """Refuse when the staged calendar.csv no longer has ``chosen`` at
+    ``index``: the file changed since the row was picked."""
+    existing = _read_calendar_rows(staged)
+    if index >= len(existing) or existing[index] != chosen:
+        raise click.ClickException(
+            f"{path} changed after row {index + 1} was chosen, so it is no longer "
+            "that row. Nothing was written; start again."
+        )
+
+
 @calendar_group_command.command("edit")
 @click.argument("row", required=False)
 @click.option("--scenario", default=None,
@@ -3237,23 +3270,10 @@ def calendar_edit(
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
     _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
-    # Its own rows first, numbered as in its own file; then those it inherits.
-    overlaid = _scenario_calendar_rows(scenario_dir)
-    entries = [
-        *sorted((e for e in overlaid if e.index is not None), key=lambda e: e.index or 0),
-        *(e for e in overlaid if e.index is None),
-    ]
-    if not entries:
-        raise click.ClickException(f"scenario {scenario_name!r} has no calendar rows to edit")
+    entries, notes = _calendar_entries(scenario_dir, scenario_name, "edit")
     rows = [entry.row for entry in entries]
     # The own rows as the file has them, which the write checks are still there.
     own_rows = _read_calendar_rows(path)
-    notes = [
-        f"[inherited from {entry.inherited_from}]" if entry.index is None
-        else f"[overrides {entry.inherited_from}]" if entry.inherited_from
-        else ""
-        for entry in entries
-    ]
     index = _select_calendar_row(rows, row, notes)
     chosen = entries[index]
     converted = _calendar_row_answers(rows[index])
@@ -3287,6 +3307,155 @@ def calendar_edit(
 
     if not guide.review(spec, context, answers, submit, show_command=False):
         ctx.exit(1)
+
+
+@calendar_group_command.command("delete")
+@click.argument("row", required=False)
+@click.option("--yes", is_flag=True, help="Don't ask before deleting.")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def calendar_delete(row: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete one row of the scenario's calendar.
+
+    ROW is picked as `sim calendar edit` picks it: the row's number, its
+    name, or text that picks it out; without it, or if it matches several
+    rows, the rows are listed to choose from.
+
+    A row other rows correlate with (their vary_correlate_with names it) is
+    refused, naming them. Deleting this scenario's override of an inherited
+    row brings back the inherited row. A row the scenario inherits can't be
+    deleted here, since an overlay can't remove a row: delete it in the
+    scenario it comes from.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "calendar.csv"
+    entries, notes = _calendar_entries(scenario_dir, scenario_name, "delete")
+    rows = [entry.row for entry in entries]
+    index = _select_calendar_row(rows, row, notes)
+    chosen = entries[index]
+    label = _calendar_row_label(chosen.row)
+    if chosen.index is None:
+        raise click.ClickException(
+            f"row {label!r} comes from scenario {chosen.inherited_from!r}, and "
+            f"{scenario_name!r} can't remove what it inherits; delete it in "
+            f"{chosen.inherited_from!r} to remove it from every scenario built on it"
+        )
+    name = chosen.row["name"].strip()
+    if name and chosen.inherited_from is None:
+        dependents = [
+            other for other in rows
+            if other is not chosen.row and other["vary_correlate_with"].strip() == name
+        ]
+        if dependents:
+            raise click.ClickException(
+                f"row {name!r} is correlated with by "
+                + "; ".join(_calendar_row_label(other) for other in dependents)
+                + ". Change or delete those rows first. Nothing was written."
+            )
+    own = _read_calendar_rows(path)[chosen.index]
+    click.echo(f"row {chosen.index + 1} of {path}: {label}  {notes[index]}".rstrip())
+    if not yes and not click.confirm("delete it?", default=False):
+        click.echo("aborted")
+        return
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        staged = edit.path(path)
+        _check_own_calendar_row(staged, path, chosen.index, own)
+        frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
+        frame.drop(index=frame.index[chosen.index]).to_csv(staged, index=False)
+    if chosen.inherited_from is not None:
+        click.echo(
+            f"deleted this scenario's override from {path}; the row is inherited "
+            f"from {chosen.inherited_from!r} again"
+        )
+    else:
+        click.echo(f"deleted row {chosen.index + 1} from {path}")
+
+
+@calendar_group_command.group(name="tag")
+def calendar_tag_group() -> None:
+    """Add or remove tags on a calendar row."""
+
+
+def _calendar_tag(
+    row: str, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None, op: str,
+) -> None:
+    """``sim calendar tag add|rm``: change one row's tags. An inherited row
+    gets an override carrying the new tags (#202)."""
+    try:
+        pairs = registries.parse_tags(" ".join(tag_tokens))
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "calendar.csv"
+    entries, notes = _calendar_entries(scenario_dir, scenario_name, "tag")
+    rows = [entry.row for entry in entries]
+    chosen = entries[_select_calendar_row(rows, row, notes)]
+    old = registries.parse_tags(chosen.row["tags"])
+    new = [*old, *(p for p in pairs if p not in old)] if op == "add" else [p for p in old if p not in pairs]
+    tags = registries.format_tags(new)
+    label = _calendar_row_label(chosen.row)
+    if set(new) == set(old):
+        click.echo(f"calendar row {label!r} tags unchanged: {tags or '(none)'}")
+        return
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        staged = edit.path(path)
+        if chosen.index is None:
+            # The whole row, so the loader finds the inherited one by its
+            # name or key and the override means the same however a blank
+            # cell merges.
+            _append_csv_row(staged, registries.CALENDAR_HEADER, {**chosen.row, "tags": tags})
+        else:
+            own = _read_calendar_rows(path)[chosen.index]
+            _check_own_calendar_row(staged, path, chosen.index, own)
+            _append_csv_row(
+                staged, registries.CALENDAR_HEADER, {**own, "tags": tags}, replace=chosen.index,
+            )
+    if chosen.index is None:
+        click.echo(
+            f"wrote an override of calendar row {label!r} (inherited from "
+            f"{chosen.inherited_from!r}) to {path}; tags: {tags or '(none)'}"
+        )
+    else:
+        click.echo(f"calendar row {label!r} tags: {tags or '(none)'}")
+
+
+@calendar_tag_group.command("add")
+@click.argument("row")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def calendar_tag_add(
+    row: str, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Add one or more '<role>:<name>' tags to a calendar row.
+
+    ROW is picked as `sim calendar edit` picks it (its number, its name, or
+    text that picks it out). A row the scenario inherits gets an override in
+    this scenario carrying the new tags; the parent keeps its own.
+    """
+    _calendar_tag(row, tag_tokens, scenario, data_dir, "add")
+
+
+@calendar_tag_group.command("rm")
+@click.argument("row")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def calendar_tag_rm(
+    row: str, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Remove one or more '<role>:<name>' tags from a calendar row; an
+    inherited row gets an override without them."""
+    _calendar_tag(row, tag_tokens, scenario, data_dir, "rm")
 
 
 def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
@@ -3798,11 +3967,249 @@ def scheduled_group_command() -> None:
     """Inspect or modify recurring scheduled transactions."""
 
 
+def _check_json_object(text: str) -> dict:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"not valid JSON: {exc}") from None
+    if not isinstance(value, dict):
+        raise click.ClickException("must be a JSON object, {...}")
+    return value
+
+
+def _check_month_of_year(text: str) -> int:
+    if not text.strip().isdigit() or not 1 <= int(text) <= 12:
+        raise click.ClickException(f"month of the year must be 1 to 12: {text!r}")
+    return int(text)
+
+
+def _check_tax_year(text: str) -> int:
+    if len(text.strip()) != 4 or not text.strip().isdigit():
+        raise click.ClickException(f"tax year must be a four-digit year: {text!r}")
+    return int(text)
+
+
+def _check_integer(text: str) -> int:
+    try:
+        return int(text)
+    except ValueError:
+        raise click.ClickException(f"not a whole number: {text!r}") from None
+
+
+_SCHEDULED_CHECKERS: dict[str, Callable[[str], object]] = {
+    "date": _validate_month_date,
+    "dollars": _parse_amount_cents,
+    "percent": _percent_to_rate_micros,
+    "integer": _check_integer,
+    "month": _check_month_of_year,
+    "year": _check_tax_year,
+    "json": _check_json_object,
+    "tags": registries.parse_tags,
+}
+
+
+def _scheduled_guide() -> calendar_guide.Guide:
+    return calendar_guide.Guide(
+        ask=lambda text, choices, default: _prompt_with_completion(
+            text, choices=choices, default=default,
+        ),
+        checkers=_SCHEDULED_CHECKERS,
+    )
+
+
+def _scheduled_context(data_dir: Path, scenario: str) -> calendar_guide.GuideContext:
+    """The scenario's accounts, chains, people and series, as completions
+    for a scheduled rule's prompts, and the rule names already taken."""
+    def column(con: sqlite3.Connection, sql: str) -> list[str]:
+        return sorted({r[0] for r in con.execute(sql) if r[0]})
+
+    with _intent_db(data_dir, scenario) as (con, _name):
+        return calendar_guide.GuideContext(
+            accounts=column(con, "SELECT name FROM account"),
+            lots=_lot_info(con),
+            chains=_interior_chains(con), chain_roles=_chain_roles(con),
+            persons=column(con, "SELECT id FROM person"),
+            series={
+                "rate": sorted({
+                    *column(con, "SELECT series FROM aux_table WHERE kind = 'rate'"),
+                    *column(con, "SELECT series FROM account_lot"),
+                }),
+                "inflation": column(con, "SELECT series FROM aux_table WHERE kind = 'inflation'"),
+            },
+            taken_names=frozenset(column(con, "SELECT name FROM scheduled_transaction")),
+        )
+
+
+def _scheduled_row(
+    answers: dict[str, object], base: dict[str, str],
+    context: calendar_guide.GuideContext | None = None,
+) -> dict[str, str]:
+    """The scheduled.csv row for a rule's ``answers``, over ``base``: the
+    row being edited, or a new row's name and meta_json.
+
+    When editing (``context`` given), a field the guide doesn't ask about
+    keeps ``base``'s cell -- the rule's kind may have nothing to say about
+    it -- unless the kind changed and the new kind doesn't read that column,
+    or it is a lot, which follows its account. An unchanged cell is kept as
+    authored; money and rates are written in the CSV's units."""
+    kind = str(answers.get("amount_rule_kind") or "fixed_amount").strip()
+    if kind not in registries.AMOUNT_RULE_KINDS:
+        raise click.ClickException(
+            f"unknown rule kind {kind!r}; allowed: {sorted(registries.AMOUNT_RULE_KINDS)}"
+        )
+    kind_changed = kind != base.get("amount_rule_kind", "").strip()
+    text = {column: str(answers.get(column, "") or "").strip() for column in scheduled_guide.RULE_COLUMNS}
+    row = {column: base.get(column, "") for column in registries.SCHEDULED_CSV_HEADER}
+    for field_ in scheduled_guide.RULE.fields:
+        column = field_.param
+        value = text[column]
+        unread = (column in scheduled_guide.KIND_ONLY_COLUMNS
+                  and column not in scheduled_guide.KIND_COLUMNS[kind])
+        if unread and (context is None or kind_changed):
+            value = ""
+        elif context is not None and not field_.applies(context, text):
+            # Not asked, so not changed -- except a lot whose account
+            # changed: the account's own lot, if any, was asked instead.
+            account = column.removesuffix("_lot") + "_account"
+            if column not in ("from_lot", "to_lot") or text[account] == base.get(account, "").strip():
+                continue
+        if value == base.get(column, "").strip():
+            row[column] = base.get(column, "")
+            continue
+        if value and column in ("amount", "ytd_amount"):
+            cents = _parse_amount_cents(value)
+            sign, cents = ("-" if cents < 0 else ""), abs(cents)
+            value = f"{sign}{cents // 100}.{cents % 100:02d}"
+        elif value and column == "rate":
+            value = units.micros_to_percent(_percent_to_rate_micros(value))
+        row[column] = value
+    row["amount_rule_kind"] = kind
+    if row["cadence"] != "annual":
+        row["month_of_year"] = ""
+    elif not row["month_of_year"].strip() and len(row["start"]) >= 7:
+        row["month_of_year"] = str(int(row["start"][5:7]))
+    if row["series"].strip() in ("", "fixed"):
+        # Nothing inflates, so nothing reads it; the loader refuses one
+        # without a series.
+        row["inflation_cadence"] = ""
+    elif kind == "fixed_amount" and not row["base_date"].strip():
+        row["base_date"] = row["start"]  # the engine needs one to inflate from
+    if row["ytd_amount"].strip():
+        row["ytd_preroll"] = ""
+    row["meta_json"] = row["meta_json"] or "{}"
+    return row
+
+
+def _check_scheduled_row(row: dict[str, str], context: calendar_guide.GuideContext) -> None:
+    """What the guide checks as each answer is typed, for a row built from
+    arguments and options instead. The loader judges the rest when the edit
+    is staged."""
+    kind = row["amount_rule_kind"]
+    if kind not in registries.AMOUNT_RULE_KINDS:
+        raise click.ClickException(
+            f"unknown rule kind {kind!r}; allowed: {sorted(registries.AMOUNT_RULE_KINDS)}"
+        )
+    missing = [
+        column for column, required in scheduled_guide.KIND_COLUMNS[kind].items()
+        if required and not row[column].strip()
+    ]
+    if missing:
+        flags = ", ".join(f"--{column.replace('_', '-')}" for column in missing)
+        raise click.ClickException(f"rule kind {kind} needs {flags}")
+    for column in ("start", "from_account", "to_account", "cadence", "tax_character"):
+        if not row[column].strip():
+            raise click.ClickException(f"a rule needs {column.replace('_', ' ')}")
+    if row["cadence"] not in registries.CADENCES:
+        raise click.ClickException(
+            f"unknown cadence {row['cadence']!r}; allowed: {sorted(registries.CADENCES)}"
+        )
+    if kind in scheduled_guide.ANNUAL_KINDS and row["cadence"] != "annual":
+        raise click.ClickException(f"a {kind} rule fires once a year: its cadence must be annual")
+    if row["cadence"] == "biweekly" and kind != "fixed_amount":
+        raise click.ClickException("only a fixed_amount rule may be biweekly")
+    if kind != "fixed_amount" and row["to_account"] in context.chains:
+        raise click.ClickException(
+            f"a {kind} rule's to account must be an account, not chain {row['to_account']!r}"
+        )
+    if kind in scheduled_guide.ACCOUNT_SOURCE_KINDS and row["from_account"] in context.chains:
+        raise click.ClickException(
+            f"a {kind} rule's from account must be an account, not chain {row['from_account']!r}"
+        )
+    if row["cadence"] == "biweekly" and not is_full_date(row["start"]):
+        raise click.ClickException(
+            f"a biweekly start needs a full YYYY-MM-DD, its first payday: {row['start']!r}"
+        )
+    if row["tax_character"] not in registries.TAX_CHARACTERS:
+        raise click.ClickException(
+            f"unknown tax_character: {row['tax_character']!r}; "
+            f"allowed: {sorted(registries.TAX_CHARACTERS)}"
+        )
+    if kind == "on_death" and row["tax_character"] != "tax_free":
+        raise click.ClickException("an on_death rule's tax character must be tax_free")
+    if row["person"] and row["person"] not in context.persons:
+        raise click.ClickException(
+            f"unknown person {row['person']!r}; allowed: {list(context.persons)}"
+        )
+    if row["interest_account"] and row["interest_account"] not in context.accounts:
+        raise click.ClickException(f"unknown interest account: {row['interest_account']!r}")
+    if row["ytd_amount"] and row["ytd_preroll"] not in ("", "0"):
+        raise click.ClickException("--ytd-amount and --ytd-preroll can't both be given")
+    if row["ytd_preroll"] not in ("", "0", "1"):
+        raise click.ClickException("--ytd-preroll must be 0 or 1")
+    if row["inflation_cadence"] not in ("", "monthly", "annual"):
+        raise click.ClickException("--inflation-cadence must be monthly or annual")
+    endpoints = _Endpoints(
+        list(context.accounts), {k: (v[0], list(v[1])) for k, v in context.lots.items()},
+        list(context.chains), dict(context.chain_roles),
+    )
+    for field_ in scheduled_guide.RULE.fields:
+        value = row.get(field_.param, "").strip()
+        checker = _SCHEDULED_CHECKERS.get(field_.type)
+        if value and checker is not None:
+            try:
+                checker(value)
+            except click.ClickException as error:
+                raise click.ClickException(f"{field_.name}: {error.format_message()}") from None
+            except ValueError as error:  # parse_tags says what is wrong this way
+                raise click.ClickException(f"{field_.name}: {error}") from None
+    if row["amount"].strip() and _parse_amount_cents(row["amount"]) <= 0:
+        raise click.ClickException(f"amount must be positive: {row['amount']!r}")
+    if kind == "rmd" and row["from_account"] in context.chains:
+        subject = _check_json_object(row["params_json"] or "{}").get("subject_account")
+        if not subject:
+            raise click.ClickException(
+                f"an rmd drawing from chain {row['from_account']!r} needs --params-json "
+                '\'{"subject_account": "<the account the RMD is for>"}\''
+            )
+        if subject not in context.accounts:
+            raise click.ClickException(f"unknown subject_account: {subject!r}")
+    _pick_endpoints(
+        endpoints, row["from_account"], row["from_lot"] or None,
+        row["to_account"], row["to_lot"] or None,
+    )
+
+
+def _scheduled_options[F: Callable[..., object]](f: F) -> F:
+    """One option per field of ``scheduled_guide.RULE``, so the guided
+    questions and the options can't drift apart. Each defaults to ``None``
+    (not given); ``""`` clears a field."""
+    for field_ in reversed(scheduled_guide.RULE.fields):
+        if field_.option is not None:
+            f = click.option(
+                field_.option, field_.param, default=None, help=field_.help or field_.label,
+            )(f)
+    return f
+
+
 @scheduled_group_command.command("add")
 @click.argument("date", required=False)
 @click.argument("from_account", required=False, shell_complete=_complete_account)
 @click.argument("to_account", required=False, shell_complete=_complete_account)
 @click.argument("amount", required=False)
+@click.option("--kind", "rule_kind", default="fixed_amount", show_default=True,
+              type=click.Choice(sorted(registries.AMOUNT_RULE_KINDS)),
+              help="How the amount is worked out (ADR-003 §2). AMOUNT is given only "
+                   "for fixed_amount, ss_benefit (PIA at FRA) and mortgage_payment (P&I).")
 @click.option("--from-lot", default=None,
               help="Lot of the from account; asked for when a blank one would not say which.")
 @click.option("--to-lot", default=None,
@@ -3814,17 +4221,39 @@ def scheduled_group_command() -> None:
               default=None)
 @click.option("--name", "row_name", default=None,
               help="scheduled.csv name (default: derived from accounts and date).")
-@click.option("--cadence", type=click.Choice(sorted(registries.CADENCES)),
-              default="monthly", show_default=True)
+@click.option("--cadence", type=click.Choice(sorted(registries.CADENCES)), default=None,
+              help="Default: monthly; annual for rmd and tax_accumulator.")
 @click.option("--month-of-year", type=click.IntRange(1, 12), default=None,
-              help="Required for annual cadence; defaults to start month.")
+              help="For annual cadence; defaults to 12 for rmd and tax_accumulator, "
+                   "else the start month.")
 @click.option("--end", "end_date", default="",
               help="Optional end date (YYYY-MM or YYYY-MM-DD).")
-@click.option("--tax-character", default="none", show_default=True)
-@click.option("--series", default="fixed", show_default=True,
-              help="'fixed' for no inflation, else an inflation series (e.g. cpi).")
-@click.option("--priority", type=int, default=200, show_default=True)
+@click.option("--tax-character", default=None,
+              help="Default: the kind's usual one (none; ss_benefit, tax_deferred_out for rmd, "
+                   "tax_free for on_death).")
+@click.option("--series", default=None,
+              help="fixed_amount: 'fixed' (the default) for no inflation, else an inflation "
+                   "series (e.g. cpi). ss_benefit: the COLA series. percent_of_balance: the rate series.")
+@click.option("--base-date", default=None,
+              help="The date inflation is measured from (default: DATE).")
+@click.option("--inflation-cadence", type=click.Choice(["monthly", "annual"]), default=None,
+              help="annual steps once each January, as a COLA does (default: monthly).")
+@click.option("--person", default=None, help="Person id: required for rmd, ss_benefit and on_death.")
+@click.option("--claim-age", type=int, default=None, help="Required for ss_benefit.")
+@click.option("--rate", default=None, help="Annual rate, e.g. 6%: required for mortgage_payment.")
+@click.option("--interest-account", default=None,
+              help="Interest expense account: required for mortgage_payment.")
+@click.option("--tax-year", default=None,
+              help="The tax year the transfer counts toward, when not its own.")
+@click.option("--ytd-amount", default=None,
+              help="Amount already paid this year before the scenario starts (ADR-003 §4.10).")
+@click.option("--ytd-preroll", type=click.Choice(["0", "1"]), default=None,
+              help="1 posts each month before the start as already paid (fixed_amount only).")
+@click.option("--priority", type=int, default=None,
+              help="Default: the kind's band (ADR-003 §5): 200 for fixed_amount.")
 @click.option("--description", default="")
+@click.option("--params-json", default=None,
+              help="JSON object: required for tax_accumulator; subject_account for an rmd from a chain.")
 @click.option("--tags", default="",
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary household:rwk').")
 def scheduled_add(
@@ -3832,40 +4261,55 @@ def scheduled_add(
     from_account: str | None,
     to_account: str | None,
     amount: str | None,
+    rule_kind: str,
     from_lot: str | None,
     to_lot: str | None,
     scenario: str | None,
     data_dir: Path | None,
     row_name: str | None,
-    cadence: str,
+    cadence: str | None,
     month_of_year: int | None,
     end_date: str,
-    tax_character: str,
-    series: str,
-    priority: int,
+    tax_character: str | None,
+    series: str | None,
+    base_date: str | None,
+    inflation_cadence: str | None,
+    person: str | None,
+    claim_age: int | None,
+    rate: str | None,
+    interest_account: str | None,
+    tax_year: str | None,
+    ytd_amount: str | None,
+    ytd_preroll: str | None,
+    priority: int | None,
     description: str,
+    params_json: str | None,
     tags: str,
 ) -> None:
-    """Append a recurring fixed-amount transfer to <scenario>/scheduled.csv."""
+    """Append a scheduled rule to <scenario>/scheduled.csv.
+
+    The rule is a fixed amount unless --kind names another kind (ADR-003
+    §2): each kind takes its own columns as options, and those it requires
+    are asked for when left out. `sim scheduled edit` changes a rule later.
+    """
     try:
         registries.parse_tags(tags)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    with _intent_db(data_dir_p, scenario) as (con, _name):
-        endpoints = _endpoints(con)
-        existing_names = {
-            r[0] for r in con.execute("SELECT name FROM scheduled_transaction")
-        }
+    context = _scheduled_context(data_dir_p, scenario_name)
+    endpoints = _Endpoints(
+        list(context.accounts), {k: (v[0], list(v[1])) for k, v in context.lots.items()},
+        list(context.chains), dict(context.chain_roles),
+    )
+    own_columns = scheduled_guide.KIND_COLUMNS[rule_kind]
+    if amount is not None and "amount" not in own_columns:
+        raise click.ClickException(f"rule kind {rule_kind} takes no AMOUNT")
 
     if not date:
         date = _prompt_with_completion("start date (YYYY-MM or YYYY-MM-DD)")
     date = _validate_month_date(date)
-    if cadence == "biweekly" and not is_full_date(date):
-        raise click.ClickException(
-            f"a biweekly start needs a full YYYY-MM-DD, its first payday: {date!r}"
-        )
     if end_date:
         end_date = _validate_month_date(end_date)
 
@@ -3873,58 +4317,62 @@ def scheduled_add(
         endpoints, from_account or None, from_lot, to_account or None, to_lot,
     )
 
-    if amount is None:
-        amount = _prompt_with_completion("amount (dollars, e.g. 1234.56)")
-    cents = _parse_amount_cents(amount)
-    if cents <= 0:
+    if amount is None and "amount" in own_columns:
+        amount = _prompt_with_completion(f"{scheduled_guide.AMOUNT_LABEL[rule_kind]} (e.g. 1234.56)")
+    if amount is not None and _parse_amount_cents(amount) <= 0:
         raise click.ClickException("amount must be positive")
-    amount_dollars = f"{cents // 100}.{cents % 100:02d}"
+    if cadence is None:
+        cadence = "annual" if rule_kind in scheduled_guide.ANNUAL_KINDS else "monthly"
+    if cadence == "annual" and month_of_year is None and rule_kind in scheduled_guide.ANNUAL_KINDS:
+        month_of_year = int(scheduled_guide.ANNUAL_KINDS[rule_kind])
 
-    if cadence == "annual" and month_of_year is None:
-        month_of_year = int(date[5:7])
-
-    if tax_character not in registries.TAX_CHARACTERS:
-        raise click.ClickException(
-            f"unknown tax_character: {tax_character!r}; "
-            f"allowed: {sorted(registries.TAX_CHARACTERS)}"
-        )
+    answers: dict[str, object] = {
+        "amount_rule_kind": rule_kind, "start": date,
+        "from_account": from_account, "from_lot": from_lot,
+        "to_account": to_account, "to_lot": to_lot,
+        "amount": amount or "", "cadence": cadence,
+        "month_of_year": str(month_of_year) if month_of_year else "",
+        "person": person or "", "claim_age": "" if claim_age is None else str(claim_age),
+        "series": series if series is not None else ("fixed" if rule_kind == "fixed_amount" else ""),
+        "base_date": base_date or "", "inflation_cadence": inflation_cadence or "",
+        "rate": rate or "", "interest_account": interest_account or "",
+        "tax_character": tax_character or scheduled_guide.KIND_TAX_CHARACTER[rule_kind],
+        "tax_year": tax_year or "", "end": end_date,
+        "priority": str(priority if priority is not None else registries.DEFAULT_PRIORITIES[rule_kind]),
+        "ytd_amount": ytd_amount or "", "ytd_preroll": ytd_preroll or "",
+        "description": description, "params_json": params_json or "", "tags": tags,
+    }
+    if rule_kind == "fixed_amount" and not answers["base_date"]:
+        answers["base_date"] = date
+    # Ask for what this kind requires and wasn't given, as the guide would.
+    guide = _scheduled_guide()
+    for field_ in scheduled_guide.RULE.fields:
+        if (field_.param in own_columns and own_columns[field_.param]
+                and not answers.get(field_.param)):
+            answers[field_.param] = guide.ask_field(
+                scheduled_guide.RULE, field_, context, {k: str(v) for k, v in answers.items()},
+            )
 
     if not row_name:
         slug_from = "_".join(filter(None, (from_account, from_lot))).lower().replace(" ", "_")
         slug_to = "_".join(filter(None, (to_account, to_lot))).lower().replace(" ", "_")
-        row_name = f"xfer_{slug_from}_to_{slug_to}_{date}"
-    if row_name in existing_names:
+        prefix = "xfer" if rule_kind == "fixed_amount" else rule_kind
+        row_name = f"{prefix}_{slug_from}_to_{slug_to}_{date}"
+    if row_name in context.taken_names:
         raise click.ClickException(
             f"scheduled transaction already exists: {row_name!r}"
         )
 
-    row = {
-        "name": row_name,
-        "from_account": from_account,
-        "from_lot": from_lot,
-        "to_account": to_account,
-        "to_lot": to_lot,
-        "cadence": cadence,
-        "month_of_year": str(month_of_year) if month_of_year else "",
-        "amount_rule_kind": "fixed_amount",
-        "series": series,
-        "amount": amount_dollars,
-        "base_date": date,
-        "tax_character": tax_character,
-        "start": date,
-        "end": end_date,
-        "priority": str(priority),
-        "description": description,
-        "meta_json": "{}",
-        "params_json": "{}",
-        "tags": tags,
-    }
+    row = _scheduled_row(answers, {"name": row_name, "meta_json": "{}"})
+    _check_scheduled_row(row, context)
     path = scenario_dir / "scheduled.csv"
     _append_and_validate(path, registries.SCHEDULED_CSV_HEADER, row,
                          data_dir=data_dir_p, scenario_name=scenario_name)
+    what = f" {_fmt_cents(_parse_amount_cents(row['amount'])).strip()}" if row["amount"] else ""
+    kind_note = "" if rule_kind == "fixed_amount" else f" {rule_kind}"
     click.echo(
-        f"appended scheduled row '{row_name}' ({cadence}) "
-        f"{from_account} -> {to_account} {_fmt_cents(cents).strip()} to {path}"
+        f"appended scheduled row '{row_name}'{kind_note} ({row['cadence']}) "
+        f"{from_account} -> {to_account}{what} to {path}"
     )
 
 
@@ -4164,6 +4612,229 @@ def scheduled_tag_rm(
 ) -> None:
     """Remove one or more '<role>:<name>' tags from a scheduled transaction."""
     _scenario_write(data_dir, scenario, "scheduled", name, tag_tokens, "rm")
+
+
+def _read_scheduled_rows(path: Path) -> list[dict[str, str]]:
+    """A scenario's own scheduled.csv rows, every SCHEDULED_CSV_HEADER column present."""
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    return [
+        {column: str(row.get(column, "")) for column in registries.SCHEDULED_CSV_HEADER}
+        for row in frame.to_dict("records")
+    ]
+
+
+class _PickedRule(NamedTuple):
+    found: _Overlaid  # the rule as the load order leaves it
+    own: dict[str, str] | None  # its row in this scenario's own file, as read then
+
+
+def _pick_scheduled(scenario_dir: Path, scenario_name: str, name: str) -> _PickedRule:
+    """The rule ``name``, as the scenario's load order leaves it."""
+    found = _overlay_rows(scenario_dir, "scheduled.csv").get(name.strip())
+    if found is None:
+        raise click.ClickException(
+            f"no scheduled rule {name!r} in scenario {scenario_name!r}'s scheduled.csv "
+            "(an account's growth rule comes from accounts.csv; a calendar row's "
+            "transfer from calendar.csv)"
+        )
+    own = None
+    if found.index is not None:
+        own = _read_scheduled_rows(scenario_dir / "scheduled.csv")[found.index]
+    return _PickedRule(found, own)
+
+
+def _write_scheduled(
+    data_dir: Path, scenario_name: str, path: Path, picked: _PickedRule,
+    row: dict[str, str] | None, *, drop_calendar: Path | None = None, name: str = "",
+) -> None:
+    """Write ``row`` over the scenario's own row ``chosen`` -- or append it as
+    an override when ``chosen`` is inherited; ``None`` removes the own row --
+    as one staged edit. With ``drop_calendar``, that calendar.csv's rows
+    naming rule ``name`` go too."""
+    index = picked.found.index
+    with _scenario_edit(data_dir, scenario_name) as edit:
+        staged = edit.path(path)
+        if index is None:
+            if row is not None:
+                _append_csv_row(staged, registries.SCHEDULED_CSV_HEADER, row)
+        else:
+            # Read inside the staged edit: the prompts may have taken a while,
+            # and the index is only good if the file still has the rule there.
+            existing = _read_scheduled_rows(staged)
+            if index >= len(existing) or existing[index] != picked.own:
+                raise click.ClickException(
+                    f"{path} changed while this rule was being edited. Nothing was "
+                    "written; start again."
+                )
+            if row is None:
+                frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
+                frame.drop(index=frame.index[index]).to_csv(staged, index=False)
+            else:
+                _append_csv_row(staged, registries.SCHEDULED_CSV_HEADER, row, replace=index)
+        if drop_calendar is not None:
+            calendar = edit.path(drop_calendar)
+            frame = pd.read_csv(calendar, dtype=str, keep_default_na=False)
+            keep = frame["scheduled_name"].str.strip() != name
+            frame.loc[keep].to_csv(calendar, index=False)
+
+
+@scheduled_group_command.command("edit")
+@click.argument("name")
+@_scheduled_options
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.pass_context
+def scheduled_edit(
+    ctx: click.Context, name: str, scenario: str | None, data_dir: Path | None,
+    **values: str | None,
+) -> None:
+    """Change a scheduled rule.
+
+    Options set those fields and write at once ("" clears one). With none,
+    the rule's fields are shown -- only those its kind reads -- name one to
+    change it, as often as needed, and write when done. Changing the kind
+    asks for the new kind's fields and drops those it doesn't read.
+
+    A rule the scenario inherits is changed by an override: the whole rule,
+    edited, appended to this scenario's scheduled.csv; the parent keeps its
+    own. `sim scheduled rename` changes a rule's name, everywhere it is shared.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "scheduled.csv"
+    picked = _pick_scheduled(scenario_dir, scenario_name, name)
+    chosen = picked.found
+    current = {column: chosen.row.get(column, "") for column in registries.SCHEDULED_CSV_HEADER}
+    context = _scheduled_context(data_dir_p, scenario_name)
+    rule = current["name"]
+
+    def submit(params: dict[str, object]) -> None:
+        row = _scheduled_row(params, current, context)
+        _check_scheduled_row(row, context)
+        if all(row[column].strip() == current[column].strip()
+               for column in registries.SCHEDULED_CSV_HEADER):
+            click.echo("no change; nothing was written")
+            return
+        _write_scheduled(data_dir_p, scenario_name, path, picked, row)
+        if chosen.index is None:
+            click.echo(
+                f"wrote an override of scheduled rule '{rule}' "
+                f"(inherited from {chosen.inherited_from!r}) to {path}"
+            )
+        else:
+            click.echo(f"updated scheduled rule '{rule}' in {path}")
+
+    answers = scheduled_guide.answers_of(current)
+    given = {param: value.strip() for param, value in values.items() if value is not None}
+    if given:
+        submit({**answers, **given})
+        return
+    _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
+    click.echo(f"Editing scheduled rule '{rule}' ({current['amount_rule_kind']})")
+    if chosen.index is None:
+        click.echo(
+            f"  It comes from scenario {chosen.inherited_from!r}: writing puts an override "
+            "of the whole rule in this scenario."
+        )
+    guide = _scheduled_guide()
+    guide.complete(scheduled_guide.RULE, context, answers)
+    if not guide.review(scheduled_guide.RULE, context, answers, submit, show_command=False):
+        ctx.exit(1)
+
+
+def _month_before(iso: str) -> str:
+    """The ``YYYY-MM`` before the month of ISO date ``iso``."""
+    year, month = int(iso[:4]), int(iso[5:7])
+    year, month = (year - 1, 12) if month == 1 else (year, month - 1)
+    return f"{year:04d}-{month:02d}"
+
+
+@scheduled_group_command.command("delete")
+@click.argument("name")
+@click.option("--yes", is_flag=True, help="Don't ask first.")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def scheduled_delete(name: str, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete a scheduled rule.
+
+    A rule of this scenario's own is removed, with this scenario's calendar
+    rows that name it (set_amount, retire_scheduled), which are listed
+    first. Deleting this scenario's override of an inherited rule brings
+    back the inherited rule.
+
+    A rule the scenario inherits can't be removed from here, since an
+    overlay can't remove a row (ADR-003 §4.5). Instead it is ended: an
+    override whose end is the month before the scenario starts, so it never
+    fires, and without a year-to-date catch-up.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "scheduled.csv"
+    picked = _pick_scheduled(scenario_dir, scenario_name, name)
+    chosen = picked.found
+    rule = chosen.row["name"]
+
+    if chosen.index is not None and chosen.inherited_from is not None:
+        if not yes and not click.confirm(
+            f"delete this scenario's override of '{rule}', so the rule from "
+            f"{chosen.inherited_from!r} applies again?", default=False,
+        ):
+            click.echo("aborted")
+            return
+        _write_scheduled(data_dir_p, scenario_name, path, picked, None)
+        click.echo(
+            f"deleted this scenario's override of scheduled rule '{rule}' from {path}; "
+            f"it is inherited from {chosen.inherited_from!r} again"
+        )
+        return
+
+    if chosen.index is not None:
+        calendar = scenario_dir / "calendar.csv"
+        references = [
+            f"  calendar.csv row {index + 2}: {_calendar_row_label(row)}"
+            for index, row in enumerate(_read_calendar_rows(calendar))
+            if row["scheduled_name"].strip() == rule
+        ]
+        if references:
+            click.echo(f"scheduled rule '{rule}' is named by:")
+            click.echo("\n".join(references))
+        prompt = "delete the rule and these rows?" if references else f"delete scheduled rule '{rule}'?"
+        if not yes and not click.confirm(prompt, default=False):
+            click.echo("aborted")
+            return
+        _write_scheduled(
+            data_dir_p, scenario_name, path, picked, None,
+            drop_calendar=calendar if references else None, name=rule,
+        )
+        click.echo(f"deleted scheduled rule '{rule}' from {path}")
+        return
+
+    with _intent_db(data_dir_p, scenario_name) as (con, _name):
+        start = con.execute("SELECT start FROM scenario").fetchone()[0]
+    end = _month_before(start)
+    current = {column: chosen.row.get(column, "") for column in registries.SCHEDULED_CSV_HEADER}
+    if current["end"] and month_end_iso(current["end"]) < start:
+        click.echo(f"scheduled rule '{rule}' already ends before the scenario starts; nothing was written")
+        return
+    click.echo(
+        f"scheduled rule '{rule}' comes from scenario {chosen.inherited_from!r}, and "
+        f"{scenario_name!r} can't remove what it inherits. It can end it instead: an "
+        f"override with end {end}, the month before the scenario starts, so it never fires."
+    )
+    if not yes and not click.confirm("write that override?", default=False):
+        click.echo("aborted")
+        return
+    row = {**current, "end": end, "ytd_amount": "", "ytd_preroll": ""}
+    _write_scheduled(data_dir_p, scenario_name, path, picked, row)
+    click.echo(f"wrote an override ending scheduled rule '{rule}' in {end} to {path}")
 
 
 def _complete_kind(ctx, param, incomplete):  # noqa: ARG001

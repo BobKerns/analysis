@@ -806,8 +806,8 @@ inherited along the parent chain.
 ### 7. CLI edits are validated before they are written
 
 The CSVs are the source of truth and the loader is their only validator, so
-every `analysis sim` command that edits scenario CSVs (`calendar add|edit`,
-`transfer add`, `scheduled add`/`import-baseline`, `account
+every `analysis sim` command that edits scenario CSVs (`calendar add|edit|delete`,
+`transfer add`, `scheduled add|edit|delete`/`import-baseline`, `account
 add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|rename|delete`,
 the `tag` commands, `chain` and `series` edits, the other `rename` commands,
 `scenario create|rename`, `ensemble create|rename`) goes through one staged edit
@@ -915,6 +915,24 @@ lots would still name it. It deletes a scenario's own override of an
 inherited account, which brings back the inherited row and leaves what uses
 the account alone.
 
+Scheduled rules and calendar rows follow the same rule (#183, #184).
+`scheduled edit` changes a rule in place, or overrides an inherited one
+with the whole edited row; its fields are those of §4.6 that the rule's
+`amount_rule_kind` reads (§2), so changing the kind asks for the new kind's
+columns and blanks those it doesn't read, while a column the kind doesn't
+read and the edit doesn't touch keeps its cell. `scheduled add --kind`
+writes any rule kind, with each kind's columns as options and those it
+requires asked for when left out. `scheduled delete` removes the
+scenario's own rule with the scenario's calendar rows that name it, after
+listing them; deletes an override, bringing back the inherited rule; and,
+since an overlay can't remove an inherited rule (§4.5), ends one instead:
+an override whose `end` is the month before `scenario.start`, with
+`ytd_amount` and `ytd_preroll` cleared so no catch-up posts.
+`calendar delete` picks its row as `calendar edit` does; it refuses a row
+another row's `vary_correlate_with` names and an inherited row, and deletes
+an override, bringing back the inherited row. `calendar tag add|rm` changes
+a row's tags, writing an override of the whole row for an inherited one.
+
 The commands that add a transfer (`transfer add`, `calendar add transfer`,
 the guided `calendar add`, `scheduled add`) pick each side the same way,
 whether a value is typed at a prompt or given on the command line: an
@@ -1019,3 +1037,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#201](https://github.com/BobKerns/analysis/issues/201): a blank `tax_character` on `one_off_transfer` or `transfer_balance` splits money out of a basis-tracked lot into basis and gain, instead of posting it as `none` (§3.4, §3.7, §4.8).
 - [#204](https://github.com/BobKerns/analysis/issues/204): a `set_rate` row on a series with no file is a load error; warnings about an unread `set_rate` series, an unused factor, or `vary_tail_dependence` with nothing under it are printed only by `sim check` (§3.1, §3.6, §4.8).
 - [#199](https://github.com/BobKerns/analysis/issues/199): destination chain steps gain `tax_character`, `basis_of` and `basis_of_lot`, so a sale goes through a chain; tax characters `home_sale` and `capital_improvement`; the tax accumulator nets capital gains and limits and carries a net loss, with the new `capital_loss_limit` aux table replacing `home_sale_exclusion` (§2.6, §4.4, §4.6, §4.7, §4.10).
+- [#183](https://github.com/BobKerns/analysis/issues/183), [#184](https://github.com/BobKerns/analysis/issues/184): `scheduled add --kind` writes every rule kind; `scheduled edit|delete` and `calendar delete`, `calendar tag add|rm`; deleting an inherited rule ends it before the scenario starts (§7).

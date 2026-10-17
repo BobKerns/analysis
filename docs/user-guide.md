@@ -69,12 +69,15 @@ scenario. You then add only the rows that need to be different — the rest of
 this guide shows what to put in them.
 
 You can also start from what the scenario inherits: `sim account edit`,
-`sim account lot edit` and `sim calendar edit` on an inherited item write
-the edited row into the derived scenario as an override, and leave the
-parent alone. A derived scenario can't remove what it inherits, so
-`sim account delete` refuses an inherited account (delete it in the scenario
-that defines it); deleting the derived scenario's override brings back the
-inherited row. Renames always reach every scenario sharing the name.
+`sim account lot edit`, `sim scheduled edit` and `sim calendar edit` (and
+`sim calendar tag add|rm`) on an inherited item write the edited row into
+the derived scenario as an override, and leave the parent alone. A derived
+scenario can't remove what it inherits, so `sim account delete` and
+`sim calendar delete` refuse an inherited account or row (delete it in the
+scenario that defines it). `sim scheduled delete` on an inherited rule ends
+it instead, with an override whose end is the month before the scenario
+starts. Deleting the derived scenario's override brings back the inherited
+row. Renames always reach every scenario sharing the name.
 
 A scenario made this way is never an ensemble, even when its parent is
 one: it runs once, with each varying row at its central value. Use
@@ -368,8 +371,17 @@ change automatically.
 
 If you are in a derived scenario and want the change to apply only there, add
 a row with the **same `name`** as the parent's row. The new row replaces the
-whole parent row (rows are matched by `name`). The easiest way is to copy the
-parent's row and change just the amount.
+whole parent row (rows are matched by `name`). The easiest way is
+`sim scheduled edit`, which writes that row for you:
+
+```sh
+sim scheduled edit groceries_monthly --amount 650.00   # change one field
+sim scheduled edit groceries_monthly                   # or pick fields to change
+```
+
+`sim scheduled add --kind <kind>` adds a rule of any kind (a Social Security
+benefit, an RMD, a mortgage, ...), asking for what that kind needs, and
+`sim scheduled delete` removes one.
 
 ### 4.4 Change an estimated expense starting at a later date
 
