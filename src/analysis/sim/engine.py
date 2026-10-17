@@ -720,6 +720,17 @@ def _warn_if_negative(
     refill_ctx.negative_since[account_id] = is_negative
 
 
+def describe_negative_balance_event(event: Mapping[str, Any]) -> str:
+    """One recorded ``negative_balance_warnings`` entry's account of the
+    refill look-ahead, worded as the run's ``RuntimeWarning`` was, so
+    ``sim explain`` reads the same as the run did (#186)."""
+    attempt = RefillAttempt(
+        event.get("refill_status") or "none_configured", None,
+        event.get("refill_needed_cents"), event.get("refill_drawn_cents"),
+    )
+    return _describe_refill(attempt, event.get("refill_chain"))
+
+
 def _describe_refill(attempt: RefillAttempt, chain_name: str | None) -> str:
     """The negative-balance warning's account of the refill look-ahead (#105)."""
     match attempt.status:

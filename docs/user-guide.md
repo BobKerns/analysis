@@ -788,8 +788,8 @@ movement, and every year's tax figures for the whole run. You can look at it
 in a notebook, from the command line, or by asking an AI to read it for you.
 Every notebook, and most commands (including the ones in the next table),
 default to a scenario's latest run, so you rarely need to name the file
-yourself. A few, like `sim explain` below, need the exact file — look in
-`state/runs/` for the newest one with that scenario's name in it.
+yourself. When you do want an older run, pass its file (from `state/runs/`)
+with `--runfile`, or in place of the scenario for `sim explain`.
 
 Run a scenario with:
 
@@ -803,10 +803,14 @@ the VS Code tasks (see below), you don't need to type either command: use the
 
 ### A quick first look
 
-After a run, `sim explain <runfile>` prints a short summary: which scenario it
-is, whether it finished successfully, and the balance of every account and
-lot at the end of the run. This is the fastest way to check "did this do
-roughly what I expected" before opening a notebook.
+After a run, `sim explain [scenario]` prints a short summary of the
+scenario's latest run: whether it finished successfully, the lots at the end
+of the run, net worth at each year end, and every time an account went
+negative (with what its refill chain did about it). This is the fastest way
+to check "did this do roughly what I expected" before opening a notebook.
+`sim networth [scenario]` shows net worth by year (`--monthly` for every
+month) with inflation taken out, so decades compare at a glance;
+`--dollars nominal` shows the inflated figures instead.
 
 ### The notebooks
 
@@ -845,7 +849,8 @@ machine too small for a notebook comfortably.
 | calendar rows of every kind, with where each is defined | `sim calendar list [--kind KIND] [--tag TAG]` |
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
-| a run's year-end net worth, and its lots | `sim explain <runfile>` |
+| a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
+| net worth by year or month, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal]` |
 
 [notebooks/README.md](../notebooks/README.md) keeps the full, up-to-date list, including which
 notebook views don't have a terminal command yet.

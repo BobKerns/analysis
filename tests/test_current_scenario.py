@@ -76,6 +76,7 @@ def test_renaming_another_scenario_leaves_the_current_one(test_data_dir: Path) -
     ("check",),
     ("load", "--no-run"),
     ("calendar", "add"),
+    ("networth",),
 ])
 def test_without_a_current_scenario_a_command_asks_for_one(
     test_data_dir: Path, args: tuple[str, ...],

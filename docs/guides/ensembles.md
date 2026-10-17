@@ -798,7 +798,7 @@ Rough starting points:
 **Cost scales linearly with member count** — each member is a full,
 independent simulation, with its own intent file and run file (ADR-006's
 own "Consequences" section). Time one ordinary run of the parent scenario
-(`sim explain <runfile>` after an ordinary `sim run`, or just watch `sim
+(`sim explain` after an ordinary `sim run`, or just watch `sim
 run` itself) and multiply by the member count you're considering to gauge
 what an ensemble run will cost.
 
