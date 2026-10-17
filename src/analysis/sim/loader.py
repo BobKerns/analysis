@@ -81,9 +81,9 @@ class LoadResult:
     (e.g. an allocation with rate series for only some of its classes)."""
     unused: list[str] = field(default_factory=list)
     """Things defined but not read yet: a latent factor with no dependents,
-    or vary_tail_dependence on a row nothing correlates with. Often
-    deliberate (work in progress, or meant for child scenarios), so only
-    `sim check` prints them (#204)."""
+    vary_tail_dependence on a row nothing correlates with, or a set_rate on
+    an existing series nothing reads. Often deliberate (work in progress, or
+    meant for child scenarios), so only `sim check` prints them (#204)."""
 
 
 class LoadError(ValueError):
