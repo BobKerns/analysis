@@ -325,6 +325,7 @@ def _resolve_scenario(
     ``remember=False`` is for a name that is only a reference, such as a new
     scenario's parent.
     """
+    defaulted = scenario is None
     if scenario is None:
         scenario = read_current_scenario(data_dir)
         if scenario is None:
@@ -332,18 +333,23 @@ def _resolve_scenario(
             raise click.UsageError(
                 f"no current scenario; name one (scenarios: {names})"
             )
-        # Once per command, though several steps of it may resolve the default.
-        ctx = click.get_current_context(silent=True)
-        if ctx is None or not ctx.meta.get(_SCENARIO_ANNOUNCED):
-            click.echo(f"Using scenario {scenario}", err=True)
-            if ctx is not None:
-                ctx.meta[_SCENARIO_ANNOUNCED] = True
-        remember = False
     try:
         ref = sc.resolve_scenario_name(data_dir, scenario, intent_dir=intent_dir)
     except LoadError as exc:
+        if defaulted:
+            raise click.ClickException(
+                f"{current_scenario_path(data_dir)} names a missing scenario: {scenario!r}; "
+                "name one"
+            ) from None
         raise click.ClickException("; ".join(exc.issues)) from None
-    if remember and read_current_scenario(data_dir) != ref.name:
+    if defaulted:
+        # Once per command, though several steps of it may resolve the default.
+        ctx = click.get_current_context(silent=True)
+        if ctx is None or not ctx.meta.get(_SCENARIO_ANNOUNCED):
+            click.echo(f"Using scenario {ref.name}", err=True)
+            if ctx is not None:
+                ctx.meta[_SCENARIO_ANNOUNCED] = True
+    elif remember and read_current_scenario(data_dir) != ref.name:
         write_current_scenario(data_dir, ref.name)
     return ref
 
@@ -8579,6 +8585,8 @@ def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, *
     name = name.strip()
     if name not in names:
         raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
+    # Named or picked at the prompt, it becomes current, even if nothing changes.
+    _resolve_scenario(data, name)
     if new_seed or any(value is not None for value in fields.values()):
         _apply_scenario_edit(data, name, new_seed=new_seed, **fields)
         return

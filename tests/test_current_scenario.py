@@ -89,3 +89,25 @@ def test_without_a_current_scenario_a_command_asks_for_one(
     assert result.exit_code == 2, result.output
     assert "no current scenario; name one (scenarios: base, retire_alice)" in result.stderr
     assert not current_scenario_path(test_data_dir).exists()
+
+
+@pytest.mark.uses_current_scenario_write
+def test_a_guided_scenario_edit_makes_its_scenario_current_even_unchanged(
+    test_data_dir: Path,
+) -> None:
+    current_scenario_path(test_data_dir).unlink()
+
+    # Picked at the prompt (`edit` is guided), then written with no change.
+    _sim(test_data_dir, "scenario", "edit", input="base\n\n")
+
+    assert read_current_scenario(test_data_dir) == "base"
+
+
+def test_a_current_scenario_that_is_gone_is_named_as_such(test_data_dir: Path) -> None:
+    current_scenario_path(test_data_dir).write_text("gone\n")
+
+    result = _sim(test_data_dir, "account", "list")
+
+    assert result.exit_code != 0
+    assert "names a missing scenario: 'gone'" in result.stderr
+    assert "Using scenario" not in result.stderr
