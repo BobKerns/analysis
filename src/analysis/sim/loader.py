@@ -911,7 +911,10 @@ def load_scenario(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
-    _validate_chains(chains, value_rows, leaves, issues, money_resolver=money_resolver)
+    _validate_chains(
+        chains, value_rows, leaves, issues, money_resolver=money_resolver,
+        asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
+    )
     _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues)
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
     _validate_lifespan(lifespan_rows, persons, issues)
@@ -1218,6 +1221,9 @@ def _read_aux_files(
             kind, series = stem.split("__", 1)
         else:
             kind, series = stem, None
+        if kind in registries.RETIRED_AUX_KINDS:
+            issues.append(f"{label}: {registries.RETIRED_AUX_KINDS[kind]}")
+            continue
         if kind not in registries.AUX_KIND_COLUMNS:
             issues.append(f"{label}: unknown kind '{kind}'")
             continue
@@ -1811,7 +1817,15 @@ def _validate_scheduled(
             issues.append(f"{where}: missing name")
             continue
         kind = row.get("amount_rule_kind", "")
-        if kind not in registries.AMOUNT_RULE_KINDS:
+        if kind == "home_sale":
+            issues.append(
+                f"{where} ({name}): the home_sale rule kind is gone (#199); sell "
+                "the home with a transfer_balance calendar event into a "
+                "destination chain whose steps recover its basis (tax_character "
+                "home_sale, basis_of the home), take the exclusion (excluded_gain, "
+                "with a maximum) and then the gain (ltcg)"
+            )
+        elif kind not in registries.AMOUNT_RULE_KINDS:
             issues.append(f"{where} ({name}): unknown amount_rule_kind '{kind}'")
         cad = row.get("cadence", "")
         if cad not in registries.CADENCES:
@@ -1828,13 +1842,6 @@ def _validate_scheduled(
                 f"{where} ({name}): on_death requires "
                 f"tax_character='tax_free' (got {tc!r}) -- death-triggered "
                 "liquidations/payouts are not taxable events"
-            )
-        if kind == "home_sale" and tc != "none":
-            issues.append(
-                f"{where} ({name}): home_sale requires "
-                f"tax_character='none' (got {tc!r}) -- the row's own "
-                "tax_character is unused; _apply_home_sale posts its own "
-                "return_of_capital / excluded_gain / ltcg legs"
             )
         tax_year = row.get("tax_year", "")
         if tax_year:
@@ -3115,6 +3122,7 @@ def _validate_chains(
     issues: list[str],
     *,
     money_resolver: _MoneyReferenceResolver,
+    asset_accounts: frozenset[str] = frozenset(),
 ) -> None:
     for name in sorted(set(chains) & leaves.names):
         issues.append(f"chains/*.csv: chain name '{name}' collides with an account name")
@@ -3169,6 +3177,8 @@ def _validate_chains(
             if series:
                 _validate_no_spaces(where, member,
                                     "series", series, issues)
+        _validate_chain_tax_steps(role, rows, _chain_label(role, name), leaves,
+                                  asset_accounts, issues)
 
     for where, row in _located(value_rows, "account_values.csv"):
         holder = leaves.leaf_of.get(
@@ -3200,6 +3210,66 @@ def _validate_chains(
                 edges.setdefault(holder, set()).add(row[column])
 
     _reject_cycles(edges, issues, label="chains/*.csv")
+
+
+def _validate_chain_tax_steps(
+    role: str, rows: list[dict[str, str]], label: str, leaves: _LeafIndex,
+    asset_accounts: frozenset[str], issues: list[str],
+) -> None:
+    """A chain step's ``tax_character`` and ``basis_of`` (#199, ADR-003
+    §4.7): a step that sets a character gives it to the money it places and
+    to every later step until another sets one; a step with ``basis_of``
+    recovers that lot's basis or adds to it. ``basis_of`` is resolved in
+    place to the lot's leaf name, as ``account_name`` is."""
+    after_basis_step = False
+    for where, row in _located(rows, label):
+        character = row.get("tax_character", "")
+        basis_of = row.get("basis_of", "")
+        if after_basis_step and not character:
+            issues.append(
+                f"{where}: the step after a basis step must set its own "
+                "tax_character, or the gain would be characterized as basis"
+            )
+        after_basis_step = False
+        if row.get("basis_of_lot") and not basis_of:
+            issues.append(f"{where}: basis_of_lot needs basis_of")
+        if not character and not basis_of:
+            continue
+        if role != "destination":
+            issues.append(
+                f"{where}: tax_character and basis_of belong to destination "
+                "chains, which characterize the money paid through them"
+            )
+            continue
+        if character and character not in registries.TAX_CHARACTERS:
+            issues.append(f"{where}: unknown tax_character '{character}'")
+            continue
+        basis_character = (character in registries.BASIS_TAX_CHARACTERS
+                           or character == "capital_improvement")
+        if basis_of and not basis_character:
+            issues.append(
+                f"{where}: basis_of needs tax_character "
+                f"{', '.join(sorted(registries.BASIS_TAX_CHARACTERS))} "
+                "(recover the basis of a sale) or capital_improvement (add to it)"
+            )
+        elif basis_character and not basis_of:
+            issues.append(f"{where}: tax_character {character} needs basis_of, the asset lot")
+        if not basis_of:
+            continue
+        if basis_of not in asset_accounts:
+            issues.append(f"{where}: basis_of '{basis_of}' is not an asset account")
+            continue
+        problem = _resolve_ref(row, "basis_of", "basis_of_lot", leaves, frozenset())
+        if problem:
+            issues.append(f"{where}: basis_of {problem}")
+        if character in registries.BASIS_TAX_CHARACTERS:
+            after_basis_step = True
+            sized = [c for c in ("maximum", "percent") if row.get(c)]
+            if sized:
+                issues.append(
+                    f"{where}: a basis step is sized by the lot's basis, so "
+                    f"{' and '.join(sized)} must be blank"
+                )
 
 
 def _validate_lifespan(
@@ -3390,8 +3460,9 @@ def _write_intent(
         for i, row in enumerate(rows, start=1):
             con.execute(
                 "INSERT INTO chain_steps(chain_id, step_order, draw_from_chain_id, "
-                "maximum_cents, percent_micros, series, cadence) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "maximum_cents, percent_micros, series, cadence, tax_character, "
+                "basis_of_lot_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     chain_ids[name], i, chain_ids[row["account_name"]],
                     _dollars_to_cents(row["maximum"], resolver=money_resolver)
@@ -3400,6 +3471,8 @@ def _write_intent(
                     if row.get("percent") else 1_000_000,
                     row.get("series") or None,
                     row.get("cadence") or None,
+                    row.get("tax_character") or None,
+                    lot_ids[row["basis_of"]] if row.get("basis_of") else None,
                 ),
             )
             step_count += 1

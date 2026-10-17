@@ -18,12 +18,23 @@ from analysis.sim import registries
 from analysis.sim.lineage import load_order
 
 __all__ = [
-    "CHAIN_COLUMNS", "REFERENCE_COLUMNS", "chain_file", "chain_files", "defining_scenario", "descendants",
-    "new_chain_file", "read_steps", "rename_cells", "rename_references", "shares_to_percents", "write_steps",
+    "ACCOUNT_COLUMNS", "CHAIN_COLUMNS", "LOT_COLUMNS", "REFERENCE_COLUMNS", "TAX_COLUMNS", "chain_file",
+    "chain_files", "defining_scenario", "descendants", "new_chain_file", "read_steps", "rename_cells",
+    "rename_references", "shares_to_percents", "write_steps",
 ]
 
-CHAIN_COLUMNS = ("account_name", "lot", "maximum", "percent", "series", "cadence")
+TAX_COLUMNS = ("tax_character", "basis_of", "basis_of_lot")
+"""A destination chain step's tax columns (#199): written only to a file
+whose steps use them, so other chain files keep their header."""
+
+CHAIN_COLUMNS = ("account_name", "lot", "maximum", "percent", "series", "cadence", *TAX_COLUMNS)
 """A chain file's columns (ADR-003 §4.7), in the order they are written."""
+
+ACCOUNT_COLUMNS = ("account_name", "basis_of")
+"""A chain file's columns that may name an account, for renames and deletes."""
+
+LOT_COLUMNS = (("account_name", "lot"), ("basis_of", "basis_of_lot"))
+"""A chain file's (account, lot) column pairs, for lot renames and deletes."""
 
 REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     "scheduled.csv": ("from_account", "to_account"),
@@ -91,19 +102,23 @@ def descendants(scenarios_dir: Path, scenario: str) -> list[str]:
 
 def read_steps(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        columns = [c for c in CHAIN_COLUMNS if c not in TAX_COLUMNS or c in (reader.fieldnames or ())]
         return [
-            {column: (row.get(column) or "").strip() for column in CHAIN_COLUMNS}
-            for row in csv.DictReader(fh)
+            {column: (row.get(column) or "").strip() for column in columns}
+            for row in reader
             if any((v or "").strip() for v in row.values())
         ]
 
 
 def write_steps(path: Path, steps: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    taxed = any(step.get(column) for step in steps for column in TAX_COLUMNS)
+    columns = [c for c in CHAIN_COLUMNS if taxed or c not in TAX_COLUMNS]
     with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=CHAIN_COLUMNS, extrasaction="ignore", lineterminator="\n")
+        writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
-        writer.writerows({column: step.get(column, "") for column in CHAIN_COLUMNS} for step in steps)
+        writer.writerows({column: step.get(column, "") for column in columns} for step in steps)
 
 
 def rename_cells(path: Path, columns: tuple[str, ...], old: str, new: str) -> bool:

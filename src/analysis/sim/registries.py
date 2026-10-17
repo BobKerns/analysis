@@ -26,7 +26,6 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd",
     "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death",
-    "home_sale",
 }
 
 # Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
@@ -117,9 +116,20 @@ TAX_CHARACTERS: set[str] = {
     "tax_deferred_in", "tax_deferred_out", "return_of_capital", "property_tax", "none",
     # IRC §121 excluded portion of a home-sale gain: real gain, but not
     # taxed. Distinct from 'return_of_capital' (not gain at all) and from
-    # 'ltcg' (gain that *is* taxed) -- see engine._apply_home_sale.
+    # 'ltcg' (gain that *is* taxed).
     "excluded_gain",
+    # A chain step's basis characters (#199, ADR-003 §4.7): the sale of a
+    # personal residence recovers its basis like return_of_capital, but basis
+    # it can't recover is a personal loss, not a deductible capital loss.
+    "home_sale",
+    # Money spent on an asset (a remodel) that adds to its cost basis.
+    "capital_improvement",
 }
+
+# The characters of a chain step that recovers a sold lot's basis (#199): the
+# step is sized by the lot's basis and uses it up. What it can't recover is a
+# capital loss for 'return_of_capital' and nothing for 'home_sale'.
+BASIS_TAX_CHARACTERS: frozenset[str] = frozenset({"return_of_capital", "home_sale"})
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 
@@ -266,9 +276,19 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # cap, 0/blank for uncapped. A category/date combo with no matching row
     # means "no credit available" -- callers must not assume a fallback.
     "energy_credits": ("effective_date", "category", "rate", "cap"),
-    # IRC §121 home-sale gain exclusion by filing status, read by the
-    # home_sale rule kind when its params give no explicit cap.
-    "home_sale_exclusion": ("effective_date", "filing_status", "amount"),
+    # IRC §1211(b): how much of a year's net capital loss offsets ordinary
+    # income, by filing status ($3,000; $1,500 married filing separately).
+    # The rest carries forward (§1212(b)).
+    "capital_loss_limit": ("effective_date", "filing_status", "amount"),
+}
+
+# Aux kinds that are no longer read, with what replaced them: a file of one
+# fails to load with this message rather than as an unknown kind.
+RETIRED_AUX_KINDS: dict[str, str] = {
+    "home_sale_exclusion": (
+        "the home-sale exclusion is now the maximum of a chain step whose "
+        "tax_character is excluded_gain (#199); delete the file"
+    ),
 }
 
 # The aux kinds a swap_aux_table event may replace (ADR-003 §3.5). Security
@@ -313,7 +333,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "state_deductions": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
     "energy_credits": frozenset({"cap"}),
-    "home_sale_exclusion": frozenset({"amount"}),
+    "capital_loss_limit": frozenset({"amount"}),
 }
 
 

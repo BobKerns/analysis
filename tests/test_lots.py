@@ -565,7 +565,11 @@ def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(ledger_con: s
             "VALUES (1, '2026-06-30', 1, 2, 1, 2, ?, ?, 0, ?, 'rule')",
             (amount, amount, character),
         )
-    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (150, 30, 7)
+    from analysis.sim.engine import _capital_gains
+
+    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (100, 7)
+    gains = _capital_gains(ledger_con, tax_year=2026, loss_limit=lambda _year: 0)
+    assert (gains.stcg, gains.ltcg) == (50, 30)
 
 
 def test_short_term_sales_then_long_term_sales_from_the_same_lot(two_lot_run_file: Path) -> None:

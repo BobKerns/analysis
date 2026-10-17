@@ -114,9 +114,9 @@ def _rename_in(scenario_dir: Path, files: dict[str, tuple[str, ...]], old: str, 
             if chain_edit.rename_cells(scenario_dir / filename, columns, old, new)]
 
 
-def _rename_in_chains(scenario_dir: Path, column: str, old: str, new: str) -> list[str]:
+def _rename_in_chains(scenario_dir: Path, columns: tuple[str, ...], old: str, new: str) -> list[str]:
     return [f"chains/{path.parent.name}/{path.name}" for path in chain_edit.chain_files(scenario_dir)
-            if chain_edit.rename_cells(path, (column,), old, new)]
+            if chain_edit.rename_cells(path, columns, old, new)]
 
 
 # ---------- accounts ----------
@@ -207,7 +207,7 @@ def rename_account(scenario_dir: Path, old: str, new: str) -> list[str]:
     """Rename account ``old`` to ``new`` throughout one scenario folder;
     returns the files changed, relative to it."""
     changed = [*_rename_in(scenario_dir, ACCOUNT_COLUMNS, old, new),
-               *_rename_in_chains(scenario_dir, "account_name", old, new)]
+               *_rename_in_chains(scenario_dir, chain_edit.ACCOUNT_COLUMNS, old, new)]
     if _rename_subject_account(scenario_dir / "scheduled.csv", old, new) and "scheduled.csv" not in changed:
         changed.append("scheduled.csv")
     return changed
@@ -332,7 +332,7 @@ def rename_series(scenario_dir: Path, old: str, new: str) -> list[str]:
             path.rename(target)
             changed.append(f"{folder}/{path.name} -> {folder}/{target.name}")
     return [*changed, *_rename_in(scenario_dir, SERIES_COLUMNS, old, new),
-            *_rename_in_chains(scenario_dir, "series", old, new)]
+            *_rename_in_chains(scenario_dir, ("series",), old, new)]
 
 
 # ---------- scenarios ----------

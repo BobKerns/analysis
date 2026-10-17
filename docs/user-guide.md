@@ -390,14 +390,51 @@ dates for a second, competing row.
 
 There are two real ways to do this today, depending on what you are selling.
 
-**Selling a home** (or anything using the `home_sale` rule kind): add a
-one-time row to `scheduled.csv`. Name the account directly; do not use a
-chain. This automatically applies the IRS home-sale tax exclusion (from
-`home_sale_exclusion.csv`, or a cap you set yourself in `params_json`, based
-on filing status). It splits the sale into three parts for you:
-`return_of_capital`, `excluded_gain`, and `ltcg`. Set the row's
-`tax_character` column to `none` — the rule calculates the real split itself;
-it does not read `tax_character` from the row.
+**Selling a home**: move the home's whole balance, on the sale date, into
+a destination chain whose steps say how each part of the price is taxed.
+The first step recovers the home's cost basis, the second takes the IRS
+home-sale exclusion, and the third takes the taxable gain. A step only needs
+a `tax_character` where the character changes:
+
+```csv
+# chains/destination/home_sale.csv
+account_name,maximum,tax_character,basis_of
+sale_proceeds,,home_sale,Asset_Home
+sale_proceeds,500000.00,excluded_gain,
+sale_proceeds,,ltcg,
+```
+
+```csv
+# chains/destination/sale_proceeds.csv: pay off the mortgage, then checking
+account_name
+Liability_Mortgage
+Asset_Checking
+```
+
+```csv
+# calendar.csv
+date,kind,account_1,account_2,description
+2030-06-30,transfer_balance,Asset_Home,home_sale,sell the home
+```
+
+The basis step (`basis_of` the home, `tax_character` `home_sale`) takes as
+much of the price as the home's basis, which needs an `opening_cost_basis` in
+`account_values.csv`. Leave its `maximum` and `percent` blank. The exclusion
+is the `excluded_gain` step's `maximum`: $500,000 married filing jointly,
+$250,000 single, if you meet the IRS ownership and use tests. A mortgage
+step takes only what is still owed. If the home sells for less than its
+basis, the loss isn't deductible, and nothing more happens. With
+`sim chain add` and `sim chain step add`, the columns are `--tax-character`
+and `--basis-of`.
+
+The same shape sells an investment through a destination chain: give the
+basis step `tax_character` `return_of_capital` and `basis_of` the lot. A sale
+below its basis then records a capital loss. The yearly tax calculation nets
+it against that year's gains, deducts up to $3,000 from ordinary income
+(`aux/capital_loss_limit.csv`), and carries the rest into later years.
+
+A remodel adds to the home's basis: pay it through a destination chain whose
+step has `tax_character` `capital_improvement` and `basis_of` the home.
 
 **Selling a brokerage lot** (or anything else that is taxable and not cash):
 there is no dedicated "sell" rule for this yet. Model it as a one-time

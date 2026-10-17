@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -116,6 +116,12 @@ CREATE TABLE chain_steps (
     percent_micros     INTEGER NOT NULL DEFAULT 1000000,
     series             TEXT,
     cadence            TEXT CHECK (cadence IN ('monthly','annual')),
+    -- #199: the character of the money this step places, and of every later
+    -- step's until another sets one (NULL: inherited).
+    tax_character      TEXT,
+    -- #199: the asset lot whose basis this step recovers (a sale) or adds to
+    -- (a capital improvement), per tax_character.
+    basis_of_lot_id    INTEGER REFERENCES account_lot(id),
     CHECK (maximum_cents IS NULL OR maximum_cents >= 0),
     CHECK (percent_micros >= 0 AND percent_micros <= 1000000),
     CHECK (cadence IS NULL OR series IS NOT NULL),
@@ -251,7 +257,8 @@ CREATE TABLE scheduled_transaction (
                                  'ss_benefit','tax_free',
                                  'tax_deferred_in','tax_deferred_out',
                                  'return_of_capital','property_tax','none',
-                                 'excluded_gain')),
+                                 'excluded_gain','home_sale',
+                                 'capital_improvement')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
     priority                INTEGER NOT NULL DEFAULT 500,
@@ -331,7 +338,7 @@ CREATE TABLE year_to_date (
                          'ss_benefit','tax_free',
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
-                         'excluded_gain')),
+                         'excluded_gain','home_sale','capital_improvement')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)
@@ -513,6 +520,22 @@ CREATE INDEX idx_xfer_to       ON transfer_event(to_account);
 CREATE INDEX idx_xfer_reason   ON transfer_event(reason_kind, reason_id);
 CREATE INDEX idx_xfer_parent   ON transfer_event(parent_event_id);
 CREATE INDEX idx_xfer_taxchar  ON transfer_event(tax_character);
+
+-- #199: basis a sale could not recover, from a chain step whose
+-- tax_character is return_of_capital. No money moved, so it is not a
+-- transfer_event; the tax accumulator nets it against the year's capital
+-- gains, deducts up to the capital_loss_limit, and carries the rest forward.
+CREATE TABLE capital_loss (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    date            TEXT NOT NULL,
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
+    amount          INTEGER NOT NULL CHECK (amount > 0),
+    tax_character   TEXT NOT NULL CHECK (tax_character IN ('ltcg','stcg')),
+    tax_year        INTEGER,
+    reason_kind     TEXT NOT NULL,
+    reason_id       INTEGER
+);
 
 CREATE TABLE applied_calendar_event (
     step_id           INTEGER NOT NULL REFERENCES simulation_step(id),

@@ -107,7 +107,7 @@ state/
 | `ensemble_manifest`, `ensemble_draw` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `lot_state`, `transfer_event`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state` | — | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state` | — | ✓ |
 | `schema_overview` (planned; not yet created) | ✓ | ✓ |
 | Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 36) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 37) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -210,6 +210,12 @@ CREATE TABLE chain_steps (
     percent_micros     INTEGER NOT NULL DEFAULT 1000000,
     series             TEXT,
     cadence            TEXT CHECK (cadence IN ('monthly','annual')),
+    -- #199: the character of the money this step places, and of every later
+    -- step's until another sets one (NULL: inherited).
+    tax_character      TEXT,
+    -- #199: the asset lot whose basis this step recovers (a sale) or adds to
+    -- (a capital improvement), per tax_character.
+    basis_of_lot_id    INTEGER REFERENCES account_lot(id),
     CHECK (maximum_cents IS NULL OR maximum_cents >= 0),
     CHECK (percent_micros >= 0 AND percent_micros <= 1000000),
     CHECK (cadence IS NULL OR series IS NOT NULL),
@@ -345,7 +351,8 @@ CREATE TABLE scheduled_transaction (
                                  'ss_benefit','tax_free',
                                  'tax_deferred_in','tax_deferred_out',
                                  'return_of_capital','property_tax','none',
-                                 'excluded_gain')),
+                                 'excluded_gain','home_sale',
+                                 'capital_improvement')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
     priority                INTEGER NOT NULL DEFAULT 500,
@@ -425,7 +432,7 @@ CREATE TABLE year_to_date (
                          'ss_benefit','tax_free',
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
-                         'excluded_gain')),
+                         'excluded_gain','home_sale','capital_improvement')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)
@@ -610,6 +617,22 @@ CREATE INDEX idx_xfer_reason   ON transfer_event(reason_kind, reason_id);
 CREATE INDEX idx_xfer_parent   ON transfer_event(parent_event_id);
 CREATE INDEX idx_xfer_taxchar  ON transfer_event(tax_character);
 
+-- #199: basis a sale could not recover, from a chain step whose
+-- tax_character is return_of_capital. No money moved, so it is not a
+-- transfer_event; the tax accumulator nets it against the year's capital
+-- gains, deducts up to the capital_loss_limit, and carries the rest forward.
+CREATE TABLE capital_loss (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    date            TEXT NOT NULL,
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
+    amount          INTEGER NOT NULL CHECK (amount > 0),
+    tax_character   TEXT NOT NULL CHECK (tax_character IN ('ltcg','stcg')),
+    tax_year        INTEGER,
+    reason_kind     TEXT NOT NULL,
+    reason_id       INTEGER
+);
+
 CREATE TABLE applied_calendar_event (
     step_id           INTEGER NOT NULL REFERENCES simulation_step(id),
     calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
@@ -659,7 +682,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `security_allocation` | What each symbol is made of by asset class, as dated weight sets (from `allocations.csv`, [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.1b). |
 | `scheduled_transaction` | Recurring or one-off rule that emits transfer events on a cadence; `amount_rule_kind` selects the formula. |
 | `chain` | A place money can be drawn from or deposited into: either a leaf (one lot) or a named, ordered, reusable liquidity chain, which is either a source (drawn from) or a destination (paid into). One namespace over both. |
-| `chain_steps` | The ordered steps of an interior chain — which chain each step draws from, and the maximum/percent allocation limiting that step. |
+| `chain_steps` | The ordered steps of an interior chain — which chain each step draws from, the maximum/percent allocation limiting that step, and, in a destination chain, the tax character of what it places and the lot whose basis it recovers or adds to. |
 | `calendar` | The patch sequence this scenario applies to the running model (one row per intent/run file). |
 | `calendar_event` | One patch on one date; `kind` selects the semantics; the common parameters are columns (`scheduled_name`, `account_1`, `account_2`, `series`, `amount`, `param_date`, `tax_character`) and `payload_json` carries the rest. `name` is a stable identifier (required, unique, for a row varied under [ADR-006](ADR-006-ensemble-scenarios.md)); its `vary_*` columns mark the row's `amount` or `date` as drawn per ensemble member rather than literal. |
 | `aux_table` | Versioned reference data: tax brackets, RMD divisors, inflation series, per-account rates, filing status. |
@@ -669,6 +692,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
+| `capital_loss` | Basis a sale through a chain's basis step could not recover: a capital loss with no money moving, which the tax scan nets, limits and carries forward. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
 | `inflation_index_state` | Cumulative inflation index per series at the end of each step; the `inflation_index` and constant-dollar views read it. |
@@ -843,3 +867,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#165](https://github.com/BobKerns/analysis/issues/165): `calendar_event.vary_outcomes` (Intent layer DDL; schema 36).
 - [#181](https://github.com/BobKerns/analysis/issues/181): intent and run files are written without fsync (Conventions).
 - [#197](https://github.com/BobKerns/analysis/issues/197): `Income_LoanOrigination` is no longer reserved, since the `buy_asset` kind that used it is dropped; the reserved names are the growth counterparties (Conventions).
+- [#199](https://github.com/BobKerns/analysis/issues/199): `chain_steps.tax_character` and `basis_of_lot_id`; the `home_sale` and `capital_improvement` tax characters; the run table `capital_loss` (Intent and ledger DDL; schema 37).
