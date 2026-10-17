@@ -33,7 +33,8 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, readme, registries,
-    rename, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols, units,
+    rename, reports, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols,
+    units,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
