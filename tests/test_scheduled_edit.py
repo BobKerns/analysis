@@ -366,3 +366,62 @@ def test_a_percent_of_balance_rule_needs_its_rate_series(test_data_dir: Path) ->
 
     assert result.exit_code != 0
     assert "rule kind percent_of_balance needs --series" in result.output
+
+
+def test_add_an_annual_kind_defaults_to_annual_in_december(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
+) -> None:
+    result = _sim(
+        test_data_dir, "retire_alice", "add", "2027-01", "Asset_Checking", "Expense_Living",
+        "--kind", "tax_accumulator", "--params-json", '{"year":"previous","scope":"federal"}',
+        "--name", "tax_test",
+    )
+
+    assert result.exit_code == 0, result.output
+    row = _rule(scheduled(), "tax_test")
+    assert (row["cadence"], row["month_of_year"]) == ("annual", "12")
+
+
+def test_an_annual_kind_refuses_another_cadence(test_data_dir: Path) -> None:
+    result = _sim(
+        test_data_dir, "retire_alice", "add", "2027-01", "Asset_TraditionalIRA_Alice",
+        "Asset_Checking", "--from-lot", "default", "--kind", "rmd", "--person", "alice",
+        "--cadence", "monthly",
+    )
+
+    assert result.exit_code != 0
+    assert "a rmd rule fires once a year" in result.output
+
+
+def test_a_kind_that_needs_an_account_source_refuses_a_chain(test_data_dir: Path) -> None:
+    result = _sim(
+        test_data_dir, "retire_alice", "add", "2027-01", "asset_checking_liquidity",
+        "Asset_Savings", "--kind", "on_death", "--person", "alice",
+    )
+
+    assert result.exit_code != 0
+    assert "must be an account, not chain 'asset_checking_liquidity'" in result.output
+
+
+def test_edit_adding_an_inflation_series_gives_a_base_date(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame.loc[frame["name"] == "living", ["series", "base_date"]] = ["fixed", ""]
+    frame.to_csv(path, index=False)
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "living", "--series", "cpi")
+
+    assert result.exit_code == 0, result.output
+    row = _rule(scheduled(), "living")
+    assert (row["series"], row["base_date"]) == ("cpi", row["start"])
+
+
+def test_edit_with_a_malformed_tag_is_a_clean_error(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "retire_alice", "edit", "living", "--tags", "untagged")
+
+    assert result.exit_code != 0
+    assert "tags: invalid tag 'untagged'" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)

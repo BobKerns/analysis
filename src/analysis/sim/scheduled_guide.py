@@ -51,6 +51,15 @@ KIND_TAX_CHARACTER: dict[str, str] = {
     "on_death": "tax_free",
 }
 
+# Kinds the engine runs only once a year (ADR-003 §2.3, §2.6), and the month
+# each usually fires.
+ANNUAL_KINDS: dict[str, str] = {"rmd": "12", "tax_accumulator": "12"}
+
+# Kinds whose source must be an account, not an interior chain; every kind
+# but fixed_amount needs an account as its destination (the engine's rules).
+ACCOUNT_SOURCE_KINDS: frozenset[str] = frozenset({"percent_of_balance", "ss_benefit", "on_death"})
+
+
 # What a rule's amount is, by kind.
 AMOUNT_LABEL: dict[str, str] = {
     "fixed_amount": "amount in dollars",
@@ -130,10 +139,14 @@ RULE = KindSpec(
         Field(
             "cadence", "cadence", option="--cadence", default="monthly", strict=True,
             choices=lambda ctx, answers: sorted(registries.CADENCES),  # noqa: ARG005
+            suggest=lambda ctx, answers: "annual" if answers.get(  # noqa: ARG005
+                "amount_rule_kind") in ANNUAL_KINDS else None,
         ),
         Field(
             "month_of_year", "month of the year it fires (1-12)", type="month",
-            option="--month-of-year", applies=_annual, suggest=_start_month,
+            option="--month-of-year", applies=_annual,
+            suggest=lambda ctx, answers: ANNUAL_KINDS.get(
+                answers.get("amount_rule_kind", "")) or _start_month(ctx, answers),
         ),
         Field(
             "person", "person", option="--person", strict=True,

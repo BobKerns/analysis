@@ -4092,6 +4092,8 @@ def _scheduled_row(
         # Nothing inflates, so nothing reads it; the loader refuses one
         # without a series.
         row["inflation_cadence"] = ""
+    elif kind == "fixed_amount" and not row["base_date"].strip():
+        row["base_date"] = row["start"]  # the engine needs one to inflate from
     if row["ytd_amount"].strip():
         row["ytd_preroll"] = ""
     row["meta_json"] = row["meta_json"] or "{}"
@@ -4120,6 +4122,18 @@ def _check_scheduled_row(row: dict[str, str], context: calendar_guide.GuideConte
     if row["cadence"] not in registries.CADENCES:
         raise click.ClickException(
             f"unknown cadence {row['cadence']!r}; allowed: {sorted(registries.CADENCES)}"
+        )
+    if kind in scheduled_guide.ANNUAL_KINDS and row["cadence"] != "annual":
+        raise click.ClickException(f"a {kind} rule fires once a year: its cadence must be annual")
+    if row["cadence"] == "biweekly" and kind != "fixed_amount":
+        raise click.ClickException("only a fixed_amount rule may be biweekly")
+    if kind != "fixed_amount" and row["to_account"] in context.chains:
+        raise click.ClickException(
+            f"a {kind} rule's to account must be an account, not chain {row['to_account']!r}"
+        )
+    if kind in scheduled_guide.ACCOUNT_SOURCE_KINDS and row["from_account"] in context.chains:
+        raise click.ClickException(
+            f"a {kind} rule's from account must be an account, not chain {row['from_account']!r}"
         )
     if row["cadence"] == "biweekly" and not is_full_date(row["start"]):
         raise click.ClickException(
@@ -4156,6 +4170,8 @@ def _check_scheduled_row(row: dict[str, str], context: calendar_guide.GuideConte
                 checker(value)
             except click.ClickException as error:
                 raise click.ClickException(f"{field_.name}: {error.format_message()}") from None
+            except ValueError as error:  # parse_tags says what is wrong this way
+                raise click.ClickException(f"{field_.name}: {error}") from None
     _pick_endpoints(
         endpoints, row["from_account"], row["from_lot"] or None,
         row["to_account"], row["to_lot"] or None,
@@ -4194,10 +4210,11 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
               default=None)
 @click.option("--name", "row_name", default=None,
               help="scheduled.csv name (default: derived from accounts and date).")
-@click.option("--cadence", type=click.Choice(sorted(registries.CADENCES)),
-              default="monthly", show_default=True)
+@click.option("--cadence", type=click.Choice(sorted(registries.CADENCES)), default=None,
+              help="Default: monthly; annual for rmd and tax_accumulator.")
 @click.option("--month-of-year", type=click.IntRange(1, 12), default=None,
-              help="Required for annual cadence; defaults to start month.")
+              help="For annual cadence; defaults to 12 for rmd and tax_accumulator, "
+                   "else the start month.")
 @click.option("--end", "end_date", default="",
               help="Optional end date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--tax-character", default=None,
@@ -4239,7 +4256,7 @@ def scheduled_add(
     scenario: str | None,
     data_dir: Path | None,
     row_name: str | None,
-    cadence: str,
+    cadence: str | None,
     month_of_year: int | None,
     end_date: str,
     tax_character: str | None,
@@ -4293,6 +4310,10 @@ def scheduled_add(
         amount = _prompt_with_completion(f"{scheduled_guide.AMOUNT_LABEL[rule_kind]} (e.g. 1234.56)")
     if amount is not None and _parse_amount_cents(amount) <= 0:
         raise click.ClickException("amount must be positive")
+    if cadence is None:
+        cadence = "annual" if rule_kind in scheduled_guide.ANNUAL_KINDS else "monthly"
+    if cadence == "annual" and month_of_year is None and rule_kind in scheduled_guide.ANNUAL_KINDS:
+        month_of_year = int(scheduled_guide.ANNUAL_KINDS[rule_kind])
 
     answers: dict[str, object] = {
         "amount_rule_kind": rule_kind, "start": date,
