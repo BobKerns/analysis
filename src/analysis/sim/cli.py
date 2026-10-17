@@ -3205,6 +3205,39 @@ def _select_calendar_row(
             click.echo(f"  no row matches {text!r}")
 
 
+def _calendar_entries(
+    scenario_dir: Path, scenario_name: str, verb: str,
+) -> tuple[list[_CalendarRow], list[str]]:
+    """The scenario's calendar rows for a command to pick from: its own
+    first, numbered as in its own file, then those it inherits; and a note
+    for each saying where an inherited row or an override comes from."""
+    overlaid = _scenario_calendar_rows(scenario_dir)
+    entries = [
+        *sorted((e for e in overlaid if e.index is not None), key=lambda e: e.index or 0),
+        *(e for e in overlaid if e.index is None),
+    ]
+    if not entries:
+        raise click.ClickException(f"scenario {scenario_name!r} has no calendar rows to {verb}")
+    notes = [
+        f"[inherited from {entry.inherited_from}]" if entry.index is None
+        else f"[overrides {entry.inherited_from}]" if entry.inherited_from
+        else ""
+        for entry in entries
+    ]
+    return entries, notes
+
+
+def _check_own_calendar_row(staged: Path, path: Path, index: int, chosen: dict[str, str]) -> None:
+    """Refuse when the staged calendar.csv no longer has ``chosen`` at
+    ``index``: the file changed since the row was picked."""
+    existing = _read_calendar_rows(staged)
+    if index >= len(existing) or existing[index] != chosen:
+        raise click.ClickException(
+            f"{path} changed after row {index + 1} was chosen, so it is no longer "
+            "that row. Nothing was written; start again."
+        )
+
+
 @calendar_group_command.command("edit")
 @click.argument("row", required=False)
 @click.option("--scenario", default=None,
@@ -3237,23 +3270,10 @@ def calendar_edit(
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
     _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
-    # Its own rows first, numbered as in its own file; then those it inherits.
-    overlaid = _scenario_calendar_rows(scenario_dir)
-    entries = [
-        *sorted((e for e in overlaid if e.index is not None), key=lambda e: e.index or 0),
-        *(e for e in overlaid if e.index is None),
-    ]
-    if not entries:
-        raise click.ClickException(f"scenario {scenario_name!r} has no calendar rows to edit")
+    entries, notes = _calendar_entries(scenario_dir, scenario_name, "edit")
     rows = [entry.row for entry in entries]
     # The own rows as the file has them, which the write checks are still there.
     own_rows = _read_calendar_rows(path)
-    notes = [
-        f"[inherited from {entry.inherited_from}]" if entry.index is None
-        else f"[overrides {entry.inherited_from}]" if entry.inherited_from
-        else ""
-        for entry in entries
-    ]
     index = _select_calendar_row(rows, row, notes)
     chosen = entries[index]
     converted = _calendar_row_answers(rows[index])
@@ -3287,6 +3307,155 @@ def calendar_edit(
 
     if not guide.review(spec, context, answers, submit, show_command=False):
         ctx.exit(1)
+
+
+@calendar_group_command.command("delete")
+@click.argument("row", required=False)
+@click.option("--yes", is_flag=True, help="Don't ask before deleting.")
+@click.option("--scenario", default=None,
+              help="Scenario folder name (default: the only scenario in data-dir).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def calendar_delete(row: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete one row of the scenario's calendar.
+
+    ROW is picked as `sim calendar edit` picks it: the row's number, its
+    name, or text that picks it out; without it, or if it matches several
+    rows, the rows are listed to choose from.
+
+    A row other rows correlate with (their vary_correlate_with names it) is
+    refused, naming them. Deleting this scenario's override of an inherited
+    row brings back the inherited row. A row the scenario inherits can't be
+    deleted here, since an overlay can't remove a row: delete it in the
+    scenario it comes from.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "calendar.csv"
+    entries, notes = _calendar_entries(scenario_dir, scenario_name, "delete")
+    rows = [entry.row for entry in entries]
+    index = _select_calendar_row(rows, row, notes)
+    chosen = entries[index]
+    label = _calendar_row_label(chosen.row)
+    if chosen.index is None:
+        raise click.ClickException(
+            f"row {label!r} comes from scenario {chosen.inherited_from!r}, and "
+            f"{scenario_name!r} can't remove what it inherits; delete it in "
+            f"{chosen.inherited_from!r} to remove it from every scenario built on it"
+        )
+    name = chosen.row["name"].strip()
+    if name and chosen.inherited_from is None:
+        dependents = [
+            other for other in rows
+            if other is not chosen.row and other["vary_correlate_with"].strip() == name
+        ]
+        if dependents:
+            raise click.ClickException(
+                f"row {name!r} is correlated with by "
+                + "; ".join(_calendar_row_label(other) for other in dependents)
+                + ". Change or delete those rows first. Nothing was written."
+            )
+    own = _read_calendar_rows(path)[chosen.index]
+    click.echo(f"row {chosen.index + 1} of {path}: {label}  {notes[index]}".rstrip())
+    if not yes and not click.confirm("delete it?", default=False):
+        click.echo("aborted")
+        return
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        staged = edit.path(path)
+        _check_own_calendar_row(staged, path, chosen.index, own)
+        frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
+        frame.drop(index=frame.index[chosen.index]).to_csv(staged, index=False)
+    if chosen.inherited_from is not None:
+        click.echo(
+            f"deleted this scenario's override from {path}; the row is inherited "
+            f"from {chosen.inherited_from!r} again"
+        )
+    else:
+        click.echo(f"deleted row {chosen.index + 1} from {path}")
+
+
+@calendar_group_command.group(name="tag")
+def calendar_tag_group() -> None:
+    """Add or remove tags on a calendar row."""
+
+
+def _calendar_tag(
+    row: str, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None, op: str,
+) -> None:
+    """``sim calendar tag add|rm``: change one row's tags. An inherited row
+    gets an override carrying the new tags (#202)."""
+    try:
+        pairs = registries.parse_tags(" ".join(tag_tokens))
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "calendar.csv"
+    entries, notes = _calendar_entries(scenario_dir, scenario_name, "tag")
+    rows = [entry.row for entry in entries]
+    chosen = entries[_select_calendar_row(rows, row, notes)]
+    old = registries.parse_tags(chosen.row["tags"])
+    new = [*old, *(p for p in pairs if p not in old)] if op == "add" else [p for p in old if p not in pairs]
+    tags = registries.format_tags(new)
+    label = _calendar_row_label(chosen.row)
+    if set(new) == set(old):
+        click.echo(f"calendar row {label!r} tags unchanged: {tags or '(none)'}")
+        return
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        staged = edit.path(path)
+        if chosen.index is None:
+            # The whole row, so the loader finds the inherited one by its
+            # name or key and the override means the same however a blank
+            # cell merges.
+            _append_csv_row(staged, registries.CALENDAR_HEADER, {**chosen.row, "tags": tags})
+        else:
+            own = _read_calendar_rows(path)[chosen.index]
+            _check_own_calendar_row(staged, path, chosen.index, own)
+            _append_csv_row(
+                staged, registries.CALENDAR_HEADER, {**own, "tags": tags}, replace=chosen.index,
+            )
+    if chosen.index is None:
+        click.echo(
+            f"wrote an override of calendar row {label!r} (inherited from "
+            f"{chosen.inherited_from!r}) to {path}; tags: {tags or '(none)'}"
+        )
+    else:
+        click.echo(f"calendar row {label!r} tags: {tags or '(none)'}")
+
+
+@calendar_tag_group.command("add")
+@click.argument("row")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def calendar_tag_add(
+    row: str, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Add one or more '<role>:<name>' tags to a calendar row.
+
+    ROW is picked as `sim calendar edit` picks it (its number, its name, or
+    text that picks it out). A row the scenario inherits gets an override in
+    this scenario carrying the new tags; the parent keeps its own.
+    """
+    _calendar_tag(row, tag_tokens, scenario, data_dir, "add")
+
+
+@calendar_tag_group.command("rm")
+@click.argument("row")
+@click.argument("tag_tokens", nargs=-1, required=True)
+@click.option("--scenario", default=None)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def calendar_tag_rm(
+    row: str, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Remove one or more '<role>:<name>' tags from a calendar row; an
+    inherited row gets an override without them."""
+    _calendar_tag(row, tag_tokens, scenario, data_dir, "rm")
 
 
 def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
