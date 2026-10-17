@@ -365,10 +365,12 @@ def edit_scenario_row(
     row = {k: v or "" for k, v in rows[0].items() if k is not None}
     before = dict(row)
     values = dict(values)
-    if "parent_scenario" in values and "description" not in values:
+    new_parents = parse_parents(values.get("parent_scenario"))
+    # A root scenario derives from nothing, so the old description stays.
+    if new_parents and "description" not in values:
         old_parents = parse_parents(row.get("parent_scenario"))
         if row.get("description", "").strip() == default_description(old_parents):
-            values["description"] = default_description(parse_parents(values["parent_scenario"]))
+            values["description"] = default_description(new_parents)
     row.update(values)
     if meta:
         try:
@@ -421,18 +423,15 @@ def follow_readme(scenario_dir: Path, old: dict[str, str], new: dict[str, str]) 
     swaps = [(was, now) for was, now in swaps if was != now]
     if not readme.is_file() or not swaps:
         return None
-    text = readme.read_text(encoding="utf-8")
-    matched = True
+    # Only whole paragraphs, as generated: one line, blank lines around. If
+    # any has been reworded, the README is somebody's own; none is touched.
+    blocks = readme.read_text(encoding="utf-8").split("\n\n")
+    if not all(was in blocks for was, _ in swaps):
+        return False
     for was, now in swaps:
-        # Only a whole paragraph, as it was generated: one line, blank lines around.
-        blocks = text.split("\n\n")
-        if was in blocks:
-            blocks[blocks.index(was)] = now
-            text = "\n\n".join(blocks)
-        else:
-            matched = False
-    readme.write_text(text, encoding="utf-8")
-    return matched
+        blocks[blocks.index(was)] = now
+    readme.write_text("\n\n".join(blocks), encoding="utf-8")
+    return True
 
 
 def dependents(scenarios_dir: Path, name: str) -> list[str]:

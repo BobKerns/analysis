@@ -123,6 +123,28 @@ def test_edit_parents_moves_the_default_description_and_readme(
     assert "Builds on `retire_alice`, with mix-in `mix`." in readme
 
 
+def test_edit_leaves_a_partly_hand_written_readme_alone(test_data_dir: Path, test_child_scenario: Path,
+                                                        derive_scenario) -> None:
+    derive_scenario("mix", "base")
+    readme = test_child_scenario / "README.md"
+    edited = readme.read_text().replace("Builds on `retire_alice`.", "Builds on Alice's plan.")
+    readme.write_text(edited)
+    result = _sim(test_data_dir, "scenario", "edit", "child", "--parents", "retire_alice:mix")
+    assert result.exit_code == 0, result.output
+    assert "edited by hand" in result.output
+    assert readme.read_text() == edited
+
+
+def test_root_parents_keep_the_description(test_child_scenario: Path) -> None:
+    changes = sc.edit_scenario_row(test_child_scenario, {"parent_scenario": ""}, {})
+    assert _row(test_child_scenario)["description"] == "Derived from retire_alice"
+    assert [c.field for c in changes] == ["parent_scenario"]
+    assert sc.follow_readme(test_child_scenario, {"description": "Derived from retire_alice",
+                                                  "parent_scenario": "retire_alice"},
+                            _row(test_child_scenario)) is True
+    assert "Builds on no other scenario." in (test_child_scenario / "README.md").read_text()
+
+
 @pytest.mark.parametrize(("args", "message"), [
     ((), "nothing to change"),
     (("--start", "May 2027"), "date must be"),
