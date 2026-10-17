@@ -806,7 +806,8 @@ inherited along the parent chain.
 ### 7. CLI edits are validated before they are written
 
 The CSVs are the source of truth and the loader is their only validator, so
-every `analysis sim` command that edits scenario CSVs (`calendar add|edit|delete`,
+every `analysis sim` command that edits scenario CSVs or the shared
+`persons.csv` (`calendar add|edit|delete`, `person add|edit`, `person lifespan set|clear`,
 `transfer add`, `scheduled add|edit|delete`/`import-baseline`, `account
 add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|rename|delete`,
 the `tag` commands, `chain` and `series` edits, the other `rename` commands,
@@ -820,7 +821,8 @@ the `tag` commands, `chain` and `series` edits, the other `rename` commands,
 2. **Stage.** The command writes its changes to a private copy of
    `scenarios/` (and the data repo's top-level files), never in place.
 3. **Validate.** Every scenario whose folder changed, and every scenario
-   inheriting from one, is loaded from the copy. Any failure -- a load issue
+   inheriting from one, is loaded from the copy; every scenario, when a
+   shared top-level file such as `persons.csv` changed. Any failure -- a load issue
    or a loader crash -- rejects the edit with nothing written. An inheriting
    scenario that already failed before the edit is reported as a warning,
    not blamed on it.
@@ -1038,3 +1040,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#204](https://github.com/BobKerns/analysis/issues/204): a `set_rate` row on a series with no file is a load error; warnings about an unread `set_rate` series, an unused factor, or `vary_tail_dependence` with nothing under it are printed only by `sim check` (§3.1, §3.6, §4.8).
 - [#199](https://github.com/BobKerns/analysis/issues/199): destination chain steps gain `tax_character`, `basis_of` and `basis_of_lot`, so a sale goes through a chain; tax characters `home_sale` and `capital_improvement`; the tax accumulator nets capital gains and limits and carries a net loss, with the new `capital_loss_limit` aux table replacing `home_sale_exclusion` (§2.6, §4.4, §4.6, §4.7, §4.10).
 - [#183](https://github.com/BobKerns/analysis/issues/183), [#184](https://github.com/BobKerns/analysis/issues/184): `scheduled add --kind` writes every rule kind; `scheduled edit|delete` and `calendar delete`, `calendar tag add|rm`; deleting an inherited rule ends it before the scenario starts (§7).
+- [#192](https://github.com/BobKerns/analysis/issues/192): `person add|edit` change the shared `persons.csv`, validated against every scenario; `person lifespan set|clear` edit the scenario's `lifespan.csv`, and clearing refuses an inherited lifespan (§7).

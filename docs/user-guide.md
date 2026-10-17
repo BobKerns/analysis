@@ -72,9 +72,9 @@ You can also start from what the scenario inherits: `sim account edit`,
 `sim account lot edit`, `sim scheduled edit` and `sim calendar edit` (and
 `sim calendar tag add|rm`) on an inherited item write the edited row into
 the derived scenario as an override, and leave the parent alone. A derived
-scenario can't remove what it inherits, so `sim account delete` and
-`sim calendar delete` refuse an inherited account or row (delete it in the
-scenario that defines it). `sim scheduled delete` on an inherited rule ends
+scenario can't remove what it inherits, so `sim account delete`,
+`sim calendar delete` and `sim person lifespan clear` refuse an inherited
+account, row or lifespan (delete it in the scenario that defines it). `sim scheduled delete` on an inherited rule ends
 it instead, with an override whose end is the month before the scenario
 starts. Deleting the derived scenario's override brings back the inherited
 row. Renames always reach every scenario sharing the name.
@@ -547,6 +547,18 @@ Setting `final_month` is also all you need to do for filing status to change
 correctly after a spouse's death: MFJ or MFS automatically becomes Single,
 starting the following year (Part 3). You do not need to add a matching row
 to `filing_status.csv`.
+
+`sim person lifespan set <person> <YYYY-MM>` writes a person's row into the
+scenario's own `lifespan.csv`, and `sim person lifespan clear <person>`
+removes it. `sim person list` shows each person's final month and which
+scenario sets it.
+
+The people themselves are in `persons.csv`, at the top of the data repo:
+`id`, `display` name, `birthdate` and an optional `role` (`primary` for a
+spouse whose death changes the filing status). `sim person add <id>` and
+`sim person edit <id>` change it, asking for any field you don't give as an
+option. The file is shared, so a change there reaches every scenario, and is
+written only if every scenario still loads.
 
 ### 4.8 Calendar for more complex changes
 

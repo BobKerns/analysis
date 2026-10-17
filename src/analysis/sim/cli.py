@@ -8588,7 +8588,7 @@ def calendar_list(
 
 @sim_group_command.group(name="person")
 def person_group_command() -> None:
-    """See the household's persons and the scenario's lifespans."""
+    """See and change the household's persons and the scenario's lifespans."""
 
 
 @person_group_command.command("list")
@@ -8620,6 +8620,261 @@ def person_list(scenario: str | None, data_dir: Path | None) -> None:
             row.get("role", ""), person.final_month, person.lifespan_defined_in,
         )))
     _print_wide(table)
+
+
+# ---------- person add|edit, lifespan set|clear (#192) ----------
+
+# Conventional roles (ADR-003 §4.1), offered at the role prompt along with
+# any other role persons.csv already uses; the column itself is open.
+_CONVENTIONAL_ROLES = ("primary", "secondary")
+
+_SHARED_PERSONS_NOTE = "persons.csv is shared: this changes every scenario"
+
+
+def _read_persons(path: Path) -> pd.DataFrame:
+    """persons.csv as written, every PERSONS_CSV_HEADER column present."""
+    if path.exists() and path.stat().st_size > 0:
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    else:
+        df = pd.DataFrame(columns=list(registries.PERSONS_CSV_HEADER))
+    missing = [c for c in registries.PERSONS_CSV_HEADER if c not in df.columns]
+    if missing:
+        raise click.ClickException(
+            f"CSV header mismatch in {path}\n"
+            f"  expected: {list(registries.PERSONS_CSV_HEADER)}\n"
+            f"  found:    {list(df.columns)}\n"
+            f"  missing:  {missing}"
+        )
+    return df
+
+
+def _check_birthdate(text: str) -> str:
+    """A birthdate is day-precise (ages turn on it), as the loader requires."""
+    try:
+        parse_day(text)
+    except ValueError:
+        raise click.ClickException(f"birthdate must be YYYY-MM-DD: {text!r}") from None
+    return text.strip()
+
+
+def _check_meta_json(text: str) -> str:
+    try:
+        json.loads(text)
+    except json.JSONDecodeError:
+        raise click.ClickException(f"invalid meta_json: {text!r}") from None
+    return text
+
+
+def _person_fields(
+    current: dict[str, str], roles: list[str], *, guided: bool,
+    display: str | None, birthdate: str | None, role: str | None, meta_json: str | None,
+) -> dict[str, str]:
+    """A person's display, birthdate, role and meta_json: each one given, or
+    when ``guided``, asked for with ``current``'s value as the default; or
+    else ``current``'s. A blank role is no role."""
+    if guided:
+        if display is None:
+            display = click.prompt("display", default=current.get("display") or None)
+        if birthdate is None:
+            birthdate = click.prompt("birthdate (YYYY-MM-DD)",
+                                     default=current.get("birthdate") or None)
+        if role is None:
+            role = _prompt_with_completion(
+                "role (blank for none)", roles, default=current.get("role") or "",
+            )
+    fields = {
+        "display": (display if display is not None else current.get("display", "")).strip(),
+        "birthdate": _check_birthdate(
+            birthdate if birthdate is not None else current.get("birthdate", "")),
+        "role": (role if role is not None else current.get("role", "")).strip(),
+        "meta_json": _check_meta_json(
+            meta_json if meta_json is not None else current.get("meta_json") or "{}"),
+    }
+    if not fields["display"]:
+        raise click.ClickException("display is required")
+    return fields
+
+
+def _role_choices(df: pd.DataFrame) -> list[str]:
+    used = [r for r in df["role"].tolist() if r]
+    return sorted({*_CONVENTIONAL_ROLES, *used})
+
+
+_PERSON_OPTIONS = (
+    click.option("--display", default=None, help="Full or display name."),
+    click.option("--birthdate", default=None, help="Birthdate, YYYY-MM-DD."),
+    click.option("--role", default=None,
+                 help="primary, secondary, or another role; '' for none."),
+    click.option("--meta-json", default=None, help="JSON metadata (default {})."),
+    click.option("--scenario", default=None,
+                 help="Scenario checked first (default: the current one); "
+                      "every scenario must still load."),
+    _LISTING_DATA_DIR_OPTION,
+)
+
+
+def _person_options(f: Callable[..., None]) -> Callable[..., None]:
+    for option in reversed(_PERSON_OPTIONS):
+        f = option(f)
+    return f
+
+
+def _write_persons(data_dir: Path, scenario: str | None, df: pd.DataFrame) -> None:
+    """persons.csv, written only if every scenario still loads with it."""
+    with _scenario_edit(data_dir, scenario) as edit:
+        df.to_csv(edit.path(data_dir / "persons.csv"), index=False)
+
+
+@person_group_command.command("add")
+@click.argument("person_id", metavar="ID")
+@_person_options
+def person_add(
+    person_id: str, display: str | None, birthdate: str | None, role: str | None,
+    meta_json: str | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Add a person to persons.csv, asking for a display name and birthdate
+    not given (and then the role).
+
+    persons.csv is shared by every scenario, at the data repo's top level.
+    """
+    data = _resolve_data_dir(data_dir)
+    path = data / "persons.csv"
+    df = _read_persons(path)
+    person_id = person_id.strip()
+    if not person_id:
+        raise click.ClickException("a person needs an id")
+    if person_id in set(df["id"]):
+        raise click.ClickException(f"person already exists: {person_id!r} (sim person edit)")
+    fields = _person_fields(
+        {}, _role_choices(df), guided=display is None or birthdate is None,
+        display=display, birthdate=birthdate, role=role, meta_json=meta_json,
+    )
+    row = pd.DataFrame([{"id": person_id, **fields}])
+    _write_persons(data, scenario, pd.concat([df, row], ignore_index=True).fillna(""))
+    click.echo(f"added person '{person_id}' to {path} ({_SHARED_PERSONS_NOTE})")
+
+
+@person_group_command.command("edit")
+@click.argument("person_id", metavar="ID")
+@_person_options
+def person_edit(
+    person_id: str, display: str | None, birthdate: str | None, role: str | None,
+    meta_json: str | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Change a person in persons.csv. With no options, asks for each field
+    with its current value as the default; options change just those fields.
+
+    persons.csv is shared by every scenario, at the data repo's top level.
+    The id can't change here.
+    """
+    data = _resolve_data_dir(data_dir)
+    path = data / "persons.csv"
+    df = _read_persons(path)
+    matches = df.index[df["id"] == person_id.strip()]
+    if len(matches) == 0:
+        raise click.ClickException(
+            f"unknown person {person_id!r}; persons: {sorted(df['id'])}")
+    idx = matches[0]
+    current = {c: str(df.at[idx, c]) for c in df.columns}
+    guided = all(v is None for v in (display, birthdate, role, meta_json))
+    fields = _person_fields(
+        current, _role_choices(df), guided=guided,
+        display=display, birthdate=birthdate, role=role, meta_json=meta_json,
+    )
+    if all(fields[k] == current.get(k, "") for k in fields):
+        click.echo(f"person '{current['id']}' unchanged")
+        return
+    for column, value in fields.items():
+        df.at[idx, column] = value
+    _write_persons(data, scenario, df)
+    click.echo(f"changed person '{current['id']}' in {path} ({_SHARED_PERSONS_NOTE})")
+
+
+@person_group_command.group(name="lifespan")
+def lifespan_group_command() -> None:
+    """Set or clear a person's final month in the scenario's lifespan.csv."""
+
+
+def _own_lifespans(path: Path) -> pd.DataFrame:
+    if path.exists() and path.stat().st_size > 0:
+        return pd.read_csv(path, dtype=str, keep_default_na=False)
+    return pd.DataFrame(columns=list(registries.LIFESPAN_CSV_HEADER))
+
+
+@lifespan_group_command.command("set")
+@click.argument("person")
+@click.argument("final_month")
+@_LISTING_SCENARIO_OPTION
+@_LISTING_DATA_DIR_OPTION
+def lifespan_set(
+    person: str, final_month: str, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Set PERSON's FINAL_MONTH (YYYY-MM), the last month their rules fire.
+
+    Written to this scenario's own lifespan.csv; one it inherits is
+    overridden here, and the parent keeps its own.
+    """
+    data = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data, scenario)
+    path = scenario_dir / "lifespan.csv"
+    person = person.strip()
+    final_month = _validate_month_date(final_month)
+    persons = set(_read_persons(data / "persons.csv")["id"])
+    if person not in persons:
+        raise click.ClickException(f"unknown person {person!r}; persons: {sorted(persons)}")
+    found = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
+    df = _own_lifespans(path)
+    with _scenario_edit(data, scenario_name) as edit:
+        _append_csv_row(
+            edit.path(path), registries.LIFESPAN_CSV_HEADER,
+            {"person": person, "final_month": final_month},
+            replace=None if found is None or found.index is None else df.index[found.index],
+        )
+    if found is not None and found.index is None:
+        click.echo(f"set {person}'s final month to {final_month} in {path}, overriding "
+                   f"{found.row.get('final_month', '')} from {found.inherited_from!r}")
+    else:
+        click.echo(f"set {person}'s final month to {final_month} in {path}")
+
+
+@lifespan_group_command.command("clear")
+@click.argument("person")
+@_LISTING_SCENARIO_OPTION
+@_LISTING_DATA_DIR_OPTION
+def lifespan_clear(person: str, scenario: str | None, data_dir: Path | None) -> None:
+    """Remove PERSON's row from this scenario's lifespan.csv.
+
+    A lifespan the scenario inherits can't be cleared here, since a row
+    can only override a final month, not remove it: clear it where it is
+    set, or set another month here.
+    """
+    data = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data, scenario)
+    path = scenario_dir / "lifespan.csv"
+    person = person.strip()
+    found = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
+    if found is None:
+        raise click.ClickException(f"{person!r} has no lifespan in scenario {scenario_name!r}")
+    if found.index is None:
+        raise click.ClickException(
+            f"{person}'s final month {found.row.get('final_month', '')} is inherited from "
+            f"{found.inherited_from!r}; clear it there, or set another month here "
+            "(sim person lifespan set)"
+        )
+    df = _own_lifespans(path)
+    remaining = df.drop(index=df.index[found.index])
+    with _scenario_edit(data, scenario_name) as edit:
+        if remaining.empty:
+            edit.path(path).unlink()
+        else:
+            remaining.to_csv(edit.path(path), index=False)
+    if found.inherited_from is not None:
+        after = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
+        if after is not None:
+            click.echo(f"cleared {person}'s final month in {path}; it now inherits "
+                       f"{after.row.get('final_month', '')} from {after.inherited_from!r}")
+            return
+    click.echo(f"cleared {person}'s final month in {path}")
 
 
 @sim_group_command.group(name="ytd")

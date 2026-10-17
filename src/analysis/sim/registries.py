@@ -471,9 +471,9 @@ DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
 }
 
 
-PERSONS_CSV_HEADER: tuple[str, ...] = (
-    "account_name", "role", "tags", "meta_json"
-)
+# ADR-003 §4.1 and §4.9.
+PERSONS_CSV_HEADER: tuple[str, ...] = ("id", "display", "birthdate", "role", "meta_json")
+LIFESPAN_CSV_HEADER: tuple[str, ...] = ("person", "final_month")
 
 ACCOUNT_VALUES_CSV_HEADER: tuple[str, ...] = (
     "account_name", "lot", "symbol", "acquired", "quantity", "series",
