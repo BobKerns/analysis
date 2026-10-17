@@ -228,6 +228,20 @@ def test_a_basis_step_no_money_reaches_fails_the_run(
         _run(load_test_copy, runs_dir)
 
 
+def test_a_sale_its_chain_cannot_finish_fails_the_run(
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """With nothing after the basis step, the gain would stay in the home
+    with its basis gone."""
+    _chain(retire_alice_csv, "destination", "home_sale", [
+        {"account_name": "Asset_Checking", "tax_character": "home_sale", "basis_of": "Asset_Home"},
+    ])
+    append_calendar_row(**SALE)
+    with pytest.raises(EngineError, match="placed only 400000.00 of the 600000.00 sale"):
+        _run(load_test_copy, runs_dir)
+
+
 def _gain(con: sqlite3.Connection, year: int, character: str, amount: int) -> None:
     con.execute(
         "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "

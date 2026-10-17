@@ -2014,13 +2014,22 @@ def _chain_sweep(
                 _progress=_progress, _sale=sale,
             )
             # Sale mode bypassed the withdrawal's own split, so a basis step
-            # that earlier steps starved would leave the basis where it was.
+            # that earlier steps starved would leave the basis where it was,
+            # and money left in the lot would keep a gain the sale's basis
+            # share already priced as sold.
+            name = None if refill_ctx is None else refill_ctx.chain_name.get(chain_id)
             if not sale.recovered:
-                name = None if refill_ctx is None else refill_ctx.chain_name.get(chain_id)
                 raise EngineError(
                     f"chain {name!r}: its basis step for "
                     f"{account_name.get(source_account_id)!r} was never reached; "
                     "an earlier step took the whole amount"
+                )
+            if placed < amount_available:
+                raise EngineError(
+                    f"chain {name!r}: placed only {placed / 100:.2f} of the "
+                    f"{amount_available / 100:.2f} sale of "
+                    f"{account_name.get(source_account_id)!r}; add a step after "
+                    "the basis step, with its own tax_character, to take the gain"
                 )
             return placed
     account_id = graph.leaf_lot.get(chain_id)
