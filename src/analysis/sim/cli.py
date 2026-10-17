@@ -16,7 +16,7 @@ import tempfile
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import click
 import pandas as pd
@@ -82,6 +82,7 @@ from analysis.sim.loader import (
     ScenarioRef,
     batch_mode,
     calendar_row_key,
+    current_scenario_path,
     list_scenario_names,
     load_scenario,
     open_intent_db,
@@ -107,7 +108,7 @@ from analysis.sim.staging import (
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day, parse_vary_date,
 )
-from analysis.sim.lineage import load_order
+from analysis.sim.lineage import load_order, parse_parents
 from analysis.frames import named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
 from analysis.sim.schema import connect_sim_file
@@ -802,6 +803,11 @@ def _report_batch(label: str, member_count: int, failures: list[tuple[int, Path,
             click.echo(f"    member {i}: {path}")
 
 
+def _suggest_readme(target: Path) -> None:
+    click.echo(f"  next: edit {target / 'README.md'} to say what the scenario is for; "
+               "its title and first paragraph are what listings and notebooks show")
+
+
 @sim_group_command.group(name="ensemble")
 def ensemble_group_command() -> None:
     """Inspect or manage an ensemble recipe's generated members (ADR-006)."""
@@ -904,6 +910,7 @@ def ensemble_create(
         elif inherited is not None:
             click.echo(f"  {label}: {inherited.value} (inherited)")
     click.echo(f"  current scenario: {name}")
+    _suggest_readme(target)
     click.echo(
         "  next: sim calendar add <kind> ... --vary-distribution ... to mark rows as "
         f"varying, then sim run {name}"
@@ -8251,7 +8258,9 @@ def scenario_create(
         click.echo("  chains/destination/.gitignore")
         click.echo("  series/")
         click.echo("  series/README.md")
+        click.echo("  README.md")
         click.echo(f"  current scenario: {name}")
+        _suggest_readme(target)
     except Exception as exc:
         click.echo(f"error: {exc}", err=True)
         raise click.ClickException(
@@ -8570,6 +8579,200 @@ def scenario_rename(old: str, new: str, data_dir: Path | None) -> None:
 def ensemble_rename(old: str, new: str, data_dir: Path | None) -> None:
     """Rename ensemble OLD to NEW; the same as `sim scenario rename`."""
     _rename_scenario(old, new, data_dir)
+
+
+# ---------- editing and deleting a scenario (#190) ----------
+
+def _blank_or(value: str, parse: Callable[[str], object], option: str) -> object | None:
+    """``value`` parsed, or ``None`` for a blank one: that option's field inherits."""
+    if not value.strip():
+        return None
+    try:
+        return parse(value.strip())
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint=option) from None
+
+
+def _whole_number(text: str) -> int:
+    if not text.lstrip("-").isdigit():
+        raise ValueError(f"{text!r} is not a whole number")
+    return int(text)
+
+
+def _member_count(text: str) -> int:
+    count = _whole_number(text)
+    if count < 0:
+        raise ValueError(f"{count} is negative; 0 makes the scenario not an ensemble")
+    return count
+
+
+def _reserve_json(text: str) -> int | str:
+    # As the loader reads it (units.json_dollars_to_cents): whole dollars as
+    # a JSON integer, cents as a string, never a float.
+    units.dollars_to_cents(text)
+    return int(text) if text.lstrip("-").isdigit() else text
+
+
+def _edit_scenario(
+    name: str, data_dir: Path | None, *, description: str | None, start: str | None, end: str | None,
+    parents: str | None, seed: str | None, new_seed: bool, size: str | None, reserve: str | None,
+) -> None:
+    """``sim scenario edit`` and ``sim ensemble edit``."""
+    data = _resolve_data_dir(data_dir)
+    name = name.strip()
+    if name not in list_scenario_names(data):
+        raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
+    if seed is not None and new_seed:
+        raise click.UsageError("--seed and --new-seed are exclusive")
+    values: dict[str, str] = {}
+    meta: dict[str, object | None] = {}
+    if description is not None:
+        if not description.strip():
+            raise click.BadParameter("a description can't be blank", param_hint="--description")
+        values["description"] = description.strip()
+    for column, given in (("start", start), ("end", end)):
+        if given is not None:
+            values[column] = _validate_month_date(given) if given.strip() else ""
+    if parents is not None:
+        names = parse_parents(parents)
+        for parent in names:
+            if parent not in list_scenario_names(data):
+                raise click.BadParameter(f"scenario not found: {parent}", param_hint="--parents")
+        if name in names:
+            raise click.BadParameter(f"{name} can't build on itself", param_hint="--parents")
+        if len(set(names)) != len(names):
+            raise click.BadParameter("a scenario is named twice", param_hint="--parents")
+        values["parent_scenario"] = ":".join(names)
+    if seed is not None:
+        parsed = _blank_or(seed, _whole_number, "--seed")
+        values["seed"] = "" if parsed is None else str(parsed)
+    elif new_seed:
+        values["seed"] = str(secrets.randbelow(2**31))
+    if size is not None:
+        meta["ensemble_size"] = _blank_or(size, _member_count, "--size")
+    if reserve is not None:
+        meta["reserve"] = _blank_or(reserve, _reserve_json, "--reserve")
+    if not values and not meta:
+        raise click.UsageError("nothing to change: give at least one option (see --help)")
+
+    readme: bool | None = None
+    # Validates this scenario and every scenario built on it before writing.
+    with _scenario_edit(data, name) as edit:
+        folder = edit.scenario_dir
+        old_row = sc._scenario_row(folder)
+        try:
+            changes = sc.edit_scenario_row(folder, values, meta)
+        except LoadError as exc:
+            raise click.ClickException("; ".join(exc.issues)) from None
+        readme = sc.follow_readme(folder, old_row, sc._scenario_row(folder))
+    if not changes:
+        click.echo(f"scenario {name} already has those values; nothing changed")
+        return
+    click.echo(f"edited scenario {name}")
+    for change in changes:
+        click.echo(f"  {change.field}: {change.old or '(inherited)'} -> {change.new or '(inherited)'}")
+    if readme is True:
+        click.echo("  README.md: updated to match")
+    elif readme is False:
+        click.echo(f"WARN: {data / 'scenarios' / name / 'README.md'} is what listings and notebooks show, "
+                   "and it has been edited by hand; update it to match", err=True)
+
+
+def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
+    options = [
+        click.argument("name"),
+        click.option("--description", default=None, help="The scenario's description."),
+        click.option("--start", default=None, help=f"First month ({MONTH_FORMAT_HINT}); '' inherits."),
+        click.option("--end", default=None, help=f"Last month ({MONTH_FORMAT_HINT}); '' inherits."),
+        click.option("--parents", default=None, metavar="PARENT[:MIXIN...]",
+                     help="What it builds on: its parent, then any mix-ins, colon-separated. "
+                          "'' makes it a root scenario."),
+        click.option("--seed", default=None, help="Ensemble master seed; '' inherits."),
+        click.option("--new-seed", is_flag=True, default=False, help="Draw a fresh random seed."),
+        click.option("--size", default=None,
+                     help="Ensemble member count (meta_json ensemble_size); 0 makes it not an "
+                          "ensemble, '' inherits."),
+        click.option("--reserve", default=None,
+                     help="The ensemble reports' reserve, in CPI-constant dollars "
+                          "(meta_json reserve); '' inherits."),
+        click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+                     default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+@scenario_group_command.command("edit")
+@_edit_options
+def scenario_edit(name: str, data_dir: Path | None, **fields: Any) -> None:
+    """Change scenario NAME's scenario.csv: its description, start and end
+    months, parents and mix-ins, seed, ensemble size or reserve. A blank
+    value ('') clears that field, so it inherits again. The change is
+    written only if NAME and every scenario built on it still load. A
+    README.md that `scenario create` wrote follows the description and
+    parents. Same as `sim ensemble edit`."""
+    _edit_scenario(name, data_dir, **fields)
+
+
+@ensemble_group_command.command("edit")
+@_edit_options
+def ensemble_edit(name: str, data_dir: Path | None, **fields: Any) -> None:
+    """Change ensemble NAME's scenario.csv; the same as `sim scenario edit`."""
+    _edit_scenario(name, data_dir, **fields)
+
+
+def _delete_scenario(name: str, data_dir: Path | None, yes: bool) -> None:
+    """``sim scenario delete`` and ``sim ensemble delete``."""
+    data = _resolve_data_dir(data_dir)
+    name = name.strip()
+    scenarios = data / "scenarios"
+    # Only a folder's own name: anything else (a path, '..') could reach outside scenarios/.
+    if name not in list_scenario_names(data):
+        raise click.ClickException(f"scenario not found: {scenarios / name}")
+    if users := sc.dependents(scenarios, name):
+        raise click.ClickException(
+            f"{name} is the parent or a mix-in of {', '.join(users)}; delete those, or build them "
+            f"on something else (`sim scenario edit <scenario> --parents ...`), first")
+    folder = scenarios / name
+    click.echo(f"{folder}: {sum(1 for p in folder.rglob('*') if p.is_file())} file(s)")
+    if not yes and not click.confirm(f"delete scenario {name}?", default=False):
+        raise click.ClickException("nothing was deleted")
+    mentions = rename.scenario_mentions(data, name)
+    # Nothing builds on it, so no other scenario's load can change: there is
+    # nothing to validate, and a scenario that fails to load can go too.
+    shutil.rmtree(folder)
+    click.echo(f"deleted scenario {name}")
+    if read_current_scenario(data) == name:
+        current_scenario_path(data).unlink(missing_ok=True)
+        click.echo("  it was the current scenario; none is current now")
+    for path in mentions:
+        click.echo(f"  {path.relative_to(data)} still mentions it")
+    runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
+    if latest_run_path(runs, name) or (runs / name).is_dir():
+        click.echo(f"  runs already made of {name} are kept, under {runs}")
+
+
+@scenario_group_command.command("delete")
+@click.argument("name")
+@click.option("--yes", is_flag=True, help="Don't ask before deleting.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def scenario_delete(name: str, yes: bool, data_dir: Path | None) -> None:
+    """Delete scenario NAME's folder. Refused while another scenario names
+    it as its parent or a mix-in. Clears the current scenario if it is NAME;
+    runs already made of it are kept. Same as `sim ensemble delete`."""
+    _delete_scenario(name, data_dir, yes)
+
+
+@ensemble_group_command.command("delete")
+@click.argument("name")
+@click.option("--yes", is_flag=True, help="Don't ask before deleting.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def ensemble_delete(name: str, yes: bool, data_dir: Path | None) -> None:
+    """Delete ensemble NAME; the same as `sim scenario delete`."""
+    _delete_scenario(name, data_dir, yes)
 
 
 # ---------- Silent alias: accounts -> account ----------

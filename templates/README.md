@@ -119,6 +119,8 @@ sim transfer add <date> <from> <to> <amount>
 sim scheduled list                        # recurring scheduled transfers
 sim scheduled add <start> <from> <to> <amount> [--cadence monthly]
 sim scenario rename <old> <new>           # also: account, chain, scheduled, calendar, series rename
+sim scenario edit <name> [--start ...] [--parents ...]  # scenario.csv; '' inherits
+sim scenario delete <name>                # refused while another scenario builds on it
 ```
 
 The CLI is interactive (tab completion on account names, prompts when arguments are omitted) and validates against the registries in [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) before writing. Prefer it when you want precise control or want to script the same edit across scenarios; ask the assistant when the change is exploratory or spans many rows.

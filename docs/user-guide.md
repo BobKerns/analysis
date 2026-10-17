@@ -83,8 +83,8 @@ A scenario made this way is never an ensemble, even when its parent is
 one: it runs once, with each varying row at its central value. Use
 `sim ensemble create` (§4.10) for an ensemble.
 
-Add a `README.md` in the scenario's own folder to describe what it's for —
-its title and first paragraph show up wherever a scenario's description
+`sim scenario create` writes a `README.md` in the scenario's own folder;
+edit it to say what the scenario is for. Its title and first paragraph show up wherever a scenario's description
 does (the scenario picker, `scenario_overview.ipynb`), and travel with every
 run file, so "what was this scenario for again" is answered without going
 back to the data repo. Without a `README.md`, `scenario.csv`'s own
@@ -113,6 +113,32 @@ This moves its folder and repoints everything that names it: the scenarios
 built on it (as parent or mix-in), your current scenario, and links to it
 in the data repo's `README.md` files. Runs you already made keep the old
 name.
+
+To change a scenario's own settings (`sim ensemble edit` is the same
+command):
+
+```sh
+sim scenario edit <name> --description "Bill works two more years"
+sim scenario edit <name> --start 2027-01 --end ''   # '' inherits the value again
+sim scenario edit <name> --parents base:high_inflation
+sim scenario edit <name> --size 200 --new-seed --reserve 250000
+```
+
+The change is written only if the scenario, and every scenario built on
+it, still loads. If its `README.md` is still the one `scenario create`
+wrote, its first paragraph follows a new description and parents;
+otherwise you're reminded to update it yourself.
+
+To delete a scenario (or `sim ensemble delete`):
+
+```sh
+sim scenario delete <name>   # asks first; --yes doesn't
+```
+
+It refuses while another scenario builds on it, as its parent or a mix-in,
+and names them. If it was your current scenario, none is current
+afterwards. Runs you already made of it are kept, and any markdown file
+that still mentions it is listed.
 
 Renaming anything else a scenario can share works the same way: the
 `rename` commands for accounts, chains, scheduled rules, calendar rows,
