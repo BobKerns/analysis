@@ -838,21 +838,31 @@ def _track_lots(
 def _post_fixed_amount(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str, ctx: RefillContext,
-    from_chain: int, to_chain: int, amount: int, tax_char: str, tid: int,
+    from_chain: int, to_chain: int, amount: int, tax_char: str | None, tid: int,
     *, tax_year: int | None = None, what: str,
 ) -> None:
     """Move a fixed ``amount`` between two chains (ADR-003 §4.7): lot to lot
     directly, out of a lot through an interior chain's sweep, or into a lot
     through an interior chain's draw. Shared by fixed_amount rules and
-    one_off_transfer events, so the two route a chain alike."""
+    one_off_transfer events, so the two route a chain alike. A ``tax_char``
+    of None lets the source lot decide, splitting a basis-tracked lot's
+    withdrawal by its cost basis (``_post_withdrawal``)."""
     graph = ctx.graph
     from_lot, to_lot = graph.leaf_lot.get(from_chain), graph.leaf_lot.get(to_chain)
     if from_lot is not None and to_lot is not None:
-        _post_transfer(
-            con, balances, account_kinds, step_id, month_s,
-            from_lot, to_lot, amount, tax_char, tid,
-            tax_year=tax_year, refill_ctx=ctx,
-        )
+        if tax_char is None:
+            _post_withdrawal(
+                con, balances, account_kinds, ctx.account_tax_treatment,
+                ctx.account_subkind, ctx.account_name, ctx.cost_bases,
+                step_id, month_s, from_lot, to_lot, amount, tid,
+                tax_year=tax_year, refill_ctx=ctx,
+            )
+        else:
+            _post_transfer(
+                con, balances, account_kinds, step_id, month_s,
+                from_lot, to_lot, amount, tax_char, tid,
+                tax_year=tax_year, refill_ctx=ctx,
+            )
     elif from_lot is not None:
         _chain_sweep(
             con, balances, account_kinds, ctx.account_tax_treatment,
@@ -2666,12 +2676,36 @@ def _cadence_count(
     return 1 if _cadence_fires(cadence, month_of_year, month, start) else 0
 
 
+def _calendar_tax_character(
+    payload: Mapping[str, Any], from_chain: int, ctx: RefillContext,
+) -> str | None:
+    """The tax character a ``one_off_transfer`` or ``transfer_balance`` row
+    moves its money with (#201). One the row sets is used as written. Left
+    blank, money out of a lot that tracks cost basis (a brokerage lot, say)
+    is a sale: None, so ``_post_withdrawal`` splits it into the basis
+    returned and the gain, as a sweep out of that lot would. From anywhere
+    else it is ``none``, right for a rollover between tax-deferred accounts.
+    """
+    if character := payload.get("tax_character"):
+        return character
+    lot = ctx.graph.leaf_lot.get(from_chain)
+    if lot is not None and registries.withdrawal_tax_character(
+        ctx.account_tax_treatment.get(lot), ctx.account_subkind.get(lot, ""),
+    ) is None:
+        return None
+    return "none"
+
+
 def _synthesize_one_off_rule(
     con, name: str, from_id: int, to_id: int, amount: int,
-    tax_char: str, ev_date: str, ev_id: int, description: str | None,
+    tax_char: str | None, ev_date: str, ev_id: int, description: str | None,
 ) -> int:
     """Insert the cadence='one_off' fixed_amount rule a rule-synthesizing
-    calendar event fires through (ADR-003 \u00a73), and return its id."""
+    calendar event fires through (ADR-003 \u00a73), and return its id.
+
+    A ``tax_char`` of None (a basis split, see ``_calendar_tax_character``)
+    is recorded as ``return_of_capital``, the character of the split's first
+    leg; the legs themselves carry the characters that are taxed."""
     cur = con.execute(
         "INSERT INTO scheduled_transaction("
         "  name, from_account, to_account, cadence, "
@@ -2679,8 +2713,8 @@ def _synthesize_one_off_rule(
         "  priority, created_by_event_id, description"
         ") VALUES (?, ?, ?, 'one_off', 'fixed_amount', ?, ?, ?, ?, "
         "  200, ?, ?)",
-        (name, from_id, to_id, amount, tax_char, ev_date, ev_date, ev_id,
-         description),
+        (name, from_id, to_id, amount, tax_char or "return_of_capital",
+         ev_date, ev_date, ev_id, description),
     )
     return inserted_id(cur)
 
@@ -2835,7 +2869,6 @@ def _apply_calendar_event(
             frm_name = payload.get("account_1")
             to_name = payload.get("account_2")
             amount = payload.get("amount")
-            tax_char = payload.get("tax_character") or "none"
             if frm_name is None or to_name is None or amount is None:
                 raise EngineError(
                     f"one_off_transfer event id={ev_id}: requires from_account, "
@@ -2849,6 +2882,7 @@ def _apply_calendar_event(
                     f"one_off_transfer event id={ev_id}: unknown account or chain "
                     f"(account_1={frm_name!r} or account_2={to_name!r})"
                 )
+            tax_char = _calendar_tax_character(payload, from_id, refill_ctx)
             tid = _synthesize_one_off_rule(
                 con, f"oneoff_evt_{ev_id}", from_id, to_id, int(amount),
                 tax_char, ev_date, ev_id, payload.get("description"),
@@ -2861,7 +2895,6 @@ def _apply_calendar_event(
         case "transfer_balance":
             frm_name = payload.get("account_1")
             to_name = payload.get("account_2")
-            tax_char = payload.get("tax_character") or "none"
             if frm_name is None or to_name is None:
                 raise EngineError(
                     f"transfer_balance event id={ev_id}: requires from_account and "
@@ -2885,6 +2918,7 @@ def _apply_calendar_event(
             # and the month's growth accrues at the destination. Nothing to
             # move is a no-op, as for on_death.
             lot_id = lot[0]
+            tax_char = _calendar_tax_character(payload, from_id, refill_ctx)
             amount = max(0, balances.get(lot_id, 0))
             if amount == 0:
                 return
