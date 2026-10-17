@@ -128,7 +128,8 @@ sim scenario edit <name> --size 200 --new-seed --reserve 250000
 The change is written only if the scenario, and every scenario built on
 it, still loads. If its `README.md` is still the one `scenario create`
 wrote, its first paragraph follows a new description and parents;
-otherwise you're reminded to update it yourself.
+otherwise you're reminded to update it yourself. A scenario made before
+`scenario create` wrote a `README.md` gets one the first time you edit it.
 
 To delete a scenario (or `sim ensemble delete`):
 

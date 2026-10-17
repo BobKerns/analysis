@@ -8664,7 +8664,7 @@ def _edit_scenario(
     if not values and not meta:
         raise click.UsageError("nothing to change: give at least one option (see --help)")
 
-    readme: bool | None = None
+    readme: bool | str | None = None
     # Validates this scenario and every scenario built on it before writing.
     with _scenario_edit(data, name) as edit:
         folder = edit.scenario_dir
@@ -8673,14 +8673,25 @@ def _edit_scenario(
             changes = sc.edit_scenario_row(folder, values, meta)
         except LoadError as exc:
             raise click.ClickException("; ".join(exc.issues)) from None
-        readme = sc.follow_readme(folder, old_row, sc._scenario_row(folder))
+        new_row = sc._scenario_row(folder)
+        if changes and not (folder / "README.md").exists():
+            # Every scenario has one now (#190); one made before that gets it here.
+            (folder / "README.md").write_text(sc.scenario_readme(
+                name, new_row.get("description", ""), parse_parents(new_row.get("parent_scenario"))),
+                encoding="utf-8")
+            readme = "written"
+        else:
+            readme = sc.follow_readme(folder, old_row, new_row)
     if not changes:
         click.echo(f"scenario {name} already has those values; nothing changed")
         return
     click.echo(f"edited scenario {name}")
     for change in changes:
         click.echo(f"  {change.field}: {change.old or '(inherited)'} -> {change.new or '(inherited)'}")
-    if readme is True:
+    if readme == "written":
+        click.echo(f"  README.md: written; edit {data / 'scenarios' / name / 'README.md'} "
+                   "to say what the scenario is for")
+    elif readme is True:
         click.echo("  README.md: updated to match")
     elif readme is False:
         click.echo(f"WARN: {data / 'scenarios' / name / 'README.md'} is what listings and notebooks show, "

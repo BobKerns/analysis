@@ -159,6 +159,16 @@ def test_blank_description_on_a_root_scenario_is_refused(test_data_dir: Path, te
     assert result.exit_code != 0 and "no default description" in result.output, result.output
 
 
+def test_edit_writes_a_readme_a_scenario_lacks(test_data_dir: Path, test_scenarios_dir: Path,
+                                               derive_scenario) -> None:
+    folder = derive_scenario("old", "retire_alice", description="Made before #190")
+    result = _sim(test_data_dir, "scenario", "edit", "old", "--seed", "3")
+    assert result.exit_code == 0, result.output
+    assert "README.md: written" in result.output
+    summary = parse_readme_summary((folder / "README.md").read_text())
+    assert (summary.title, summary.paragraph) == ("old", "Made before #190")
+
+
 @pytest.mark.parametrize(("args", "message"), [
     ((), "nothing to change"),
     (("--start", "May 2027"), "date must be"),
