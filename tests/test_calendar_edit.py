@@ -243,15 +243,80 @@ def test_edit_says_so_when_a_row_is_of_a_kind_it_cannot_edit(
     assert "'some_future_kind' row, which this command cannot edit" in result.output
 
 
-def test_edit_says_so_when_the_scenario_has_no_rows_of_its_own(
-    calendar_edit: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
-) -> None:
-    retire_alice_csv("calendar.csv").write_text(",".join(CALENDAR_HEADER) + "\n")
+@pytest.fixture
+def child_calendar(test_child_scenario: Path) -> Callable[[], pd.DataFrame]:
+    """The ``child`` scenario's own calendar.csv, every column present."""
+    def read() -> pd.DataFrame:
+        frame = pd.read_csv(test_child_scenario / "calendar.csv", dtype=str, keep_default_na=False)
+        return frame.reindex(columns=CALENDAR_HEADER, fill_value="")
+    return read
 
-    result = calendar_edit(answers=[])
+
+def _edit_child(test_data_dir: Path, *args: str, answers: list[str]) -> Result:
+    return CliRunner().invoke(
+        main,
+        ["sim", "calendar", "edit", *args, "--data-dir", str(test_data_dir), "--scenario", "child"],
+        input="".join(answer + "\n" for answer in answers),
+    )
+
+
+def test_editing_an_inherited_row_writes_a_whole_row_override(
+    test_data_dir: Path, calendar_rows: Callable[[], pd.DataFrame],
+    child_calendar: Callable[[], pd.DataFrame],
+) -> None:
+    parent = calendar_rows()
+
+    result = _edit_child(test_data_dir, "healthcare", answers=["description", "COBRA", ""])
+
+    assert result.exit_code == 0, result.output
+    assert "[inherited from retire_alice]" in result.output
+    assert "wrote an override: set_amount 'healthcare'" in result.output
+    override = child_calendar()
+    assert len(override) == 1
+    assert override.iloc[0].to_dict() == {**parent.iloc[2].to_dict(), "description": "COBRA"}
+    pd.testing.assert_frame_equal(calendar_rows(), parent)
+
+
+def test_writing_an_inherited_row_unchanged_writes_no_override(
+    test_data_dir: Path, child_calendar: Callable[[], pd.DataFrame],
+) -> None:
+    result = _edit_child(test_data_dir, "healthcare", answers=[""])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing changed; no override written for" in result.output
+    assert child_calendar().empty
+
+
+def test_an_override_of_an_unnamed_row_must_keep_its_key(
+    test_data_dir: Path, child_calendar: Callable[[], pd.DataFrame],
+) -> None:
+    result = _edit_child(test_data_dir, "healthcare", answers=["amount", "1500.00", ""])
 
     assert result.exit_code != 0
-    assert "has no calendar rows of its own to edit" in result.output
+    assert "has no name, so an override is matched to it by its amount" in result.output
+    assert "sim calendar edit --scenario retire_alice" in result.output
+    assert child_calendar().empty
+
+
+def test_an_override_of_a_named_row_may_change_its_key(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    child_calendar: Callable[[], pd.DataFrame],
+) -> None:
+    append_calendar_row(date="2027-02", kind="set_rate", name="checking_bump",
+                        series="Asset_Checking", amount="4.25%")
+
+    result = _edit_child(test_data_dir, "checking_bump", answers=["rate-percent", "5%", ""])
+
+    assert result.exit_code == 0, result.output
+    override = child_calendar()
+    assert (override.loc[0, "name"], override.loc[0, "amount"]) == ("checking_bump", "5%")
+
+    again = _edit_child(test_data_dir, "checking_bump", answers=["rate-percent", "6%", ""])
+
+    assert again.exit_code == 0, again.output
+    assert "[overrides retire_alice]" in again.output
+    assert "updated set_rate" in again.output
+    assert child_calendar().loc[0, "amount"] == "6%"
 
 
 def test_a_row_key_reads_dates_and_spacing_as_the_loader_does() -> None:

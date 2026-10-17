@@ -895,6 +895,24 @@ its place. A lot that only opens at zero, or that the scenario defines
 itself, is an ordinary lot, and the loader drops no lot for being empty,
 since one that opens empty and is funded later is common.
 
+An account or calendar row the scenario inherits is edited the same way
+(#202): `account edit` and `calendar edit` find it down the scenario's load
+order and write the whole edited row into the scenario's own file, so the
+override doesn't depend on how the loader merges a blank cell (§4.5). An
+`account edit` that only renames writes no override; the rename reaches the
+scenario that defines the account, as every rename does. `calendar edit`
+lists the scenario's own rows first, numbered as in its file, then the rows
+it inherits, each marked with where it comes from. The loader matches a
+named calendar row to its override by name and an unnamed one by its key
+columns, so the override keeps the row's name (`calendar rename` renames
+it), and one of an unnamed row may not change a key column: that would add
+a second event beside the inherited one, so it is refused. An override that
+changes nothing is not written. `account delete` refuses an inherited
+account: an overlay can't remove a row, and the inherited chains, rules and
+lots would still name it. It deletes a scenario's own override of an
+inherited account, which brings back the inherited row and leaves what uses
+the account alone.
+
 The commands that add a transfer (`transfer add`, `calendar add transfer`,
 the guided `calendar add`, `scheduled add`) pick each side the same way,
 whether a value is typed at a prompt or given on the command line: an
@@ -995,4 +1013,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#168](https://github.com/BobKerns/analysis/issues/168), [#169](https://github.com/BobKerns/analysis/issues/169): `scenario create` writes `ensemble_size` 0, so it never makes an ensemble; `ensemble create` takes mix-ins; `ensemble_size` is checked at load (§4.5).
 - [#177](https://github.com/BobKerns/analysis/issues/177): renames reach every scenario sharing the name; `scenario|ensemble rename`, and `rename` for scheduled rules, calendar rows, series and lots (§7).
 - [#197](https://github.com/BobKerns/analysis/issues/197): `add_scheduled`, `sell_asset`, `buy_asset` and `life_transition`, never built, are dropped from the registry, and `swap_aux_table` is implemented, with `calendar add swap-aux-table`; §3 renumbered (§3, §3.1, §3.3–§3.7, §4.8, §4.9).
+- [#202](https://github.com/BobKerns/analysis/issues/202): `account edit` and `calendar edit` write an override of an inherited row; `account delete` refuses an inherited account and deletes an override (§7).
 - [#199](https://github.com/BobKerns/analysis/issues/199): destination chain steps gain `tax_character`, `basis_of` and `basis_of_lot`, so a sale goes through a chain; tax characters `home_sale` and `capital_improvement`; the tax accumulator nets capital gains and limits and carries a net loss, with the new `capital_loss_limit` aux table replacing `home_sale_exclusion` (§2.6, §4.4, §4.6, §4.7, §4.10).
