@@ -6,8 +6,9 @@
 - An account whose subkind is `traditional_ira`, `roth_ira`,
   `traditional_401k` or `roth_401k` becomes subkind `retirement` with a blank
   `tax_treatment`; its old subkind moves to each of its lots' `subkind`.
-- Such an account with no lot row anywhere gets a zero-balance `default` lot,
-  in the folder whose accounts.csv defines it, to carry that subkind.
+- Such an account with no lot row in the folder whose accounts.csv defines it
+  gets a zero-balance `default` lot there, to carry that subkind (starting an
+  `account_lots.csv` in that folder if it had no lots file).
 
 Usage: scripts/migrate_217.py [DATA_DIR] [--write]
 
@@ -101,7 +102,8 @@ def plan(data_dir: Path) -> Plan:
             result.writes[path] = _render(header, rows, newline)
             result.report.append(f"{path}: {changed} account(s) now subkind {RETIREMENT}")
 
-    with_lots: set[str] = set()
+    # Accounts with a lot row, by the folder that has it.
+    with_lots: dict[Path, set[str]] = {}
     for path in lots_files:
         header, rows, newline = _read(path)
         if "subkind" in header:
@@ -115,7 +117,7 @@ def plan(data_dir: Path) -> Plan:
         for row in rows:
             row.extend([""] * (len(header) - len(row)))
             account = _cell(header, row, "account_name")
-            with_lots.add(account)
+            with_lots.setdefault(path.parent, set()).add(account)
             subkind = moved.get(account, "")
             set_count += bool(subkind)
             row.insert(at, subkind)
@@ -126,14 +128,22 @@ def plan(data_dir: Path) -> Plan:
             f"{path}: renamed {NEW_NAME}; subkind set on {set_count} lot(s)"
         )
 
-    for account in sorted(set(moved) - with_lots):
+    # A converted account needs a lot in the folder that defines it: a lot
+    # only in some derived scenario leaves the others, and the defining one,
+    # with none. A zero default lot there carries the subkind.
+    for account in sorted(moved):
         folder = defined_in[account]
+        if account in with_lots.get(folder, set()):
+            continue
         target = folder / NEW_NAME
         if target not in result.writes:
-            result.problems.append(
-                f"{folder}: no {OLD_NAME} beside the accounts.csv that defines {account!r}"
-            )
-            continue
+            # This folder had no lots file: start one with the others' columns.
+            others = [text for path, text in result.writes.items() if path.name == NEW_NAME]
+            if not others:
+                result.problems.append(f"{folder}: no {NEW_NAME} to seed {account!r}'s lot in")
+                continue
+            some_header, _rows, newline = _read_text(others[0])
+            result.writes[target] = _render(some_header, [], newline)
         header, rows, newline = _read_text(result.writes[target])
         row = [""] * len(header)
         row[header.index("account_name")] = account
