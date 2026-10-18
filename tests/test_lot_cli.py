@@ -86,20 +86,20 @@ def test_add_refuses_a_lot_it_cannot_add(
 def test_guided_add_asks_only_what_applies(
     lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
 ) -> None:
-    # account, lot, subkind, symbol, acquired, quantity, series, balance, manage?, write
+    # account, lot, subkind, symbol, acquired, quantity, series, balance, basis, manage?, write
     result = lot("add", answers=[
-        "Asset_Roth_Bill", "bonds", "roth_ira", "BND", "", "", "", "2500", "n", "write",
+        "Asset_Roth_Bill", "bonds", "roth_ira", "BND", "", "", "", "2500", "2000", "n", "write",
     ])
 
     assert result.exit_code == 0, result.output
-    # A Roth lot isn't taxable, so no basis is asked for, nor (not traditional)
-    # a prior year-end balance for an RMD.
-    assert "cost basis" not in result.output
+    # A Roth lot has a basis (#217), but isn't traditional, so has no prior
+    # year-end balance for an RMD.
     assert "Dec 31" not in result.output
     assert ("sim account lot add Asset_Roth_Bill bonds --subkind roth_ira --symbol BND "
-            "--opening-balance 2500") in result.output
+            "--opening-balance 2500 --opening-cost-basis 2000") in result.output
     row = _lot_row(values(), "Asset_Roth_Bill", "bonds")
-    assert (row["subkind"], row["opening_balance"]) == ("roth_ira", "2500.00")
+    assert (row["subkind"], row["opening_balance"], row["opening_cost_basis"]) == (
+        "roth_ira", "2500.00", "2000.00")
 
 
 def test_only_a_retirement_accounts_lot_is_asked_its_subkind(
@@ -124,6 +124,7 @@ def test_a_traditional_lot_is_asked_its_prior_year_end_balance(
 
     assert result.exit_code == 0, result.output
     assert "balance on the Dec 31 before the scenario starts" in result.output
+    assert "cost basis" not in result.output  # traditional money has none
 
 
 def test_edit_sets_a_field_and_keeps_the_rest_as_authored(

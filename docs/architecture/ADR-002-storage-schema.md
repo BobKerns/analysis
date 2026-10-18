@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 38) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 39) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -360,7 +360,7 @@ CREATE TABLE scheduled_transaction (
                                  'tax_deferred_in','tax_deferred_out',
                                  'return_of_capital','property_tax','none',
                                  'excluded_gain','home_sale',
-                                 'capital_improvement')),
+                                 'capital_improvement','roth_nonqualified')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
     priority                INTEGER NOT NULL DEFAULT 500,
@@ -440,7 +440,8 @@ CREATE TABLE year_to_date (
                          'ss_benefit','tax_free',
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
-                         'excluded_gain','home_sale','capital_improvement')),
+                         'excluded_gain','home_sale','capital_improvement',
+                         'roth_nonqualified')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)
@@ -877,3 +878,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#197](https://github.com/BobKerns/analysis/issues/197): `Income_LoanOrigination` is no longer reserved, since the `buy_asset` kind that used it is dropped; the reserved names are the growth counterparties (Conventions).
 - [#199](https://github.com/BobKerns/analysis/issues/199): `chain_steps.tax_character` and `basis_of_lot_id`; the `home_sale` and `capital_improvement` tax characters; the run table `capital_loss` (Intent and ledger DDL; schema 37).
 - [#217](https://github.com/BobKerns/analysis/issues/217): account subkind `retirement` replaces the four IRA/401k subkinds; `account_lot` gains `subkind` and the effective `tax_treatment` the engine reads (Intent DDL; schema 38).
+- [#217](https://github.com/BobKerns/analysis/issues/217): tax character `roth_nonqualified`, a Roth lot's earnings paid out before the distribution is qualified (Intent DDL; schema 39).

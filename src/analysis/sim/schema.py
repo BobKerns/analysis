@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -266,7 +266,7 @@ CREATE TABLE scheduled_transaction (
                                  'tax_deferred_in','tax_deferred_out',
                                  'return_of_capital','property_tax','none',
                                  'excluded_gain','home_sale',
-                                 'capital_improvement')),
+                                 'capital_improvement','roth_nonqualified')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
     priority                INTEGER NOT NULL DEFAULT 500,
@@ -346,7 +346,8 @@ CREATE TABLE year_to_date (
                          'ss_benefit','tax_free',
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
-                         'excluded_gain','home_sale','capital_improvement')),
+                         'excluded_gain','home_sale','capital_improvement',
+                         'roth_nonqualified')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)

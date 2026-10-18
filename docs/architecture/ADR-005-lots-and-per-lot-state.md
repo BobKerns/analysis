@@ -116,6 +116,8 @@ Symbols get names from `securities.csv` (`symbol,name`), at the top of the data 
 
 ### 7. Sales and withdrawals
 
+A Roth lot's distribution splits by its own rules instead: basis first (pro-rata in a Roth 401k), earnings `roth_nonqualified` until the owner's five-year clock has run ([ADR-003](ADR-003-registries-and-csv-schemas.md) §1a).
+
 A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, [ADR-003](ADR-003-registries-and-csv-schemas.md) #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. A `transfer_balance` calendar event (ADR-003 §3.7) names a lot and empties it; emptying an account is one such event per lot.
 
 A sale can instead go into a destination chain with a basis step for the lot (ADR-003 §4.7, [#199](https://github.com/BobKerns/analysis/issues/199)): the withdrawal is not split, and the step recovers the same pro-rata share of the lot's basis, which leaves the lot whether or not the price covered it. Basis it couldn't recover is a `capital_loss` row for an investment (`return_of_capital`) and nothing for a home (`home_sale`). A chain step with `capital_improvement` adds what it places to a lot's basis.
@@ -164,3 +166,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#197](https://github.com/BobKerns/analysis/issues/197): the `sell_asset` and `buy_asset` calendar kinds are dropped, so nothing here refers to them (Context, Consequences).
 - [#199](https://github.com/BobKerns/analysis/issues/199): a sale through a destination chain's basis step recovers the lot's basis, and a `capital_improvement` step adds to it (§7).
 - [#217](https://github.com/BobKerns/analysis/issues/217): a `retirement` account's lots each carry a subkind (Roth or traditional, IRA or 401k) that sets the lot's tax treatment, and its RMD counts only traditional lots (§1, §3, §8).
+- [#217](https://github.com/BobKerns/analysis/issues/217): a Roth lot tracks basis and splits a distribution by the five-year rule (§7).

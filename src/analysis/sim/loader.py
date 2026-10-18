@@ -927,6 +927,8 @@ def load_scenario(
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
+        retirement_accounts=frozenset(
+            a["name"] for a in accounts if a.get("subkind") == registries.RETIREMENT_SUBKIND),
     )
     _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues)
     roth_leaves = frozenset(
@@ -937,6 +939,7 @@ def load_scenario(
     )
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
     _validate_lifespan(lifespan_rows, persons, issues)
+    _validate_retirement_owners(accounts, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
 
     if issues:
@@ -1720,9 +1723,15 @@ def _describe_blend(blend: AllocationBlend) -> str:
 
 
 def _validate_birthdates(rows: list[dict[str, str]], issues: list[str]) -> None:
-    """A birthdate is day-precise (ages turn on it), so a strict YYYY-MM-DD."""
+    """A birthdate is day-precise (ages turn on it), so a strict YYYY-MM-DD.
+    An actual person (``PERSON_ROLES``) must have one; a pseudo-person such
+    as ``joint`` needn't."""
     for where, row in _located(rows, "persons.csv"):
         birthdate = row.get("birthdate", "")
+        if not birthdate and (row.get("role") or "").strip() in registries.PERSON_ROLES:
+            issues.append(
+                f"{where} ({row.get('id') or '?'}): a {row['role'].strip()} person needs a birthdate"
+            )
         if birthdate:
             try:
                 parse_day(birthdate)
@@ -2058,6 +2067,27 @@ def _validate_lot_money(
             issues.append(
                 f"account_lots.csv ({name}): prior_year_end_balance must be set "
                 "on every lot of an account or on none (Roth lots aside)"
+            )
+
+
+def _validate_retirement_owners(
+    accounts: list[dict[str, str]], persons: list[dict[str, str]], issues: list[str],
+) -> None:
+    """A retirement account belongs to one actual person (``PERSON_ROLES``,
+    who must have a birthdate): RMDs and whether a Roth distribution is
+    qualified turn on the owner's age (#217)."""
+    people = {p.get("id", "") for p in persons
+              if (p.get("role") or "").strip() in registries.PERSON_ROLES}
+    roles = " or ".join(sorted(registries.PERSON_ROLES))
+    for where, a in _located(accounts, "accounts.csv"):
+        if a.get("subkind") != registries.RETIREMENT_SUBKIND:
+            continue
+        owner = a.get("owner", "")
+        if owner not in people:
+            found = f"owner {owner!r}" if owner else "no owner"
+            issues.append(
+                f"{where} ({a.get('name', '')}): a retirement account's owner must be a "
+                f"person whose role in persons.csv is {roles} ({found})"
             )
 
 
@@ -3189,6 +3219,7 @@ def _validate_chains(
     *,
     money_resolver: _MoneyReferenceResolver,
     asset_accounts: frozenset[str] = frozenset(),
+    retirement_accounts: frozenset[str] = frozenset(),
 ) -> None:
     for name in sorted(set(chains) & leaves.names):
         issues.append(f"chains/*.csv: chain name '{name}' collides with an account name")
@@ -3244,7 +3275,7 @@ def _validate_chains(
                 _validate_no_spaces(where, member,
                                     "series", series, issues)
         _validate_chain_tax_steps(role, rows, _chain_label(role, name), leaves,
-                                  asset_accounts, issues)
+                                  asset_accounts, issues, retirement_accounts)
 
     for where, row in _located(value_rows, "account_lots.csv"):
         holder = leaves.leaf_of.get(
@@ -3281,6 +3312,7 @@ def _validate_chains(
 def _validate_chain_tax_steps(
     role: str, rows: list[dict[str, str]], label: str, leaves: _LeafIndex,
     asset_accounts: frozenset[str], issues: list[str],
+    retirement_accounts: frozenset[str] = frozenset(),
 ) -> None:
     """A chain step's ``tax_character`` and ``basis_of`` (#199, ADR-003
     §4.7): a step that sets a character gives it to the money it places and
@@ -3324,6 +3356,13 @@ def _validate_chain_tax_steps(
             continue
         if basis_of not in asset_accounts:
             issues.append(f"{where}: basis_of '{basis_of}' is not an asset account")
+            continue
+        if basis_of in retirement_accounts:
+            # A retirement lot's basis follows its own rules (#217), not a sale's.
+            issues.append(
+                f"{where}: basis_of '{basis_of}' is a retirement account; its basis "
+                "is tracked for you, so leave basis_of blank"
+            )
             continue
         problem = _resolve_ref(row, "basis_of", "basis_of_lot", leaves, frozenset())
         if problem:
