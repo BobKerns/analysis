@@ -1176,7 +1176,7 @@ def test_negative_rate_depreciates_asset_into_expense(test_data_dir: Path, tmp_p
     df = pd.concat([df, pd.DataFrame([row], columns=df.columns)], ignore_index=True)
     df.to_csv(accounts_path, index=False)
 
-    values_path = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    values_path = repo / "scenarios" / "retire_alice" / "account_lots.csv"
     vdf = pd.read_csv(values_path, dtype=str, keep_default_na=False)
     vrow = dict.fromkeys(vdf.columns, "")
     vrow.update(account_name="Asset_Car", opening_balance="30000.00")

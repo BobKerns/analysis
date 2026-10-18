@@ -161,7 +161,7 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     for filename in (
-        "accounts.csv", "account_values.csv", "scheduled.csv",
+        "accounts.csv", "account_lots.csv", "scheduled.csv",
         "calendar.csv", "year_to_date.csv",
     ):
         header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
@@ -532,7 +532,7 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     for filename, header in {
-        "account_values.csv": (
+        "account_lots.csv": (
             "account_name,opening_balance,opening_cost_basis,prior_year_end_balance,"
             "refill_chain\nAsset_Checking,100.00,,,missing"
         ),
@@ -592,7 +592,7 @@ def test_policy_chain_leading_back_to_its_own_lot_rejected(
         (retire_alice_csv("chains") / filename).write_text(
             "account_name,lot,maximum,percent,series,cadence\n" + rows
         )
-    values_path = retire_alice_csv("account_values.csv")
+    values_path = retire_alice_csv("account_lots.csv")
     df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
     checking = df["account_name"] == "Asset_Checking"
     if column == "overflow_chain":
@@ -619,7 +619,7 @@ def test_policy_loop_through_another_lot_loads(
     (retire_alice_csv("chains/destination") / "spill.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"
     )
-    values_path = retire_alice_csv("account_values.csv")
+    values_path = retire_alice_csv("account_lots.csv")
     df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
     checking = df["account_name"] == "Asset_Checking"
     df.loc[checking, "maximum_balance"] = "10000.00"
@@ -704,7 +704,7 @@ def _derive_empty_child(repo: Path, parent_name: str, child_name: str) -> Path:
         encoding="utf-8",
     )
     for filename in (
-        "accounts.csv", "account_values.csv", "scheduled.csv",
+        "accounts.csv", "account_lots.csv", "scheduled.csv",
         "calendar.csv", "year_to_date.csv",
     ):
         header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
@@ -1026,11 +1026,11 @@ def test_invalid_tag_rejected(tmp_path: Path) -> None:
     assert any("no_colon_here" in issue for issue in ei.value.issues)
 
 
-def test_account_values_unknown_account_rejected(tmp_path: Path) -> None:
+def test_account_lots_unknown_account_rejected(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
 
-    av = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    av = repo / "scenarios" / "retire_alice" / "account_lots.csv"
     with av.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
         fields = list(rows[0].keys())
@@ -1055,7 +1055,7 @@ def test_account_values_unknown_account_rejected(tmp_path: Path) -> None:
     assert any("account_name not in accounts.csv" in issue for issue in ei.value.issues)
 
 
-def test_money_reference_in_account_values_resolves_itemization_sum(
+def test_money_reference_in_account_lots_resolves_itemization_sum(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "data"
@@ -1069,7 +1069,7 @@ def test_money_reference_in_account_values_resolves_itemization_sum(
         w.writerow({"Item": "purchase", "Value": "300000.00", "Note": ""})
         w.writerow({"Item": "improvements", "Value": "100000.00", "Note": ""})
 
-    av = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    av = repo / "scenarios" / "retire_alice" / "account_lots.csv"
     with av.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
         fields = list(rows[0].keys())
@@ -1111,7 +1111,7 @@ def test_money_reference_rejects_itemization_missing_value_column(
         w.writeheader()
         w.writerow({"Item": "purchase", "Amount": "300000.00"})
 
-    av = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    av = repo / "scenarios" / "retire_alice" / "account_lots.csv"
     with av.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
         fields = list(rows[0].keys())
@@ -2111,9 +2111,9 @@ def test_day_precise_dates_are_strict(
     persons = pd.read_csv(test_data_dir / "persons.csv", dtype=str, keep_default_na=False)
     persons.loc[0, "birthdate"] = bad
     persons.to_csv(test_data_dir / "persons.csv", index=False)
-    values = pd.read_csv(retire_alice_csv("account_values.csv"), dtype=str, keep_default_na=False)
+    values = pd.read_csv(retire_alice_csv("account_lots.csv"), dtype=str, keep_default_na=False)
     values.loc[0, "acquired"] = bad
-    values.to_csv(retire_alice_csv("account_values.csv"), index=False)
+    values.to_csv(retire_alice_csv("account_lots.csv"), index=False)
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any(f"birthdate '{bad}' is not YYYY-MM-DD" in issue for issue in ei.value.issues)

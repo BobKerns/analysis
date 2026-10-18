@@ -25,7 +25,7 @@ which one it derives from in its own `scenario.csv`, using the
 `parent_scenario` column.
 
 A derived scenario only needs to list what is different. Its CSV files
-(`accounts.csv`, `account_values.csv`, `scheduled.csv`, `calendar.csv`, and
+(`accounts.csv`, `account_lots.csv`, `scheduled.csv`, `calendar.csv`, and
 others) are combined with its parent's files. Each row has a key, such as a
 name, or an account plus a lot. If you add a row with a new key, it is added.
 If you add a row with a key that already exists in the parent, it replaces
@@ -37,7 +37,7 @@ picks up the change automatically, the next time it loads.
 flowchart TB
     base["base\n(your main model)"]
     cut["current-cut\noverrides: SS benefit cut in scheduled.csv"]
-    hsa["hsa_2027\noverrides: one HSA account_values row"]
+    hsa["hsa_2027\noverrides: one HSA account_lots row"]
     sell["sell_stock\noverrides: a calendar.csv row"]
     base --> cut
     base --> hsa
@@ -323,11 +323,11 @@ sim account add "Asset_Savings_Emergency" asset cash --owner joint
 ```
 
 This adds a row to `accounts.csv`. If you add `--opening-balance`, it also
-adds a matching row to `account_values.csv`. If you run the command with no
+adds a matching row to `account_lots.csv`. If you run the command with no
 arguments, it asks you questions and shows the valid choices for kind,
 subkind, and owner. Afterward, run `sim account check` — it tells you about
 anything that still needs your attention. Run `sim account sync` to add any
-missing `account_values.csv` rows, with a balance of zero, ready for you to
+missing `account_lots.csv` rows, with a balance of zero, ready for you to
 fill in with `sim account lot edit` (Part 4.2).
 
 ### 4.2 Add, change or delete a lot
@@ -344,7 +344,7 @@ flowchart LR
     end
 ```
 
-Each lot is one row of `account_values.csv`. The `sim account lot` commands
+Each lot is one row of `account_lots.csv`. The `sim account lot` commands
 add, change, delete and list them, so you don't have to edit that file by
 hand (though you still can):
 
@@ -469,7 +469,7 @@ date,kind,account_1,account_2,description
 
 The basis step (`basis_of` the home, `tax_character` `home_sale`) takes as
 much of the price as the home's basis, which needs an `opening_cost_basis` in
-`account_values.csv`. Leave its `maximum` and `percent` blank. The exclusion
+`account_lots.csv`. Leave its `maximum` and `percent` blank. The exclusion
 is the `excluded_gain` step's `maximum`: $500,000 married filing jointly,
 $250,000 single, if you meet the IRS ownership and use tests. A mortgage
 step takes only what is still owed. If the home sells for less than its
@@ -531,7 +531,7 @@ use a chain:
    except a `transfer_balance`'s source. A transfer names a chain on one
    side at most.
 2. **As a lot's own rule for refilling or overflowing.** This is set
-   directly on the lot's row in `account_values.csv` (with
+   directly on the lot's row in `account_lots.csv` (with
    `sim account lot edit`, or by hand), not as a separate rule:
 
 ```mermaid

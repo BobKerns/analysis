@@ -286,7 +286,7 @@ _LOT_MONEY_COLUMNS = frozenset({
 })
 _MONEY_COLUMNS_BY_FILE: dict[str, frozenset[str]] = {
     "accounts.csv": _LOT_MONEY_COLUMNS,
-    "account_values.csv": _LOT_MONEY_COLUMNS,
+    "account_lots.csv": _LOT_MONEY_COLUMNS,
     "scheduled.csv": frozenset({"amount", "ytd_amount"}),
     "year_to_date.csv": frozenset({"amount"}),
 }

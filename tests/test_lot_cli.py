@@ -1,5 +1,5 @@
 """``sim account lot add|edit|delete`` (issue #124): a lot is one
-account_values.csv row, added, changed or deleted with the references to it."""
+account_lots.csv row, added, changed or deleted with the references to it."""
 
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ def lot(test_data_dir: Path) -> Callable[..., Result]:
 
 @pytest.fixture
 def values(test_scenarios_dir: Path) -> Callable[[str], pd.DataFrame]:
-    """A scenario's own account_values.csv."""
+    """A scenario's own account_lots.csv."""
     def read(scenario: str = "retire_alice") -> pd.DataFrame:
-        path = test_scenarios_dir / scenario / "account_values.csv"
+        path = test_scenarios_dir / scenario / "account_lots.csv"
         return pd.read_csv(path, dtype=str, keep_default_na=False)
     return read
 
@@ -138,7 +138,7 @@ def test_renaming_a_lot_renames_its_references(
 ) -> None:
     frame = values()
     frame.loc[frame["account_name"] == "Asset_Savings", ["refill_chain", "refill_lot"]] = [BROKERAGE, "default"]
-    frame.to_csv(retire_alice_csv("account_values.csv"), index=False)
+    frame.to_csv(retire_alice_csv("account_lots.csv"), index=False)
 
     result = lot("edit", BROKERAGE, "default", "--new-lot", "core")
 
@@ -159,7 +159,7 @@ def test_delete_lists_references_and_removes_them_once_confirmed(
     frame.loc[frame["account_name"] == "Asset_Savings",
               ["minimum_balance", "refill_chain", "refill_lot", "refill_amount"]] = [
         "1000.00", BROKERAGE, "default", "500.00"]
-    frame.to_csv(retire_alice_csv("account_values.csv"), index=False)
+    frame.to_csv(retire_alice_csv("account_lots.csv"), index=False)
     calendar_before = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
 
     declined = lot("delete", BROKERAGE, "default", answers=["n"])
@@ -170,7 +170,7 @@ def test_delete_lists_references_and_removes_them_once_confirmed(
     result = lot("delete", BROKERAGE, "default", answers=["y"])
 
     assert result.exit_code == 0, result.output
-    assert "account_values.csv row 3: refill_chain/refill_lot" in result.output
+    assert "account_lots.csv row 3: refill_chain/refill_lot" in result.output
     assert "calendar.csv row 5: account_2/lot_2" in result.output
     after = values()
     assert BROKERAGE not in set(after["account_name"])
@@ -362,7 +362,7 @@ def test_renaming_or_deleting_a_lot_follows_it_into_inheriting_scenarios(
 
     assert deleted.exit_code == 0, deleted.output
     assert "child: calendar.csv row 2: account_2/lot_2" in deleted.output
-    assert "child: account_values.csv row 2: an override of the lot" in deleted.output
+    assert "child: account_lots.csv row 2: an override of the lot" in deleted.output
     assert pd.read_csv(child / "calendar.csv", dtype=str, keep_default_na=False).empty
     assert values("child").empty
     check("child")

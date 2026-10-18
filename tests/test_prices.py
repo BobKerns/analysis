@@ -116,7 +116,7 @@ def test_prices_in_use_lists_symbols_with_a_quantity_and_the_earliest_start(tmp_
         folder = tmp_path / name
         folder.mkdir()
         (folder / "scenario.csv").write_text(f"name,start\n{name},{start}\n")
-        (folder / "account_values.csv").write_text(
+        (folder / "account_lots.csv").write_text(
             "account_name,lot,symbol,acquired,quantity,series,opening_balance,opening_cost_basis,x\n" + rows)
     use = prices.prices_in_use(tmp_path)
     assert use.symbols == ["AAA", "CCC"]  # BBB has no quantity, CASH is skipped

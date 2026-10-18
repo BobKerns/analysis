@@ -92,7 +92,7 @@ def test_duplicate_account_and_lot_rejected(
 def test_lot_label_may_not_contain_colon(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
-    _edit(retire_alice_csv("account_values.csv"), "Asset_Roth_Bill,default,", "Asset_Roth_Bill,a:b,")
+    _edit(retire_alice_csv("account_lots.csv"), "Asset_Roth_Bill,default,", "Asset_Roth_Bill,a:b,")
     with pytest.raises(LoadError, match="may not contain ':'"):
         load_test_copy()
 
@@ -100,7 +100,7 @@ def test_lot_label_may_not_contain_colon(
 def test_investment_account_row_requires_explicit_lot(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
-    _edit(retire_alice_csv("account_values.csv"), "Asset_Roth_Bill,default,", "Asset_Roth_Bill,,")
+    _edit(retire_alice_csv("account_lots.csv"), "Asset_Roth_Bill,default,", "Asset_Roth_Bill,,")
     with pytest.raises(LoadError, match=r"Asset_Roth_Bill\): investment account requires an explicit lot"):
         load_test_copy()
 
@@ -382,16 +382,16 @@ def test_scheduled_list_and_accounts_view_handle_multi_lot_accounts(
     assert brokerage.rate_series is not None
 
 
-def test_shipped_account_values_files_carry_every_lot_column(
+def test_shipped_account_lots_files_carry_every_lot_column(
     repo_root: Path, prototype_data: Path
 ) -> None:
-    from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER
+    from analysis.sim.registries import ACCOUNT_LOTS_CSV_HEADER
 
     for path in (
-        prototype_data / "scenarios" / "retire_alice" / "account_values.csv",
-        repo_root / "templates" / "scenarios" / "base" / "account_values.csv",
+        prototype_data / "scenarios" / "retire_alice" / "account_lots.csv",
+        repo_root / "templates" / "scenarios" / "base" / "account_lots.csv",
     ):
-        assert tuple(path.read_text().splitlines()[0].split(",")) == ACCOUNT_VALUES_CSV_HEADER, path
+        assert tuple(path.read_text().splitlines()[0].split(",")) == ACCOUNT_LOTS_CSV_HEADER, path
 
 
 def test_explain_lists_each_lot_with_its_symbol_and_quantity(two_lot_run_file: Path) -> None:

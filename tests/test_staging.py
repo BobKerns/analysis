@@ -121,7 +121,7 @@ def test_multi_file_edit_commits_every_file(test_data_dir: Path) -> None:
 
     assert result.exit_code == 0, result.output
     scenario_dir = test_data_dir / "scenarios" / "retire_alice"
-    for name in ("accounts.csv", "account_values.csv", "scheduled.csv"):
+    for name in ("accounts.csv", "account_lots.csv", "scheduled.csv"):
         assert "Asset_Checking_2" in (scenario_dir / name).read_text(), name
     leftovers = [p for p in scenario_dir.rglob("*.tmp")]
     assert not leftovers

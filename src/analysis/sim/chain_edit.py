@@ -39,7 +39,7 @@ LOT_COLUMNS = (("account_name", "lot"), ("basis_of", "basis_of_lot"))
 REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     "scheduled.csv": ("from_account", "to_account"),
     "calendar.csv": ("account_1", "account_2"),
-    "account_values.csv": ("refill_chain", "overflow_chain"),
+    "account_lots.csv": ("refill_chain", "overflow_chain"),
 }
 """The columns, per scenario file, that may name a chain. Chain files' own
 ``account_name`` steps are handled with the chain files."""

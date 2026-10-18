@@ -81,7 +81,7 @@ def test_cash_management_columns_moved_off_accounts_csv(
     accounts["minimum_balance"] = ""
     accounts.loc[accounts["name"] == CHECKING, "minimum_balance"] = "5.00"
     accounts.to_csv(path, index=False)
-    with pytest.raises(LoadError, match=r"Asset_Checking\): minimum_balance moved to account_values.csv"):
+    with pytest.raises(LoadError, match=r"Asset_Checking\): minimum_balance moved to account_lots.csv"):
         load_test_copy()
 
 

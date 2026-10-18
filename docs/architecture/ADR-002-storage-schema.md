@@ -37,7 +37,7 @@ data_repo/
         retire_2030/
             scenario.csv    # one-row scenario header (incl. parent_scenario)
             accounts.csv    # every Account this scenario models ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.2)
-            account_values.csv # opening balances/bases, one row per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3, [ADR-005](ADR-005-lots-and-per-lot-state.md))
+            account_lots.csv # opening balances/bases, one row per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3, [ADR-005](ADR-005-lots-and-per-lot-state.md))
             scheduled.csv   # this scenario's ScheduledTransactions
             calendar.csv    # CalendarEvents
             lifespan.csv    # per-person final month
@@ -848,7 +848,7 @@ There are no migrations: the database files are always generated, never upgraded
 - Exact vocabulary of `account.subkind` values — drafted in code, will become a checked list in [ADR-003](ADR-003-registries-and-csv-schemas.md).
 - Exact vocabulary of `aux_table.kind` — same.
 - Whether `tax_year_summary` should also store the inputs used (bracket-table aux_table id, filing status). Likely yes; added when the tax scan is implemented.
-- ~~Exact CSV layout for the per-scenario folder~~ — **settled** in [ADR-003](ADR-003-registries-and-csv-schemas.md) §4 (`scenario.csv`, `accounts.csv`, `account_values.csv`, `scheduled.csv`, `calendar.csv`, `lifespan.csv`, `year_to_date.csv`, `chains/<role>/<name>.csv`).
+- ~~Exact CSV layout for the per-scenario folder~~ — **settled** in [ADR-003](ADR-003-registries-and-csv-schemas.md) §4 (`scenario.csv`, `accounts.csv`, `account_lots.csv`, `scheduled.csv`, `calendar.csv`, `lifespan.csv`, `year_to_date.csv`, `chains/<role>/<name>.csv`).
 
 ## Amendments
 

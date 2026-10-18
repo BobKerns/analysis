@@ -9,7 +9,7 @@ like `aux/`.
 
 The loader uses the latest price on or before the scenario start to turn a
 lot's `quantity` into an `opening_balance`, when that balance is left blank
-in `account_values.csv` (ADR-005 §6). It is not used month to month.
+in `account_lots.csv` (ADR-005 §6). It is not used month to month.
 
 ## See also
 

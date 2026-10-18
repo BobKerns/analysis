@@ -426,11 +426,11 @@ def _default_scenario_name(data_dir: Path, scenarios: Path, scenarios_dir: Path 
 def _default_lots(
     rows: list[dict[str, str]], issues: list[str], investment_accounts: set[str],
 ) -> list[dict[str, str]]:
-    """Default each account_values.csv row's lot (investment accounts must name
+    """Default each account_lots.csv row's lot (investment accounts must name
     theirs), and flag repeated (account, lot) pairs here: the overlay merge that
     follows would silently collapse them."""
     seen: set[tuple[str, str]] = set()
-    for where, row in _located(rows, "account_values.csv"):
+    for where, row in _located(rows, "account_lots.csv"):
         if not row.get("lot") and row.get("account_name") in investment_accounts:
             issues.append(
                 f"{where} ({row['account_name']}): investment "
@@ -739,7 +739,7 @@ def _read_scenario_inputs(
         )
         value_rows = _merge_scenario_rows(
             value_rows, _default_lots(
-                read_overlay("account_values.csv", required=True), issues,
+                read_overlay("account_lots.csv", required=True), issues,
                 {a["name"] for a in accounts if a.get("subkind") in INVESTMENT_ASSET_SUBKINDS},
             ),
             ("account_name", "lot"),
@@ -1567,7 +1567,7 @@ def _expand_account_growth(
             if not series and symbol in weight_sets:
                 blend = _allocation_blend(
                     symbol, weight_sets[symbol], rate_series,
-                    f"account_values.csv ({name} / {lot})", warnings,
+                    f"account_lots.csv ({name} / {lot})", warnings,
                 )
             lot_series.append((lot, series or ("" if blend else account_series), blend))
         if not any(series or blend for _, series, blend in lot_series):
@@ -1805,7 +1805,7 @@ def _validate_accounts(
         if moved:
             issues.append(
                 f"{where} ({name}): {', '.join(moved)} moved to "
-                "account_values.csv, where each lot has its own"
+                "account_lots.csv, where each lot has its own"
             )
         series = row.get("series", "")
         if series:
@@ -1927,7 +1927,7 @@ def _validate_lot_money(
     accounts: list[dict[str, str]],
 ) -> None:
     account_names = {r.get("name", "") for r in accounts}
-    for where, row in _located(rows, "account_values.csv"):
+    for where, row in _located(rows, "account_lots.csv"):
         name = row.get("account_name", "")
         if not name:
             issues.append(f"{where}: missing account_name")
@@ -2015,7 +2015,7 @@ def _validate_lot_money(
         with_pyeb = sum(1 for r in lots if r.get("prior_year_end_balance"))
         if 0 < with_pyeb < len(lots):
             issues.append(
-                f"account_values.csv ({name}): prior_year_end_balance must be set "
+                f"account_lots.csv ({name}): prior_year_end_balance must be set "
                 "on every lot of an account or on none"
             )
 
@@ -2066,7 +2066,7 @@ def _derive_opening_balances(
     for kind, series, payload, effective in aux_rows:
         if kind == "security_price":
             prices.setdefault(series or "", []).append((effective, payload["price_micros"]))
-    for where, row in _located(value_rows, "account_values.csv"):
+    for where, row in _located(value_rows, "account_lots.csv"):
         if row.get("opening_balance") or not row.get("quantity"):
             continue
         name, symbol = row.get("account_name", ""), row.get("symbol", "")
@@ -3070,7 +3070,7 @@ def _validate_chain_roles(
             where = f"{where} ({row.get('name', '')})" if row.get("name") else where
             check(where, from_col, row.get(from_col, ""), "source")
             check(where, to_col, row.get(to_col, ""), "destination")
-    for where, row in _located(value_rows, "account_values.csv"):
+    for where, row in _located(value_rows, "account_lots.csv"):
         where = f"{where} ({row.get('account_name', '')})"
         check(where, "refill_chain", row.get("refill_chain", ""), "source")
         check(where, "overflow_chain", row.get("overflow_chain", ""), "destination")
@@ -3186,7 +3186,7 @@ def _validate_chains(
         _validate_chain_tax_steps(role, rows, _chain_label(role, name), leaves,
                                   asset_accounts, issues)
 
-    for where, row in _located(value_rows, "account_values.csv"):
+    for where, row in _located(value_rows, "account_lots.csv"):
         holder = leaves.leaf_of.get(
             (row.get("account_name", ""), row.get("lot") or registries.DEFAULT_LOT)
         )
@@ -3393,7 +3393,7 @@ def _write_intent(
     counts["account"] = len(accounts)
 
     # One account_lot row per lot (ADR-005). An account with no
-    # account_values.csv row gets a single zero-balance default lot. Rows are
+    # account_lots.csv row gets a single zero-balance default lot. Rows are
     # written in accounts.csv order so lot ids follow account order.
     rows_by_account: dict[str, list[dict[str, str]]] = {}
     for m in value_rows:

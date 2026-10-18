@@ -141,12 +141,12 @@ def test_account_rename_from_a_child_reaches_its_parent(
     test_data_dir: Path, test_scenarios_dir: Path, derive_scenario, loads: Callable[[str], None],
 ) -> None:
     derive_scenario("kid", "retire_alice", files={
-        "account_values.csv": "account_name,opening_balance\nAsset_Savings,30000.00\n"})
+        "account_lots.csv": "account_name,opening_balance\nAsset_Savings,30000.00\n"})
     result = _sim(test_data_dir, "account", "rename", "Asset_Savings", "Asset_Reserve", scenario="kid")
     assert result.exit_code == 0, result.output
-    assert "retire_alice: accounts.csv" in result.output and "kid: account_values.csv" in result.output
+    assert "retire_alice: accounts.csv" in result.output and "kid: account_lots.csv" in result.output
     assert "Asset_Reserve" in _column(test_scenarios_dir / "retire_alice" / "accounts.csv", "name")
-    assert _column(test_scenarios_dir / "kid" / "account_values.csv", "account_name") == ["Asset_Reserve"]
+    assert _column(test_scenarios_dir / "kid" / "account_lots.csv", "account_name") == ["Asset_Reserve"]
     loads("kid")
 
 
@@ -307,7 +307,7 @@ def test_lot_rename_reaches_every_scenario(test_data_dir: Path, test_scenarios_d
                   scenario="kid")
     assert result.exit_code == 0, result.output
     assert "renamed lot of Asset_Brokerage_Joint default to core" in result.output
-    values = test_scenarios_dir / "retire_alice" / "account_values.csv"
+    values = test_scenarios_dir / "retire_alice" / "account_lots.csv"
     lots = dict(zip(_column(values, "account_name"), _column(values, "lot"), strict=True))
     assert lots["Asset_Brokerage_Joint"] == "core"
     loads("kid")

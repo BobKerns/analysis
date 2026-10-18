@@ -288,7 +288,7 @@ flowchart TB
         itemizations["itemizations/*.csv — @name rollups"]
     end
     subgraph base["scenarios/base/ (root scenario)"]
-        base_files["accounts.csv, account_values.csv,
+        base_files["accounts.csv, account_lots.csv,
 scheduled.csv, calendar.csv, chains/*/*.csv, ..."]
         base_series["series/*.csv — this scenario's
 growth-rate/inflation projections"]
@@ -323,7 +323,7 @@ arrowhead."
 flowchart LR
     accounts["accounts.csv
 (name, kind, subkind, series, tax_character)"]
-    values["account_values.csv
+    values["account_lots.csv
 (account_name, lot, symbol, series, ...)"]
     chains["chains/*/*.csv
 (account_name, lot)"]
@@ -438,7 +438,7 @@ lots use).
   up, mix-ins after the main parent's line, so a mix-in's file beats the main parent's), else — for
   `aux/`/`prices/`/`itemizations/` only — the shared file at the data repo root. A match
   replaces the entire file; there is no row-level merge across tiers (unlike
-  `accounts.csv`/`account_values.csv`/etc., which do merge by key, §4.5).
+  `accounts.csv`/`account_lots.csv`/etc., which do merge by key, §4.5).
 - **A derived scenario without its own override inherits its parent's.** Overriding a
   file only where it first needs to differ, and leaving every descendant to inherit that
   override, is the intended shape. For `series/` this is not optional: since there is no
@@ -483,7 +483,7 @@ Required in a root scenario; optional in a derived one, where it overlays the pa
 | `closed` | YYYY-MM | | informational |
 | `meta_json` | json | | default `{}` |
 
-#### 4.3 Per-scenario: `data_repo/scenarios/<name>/account_values.csv`
+#### 4.3 Per-scenario: `data_repo/scenarios/<name>/account_lots.csv`
 
 Opening state for the accounts declared in §4.2, **one row per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)): a position inside one account. An account that is not split has one lot named `default`, for which the `lot` column may be left blank. Required in a root scenario; optional in a derived one, where it overlays the parent's rows by (`account_name`, `lot`) (§4.5).
 
@@ -529,7 +529,7 @@ The folder a kind lives in is a convention for humans and for what's most likely
 per-scenario override, not something the loader validates by kind — a misplaced file still
 loads correctly (it just won't be found via the tier it "should" have used).
 
-Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_values.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it. A symbol is also upper case, as tickers are: a lower-case spelling would be a second symbol that no price file or allocation matches, so the loader rejects one in `securities.csv`, `allocations.csv`, `account_values.csv` or a `security_price__<symbol>.csv` filename (`_validate_symbol_case`), and the commands that write a symbol upper-case it.
+Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_lots.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it. A symbol is also upper case, as tickers are: a lower-case spelling would be a second symbol that no price file or allocation matches, so the loader rejects one in `securities.csv`, `allocations.csv`, `account_lots.csv` or a `security_price__<symbol>.csv` filename (`_validate_symbol_case`), and the commands that write a symbol upper-case it.
 
 - **`federal_brackets.csv`**, **`state_brackets__<state>.csv`**:
   `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate` (percent)
@@ -586,16 +586,16 @@ The main parent's whole line comes first; each mix-in then contributes its own l
 | file | key |
 | --- | --- |
 | `accounts.csv` | `name` |
-| `account_values.csv` | `account_name` |
+| `account_lots.csv` | `account_name` |
 | `scheduled.csv` | `name` |
 | `chains/<role>/<name>.csv` | whole file by chain name, in either role folder |
 | `calendar.csv` | a named row overrides the inherited row with the same `name`, whatever its other fields; any other row matches on (`date`, `kind`, `scheduled_name`, `account_1`, `lot_1`, `account_2`, `lot_2`, `series`, `amount`), so naming an inherited unnamed row (to vary it) still replaces it; two differently named rows sharing all those fields are an error. A `latent_factor` row's key is its `name` alone, since its other key fields are blank |
 | `lifespan.csv` | `person` |
 | `year_to_date.csv` | `name` |
 
-A child row with a new key is appended; one whose key matches the parent replaces every column the child's file has, a blank cell included, so an override must repeat every column it wants to keep, not just the changed ones. A column the child's header leaves out keeps the parent's value. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits; only a scenario with no parent of its own must supply `accounts.csv`, `account_values.csv`, and `scheduled.csv`. A load error about a row names the file it was authored in, by its path within the data repo, and the line its record starts on (blank lines counted), not its position among the merged rows.
+A child row with a new key is appended; one whose key matches the parent replaces every column the child's file has, a blank cell included, so an override must repeat every column it wants to keep, not just the changed ones. A column the child's header leaves out keeps the parent's value. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits; only a scenario with no parent of its own must supply `accounts.csv`, `account_lots.csv`, and `scheduled.csv`. A load error about a row names the file it was authored in, by its path within the data repo, and the line its record starts on (blank lines counted), not its position among the merged rows.
 
-`analysis sim scenario create <name> <parent> [<mixin> ...]` creates one: it writes `scenario.csv` with the parent link (and any mix-ins) header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, a `series/` folder holding a `README.md` that explains what goes there (so the folder isn't empty), `chains/source/` and `chains/destination/`, each kept by an empty `.gitignore`, with a header-only `_example.csv` in `source/` that the loader skips, and a `README.md` (§4.1e) titled with the name, whose first paragraph is the description, followed by a line naming the parent and mix-ins and a placeholder section for what the scenario is for, which the command suggests editing; it verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a). Its `meta_json` is `{"ensemble_size":0}` and its `seed` blank, so it is never an ensemble, even under one ([ADR-006](ADR-006-ensemble-scenarios.md) §7). `analysis sim ensemble create <name> <parent> [<mixin> ...]` writes the same files for an ensemble, and `sim scenario list` / `sim ensemble list` show each scenario's merged `seed` and `ensemble_size` (ADR-006 §7).
+`analysis sim scenario create <name> <parent> [<mixin> ...]` creates one: it writes `scenario.csv` with the parent link (and any mix-ins) header-only `accounts.csv`, `account_lots.csv`, `scheduled.csv`, and `calendar.csv` skeletons, a `series/` folder holding a `README.md` that explains what goes there (so the folder isn't empty), `chains/source/` and `chains/destination/`, each kept by an empty `.gitignore`, with a header-only `_example.csv` in `source/` that the loader skips, and a `README.md` (§4.1e) titled with the name, whose first paragraph is the description, followed by a line naming the parent and mix-ins and a placeholder section for what the scenario is for, which the command suggests editing; it verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a). Its `meta_json` is `{"ensemble_size":0}` and its `seed` blank, so it is never an ensemble, even under one ([ADR-006](ADR-006-ensemble-scenarios.md) §7). `analysis sim ensemble create <name> <parent> [<mixin> ...]` writes the same files for an ensemble, and `sim scenario list` / `sim ensemble list` show each scenario's merged `seed` and `ensemble_size` (ADR-006 §7).
 
 `analysis sim scenario edit [<name>]` (the same command as `sim ensemble edit`) is guided, like every `edit` command: without a name it asks for one, and without options it shows the fields and asks which to change, with completion, writing when done (a seed of `new` draws a fresh one). With options, it sets `scenario.csv`'s `description`, `start`, `end`, `parent_scenario` and `seed`, and the `meta_json` keys `ensemble_size` and `reserve`; a blank value clears a column, or drops a key, so it inherits, except that a blank description restores the default one (`Derived from <parents>`; a root scenario has none, so there it is refused), since an inherited description would describe the parent. It goes through a staged edit (§7), so it is written only if the scenario and every scenario built on it still load: a cycle, or a root scenario left with no `start` or `end` anywhere in its lineage (a load error), is refused. A default description (`Derived from <parents>`) follows a change of parents, as it does a rename. In a `README.md` the command wrote, the first paragraph and the parents line follow the description and parents while they are still word for word as generated; otherwise it warns that the README is what is shown. A scenario with no `README.md` (one made before `scenario create` wrote one) gets the generated one with its first edit. `analysis sim scenario delete <name>` (also `sim ensemble delete`) removes the folder after asking (`--yes` skips the question). It is refused while any scenario names it in `parent_scenario`, listing them; nothing else can depend on it, so it doesn't validate and also takes a scenario that fails to load. It clears `.current_scenario` if that names it, keeps the runs, and lists the markdown files that still mention it.
 
@@ -672,7 +672,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 
 **A chain's role is the folder its file is in** (`registries.CHAIN_ROLES`), and the file name is the chain name. A `source` chain is drawn from: a rule's `from_account`, a calendar transfer's `account_1`, a lot's `refill_chain`, an `rmd` rule's chain. A `destination` chain is paid into: a rule's `to_account`, a calendar transfer's `account_2`, a lot's `overflow_chain`. A step naming another chain names one of the same role. The loader rejects a chain used against its role, a chain file directly under `chains/` or in a folder that names no role, and one name in both folders of one scenario; a leaf chain (one lot) plays either part. No chain is both: money drawn through a chain and money paid through it follow different policies, so the role also says which one a reader follows. Money drawn from a source chain may first refill the lots it reaches, but never passes through their overflow; money paid into a destination chain may overflow on from the lots it reaches, but never passes through their refill chains. `sim chain show --graph` (and the Mermaid source `--mermaid` prints) draws a chain that way, every arrow pointing the way money moves.
 
-**Withdrawing from a taxable lot.** A draw or sweep leg out of a `taxable` non-cash lot (e.g. in a `brokerage_taxable` account) splits into a `return_of_capital` leg and a gain leg (`engine._post_withdrawal`). Basis is tracked **per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)); an account's basis is the sum over its lots (the `account_state` view). The split is pro-rata to the fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount // balance`); it reduces that lot's basis, and its `quantity` when tracked. The gain leg is `stcg` if the lot was acquired a year or less before the sale, else `ltcg`. Money moved into a basis-tracked lot adds to its basis (and shares), except built-in growth, which is total return and leaves basis alone. A realized loss (basis exceeds proceeds) is a negative gain leg, the same convention as a `year_to_date.csv` loss carryforward; the tax accumulator nets and limits it (§2.6). A sweep into a destination chain with a basis step for the lot is not split this way; the chain characterizes it (below). The lot needs an `opening_cost_basis` (a zero balance starts at basis 0); an untracked basis (`NULL`) raises, telling the author to add it to `account_values.csv`.
+**Withdrawing from a taxable lot.** A draw or sweep leg out of a `taxable` non-cash lot (e.g. in a `brokerage_taxable` account) splits into a `return_of_capital` leg and a gain leg (`engine._post_withdrawal`). Basis is tracked **per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)); an account's basis is the sum over its lots (the `account_state` view). The split is pro-rata to the fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount // balance`); it reduces that lot's basis, and its `quantity` when tracked. The gain leg is `stcg` if the lot was acquired a year or less before the sale, else `ltcg`. Money moved into a basis-tracked lot adds to its basis (and shares), except built-in growth, which is total return and leaves basis alone. A realized loss (basis exceeds proceeds) is a negative gain leg, the same convention as a `year_to_date.csv` loss carryforward; the tax accumulator nets and limits it (§2.6). A sweep into a destination chain with a basis step for the lot is not split this way; the chain characterizes it (below). The lot needs an `opening_cost_basis` (a zero balance starts at basis 0); an untracked basis (`NULL`) raises, telling the author to add it to `account_lots.csv`.
 
 #### 4.8 Per-scenario: `data_repo/scenarios/<name>/calendar.csv`
 
@@ -871,7 +871,7 @@ edit it first confirms the file still has the chosen row at that position,
 and refuses if not: the commit check above cannot see a change made before
 staging began.
 
-`account lot add|edit|delete` work on one lot, one `account_values.csv` row
+`account lot add|edit|delete` work on one lot, one `account_lots.csv` row
 (§4.3), named by its account and its label as two arguments; `account lot
 list` shows an account's lots and where each comes from. Without them,
 `add` asks only what applies to the account (a cost basis for a taxable
@@ -887,7 +887,7 @@ listing them. Both reach the scenarios that inherit from this one too,
 including their overrides of the lot, since the staged edit loads them. A
 chain left with no steps is an error, so deleting a chain's only step is
 refused. An account left with no lots loads with an empty `default` lot,
-as an account with no `account_values.csv` row always has.
+as an account with no `account_lots.csv` row always has.
 
 A lot the scenario inherits is edited by writing an override of the whole
 row into the scenario's own file (§4.5); `lot edit` won't rename it, and
@@ -981,7 +981,7 @@ columns. A step's `series` and `cadence` are asked only once it has a
 ### Negative / accepted
 
 - Free-text `kind`/`subkind` in the DDL with loader-side validation means a hand-written SQL `INSERT` could bypass the registry. The loader is the only sanctioned writer; ad-hoc edits to `state/intent/*.sqlite3` are out of scope (and would be overwritten on next reload anyway).
-- Account-level state at the scenario start lives as columns on `account_lot` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`), so "what's in the accounts at scenario start" is one file (`account_values.csv`, §4.3), and prior tax-year activity is a thin feed in `year_to_date.csv` (§4.10).
+- Account-level state at the scenario start lives as columns on `account_lot` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`), so "what's in the accounts at scenario start" is one file (`account_lots.csv`, §4.3), and prior tax-year activity is a thin feed in `year_to_date.csv` (§4.10).
 
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 
@@ -1003,10 +1003,10 @@ These amendments to [ADR-002](ADR-002-storage-schema.md) fall out of the §2 inv
 
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
 
-- [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3).
+- [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_lots.csv` (§4.3).
 - 2026-09-27: `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`) (§4.1c, §4.1d).
 - [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior.
-- After acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7).
+- After acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_lots.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7).
 - [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8).
 - [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.6), the correlation columns (§4.8), and factors merged by name (§4.5).
 - [#34](https://github.com/BobKerns/analysis/issues/34): month date columns accept `YYYY-MM` or `YYYY-MM-DD`, pinned to month-end; day-precise columns are named, a biweekly rule's dates and a `retire_scheduled` date keep a full date's day, and a date-varying row's bare-month bounds span the month (§4, §4.8).

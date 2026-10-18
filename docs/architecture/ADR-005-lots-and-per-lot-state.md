@@ -67,7 +67,7 @@ Leaf chains are per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7 
 
 | file | account column | lot column |
 | --- | --- | --- |
-| `account_values.csv` | `account_name` | `lot` |
+| `account_lots.csv` | `account_name` | `lot` |
 | `chains/<role>/*.csv` | `account_name` | `lot` |
 | `scheduled.csv` | `from_account`, `to_account` | `from_lot`, `to_lot` |
 | `year_to_date.csv` | `from_account`, `to_account` | `from_lot`, `to_lot` |
@@ -85,12 +85,12 @@ The rule depends only on subkind, never on the current lot count, so adding a lo
 
 ### 4. CSV layout
 
-`account_values.csv` ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3) gains optional columns `lot`, `symbol`, `acquired`, `quantity`, `series`, with several rows per account allowed. In a derived scenario, rows overlay the parent's by **(`account_name`, `lot`)**.
+`account_lots.csv` ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3) gains optional columns `lot`, `symbol`, `acquired`, `quantity`, `series`, with several rows per account allowed. In a derived scenario, rows overlay the parent's by **(`account_name`, `lot`)**.
 
 - `opening_balance` may be blank if `quantity`, `symbol`, and a price (§6) are all present; it is then `quantity × price` at `scenario.start`, rounded to cents. If both balance and quantity are given, the balance is authoritative and no price is consulted.
 - `prior_year_end_balance` is summed across an account's lots for RMD. Either every lot of an account has it or none does.
 - `opening_cost_basis` requirements are unchanged, now per lot.
-- Cash-management attributes (`minimum_balance`, `refill_*`, `maximum_balance`, `overflow_*`) are per lot: they moved from `accounts.csv` to `account_values.csv` (plan Phase 7), and the engine, which already keyed them by lot id, is unchanged. A lot may refill from a sibling lot of its own account.
+- Cash-management attributes (`minimum_balance`, `refill_*`, `maximum_balance`, `overflow_*`) are per lot: they moved from `accounts.csv` to `account_lots.csv` (plan Phase 7), and the engine, which already keyed them by lot id, is unchanged. A lot may refill from a sibling lot of its own account.
 
 ### 5. Growth is per lot
 
@@ -142,8 +142,8 @@ Applied to [ADR-001](ADR-001-overall-architecture.md), [ADR-002](ADR-002-storage
 
 ## Consequences
 
-- Positive: lot-level sales and per-security growth with no price path in the engine; reporting is untouched through the view; one file (`account_values.csv`) carries opening state; the ledger stays zero-sum and event-sourced.
-- Negative: every engine site keyed on account id changes to lot id; existing data needs a `lot` column on `account_values.csv` and chain files, and `from_lot`/`to_lot`/`lot_1`/`lot_2` columns filled in for investment accounts; row counts in `lot_state` scale with lots × months.
+- Positive: lot-level sales and per-security growth with no price path in the engine; reporting is untouched through the view; one file (`account_lots.csv`) carries opening state; the ledger stays zero-sum and event-sourced.
+- Negative: every engine site keyed on account id changes to lot id; existing data needs a `lot` column on `account_lots.csv` and chain files, and `from_lot`/`to_lot`/`lot_1`/`lot_2` columns filled in for investment accounts; row counts in `lot_state` scale with lots × months.
 - Runtime lot creation is not supported: money moved into an account goes to a named existing lot.
 
 ## Open questions deferred

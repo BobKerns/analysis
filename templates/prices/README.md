@@ -11,7 +11,7 @@ This folder sits at the data repo root, like `aux/`.
 
 The loader uses the latest price on or before the scenario start to turn a
 lot's `quantity` into an `opening_balance`, when that balance is left blank
-in `account_values.csv` (ADR-005 §6). It is not used month to month — after
+in `account_lots.csv` (ADR-005 §6). It is not used month to month — after
 that a lot grows by its own rate series, from `series/`, not by price.
 
 ## Fetching prices

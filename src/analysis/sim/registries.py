@@ -475,14 +475,14 @@ DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
 PERSONS_CSV_HEADER: tuple[str, ...] = ("id", "display", "birthdate", "role", "meta_json")
 LIFESPAN_CSV_HEADER: tuple[str, ...] = ("person", "final_month")
 
-ACCOUNT_VALUES_CSV_HEADER: tuple[str, ...] = (
+ACCOUNT_LOTS_CSV_HEADER: tuple[str, ...] = (
     "account_name", "lot", "symbol", "acquired", "quantity", "series",
     "opening_balance", "opening_cost_basis", "prior_year_end_balance",
     "minimum_balance", "maximum_balance", "refill_chain", "refill_lot",
     "refill_target", "refill_amount", "overflow_chain", "overflow_lot",
 )
 
-# The per-lot balance-management columns of account_values.csv (ADR-003 §4.3).
+# The per-lot balance-management columns of account_lots.csv (ADR-003 §4.3).
 CASH_MANAGEMENT_COLUMNS: tuple[str, ...] = (
     "minimum_balance", "maximum_balance", "refill_chain", "refill_lot",
     "refill_target", "refill_amount", "overflow_chain", "overflow_lot",

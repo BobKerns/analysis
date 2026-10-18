@@ -123,7 +123,7 @@ def _rename_in_chains(scenario_dir: Path, columns: tuple[str, ...], old: str, ne
 
 ACCOUNT_COLUMNS: dict[str, tuple[str, ...]] = {
     "accounts.csv": ("name",),
-    "account_values.csv": ("account_name", "refill_chain", "overflow_chain"),
+    "account_lots.csv": ("account_name", "refill_chain", "overflow_chain"),
     "scheduled.csv": ("from_account", "to_account", "interest_account"),
     "calendar.csv": ("account_1", "account_2"),
     "quicken_account_map.csv": ("account_name",),
@@ -279,7 +279,7 @@ def rename_calendar_row(scenario_dir: Path, old: str, new: str) -> list[str]:
 
 SERIES_COLUMNS: dict[str, tuple[str, ...]] = {
     "accounts.csv": ("series",),
-    "account_values.csv": ("series",),
+    "account_lots.csv": ("series",),
     "scheduled.csv": ("series",),
     "calendar.csv": ("series",),
 }
@@ -498,7 +498,7 @@ def symbol_series(data_dir: Path, name: str) -> str | None:
     symbols = _cells(data_dir / "securities.csv", ("symbol",))
     scenarios = data_dir / "scenarios"
     for each in scenario_folders(scenarios):
-        symbols |= _cells(scenarios / each / "account_values.csv", ("symbol",))
+        symbols |= _cells(scenarios / each / "account_lots.csv", ("symbol",))
     symbols.discard("")
     if name in symbols:
         return f"{name!r} is a symbol, and lots holding it read its series by that name"

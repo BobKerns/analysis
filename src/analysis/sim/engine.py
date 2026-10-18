@@ -1751,7 +1751,7 @@ def _post_withdrawal(
         raise EngineError(
             f"account {account_name.get(from_id)!r}: withdrawal needs cost-basis "
             "tracking (taxable, non-cash) but opening_cost_basis was never set -- "
-            "add it to account_values.csv"
+            "add it to account_lots.csv"
         )
     if account_kinds[to_id] == "liability":
         amount = min(amount, max(0, balances.get(to_id, 0)))
@@ -1968,7 +1968,7 @@ def _sale_basis(
         name = None if refill_ctx is None else refill_ctx.account_name.get(lot_id)
         raise EngineError(
             f"account {name!r}: a chain step recovers its basis, but it has none -- "
-            "set opening_cost_basis in account_values.csv"
+            "set opening_cost_basis in account_lots.csv"
         )
     prior = balances.get(lot_id, 0)
     return _SaleBasis(basis if prior <= amount else basis * amount // prior)
@@ -2167,7 +2167,7 @@ def _add_basis(
     if ctx is None or basis is None:
         raise EngineError(
             f"account {account_name.get(lot_id)!r}: a capital_improvement step adds "
-            "to its basis, but it has none -- set opening_cost_basis in account_values.csv"
+            "to its basis, but it has none -- set opening_cost_basis in account_lots.csv"
         )
     ctx.cost_bases[lot_id] = basis + amount
 
