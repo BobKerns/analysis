@@ -618,8 +618,11 @@ only for ensembles, Part 4.10):
 Leave `tax_character` blank on a `one_off_transfer` or `transfer_balance` out
 of a brokerage lot and the move is a sale: the lot's share of basis comes out
 as `return_of_capital`, the rest as a capital gain, and the lot's basis drops.
-From other accounts a blank means `none`, which suits a rollover between
-tax-deferred accounts. Set `tax_character` to override either.
+Out of a traditional IRA or 401k lot, a blank is taxed as ordinary income
+(`tax_deferred_out`) wherever the money lands, a Roth lot included (a
+conversion), except in another traditional lot, which is an untaxed rollover.
+Into a chain, each step's money is decided this way. From other accounts a
+blank means `none`. Set `tax_character` to override any of these.
 
 A rule that should start on a future date needs no calendar event: give its
 `scheduled.csv` row that `start` date.

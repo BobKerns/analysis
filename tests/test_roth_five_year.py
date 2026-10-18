@@ -174,3 +174,18 @@ def test_a_roth_rollover_is_not_a_distribution(
     append_calendar_row(date="2027-01-31", kind="one_off_transfer", account_1=ROTH, lot_1="default",
                         account_2=ROTH, lot_2="b", amount="15000.00")
     assert _legs(_run(load_test_copy, runs_dir)) == [("2027-01-31", ROTH, 1_500_000, "none")]
+
+
+def test_a_roth_distribution_through_a_chain_is_taxed_on_earnings(
+    young_roth: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    young_roth("0.00")
+    (retire_alice_csv("chains/destination") / "out.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Checking,,,,,\n")
+    append_calendar_row(date="2027-01-31", kind="one_off_transfer", account_1=ROTH, lot_1="default",
+                        account_2="out", amount="10000.00")
+    assert _legs(_run(load_test_copy, runs_dir)) == [
+        ("2027-01-31", "Asset_Checking", 1_000_000, "roth_nonqualified"),
+    ]
