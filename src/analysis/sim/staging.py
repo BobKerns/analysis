@@ -244,11 +244,11 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedE
     runs. The body makes its changes under ``edit.data_dir`` (``edit.path``
     maps a real path to its staged copy). On a clean exit, every scenario
     whose folder changed, and every scenario inheriting from one, is loaded
-    from the stage. Any that fails -- unless it already failed before the
-    edit -- raises :class:`EditRejected` with nothing written. If a file the
-    edit would write changed on disk meanwhile, :class:`ConcurrentEdit` is
-    raised, also with nothing written; otherwise the changed files are copied
-    back. If the body raises, nothing is written.
+    from the stage -- every scenario, when a shared top-level file changed.
+    Any that fails -- unless it already failed before the edit -- raises
+    :class:`EditRejected` with nothing written. If a file the edit would write
+    changed on disk meanwhile, :class:`ConcurrentEdit` is raised, also with
+    nothing written; otherwise the changed files are copied back. If the body raises, nothing is written.
     """
     real = Path(data_dir).resolve()
     name = resolve_scenario_name(real, scenario).name
@@ -283,6 +283,10 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedE
             rel.parts[1] for rel in (*changed, *removed)
             if rel.parts[0] == SCENARIOS and len(rel.parts) > 2
         }
+        # A top-level file (persons.csv) is shared by every scenario, so
+        # every scenario must still load with it.
+        if any(rel.parts[0] != SCENARIOS for rel in (*changed, *removed)):
+            touched |= {d.name for d in (stage / SCENARIOS).iterdir() if d.is_dir()}
         issues: list[str] = []
         for affected in _affected_scenarios(stage, touched or {name}):
             found, result = _load_issues(stage, affected)
