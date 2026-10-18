@@ -5524,7 +5524,7 @@ def edit_account(
         # Its lots' subkinds, which set how it is taxed, would have to change too.
         raise click.ClickException(
             f"{name!r} can't change to or from subkind {registries.RETIREMENT_SUBKIND!r}; "
-            "add a new account and move the money with a transfer_balance event"
+            "add a new account and move the money (sim invest, or a transfer_balance event)"
         )
     if owner not in persons and owner != "joint":
         raise click.ClickException(
