@@ -493,14 +493,18 @@ def run(
             f"  run: analysis sim load {scenario_name}"
         )
     resolved_by = run_by or os.environ.get("USER") or "unknown"
-    _run_loaded(
-        scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
-        run_by=resolved_by, allow_dirty_data=allow_dirty_data,
-        allow_dirty_code=allow_dirty_code, ensemble_size=ensemble_size,
-        sensitivity=sensitivity, quantiles=quantiles, only=only_names, jobs=jobs,
-    )
-    if resolved_data_dir is not None:
-        _prune_state(resolved_data_dir, resolved_intent_dir, resolved_runs_dir)
+    try:
+        _run_loaded(
+            scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
+            run_by=resolved_by, allow_dirty_data=allow_dirty_data,
+            allow_dirty_code=allow_dirty_code, ensemble_size=ensemble_size,
+            sensitivity=sensitivity, quantiles=quantiles, only=only_names, jobs=jobs,
+        )
+    finally:
+        # A failed run leaves its run file too, so it still gets housekeeping;
+        # as its scenario's newest attempt, it is never pruned itself.
+        if resolved_data_dir is not None:
+            _prune_state(resolved_data_dir, resolved_intent_dir, resolved_runs_dir)
 
 
 def _prune_state(data_dir: Path, intent_dir: Path, runs_dir: Path) -> None:

@@ -41,6 +41,7 @@ from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
 from analysis.sim.schema import connect_sim_file
 
 __all__ = [
+    "ACTIVE_WINDOW",
     "DEFAULT_RETENTION",
     "RETENTION_FILENAME",
     "StateItem",
@@ -93,6 +94,12 @@ _RUN_FILE = re.compile(rf"^({_STAMP})_(.+)_[^_]+\.sqlite3$")
 _BATCH_DIR = re.compile(rf"^({_STAMP})(?:-(\d+))?$")
 _DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(minute|hour|day|week)s?\s*$", re.IGNORECASE)
 _SECTIONS = ("intents", "runs", "pins")
+# Beyond this, `now - since` could leave datetime's range.
+_LONGEST_SINCE = timedelta(days=366_000)
+# A run or batch written to this recently may still be in progress in another
+# `sim run` (concurrent runs are allowed, cli._reserve_batch), so it is never
+# pruned, whatever its rank.
+ACTIVE_WINDOW = timedelta(minutes=10)
 
 
 class RetentionError(ValueError):
@@ -176,7 +183,8 @@ def parse_retention(text: str, *, base: Path) -> Retention:
     if unknown:
         raise RetentionError(f"unknown section(s): {', '.join(unknown)} "
                              f"(expected {', '.join(_SECTIONS)})")
-    pins = doc.get("pins") or []
+    pins = doc.get("pins")
+    pins = [] if pins is None else pins
     if not isinstance(pins, list) or not all(isinstance(p, str) and p.strip() for p in pins):
         raise RetentionError("pins: expected a list of paths")
     return Retention(
@@ -188,8 +196,9 @@ def parse_retention(text: str, *, base: Path) -> Retention:
 
 def _rules(section: str, raw: Any) -> tuple[Rule, ...] | None:
     # An empty section keeping nothing would delete everything but the
-    # newest items, which is never what a blank section means.
-    if not raw:
+    # newest items, which is never what a blank section means. Other falsy
+    # values (0, "") are malformed, not empty, so they fall through.
+    if raw is None or raw == []:
         return None
     if not isinstance(raw, list):
         raise RetentionError(f"{section}: expected a list of rules")
@@ -216,7 +225,13 @@ def _duration(where: str, raw: Any) -> timedelta:
         raise RetentionError(f"{where}: since must look like '3 days' (minutes, hours, "
                              f"days or weeks), got {raw!r}")
     amount, unit = float(match[1]), match[2].lower()
-    return timedelta(**{f"{unit}s": amount})
+    try:
+        since = timedelta(**{f"{unit}s": amount})
+    except OverflowError:
+        since = _LONGEST_SINCE + _LONGEST_SINCE
+    if since > _LONGEST_SINCE:
+        raise RetentionError(f"{where}: since is longer than 1000 years, got {raw!r}")
+    return since
 
 
 def plan_prune(
@@ -244,6 +259,7 @@ def plan_prune(
             protected.add(_newest_succeeded(group))
         for rank, item in enumerate(group):
             if (rank in protected
+                    or _active(item.path, now)
                     or any(rule.keeps(rank, item.made, now) for rule in rules)
                     or _is_pinned(item.path, retention.pins)
                     or (kind != "run" and (item.scenario, item.path.name) in pinned_batches)):
@@ -336,6 +352,15 @@ def _succeeded(item: StateItem) -> bool:
                 and all(s == "succeeded" for s in statuses.values()))
     except (sqlite3.DatabaseError, OSError, ValueError):
         return False  # unreadable: not a success to protect
+
+
+def _active(path: Path, now: datetime) -> bool:
+    """Written within ACTIVE_WINDOW of ``now``. A batch folder's own mtime
+    moves each time a member file is added to it."""
+    try:
+        return path.stat().st_mtime >= (now - ACTIVE_WINDOW).timestamp()
+    except OSError:
+        return False
 
 
 def _is_pinned(path: Path, pins: tuple[Path, ...]) -> bool:

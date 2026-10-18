@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.sim import cli
 from analysis.sim.retention import (
     DEFAULT_RETENTION,
     RETENTION_FILENAME,
@@ -52,6 +55,9 @@ def test_parses_the_documented_example(tmp_path: Path) -> None:
     ("run:\n  - keep: 5\n", "unknown section(s): run"),
     ("pins: state/runs/x.sqlite3\n", "pins: expected a list"),
     ("runs: [\n", "not valid YAML"),
+    ("runs:\n  - keep: 1\npins: 0\n", "pins: expected a list"),
+    ("runs: 0\n", "runs: expected a list of rules"),
+    ("runs:\n  - since: 99999999999 weeks\n", "since is longer than 1000 years"),
 ])
 def test_rejects_malformed_rules(tmp_path: Path, text: str, message: str) -> None:
     with pytest.raises(RetentionError, match=message.replace("(", r"\(").replace(")", r"\)")):
@@ -128,6 +134,17 @@ def test_pinning_a_member_keeps_its_batch_and_its_intents(
     assert other_intents in planned
 
 
+def test_a_run_or_batch_written_moments_ago_is_never_pruned(
+    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    """Another `sim run` may still be writing it (concurrent runs are allowed)."""
+    in_progress = fake_state("batch", "alice", "2026-10-01T120000Z")
+    fake_state("batch", "alice", "2026-10-02T120000Z")
+    os.utime(in_progress, (NOW.timestamp() - 60, NOW.timestamp() - 60))
+    planned = _planned(_rules("runs:\n  - keep: 1\n", tmp_path), intent_dir, runs_dir)
+    assert in_progress not in planned
+
+
 def test_a_missing_or_empty_section_keeps_everything(
     fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
 ) -> None:
@@ -190,6 +207,27 @@ def test_sim_run_prunes_after_running(
     assert "pruned 1 run file(s) (.retention.yaml)" in result.output
     assert not old.exists()
     assert len(list(runs_dir.glob("*_retire_alice_*.sqlite3"))) == 1
+
+
+def test_sim_run_prunes_even_when_the_run_fails(
+    fake_state: Callable[..., Path], test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (test_data_dir / RETENTION_FILENAME).write_text("runs:\n  - keep: 1\n")
+    old = fake_state("run", "retire_alice", "2026-01-01T120000Z")
+    fake_state("run", "retire_alice", "2026-01-02T120000Z")
+    fake_state("run", "retire_alice", "2026-01-03T120000Z", status="failed")
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise click.ClickException("engine failed")
+
+    monkeypatch.setattr(cli, "_run_loaded", _fail)
+    result = CliRunner().invoke(main, [
+        "sim", "run", "retire_alice", "--data-dir", str(test_data_dir), "--allow-dirty-data",
+    ])
+    assert result.exit_code != 0
+    assert "engine failed" in result.output
+    assert "pruned 1 run file(s)" in result.output
+    assert not old.exists()
 
 
 def test_sim_load_warns_of_a_bad_retention_file_and_still_succeeds(

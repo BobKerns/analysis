@@ -185,9 +185,9 @@ pins:             # relative to the data repo root, the folder holding state/
 
 - **What is counted.** Items are grouped by scenario and kind — single run files, run batches, intent batches — and ranked newest first by the timestamp in their names. Only names `sim run` writes are recognized (`<stamp>_<scenario>_<version>.sqlite3`, a `<stamp>[-N]` batch folder); anything else in `state/`, including a scenario's own intent file and its `base_case.sqlite3`, is never pruned.
 - **Rules.** An item is kept when any rule in its section keeps it. A rule keeps it when any condition it gives holds: `keep: N` (among its group's N newest) or `since: <duration>` (made within that long; minutes, hours, days or weeks). So the defaults keep each scenario's five newest and everything from the last week, as backup tools combine keep-last and keep-within. A missing or empty section keeps everything of its kind.
-- **Always kept.** Each group's newest item (a failed run's latest attempt included), and each scenario's newest successful run file and newest successful run batch (one with a batch manifest, no recorded failures, and every member `succeeded`).
+- **Always kept.** Each group's newest item (a failed run's latest attempt included), and each scenario's newest successful run file and newest successful run batch (one with a batch manifest, no recorded failures, and every member `succeeded`), and anything written in the last ten minutes, which a concurrent `sim run` may still be writing.
 - **Batches go whole.** A batch folder is deleted with all its members, never member by member. A pin naming a batch or anything inside it keeps the batch, and keeps both its run folder and its member intents.
-- **Never fatal.** A malformed file is a warning naming the problem and prunes nothing; the load or run itself still succeeds. Each prune prints one `pruned …` line when it deleted something.
+- **Never fatal.** A malformed file is a warning naming the problem and prunes nothing; the load or run itself still succeeds. A run that fails still prunes afterwards, since its run file stays behind. Each prune prints one `pruned …` line when it deleted something.
 
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 

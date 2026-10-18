@@ -1238,7 +1238,12 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     single run file; ``fake_state("batch", ...)`` a run batch of ``members``
     member files with a batch manifest (``complete=False`` leaves the last
     member out); ``fake_state("intent", ...)`` a member-intent batch. Each
-    run file holds just a ``simulation_run`` row with the status."""
+    run file holds just a ``simulation_run`` row with the status. Every file
+    and folder written gets the stamp as its mtime, so nothing reads as still
+    being written (retention.ACTIVE_WINDOW)."""
+    import os
+    from datetime import UTC, datetime
+
     from analysis.sim.ensemble import write_batch_manifest
 
     def _run_file(path: Path, status: str) -> None:
@@ -1252,9 +1257,11 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
 
     def _fake(kind: str, scenario_name: str, stamp: str, *, status: str = "succeeded",
               members: int = 2, complete: bool = True) -> Path:
+        made = datetime.strptime(stamp, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()
         if kind == "run":
             path = runs_dir / f"{stamp}_{scenario_name}_abc1234.sqlite3"
             _run_file(path, status)
+            os.utime(path, (made, made))
             return path
         path = (runs_dir if kind == "batch" else intent_dir) / scenario_name / stamp
         path.mkdir(parents=True)
@@ -1263,6 +1270,8 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
             _run_file(path / f"member_{i:04d}.sqlite3", status)
         if kind == "batch":
             write_batch_manifest(path, member_count=members, failures=[])
+        for child in [*path.iterdir(), path]:
+            os.utime(child, (made, made))
         return path
 
     return _fake
