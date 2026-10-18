@@ -90,7 +90,7 @@ The rule depends only on subkind, never on the current lot count, so adding a lo
 `account_lots.csv` ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3) gains optional columns `lot`, `symbol`, `acquired`, `quantity`, `series`, with several rows per account allowed. In a derived scenario, rows overlay the parent's by **(`account_name`, `lot`)**.
 
 - `opening_balance` may be blank if `quantity`, `symbol`, and a price (§6) are all present; it is then `quantity × price` at `scenario.start`, rounded to cents. If both balance and quantity are given, the balance is authoritative and no price is consulted.
-- `prior_year_end_balance` is summed across an account's lots for RMD. Either every lot of an account has it or none does.
+- `prior_year_end_balance` is summed across an account's traditional lots for RMD. Either every one of an account's lots has it or none does, Roth lots aside: they owe no RMD, so they needn't carry it.
 - `opening_cost_basis` requirements are unchanged, now per lot.
 - Cash-management attributes (`minimum_balance`, `refill_*`, `maximum_balance`, `overflow_*`) are per lot: they moved from `accounts.csv` to `account_lots.csv` (plan Phase 7), and the engine, which already keyed them by lot id, is unchanged. A lot may refill from a sibling lot of its own account.
 
