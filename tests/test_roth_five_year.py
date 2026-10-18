@@ -31,12 +31,14 @@ def test_the_clock_runs_five_tax_years_from_jan_1(on: date, qualified: bool) -> 
     assert engine._roth_qualified(roth, on) is qualified
 
 
-@pytest.mark.parametrize(("on", "qualified"), [
-    (date(2024, 9, 14), False),
-    (date(2024, 9, 15), True),
+@pytest.mark.parametrize(("born", "on", "qualified"), [
+    (date(1965, 3, 15), date(2024, 9, 14), False),
+    (date(1965, 3, 15), date(2024, 9, 15), True),
+    (date(1965, 8, 31), date(2025, 2, 27), False),
+    (date(1965, 8, 31), date(2025, 2, 28), True),  # no Feb 31: the month's last day
 ])
-def test_a_qualified_distribution_also_needs_59_and_a_half(on: date, qualified: bool) -> None:
-    roth = RothLot(basis_first=True, clock_start=None, birthdate=date(1965, 3, 15))
+def test_a_qualified_distribution_also_needs_59_and_a_half(born: date, on: date, qualified: bool) -> None:
+    roth = RothLot(basis_first=True, clock_start=None, birthdate=born)
     assert engine._roth_qualified(roth, on) is qualified
 
 

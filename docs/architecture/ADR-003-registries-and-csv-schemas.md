@@ -836,7 +836,7 @@ The CSVs are the source of truth and the loader is their only validator, so
 every `analysis sim` command that edits scenario CSVs or the shared
 `persons.csv` (`calendar add|edit|delete`, `person add|edit`, `person lifespan set|clear`,
 `transfer add`, `scheduled add|edit|delete`/`import-baseline`, `account
-add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|rename|delete`,
+add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|rename|delete`, `invest`,
 the `tag` commands, `chain` and `series` edits, the other `rename` commands,
 `scenario create|rename`, `ensemble create|rename`) goes through one staged edit
 (`analysis.sim.staging.staged_edit`):
@@ -1071,6 +1071,7 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#190](https://github.com/BobKerns/analysis/issues/190): `scenario create` writes a `README.md`; `scenario|ensemble edit` and `delete`; a `start` or `end` blank down the whole lineage is a load error (§4.5).
 - [#217](https://github.com/BobKerns/analysis/issues/217): `account_values.csv` is renamed `account_lots.csv`; the Roth and traditional IRA/401k account subkinds become `retirement`, with the old names as lot subkinds that set each lot's tax treatment; traditional-to-traditional moves are untaxed rollovers; RMDs count only traditional lots (§1, §1a, §2.3, §4.2, §4.3).
 - [#217](https://github.com/BobKerns/analysis/issues/217): Roth lots track basis and follow the five-year rule: earnings before a qualified distribution are the new `roth_nonqualified` character, and a chain skips such a Roth step unless it is the last (§1a, §4.3, §4.6, §4.7).
+- [#217](https://github.com/BobKerns/analysis/issues/217): `sim invest` writes a new lot, its account if new, and the `one_off_transfer` that buys it, as one staged edit (§7).
 - [#217](https://github.com/BobKerns/analysis/issues/217): a blank `tax_character` on a `one_off_transfer` or `transfer_balance` out of a traditional lot is taxed by where each leg lands, through a destination chain too, instead of posting as `none` (§3.4, §3.7, §4.8).
 - [#217](https://github.com/BobKerns/analysis/issues/217): a `primary` or `secondary` person must have a `birthdate`, and a `retirement` account's owner must be such a person (§1a, §4.1, §4.2).
 - [#221](https://github.com/BobKerns/analysis/issues/221): `lifespan.csv`'s `final_month` is replaced by `age_at_death`, which can vary across ensemble members (`uniform` or `triangular` bounds in years) and join correlation trees as `lifespan:<person>`, a name calendar rows can no longer take; the tax accumulator and `on_death` read the derived final month (§2.6, §2.9, §4.8, §4.9).
