@@ -1228,3 +1228,50 @@ def calibration_rate_csv(tmp_path: Path) -> Path:
     path = tmp_path / "premiums.csv"
     path.write_text("date,rate\n2020-01-01,3.0\n2021-01-01,5.0\n2022-01-01,4.0\n")
     return path
+
+
+@pytest.fixture(scope="function")
+def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
+    """Callable that fabricates what ``sim run`` leaves under ``state/``, for
+    retention tests (#195) that need many old runs without running them:
+    ``fake_state("run", "alice", "2026-10-01T120000Z", status=...)`` writes a
+    single run file; ``fake_state("batch", ...)`` a run batch of ``members``
+    member files with a batch manifest (``complete=False`` leaves the last
+    member out); ``fake_state("intent", ...)`` a member-intent batch. Each
+    run file holds just a ``simulation_run`` row with the status. Every file
+    and folder written gets the stamp as its mtime, so nothing reads as still
+    being written (retention.ACTIVE_WINDOW)."""
+    import os
+    from datetime import UTC, datetime
+
+    from analysis.sim.ensemble import write_batch_manifest
+
+    def _run_file(path: Path, status: str) -> None:
+        con = sqlite3.connect(path)
+        try:
+            con.execute("CREATE TABLE simulation_run (id INTEGER PRIMARY KEY, status TEXT)")
+            con.execute("INSERT INTO simulation_run VALUES (1, ?)", (status,))
+            con.commit()
+        finally:
+            con.close()
+
+    def _fake(kind: str, scenario_name: str, stamp: str, *, status: str = "succeeded",
+              members: int = 2, complete: bool = True) -> Path:
+        made = datetime.strptime(stamp, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()
+        if kind == "run":
+            path = runs_dir / f"{stamp}_{scenario_name}_abc1234.sqlite3"
+            _run_file(path, status)
+            os.utime(path, (made, made))
+            return path
+        path = (runs_dir if kind == "batch" else intent_dir) / scenario_name / stamp
+        path.mkdir(parents=True)
+        written = members if complete else members - 1
+        for i in range(written):
+            _run_file(path / f"member_{i:04d}.sqlite3", status)
+        if kind == "batch":
+            write_batch_manifest(path, member_count=members, failures=[])
+        for child in [*path.iterdir(), path]:
+            os.utime(child, (made, made))
+        return path
+
+    return _fake

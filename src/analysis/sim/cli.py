@@ -118,6 +118,7 @@ from analysis.sim.overlay import (
 )
 from analysis.frames import named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
+from analysis.sim.retention import RetentionError, prune_state
 from analysis.sim.schema import connect_sim_file
 
 if TYPE_CHECKING:
@@ -195,6 +196,8 @@ def load(
 
     Naming a scenario also records it as the data repo's current scenario;
     omitting it reuses that recorded scenario. Pass --no-run to only load.
+    Either way, old runs and batches are then pruned by the data repo's
+    .retention.yaml, created with default rules if missing.
     """
     resolved = _resolve_data_dir(data_dir)
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved)
@@ -217,6 +220,9 @@ def load(
     click.echo(f"  current scenario: {ref.name}")
     for table, n in result.counts.items():
         click.echo(f"  {table}: {n}")
+    if not run_after_load:
+        _prune_state(resolved, resolved_intent_dir,
+                     _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved))
 
     if run_after_load:
         ctx.invoke(
@@ -452,6 +458,9 @@ def run(
     single run; with ``--sensitivity``, a one-at-a-time sensitivity batch
     (ADR-007). A scenario with varying rows that is not an ensemble runs its
     base case, each varying row at its central value.
+
+    Afterwards, old run files and batches are pruned by the data repo's
+    ``.retention.yaml``, created with default rules if missing (ADR-004 §10).
     """
     quantiles, only_names, jobs = _batch_options(
         sensitivity=sensitivity, ensemble_size=ensemble_size, only=only,
@@ -484,7 +493,46 @@ def run(
             f"  run: analysis sim load {scenario_name}"
         )
     resolved_by = run_by or os.environ.get("USER") or "unknown"
+    try:
+        _run_loaded(
+            scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
+            run_by=resolved_by, allow_dirty_data=allow_dirty_data,
+            allow_dirty_code=allow_dirty_code, ensemble_size=ensemble_size,
+            sensitivity=sensitivity, quantiles=quantiles, only=only_names, jobs=jobs,
+        )
+    finally:
+        # A failed run leaves its run file too, so it still gets housekeeping;
+        # as its scenario's newest attempt, it is never pruned itself.
+        if resolved_data_dir is not None:
+            _prune_state(resolved_data_dir, resolved_intent_dir, resolved_runs_dir)
 
+
+def _prune_state(data_dir: Path, intent_dir: Path, runs_dir: Path) -> None:
+    """Apply the data repo's ``.retention.yaml`` after a load or run
+    (ADR-004 §10). Housekeeping never fails the command: a bad file or a
+    failed delete is a warning."""
+    try:
+        result = prune_state(data_dir, intent_dir, runs_dir)
+    except RetentionError as exc:
+        click.echo(f"  warning: {data_dir / '.retention.yaml'}: {exc}; nothing pruned", err=True)
+        return
+    except OSError as exc:
+        click.echo(f"  warning: pruning state stopped: {exc}", err=True)
+        return
+    if result.created is not None:
+        click.echo(f"created {result.created} with the default retention rules")
+    if result:
+        click.echo(result.summary())
+
+
+def _run_loaded(
+    scenario_name: str, intent_path: Path, intent_dir: Path, runs_dir: Path,
+    *, run_by: str, allow_dirty_data: bool, allow_dirty_code: bool,
+    ensemble_size: int | None, sensitivity: bool, quantiles: tuple[float, ...],
+    only: list[str] | None, jobs: int,
+) -> None:
+    """``sim run``'s work once the intent is loaded: a sensitivity batch, an
+    ensemble, or a single run."""
     if sensitivity:
         if not _has_unresolved_vary(intent_path):
             raise click.ClickException(
@@ -493,8 +541,8 @@ def run(
             )
         _run_sensitivity(
             scenario_name, intent_path,
-            resolved_intent_dir, resolved_runs_dir,
-            quantiles=quantiles, only=only_names, run_by=resolved_by,
+            intent_dir, runs_dir,
+            quantiles=quantiles, only=only, run_by=run_by,
             allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code, jobs=jobs,
         )
         return
@@ -503,8 +551,8 @@ def run(
         if ensemble_size is not None or _recorded_ensemble_size(intent_path):
             _run_ensemble(
                 scenario_name, intent_path,
-                resolved_intent_dir, resolved_runs_dir,
-                ensemble_size=ensemble_size, run_by=resolved_by,
+                intent_dir, runs_dir,
+                ensemble_size=ensemble_size, run_by=run_by,
                 allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
                 jobs=jobs,
             )
@@ -513,17 +561,17 @@ def run(
             f"{scenario_name} is not an ensemble: running its base case, each varying "
             "row at its central value (--ensemble-size N runs it as an ensemble)"
         )
-        intent_path = _resolve_base_case(scenario_name, intent_path, resolved_intent_dir)
+        intent_path = _resolve_base_case(scenario_name, intent_path, intent_dir)
 
     data_version = _read_data_version(intent_path)
     short = data_version[:7] if data_version else "nodata"
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-    run_path = resolved_runs_dir / f"{stamp}_{scenario_name}_{short}.sqlite3"
+    run_path = runs_dir / f"{stamp}_{scenario_name}_{short}.sqlite3"
 
     try:
         out = run_scenario(
             intent_path, run_path,
-            run_by=resolved_by,
+            run_by=run_by,
             allow_dirty_data=allow_dirty_data,
             allow_dirty_code=allow_dirty_code,
         )

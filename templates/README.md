@@ -16,6 +16,7 @@ SQL schema alongside the source CSV.
 ```text
 <data_repo>/
     activate-analysis             # sourced shell script ([ADR-004](../docs/architecture/ADR-004-reproducibility-and-activation.md) §4)
+    .retention.yaml               # which old runs `sim load`/`sim run` prune ([ADR-004](../docs/architecture/ADR-004-reproducibility-and-activation.md) §10)
     persons.csv                   # household owners + operator identities ($ANALYSIS_USER)
     accounts.csv                  # chart of accounts
     itemizations/<name>.csv       # optional money rollups referenced as @<name>
@@ -93,7 +94,7 @@ When sourced, `activate-analysis` will:
 
 - Discover the analysis program repo from `$ANALYSIS_DATA_DIR/.analysis`.
 - Prompt for the repo path if missing/invalid, validate it, and persist it.
-- Ensure `.analysis`, `.current_scenario` and `.analysis_user` are ignored in the data repo's `.gitignore`.
+- Ensure `.analysis`, `.current_scenario`, `.analysis_user` and `.retention.yaml` are ignored in the data repo's `.gitignore`.
 - Create `.venv` with `uv sync --group dev` if needed, then activate it.
 - Take `ANALYSIS_USER` from the environment or `.analysis_user`; if neither names a
   person in `persons.csv`, list the `primary` persons and ask for an id or display

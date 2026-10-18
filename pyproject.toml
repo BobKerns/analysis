@@ -21,6 +21,7 @@ dependencies = [
   "markdown-it-py>=4.2.0",
   "anywidget>=0.9.18",
   "playwright>=1.64.0",
+  "pyyaml>=6.0.3",
 ]
 
 [project.scripts]
