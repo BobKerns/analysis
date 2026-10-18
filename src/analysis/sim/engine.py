@@ -915,7 +915,7 @@ def _post_transfer(
          remainder, tax_char, tax_year, reason_kind, reason_id, parent_event_id),
     )
     if track is not None:
-        _track_lots(track, account_kinds, balances, from_id, to_id, amount)
+        _track_lots(track, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
     if track is not None:
@@ -927,12 +927,23 @@ def _post_transfer(
 
 def _track_lots(
     ctx: RefillContext, account_kinds: dict[int, str], balances: dict[int, int],
-    from_id: int, to_id: int, amount: int,
+    from_id: int, to_id: int, amount: int, on: date,
 ) -> None:
     """Shares leave ``from_id`` in proportion to the value withdrawn, and
-    ``to_id`` records a purchase. Call before ``balances`` moves."""
+    ``to_id`` records a purchase. Call before ``balances`` moves.
+
+    Money out of a Roth lot takes its basis with it (``_roth_basis_out``).
+    Rolled into another Roth lot, it carries that basis, or all of it as
+    basis when the draw would have been qualified, as a qualified Roth 401k
+    rollover into a Roth IRA does."""
     if amount <= 0:
         return
+    carried = amount
+    if from_id in ctx.roth:
+        basis_out = _roth_basis_out(ctx, balances, from_id, amount)
+        ctx.cost_bases[from_id] = (ctx.cost_bases.get(from_id) or 0) - basis_out
+        if to_id in ctx.roth and not _roth_qualified(ctx.roth[from_id], on):
+            carried = basis_out
     if account_kinds[from_id] == "asset":
         quantity = ctx.quantities.get(from_id)
         prior_balance = balances.get(from_id, 0)
@@ -942,6 +953,8 @@ def _track_lots(
             )
     if account_kinds[to_id] == "asset":
         _record_purchase(ctx, balances, from_id, to_id, amount)
+        if carried < amount and (to_basis := ctx.cost_bases.get(to_id)) is not None:
+            ctx.cost_bases[to_id] = to_basis - (amount - carried)
 
 
 def _post_fixed_amount(
@@ -1884,7 +1897,7 @@ def _post_withdrawal(
     basis_out = 0 if prior_balance <= 0 else min(basis, basis * amount // prior_balance)
     gain = amount - basis_out
     if refill_ctx is not None:
-        _track_lots(refill_ctx, account_kinds, balances, from_id, to_id, amount)
+        _track_lots(refill_ctx, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
     basis_leg_id = _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_id, to_id, basis_out,
         "return_of_capital", reason_id, parent_event_id, reason_kind=reason_kind,
@@ -1930,11 +1943,8 @@ def _post_roth_withdrawal(
             con, balances, account_kinds, step_id, month_s, ctx, from_id, amount,
         )
     taxed = _roth_taxed(ctx, balances, from_id, amount, _parse_date(month_s))
-    basis = ctx.cost_bases.get(from_id) or 0
-    # A qualified distribution spends basis by the same rule as one that
-    # isn't, so a later rollover or nonqualified draw sees the right basis.
-    ctx.cost_bases[from_id] = basis - _roth_basis_out(ctx, balances, from_id, amount)
-    _track_lots(ctx, account_kinds, balances, from_id, to_id, amount)
+    # _track_lots spends the lot's basis by the same rule, qualified or not.
+    _track_lots(ctx, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
     free_leg = _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_id, to_id, amount - taxed,
         "tax_free", reason_id, parent_event_id, reason_kind=reason_kind, tax_year=tax_year,

@@ -241,3 +241,42 @@ def test_the_basis_in_a_roth_draw_never_exceeds_the_draw(
     ctx = _roth_ctx(basis_first, basis)
     assert engine._roth_basis_out(ctx, {1: balance}, 1, 2_000_000) == basis_out
     assert engine._roth_taxed(ctx, {1: balance}, 1, 2_000_000, date(2027, 1, 31)) == 2_000_000 - basis_out
+
+
+def _bases(run: Path, month: str) -> dict[str, int]:
+    """Each Roth lot's basis at ``month``'s end, by lot name."""
+    with sqlite3.connect(run) as con:
+        return dict(con.execute(
+            "SELECT m.lot, ls.cost_basis FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
+            "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
+            "WHERE a.name = ? AND substr(s.month, 1, 7) = ?", (ROTH, month),
+        ).fetchall())
+
+
+@pytest.mark.parametrize(("when", "moved_basis"), [
+    ("2027-01-31", 1_500_000),  # basis first, so the $15,000 is all basis
+    ("2029-01-31", 1_500_000),  # qualified: all of it arrives as basis
+])
+def test_a_roth_rollover_moves_basis_without_counting_it_twice(
+    when: str, moved_basis: int, young_roth: Callable[..., None],
+    add_account_value: Callable[..., None], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    young_roth("60000.00")
+    add_account_value(ROTH, lot="b", opening_balance="0.00", opening_cost_basis="0.00")
+    append_calendar_row(date=when, kind="one_off_transfer", account_1=ROTH, lot_1="default",
+                        account_2=ROTH, lot_2="b", amount="15000.00")
+    bases = _bases(_run(load_test_copy, runs_dir), when[:7])
+    assert bases == {"default": 6_000_000 - 1_500_000, "b": moved_basis}
+
+
+def test_a_nonqualified_roth_rollover_carries_only_its_basis(
+    young_roth: Callable[..., None], add_account_value: Callable[..., None],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    young_roth("5000.00")  # $5,000 of basis in $100,000
+    add_account_value(ROTH, lot="b", opening_balance="0.00", opening_cost_basis="0.00")
+    append_calendar_row(date="2027-01-31", kind="one_off_transfer", account_1=ROTH, lot_1="default",
+                        account_2=ROTH, lot_2="b", amount="15000.00")
+    assert _bases(_run(load_test_copy, runs_dir), "2027-01") == {"default": 0, "b": 500_000}
