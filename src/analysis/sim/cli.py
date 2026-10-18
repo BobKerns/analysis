@@ -9644,13 +9644,18 @@ def _lifespan_summary(row: dict[str, str]) -> str:
     return f"age {row.get('age_at_death', '')}" + (f" ({vary})" if vary else "")
 
 
-def _lifespan_parents(scenario_dir: Path, person: str) -> list[str]:
-    """Correlation parents to offer: the other persons' lifespan nodes."""
-    return sorted(
-        registries.LIFESPAN_NODE_PREFIX + other
-        for other in _overlay_rows(scenario_dir, "lifespan.csv", key="person")
-        if other != person
-    )
+def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
+    """Correlation parents to offer: the scenario's varying calendar rows,
+    its latent factors, and the other persons' varying lifespans -- the
+    nodes the loader accepts as a parent."""
+    with _intent_db(data_dir, scenario) as (con, _name):
+        factors = [name for (name,) in con.execute(
+            "SELECT name FROM calendar_event WHERE kind = ? AND name IS NOT NULL",
+            (registries.LATENT_FACTOR_KIND,),
+        )]
+        nodes = varying_names(con)
+    own = registries.LIFESPAN_NODE_PREFIX + person
+    return sorted({*nodes, *factors} - {own})
 
 
 @lifespan_group_command.command("set")
@@ -9697,9 +9702,10 @@ def lifespan_set(
     found = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
     current = {k: v for k, v in (found.row if found else {}).items() if k != "final_month"}
     given = (age, vary, low, high, mode, correlate_with, correlation)
+    guided = all(v is None for v in given)
     fields = _lifespan_fields(
-        current, _lifespan_parents(scenario_dir, person),
-        guided=all(v is None for v in given),
+        current, _lifespan_parents(data, scenario_name, person) if guided else [],
+        guided=guided,
         age=age, vary=vary, low=low, high=high, mode=mode,
         correlate_with=correlate_with, correlation=correlation,
     )

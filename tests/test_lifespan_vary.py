@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from analysis.sim.dates import final_month_for_age
+from analysis.sim.engine import run_scenario
 from analysis.sim.ensemble import oat_plan, resolve_member, varying_names
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.sensitivity import parameters
@@ -104,6 +105,11 @@ def test_the_old_final_month_column_is_rejected(
 ) -> None:
     retire_alice_csv("lifespan.csv").write_text("person,final_month\nalice,2033-06\n")
 
+    with pytest.raises(LoadError, match="final_month was replaced by age_at_death") as raised:
+        load_test_copy()
+    assert len(raised.value.issues) == 1  # the file, not each row too
+
+    retire_alice_csv("lifespan.csv").write_text("person,final_month\n")
     with pytest.raises(LoadError, match="final_month was replaced by age_at_death"):
         load_test_copy()
 
@@ -251,7 +257,6 @@ def test_an_oat_member_moves_a_lifespan_to_its_quantile(
     assert _draws(member)["lifespan:alice"][2] == 0.1
 
 
-@pytest.mark.slow
 def test_a_sensitivity_batch_describes_a_varying_lifespan(
     write_lifespans: Callable[..., None], run_test_batch: Callable[..., Path],
 ) -> None:
@@ -266,3 +271,59 @@ def test_a_sensitivity_batch_describes_a_varying_lifespan(
     assert row["center"] == "age 84.0"
     assert row["shape"] == "mode age 88"
     assert row["value@0.1"].startswith("age ")
+
+
+def _salary_alice_months(run_path: Path) -> list[str]:
+    con = sqlite3.connect(run_path)
+    try:
+        return [d for (d,) in con.execute(
+            "SELECT DISTINCT substr(e.date, 1, 7) FROM transfer_event e "
+            "JOIN scheduled_transaction s ON s.id = e.reason_id "
+            "WHERE s.name = 'salary_alice' ORDER BY 1"
+        )]
+    finally:
+        con.close()
+
+
+def test_each_member_stops_the_persons_rules_at_its_own_drawn_month(
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    fund_asset_savings: Callable[..., None], tmp_path: Path,
+) -> None:
+    fund_asset_savings("500000.00")  # her salary stops years early
+    # Alice's salary runs until she dies: a draw between ages 61.5 and 62.5
+    # lands between 2026-09 and 2027-09, before she retires.
+    write_lifespans("alice,62,uniform,61.5,62.5,,,")
+    recipe = load_test_copy().intent_path
+
+    last_months = {}
+    for index in (0, 1, 2):
+        member = _member(recipe, tmp_path, index)
+        final_month = _lifespans(member)["alice"][1][:7]
+        run = tmp_path / f"run_{index}.sqlite3"
+        run_scenario(member, run, run_by="test", allow_dirty_data=True)
+        months = _salary_alice_months(run)
+        assert months and months[-1] == final_month, (index, final_month, months[-3:])
+        last_months[index] = final_month
+    assert last_months[0] == "2027-03"  # member 0 at the authored 62
+    assert len(set(last_months.values())) > 1
+
+
+def test_guided_set_offers_only_the_parents_the_loader_accepts(
+    write_lifespans: Callable[..., None], append_calendar_row: Callable[..., None],
+    test_data_dir: Path,
+) -> None:
+    from analysis.sim.cli import _lifespan_parents
+
+    write_lifespans("alice,84,uniform,75,95,,,", "bill,86,,,,,,")
+    append_calendar_row(
+        date="2027-06-30", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill", vary_target="date", vary_distribution="uniform",
+        vary_low="2029-01-01", vary_high="2029-12-31",
+    )
+
+    for_bill = _lifespan_parents(test_data_dir, "retire_alice", "bill")
+    for_alice = _lifespan_parents(test_data_dir, "retire_alice", "alice")
+
+    assert {"lifespan:alice", "retire_bill_vary"} <= set(for_bill)
+    assert "lifespan:bill" not in for_bill  # bill's age is fixed
+    assert "lifespan:alice" not in for_alice  # not itself

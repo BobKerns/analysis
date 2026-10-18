@@ -707,6 +707,10 @@ def _read_scenario_inputs(
             )
             if filename == "scheduled.csv":
                 _legacy_units_header(scenario_dir / filename, filename, issues)
+            if filename == "lifespan.csv":
+                _old_lifespan_header(
+                    scenario_dir / filename, _data_label(scenario_dir / filename, data_dir), issues,
+                )
             # Before both normalizations: a kind decides a date's day as well
             # as an amount's unit (``_keeps_exact_day``).
             if inherited:
@@ -1335,6 +1339,20 @@ def _legacy_units_header(path: Path, where: str, issues: list[str]) -> bool:
     if legacy:
         issues.append(f"{where}: column {', '.join(legacy)}: {registries.UNITS_CONVERSION_HINT}")
     return bool(legacy)
+
+
+def _old_lifespan_header(path: Path, where: str, issues: list[str]) -> None:
+    """Report a lifespan.csv still using ``final_month`` (#221), from the
+    header itself, so a file with no rows yet is refused too."""
+    if not path.exists():
+        return
+    with path.open(newline="", encoding="utf-8") as fh:
+        header = {c.strip() for c in next(csv.reader(fh), [])}
+    if "final_month" in header:
+        issues.append(
+            f"{where}: final_month was replaced by age_at_death (#221), "
+            "a decimal age in years; replace the column"
+        )
 
 
 def _normalize_units(rows: list[dict[str, str]], filename: str, issues: list[str]) -> None:
@@ -3438,11 +3456,7 @@ def _validate_lifespan(
         person = row.get("person", "")
         where = f"{where} ({person or '?'})"
         if "final_month" in row:
-            issues.append(
-                f"{where}: lifespan.csv's final_month was replaced by age_at_death (#221), "
-                "a decimal age in years; replace the column"
-            )
-            continue
+            continue  # _old_lifespan_header reported the file
         raw_age = row.get("age_at_death", "")
         if not person or not raw_age:
             issues.append(f"{where}: person and age_at_death are required")
