@@ -72,6 +72,8 @@ No RNG is consulted anywhere in an OAT batch, so it's fully deterministic. `scen
 
 Overriding an ordinary row still moves that row alone, even when other rows depend on it, so a row's entry keeps one meaning: "this row alone". The family question belongs to a factor. If it's wanted for a row with dependents, put a factor above them.
 
+**A varying lifespan** ([ADR-006](ADR-006-ensemble-scenarios.md) §3a) is swept like a row, under its node name `lifespan:<person>`: its quantile is an age, rounded to whole months. Its central value is the authored `age_at_death`, not the median, so the base member and every member that doesn't move it die at the age written down. The parameters table describes it with kind `lifespan`, what it affects as the person, and its range, center and mode as ages.
+
 `--only NAME[,NAME...]` restricts the sweep to a subset of rows and factors; the rest stay central. Naming a factor that no varying row depends on is an error rather than a batch of base-case copies.
 
 ### 3. Quantiles, not deltas, and ladders to find transitions
@@ -258,3 +260,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#39](https://github.com/BobKerns/analysis/issues/39): an OAT batch also perturbs [ADR-008](ADR-008-correlated-parameters.md) latent factors, each moving its whole family to their conditional medians, and reports them labeled as factors (§2, §5, §6.1, §7, §9).
 - [#38](https://github.com/BobKerns/analysis/issues/38): a Monte Carlo batch with [ADR-008](ADR-008-correlated-parameters.md) correlated rows is ranked and pinned by SRRC with its own interval, reports PRCC, a line per latent factor, and the correlations its normal scores achieved (§6.2, §9).
 - [#68](https://github.com/BobKerns/analysis/issues/68): the achieved correlations are read through Kendall's τ, and rows sharing a Student-t copula tree make a batch correlated (§6.2).
+- [#221](https://github.com/BobKerns/analysis/issues/221): a varying lifespan is swept as `lifespan:<person>`, centered on its authored age (§2).

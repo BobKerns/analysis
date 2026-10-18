@@ -25,6 +25,7 @@ from typing import Literal
 __all__ = [
     "MONTH_FORMAT_HINT", "VaryBoundRole", "parse_day", "parse_month", "month_end_iso",
     "parse_vary_date", "vary_date_iso", "is_full_date", "is_month_or_date",
+    "final_month_for_age",
 ]
 
 MONTH_FORMAT_HINT = "YYYY-MM or YYYY-MM-DD"
@@ -126,3 +127,13 @@ def is_month_or_date(s: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def final_month_for_age(birthdate: str | date, age: float) -> str:
+    """The month-end ISO date of the month a person born on ``birthdate``
+    reaches ``age`` (decimal years), the lifespan.csv ``age_at_death`` (#221):
+    the birth month plus ``round(age * 12)`` months, so ``84`` is the month
+    of the 84th birthday and ``84.5`` six months later."""
+    born = birthdate if isinstance(birthdate, date) else parse_day(birthdate)
+    months = born.year * 12 + born.month - 1 + round(age * 12)
+    return _month_end(months // 12, months % 12 + 1).isoformat()

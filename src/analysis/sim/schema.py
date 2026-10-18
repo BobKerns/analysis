@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -316,9 +316,19 @@ CREATE TABLE scenario (
 -- associated with this person (explicit `person` column, or owner of
 -- from_account/to_account) stops firing for the remainder of the run.
 CREATE TABLE person_lifespan (
-    scenario_id INTEGER NOT NULL REFERENCES scenario(id),
-    person      TEXT NOT NULL REFERENCES person(id),
-    final_month TEXT NOT NULL,
+    scenario_id  INTEGER NOT NULL REFERENCES scenario(id),
+    person       TEXT NOT NULL REFERENCES person(id),
+    -- #221: the authored age (decimal years); final_month is derived from it
+    -- and the person's birthdate, and is all the engine reads. An ensemble
+    -- member rewrites both with its draw and clears vary_distribution.
+    age_at_death REAL NOT NULL,
+    final_month  TEXT NOT NULL,
+    vary_distribution   TEXT,
+    vary_low            REAL,
+    vary_high           REAL,
+    vary_mode           REAL,
+    vary_correlate_with TEXT,
+    vary_correlation    REAL,
     PRIMARY KEY (scenario_id, person)
 );
 

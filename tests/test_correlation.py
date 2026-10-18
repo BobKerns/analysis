@@ -146,7 +146,7 @@ def test_child_scenario_overrides_and_uses_a_parent_factor(
 
 @pytest.mark.parametrize(("rows", "message"), [
     ([("rate_a", {"vary_correlate_with": "nowhere", "vary_correlation": "0.5"})],
-     "names no varying row or latent_factor"),
+     "names no varying row, varying lifespan or latent_factor"),
     ([("rate_a", {"vary_correlate_with": "rate_a", "vary_correlation": "0.5"})],
      "correlation cycle rate_a -> rate_a"),
     ([("rate_a", {"vary_correlate_with": "rate_b", "vary_correlation": "0.5"}),

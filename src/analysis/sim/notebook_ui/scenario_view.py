@@ -41,17 +41,37 @@ def manifest_view(sc: ScenarioConnection) -> pd.DataFrame:
 
 
 def persons_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
-    """Every person, one row each, with their date of death if the scenario sets one.
+    """Every person, one row each, with their lifespan if the scenario sets one.
 
-    ``date_of_death`` comes from ``person_lifespan.final_month`` (ADR-003
-    §4.9) -- the last month a person's rules still fire; blank if the
-    scenario has no lifespan override for them.
+    ``age_at_death`` and ``date_of_death`` come from ``person_lifespan``
+    (ADR-003 §4.9): the authored age, or a member's drawn one (#221), and the
+    final month it reaches -- the last month a person's rules still fire;
+    ``-`` if the scenario has no lifespan for them. ``varies`` is how an
+    unresolved recipe's age varies across members.
     """
     persons = sc.items("person")[["id", "display", "birthdate", "role"]].fillna('')
-    lifespan = sc.items("person_lifespan").set_index("person")["final_month"]
+    lifespans = sc.items("person_lifespan").set_index("person")
     persons = persons.set_index("id")
-    persons["date_of_death"] = lifespan.reindex(persons.index).fillna('-')
+    persons["age_at_death"] = lifespans["age_at_death"].reindex(persons.index).map(
+        lambda age: '-' if pd.isna(age) else f"{age:g}"
+    )
+    persons["date_of_death"] = lifespans["final_month"].reindex(persons.index).fillna('-')
+    if "vary_distribution" in lifespans.columns:
+        persons["varies"] = [
+            _lifespan_varies(lifespans.loc[p]) if p in lifespans.index else ''
+            for p in persons.index
+        ]
     return persons
+
+
+def _lifespan_varies(row: pd.Series) -> str:
+    """``triangular 75..95, mode 84``, or '' for a fixed age."""
+    if pd.isna(row["vary_distribution"]):
+        return ''
+    text = f"{row['vary_distribution']} {row['vary_low']:g}..{row['vary_high']:g}"
+    if not pd.isna(row["vary_mode"]):
+        text += f", mode {row['vary_mode']:g}"
+    return text
 
 
 def _chain_targets(sc: ScenarioConnection) -> Callable[[object], tuple[str, str]]:

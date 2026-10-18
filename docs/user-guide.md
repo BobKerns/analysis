@@ -290,7 +290,7 @@ tax year, by looking back over everything that happened that year (the
   income.
 - **Filing status** comes from the `filing_status` aux table for that tax
   year. One exception: MFJ or MFS automatically changes to Single, starting
-  the year after a primary person's `final_month` in `lifespan.csv`. You do
+  the year after a primary person's final month in `lifespan.csv`. You do
   not need to add a matching row to `filing_status.csv` yourself; see Part 4.7.
 - **Deductions**: the standard deduction, from `standard_deduction.csv`,
   unless you add itemized deductions for that year — see §4.9. The simulator
@@ -577,21 +577,44 @@ together, with worked examples and recipes.
 ### 4.7 Lifespan assumptions
 
 `lifespan.csv` has one optional row for each person: `person` and
-`final_month`. After that month, every scheduled rule tied to that person
+`age_at_death`, a decimal age in years such as `84.5`. The person's final
+month is their birth month plus that many months (`84` is the month of the
+84th birthday). After that month, every scheduled rule tied to that person
 stops firing — this includes rules where the person is set directly, and
 rules for accounts that person owns (salary, their share of expenses, and so
 on). Growth rules (`percent_of_balance`) are an exception: a balance keeps
 earning interest, or growing in value, after its owner dies.
 
-Setting `final_month` is also all you need to do for filing status to change
+Setting `age_at_death` is also all you need to do for filing status to change
 correctly after a spouse's death: MFJ or MFS automatically becomes Single,
 starting the following year (Part 3). You do not need to add a matching row
 to `filing_status.csv`.
 
-`sim person lifespan set <person> <YYYY-MM>` writes a person's row into the
-scenario's own `lifespan.csv`, and `sim person lifespan clear <person>`
-removes it. `sim person list` shows each person's final month and which
-scenario sets it.
+In an ensemble the age can vary from member to member. Give
+`vary_distribution` (`uniform` or `triangular`) and the lowest and highest
+age, `vary_low` and `vary_high`; a triangular peaks at `vary_mode`, or at
+`age_at_death` when that's blank. Alice, most likely 84, no earlier than 75,
+possibly as late as 95:
+
+```csv
+person,age_at_death,vary_distribution,vary_low,vary_high,vary_mode,vary_correlate_with,vary_correlation
+alice,84,triangular,75,95,,,
+bill,86,triangular,78,97,,lifespan:alice,0.5
+```
+
+Each member draws an age (in whole months), and everything that depends on
+death follows it. The base case, member 0, dies at `age_at_death` exactly.
+`vary_correlate_with` and `vary_correlation` tie one person's draw to
+another's (`lifespan:<person>`), as in `calendar.csv`; here Bill's age moves
+partly with Alice's. `vary_low` can't fall before the scenario starts.
+
+`sim person lifespan set <person> <age>` writes a person's row into the
+scenario's own `lifespan.csv`; `--vary`, `--low`, `--high`, `--mode`,
+`--correlate-with` and `--correlation` set how it varies (`--vary none`
+drops it), and with no age and no options it asks for each field. `sim
+person lifespan clear <person>` removes the row. `sim person list` shows
+each person's age at death, final month, how it varies, and which scenario
+sets it.
 
 The people themselves are in `persons.csv`, at the top of the data repo:
 `id`, `display` name, `birthdate` and an optional `role` (`primary` for a

@@ -1467,7 +1467,7 @@ def test_person_lifespan_stops_associated_transfers(
     repo = test_data_dir
     _shorten_scenario_end(repo, "2028-12-31")  # only 2026-2027 events are asserted on
     lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
+    lifespan_csv.write_text("person,age_at_death\nalice,61.8333\n")
 
     intent_path = load_scenario(
         repo, "retire_alice",
@@ -1538,7 +1538,7 @@ def test_person_lifespan_does_not_stop_solely_owned_asset_growth(
     df.to_csv(accounts_csv, index=False)
 
     lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
+    lifespan_csv.write_text("person,age_at_death\nalice,61.8333\n")
 
     intent_path = load_scenario(
         repo, "retire_alice",
@@ -1575,7 +1575,7 @@ def test_on_death_sweeps_full_balance_once(
     repo = test_data_dir
     _shorten_scenario_end(repo, "2028-12-31")  # only 2027-02 events are asserted on
     lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
+    lifespan_csv.write_text("person,age_at_death\nalice,61.8333\n")
 
     scheduled_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
     _append_scheduled(

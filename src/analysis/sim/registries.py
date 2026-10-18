@@ -508,7 +508,21 @@ DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
 
 # ADR-003 §4.1 and §4.9.
 PERSONS_CSV_HEADER: tuple[str, ...] = ("id", "display", "birthdate", "role", "meta_json")
-LIFESPAN_CSV_HEADER: tuple[str, ...] = ("person", "final_month")
+LIFESPAN_CSV_HEADER: tuple[str, ...] = (
+    "person", "age_at_death", "vary_distribution", "vary_low", "vary_high", "vary_mode",
+    "vary_correlate_with", "vary_correlation",
+)
+
+# #221: a lifespan varies by age, uniform or triangular for now (#222 adds a
+# life table). Its node in correlation trees, sensitivity sweeps and
+# ensemble_draw is `lifespan:<person>`, a name no calendar row may take, and
+# its draws are recorded with target `age_at_death`.
+LIFESPAN_DISTRIBUTIONS: tuple[str, ...] = ("uniform", "triangular")
+LIFESPAN_NODE_PREFIX = "lifespan:"
+LIFESPAN_TARGET = "age_at_death"
+
+# #221: an age_at_death (or bound) beyond this is a typo, not a plan.
+MAX_AGE_AT_DEATH = 130.0
 
 ACCOUNT_LOTS_CSV_HEADER: tuple[str, ...] = (
     "account_name", "lot", "subkind", "symbol", "acquired", "quantity", "series",

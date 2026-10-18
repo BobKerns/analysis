@@ -67,6 +67,7 @@ from analysis.sim.ensemble import (
     member_pairs,
     members_balance_by_month,
     oat_plan,
+    varying_names,
     recipe_reserve,
     resolve_member,
     risk_summary,
@@ -613,16 +614,10 @@ def _available_cpus() -> int:
 
 
 def _has_unresolved_vary(intent_path: Path) -> bool:
-    """ADR-006: whether ``intent_path`` still has any calendar_event row with
-    `vary_distribution` set, i.e. is a recipe that hasn't been resolved."""
-    con = connect_sim_file(intent_path)
-    try:
-        row = con.execute(
-            "SELECT 1 FROM calendar_event WHERE vary_distribution IS NOT NULL LIMIT 1"
-        ).fetchone()
-    finally:
-        con.close()
-    return row is not None
+    """ADR-006: whether ``intent_path`` still has any calendar_event row or
+    lifespan (#221) with `vary_distribution` set, i.e. is a recipe that
+    hasn't been resolved."""
+    return bool(_unresolved_vary_names(intent_path))
 
 
 def _recorded_ensemble_size(intent_path: Path) -> int:
@@ -761,9 +756,7 @@ def _recipe_identity(recipe_intent_path: Path) -> tuple[int | None, str | None, 
 def _unresolved_vary_names(intent_path: Path) -> list[str]:
     con = connect_sim_file(intent_path)
     try:
-        return [r[0] for r in con.execute(
-            "SELECT name FROM calendar_event WHERE vary_distribution IS NOT NULL ORDER BY name"
-        )]
+        return varying_names(con)
     finally:
         con.close()
 
@@ -3229,6 +3222,9 @@ def _guide_context(
             row_names=[
                 name for name in column(con, "SELECT name FROM calendar_event")
                 if name != own_name
+            ] + [  # a varying lifespan is a correlation parent too (#221)
+                name for name in varying_names(con)
+                if name.startswith(registries.LIFESPAN_NODE_PREFIX)
             ],
             other_rows=other_rows,
             taken_names=frozenset(row["name"].strip() for row in others if row["name"].strip()),
@@ -9324,9 +9320,11 @@ def person_group_command() -> None:
 def person_list(scenario: str | None, data_dir: Path | None) -> None:
     """List persons.csv's persons, with each one's lifespan in the scenario.
 
-    Final month is lifespan.csv's final_month, the last month the person's
-    rules still fire; blank when the scenario sets none. Defined in says
-    which scenario's lifespan.csv sets it.
+    Age at death is lifespan.csv's age_at_death, and final month the month
+    it reaches from the birthdate: the last month the person's rules still
+    fire. Both are blank when the scenario sets none. Varies is how the age
+    varies across ensemble members, and defined in says which scenario's
+    lifespan.csv sets it.
     """
     from rich.markup import escape
     from rich.table import Table
@@ -9338,13 +9336,15 @@ def person_list(scenario: str | None, data_dir: Path | None) -> None:
         click.echo(f"no persons in {data / 'persons.csv'}")
         return
     table = Table(title=f"persons ({ref.name})", header_style="bold")
-    for column in ("Id", "Display", "Birthdate", "Role", "Final month", "Defined in"):
+    for column in ("Id", "Display", "Birthdate", "Role", "Age at death", "Final month",
+                   "Varies", "Defined in"):
         table.add_column(column)
     for person in persons:
         row = person.row
         table.add_row(*(escape(cell) for cell in (
             row.get("id", ""), row.get("display", ""), row.get("birthdate", ""),
-            row.get("role", ""), person.final_month, person.lifespan_defined_in,
+            row.get("role", ""), person.age_at_death, person.final_month, person.varies,
+            person.lifespan_defined_in,
         )))
     _print_wide(table)
 
@@ -9543,7 +9543,7 @@ def person_edit(
 
 @person_group_command.group(name="lifespan")
 def lifespan_group_command() -> None:
-    """Set or clear a person's final month in the scenario's lifespan.csv."""
+    """Set or clear a person's age at death in the scenario's lifespan.csv."""
 
 
 def _own_lifespans(path: Path) -> pd.DataFrame:
@@ -9552,42 +9552,176 @@ def _own_lifespans(path: Path) -> pd.DataFrame:
     return pd.DataFrame(columns=list(registries.LIFESPAN_CSV_HEADER))
 
 
+_LIFESPAN_VARY_COLUMNS = (
+    "vary_distribution", "vary_low", "vary_high", "vary_mode",
+    "vary_correlate_with", "vary_correlation",
+)
+_NO_VARY = "none"
+
+
+def _check_age(text: str, what: str) -> str:
+    """An age in years as typed, checked to be a number (the loader checks
+    its range against the rest of the row)."""
+    try:
+        float(text)
+    except ValueError:
+        raise click.ClickException(f"{what} must be an age in years: {text!r}") from None
+    return text.strip()
+
+
+def _lifespan_fields(
+    current: dict[str, str], parents: list[str], *, guided: bool,
+    age: str | None, vary: str | None, low: str | None, high: str | None, mode: str | None,
+    correlate_with: str | None, correlation: str | None,
+) -> dict[str, str]:
+    """A lifespan row's age and vary_* cells (#221): each one given, or when
+    ``guided``, asked for with ``current``'s value as the default; or else
+    ``current``'s. ``vary`` 'none' (or a blank one) drops the distribution
+    and its bounds; a blank mode is the age; a blank correlate-with drops the
+    correlation."""
+    if guided:
+        if age is None:
+            age = click.prompt("age at death (years, e.g. 84.5)",
+                               default=current.get("age_at_death") or None)
+        if vary is None:
+            vary = click.prompt(
+                "vary across ensemble members",
+                type=click.Choice([_NO_VARY, *registries.LIFESPAN_DISTRIBUTIONS]),
+                default=current.get("vary_distribution") or _NO_VARY,
+            )
+        if vary != _NO_VARY:
+            if low is None:
+                low = click.prompt("lowest age", default=current.get("vary_low") or None)
+            if high is None:
+                high = click.prompt("highest age", default=current.get("vary_high") or None)
+            if vary == "triangular" and mode is None:
+                mode = click.prompt("most likely age (blank: the age at death)",
+                                    default=current.get("vary_mode") or "", show_default=False)
+            if correlate_with is None:
+                correlate_with = _prompt_with_completion(
+                    "correlate with (a lifespan:<person>, varying row or factor; blank for none)",
+                    parents, default=current.get("vary_correlate_with") or "",
+                )
+            if correlate_with and correlation is None:
+                correlation = click.prompt(
+                    "correlation (-1..1)", default=current.get("vary_correlation") or None,
+                )
+
+    def pick(given: str | None, column: str) -> str:
+        return (given if given is not None else current.get(column, "")).strip()
+
+    fields = {"age_at_death": pick(age, "age_at_death")}
+    if not fields["age_at_death"]:
+        raise click.ClickException("an age at death is required")
+    _check_age(fields["age_at_death"], "age at death")
+    distribution = pick(vary, "vary_distribution")
+    if distribution in ("", _NO_VARY):
+        return fields | dict.fromkeys(_LIFESPAN_VARY_COLUMNS, "")
+    if distribution not in registries.LIFESPAN_DISTRIBUTIONS:
+        raise click.ClickException(
+            f"--vary must be {_NO_VARY} or one of {list(registries.LIFESPAN_DISTRIBUTIONS)}"
+        )
+    fields |= {
+        "vary_distribution": distribution,
+        "vary_low": pick(low, "vary_low"),
+        "vary_high": pick(high, "vary_high"),
+        "vary_mode": pick(mode, "vary_mode") if distribution == "triangular" else "",
+        "vary_correlate_with": pick(correlate_with, "vary_correlate_with"),
+        "vary_correlation": pick(correlation, "vary_correlation"),
+    }
+    for column, what in (("vary_low", "lowest age"), ("vary_high", "highest age"),
+                         ("vary_mode", "most likely age")):
+        if fields[column]:
+            _check_age(fields[column], what)
+    if not fields["vary_correlate_with"]:
+        fields["vary_correlation"] = ""
+    return fields
+
+
+def _lifespan_summary(row: dict[str, str]) -> str:
+    """A lifespan row as one phrase: ``age 84 (triangular 75..95)``."""
+    vary = setup_listings.lifespan_vary_text(row)
+    return f"age {row.get('age_at_death', '')}" + (f" ({vary})" if vary else "")
+
+
+def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
+    """Correlation parents to offer: the scenario's varying calendar rows,
+    its latent factors, and the other persons' varying lifespans -- the
+    nodes the loader accepts as a parent."""
+    with _intent_db(data_dir, scenario) as (con, _name):
+        factors = [name for (name,) in con.execute(
+            "SELECT name FROM calendar_event WHERE kind = ? AND name IS NOT NULL",
+            (registries.LATENT_FACTOR_KIND,),
+        )]
+        nodes = varying_names(con)
+    own = registries.LIFESPAN_NODE_PREFIX + person
+    return sorted({*nodes, *factors} - {own})
+
+
 @lifespan_group_command.command("set")
 @click.argument("person")
-@click.argument("final_month")
+@click.argument("age", required=False)
+@click.option("--vary", default=None,
+              help=f"How the age varies across ensemble members: {_NO_VARY}, "
+                   f"{', '.join(registries.LIFESPAN_DISTRIBUTIONS)}.")
+@click.option("--low", default=None, help="Lowest age a member draws.")
+@click.option("--high", default=None, help="Highest age a member draws.")
+@click.option("--mode", default=None,
+              help="Most likely age, for triangular ('' for the age at death).")
+@click.option("--correlate-with", default=None,
+              help="Correlation parent: lifespan:<person>, a varying calendar row "
+                   "or a latent factor ('' for none).")
+@click.option("--correlation", default=None, help="Correlation with that parent, -1..1.")
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
 def lifespan_set(
-    person: str, final_month: str, scenario: str | None, data_dir: Path | None,
+    person: str, age: str | None, vary: str | None, low: str | None, high: str | None,
+    mode: str | None, correlate_with: str | None, correlation: str | None,
+    scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Set PERSON's FINAL_MONTH (YYYY-MM), the last month their rules fire.
+    """Set PERSON's AGE at death in years (e.g. 84.5), and how it varies.
 
-    Written to this scenario's own lifespan.csv; one it inherits is
-    overridden here, and the parent keeps its own.
+    The final month, the last month the person's rules fire, is the birth
+    month plus the age in months. In an ensemble each member draws an age
+    from --vary (uniform or triangular between --low and --high, peaking at
+    --mode); the base case, member 0, is AGE.
+
+    With no AGE and no options, asks for each field with its current value
+    as the default; otherwise just the fields given change. Written to this
+    scenario's own lifespan.csv; one it inherits is overridden here, and the
+    parent keeps its own.
     """
     data = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data, scenario)
     path = scenario_dir / "lifespan.csv"
     person = person.strip()
-    final_month = _validate_month_date(final_month)
     persons = set(_read_persons(data / "persons.csv")["id"])
     if person not in persons:
         raise click.ClickException(f"unknown person {person!r}; persons: {sorted(persons)}")
     before = _file_bytes(path)
     found = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
+    current = {k: v for k, v in (found.row if found else {}).items() if k != "final_month"}
+    given = (age, vary, low, high, mode, correlate_with, correlation)
+    guided = all(v is None for v in given)
+    fields = _lifespan_fields(
+        current, _lifespan_parents(data, scenario_name, person) if guided else [],
+        guided=guided,
+        age=age, vary=vary, low=low, high=high, mode=mode,
+        correlate_with=correlate_with, correlation=correlation,
+    )
+    row = {"person": person, **fields}
     df = _own_lifespans(path)
     with _scenario_edit(data, scenario_name) as edit:
         _require_unchanged(edit, path, before)
         _append_csv_row(
-            edit.path(path), registries.LIFESPAN_CSV_HEADER,
-            {"person": person, "final_month": final_month},
+            edit.path(path), registries.LIFESPAN_CSV_HEADER, row,
             replace=None if found is None or found.index is None else df.index[found.index],
         )
     if found is not None and found.index is None:
-        click.echo(f"set {person}'s final month to {final_month} in {path}, overriding "
-                   f"{found.row.get('final_month', '')} from {found.inherited_from!r}")
+        click.echo(f"set {person}'s lifespan to {_lifespan_summary(row)} in {path}, overriding "
+                   f"{_lifespan_summary(found.row)} from {found.inherited_from!r}")
     else:
-        click.echo(f"set {person}'s final month to {final_month} in {path}")
+        click.echo(f"set {person}'s lifespan to {_lifespan_summary(row)} in {path}")
 
 
 @lifespan_group_command.command("clear")
@@ -9598,8 +9732,8 @@ def lifespan_clear(person: str, scenario: str | None, data_dir: Path | None) -> 
     """Remove PERSON's row from this scenario's lifespan.csv.
 
     A lifespan the scenario inherits can't be cleared here, since a row
-    can only override a final month, not remove it: clear it where it is
-    set, or set another month here.
+    can only override a lifespan, not remove it: clear it where it is
+    set, or set another age here.
     """
     data = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data, scenario)
@@ -9611,8 +9745,8 @@ def lifespan_clear(person: str, scenario: str | None, data_dir: Path | None) -> 
         raise click.ClickException(f"{person!r} has no lifespan in scenario {scenario_name!r}")
     if found.index is None:
         raise click.ClickException(
-            f"{person}'s final month {found.row.get('final_month', '')} is inherited from "
-            f"{found.inherited_from!r}; clear it there, or set another month here "
+            f"{person}'s lifespan ({_lifespan_summary(found.row)}) is inherited from "
+            f"{found.inherited_from!r}; clear it there, or set another age here "
             "(sim person lifespan set)"
         )
     df = _own_lifespans(path)
@@ -9626,10 +9760,10 @@ def lifespan_clear(person: str, scenario: str | None, data_dir: Path | None) -> 
     if found.inherited_from is not None:
         after = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
         if after is not None:
-            click.echo(f"cleared {person}'s final month in {path}; it now inherits "
-                       f"{after.row.get('final_month', '')} from {after.inherited_from!r}")
+            click.echo(f"cleared {person}'s lifespan in {path}; it now inherits "
+                       f"{_lifespan_summary(after.row)} from {after.inherited_from!r}")
             return
-    click.echo(f"cleared {person}'s final month in {path}")
+    click.echo(f"cleared {person}'s lifespan in {path}")
 
 
 @sim_group_command.group(name="ytd")

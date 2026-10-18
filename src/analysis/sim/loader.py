@@ -24,7 +24,8 @@ from typing import Any, NamedTuple
 
 from analysis.sim import registries, units
 from analysis.sim.dates import (
-    MONTH_FORMAT_HINT, VaryBoundRole, month_end_iso, parse_day, vary_date_iso,
+    MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, month_end_iso, parse_day,
+    vary_date_iso,
 )
 from analysis.sim.distributions import (
     Discrete,
@@ -706,6 +707,10 @@ def _read_scenario_inputs(
             )
             if filename == "scheduled.csv":
                 _legacy_units_header(scenario_dir / filename, filename, issues)
+            if filename == "lifespan.csv":
+                _old_lifespan_header(
+                    scenario_dir / filename, _data_label(scenario_dir / filename, data_dir), issues,
+                )
             # Before both normalizations: a kind decides a date's day as well
             # as an amount's unit (``_keeps_exact_day``).
             if inherited:
@@ -919,7 +924,10 @@ def load_scenario(
         calendar_rows, leaves, set(chains), issues,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
     )
-    _validate_calendar_correlation(calendar_rows, issues, unused)
+    lifespan_links = _validate_lifespan(
+        lifespan_rows, persons, scenario_row.get("start", ""), issues,
+    )
+    _validate_calendar_correlation(calendar_rows, issues, unused, lifespan_links)
     _validate_series_references(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
     )
@@ -938,7 +946,6 @@ def load_scenario(
         and (m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT) in leaves.leaf_of
     )
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
-    _validate_lifespan(lifespan_rows, persons, issues)
     _validate_retirement_owners(accounts, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
 
@@ -1101,7 +1108,6 @@ _MONTH_COLUMNS: dict[str, tuple[str, ...]] = {
     "accounts.csv": ("opened", "closed"),
     "scheduled.csv": ("start", "end", "base_date"),
     "calendar.csv": ("date", "param_date"),
-    "lifespan.csv": ("final_month",),
     "allocations.csv": ("as_of",),
 }
 """Per-file columns that name a month (#34): ``YYYY-MM`` or ``YYYY-MM-DD``,
@@ -1333,6 +1339,20 @@ def _legacy_units_header(path: Path, where: str, issues: list[str]) -> bool:
     if legacy:
         issues.append(f"{where}: column {', '.join(legacy)}: {registries.UNITS_CONVERSION_HINT}")
     return bool(legacy)
+
+
+def _old_lifespan_header(path: Path, where: str, issues: list[str]) -> None:
+    """Report a lifespan.csv still using ``final_month`` (#221), from the
+    header itself, so a file with no rows yet is refused too."""
+    if not path.exists():
+        return
+    with path.open(newline="", encoding="utf-8") as fh:
+        header = {c.strip() for c in next(csv.reader(fh), [])}
+    if "final_month" in header:
+        issues.append(
+            f"{where}: final_month was replaced by age_at_death (#221), "
+            "a decimal age in years; replace the column"
+        )
 
 
 def _normalize_units(rows: list[dict[str, str]], filename: str, issues: list[str]) -> None:
@@ -2663,6 +2683,7 @@ an authored distribution (ADR-008 §3)."""
 
 def _validate_calendar_correlation(
     rows: list[dict[str, str]], issues: list[str], unused_warnings: list[str],
+    lifespan_links: Mapping[str, tuple[str, str]] | None = None,
 ) -> None:
     """ADR-008 §4, over the merged calendar (so a child scenario's row can
     name a parent scenario's factor): latent_factor rows are named and carry
@@ -2671,7 +2692,13 @@ def _validate_calendar_correlation(
     [-1, 1]; every parent exists; there are no cycles. A factor nothing
     depends on is a warning: work in progress, or meant for child scenarios.
     ``vary_tail_dependence`` (#68) is a number >= 1 on a tree's root only; on a
-    root nothing depends on it is a warning, for the same reasons."""
+    root nothing depends on it is a warning, for the same reasons.
+
+    ``lifespan_links`` (#221) are the varying lifespans' nodes
+    (``lifespan:<person>``), each mapped to its parent (or "") and where to
+    report it: they join the same forest, so a lifespan and a calendar row
+    can name each other."""
+    lifespan_links = lifespan_links or {}
     nodes: dict[str, int] = {}
     parents: dict[str, str] = {}
     tails: dict[str, int] = {}
@@ -2683,6 +2710,11 @@ def _validate_calendar_correlation(
         where = f"{_where(row, 'calendar.csv', i)} ({name or '?'})"
         is_factor = kind == registries.LATENT_FACTOR_KIND
         varying = bool((row.get("vary_distribution") or "").strip())
+        if name.startswith(registries.LIFESPAN_NODE_PREFIX):
+            issues.append(
+                f"{where}: a calendar row's name can't start with "
+                f"'{registries.LIFESPAN_NODE_PREFIX}', which names a lifespan (#221)"
+            )
         if is_factor:
             if not name:
                 issues.append(f"{where}: a latent_factor row needs a name")
@@ -2744,12 +2776,20 @@ def _validate_calendar_correlation(
             parents[name] = parent
 
     for child, parent in parents.items():
-        if parent not in nodes:
+        if parent not in nodes and parent not in lifespan_links:
             issues.append(
                 f"{_where(rows[nodes[child] - 2], 'calendar.csv', nodes[child])} ({child}): "
                 f"vary_correlate_with '{parent}' "
-                "names no varying row or latent_factor"
+                "names no varying row, varying lifespan or latent_factor"
             )
+    for child, (parent, where) in lifespan_links.items():
+        if parent and parent not in nodes and parent not in lifespan_links:
+            issues.append(
+                f"{where}: vary_correlate_with '{parent}' "
+                "names no varying calendar row, varying lifespan or latent_factor"
+            )
+        elif parent:
+            parents[child] = parent
     reported: set[str] = set()
     for start in parents:
         path: list[str] = []
@@ -3377,24 +3417,148 @@ def _validate_chain_tax_steps(
                 )
 
 
+def _lifespan_age(raw: str, col: str, where: str, issues: list[str]) -> float | None:
+    """A lifespan.csv age cell (#221) as decimal years, or ``None`` (reported)."""
+    try:
+        age = float(raw)
+    except ValueError:
+        issues.append(f"{where}: {col} '{raw}' is not an age in years")
+        return None
+    if not 0 < age <= registries.MAX_AGE_AT_DEATH:  # also rejects NaN
+        issues.append(
+            f"{where}: {col} must be an age above 0 and at most "
+            f"{registries.MAX_AGE_AT_DEATH:g} (got {raw})"
+        )
+        return None
+    return age
+
+
 def _validate_lifespan(
     rows: list[dict[str, str]],
     persons: list[dict[str, str]],
+    scenario_start: str,
     issues: list[str],
-) -> None:
-    person_ids = {p["id"] for p in persons if p.get("id")}
+) -> dict[str, tuple[str, str]]:
+    """lifespan.csv (#221): each row names a person and an ``age_at_death``,
+    which becomes the row's ``final_month`` from the person's birthdate. A
+    varying row (``vary_distribution``) has age bounds that hold the age and
+    its mode; its lowest age can't fall before the scenario starts, since
+    no member can die before then. ``vary_correlate_with``/
+    ``vary_correlation`` go together, on a varying row, rho in [-1, 1]; the
+    parent is checked with the calendar's forest.
+
+    Returns each varying row's correlation node (``lifespan:<person>``),
+    mapped to its parent (or "") and where to report it."""
+    birthdates = {p["id"]: p.get("birthdate", "") for p in persons if p.get("id")}
     seen: set[str] = set()
+    links: dict[str, tuple[str, str]] = {}
     for where, row in _located(rows, "lifespan.csv"):
         person = row.get("person", "")
-        final_month = row.get("final_month", "")
-        if not person or not final_month:
-            issues.append(f"{where}: person and final_month are required")
+        where = f"{where} ({person or '?'})"
+        if "final_month" in row:
+            continue  # _old_lifespan_header reported the file
+        raw_age = row.get("age_at_death", "")
+        if not person or not raw_age:
+            issues.append(f"{where}: person and age_at_death are required")
             continue
-        if person not in person_ids:
+        if person not in birthdates:
             issues.append(f"{where}: person '{person}' not in persons.csv")
+            continue
         if person in seen:
             issues.append(f"{where}: duplicate person '{person}'")
         seen.add(person)
+        age = _lifespan_age(raw_age, "age_at_death", where, issues)
+        if age is None:
+            continue
+        if not birthdates[person]:
+            issues.append(
+                f"{where}: an age at death needs '{person}'s birthdate in persons.csv"
+            )
+            continue
+        try:
+            row["final_month"] = final_month_for_age(birthdates[person], age)
+        except ValueError:
+            continue  # persons.csv reports the bad birthdate
+        _validate_lifespan_vary(row, age, birthdates[person], scenario_start, where, issues, links)
+    return links
+
+
+def _validate_lifespan_vary(
+    row: dict[str, str], age: float, birthdate: str, scenario_start: str, where: str,
+    issues: list[str], links: dict[str, tuple[str, str]],
+) -> None:
+    """A lifespan row's ``vary_*`` and correlation cells (#221)."""
+    distribution = (row.get("vary_distribution") or "").strip()
+    stray = [
+        c for c in ("vary_low", "vary_high", "vary_mode", "vary_correlate_with",
+                    "vary_correlation")
+        if (row.get(c) or "").strip()
+    ]
+    if not distribution:
+        if stray:
+            issues.append(f"{where}: {', '.join(stray)} need vary_distribution")
+        return
+    if distribution not in registries.LIFESPAN_DISTRIBUTIONS:
+        issues.append(
+            f"{where}: a lifespan's vary_distribution must be one of "
+            f"{list(registries.LIFESPAN_DISTRIBUTIONS)} (got '{distribution}')"
+        )
+        return
+    bounds: dict[str, float] = {}
+    for col in ("vary_low", "vary_high", "vary_mode"):
+        raw = (row.get(col) or "").strip()
+        if not raw:
+            continue
+        if col == "vary_mode" and distribution != "triangular":
+            issues.append(f"{where}: vary_mode is only used by triangular")
+            continue
+        value = _lifespan_age(raw, col, where, issues)
+        if value is not None:
+            bounds[col] = value
+    if not (row.get("vary_low") or "").strip() or not (row.get("vary_high") or "").strip():
+        issues.append(f"{where}: {distribution} needs vary_low and vary_high (ages)")
+        return
+    if "vary_low" not in bounds or "vary_high" not in bounds:
+        return
+    low, high = bounds["vary_low"], bounds["vary_high"]
+    mode = bounds.get("vary_mode", age)
+    if not low < high:
+        issues.append(f"{where}: vary_low must be below vary_high (got {low:g}..{high:g})")
+        return
+    if not low <= age <= high:
+        issues.append(
+            f"{where}: age_at_death {age:g} must lie within vary_low..vary_high "
+            f"({low:g}..{high:g}): it is the base case, member 0"
+        )
+    if not low <= mode <= high:
+        issues.append(f"{where}: vary_mode {mode:g} must lie within {low:g}..{high:g}")
+    if scenario_start and final_month_for_age(birthdate, low) < scenario_start:
+        issues.append(
+            f"{where}: vary_low {low:g} is the month {final_month_for_age(birthdate, low)[:7]}, "
+            f"before the scenario starts ({scenario_start[:7]}); a member can't die before then"
+        )
+    parent = (row.get("vary_correlate_with") or "").strip()
+    raw_rho = (row.get("vary_correlation") or "").strip()
+    node = registries.LIFESPAN_NODE_PREFIX + row["person"]
+    if bool(parent) != bool(raw_rho):
+        issues.append(f"{where}: vary_correlate_with and vary_correlation go together")
+        parent = ""
+    elif raw_rho:
+        try:
+            rho = float(raw_rho)
+        except ValueError:
+            issues.append(f"{where}: vary_correlation '{raw_rho}' is not a number")
+            parent = ""
+        else:
+            if not -1.0 <= rho <= 1.0:  # also rejects NaN
+                issues.append(
+                    f"{where}: vary_correlation must be between -1 and 1 (got {raw_rho})"
+                )
+                parent = ""
+    if parent == node:
+        issues.append(f"{where}: a lifespan can't correlate with itself")
+        parent = ""
+    links[node] = (parent, where)
 
 
 # ---------- writers ----------
@@ -3727,9 +3891,19 @@ def _write_intent(
 
     for lf in lifespan_rows:
         con.execute(
-            "INSERT INTO person_lifespan(scenario_id, person, final_month) "
-            "VALUES (?,?,?)",
-            (scenario_id, lf["person"], lf["final_month"]),
+            "INSERT INTO person_lifespan(scenario_id, person, age_at_death, final_month, "
+            "vary_distribution, vary_low, vary_high, vary_mode, vary_correlate_with, "
+            "vary_correlation) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                scenario_id, lf["person"], float(lf["age_at_death"]), lf["final_month"],
+                lf.get("vary_distribution") or None,
+                _opt_float(lf.get("vary_low")), _opt_float(lf.get("vary_high")),
+                # A blank mode is the authored age, so the base case is the
+                # most likely value (#221).
+                (_opt_float(lf.get("vary_mode")) or float(lf["age_at_death"]))
+                if lf.get("vary_distribution") == "triangular" else None,
+                lf.get("vary_correlate_with") or None, _opt_float(lf.get("vary_correlation")),
+            ),
         )
     counts["person_lifespan"] = len(lifespan_rows)
 
