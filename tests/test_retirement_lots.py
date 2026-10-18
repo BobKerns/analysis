@@ -136,6 +136,38 @@ def test_a_calendar_conversion_is_taxed_and_a_rollover_is_not(
     ]
 
 
+def test_blank_traditional_money_is_taxed_by_where_each_leg_lands(
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """A blank tax_character out of a traditional lot is a distribution, into
+    checking or through a chain into a Roth lot alike (#217)."""
+    (retire_alice_csv("chains/destination") / "convert.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\n"
+        "Asset_Roth_Alice,default,5000.00,,,\nAsset_Checking,,,,,\n")
+    append_calendar_row(date="2029-01-31", kind="one_off_transfer", account_1=IRA,
+                        lot_1="default", account_2="convert", amount="20000.00")
+    append_calendar_row(date="2029-02-28", kind="one_off_transfer", account_1=IRA,
+                        lot_1="default", account_2="Asset_Checking", amount="1000.00")
+    with sqlite3.connect(_run(load_test_copy, runs_dir)) as con:
+        legs = con.execute(
+            "SELECT ta.name, te.amount, te.tax_character FROM transfer_event te "
+            "JOIN scheduled_transaction s ON s.id = te.reason_id AND te.reason_kind = 'rule' "
+            "JOIN account ta ON ta.id = te.to_account "
+            "WHERE s.created_by_event_id IS NOT NULL AND te.from_account = "
+            "(SELECT id FROM account WHERE name = ?) ORDER BY te.id",
+            (IRA,),
+        ).fetchall()
+        rules = {character for (character,) in con.execute(
+            "SELECT tax_character FROM scheduled_transaction WHERE created_by_event_id IS NOT NULL")}
+    assert legs == [
+        ("Asset_Roth_Alice", 500_000, "tax_deferred_out"),
+        ("Asset_Checking", 1_500_000, "tax_deferred_out"),
+        ("Asset_Checking", 100_000, "tax_deferred_out"),
+    ]
+    assert "return_of_capital" not in rules  # each rule records what its legs are
+
+
 def test_an_rmd_counts_and_draws_only_traditional_lots(
     retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
