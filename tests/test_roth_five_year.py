@@ -1,7 +1,7 @@
 """Roth distributions and the five-year clock (#217): basis always comes out
 tax-free; earnings are ordinary income until the distribution is qualified
 (the owner 59½ and five tax years since their first Roth year). A chain skips
-a Roth step that would pay taxed earnings unless it is the chain's last."""
+a Roth step that would pay taxed earnings unless no later step can pay."""
 
 from __future__ import annotations
 
@@ -9,13 +9,15 @@ import sqlite3
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pandas as pd
 import pytest
 
 from analysis.sim import engine
 from analysis.sim.engine import RothLot, run_scenario
-from analysis.sim.loader import LoadResult
+from analysis.sim.loader import LoadError, LoadResult
 
 ROTH = "Asset_Roth_Alice"  # Alice was born 1965-03-15, so 59½ from 2024-09-15
 
@@ -189,3 +191,137 @@ def test_a_roth_distribution_through_a_chain_is_taxed_on_earnings(
     assert _legs(_run(load_test_copy, runs_dir)) == [
         ("2027-01-31", "Asset_Checking", 1_000_000, "roth_nonqualified"),
     ]
+
+
+def test_a_roth_step_inside_a_chain_with_later_steps_above_it_is_skipped(
+    young_roth: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    """The Roth step is its own chain's last, but the chain above still has
+    a step that can pay, so the taxed draw is skipped."""
+    young_roth("0.00")
+    (retire_alice_csv("chains/source") / "roth_only.csv").write_text(
+        f"account_name,lot,maximum,percent,series,cadence\n{ROTH},default,,,,\n")
+    _roth_chain(retire_alice_csv, "roth_only,,,,,", "Asset_Savings,,,,,")
+    append_calendar_row(date="2027-01-31", kind="one_off_transfer", account_1="spend",
+                        account_2="Asset_Checking", amount="15000.00")
+    run = _run(load_test_copy, runs_dir)
+    assert _legs(run) == []
+    assert ("2027-01-31", "Asset_Checking", 1_500_000, "none") in _legs(run, "Asset_Savings")
+
+
+def test_a_roth_rollover_through_a_chain_is_not_a_distribution(
+    young_roth: Callable[..., None], add_account_value: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    young_roth("0.00")
+    add_account_value(ROTH, lot="b", opening_balance="0.00")
+    (retire_alice_csv("chains/destination") / "into_b.csv").write_text(
+        f"account_name,lot,maximum,percent,series,cadence\n{ROTH},b,,,,\n")
+    append_calendar_row(date="2027-01-31", kind="one_off_transfer", account_1=ROTH, lot_1="default",
+                        account_2="into_b", amount="15000.00")
+    assert _legs(_run(load_test_copy, runs_dir)) == [("2027-01-31", ROTH, 1_500_000, "none")]
+
+
+def _roth_ctx(basis_first: bool, basis: int) -> engine.RefillContext:
+    roth = RothLot(basis_first=basis_first, clock_start=date(2024, 1, 1), birthdate=None)
+    return cast(engine.RefillContext, SimpleNamespace(roth={1: roth}, cost_bases={1: basis}))
+
+
+@pytest.mark.parametrize(("basis_first", "basis", "balance", "basis_out"), [
+    (True, 6_000_000, 10_000_000, 2_000_000),   # Roth IRA: basis first
+    (False, 6_000_000, 10_000_000, 1_200_000),  # Roth 401k: pro-rata
+    (False, 6_000_000, 4_000_000, 2_000_000),   # worth less than its basis: all basis
+])
+def test_the_basis_in_a_roth_draw_never_exceeds_the_draw(
+    basis_first: bool, basis: int, balance: int, basis_out: int,
+) -> None:
+    ctx = _roth_ctx(basis_first, basis)
+    assert engine._roth_basis_out(ctx, {1: balance}, 1, 2_000_000) == basis_out
+    assert engine._roth_taxed(ctx, {1: balance}, 1, 2_000_000, date(2027, 1, 31)) == 2_000_000 - basis_out
+
+
+def _bases(run: Path, month: str) -> dict[str, int]:
+    """Each Roth lot's basis at ``month``'s end, by lot name."""
+    with sqlite3.connect(run) as con:
+        return dict(con.execute(
+            "SELECT m.lot, ls.cost_basis FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
+            "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
+            "WHERE a.name = ? AND substr(s.month, 1, 7) = ?", (ROTH, month),
+        ).fetchall())
+
+
+@pytest.mark.parametrize(("when", "moved_basis"), [
+    ("2027-01-31", 1_500_000),  # basis first, so the $15,000 is all basis
+    ("2029-01-31", 1_500_000),  # qualified: all of it arrives as basis
+])
+def test_a_roth_rollover_moves_basis_without_counting_it_twice(
+    when: str, moved_basis: int, young_roth: Callable[..., None],
+    add_account_value: Callable[..., None], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    young_roth("60000.00")
+    add_account_value(ROTH, lot="b", opening_balance="0.00", opening_cost_basis="0.00")
+    append_calendar_row(date=when, kind="one_off_transfer", account_1=ROTH, lot_1="default",
+                        account_2=ROTH, lot_2="b", amount="15000.00")
+    bases = _bases(_run(load_test_copy, runs_dir), when[:7])
+    assert bases == {"default": 6_000_000 - 1_500_000, "b": moved_basis}
+
+
+def test_a_nonqualified_roth_rollover_carries_only_its_basis(
+    young_roth: Callable[..., None], add_account_value: Callable[..., None],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    young_roth("5000.00")  # $5,000 of basis in $100,000
+    add_account_value(ROTH, lot="b", opening_balance="0.00", opening_cost_basis="0.00")
+    append_calendar_row(date="2027-01-31", kind="one_off_transfer", account_1=ROTH, lot_1="default",
+                        account_2=ROTH, lot_2="b", amount="15000.00")
+    assert _bases(_run(load_test_copy, runs_dir), "2027-01") == {"default": 0, "b": 500_000}
+
+
+@pytest.mark.parametrize("owner", ["", "nobody", "joint"])  # joint: a pseudo-person, no role
+def test_a_retirement_account_needs_a_person_as_its_owner(
+    owner: str, retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    path = retire_alice_csv("accounts.csv")
+    accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
+    accounts.loc[accounts["name"] == ROTH, "owner"] = owner
+    accounts.to_csv(path, index=False)
+    with pytest.raises(LoadError, match=f"{ROTH}.*owner must be a person"):
+        load_test_copy()
+
+
+@pytest.mark.parametrize("role", ["primary", "secondary"])
+def test_a_person_needs_a_birthdate(
+    role: str, test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
+) -> None:
+    persons = test_data_dir / "persons.csv"
+    persons.write_text(persons.read_text() + f"carol,Carol (fake),,{role},{{}}\n")
+    with pytest.raises(LoadError, match=f"carol.*{role} person needs a birthdate"):
+        load_test_copy()
+
+
+def test_a_pseudo_person_without_a_birthdate_still_runs(
+    test_data_dir: Path, load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    persons = test_data_dir / "persons.csv"
+    rows = pd.read_csv(persons, dtype=str, keep_default_na=False)
+    rows.loc[rows["id"] == "joint", "birthdate"] = ""
+    rows.to_csv(persons, index=False)
+    assert _run(load_test_copy, runs_dir).exists()
+
+
+def test_a_basis_step_may_not_name_a_retirement_account(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """A Roth lot's basis follows its own rules, so a sale's basis step would
+    spend it twice."""
+    (retire_alice_csv("chains/destination") / "roth_sale.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence,tax_character,basis_of,basis_of_lot\n"
+        f"Asset_Checking,,,,,,return_of_capital,{ROTH},default\n"
+        "Asset_Checking,,,,,,ltcg,,\n")
+    with pytest.raises(LoadError, match=f"basis_of '{ROTH}' is a retirement account"):
+        load_test_copy()
