@@ -2046,6 +2046,10 @@ def _validate_lot_money(
                 f"account_lots.csv ({a['name']}): a retirement account needs at least "
                 "one lot, with its subkind; add its row to account_lots.csv"
             )
+        # Only lots that could owe an RMD need prior_year_end_balance; a Roth
+        # lot beside a traditional one needn't carry it (#217).
+        lots = [r for r in lots
+                if registries.RETIREMENT_LOT_SUBKINDS.get(r.get("subkind", "")) != "tax_free"]
         if len(lots) < 2:
             continue
         name = a["name"]
@@ -2053,7 +2057,7 @@ def _validate_lot_money(
         if 0 < with_pyeb < len(lots):
             issues.append(
                 f"account_lots.csv ({name}): prior_year_end_balance must be set "
-                "on every lot of an account or on none"
+                "on every lot of an account or on none (Roth lots aside)"
             )
 
 

@@ -5491,7 +5491,8 @@ def edit_account(
             show_default=True,
         )
         owner = owner.strip() or "joint"
-        tax_treatment = click.prompt(
+        # A retirement account's lots set its tax treatment (#217).
+        tax_treatment = "" if subkind == registries.RETIREMENT_SUBKIND else click.prompt(
             "tax_treatment",
             default=current.get("tax_treatment", ""),
             show_default=True,
@@ -5518,6 +5519,12 @@ def edit_account(
     if subkind not in registries.ACCOUNT_SUBKINDS.get(kind, set()):
         raise click.ClickException(
             f"subkind {subkind!r} not allowed for kind {kind!r}; allowed: {sorted(registries.ACCOUNT_SUBKINDS[kind])}"
+        )
+    if (subkind == registries.RETIREMENT_SUBKIND) != (current.get("subkind") == registries.RETIREMENT_SUBKIND):
+        # Its lots' subkinds, which set how it is taxed, would have to change too.
+        raise click.ClickException(
+            f"{name!r} can't change to or from subkind {registries.RETIREMENT_SUBKIND!r}; "
+            "add a new account and move the money with a transfer_balance event"
         )
     if owner not in persons and owner != "joint":
         raise click.ClickException(
