@@ -138,6 +138,12 @@ def plan(data_dir: Path) -> Plan:
         if account in with_lots.get(folder, set()):
             continue
         target = folder / NEW_NAME
+        if target not in result.writes and target.exists():
+            result.problems.append(
+                f"{target}: already exists, with no {OLD_NAME} beside it; "
+                f"add a lot for {account!r} to it by hand"
+            )
+            continue
         if target not in result.writes:
             # This folder had no lots file: start one with the others' columns.
             others = [text for path, text in result.writes.items() if path.name == NEW_NAME]

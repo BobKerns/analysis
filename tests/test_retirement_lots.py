@@ -103,6 +103,10 @@ def test_a_retirement_withdrawals_character_depends_on_where_it_goes(
     assert registries.withdrawal_tax_character(source, "retirement", destination) == character
 
 
+def test_only_retirement_money_rolls_over_untaxed() -> None:
+    assert registries.withdrawal_tax_character("tax_deferred", "hsa", "tax_deferred") == "tax_deferred_out"
+
+
 def _calendar_legs(run: Path, account: str) -> list[tuple[str, str, str, str]]:
     """The legs calendar events moved out of ``account``."""
     with sqlite3.connect(run) as con:
@@ -358,3 +362,16 @@ def test_account_edit_refuses_a_change_to_or_from_retirement(
     assert result.exit_code != 0
     assert "can't change to or from subkind 'retirement'" in result.output
     assert retire_alice_csv("accounts.csv").read_text() == before
+
+
+def test_the_migration_refuses_to_seed_over_an_existing_lots_file(tmp_path: Path) -> None:
+    base, child = tmp_path / "scenarios" / "base", tmp_path / "scenarios" / "child"
+    base.mkdir(parents=True)
+    child.mkdir()
+    (base / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nRoth,asset,roth_ira,bill,\n")
+    (base / "account_lots.csv").write_text("account_name,lot,subkind,opening_balance\nCash,,,5.00\n")
+    (child / "account_values.csv").write_text("account_name,lot,opening_balance\n")
+    assert _migration().plan(tmp_path).problems == [
+        f"{base / 'account_lots.csv'}: already exists, with no account_values.csv beside it; "
+        "add a lot for 'Roth' to it by hand",
+    ]
