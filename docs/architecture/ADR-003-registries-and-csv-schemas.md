@@ -43,7 +43,7 @@ The lots of a `retirement` account, and only they, carry a `subkind` (§4.3), wh
 
 Money moved out of a traditional lot is `tax_deferred_out` (ordinary income), including into a Roth lot, which is how a conversion is taxed; into another traditional lot it is a rollover, `none`. An `rmd` counts and draws only traditional lots: Roth IRAs have no RMDs, and Roth 401ks none from 2024. A retirement account must have at least one lot, since an empty default lot would have no subkind.
 
-**Roth distributions and the five-year clock.** A Roth lot tracks its basis, its contributions and conversions: `opening_cost_basis`, or the whole opening balance when that is blank, plus whatever moves into it later other than growth. A distribution, meaning money that leaves for a lot outside a `retirement` account, is *qualified* once the owner is 59½ and five tax years have passed since the clock started. Then all of it is `tax_free`. Before that its basis is still `tax_free`, and its earnings are `roth_nonqualified`, which the accumulator counts as ordinary income (the 10% additional tax under 59½ is not modeled). Since that turns on the owner's age, a Roth lot's account must have an `owner` with a `birthdate` in `persons.csv`, or the load fails. A Roth IRA pays out basis first; a Roth 401k pays out basis and earnings pro-rata, never more basis than the amount. Either way the lot's basis falls by the basis paid out, qualified or not.
+**Roth distributions and the five-year clock.** A Roth lot tracks its basis, its contributions and conversions: `opening_cost_basis`, or the whole opening balance when that is blank, plus whatever moves into it later other than growth. A distribution, meaning money that leaves for a lot outside a `retirement` account, is *qualified* once the owner is 59½ and five tax years have passed since the clock started. Then all of it is `tax_free`. Before that its basis is still `tax_free`, and its earnings are `roth_nonqualified`, which the accumulator counts as ordinary income (the 10% additional tax under 59½ is not modeled). Since that turns on the owner's age, a `retirement` account's `owner` must be an actual person (§4.1), who has a `birthdate`, or the load fails. A Roth IRA pays out basis first; a Roth 401k pays out basis and earnings pro-rata, never more basis than the amount. Either way the lot's basis falls by the basis paid out, qualified or not.
 
 - The clock of a Roth IRA lot is its owner's, one for all of their `roth_ira` lots; a `roth_401k` lot's is its account's. It starts on Jan 1 of the earliest year among those lots' `acquired` dates, or their account's `opened` where a lot has none. A lot with neither means the clock has run. A conversion is best given its own lot with its `acquired` date; it does not restart the owner's clock. Inherited Roth accounts, which keep the deceased owner's clock, are not modeled.
 - **A chain step on a Roth lot that would pay out `roth_nonqualified` earnings is skipped**, so the later steps pay instead, **unless no later step can**: the last step of a chain pays and is taxed, unless the chain is itself a step with later steps after it in a chain above. A step whose draw is all basis is not skipped.
@@ -392,8 +392,8 @@ Single identity list for the household: account owners *and* operator identities
 | --- | --- | --- | --- |
 | `id` | text | ✓ | short identifier, e.g. `rwk`; matched against `$ANALYSIS_USER` |
 | `display` | text | ✓ | full or display name |
-| `birthdate` | YYYY-MM-DD | ✓ | for RMD and life-transition computations |
-| `role` | text | | informational; conventional values `primary`, `secondary`; NULL = person-not-operator |
+| `birthdate` | YYYY-MM-DD | ✓ | for RMD and life-transition computations; may be blank only for a pseudo-person (blank `role`) |
+| `role` | text | | `primary` or `secondary` marks an actual person, who must have a `birthdate` and may own a `retirement` account; NULL = person-not-operator, such as `joint` |
 | `meta_json` | json | | default `{}` |
 
 #### 4.1a Shared base: `data_repo/securities.csv` (optional)
@@ -491,7 +491,7 @@ Required in a root scenario; optional in a derived one, where it overlays the pa
 | `name` | text | ✓ | unique; referenced by other CSVs |
 | `kind` | enum | ✓ | `asset`, `liability`, `income`, `expense` |
 | `subkind` | enum | ✓ | per §1 |
-| `owner` | text | | `person.id`; NULL for jointly-held |
+| `owner` | text | | `person.id`; NULL for jointly-held. A `retirement` account's must be an actual person (§4.1) |
 | `tax_treatment` | enum | | `taxable`, `tax_deferred`, `tax_free`, `none`; blank on a `retirement` account, whose lots' subkinds set it (§1a) |
 | `series` | text | | asset accounts only: aux rate-series driving monthly growth; synthesizes a `percent_of_balance` rule (§2.2) |
 | `tax_character` | enum | | required with `series`, and only meaningful with it: `ordinary`, `gains`, `deferred`, `tax_free` — selects the built-in income account that funds the growth (§2.2) |
@@ -1066,3 +1066,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#217](https://github.com/BobKerns/analysis/issues/217): `account_values.csv` is renamed `account_lots.csv`; the Roth and traditional IRA/401k account subkinds become `retirement`, with the old names as lot subkinds that set each lot's tax treatment; traditional-to-traditional moves are untaxed rollovers; RMDs count only traditional lots (§1, §1a, §2.3, §4.2, §4.3).
 - [#217](https://github.com/BobKerns/analysis/issues/217): Roth lots track basis and follow the five-year rule: earnings before a qualified distribution are the new `roth_nonqualified` character, and a chain skips such a Roth step unless it is the last (§1a, §4.3, §4.6, §4.7).
 - [#217](https://github.com/BobKerns/analysis/issues/217): a blank `tax_character` on a `one_off_transfer` or `transfer_balance` out of a traditional lot is taxed by where each leg lands, through a destination chain too, instead of posting as `none` (§3.4, §3.7, §4.8).
+- [#217](https://github.com/BobKerns/analysis/issues/217): a `primary` or `secondary` person must have a `birthdate`, and a `retirement` account's owner must be such a person (§1a, §4.1, §4.2).

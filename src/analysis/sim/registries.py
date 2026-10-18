@@ -148,6 +148,11 @@ TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 
 RETIREMENT_SUBKIND = "retirement"
 
+# persons.csv roles of an actual person (ADR-003 §4.1), who needs a birthdate
+# and may own a retirement account (#217). A blank role is a pseudo-person
+# such as `joint`, or someone who only appears (an ancestor, an heir).
+PERSON_ROLES: frozenset[str] = frozenset({"primary", "secondary"})
+
 # A `retirement` account's lot subkinds (#217) and the tax treatment each
 # gives its lot. One IRA is either Roth or traditional, but a 401k can hold
 # both, so the distinction lives on the lot; the account's own tax_treatment

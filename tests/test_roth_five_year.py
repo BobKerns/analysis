@@ -282,15 +282,25 @@ def test_a_nonqualified_roth_rollover_carries_only_its_basis(
     assert _bases(_run(load_test_copy, runs_dir), "2027-01") == {"default": 0, "b": 500_000}
 
 
-@pytest.mark.parametrize("owner", ["", "nobody"])  # blank, or not in persons.csv
-def test_a_roth_account_needs_an_owner_with_a_birthdate(
+@pytest.mark.parametrize("owner", ["", "nobody", "joint"])  # joint: a pseudo-person, no role
+def test_a_retirement_account_needs_a_person_as_its_owner(
     owner: str, retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:
     path = retire_alice_csv("accounts.csv")
     accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
     accounts.loc[accounts["name"] == ROTH, "owner"] = owner
     accounts.to_csv(path, index=False)
-    with pytest.raises(LoadError, match=f"{ROTH}.*owner needs a birthdate"):
+    with pytest.raises(LoadError, match=f"{ROTH}.*owner must be a person"):
+        load_test_copy()
+
+
+@pytest.mark.parametrize("role", ["primary", "secondary"])
+def test_a_person_needs_a_birthdate(
+    role: str, test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
+) -> None:
+    persons = test_data_dir / "persons.csv"
+    persons.write_text(persons.read_text() + f"carol,Carol (fake),,{role},{{}}\n")
+    with pytest.raises(LoadError, match=f"carol.*{role} person needs a birthdate"):
         load_test_copy()
 
 

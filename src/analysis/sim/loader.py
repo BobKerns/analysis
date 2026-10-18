@@ -939,7 +939,7 @@ def load_scenario(
     )
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
     _validate_lifespan(lifespan_rows, persons, issues)
-    _validate_roth_owners(value_rows, accounts, persons, issues)
+    _validate_retirement_owners(accounts, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
 
     if issues:
@@ -1723,9 +1723,15 @@ def _describe_blend(blend: AllocationBlend) -> str:
 
 
 def _validate_birthdates(rows: list[dict[str, str]], issues: list[str]) -> None:
-    """A birthdate is day-precise (ages turn on it), so a strict YYYY-MM-DD."""
+    """A birthdate is day-precise (ages turn on it), so a strict YYYY-MM-DD.
+    An actual person (``PERSON_ROLES``) must have one; a pseudo-person such
+    as ``joint`` needn't."""
     for where, row in _located(rows, "persons.csv"):
         birthdate = row.get("birthdate", "")
+        if not birthdate and (row.get("role") or "").strip() in registries.PERSON_ROLES:
+            issues.append(
+                f"{where} ({row.get('id') or '?'}): a {row['role'].strip()} person needs a birthdate"
+            )
         if birthdate:
             try:
                 parse_day(birthdate)
@@ -2064,27 +2070,24 @@ def _validate_lot_money(
             )
 
 
-def _validate_roth_owners(
-    rows: list[dict[str, str]], accounts: list[dict[str, str]],
-    persons: list[dict[str, str]], issues: list[str],
+def _validate_retirement_owners(
+    accounts: list[dict[str, str]], persons: list[dict[str, str]], issues: list[str],
 ) -> None:
-    """A Roth lot's account needs an owner with a birthdate (#217): whether a
-    distribution is qualified turns on the owner being 59½, and a Roth
-    account, like any IRA or 401k, belongs to one person."""
-    owner_of = {a.get("name", ""): a.get("owner", "") for a in accounts}
-    born = {p.get("id", "") for p in persons if p.get("birthdate")}
-    named: set[str] = set()
-    for row in rows:
-        name = row.get("account_name", "")
-        if registries.RETIREMENT_LOT_SUBKINDS.get(row.get("subkind") or "") != "tax_free" \
-                or name in named or name not in owner_of:
+    """A retirement account belongs to one actual person (``PERSON_ROLES``,
+    who must have a birthdate): RMDs and whether a Roth distribution is
+    qualified turn on the owner's age (#217)."""
+    people = {p.get("id", "") for p in persons
+              if (p.get("role") or "").strip() in registries.PERSON_ROLES}
+    roles = " or ".join(sorted(registries.PERSON_ROLES))
+    for where, a in _located(accounts, "accounts.csv"):
+        if a.get("subkind") != registries.RETIREMENT_SUBKIND:
             continue
-        named.add(name)
-        if owner_of[name] not in born:
+        owner = a.get("owner", "")
+        if owner not in people:
+            found = f"owner {owner!r}" if owner else "no owner"
             issues.append(
-                f"accounts.csv ({name}): a Roth account's owner needs a birthdate in "
-                "persons.csv, to tell when its distributions are qualified "
-                f"({f'owner {owner_of[name]!r}' if owner_of[name] else 'no owner'})"
+                f"{where} ({a.get('name', '')}): a retirement account's owner must be a "
+                f"person whose role in persons.csv is {roles} ({found})"
             )
 
 
