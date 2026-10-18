@@ -136,8 +136,8 @@ def test_prior_year_end_balance_is_all_or_none_per_account(
     add_account_value: Callable[..., None], update_account_value: Callable[..., None],
     load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    add_account_value("Asset_Roth_Alice", lot="b", opening_balance="10000.00")
-    update_account_value("Asset_Roth_Alice", "default", prior_year_end_balance="90000.00")
+    add_account_value("Asset_TraditionalIRA_Alice", lot="b", opening_balance="10000.00")
+    update_account_value("Asset_TraditionalIRA_Alice", "default", prior_year_end_balance="90000.00")
     with pytest.raises(LoadError, match="prior_year_end_balance must be set on every lot"):
         load_test_copy()
 

@@ -197,6 +197,16 @@ def test_an_rmd_counts_and_draws_only_traditional_lots(
     assert "an rmd may not draw from a Roth lot" in _issues(load_test_copy)
 
 
+def test_a_roth_lot_needs_no_prior_year_end_balance(
+    add_alice_401k: Callable[[str], None], update_account_value: Callable[..., None],
+    add_account_value: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    add_alice_401k("100000.00")
+    update_account_value(K401, "default", prior_year_end_balance="100000.00")
+    add_account_value(K401, lot="roth", subkind="roth_401k", opening_balance="1000.00")
+    load_test_copy()  # the traditional lot alone carries it
+
+
 def test_account_add_gives_a_retirement_account_its_first_lot(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
@@ -313,3 +323,38 @@ def test_the_migration_seeds_a_lot_where_the_account_is_defined(tmp_path: Path) 
     assert (other / "account_lots.csv").read_text().splitlines() == [
         "account_name,lot,subkind,opening_balance", "Roth,default,roth_ira,0.00",
     ]
+
+
+def test_the_migration_seeds_the_parent_not_an_override(tmp_path: Path) -> None:
+    """The defining folder comes from scenario.csv, not from which path sorts
+    first: here the child ``a_child`` sorts before its parent ``z_base``."""
+    base, child = tmp_path / "scenarios" / "z_base", tmp_path / "scenarios" / "a_child"
+    for folder, parent in ((base, ""), (child, "z_base")):
+        folder.mkdir(parents=True)
+        (folder / "scenario.csv").write_text(f"name,parent_scenario\n{folder.name},{parent}\n")
+        (folder / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nRoth,asset,roth_ira,bill,\n")
+        (folder / "account_values.csv").write_text("account_name,lot,opening_balance\n")
+    migration = _migration()
+
+    planned = migration.plan(tmp_path)
+    assert planned.problems == []
+    migration.apply(planned)
+    assert (base / "account_lots.csv").read_text().splitlines()[1:] == ["Roth,default,roth_ira,0.00"]
+    assert (child / "account_lots.csv").read_text().splitlines()[1:] == []
+
+
+@pytest.mark.parametrize(("account", "subkind"), [
+    ("Asset_Brokerage_Joint", "retirement"),
+    ("Asset_Roth_Bill", "brokerage_taxable"),
+])
+def test_account_edit_refuses_a_change_to_or_from_retirement(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], account: str, subkind: str,
+) -> None:
+    before = retire_alice_csv("accounts.csv").read_text()
+    result = CliRunner().invoke(main, [
+        "sim", "account", "edit", account, "--subkind", subkind,
+        "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
+    ])
+    assert result.exit_code != 0
+    assert "can't change to or from subkind 'retirement'" in result.output
+    assert retire_alice_csv("accounts.csv").read_text() == before

@@ -78,7 +78,7 @@ def plan(data_dir: Path) -> Plan:
     # Accounts to convert, by name, with their old subkind. Account names are
     # one namespace across scenarios, so one name must mean one subkind.
     moved: dict[str, str] = {}
-    defined_in: dict[str, Path] = {}
+    defined_in: dict[str, list[Path]] = {}
     for path in _files(data_dir, "accounts.csv"):
         header, rows, newline = _read(path)
         if "subkind" not in header:
@@ -93,7 +93,7 @@ def plan(data_dir: Path) -> Plan:
                 result.problems.append(
                     f"{path}: account {name!r} is {subkind} here but {moved[name]} elsewhere"
                 )
-            defined_in.setdefault(name, path.parent)
+            defined_in.setdefault(name, []).append(path.parent)
             row[header.index("subkind")] = RETIREMENT
             if "tax_treatment" in header and header.index("tax_treatment") < len(row):
                 row[header.index("tax_treatment")] = ""
@@ -128,11 +128,13 @@ def plan(data_dir: Path) -> Plan:
             f"{path}: renamed {NEW_NAME}; subkind set on {set_count} lot(s)"
         )
 
-    # A converted account needs a lot in the folder that defines it: a lot
-    # only in some derived scenario leaves the others, and the defining one,
-    # with none. A zero default lot there carries the subkind.
-    for account in sorted(moved):
-        folder = defined_in[account]
+    # A converted account needs a lot in each folder that defines it, not
+    # just overrides it (no ancestor scenario lists it too): a lot only in
+    # some derived scenario leaves the others, and the defining one, with
+    # none. A zero default lot there carries the subkind.
+    for account, folder in sorted(
+        (name, folder) for name in moved for folder in _defining(defined_in[name])
+    ):
         if account in with_lots.get(folder, set()):
             continue
         target = folder / NEW_NAME
@@ -154,6 +156,30 @@ def plan(data_dir: Path) -> Plan:
         result.writes[target] = _render(header, rows, newline)
         result.report.append(f"{target}: added a zero default lot for {account!r} ({moved[account]})")
     return result
+
+
+def _ancestors(folder: Path) -> set[Path]:
+    """The scenario folders ``folder`` inherits from: each `parent_scenario`
+    (main parent, then mix-ins, `:`-separated) and theirs, by scenario.csv."""
+    seen: set[Path] = set()
+    todo = [folder]
+    while todo:
+        path = todo.pop() / "scenario.csv"
+        if not path.is_file():
+            continue
+        header, rows, _newline = _read(path)
+        cell = _cell(header, rows[0], "parent_scenario") if rows else ""
+        for name in (part.strip() for part in cell.split(":")):
+            parent = folder.parent / name
+            if name and parent not in seen:
+                seen.add(parent)
+                todo.append(parent)
+    return seen
+
+
+def _defining(folders: list[Path]) -> list[Path]:
+    """The folders among ``folders`` none of whose ancestors is also among them."""
+    return [f for f in folders if not _ancestors(f) & set(folders)]
 
 
 def _read_text(text: str) -> tuple[list[str], list[list[str]], str]:
