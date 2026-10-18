@@ -34,7 +34,7 @@ def _lifespans(scenario_dir: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-    return dict(zip(frame["person"], frame["final_month"], strict=True))
+    return dict(zip(frame["person"], frame["age_at_death"], strict=True))
 
 
 # ---------- person add ----------
@@ -154,7 +154,7 @@ def test_a_persons_change_must_leave_every_scenario_loading(
     lineage is checked too."""
     persons = test_data_dir / "persons.csv"
     persons.write_text(persons.read_text() + "carol,Carol (fake),1995-02-03,,{}\n")
-    derive_scenario("other", "base", files={"lifespan.csv": "person,final_month\ncarol,2060-01\n"})
+    derive_scenario("other", "base", files={"lifespan.csv": "person,age_at_death\ncarol,65\n"})
     frame = pd.read_csv(persons, dtype=str, keep_default_na=False)
     before = persons.read_text()
 
@@ -173,32 +173,34 @@ def test_lifespan_set_writes_and_then_replaces_the_scenarios_row(
 ) -> None:
     folder = test_scenarios_dir / "retire_alice"
 
-    first = sim("person", "lifespan", "set", "bill", "2055-06", "--scenario", "retire_alice")
-    second = sim("person", "lifespan", "set", "bill", "2056-01", "--scenario", "retire_alice")
+    first = sim("person", "lifespan", "set", "bill", "88", "--scenario", "retire_alice")
+    second = sim("person", "lifespan", "set", "bill", "89.5", "--scenario", "retire_alice")
 
     assert first.exit_code == 0, first.output
     assert second.exit_code == 0, second.output
-    assert _lifespans(folder) == {"bill": "2056-01"}
+    assert _lifespans(folder) == {"bill": "89.5"}
 
 
 def test_lifespan_set_overrides_an_inherited_one(
     sim: Callable[..., Result], derive_scenario: Callable[..., Path],
 ) -> None:
     parent = derive_scenario("parent", "retire_alice",
-                             files={"lifespan.csv": "person,final_month\nbill,2055-06\n"})
+                             files={"lifespan.csv": "person,age_at_death\nbill,88\n"})
     child = derive_scenario("child", "parent")
 
-    result = sim("person", "lifespan", "set", "bill", "2050-12", "--scenario", "child")
+    result = sim("person", "lifespan", "set", "bill", "83", "--scenario", "child")
 
     assert result.exit_code == 0, result.output
-    assert "overriding 2055-06 from 'parent'" in result.output
-    assert _lifespans(child) == {"bill": "2050-12"}
-    assert _lifespans(parent) == {"bill": "2055-06"}
+    assert "overriding age 88 from 'parent'" in result.output
+    assert _lifespans(child) == {"bill": "83"}
+    assert _lifespans(parent) == {"bill": "88"}
 
 
 @pytest.mark.parametrize(("args", "message"), [
-    (("nobody", "2055-06"), "unknown person"),
-    (("bill", "June 2055"), "date must be"),
+    (("nobody", "88"), "unknown person"),
+    (("bill", "eighty"), "must be an age"),
+    (("bill", "88", "--vary", "triangular", "--low", "90", "--high", "95"), "must lie within"),
+    (("bill", "88", "--vary", "lognormal"), "--vary must be"),
 ])
 def test_lifespan_set_refuses_a_bad_row(
     sim: Callable[..., Result], test_scenarios_dir: Path, args: tuple[str, ...], message: str,
@@ -214,7 +216,7 @@ def test_lifespan_clear_removes_the_scenarios_row(
     sim: Callable[..., Result], derive_scenario: Callable[..., Path],
 ) -> None:
     child = derive_scenario("child", "retire_alice", files={
-        "lifespan.csv": "person,final_month\nalice,2060-01\nbill,2055-06\n"})
+        "lifespan.csv": "person,age_at_death\nalice,95\nbill,88\n"})
 
     result = sim("person", "lifespan", "clear", "bill", "--scenario", "child")
     last = sim("person", "lifespan", "clear", "alice", "--scenario", "child")
@@ -228,20 +230,20 @@ def test_lifespan_clear_of_an_override_says_what_is_inherited(
     sim: Callable[..., Result], derive_scenario: Callable[..., Path],
 ) -> None:
     derive_scenario("parent", "retire_alice",
-                    files={"lifespan.csv": "person,final_month\nbill,2055-06\n"})
-    derive_scenario("child", "parent", files={"lifespan.csv": "person,final_month\nbill,2050-12\n"})
+                    files={"lifespan.csv": "person,age_at_death\nbill,88\n"})
+    derive_scenario("child", "parent", files={"lifespan.csv": "person,age_at_death\nbill,83\n"})
 
     result = sim("person", "lifespan", "clear", "bill", "--scenario", "child")
 
     assert result.exit_code == 0, result.output
-    assert "now inherits 2055-06 from 'parent'" in result.output
+    assert "now inherits age 88 from 'parent'" in result.output
 
 
 def test_lifespan_clear_refuses_an_inherited_lifespan(
     sim: Callable[..., Result], derive_scenario: Callable[..., Path],
 ) -> None:
     parent = derive_scenario("parent", "retire_alice",
-                             files={"lifespan.csv": "person,final_month\nbill,2055-06\n"})
+                             files={"lifespan.csv": "person,age_at_death\nbill,88\n"})
     derive_scenario("child", "parent")
 
     inherited = sim("person", "lifespan", "clear", "bill", "--scenario", "child")
@@ -251,4 +253,78 @@ def test_lifespan_clear_refuses_an_inherited_lifespan(
     assert "inherited from 'parent'" in inherited.output
     assert absent.exit_code != 0
     assert "no lifespan" in absent.output
-    assert _lifespans(parent) == {"bill": "2055-06"}
+    assert _lifespans(parent) == {"bill": "88"}
+
+
+def _lifespan_row(scenario_dir: Path, person: str) -> dict[str, str]:
+    frame = pd.read_csv(scenario_dir / "lifespan.csv", dtype=str, keep_default_na=False)
+    return frame[frame["person"] == person].iloc[0].to_dict()
+
+
+def test_lifespan_set_with_vary_options_writes_the_distribution(
+    sim: Callable[..., Result], test_scenarios_dir: Path,
+) -> None:
+    folder = test_scenarios_dir / "retire_alice"
+
+    result = sim("person", "lifespan", "set", "bill", "86", "--vary", "triangular",
+                 "--low", "78", "--high", "97", "--scenario", "retire_alice")
+
+    assert result.exit_code == 0, result.output
+    assert "age 86 (triangular 78..97)" in result.output
+    row = _lifespan_row(folder, "bill")
+    assert (row["vary_distribution"], row["vary_low"], row["vary_high"], row["vary_mode"]) == (
+        "triangular", "78", "97", "")
+
+
+def test_lifespan_set_changes_only_the_options_given(
+    sim: Callable[..., Result], test_scenarios_dir: Path,
+) -> None:
+    folder = test_scenarios_dir / "retire_alice"
+    sim("person", "lifespan", "set", "bill", "86", "--vary", "uniform",
+        "--low", "78", "--high", "97", "--scenario", "retire_alice")
+
+    moved = sim("person", "lifespan", "set", "bill", "--high", "95", "--scenario", "retire_alice")
+    row = _lifespan_row(folder, "bill")
+    dropped = sim("person", "lifespan", "set", "bill", "--vary", "none",
+                  "--scenario", "retire_alice")
+
+    assert moved.exit_code == 0, moved.output
+    assert (row["age_at_death"], row["vary_low"], row["vary_high"]) == ("86", "78", "95")
+    assert dropped.exit_code == 0, dropped.output
+    after = _lifespan_row(folder, "bill")
+    assert (after["age_at_death"], after["vary_distribution"], after["vary_low"]) == ("86", "", "")
+
+
+def test_lifespan_set_with_no_options_asks_for_each_field(
+    sim: Callable[..., Result], test_scenarios_dir: Path,
+) -> None:
+    folder = test_scenarios_dir / "retire_alice"
+    answers = "\n".join(["84", "triangular", "75", "95", "", ""]) + "\n"
+
+    result = sim("person", "lifespan", "set", "alice", "--scenario", "retire_alice",
+                 input=answers)
+
+    assert result.exit_code == 0, result.output
+    row = _lifespan_row(folder, "alice")
+    assert (row["age_at_death"], row["vary_distribution"], row["vary_low"],
+            row["vary_high"], row["vary_correlate_with"]) == ("84", "triangular", "75", "95", "")
+
+
+def test_lifespan_set_correlates_two_lifespans(
+    sim: Callable[..., Result], test_scenarios_dir: Path,
+) -> None:
+    folder = test_scenarios_dir / "retire_alice"
+    sim("person", "lifespan", "set", "alice", "84", "--vary", "triangular",
+        "--low", "75", "--high", "95", "--scenario", "retire_alice")
+
+    result = sim("person", "lifespan", "set", "bill", "86", "--vary", "uniform",
+                 "--low", "78", "--high", "97", "--correlate-with", "lifespan:alice",
+                 "--correlation", "0.5", "--scenario", "retire_alice")
+    missing = sim("person", "lifespan", "set", "bill", "--correlate-with", "lifespan:carol",
+                  "--scenario", "retire_alice")
+
+    assert result.exit_code == 0, result.output
+    row = _lifespan_row(folder, "bill")
+    assert (row["vary_correlate_with"], row["vary_correlation"]) == ("lifespan:alice", "0.5")
+    assert missing.exit_code != 0
+    assert "lifespan:carol" in missing.output

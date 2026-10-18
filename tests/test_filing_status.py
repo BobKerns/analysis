@@ -67,7 +67,7 @@ def test_the_standard_deduction_switches_after_the_year_of_death(
     scenario_df.loc[0, "end"] = "2031-12-31"
     scenario_df.to_csv(scenario_csv, index=False)
 
-    retire_alice_csv("lifespan.csv").write_text("person,final_month\nalice,2028-06-01\n")
+    retire_alice_csv("lifespan.csv").write_text("person,age_at_death\nalice,63.25\n")
     scheduled = retire_alice_csv("scheduled.csv")
 
     df = pd.read_csv(scheduled, dtype=str, keep_default_na=False)

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from analysis.sim import readme, registries, units
+from analysis.sim.dates import final_month_for_age
 from analysis.sim.lineage import load_order, read_parents
 from analysis.sim.loader import (
     _MoneyReferenceResolver,
@@ -144,9 +145,44 @@ def vary_summary(row: dict[str, str]) -> str:
 class PersonListing:
     row: dict[str, str]
     """persons.csv's row: id, display, birthdate, role, meta_json."""
-    final_month: str
-    """The lifespan.csv ``final_month`` the scenario sets, or ""."""
+    lifespan: dict[str, str]
+    """The person's lifespan.csv row as the scenario merges it, or {}."""
     lifespan_defined_in: str
+
+    @property
+    def age_at_death(self) -> str:
+        """The lifespan's ``age_at_death`` as written, or ""."""
+        return self.lifespan.get("age_at_death", "")
+
+    @property
+    def final_month(self) -> str:
+        """The ``YYYY-MM`` the age reaches from the birthdate (#221), or ""
+        when either is missing or doesn't parse (the loader reports it)."""
+        try:
+            return final_month_for_age(
+                self.row.get("birthdate", ""), float(self.age_at_death),
+            )[:7]
+        except ValueError:
+            return ""
+
+    @property
+    def varies(self) -> str:
+        """How the age varies across ensemble members, e.g.
+        ``triangular 75..95 ~ lifespan:alice 0.5``, or ""."""
+        return lifespan_vary_text(self.lifespan)
+
+
+def lifespan_vary_text(row: dict[str, str]) -> str:
+    """A lifespan.csv row's ``vary_*`` cells in one phrase (#221), or ""."""
+    distribution = row.get("vary_distribution", "")
+    if not distribution:
+        return ""
+    parts = [f"{distribution} {row.get('vary_low', '')}..{row.get('vary_high', '')}"]
+    if row.get("vary_mode"):
+        parts.append(f"mode {row['vary_mode']}")
+    if row.get("vary_correlate_with"):
+        parts.append(f"~ {row['vary_correlate_with']} {row.get('vary_correlation', '')}".rstrip())
+    return " ".join(parts)
 
 
 def person_listing(data_dir: Path, scenario_dir: Path) -> list[PersonListing]:
@@ -160,13 +196,12 @@ def person_listing(data_dir: Path, scenario_dir: Path) -> list[PersonListing]:
         found = lifespans.pop(row.get("id", ""), None)
         listed.append(PersonListing(
             row,
-            found.row.get("final_month", "") if found else "",
+            dict(found.row) if found else {},
             defined_in(found.index, found.inherited_from) if found else "",
         ))
     for person, found in lifespans.items():
         listed.append(PersonListing(
-            {"id": person}, found.row.get("final_month", ""),
-            defined_in(found.index, found.inherited_from),
+            {"id": person}, dict(found.row), defined_in(found.index, found.inherited_from),
         ))
     return listed
 

@@ -83,6 +83,12 @@ A `vary_process` row draws its level in the amount pass like any other amount ro
 
 **Two passes, in this order: every `vary_target=date` row first, then every `vary_target=amount`/rate row.** A ramp's reference point, or an amount meant to reflect "whatever the ramped rate is as of this (possibly also-varying) date," needs the date side already resolved before the amount side draws — resolving dates first makes that always true rather than order-dependent by accident.
 
+### 3a. A varying lifespan
+
+A person's lifespan varies too ([#221](https://github.com/BobKerns/analysis/issues/221)): `lifespan.csv`'s `age_at_death` can carry `vary_distribution` (`uniform` or `triangular`), with `vary_low`/`vary_high`/`vary_mode` in years ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). Each member draws an age, rounds it to whole months, and writes it and the final month it reaches into `person_lifespan`, clearing `vary_distribution`. The engine reads only the final month, so the `on_death` sweep, RMDs, Social Security and every lifespan-gated rule, and the filing-status switch all follow the draw.
+
+A lifespan behaves like any varying row: its stream is keyed by `lifespan:<person>`, its node name in correlation trees ([ADR-008](ADR-008-correlated-parameters.md)) and sensitivity sweeps ([ADR-007](ADR-007-sensitivity-analysis.md)), and `ensemble_draw` records the age with target `age_at_death`. One difference: its base case (§9), member 0 and any OAT member that doesn't move it, is the authored `age_at_death`, not the distribution's median, so a run dies at the age written down. A triangular's mode defaults to that age, so the base case is the most likely value.
+
 ### 4. Ramps: one authored row, several generated rows
 
 A `kind=set_rate` row with `vary_ramp_months` set draws its **target** the same way any `amount` variation does, then **expands**: instead of writing one resolved `set_rate` event, the vary step writes `vary_ramp_months` of them, one per month, linearly interpolated from the series' current value (its latest aux row as of this event's own `date`) up to the drawn target, landing on it at `date + vary_ramp_months`. One authored row with several synthesized effects is not a new category of calendar event, nor a new way of reading `aux_table`: every generated row is an ordinary dated `set_rate`, looked up exactly like any other rate series (latest row on or before the month). The smoothing is entirely in what the generator writes, not in how anything reads.
@@ -121,11 +127,12 @@ A ramp and a process don't combine on one row: a ramp describes a planned move t
 A new module resolves one recipe intent into `member_count` member intents:
 
 1. Copy the recipe's intent file to `state/intent/<recipe>/member_NNNN.sqlite3`.
-2. Query that copy's own `calendar_event` rows for `vary_distribution IS NOT NULL`.
+2. Query that copy's own `calendar_event` rows and `person_lifespan` rows for `vary_distribution IS NOT NULL`.
 3. Pass 1 (dates): for each `vary_target='date'` row, draw on its own RNG stream (§3) and `UPDATE calendar_event SET date = ?, vary_distribution = NULL WHERE name = ?`.
 4. Pass 2 (amounts/rates): for each `vary_target='amount'` row, draw a value (and, for a ramp, the target — §4; for a process, the level `L` — §4a); either `UPDATE ... SET amount = ?, vary_distribution = NULL` or, for a ramp, that plus `INSERT`ing the additional interpolated rows. A process row instead takes `rate₀` as its own `amount` and `INSERT`s one row per later year, up to the cutoff §4a describes (the scenario's last month, or the next authored `set_rate` for the same `(aux_kind, series)`, whichever is first). Its `ensemble_draw` row records `L`, not `rate₀`, so the parameter the reports read is the level, kept apart from the path built on it.
-5. Record what happened (§6) in the same copy.
-6. Hand the finished, ordinary intent file to `run_scenario`, unmodified, writing `state/runs/<recipe>/member_NNNN.sqlite3`.
+5. Resolve each varying lifespan's age and final month (§3a).
+6. Record what happened (§6) in the same copy.
+7. Hand the finished, ordinary intent file to `run_scenario`, unmodified, writing `state/runs/<recipe>/member_NNNN.sqlite3`.
 
 Clearing `vary_distribution` as each row resolves means a finished member intent has no unresolved rows left — by the time `_apply_calendar_event` ever sees these rows, they're indistinguishable from any other authored calendar event.
 
@@ -189,7 +196,7 @@ No confidence bands are drawn on any of these: they don't read well over a fan, 
 
 ### 9. Member 0: a deterministic base case
 
-Every ensemble's member 0 resolves each `vary_distribution` row to its distribution's **central value**, its median (`uniform`'s midpoint; `truncated_normal`'s authored `vary_median`, exact even with asymmetric bounds; `triangular`'s median — #31) instead of drawing from its RNG stream — members 1 through `member_count - 1` draw exactly as before, unaffected. This gives every ensemble one deterministic, always-in-bounds "base case" member, and lets anything that only knows how to open one run file per scenario (a notebook's scenario picker, any other single-scenario tool) treat an ensemble recipe's member 0 as that scenario's run the same way it would any ordinary scenario's — `resolve_scenario_name` falls back to member 0 of the latest batch when there's no flat run file to find.
+Every ensemble's member 0 resolves each `vary_distribution` row to its distribution's **central value**, its median (`uniform`'s midpoint; `truncated_normal`'s authored `vary_median`, exact even with asymmetric bounds; `triangular`'s median — #31; a lifespan's authored age instead, §3a) instead of drawing from its RNG stream — members 1 through `member_count - 1` draw exactly as before, unaffected. This gives every ensemble one deterministic, always-in-bounds "base case" member, and lets anything that only knows how to open one run file per scenario (a notebook's scenario picker, any other single-scenario tool) treat an ensemble recipe's member 0 as that scenario's run the same way it would any ordinary scenario's — `resolve_scenario_name` falls back to member 0 of the latest batch when there's no flat run file to find.
 
 This is a deliberate, small distortion of the sampled distribution: member 0 isn't actually drawn from it, so a statistic computed across *all* `member_count` members (mean, SD, a fan chart's percentile bands) is very slightly biased toward the center relative to `member_count` genuinely independent draws — most noticeable at a small `member_count`, negligible at the sizes this ADR expects (tens of members; see `docs/guides/ensembles.md` for sizing guidance). The alternative considered was keeping member 0 out of the statistics (effectively `member_count + 1` members: one deterministic, `member_count` random) or dropping the guaranteed base case entirely (every member drawn, as originally designed). Both were rejected: a single always-present, always-inspectable member is worth more than the statistical purity of excluding it, and "member 0 is special, full stop" is a simpler invariant to hold onto than a count that means something different depending on whether you're drawing a member or aggregating across them.
 
@@ -229,3 +236,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#165](https://github.com/BobKerns/analysis/issues/165): new `discrete` family with `vary_outcomes`: weighted outcomes, each a value or a range; a `one_off_transfer` outcome may be 0 (§2, §3).
 - [#168](https://github.com/BobKerns/analysis/issues/168), [#169](https://github.com/BobKerns/analysis/issues/169): an ensemble is a scenario with a positive `ensemble_size`; `ensemble create` takes mix-ins and inherits an ensemble parent's seed and size; `scenario create` writes size 0; a non-ensemble with varying rows runs its base case; `sim ensemble list` (§7).
 - [#170](https://github.com/BobKerns/analysis/issues/170), [#171](https://github.com/BobKerns/analysis/issues/171): one lot of an account as well as the whole account, with `--lot` on `sim ensemble summary`/`compare`; the notebook's two widgets share their controls and can start on a named recipe (§8).
+- [#221](https://github.com/BobKerns/analysis/issues/221): a person's lifespan varies by age, `uniform` or `triangular`, with the authored age as its base case (§3a, §5, §9).

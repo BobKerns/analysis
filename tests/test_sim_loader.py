@@ -804,7 +804,8 @@ def test_lifespan_csv_round_trip(tmp_path: Path) -> None:
     shutil.copytree(PROTOTYPE, repo)
 
     lifespan = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan.write_text("person,final_month\nalice,2033-06-30\n")
+    # Alice was born 1965-03: 68.25 years on is 2033-06.
+    lifespan.write_text("person,age_at_death\nalice,68.25\n")
 
     result = load_scenario(
         repo, "retire_alice", intent_dir=tmp_path / "out",
@@ -814,10 +815,12 @@ def test_lifespan_csv_round_trip(tmp_path: Path) -> None:
     con.row_factory = sqlite3.Row
     try:
         row = con.execute(
-            "SELECT person, final_month FROM person_lifespan"
+            "SELECT person, age_at_death, final_month, vary_distribution FROM person_lifespan"
         ).fetchone()
         assert row["person"] == "alice"
+        assert row["age_at_death"] == 68.25
         assert row["final_month"] == "2033-06-30"
+        assert row["vary_distribution"] is None
     finally:
         con.close()
 
@@ -827,7 +830,7 @@ def test_lifespan_unknown_person_rejected(tmp_path: Path) -> None:
     shutil.copytree(PROTOTYPE, repo)
 
     lifespan = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan.write_text("person,final_month\ncarol,2033-06-30\n")
+    lifespan.write_text("person,age_at_death\ncarol,70\n")
 
     with pytest.raises(LoadError, match="not in persons.csv"):
         load_scenario(

@@ -57,7 +57,14 @@ from analysis.sim.correlation import (
 )
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
 from analysis.sim import units
-from analysis.sim.registries import ENSEMBLE_MODES, LATENT_FACTOR_KIND, PROCESS_SHOCK_CLAMP
+from analysis.sim.dates import final_month_for_age
+from analysis.sim.registries import (
+    ENSEMBLE_MODES,
+    LATENT_FACTOR_KIND,
+    LIFESPAN_NODE_PREFIX,
+    LIFESPAN_TARGET,
+    PROCESS_SHOCK_CLAMP,
+)
 from analysis.sim.types import DollarMode
 from analysis.sim.schema import connect_sim_file
 
@@ -66,7 +73,8 @@ __all__ = [
     "latest_ensemble_batch", "members_net_worth_by_month", "summary",
     "QUINTILES", "REPORT_PERCENTILES", "percentiles", "summary_with_percentiles",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
-    "factor_reach", "process_path",
+    "factor_reach", "process_path", "varying_names", "lifespan_distribution",
+    "correlation_links",
     "members_balance_by_month", "TAIL_LEVELS", "tail_means", "reserve_shares",
     "recipe_reserve", "quantile_deltas", "member_pairs", "paired_deltas",
     "risk_summary", "comparison_deltas",
@@ -426,15 +434,101 @@ def _resolve_value(
     return (_discrete(dist, row).draw_int(rng) if as_int else dist.draw(rng)), None
 
 
-def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[str]]:
-    """The intent's correlation forest (ADR-008): each varying row's or
-    factor's link to its parent, and the latent factors' names."""
-    links = {
-        name: Link(parent, rho) for name, parent, rho in con.execute(
-            "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
-            "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
+def _resolve_lifespan(
+    row: sqlite3.Row, *, overrides: dict[str, float] | None, seed: int | None,
+    member_index: int, score: float | None, conditional: bool, nu: float | None,
+) -> tuple[float, float | None]:
+    """A varying lifespan's age on one member (#221), and the OAT quantile it
+    was resolved at, by ``_resolve_value``'s rules, with one difference: its
+    base case (member 0, and an OAT member that doesn't move it) is the
+    authored ``age_at_death``, not the distribution's median, so a run dies at
+    the age written down. The age is whole months, as its final month is."""
+    dist = lifespan_distribution(row)
+    if overrides is None and member_index != 0 or row["name"] in (overrides or {}) or conditional:
+        value, quantile = _resolve_value(
+            row, dist, as_int=False, overrides=overrides, seed=seed,
+            member_index=member_index, score=score, conditional=conditional, nu=nu,
         )
-    }
+    else:
+        value, quantile = row["age_at_death"], None
+    return round(value * 12) / 12, quantile
+
+
+def _has_columns(con: sqlite3.Connection, table: str, *columns: str) -> bool:
+    present = {c[1] for c in con.execute(f"PRAGMA table_info({table})")}
+    return set(columns) <= present
+
+
+def _lifespan_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
+    """The varying lifespans (#221), each with its person's birthdate and its
+    correlation node name; none in a file written before schema 39."""
+    if not _has_columns(con, "person_lifespan", "vary_distribution"):
+        return []
+    cur = con.cursor()
+    cur.row_factory = sqlite3.Row
+    return cur.execute(
+        "SELECT l.*, ? || l.person AS name, p.birthdate FROM person_lifespan l "
+        "JOIN person p ON p.id = l.person "
+        "WHERE l.vary_distribution IS NOT NULL ORDER BY l.person",
+        (LIFESPAN_NODE_PREFIX,),
+    ).fetchall()
+
+
+def varying_names(con: sqlite3.Connection) -> list[str]:
+    """Every unresolved varying node in an intent, sorted: the calendar rows
+    with `vary_distribution` set, and the varying lifespans' nodes (#221)."""
+    names = [name for (name,) in con.execute(
+        "SELECT name FROM calendar_event WHERE vary_distribution IS NOT NULL AND name IS NOT NULL"
+    )]
+    if _has_columns(con, "person_lifespan", "vary_distribution"):
+        names += [LIFESPAN_NODE_PREFIX + person for (person,) in con.execute(
+            "SELECT person FROM person_lifespan WHERE vary_distribution IS NOT NULL"
+        )]
+    return sorted(names)
+
+
+def correlation_links(con: sqlite3.Connection) -> dict[str, Link]:
+    """Each varying calendar row's, factor's or lifespan's (#221) link to its
+    correlation parent (ADR-008); tolerant of files from before either set
+    of columns existed."""
+    links: dict[str, Link] = {}
+    if _has_columns(con, "calendar_event", "vary_correlate_with"):
+        links.update({
+            name: Link(parent, rho) for name, parent, rho in con.execute(
+                "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
+                "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
+            )
+        })
+    if _has_columns(con, "person_lifespan", "vary_correlate_with"):
+        links.update({
+            LIFESPAN_NODE_PREFIX + person: Link(parent, rho)
+            for person, parent, rho in con.execute(
+                "SELECT person, vary_correlate_with, vary_correlation FROM person_lifespan "
+                "WHERE vary_correlate_with IS NOT NULL"
+            )
+        })
+    return links
+
+
+def lifespan_distribution(row: sqlite3.Row | Mapping[str, Any]) -> Uniform | Triangular:
+    """A varying lifespan's distribution over ages (#221). A triangular's
+    mode was filled with the authored age at load when left blank."""
+    try:
+        if row["vary_distribution"] == "uniform":
+            return Uniform(row["vary_low"], row["vary_high"])
+        if row["vary_distribution"] == "triangular":
+            return Triangular(row["vary_low"], row["vary_mode"], row["vary_high"])
+    except DistributionError as e:
+        raise EnsembleError(f"lifespan of {row['person']!r}: {e}") from e
+    raise EnsembleError(
+        f"lifespan of {row['person']!r}: {row['vary_distribution']!r} can't vary a lifespan"
+    )
+
+
+def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[str]]:
+    """The intent's correlation forest (ADR-008): each varying row's,
+    lifespan's or factor's link to its parent, and the latent factors' names."""
+    links = correlation_links(con)
     factors = [name for (name,) in con.execute(
         "SELECT name FROM calendar_event WHERE kind = ? AND name IS NOT NULL ORDER BY name",
         (LATENT_FACTOR_KIND,),
@@ -587,10 +681,14 @@ def resolve_member(
         rows = con.execute(
             "SELECT * FROM calendar_event WHERE vary_distribution IS NOT NULL"
         ).fetchall()
+        lifespans = _lifespan_rows(con)
         links, factors = _correlation_links(con)
         node_tails = _node_tails(links, tree_members(links) | set(factors), _tail_dependence(con))
         if overrides is not None:
-            unknown = set(overrides) - {r["name"] for r in rows} - set(factors)
+            unknown = (
+                set(overrides) - {r["name"] for r in rows} - {r["name"] for r in lifespans}
+                - set(factors)
+            )
             if unknown:
                 raise EnsembleError(
                     f"overrides name no unresolved vary_* row or latent factor: {sorted(unknown)}"
@@ -623,6 +721,21 @@ def resolve_member(
                 (drawn.isoformat(), row["id"]),
             )
             draws.append((row["name"], "date", drawn.isoformat(), quantile,
+                          row["vary_distribution"], scores.get(row["name"])))
+
+        for row in lifespans:
+            age, quantile = _resolve_lifespan(
+                row, overrides=overrides, seed=seed, member_index=member_index,
+                score=scores.get(row["name"]), conditional=row["name"] in moved,
+                nu=node_tails.get(row["name"]),
+            )
+            con.execute(
+                "UPDATE person_lifespan SET age_at_death = ?, final_month = ?, "
+                "vary_distribution = NULL WHERE scenario_id = ? AND person = ?",
+                (age, final_month_for_age(row["birthdate"], age), row["scenario_id"],
+                 row["person"]),
+            )
+            draws.append((row["name"], LIFESPAN_TARGET, f"{age:.4f}", quantile,
                           row["vary_distribution"], scores.get(row["name"])))
 
         # Process paths (ADR-006 §4a) need the drawn dates (a path stops at the
@@ -719,10 +832,7 @@ def factor_reach(intent_path: Path) -> dict[str, int]:
     con = connect_sim_file(intent_path)
     try:
         links, factors = _correlation_links(con)
-        varying = {name for (name,) in con.execute(
-            "SELECT name FROM calendar_event "
-            "WHERE vary_distribution IS NOT NULL AND name IS NOT NULL"
-        )}
+        varying = set(varying_names(con))
     finally:
         con.close()
     try:

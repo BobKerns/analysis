@@ -109,16 +109,20 @@ def test_person_list_shows_the_inherited_lifespan(
     sim: Callable[..., Result], derive_scenario: Callable[..., Path],
 ) -> None:
     derive_scenario("parent", "retire_alice",
-                    files={"lifespan.csv": "person,final_month\nbill,2055-06-30\n"})
+                    files={"lifespan.csv": "person,age_at_death,vary_distribution,vary_low,"
+                                           "vary_high\nbill,87.8333,uniform,80,95\n"})
     child = derive_scenario("child", "parent")
 
     persons = {p.row["id"]: p for p in setup_listings.person_listing(child.parent.parent, child)}
 
-    assert persons["bill"].final_month == "2055-06-30"
+    # Bill was born 1967-08, so 87 years and 10 months on is 2055-06.
+    assert persons["bill"].age_at_death == "87.8333"
+    assert persons["bill"].final_month == "2055-06"
+    assert persons["bill"].varies == "uniform 80..95"
     assert persons["bill"].lifespan_defined_in == "parent"
     assert persons["alice"].final_month == ""
     output = sim("person", "list", "--scenario", "child").output
-    assert "Bill (fake)" in output and "2055-06-30" in output
+    assert "Bill (fake)" in output and "2055-06" in output and "uniform 80..95" in output
 
 
 # ---------- year to date ----------

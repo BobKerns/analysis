@@ -111,9 +111,11 @@ Three `calendar.csv` columns, valid on a varying row and on a `latent_factor` ro
 
 | column | notes |
 | --- | --- |
-| `vary_correlate_with` | the parent: another varying row's or a factor's `name` |
+| `vary_correlate_with` | the parent: another varying row's or a factor's `name`, or a varying lifespan's `lifespan:<person>` |
 | `vary_correlation` | ρ, in [-1, 1]; required with `vary_correlate_with` and only with it |
 | `vary_tail_dependence` | `ν` ≥ 1, the Student-t copula's degrees of freedom for the whole tree (§1); only on a tree's root; blank is the Gaussian copula |
+
+A varying lifespan ([ADR-006](ADR-006-ensemble-scenarios.md) §3a) is a node too, named `lifespan:<person>`: `lifespan.csv` has its own `vary_correlate_with`/`vary_correlation` (not `vary_tail_dependence`), so two spouses' ages can move together, and a calendar row or factor can be its parent or its child. No calendar row may take a name starting `lifespan:`.
 
 `vary_tail_dependence` is a separate column from `vary_tailweight` on purpose: `vary_tailweight` shapes one row's own marginal (sinh-arcsinh, ADR-006), a different quantity on a different scale. The two compose: tail weight makes a rate's extremes bigger; `ν` makes extremes coincide.
 
@@ -199,3 +201,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#80](https://github.com/BobKerns/analysis/issues/80): several factors with no dependents are one warning (§4).
 - [#115](https://github.com/BobKerns/analysis/issues/115): a tree holding a process row (ADR-006 §4a) also computes a score per node for each calendar year of the path (§5, §7).
 - [#204](https://github.com/BobKerns/analysis/issues/204): only `sim check` prints the unused-factor and lone-`vary_tail_dependence` warnings (§4).
+- [#221](https://github.com/BobKerns/analysis/issues/221): a varying lifespan joins correlation trees as `lifespan:<person>` (§4).

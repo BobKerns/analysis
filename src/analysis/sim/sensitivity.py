@@ -29,8 +29,14 @@ from analysis.frames import index_years
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.correlation import Link, implied_correlation, rho_from_kendall_tau, tree_root
 from analysis.sim.distributions import Discrete, Distribution, Triangular, TruncatedNormal, moments
-from analysis.sim.ensemble import EnsembleError, load_ensemble, read_batch_manifest
-from analysis.sim.registries import format_calendar_amount
+from analysis.sim.ensemble import (
+    EnsembleError,
+    correlation_links,
+    lifespan_distribution,
+    load_ensemble,
+    read_batch_manifest,
+)
+from analysis.sim.registries import LIFESPAN_NODE_PREFIX, LIFESPAN_TARGET, format_calendar_amount
 from analysis.sim.types import DollarMode
 from analysis.sim.schema import connect_sim_file
 
@@ -102,16 +108,18 @@ def _day_ordinal(raw: str) -> int:
     return stamp.toordinal()
 
 
-def display_value(kind: str, target: str, raw: str) -> str:
+def display_value(kind: str | None, target: str, raw: str) -> str:
     """An ``ensemble_draw.drawn_value`` in display units: a date as-is, a
     latent factor's standard normal score as ``z=+1.28`` (``z=+inf`` at an
-    endpoint quantile), a ``set_rate``
+    endpoint quantile), a lifespan's age as ``age 84.5`` (#221), a ``set_rate``
     amount (micros) as a percent, any other amount (cents) as dollars."""
     if target == "date":
         return raw
+    if target == LIFESPAN_TARGET:
+        return f"age {float(raw):.1f}"
     if target == FACTOR_TARGET:
         return f"z={float(raw):+.2f}"
-    return format_calendar_amount(kind, int(raw), cents=False, rate_places=2)
+    return format_calendar_amount(kind or "", int(raw), cents=False, rate_places=2)
 
 
 def oat_members(connections: dict[str, RunConnection]) -> list[OatMember]:
@@ -125,7 +133,8 @@ def oat_members(connections: dict[str, RunConnection]) -> list[OatMember]:
             row = con.execute(
                 "SELECT d.calendar_event_name, d.quantile, d.vary_target, d.drawn_value, c.kind "
                 "FROM ensemble_draw d "
-                "JOIN calendar_event c ON c.name = d.calendar_event_name "
+                # A lifespan's draw (#221) has no calendar row.
+                "LEFT JOIN calendar_event c ON c.name = d.calendar_event_name "
                 "WHERE d.quantile IS NOT NULL"
             ).fetchone()
         finally:
@@ -789,12 +798,7 @@ def _links_and_rows(run_path: Path) -> tuple[dict[str, Link], list[str], set[str
     con = connect_sim_file(run_path)
     try:
         columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
-        links = {} if "vary_correlate_with" not in columns else {
-            name: Link(parent, rho) for name, parent, rho in con.execute(
-                "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
-                "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
-            )
-        }
+        links = correlation_links(con)
         t_roots = set() if "vary_tail_dependence" not in columns else {
             name for (name,) in con.execute(
                 "SELECT name FROM calendar_event "
@@ -994,6 +998,8 @@ def _display_number(kind: str, target: str, value: float) -> str:
     a date, a ``set_rate`` amount (micros) as a percent, cents as dollars."""
     if target == "date":
         return date.fromordinal(round(value)).isoformat()
+    if target == LIFESPAN_TARGET:
+        return display_value(kind, target, str(value))
     return display_value(kind, target, str(round(value)))
 
 
@@ -1059,6 +1065,54 @@ def _describe(dist: Distribution, kind: str, target: str) -> dict[str, str]:
     }
 
 
+def _lifespan_record(
+    con: sqlite3.Connection, name: str, distribution: str | None, base_ages: dict[str, float],
+) -> dict[str, object]:
+    """``parameters``' row for a varying lifespan (#221): what it acts on is
+    the person, its center the authored age (the base case, not the median)."""
+    person = name.removeprefix(LIFESPAN_NODE_PREFIX)
+    cur = con.cursor()
+    cur.row_factory = sqlite3.Row
+    row = cur.execute("SELECT * FROM person_lifespan WHERE person = ?", (person,)).fetchone()
+    record: dict[str, object] = {
+        "name": name, "kind": "lifespan", "affects": person, "target": LIFESPAN_TARGET,
+        "distribution": distribution or "", "range": "", "center": "", "shape": "",
+        "moments": "", "ramp_months": "", "process": "", "description": "",
+        "correlate_with": (row["vary_correlate_with"] or "") if row else "",
+        "rho": "" if row is None or row["vary_correlation"] is None
+        else f"{row['vary_correlation']:+g}",
+        "nu": "",
+    }
+    if row is None or not distribution:
+        return record
+    try:
+        dist = lifespan_distribution({**dict(row), "vary_distribution": distribution})
+    except EnsembleError:
+        return record
+    m = moments(dist)
+    record.update({
+        "range": f"age {dist.low:g} to {dist.high:g}",
+        "center": f"age {base_ages[person]:.1f}" if person in base_ages else "",
+        "shape": f"mode age {dist.mode:g}" if isinstance(dist, Triangular) else "",
+        "moments": (f"mean age {m.mean:.1f}, sd {m.sd:.1f} years, skew {m.skewness:+.2f}, "
+                    f"excess kurtosis {m.excess_kurtosis:+.2f}"),
+    })
+    return record
+
+
+def _base_ages(connections: dict[str, RunConnection]) -> dict[str, float]:
+    """Each person's age at death on the batch's base (member 0), if run."""
+    for rc in connections.values():
+        con = connect_sim_file(rc.run_path)
+        try:
+            index = con.execute("SELECT member_index FROM ensemble_manifest").fetchone()
+            if index is not None and index[0] == 0:
+                return dict(con.execute("SELECT person, age_at_death FROM person_lifespan"))
+        finally:
+            con.close()
+    return {}
+
+
 def _describe_process(row: sqlite3.Row) -> str:
     """A process row's path (ADR-006 §4a), e.g. ``ar1, persistence 0.5,
     shock 2.00%``; blank for a held draw, or a file before schema 33."""
@@ -1101,9 +1155,14 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
                 "FROM ensemble_draw d JOIN calendar_event c ON c.name = d.calendar_event_name "
                 "ORDER BY name"
             ).fetchall()
+            lifespans = con.execute(
+                f"SELECT calendar_event_name, {'distribution' if has_distribution else 'NULL'} "
+                "FROM ensemble_draw WHERE vary_target = ?", (LIFESPAN_TARGET,),
+            ).fetchall()
+            base_ages = _base_ages(connections) if lifespans else {}
+            records = [_lifespan_record(con, name, dist, base_ages) for name, dist in lifespans]
         finally:
             con.close()
-        records = []
         for row in rows:
             kind, target = row["kind"], row["target"]
             record: dict[str, object] = {
@@ -1123,7 +1182,7 @@ def parameters(batch_dir: Path) -> pd.DataFrame:
             if dist is not None:
                 record.update(_describe(dist, kind, target))
             records.append(record)
-        table = pd.DataFrame(records).set_index("name") if records else pd.DataFrame()
+        table = pd.DataFrame(records).set_index("name").sort_index() if records else pd.DataFrame()
         if table.empty:
             return table
         if batch_mode(batch_dir) == "sensitivity":

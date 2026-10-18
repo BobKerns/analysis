@@ -40,7 +40,7 @@ data_repo/
             account_lots.csv # opening balances/bases, one row per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3, [ADR-005](ADR-005-lots-and-per-lot-state.md))
             scheduled.csv   # this scenario's ScheduledTransactions
             calendar.csv    # CalendarEvents
-            lifespan.csv    # per-person final month
+            lifespan.csv    # per-person age at death
             year_to_date.csv # partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10)
             chains/
                 source/asset_checking_liquidity.csv   # named liquidity chains ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7)
@@ -409,10 +409,20 @@ CREATE TABLE scenario (
 -- simulated month exceeds final_month, every scheduled_transaction
 -- associated with this person (explicit `person` column, or owner of
 -- from_account/to_account) stops firing for the remainder of the run.
+-- final_month is derived from age_at_death and the person's birthdate, and
+-- is all the engine reads. An ensemble member rewrites both with its draw
+-- and clears vary_distribution ([ADR-006](ADR-006-ensemble-scenarios.md) §3a).
 CREATE TABLE person_lifespan (
-    scenario_id INTEGER NOT NULL REFERENCES scenario(id),
-    person      TEXT NOT NULL REFERENCES person(id),
-    final_month TEXT NOT NULL,
+    scenario_id  INTEGER NOT NULL REFERENCES scenario(id),
+    person       TEXT NOT NULL REFERENCES person(id),
+    age_at_death REAL NOT NULL,
+    final_month  TEXT NOT NULL,
+    vary_distribution   TEXT,
+    vary_low            REAL,
+    vary_high           REAL,
+    vary_mode           REAL,
+    vary_correlate_with TEXT,
+    vary_correlation    REAL,
     PRIMARY KEY (scenario_id, person)
 );
 
@@ -491,7 +501,7 @@ CREATE TABLE ensemble_manifest (
 
 CREATE TABLE ensemble_draw (
     calendar_event_name TEXT NOT NULL,
-    vary_target          TEXT NOT NULL,  -- 'amount' or 'date'
+    vary_target          TEXT NOT NULL,  -- 'amount', 'date', 'factor' or 'age_at_death' (a lifespan, #221)
     drawn_value           TEXT NOT NULL, -- in the target column's own unit
     quantile             REAL,           -- ADR-007 §5: OAT override quantile; NULL for a draw or central value
     distribution         TEXT,           -- ADR-007 §5: the row's vary_distribution, which resolving clears
@@ -695,7 +705,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `calendar_event` | One patch on one date; `kind` selects the semantics; the common parameters are columns (`scheduled_name`, `account_1`, `account_2`, `series`, `amount`, `param_date`, `tax_character`) and `payload_json` carries the rest. `name` is a stable identifier (required, unique, for a row varied under [ADR-006](ADR-006-ensemble-scenarios.md)); its `vary_*` columns mark the row's `amount` or `date` as drawn per ensemble member rather than literal. |
 | `aux_table` | Versioned reference data: tax brackets, RMD divisors, inflation series, per-account rates, filing status. |
 | `scenario` | The scenario this file represents (one row). |
-| `person_lifespan` | Optional per-person final_month override for a scenario ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). |
+| `person_lifespan` | Optional per-person age at death for a scenario, its final month, and how it varies ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). |
 | `year_to_date` | Partial-first-year catch-up facts ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.10): wages/investment growth/SS already received, prior withholding, and fully-prior-year tax activity (loss carryforwards etc.), posted as balance-neutral transfer_event rows. |
 | `simulation_step` | One month inside the run; links to the previous step. |
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
@@ -706,7 +716,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `inflation_index_state` | Cumulative inflation index per series at the end of each step; the `inflation_index` and constant-dollar views read it. |
 | `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | Role/name labels and their junctions to accounts, rules and calendar events. |
 | `ensemble_manifest` | One row: which ensemble member this file is, its derived seed, member count, and the recipe's `scenario_tree_id` at generation time ([ADR-006](ADR-006-ensemble-scenarios.md)), and whether it's a Monte Carlo or sensitivity member (`mode`, [ADR-007](ADR-007-sensitivity-analysis.md)). Present only in a resolved member's intent/run files. |
-| `ensemble_draw` | One row per resolved `vary_distribution` row: which `calendar_event` (`name`), which target (`amount`/`date`), and the drawn value ([ADR-006](ADR-006-ensemble-scenarios.md)); `quantile` is the OAT override quantile for a sensitivity member's perturbed row ([ADR-007](ADR-007-sensitivity-analysis.md)). Present only in a resolved member's intent/run files. |
+| `ensemble_draw` | One row per resolved `vary_distribution` row: which `calendar_event` (`name`) or lifespan (`lifespan:<person>`), which target (`amount`/`date`/`age_at_death`), and the drawn value ([ADR-006](ADR-006-ensemble-scenarios.md)); `quantile` is the OAT override quantile for a sensitivity member's perturbed row ([ADR-007](ADR-007-sensitivity-analysis.md)). Present only in a resolved member's intent/run files. |
 | `schema_overview` | This table; one short description per table, for human and LLM readers. |
 
 ### Views
@@ -877,3 +887,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#197](https://github.com/BobKerns/analysis/issues/197): `Income_LoanOrigination` is no longer reserved, since the `buy_asset` kind that used it is dropped; the reserved names are the growth counterparties (Conventions).
 - [#199](https://github.com/BobKerns/analysis/issues/199): `chain_steps.tax_character` and `basis_of_lot_id`; the `home_sale` and `capital_improvement` tax characters; the run table `capital_loss` (Intent and ledger DDL; schema 37).
 - [#217](https://github.com/BobKerns/analysis/issues/217): account subkind `retirement` replaces the four IRA/401k subkinds; `account_lot` gains `subkind` and the effective `tax_treatment` the engine reads (Intent DDL; schema 38).
+- [#221](https://github.com/BobKerns/analysis/issues/221): `person_lifespan` gains `age_at_death` and the `vary_*` columns; `ensemble_draw` records a lifespan under `lifespan:<person>` with target `age_at_death` (Intent layer DDL, glossary; schema 39).

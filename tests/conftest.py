@@ -1194,6 +1194,24 @@ def _copy_batch(built_batches: Callable[[str], Path], name: str, state_dir: Path
 
 
 @pytest.fixture(scope="function")
+def run_test_batch(
+    test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> Callable[..., Path]:
+    """Load and run the private retire_alice copy as a batch, after a test
+    has edited it: ``run_test_batch("--sensitivity")`` or
+    ``run_test_batch("--ensemble-size", "8")`` (seed 7). Returns the batch dir."""
+    from analysis.sim.loader import latest_ensemble_batch
+
+    def _run(*run_args: str) -> Path:
+        output = _load_and_run_batch(test_data_dir, intent_dir, runs_dir, *run_args)
+        mode = "sensitivity" if "--sensitivity" in run_args else "monte_carlo"
+        batch = latest_ensemble_batch(runs_dir / "retire_alice", mode=mode)
+        assert batch is not None, output
+        return batch
+    return _run
+
+
+@pytest.fixture(scope="function")
 def oat_batch(_built_batches: Callable[[str], Path], state_dir: Path) -> Path:
     """An OAT sensitivity batch (default p10/p90) over a varying gift and a
     varying retirement date on a copy of retire_alice: 5 members, in this
