@@ -618,16 +618,22 @@ def _roth_qualified(roth: RothLot, on: date) -> bool:
     return months > 59 * 12 + 6 or (months == 59 * 12 + 6 and on.day >= roth.birthdate.day)
 
 
+def _roth_basis_out(ctx: RefillContext, balances: Mapping[int, int], lot: int, amount: int) -> int:
+    """The basis in ``amount`` drawn from Roth ``lot``: basis first for a Roth
+    IRA, pro-rata for a Roth 401k, qualified or not. Never more than the
+    amount, so a lot worth less than its basis pays out basis only."""
+    basis = ctx.cost_bases.get(lot) or 0
+    if ctx.roth[lot].basis_first:
+        return min(basis, amount)
+    balance = balances.get(lot, 0)
+    return min(amount, basis) if balance <= 0 else min(amount, basis, basis * amount // balance)
+
+
 def _roth_taxed(ctx: RefillContext, balances: Mapping[int, int], lot: int, amount: int, on: date) -> int:
     """How much of ``amount`` drawn from Roth ``lot`` on ``on`` is taxed."""
-    roth = ctx.roth[lot]
-    if _roth_qualified(roth, on):
+    if _roth_qualified(ctx.roth[lot], on):
         return 0
-    basis = ctx.cost_bases.get(lot) or 0
-    if roth.basis_first:
-        return max(0, amount - basis)
-    balance = balances.get(lot, 0)
-    return 0 if balance <= 0 else amount - min(basis, basis * amount // balance)
+    return amount - _roth_basis_out(ctx, balances, lot, amount)
 
 
 def _leaves_roth(ctx: RefillContext | None, from_id: int, to_id: int) -> bool:
@@ -1841,6 +1847,8 @@ def _post_withdrawal(
             tax_year=tax_year, requested=requested, remainder=remainder, refill_mark=refill_mark,
         )
         return
+    if tax_character is None and refill_ctx is not None and from_id in refill_ctx.roth:
+        tax_character = "none"  # a rollover into another retirement lot (_leaves_roth)
     tax_char = tax_character or registries.withdrawal_tax_character(
         account_tax_treatment.get(from_id), account_subkind.get(from_id, ""),
         account_tax_treatment.get(to_id),
@@ -1923,9 +1931,9 @@ def _post_roth_withdrawal(
         )
     taxed = _roth_taxed(ctx, balances, from_id, amount, _parse_date(month_s))
     basis = ctx.cost_bases.get(from_id) or 0
-    # Basis comes out first whenever nothing is taxed, so a qualified
-    # distribution spends basis before earnings, as the ordering rules would.
-    ctx.cost_bases[from_id] = max(0, basis - (amount - taxed))
+    # A qualified distribution spends basis by the same rule as one that
+    # isn't, so a later rollover or nonqualified draw sees the right basis.
+    ctx.cost_bases[from_id] = basis - _roth_basis_out(ctx, balances, from_id, amount)
     _track_lots(ctx, account_kinds, balances, from_id, to_id, amount)
     free_leg = _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_id, to_id, amount - taxed,
@@ -2013,6 +2021,7 @@ def _chain_draw(
     aux=None, chain_base_date: date | None = None,
     inflation_factor_cache: dict | None = None,
     _progress: _ChainProgress | None = None,
+    _fallback: bool = False,
 ) -> int:
     """Recursively draw up to ``amount_needed`` into ``target_account_id``,
     scanning ``chain_id``'s steps in order (ADR-003 §4.7).
@@ -2027,7 +2036,9 @@ def _chain_draw(
     it depends on which account actually supplied it. ``_progress`` (created
     here at the top-level call, then threaded through the recursion) is what
     lets every leg's transfer_event report the ORIGINAL ``amount_needed`` as
-    ``requested`` rather than its own shrunk-down allocation.
+    ``requested`` rather than its own shrunk-down allocation. ``_fallback``
+    says a step after this chain, in a chain above it, can still pay, so a
+    taxed Roth step here is skipped even when it is this chain's last.
     """
     if amount_needed <= 0:
         return 0
@@ -2084,7 +2095,8 @@ def _chain_draw(
         )
         if allocation <= 0:
             continue
-        if number < len(members) and _roth_draw_taxed(
+        fallback = _fallback or number < len(members)
+        if fallback and _roth_draw_taxed(
             refill_ctx, balances, graph, draw_from_id, target_account_id, allocation, month_s,
         ):
             continue  # a later step can pay without tax; a Roth last step still pays (#217)
@@ -2096,7 +2108,7 @@ def _chain_draw(
             reason_id=reason_id, tax_year=tax_year,
             aux=aux, chain_base_date=chain_base_date,
             inflation_factor_cache=inflation_factor_cache,
-            _progress=_progress,
+            _progress=_progress, _fallback=fallback,
         )
     return total
 

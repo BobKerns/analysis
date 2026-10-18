@@ -194,7 +194,7 @@ def test_calendar_add_writes_the_row_and_transfer_list_shows_it(
     assert (row["kind"], row["account_1"], row["lot_1"], row["account_2"], row["amount"],
             row["tax_character"]) == (
         "transfer_balance", "Asset_401k_Alice", "default", "Asset_TraditionalIRA_Alice", "",
-        "none",
+        "",  # left blank, the rollover is untaxed because both lots are traditional
     )
 
     listed = sim("transfer", "list")

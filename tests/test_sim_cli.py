@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import sqlite3
 from collections.abc import Callable
@@ -595,6 +596,9 @@ def test_sim_add_fixed_appends_calendar_row_and_check_passes(test_data_dir: Path
     assert "Asset_Checking" in last
     assert "Asset_Brokerage_Joint" in last
     assert "1500.00" in last
+    # Left out, the tax character stays blank, so the accounts decide it.
+    rows = list(csv.DictReader(io.StringIO(cal)))
+    assert rows[-1]["tax_character"] == ""
 
     check = runner.invoke(
         main, ["sim", "check", "retire_alice", "--data-dir", str(data)]

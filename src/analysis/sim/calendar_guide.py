@@ -322,6 +322,10 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
 
 _DATE = Field("date", "date (YYYY-MM or YYYY-MM-DD)", type="date")
 _DESCRIPTION = Field("description", "description", option="--description", required=False)
+_TAX_CHARACTER_HELP = (
+    "Leave blank to have it follow from the accounts: a rollover is untaxed, "
+    "a distribution taxed by its lot (ADR-003 §3.4)."
+)
 _TAGS = Field(
     "tags", "tags", type="tags", option="--tags", required=False,
     help="Space-separated <role>:<name> tokens, e.g. expense:discretionary.",
@@ -447,9 +451,9 @@ KINDS: tuple[KindSpec, ...] = (
             ),
             Field("amount", "amount in dollars", type="dollars"),
             Field(
-                "tax_character", "tax character", option="--tax-character", default="none",
+                "tax_character", "tax character", option="--tax-character", default="",
                 choices=lambda ctx, answers: sorted(registries.TAX_CHARACTERS),  # noqa: ARG005
-                strict=True,
+                strict=True, required=False, help=_TAX_CHARACTER_HELP,
             ),
             _DESCRIPTION,
             Field("series", "series tag", option="--series", required=False),
@@ -477,10 +481,9 @@ KINDS: tuple[KindSpec, ...] = (
                 choices=lots_of("to_account"), applies=lot_asked("to_account"),
             ),
             Field(
-                "tax_character", "tax character", option="--tax-character", default="none",
+                "tax_character", "tax character", option="--tax-character", default="",
                 choices=lambda ctx, answers: sorted(registries.TAX_CHARACTERS),  # noqa: ARG005
-                strict=True,
-                help="none for a direct rollover between tax-deferred accounts.",
+                strict=True, required=False, help=_TAX_CHARACTER_HELP,
             ),
             _DESCRIPTION, _TAGS,
             *_vary_fields(targets=("date",), ramp=False),
