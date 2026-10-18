@@ -456,6 +456,39 @@ def test_an_overflow_chain_must_be_a_destination(
                "a destination chain (chains/destination/)" in issue for issue in ei.value.issues), ei.value.issues
 
 
+@pytest.mark.parametrize("account_character", ["", "deferred", "tax_free"])
+def test_each_retirement_lot_grows_from_its_own_shelter(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+    account_character: str,
+) -> None:
+    """#224: Roth and traditional lots in one account grow from the built-in
+    their subkind names, whatever the account's tax_character says."""
+    accounts_path = retire_alice_csv("accounts.csv")
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    account = df["name"] == "Asset_Roth_Alice"
+    df.loc[account, "series"] = "brokerage_growth"
+    df.loc[account, "tax_character"] = account_character
+    df.to_csv(accounts_path, index=False)
+    lots_path = retire_alice_csv("account_lots.csv")
+    lots = pd.read_csv(lots_path, dtype=str, keep_default_na=False)
+    lot = {column: "" for column in lots.columns}
+    lot.update(account_name="Asset_Roth_Alice", lot="rollover", subkind="traditional_ira",
+                opening_balance="0.00")
+    pd.concat([lots, pd.DataFrame([lot])]).to_csv(lots_path, index=False)
+
+    with sqlite3.connect(load_test_copy().intent_path) as con:
+        rules = dict(con.execute(
+            "SELECT s.name, c.name || ':' || s.tax_character FROM scheduled_transaction s "
+            "JOIN chain c ON c.id = s.from_account WHERE s.name IN (?, ?)",
+            (growth_rule_name("Asset_Roth_Alice", "default"),
+             growth_rule_name("Asset_Roth_Alice", "rollover")),
+        ).fetchall())
+    assert rules == {
+        growth_rule_name("Asset_Roth_Alice", "default"): "tax_free_gains:tax_free",
+        growth_rule_name("Asset_Roth_Alice", "rollover"): "deferred_gains:deferred",
+    }
+
+
 @pytest.mark.parametrize(
     ("column_values", "expected"),
     [
