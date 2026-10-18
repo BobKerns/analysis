@@ -461,8 +461,9 @@ def test_each_retirement_lot_grows_from_its_own_shelter(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
     account_character: str,
 ) -> None:
-    """#224: Roth and traditional lots in one account grow from the built-in
-    their subkind names, whatever the account's tax_character says."""
+    """#224: Roth and traditional lots in one account each grow from the
+    built-in account their own subkind names, whatever the account's
+    tax_character says."""
     accounts_path = retire_alice_csv("accounts.csv")
     df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
     account = df["name"] == "Asset_Roth_Alice"
@@ -487,6 +488,23 @@ def test_each_retirement_lot_grows_from_its_own_shelter(
         growth_rule_name("Asset_Roth_Alice", "default"): "tax_free_gains:tax_free",
         growth_rule_name("Asset_Roth_Alice", "rollover"): "deferred_gains:deferred",
     }
+
+
+def test_a_retirement_accounts_own_growth_character_is_still_checked(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Its lots' subkinds decide their growth, but a character set on the
+    account must still be one the growth registry knows."""
+    accounts_path = retire_alice_csv("accounts.csv")
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    account = df["name"] == "Asset_Roth_Alice"
+    df.loc[account, "series"] = "brokerage_growth"
+    df.loc[account, "tax_character"] = "ltcg"
+    df.to_csv(accounts_path, index=False)
+
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any("requires tax_character in" in issue for issue in ei.value.issues)
 
 
 @pytest.mark.parametrize(

@@ -1630,7 +1630,9 @@ def _expand_account_growth(
                 "asset accounts"
             )
             continue
-        unknown = sorted({c for *_, c in growing if c not in registries.GROWTH_COUNTERPARTY_ACCOUNTS})
+        # A retirement account's own character, if set, must still be valid.
+        checked = {c for *_, c in growing} | ({character} if character else set())
+        unknown = sorted(checked - registries.GROWTH_COUNTERPARTY_ACCOUNTS.keys())
         if unknown:
             issues.append(
                 f"{where} ({name}): series requires tax_character in "
