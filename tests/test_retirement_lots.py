@@ -224,3 +224,32 @@ def test_the_migration_moves_old_subkinds_onto_the_lots(tmp_path: Path) -> None:
     ]
     assert (child / "account_lots.csv").read_text().splitlines()[1:] == ["IRA,b,traditional_ira,VTI,7.00"]
     assert migration.plan(tmp_path).problems == [f"{tmp_path}: no account_values.csv left; already migrated?"]
+
+
+def test_the_migration_refuses_when_account_lots_already_exists(tmp_path: Path) -> None:
+    folder = tmp_path / "scenarios" / "base"
+    folder.mkdir(parents=True)
+    (folder / "account_values.csv").write_text("account_name,lot,opening_balance\nCash,,5.00\n")
+    (folder / "account_lots.csv").write_text("account_name,lot,subkind,opening_balance\nCash,,,9.00\n")
+    assert _migration().plan(tmp_path).problems == [
+        f"{folder / 'account_values.csv'}: account_lots.csv already exists beside it; merge them by hand",
+    ]
+
+
+def test_account_sync_leaves_a_retirement_account_to_lot_add(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("accounts.csv")
+    accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
+    added = {column: "" for column in accounts.columns}
+    added |= {"name": "Asset_Roth401k_Bill", "kind": "asset", "subkind": "retirement", "owner": "bill"}
+    pd.concat([accounts, pd.DataFrame([added])], ignore_index=True).to_csv(path, index=False)
+    before = retire_alice_csv("account_lots.csv").read_text()
+
+    result = CliRunner().invoke(main, [
+        "sim", "account", "sync", "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
+    ])
+    # The scenario fails to load until the lot is added, so nothing else is
+    # written either; the message says what to run.
+    assert "skipped Asset_Roth401k_Bill: a retirement account's lot needs a subkind" in result.output
+    assert retire_alice_csv("account_lots.csv").read_text() == before
