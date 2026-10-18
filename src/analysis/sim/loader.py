@@ -937,6 +937,7 @@ def load_scenario(
     )
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
     _validate_lifespan(lifespan_rows, persons, issues)
+    _validate_roth_owners(value_rows, accounts, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
 
     if issues:
@@ -2058,6 +2059,30 @@ def _validate_lot_money(
             issues.append(
                 f"account_lots.csv ({name}): prior_year_end_balance must be set "
                 "on every lot of an account or on none (Roth lots aside)"
+            )
+
+
+def _validate_roth_owners(
+    rows: list[dict[str, str]], accounts: list[dict[str, str]],
+    persons: list[dict[str, str]], issues: list[str],
+) -> None:
+    """A Roth lot's account needs an owner with a birthdate (#217): whether a
+    distribution is qualified turns on the owner being 59½, and a Roth
+    account, like any IRA or 401k, belongs to one person."""
+    owner_of = {a.get("name", ""): a.get("owner", "") for a in accounts}
+    born = {p.get("id", "") for p in persons if p.get("birthdate")}
+    named: set[str] = set()
+    for row in rows:
+        name = row.get("account_name", "")
+        if registries.RETIREMENT_LOT_SUBKINDS.get(row.get("subkind") or "") != "tax_free" \
+                or name in named or name not in owner_of:
+            continue
+        named.add(name)
+        if owner_of[name] not in born:
+            issues.append(
+                f"accounts.csv ({name}): a Roth account's owner needs a birthdate in "
+                "persons.csv, to tell when its distributions are qualified "
+                f"({f'owner {owner_of[name]!r}' if owner_of[name] else 'no owner'})"
             )
 
 

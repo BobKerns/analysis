@@ -17,7 +17,7 @@ import pytest
 
 from analysis.sim import engine
 from analysis.sim.engine import RothLot, run_scenario
-from analysis.sim.loader import LoadResult
+from analysis.sim.loader import LoadError, LoadResult
 
 ROTH = "Asset_Roth_Alice"  # Alice was born 1965-03-15, so 59½ from 2024-09-15
 
@@ -280,3 +280,15 @@ def test_a_nonqualified_roth_rollover_carries_only_its_basis(
     append_calendar_row(date="2027-01-31", kind="one_off_transfer", account_1=ROTH, lot_1="default",
                         account_2=ROTH, lot_2="b", amount="15000.00")
     assert _bases(_run(load_test_copy, runs_dir), "2027-01") == {"default": 0, "b": 500_000}
+
+
+@pytest.mark.parametrize("owner", ["", "nobody"])  # blank, or not in persons.csv
+def test_a_roth_account_needs_an_owner_with_a_birthdate(
+    owner: str, retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    path = retire_alice_csv("accounts.csv")
+    accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
+    accounts.loc[accounts["name"] == ROTH, "owner"] = owner
+    accounts.to_csv(path, index=False)
+    with pytest.raises(LoadError, match=f"{ROTH}.*owner needs a birthdate"):
+        load_test_copy()

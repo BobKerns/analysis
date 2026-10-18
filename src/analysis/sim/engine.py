@@ -609,7 +609,8 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
 
 def _roth_qualified(roth: RothLot, on: date) -> bool:
     """Whether a distribution on ``on`` is qualified: five tax years since the
-    clock started, and the owner 59½ (an unknown owner counts as past it)."""
+    clock started, and the owner 59½. The loader requires a Roth owner's
+    birthdate; with none (a hand-built ``RothLot``) the age test passes."""
     if roth.clock_start is not None and on < roth.clock_start.replace(year=roth.clock_start.year + 5):
         return False
     if roth.birthdate is None:
