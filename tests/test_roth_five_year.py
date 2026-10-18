@@ -304,6 +304,16 @@ def test_a_person_needs_a_birthdate(
         load_test_copy()
 
 
+def test_a_pseudo_person_without_a_birthdate_still_runs(
+    test_data_dir: Path, load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    persons = test_data_dir / "persons.csv"
+    rows = pd.read_csv(persons, dtype=str, keep_default_na=False)
+    rows.loc[rows["id"] == "joint", "birthdate"] = ""
+    rows.to_csv(persons, index=False)
+    assert _run(load_test_copy, runs_dir).exists()
+
+
 def test_a_basis_step_may_not_name_a_retirement_account(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:

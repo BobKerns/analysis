@@ -141,9 +141,10 @@ def run_scenario(
                 "SELECT person, final_month FROM person_lifespan"
             )
         }
+        # A pseudo-person such as `joint` may have no birthdate (#217).
         person_birthdates: dict[str, date] = {
             r[0]: _parse_date(r[1])
-            for r in con.execute("SELECT id, birthdate FROM person")
+            for r in con.execute("SELECT id, birthdate FROM person WHERE birthdate != ''")
         }
         # The people who file taxes: role 'primary', or everyone if none is marked.
         taxpayers = {
