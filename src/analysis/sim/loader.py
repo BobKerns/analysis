@@ -927,6 +927,8 @@ def load_scenario(
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
+        retirement_accounts=frozenset(
+            a["name"] for a in accounts if a.get("subkind") == registries.RETIREMENT_SUBKIND),
     )
     _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues)
     roth_leaves = frozenset(
@@ -3214,6 +3216,7 @@ def _validate_chains(
     *,
     money_resolver: _MoneyReferenceResolver,
     asset_accounts: frozenset[str] = frozenset(),
+    retirement_accounts: frozenset[str] = frozenset(),
 ) -> None:
     for name in sorted(set(chains) & leaves.names):
         issues.append(f"chains/*.csv: chain name '{name}' collides with an account name")
@@ -3269,7 +3272,7 @@ def _validate_chains(
                 _validate_no_spaces(where, member,
                                     "series", series, issues)
         _validate_chain_tax_steps(role, rows, _chain_label(role, name), leaves,
-                                  asset_accounts, issues)
+                                  asset_accounts, issues, retirement_accounts)
 
     for where, row in _located(value_rows, "account_lots.csv"):
         holder = leaves.leaf_of.get(
@@ -3306,6 +3309,7 @@ def _validate_chains(
 def _validate_chain_tax_steps(
     role: str, rows: list[dict[str, str]], label: str, leaves: _LeafIndex,
     asset_accounts: frozenset[str], issues: list[str],
+    retirement_accounts: frozenset[str] = frozenset(),
 ) -> None:
     """A chain step's ``tax_character`` and ``basis_of`` (#199, ADR-003
     §4.7): a step that sets a character gives it to the money it places and
@@ -3349,6 +3353,13 @@ def _validate_chain_tax_steps(
             continue
         if basis_of not in asset_accounts:
             issues.append(f"{where}: basis_of '{basis_of}' is not an asset account")
+            continue
+        if basis_of in retirement_accounts:
+            # A retirement lot's basis follows its own rules (#217), not a sale's.
+            issues.append(
+                f"{where}: basis_of '{basis_of}' is a retirement account; its basis "
+                "is tracked for you, so leave basis_of blank"
+            )
             continue
         problem = _resolve_ref(row, "basis_of", "basis_of_lot", leaves, frozenset())
         if problem:

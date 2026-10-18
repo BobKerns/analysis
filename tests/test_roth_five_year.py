@@ -292,3 +292,16 @@ def test_a_roth_account_needs_an_owner_with_a_birthdate(
     accounts.to_csv(path, index=False)
     with pytest.raises(LoadError, match=f"{ROTH}.*owner needs a birthdate"):
         load_test_copy()
+
+
+def test_a_basis_step_may_not_name_a_retirement_account(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """A Roth lot's basis follows its own rules, so a sale's basis step would
+    spend it twice."""
+    (retire_alice_csv("chains/destination") / "roth_sale.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence,tax_character,basis_of,basis_of_lot\n"
+        f"Asset_Checking,,,,,,return_of_capital,{ROTH},default\n"
+        "Asset_Checking,,,,,,ltcg,,\n")
+    with pytest.raises(LoadError, match=f"basis_of '{ROTH}' is a retirement account"):
+        load_test_copy()
