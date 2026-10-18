@@ -253,3 +253,31 @@ def test_account_sync_leaves_a_retirement_account_to_lot_add(
     # written either; the message says what to run.
     assert "skipped Asset_Roth401k_Bill: a retirement account's lot needs a subkind" in result.output
     assert retire_alice_csv("account_lots.csv").read_text() == before
+
+
+def test_the_migration_seeds_a_lot_where_the_account_is_defined(tmp_path: Path) -> None:
+    """A lot only in a derived scenario doesn't stand in for one where the
+    account is defined, and a folder with no lots file gets one."""
+    base, child, other = (tmp_path / "scenarios" / name for name in ("base", "child", "other"))
+    for folder in (base, child, other):
+        folder.mkdir(parents=True)
+    (base / "account_values.csv").write_text("account_name,lot,opening_balance\nCash,,5.00\n")
+    (child / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nIRA,asset,traditional_ira,alice,\n")
+    (other / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nRoth,asset,roth_ira,bill,\n")
+    (base / "accounts.csv").write_text("name,kind,subkind,owner,tax_treatment\nIRA2,asset,roth_ira,bill,\n")
+    (child / "account_values.csv").write_text(
+        "account_name,lot,opening_balance\nIRA,default,7.00\nIRA2,b,1.00\n")
+    migration = _migration()
+
+    planned = migration.plan(tmp_path)
+    assert planned.problems == []
+    migration.apply(planned)
+    assert (base / "account_lots.csv").read_text().splitlines()[1:] == [
+        "Cash,,,5.00", "IRA2,default,roth_ira,0.00",
+    ]
+    assert (child / "account_lots.csv").read_text().splitlines()[1:] == [
+        "IRA,default,traditional_ira,7.00", "IRA2,b,roth_ira,1.00",
+    ]
+    assert (other / "account_lots.csv").read_text().splitlines() == [
+        "account_name,lot,subkind,opening_balance", "Roth,default,roth_ira,0.00",
+    ]
