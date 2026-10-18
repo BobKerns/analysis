@@ -16,7 +16,7 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim import registries
 from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult
+from analysis.sim.loader import LoadError, LoadResult, growth_rule_name
 
 IRA = "Asset_TraditionalIRA_Alice"
 K401 = "Asset_401k_Alice"
@@ -225,6 +225,27 @@ def test_account_add_gives_a_retirement_account_its_first_lot(
     lots = pd.read_csv(retire_alice_csv("account_lots.csv"), dtype=str, keep_default_na=False)
     lot = lots[lots["account_name"] == "Asset_Roth401k_Bill"].iloc[0]
     assert (lot["lot"], lot["subkind"], lot["opening_balance"]) == ("default", "roth_401k", "0.00")
+
+
+def test_account_add_takes_a_retirement_series_without_a_tax_character(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Its lot's subkind picks the growth character (#224)."""
+    result = CliRunner().invoke(main, [
+        "sim", "account", "add", "Asset_Roth401k_Bill", "asset", "retirement",
+        "--owner", "bill", "--lot-subkind", "roth_401k", "--series", "brokerage_growth", "--opening-balance", "",
+        "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
+    ])
+    assert result.exit_code == 0, result.output
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    assert accounts.loc[accounts["name"] == "Asset_Roth401k_Bill", "tax_character"].item() == ""
+    with sqlite3.connect(load_test_copy().intent_path) as con:
+        source = con.execute(
+            "SELECT c.name FROM scheduled_transaction s JOIN chain c ON c.id = s.from_account "
+            "WHERE s.name = ?", (growth_rule_name("Asset_Roth401k_Bill", "default"),),
+        ).fetchone()
+    assert source == ("tax_free_gains",)
 
 
 def _migration():
