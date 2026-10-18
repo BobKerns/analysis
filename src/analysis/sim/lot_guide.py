@@ -32,8 +32,13 @@ def _overflow_chains(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # n
     return [*ctx.accounts, *chains_of(ctx, "destination")]
 
 
-def _taxable(ctx: GuideContext, answers: Answers) -> bool:
-    return ctx.tax_treatments.get(answers.get("account", "")) == "taxable"
+def _has_basis(ctx: GuideContext, answers: Answers) -> bool:
+    """A taxable account's lot, or a Roth lot, whose basis comes out tax-free
+    before its five-year clock has run (#217)."""
+    return (
+        ctx.tax_treatments.get(answers.get("account", "")) == "taxable"
+        or registries.RETIREMENT_LOT_SUBKINDS.get(answers.get("subkind", "")) == "tax_free"
+    )
 
 
 def _retirement(ctx: GuideContext, answers: Answers) -> bool:
@@ -111,7 +116,8 @@ LOT = KindSpec(
         ),
         Field(
             "opening_cost_basis", "opening cost basis in dollars", type="money",
-            option="--opening-cost-basis", required=False, applies=_taxable,
+            option="--opening-cost-basis", required=False, applies=_has_basis,
+            help="For a Roth lot, its contributions and conversions; blank means all of it.",
         ),
         Field(
             "prior_year_end_balance", "balance on the Dec 31 before the scenario starts",

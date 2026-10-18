@@ -133,6 +133,9 @@ TAX_CHARACTERS: set[str] = {
     "home_sale",
     # Money spent on an asset (a remodel) that adds to its cost basis.
     "capital_improvement",
+    # Earnings out of a Roth lot before the owner's 5-year clock has run (or
+    # before 59½): ordinary income (#217). Its basis comes out tax_free.
+    "roth_nonqualified",
 }
 
 # The characters of a chain step that recovers a sold lot's basis (#199): the
