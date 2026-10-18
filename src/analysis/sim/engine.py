@@ -617,7 +617,9 @@ def _roth_qualified(roth: RothLot, on: date) -> bool:
     if roth.birthdate is None:
         return True
     months = (on.year - roth.birthdate.year) * 12 + on.month - roth.birthdate.month
-    return months > 59 * 12 + 6 or (months == 59 * 12 + 6 and on.day >= roth.birthdate.day)
+    # Born on the 31st, 59½ falls on the last day of a shorter month.
+    day = min(roth.birthdate.day, calendar.monthrange(on.year, on.month)[1])
+    return months > 59 * 12 + 6 or (months == 59 * 12 + 6 and on.day >= day)
 
 
 def _roth_basis_out(ctx: RefillContext, balances: Mapping[int, int], lot: int, amount: int) -> int:
