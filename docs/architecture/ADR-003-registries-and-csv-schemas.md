@@ -24,14 +24,24 @@ CHECK-constrained at load time (the loader validates; the DDL keeps `subkind` as
 | --- | --- |
 | `cash` | bank and money-market money: checking, savings, or any cash position (by convention its lots use the symbol `CASH`). Checking and savings were once separate subkinds, but the engine never distinguished them and one account can now hold both as lots |
 | `brokerage_taxable` | taxable investment account |
-| `traditional_ira` | pre-tax IRA |
-| `roth_ira` | post-tax IRA |
-| `traditional_401k` | pre-tax employer plan (also 403b, 457b) |
-| `roth_401k` | post-tax employer plan |
+| `retirement` | an IRA or employer plan; each of its lots says which kind (§1a) |
 | `hsa` | health savings account |
 | `real_estate` | primary residence or other real property |
 | `vehicle` | car, boat, etc. (depreciating asset) |
 | `other_asset` | catch-all; populates `meta_json` for explanation |
+
+#### 1a. Retirement lot subkinds
+
+The lots of a `retirement` account, and only they, carry a `subkind` (§4.3), which sets the lot's tax treatment. One IRA is either Roth or traditional, but a 401k can hold both, so the distinction lives on the lot; the account's own `tax_treatment` is left blank.
+
+| lot subkind | meaning | tax treatment |
+| --- | --- | --- |
+| `traditional_ira` | pre-tax IRA | `tax_deferred` |
+| `roth_ira` | post-tax IRA | `tax_free` |
+| `traditional_401k` | pre-tax employer plan (also 403b, 457b) | `tax_deferred` |
+| `roth_401k` | post-tax employer plan | `tax_free` |
+
+Money moved out of a traditional lot is `tax_deferred_out` (ordinary income), including into a Roth lot, which is how a conversion is taxed; into another traditional lot it is a rollover, `none`. An `rmd` counts and draws only traditional lots: Roth IRAs have no RMDs, and Roth 401ks none from 2024. A retirement account must have at least one lot, since an empty default lot would have no subkind.
 
 **Liability:**
 
@@ -121,7 +131,7 @@ Depreciation is a book entry, not spending. Reporting that totals cash outflows 
 IRS Required Minimum Distribution.
 
 - **Params:** the row's `from_account` is the subject IRA/401k account (the one being drawn down) and `person` = person id. When the subject account has several lots ([ADR-005](ADR-005-lots-and-per-lot-state.md)), `from_account` is instead a chain listing the lots to draw from, in order, and `params_json` names the account the RMD is for: `{"subject_account": "<account>"}`; the chain may only draw from that account's lots. The amount is that account's total on the prior Dec 31 over the age factor. Aggregation across an owner's several IRAs is deliberately not modelled: a brokerage distributes per account, without regard to distributions taken elsewhere. Factor table is `rmd_factors`; start-age series is `rmd_start_age` (both fixed aux references).
-- **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state` (the subject account's lots added together); for the partial first year it comes from `account_lot.prior_year_end_balance` (which the author must supply for any `traditional_ira` / `traditional_401k` account whose owner reaches RMD age during the scenario's first calendar year).
+- **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state` (the subject account's traditional lots added together; Roth lots owe no RMD, §1a); for the partial first year it comes from `account_lot.prior_year_end_balance` (which the author must supply for any `traditional_ira` / `traditional_401k` lot whose owner reaches RMD age during the scenario's first calendar year).
 - **Start semantics:** the row's `start` column is a lower bound on candidate fire dates. The actual first fire is `max(row.start, year-end of the year person reaches start_age)`. Authors typically set `start = scenario.start` and let the age gate dominate.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
 - **Use:** post-age-73 required distributions for either spouse.
@@ -476,7 +486,7 @@ Required in a root scenario; optional in a derived one, where it overlays the pa
 | `kind` | enum | ✓ | `asset`, `liability`, `income`, `expense` |
 | `subkind` | enum | ✓ | per §1 |
 | `owner` | text | | `person.id`; NULL for jointly-held |
-| `tax_treatment` | enum | | `taxable`, `tax_deferred`, `tax_free`, `none` |
+| `tax_treatment` | enum | | `taxable`, `tax_deferred`, `tax_free`, `none`; blank on a `retirement` account, whose lots' subkinds set it (§1a) |
 | `series` | text | | asset accounts only: aux rate-series driving monthly growth; synthesizes a `percent_of_balance` rule (§2.2) |
 | `tax_character` | enum | | required with `series`, and only meaningful with it: `ordinary`, `gains`, `deferred`, `tax_free` — selects the built-in income account that funds the growth (§2.2) |
 | `opened` | YYYY-MM | | informational |
@@ -490,14 +500,15 @@ Opening state for the accounts declared in §4.2, **one row per lot** ([ADR-005]
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `account_name` | text | ✓ | resolves to `account.id` |
-| `lot` | text | | free-form label, unique within the account, without `:`; blank means `default`. **Required for investment subkinds** (`brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) |
+| `lot` | text | | free-form label, unique within the account, without `:`; blank means `default`. **Required for investment subkinds** (`brokerage_taxable`, `retirement`, `hsa`) |
+| `subkind` | enum | on a `retirement` account | the lot's retirement subkind (§1a); required on, and only allowed on, the lots of a `retirement` account |
 | `symbol` | text | | the security held; names its rate series (§2.2) and its price (§4.4) |
 | `acquired` | YYYY-MM-DD | | starts the holding period: a sale within a year of it books its gain as `stcg`, later as `ltcg`; blank means long-term |
 | `quantity` | number | | shares; tracked through withdrawals and purchases. Leave blank for dollar-denominated funds |
 | `series` | text | | growth-rate series for this lot, overriding the symbol's and the account's |
 | `opening_balance` | dollars | ✓ unless derivable | balance at the model's effective start. May be left blank when `quantity`, `symbol` and a `security_price` are given: it is then `quantity × price` on or before `scenario.start`. A given balance is used as written |
 | `opening_cost_basis` | dollars | | required for lots in `tax_treatment IN ('taxable')` accounts holding appreciable assets. A taxable asset lot with a zero balance and no basis starts at basis 0 |
-| `prior_year_end_balance` | dollars | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` accounts whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. Set on every lot of an account or on none. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
+| `prior_year_end_balance` | dollars | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` lots whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. Set on every lot of an account or on none. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
 
 **Balance management is per lot**, so the lots of one account can differ (a cash lot that refills from the fund lots beside it, next to a lot that does not). These columns are not accepted on `accounts.csv`. The chain columns follow the same lot rule as every other reference: a `refill_chain` or `overflow_chain` that names an account is completed by `refill_lot` / `overflow_lot` (required for investment subkinds, blank meaning `default` otherwise, and blank when the name is a chain).
 
@@ -1044,3 +1055,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#183](https://github.com/BobKerns/analysis/issues/183), [#184](https://github.com/BobKerns/analysis/issues/184): `scheduled add --kind` writes every rule kind; `scheduled edit|delete` and `calendar delete`, `calendar tag add|rm`; deleting an inherited rule ends it before the scenario starts (§7).
 - [#192](https://github.com/BobKerns/analysis/issues/192): `person add|edit` change the shared `persons.csv`, validated against every scenario; `person lifespan set|clear` edit the scenario's `lifespan.csv`, and clearing refuses an inherited lifespan (§7).
 - [#190](https://github.com/BobKerns/analysis/issues/190): `scenario create` writes a `README.md`; `scenario|ensemble edit` and `delete`; a `start` or `end` blank down the whole lineage is a load error (§4.5).
+- [#217](https://github.com/BobKerns/analysis/issues/217): `account_values.csv` is renamed `account_lots.csv`; the Roth and traditional IRA/401k account subkinds become `retirement`, with the old names as lot subkinds that set each lot's tax treatment; traditional-to-traditional moves are untaxed rollovers; RMDs count only traditional lots (§1, §1a, §2.3, §4.2, §4.3).

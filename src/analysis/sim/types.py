@@ -59,16 +59,14 @@ class InvestmentAssetSubkind(StrEnum):
     """
     Investment asset subkind type.
 
-    These subkinds represent different types of investment accounts.
-    The categories represent the tax treatment of the investment accounts.
+    These subkinds represent different types of investment accounts. A
+    ``retirement`` account's lots each say whether they are Roth or
+    traditional, IRA or 401k (``registries.RETIREMENT_LOT_SUBKINDS``, #217).
     """
     BROKERAGE_TAXABLE = "brokerage_taxable"
-    TRADITIONAL_IRA = "traditional_ira"
-    ROTH_IRA = "roth_ira"
-    TRADITIONAL_401K = "traditional_401k"
-    ROTH_401K = "roth_401k"
+    RETIREMENT = "retirement"
     HSA = "hsa"
-    
+
 INVESTMENT_ASSET_SUBKINDS = frozenset(item.value for item in InvestmentAssetSubkind)
 """
 Subkinds eligible for prior_year_end_balance (the RMD-relevant investment

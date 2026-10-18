@@ -493,8 +493,8 @@ def lot_variant_runs(
     variant_dir = test_scenarios_dir / "variant"
     (variant_dir / "account_lots.csv").write_text(
         f"{header}\n"
-        "Asset_Brokerage_Joint,b,BBB,2026-01-15,1500,,150000.00,100000.00,\n"
-        "Asset_Brokerage_Joint,c,CCC,2027-06-30,,,25000.00,20000.00,\n"
+        "Asset_Brokerage_Joint,b,,BBB,2026-01-15,1500,,150000.00,100000.00,\n"
+        "Asset_Brokerage_Joint,c,,CCC,2027-06-30,,,25000.00,20000.00,\n"
     )
     (variant_dir / "year_to_date.csv").write_text(
         "name,from_account,from_lot,to_account,to_lot,amount,tax_character,year,description\n"
@@ -618,14 +618,15 @@ def add_alice_401k(
         accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
         accounts.loc[len(accounts)] = {
             **dict.fromkeys(accounts.columns, ""),
-            "name": "Asset_401k_Alice", "kind": "asset", "subkind": "traditional_401k",
-            "owner": "alice", "tax_treatment": "tax_deferred",
+            "name": "Asset_401k_Alice", "kind": "asset", "subkind": "retirement",
+            "owner": "alice", "tax_treatment": "",
             "series": "brokerage_growth", "tax_character": "deferred", "meta_json": "{}",
         }
         ira = accounts["name"] == "Asset_TraditionalIRA_Alice"
         accounts.loc[ira, ["series", "tax_character"]] = ["brokerage_growth", "deferred"]
         accounts.to_csv(path, index=False)
-        add_account_value("Asset_401k_Alice", lot="default", opening_balance=opening_balance)
+        add_account_value("Asset_401k_Alice", lot="default", subkind="traditional_401k",
+                          opening_balance=opening_balance)
     return _add
 
 
@@ -809,10 +810,15 @@ def _append_calendar_row_to(path: Path, **fields: str) -> None:
 
 @pytest.fixture(scope="function")
 def add_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
-    """Append a row to the private copy's account_lots.csv, by column name."""
+    """Append a row to the private copy's account_lots.csv, by column name.
+    A new lot of an account whose lots have a subkind (a retirement account)
+    takes the first one's unless ``subkind`` is given."""
     def _add(account_name: str, **columns: str) -> None:
         path = retire_alice_csv("account_lots.csv")
         values = pd.read_csv(path, dtype=str, keep_default_na=False)
+        siblings = values.loc[values["account_name"] == account_name, "subkind"]
+        if "subkind" not in columns and len(siblings):
+            columns["subkind"] = siblings.iloc[0]
         values.loc[len(values)] = {**dict.fromkeys(values.columns, ""),
                                    "account_name": account_name, **columns}
         values.to_csv(path, index=False)

@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 37) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 38) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -157,8 +157,7 @@ CREATE TABLE account (
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
         (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
-            'traditional_ira','roth_ira','traditional_401k','roth_401k','hsa',
-            'real_estate','vehicle','other_asset'))
+            'retirement','hsa','real_estate','vehicle','other_asset'))
         OR (kind = 'liability' AND subkind IN ('mortgage','heloc','credit_card',
             'other_liability'))
         OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
@@ -227,6 +226,11 @@ CREATE TABLE chain_steps (
 -- engine keys balances, basis and quantity on `id`. Accounts that are not split
 -- have a single lot labelled 'default'.
 --
+-- `subkind` is set on, and only on, the lots of a `retirement` account (#217):
+-- Roth or traditional, IRA or 401k. `tax_treatment` is the lot's effective
+-- treatment, resolved at load: its subkind's for a retirement lot, else its
+-- account's. The engine and the views read it from here, not from account.
+--
 -- Balance management is per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.3): a debit that would drop the
 -- lot's balance below minimum_balance_cents triggers a look-ahead draw on
 -- refill_chain_id BEFORE the debit posts (not a month-end reconciliation);
@@ -241,6 +245,10 @@ CREATE TABLE account_lot (
     id                      INTEGER PRIMARY KEY,
     account_id              INTEGER NOT NULL REFERENCES account(id),
     lot                     TEXT NOT NULL DEFAULT 'default',
+    subkind                 TEXT CHECK (subkind IN
+                                ('traditional_ira','roth_ira','traditional_401k','roth_401k')),
+    tax_treatment           TEXT CHECK (tax_treatment IN
+                                ('taxable','tax_deferred','tax_free','none')),
     symbol                  TEXT,
     acquired                TEXT,
     quantity_micros         INTEGER,
@@ -868,3 +876,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#181](https://github.com/BobKerns/analysis/issues/181): intent and run files are written without fsync (Conventions).
 - [#197](https://github.com/BobKerns/analysis/issues/197): `Income_LoanOrigination` is no longer reserved, since the `buy_asset` kind that used it is dropped; the reserved names are the growth counterparties (Conventions).
 - [#199](https://github.com/BobKerns/analysis/issues/199): `chain_steps.tax_character` and `basis_of_lot_id`; the `home_sale` and `capital_improvement` tax characters; the run table `capital_loss` (Intent and ledger DDL; schema 37).
+- [#217](https://github.com/BobKerns/analysis/issues/217): account subkind `retirement` replaces the four IRA/401k subkinds; `account_lot` gains `subkind` and the effective `tax_treatment` the engine reads (Intent DDL; schema 38).

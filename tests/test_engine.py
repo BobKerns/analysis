@@ -473,7 +473,7 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character(l
     balances = {1: 0, 2: 200_000, 3: 1_000_000}
     account_kinds = {1: "asset", 2: "asset", 3: "asset"}
     account_tax_treatment = {1: "taxable", 2: "taxable", 3: "tax_deferred"}
-    account_subkind = {1: "cash", 2: "cash", 3: "traditional_ira"}
+    account_subkind = {1: "cash", 2: "cash", 3: "retirement"}
     account_name = {1: "Checking", 2: "Savings", 3: "IRA"}
     # chain 100 = interior chain listing leaf chains 2 (savings) then 3 (IRA);
     # leaf chains share ids with their account for simplicity in this test.

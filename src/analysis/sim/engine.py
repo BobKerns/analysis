@@ -93,7 +93,7 @@ def run_scenario(
         # subkind, tax treatment, owner and name.
         lots = con.execute(
             "SELECT m.id, m.opening_balance, m.opening_cost_basis, "
-            "       m.prior_year_end_balance, a.kind, a.subkind, a.tax_treatment, "
+            "       m.prior_year_end_balance, a.kind, a.subkind, m.tax_treatment, "
             "       a.owner, m.quantity_micros, a.name, m.acquired "
             "FROM account_lot m "
             "JOIN account a ON a.id = m.account_id "
@@ -418,7 +418,13 @@ def run_scenario(
                             con, balances, account_kinds, step_id, month_s, month,
                             params, from_account, to,
                             person_birthdates, prior_year_end_balances, aux,
-                            tax_char, tid, subject_lots=lots_by_account[subject],
+                            tax_char, tid,
+                            # A Roth lot of a retirement account owes no RMD
+                            # and counts toward none (#217).
+                            subject_lots=[
+                                lot for lot in lots_by_account[subject]
+                                if account_tax_treatment.get(lot) != "tax_free"
+                            ],
                             graph=chain_graph, source_chain_id=frm,
                             account_tax_treatment=account_tax_treatment,
                             account_subkind=account_subkind, account_name=account_name,
@@ -1737,6 +1743,7 @@ def _post_withdrawal(
     """
     tax_char = tax_character or registries.withdrawal_tax_character(
         account_tax_treatment.get(from_id), account_subkind.get(from_id, ""),
+        account_tax_treatment.get(to_id),
     )
     if tax_char is not None:
         _post_transfer(
@@ -2822,22 +2829,29 @@ def _cadence_count(
 
 
 def _calendar_tax_character(
-    payload: Mapping[str, Any], from_chain: int, ctx: RefillContext,
+    payload: Mapping[str, Any], from_chain: int, to_chain: int, ctx: RefillContext,
 ) -> str | None:
     """The tax character a ``one_off_transfer`` or ``transfer_balance`` row
     moves its money with (#201). One the row sets is used as written. Left
     blank, money out of a lot that tracks cost basis (a brokerage lot, say)
     is a sale: None, so ``_post_withdrawal`` splits it into the basis
     returned and the gain, as a sweep out of that lot would. From anywhere
-    else it is ``none``, right for a rollover between tax-deferred accounts.
+    else it is ``none``, right for a rollover between tax-deferred accounts,
+    except that traditional money moved straight into a Roth lot is a
+    conversion, taxed as ``tax_deferred_out`` (#217).
     """
     if character := payload.get("tax_character"):
         return character
     lot = ctx.graph.leaf_lot.get(from_chain)
-    if lot is not None and registries.withdrawal_tax_character(
-        ctx.account_tax_treatment.get(lot), ctx.account_subkind.get(lot, ""),
-    ) is None:
+    if lot is None:
+        return "none"
+    treatment = ctx.account_tax_treatment.get(lot)
+    if registries.withdrawal_tax_character(treatment, ctx.account_subkind.get(lot, "")) is None:
         return None
+    to_lot = ctx.graph.leaf_lot.get(to_chain)
+    if treatment == "tax_deferred" and to_lot is not None \
+            and ctx.account_tax_treatment.get(to_lot) == "tax_free":
+        return "tax_deferred_out"
     return "none"
 
 
@@ -3027,7 +3041,7 @@ def _apply_calendar_event(
                     f"one_off_transfer event id={ev_id}: unknown account or chain "
                     f"(account_1={frm_name!r} or account_2={to_name!r})"
                 )
-            tax_char = _calendar_tax_character(payload, from_id, refill_ctx)
+            tax_char = _calendar_tax_character(payload, from_id, to_id, refill_ctx)
             tid = _synthesize_one_off_rule(
                 con, f"oneoff_evt_{ev_id}", from_id, to_id, int(amount),
                 tax_char, ev_date, ev_id, payload.get("description"),
@@ -3063,7 +3077,7 @@ def _apply_calendar_event(
             # and the month's growth accrues at the destination. Nothing to
             # move is a no-op, as for on_death.
             lot_id = lot[0]
-            tax_char = _calendar_tax_character(payload, from_id, refill_ctx)
+            tax_char = _calendar_tax_character(payload, from_id, to_id, refill_ctx)
             amount = max(0, balances.get(lot_id, 0))
             if amount == 0:
                 return

@@ -28,6 +28,8 @@ Every account is one balance with one running cost basis. A brokerage or IRA tha
 | `id` | int PK | the **lot id**; the engine keys balances, basis and quantity on it |
 | `account_id` | int | the account the lot belongs to |
 | `lot` | text NOT NULL | free-form label, unique within the account; `'default'` for accounts that are not split. Sequential numbers (`1`, `2`) are a fine convention, and so are acquisition dates or any other name without `:` |
+| `subkind` | text | a `retirement` account's lot only, and required there: `traditional_ira`, `roth_ira`, `traditional_401k` or `roth_401k` ([ADR-003](ADR-003-registries-and-csv-schemas.md) §1a) |
+| `tax_treatment` | text | the lot's effective tax treatment, resolved at load: its subkind's (Roth `tax_free`, traditional `tax_deferred`) on a retirement lot, else its account's. The engine reads a lot's treatment from here |
 | `symbol` | text | optional security identifier |
 | `acquired` | text | optional ISO date; enables short/long-term treatment later |
 | `quantity_micros` | int | optional; shares × 1e6 |
@@ -76,7 +78,7 @@ Leaf chains are per lot ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.7 
 The loader resolves each `(account, lot)` pair to that lot's leaf chain and reports a bad pair with the column names.
 
 - A chain named in an account column takes no lot; the lot column must be blank.
-- For **investment subkinds** (`types.INVESTMENT_ASSET_SUBKINDS`: `brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) a blank lot is a **load error** that lists the account's lots (`'Asset_Brokerage' is an investment account and needs a to_lot (its lots: default)`). There is no defaulting and no implicit chain over an account's lots.
+- For **investment subkinds** (`types.INVESTMENT_ASSET_SUBKINDS`: `brokerage_taxable`, `retirement`, `hsa`) a blank lot is a **load error** that lists the account's lots (`'Asset_Brokerage' is an investment account and needs a to_lot (its lots: default)`). There is no defaulting and no implicit chain over an account's lots.
 - For all other subkinds a blank lot means `default`.
 - `:` is reserved: account names, chain names and lot labels may not contain it.
 - `refill_chain`/`overflow_chain` (on the lot, see §4) name a chain or an account, completed by `refill_lot`/`overflow_lot` under the same rule as every other reference.
@@ -124,7 +126,7 @@ The gain leg of a sale from a lot is `ltcg` if the lot has been held more than a
 
 ### 8. RMD
 
-An `rmd` rule's amount comes from its **subject account**: the total of all its lots' balances on the previous Dec 31 (or the lots' `prior_year_end_balance` values in the first year), over the age factor. The money comes from `from_account`:
+An `rmd` rule's amount comes from its **subject account**: the total of its traditional lots' balances (a Roth lot owes no RMD and counts toward none, and an `rmd` may not draw from one) on the previous Dec 31 (or the lots' `prior_year_end_balance` values in the first year), over the age factor. The money comes from `from_account`:
 
 - a single lot, when the subject account has one lot (`subject_account` is then optional, and the rule behaves as before); or
 - an **explicit chain**, with `{"subject_account": "<account>"}` in `params_json`, drawn in the chain's own order, so which lots fund the RMD is written down rather than inferred.
@@ -161,3 +163,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#160](https://github.com/BobKerns/analysis/issues/160): the table is named `account_lot` (was `account_model_member`) and loses `model_id` with the single-row `account_model` table (§1).
 - [#197](https://github.com/BobKerns/analysis/issues/197): the `sell_asset` and `buy_asset` calendar kinds are dropped, so nothing here refers to them (Context, Consequences).
 - [#199](https://github.com/BobKerns/analysis/issues/199): a sale through a destination chain's basis step recovers the lot's basis, and a `capital_improvement` step adds to it (§7).
+- [#217](https://github.com/BobKerns/analysis/issues/217): a `retirement` account's lots each carry a subkind (Roth or traditional, IRA or 401k) that sets the lot's tax treatment, and its RMD counts only traditional lots (§1, §3, §8).

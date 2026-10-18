@@ -279,7 +279,7 @@ _ITEM_SQL: dict[str, str] = {
     "lot_balance": "SELECT * FROM balance_by_lot ORDER BY month, account, lot_id",
     "account_lot": (
         "SELECT a.name AS account, m.lot, m.symbol, m.acquired, m.quantity_micros, "
-        "       m.series, a.kind, a.subkind, a.tax_treatment, "
+        "       m.series, a.kind, a.subkind, m.subkind AS lot_subkind, m.tax_treatment, "
         "       m.opening_balance, m.opening_cost_basis, "
         "       m.prior_year_end_balance, "
         "       m.minimum_balance_cents, m.maximum_balance_cents, "

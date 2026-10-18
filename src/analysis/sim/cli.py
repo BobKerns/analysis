@@ -5036,6 +5036,9 @@ def account_group_command() -> None:
 @click.option("--opening-balance", default=None,
               help="Initial balance in dollars; appended to the scenario's "
                    "account_lots.csv.")
+@click.option("--lot-subkind", default=None,
+              type=click.Choice(sorted(registries.RETIREMENT_LOT_SUBKINDS)),
+              help="A retirement account's first lot: Roth or traditional, IRA or 401k.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (for opening-balance lookup).")
 @click.option("--data-dir",
@@ -5054,11 +5057,16 @@ def add_account(
     opened: str,
     closed: str,
     opening_balance: str | None,
+    lot_subkind: str | None,
     scenario: str | None,
     data_dir: Path | None,
     tags: str,
 ) -> None:
-    """Append an account to accounts.csv (and opening balance to the model)."""
+    """Append an account to accounts.csv (and opening balance to the model).
+
+    A retirement account always gets its first lot, ``default``, whose
+    --lot-subkind (asked if not given) says whether it is Roth or traditional.
+    """
     try:
         registries.parse_tags(tags)
     except ValueError as e:
@@ -5104,9 +5112,28 @@ def add_account(
             f"unknown owner {owner!r}; allowed: {persons + ['joint']}"
         )
 
+    retirement = subkind == registries.RETIREMENT_SUBKIND
+    if retirement:
+        if tax_treatment:
+            raise click.ClickException(
+                "a retirement account's tax treatment is its lots' subkinds'; "
+                "give --lot-subkind instead of --tax-treatment"
+            )
+        tax_treatment = ""
+        if lot_subkind is None:
+            lot_subkinds = sorted(registries.RETIREMENT_LOT_SUBKINDS)
+            click.echo(f"lot subkinds: {', '.join(lot_subkinds)}")
+            lot_subkind = _prompt_with_completion("lot subkind", choices=lot_subkinds)
+        if lot_subkind not in registries.RETIREMENT_LOT_SUBKINDS:
+            raise click.ClickException(
+                f"unknown lot subkind {lot_subkind!r}; "
+                f"allowed: {sorted(registries.RETIREMENT_LOT_SUBKINDS)}"
+            )
+    elif lot_subkind:
+        raise click.ClickException("--lot-subkind is only for a retirement account")
     if tax_treatment is None:
         tax_treatment = _default_tax_treatment(kind, subkind)
-    if tax_treatment not in registries.TAX_TREATMENTS:
+    if tax_treatment and tax_treatment not in registries.TAX_TREATMENTS:
         raise click.ClickException(
             f"unknown tax_treatment: {tax_treatment!r}; "
             f"allowed: {sorted(registries.TAX_TREATMENTS)}"
@@ -5138,6 +5165,8 @@ def add_account(
                 "opening balance (dollars, e.g. 1234.56)"
             )
     cents = _parse_amount_cents(opening_balance) if opening_balance else None
+    if cents is None and retirement:
+        cents = 0  # its lot row is what carries the lot subkind
 
     # Both rows go in as one edit, after every prompt: the account and its
     # opening balance are validated together and land together or not at all.
@@ -5152,6 +5181,7 @@ def add_account(
                 {
                     "account_name": name,
                     "lot": registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else "",
+                    "subkind": lot_subkind or "",
                     "opening_balance": f"{cents // 100}.{cents % 100:02d}",
                     "opening_cost_basis": "",
                     "prior_year_end_balance": "",
@@ -5582,10 +5612,10 @@ def rename_account(
 
 def _default_tax_treatment(kind: str, subkind: str) -> str:
     match (kind, subkind):
-        case ("asset", "traditional_ira" | "traditional_401k" | "hsa"):
+        case ("asset", "hsa"):
             return "tax_deferred"
-        case ("asset", "roth_ira" | "roth_401k"):
-            return "tax_free"
+        case ("asset", registries.RETIREMENT_SUBKIND):
+            return ""  # each lot's subkind says (#217)
         case ("asset", "real_estate" | "vehicle"):
             return "none"
         case ("asset", _):
