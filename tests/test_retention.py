@@ -21,6 +21,7 @@ from analysis.sim.retention import (
     parse_retention,
     plan_prune,
     prune_state,
+    read_retention,
 )
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
@@ -57,6 +58,7 @@ def test_parses_the_documented_example(tmp_path: Path) -> None:
     ("runs: [\n", "not valid YAML"),
     ("runs:\n  - keep: 1\npins: 0\n", "pins: expected a list"),
     ("runs: 0\n", "runs: expected a list of rules"),
+    ("runs:\n  - keep: null\n", "runs rule 1: give keep, since, or both"),
     ("runs:\n  - since: 99999999999 weeks\n", "since is longer than 1000 years"),
 ])
 def test_rejects_malformed_rules(tmp_path: Path, text: str, message: str) -> None:
@@ -143,6 +145,27 @@ def test_a_run_or_batch_written_moments_ago_is_never_pruned(
     os.utime(in_progress, (NOW.timestamp() - 60, NOW.timestamp() - 60))
     planned = _planned(_rules("runs:\n  - keep: 1\n", tmp_path), intent_dir, runs_dir)
     assert in_progress not in planned
+
+
+def test_symlinked_scenario_and_batch_folders_are_never_walked(
+    fake_state: Callable[..., Path], intent_dir: Path, runs_dir: Path, tmp_path: Path,
+) -> None:
+    """Pruning deletes only what `sim run` wrote under state/, never what a
+    link there reaches."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (runs_dir / "linked").symlink_to(elsewhere, target_is_directory=True)
+    fake_state("batch", "alice", "2026-10-02T120000Z")
+    (runs_dir / "alice" / "2026-10-01T120000Z").symlink_to(elsewhere, target_is_directory=True)
+    (elsewhere / "2026-10-01T120000Z").mkdir()
+    (elsewhere / "2026-10-03T120000Z").mkdir()
+    assert _planned(_rules("runs:\n  - keep: 1\n", tmp_path), intent_dir, runs_dir) == set()
+
+
+def test_a_retention_file_that_is_not_utf8_is_a_retention_error(test_data_dir: Path) -> None:
+    (test_data_dir / RETENTION_FILENAME).write_bytes(b"runs:\n  - keep: \xff\n")
+    with pytest.raises(RetentionError, match="not valid UTF-8"):
+        read_retention(test_data_dir)
 
 
 def test_a_missing_or_empty_section_keeps_everything(

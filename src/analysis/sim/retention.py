@@ -165,7 +165,11 @@ def read_retention(data_dir: Path) -> Retention | None:
     path = Path(data_dir) / RETENTION_FILENAME
     if not path.is_file():
         return None
-    return parse_retention(path.read_text(), base=Path(data_dir).resolve().parent)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise RetentionError(f"not valid UTF-8: {exc}") from None
+    return parse_retention(text, base=Path(data_dir).resolve().parent)
 
 
 def parse_retention(text: str, *, base: Path) -> Retention:
@@ -215,6 +219,8 @@ def _rules(section: str, raw: Any) -> tuple[Rule, ...] | None:
         if keep is not None and (isinstance(keep, bool) or not isinstance(keep, int) or keep < 1):
             raise RetentionError(f"{where}: keep must be a positive whole number, got {keep!r}")
         since = entry.get("since")
+        if keep is None and since is None:
+            raise RetentionError(f"{where}: give keep, since, or both")
         rules.append(Rule(keep=keep, since=None if since is None else _duration(where, since)))
     return tuple(rules)
 
@@ -298,6 +304,8 @@ def _run_items(runs_dir: Path) -> Iterable[StateItem]:
     if not runs_dir.is_dir():
         return
     for path in runs_dir.iterdir():
+        if path.is_symlink():
+            continue  # only what `sim run` wrote here, never what a link reaches
         match = _RUN_FILE.match(path.name)
         if match and path.is_file():
             yield StateItem(path, "run", match[2], _stamp(match[1]), (path.name, 0))
@@ -309,14 +317,14 @@ def _intent_items(intent_dir: Path) -> Iterable[StateItem]:
     if not intent_dir.is_dir():
         return
     for path in intent_dir.iterdir():
-        if path.is_dir():
+        if path.is_dir() and not path.is_symlink():
             yield from _batch_items(path, "intent")
 
 
 def _batch_items(scenario_dir: Path, kind: str) -> Iterable[StateItem]:
     for path in scenario_dir.iterdir():
         match = _BATCH_DIR.match(path.name)
-        if match and path.is_dir():
+        if match and path.is_dir() and not path.is_symlink():
             yield StateItem(path, kind, scenario_dir.name, _stamp(match[1]),
                         (match[1], int(match[2] or 1)))
 
