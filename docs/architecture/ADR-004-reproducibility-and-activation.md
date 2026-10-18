@@ -168,6 +168,27 @@ Run filenames embed `<timestamp>_<scenario>_<shortTreeId>` ([ADR-002](ADR-002-st
 - First-time install: `analysis sim load <scenario>` builds the intent file. If `state/` doesn't exist, it's created. If the data repo has no `persons.csv`, the engine refuses with a one-line how-to.
 - Code upgrade with a schema change: the intent file is silently rebuilt (it's a cache; [ADR-002](ADR-002-storage-schema.md) §Schema changes). Run files are never migrated: re-run a scenario to compare it with runs made under the current schema. Each file records the `SCHEMA_VERSION` it was written under (`intent_manifest.schema_version`, `simulation_run.schema_version`).
 
+### 10. Pruning `state/` (`.retention.yaml`)
+
+Run files and ensemble batches accumulate under `state/runs/`, quickly with ensembles, and each batch leaves its member intents under `state/intent/<scenario>/<batch>/`. There is no prune command: `sim load` and `sim run` (and so `sim all`) prune after their own work, by rules in `.retention.yaml` at the root of the data dir (`$ANALYSIS_DATA_DIR`). When the file is missing, they first write it with the default rules below (`retention.DEFAULT_RETENTION`) and say so. The file is per-user housekeeping, not data: `activate` adds it to the data repo's `.gitignore`, like `.current_scenario` (§4a), so it never affects `data_version` or dirty gating. `templates/` and `prototype_data/` ship the same defaults, with no pins.
+
+```yaml
+intents:          # member-intent batches, state/intent/<scenario>/<batch>/
+  - keep: 5
+    since: 7 days
+runs:             # single run files and run batches, state/runs/
+  - keep: 5
+    since: 7 days
+pins:             # relative to the data repo root, the folder holding state/
+  - state/runs/2026-10-17T214106Z_<scenario>_49373e7.sqlite3
+```
+
+- **What is counted.** Items are grouped by scenario and kind — single run files, run batches, intent batches — and ranked newest first by the timestamp in their names. Only names `sim run` writes are recognized (`<stamp>_<scenario>_<version>.sqlite3`, a `<stamp>[-N]` batch folder); anything else in `state/`, including a scenario's own intent file and its `base_case.sqlite3`, is never pruned.
+- **Rules.** An item is kept when any rule in its section keeps it. A rule keeps it when any condition it gives holds: `keep: N` (among its group's N newest) or `since: <duration>` (made within that long; minutes, hours, days or weeks). So the defaults keep each scenario's five newest and everything from the last week, as backup tools combine keep-last and keep-within. A missing or empty section keeps everything of its kind.
+- **Always kept.** Each group's newest item (a failed run's latest attempt included), and each scenario's newest successful run file and newest successful run batch (one with a batch manifest, no recorded failures, and every member `succeeded`).
+- **Batches go whole.** A batch folder is deleted with all its members, never member by member. A pin naming a batch or anything inside it keeps the batch, and keeps both its run folder and its member intents.
+- **Never fatal.** A malformed file is a warning naming the problem and prunes nothing; the load or run itself still succeeds. Each prune prints one `pruned …` line when it deleted something.
+
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 
 These amendments to `simulation_run` ([ADR-002](ADR-002-storage-schema.md) §Ledger DDL) accommodate the §1 stamp set; all rolled into [ADR-002](ADR-002-storage-schema.md):
@@ -210,3 +231,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#131](https://github.com/BobKerns/analysis/issues/131): `scripts/link-data.sh` links the data repo at `data/shared` or builds template data there, and the user prompt lists the primary persons (§4).
 - [#204](https://github.com/BobKerns/analysis/issues/204): only `sim check` prints defined-but-not-read warnings, and `sim check --all` only with `--verbose` (§6).
 - [#214](https://github.com/BobKerns/analysis/issues/214): every CLI command naming a scenario makes it current, a defaulted one is announced, the CLI no longer falls back past `.current_scenario`, and the prompt shows the current scenario (§4, §4a).
+- [#195](https://github.com/BobKerns/analysis/issues/195): `sim load` and `sim run` prune old runs and batches by the data repo's `.retention.yaml`, written with defaults when missing and kept out of git by `activate` (§10).

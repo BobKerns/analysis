@@ -1,0 +1,24 @@
+# Retention rules for state/: after each `sim load` and `sim run`, old run
+# files and batches are deleted unless a rule here keeps them (ADR-004 §10).
+#
+# Items are counted per scenario, newest first. An item is kept when any rule
+# in its list keeps it, and a rule keeps it when any of its conditions holds:
+#   keep: N            among the N newest
+#   since: 7 days      made within that long (minutes, hours, days or weeks)
+# Each scenario's newest run and batch, and its newest successful ones, are
+# always kept. Delete a section's rules to keep everything of that kind.
+
+# Ensemble and sensitivity batches' member intents (state/intent/<scenario>/).
+intents:
+  - keep: 5
+    since: 7 days
+
+# Single run files and ensemble/sensitivity batches (state/runs/).
+runs:
+  - keep: 5
+    since: 7 days
+
+# Runs or batches never to prune, relative to the data repo root (beside
+# state/), e.g. state/runs/<stamp>_<scenario>_<version>.sqlite3. Pinning a
+# batch keeps both its runs and its member intents.
+pins: []

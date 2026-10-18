@@ -803,6 +803,16 @@ default to a scenario's latest run, so you rarely need to name the file
 yourself. When you do want an older run, pass its file (from `state/runs/`)
 with `--runfile`, or in place of the scenario for `sim explain`.
 
+Old runs don't pile up forever. After each `sim load` and `sim run`, the
+simulator deletes runs that `.retention.yaml`, in the data dir, no longer
+keeps: by default it keeps each scenario's five newest runs and anything from
+the last seven days, and always its newest and newest successful run. The
+first `sim load` or `sim run` writes the file if it's missing. To keep a
+particular run for good, add its path under `pins:` in that file. The file's
+comments explain the rules, and
+[ADR-004 §10](architecture/ADR-004-reproducibility-and-activation.md) has
+the details.
+
 Run a scenario with:
 
 ```sh
