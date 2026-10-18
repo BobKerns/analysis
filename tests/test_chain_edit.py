@@ -120,7 +120,7 @@ def test_rename_follows_every_reference(guide_chains: Path, test_scenarios_dir: 
     assert "ss_alice,Income_SS_Alice,,benefit_split," in scheduled
     liquidity = _sim(guide_chains, "rename", "asset_checking_liquidity", "liquidity")
     assert liquidity.exit_code == 0, liquidity.output
-    assert ",liquidity," in (test_scenarios_dir / "retire_alice" / "account_values.csv").read_text()
+    assert ",liquidity," in (test_scenarios_dir / "retire_alice" / "account_lots.csv").read_text()
     load_test_copy()
 
 

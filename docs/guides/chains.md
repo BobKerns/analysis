@@ -161,7 +161,7 @@ amount. A **source** chain (`chains/source/`) is drawn from, as:
 
 - a rule's `from_account` in `scheduled.csv` (a monthly withdrawal);
 - a calendar transfer's `account_1` (`one_off_transfer`);
-- a lot's `refill_chain` in `account_values.csv` (section 5).
+- a lot's `refill_chain` in `account_lots.csv` (section 5).
 
 **A sweep** puts money *into* the steps, first step first, until it is
 placed. A **destination** chain (`chains/destination/`) is swept into, as:
@@ -297,7 +297,7 @@ rejects that and names the loop.
 ## 5. The limits on each lot: minimum, refill, maximum, overflow
 
 Chains say where to look. The **lots** say how much they can give or take.
-These columns sit on the lot's own row in `account_values.csv` (set them
+These columns sit on the lot's own row in `account_lots.csv` (set them
 with `sim account lot edit`), not on the chain, so a lot behaves the same
 way whichever chain reaches it.
 
@@ -372,7 +372,7 @@ Asset_Brokerage_Joint,default,,,,
 Asset_TraditionalIRA_Alice,default,,,,
 ```
 
-Then, on the `Asset_Checking` row of `account_values.csv` (or with
+Then, on the `Asset_Checking` row of `account_lots.csv` (or with
 `sim account lot edit Asset_Checking default`):
 
 | column | value |

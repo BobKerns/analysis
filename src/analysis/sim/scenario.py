@@ -129,7 +129,7 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
 
     skeletons: dict[str, tuple[str, ...]] = {
         "accounts.csv": registries.ACCOUNTS_CSV_HEADER,
-        "account_values.csv": registries.ACCOUNT_VALUES_CSV_HEADER,
+        "account_lots.csv": registries.ACCOUNT_LOTS_CSV_HEADER,
         "scheduled.csv": registries.SCHEDULED_CSV_HEADER,
         "calendar.csv": registries.CALENDAR_HEADER,
     }

@@ -426,11 +426,11 @@ def _default_scenario_name(data_dir: Path, scenarios: Path, scenarios_dir: Path 
 def _default_lots(
     rows: list[dict[str, str]], issues: list[str], investment_accounts: set[str],
 ) -> list[dict[str, str]]:
-    """Default each account_values.csv row's lot (investment accounts must name
+    """Default each account_lots.csv row's lot (investment accounts must name
     theirs), and flag repeated (account, lot) pairs here: the overlay merge that
     follows would silently collapse them."""
     seen: set[tuple[str, str]] = set()
-    for where, row in _located(rows, "account_values.csv"):
+    for where, row in _located(rows, "account_lots.csv"):
         if not row.get("lot") and row.get("account_name") in investment_accounts:
             issues.append(
                 f"{where} ({row['account_name']}): investment "
@@ -737,9 +737,16 @@ def _read_scenario_inputs(
         accounts = _merge_scenario_rows(
             accounts, read_overlay("accounts.csv", required=True), ("name",)
         )
+        # #217 renamed the lots file; a leftover old one would otherwise be
+        # silently ignored, losing every opening balance in it.
+        if (scenario_dir / "account_values.csv").exists():
+            issues.append(
+                f"{_data_label(scenario_dir / 'account_values.csv', data_dir)}: renamed to "
+                "account_lots.csv (#217); run scripts/migrate_217.py on the data repo"
+            )
         value_rows = _merge_scenario_rows(
             value_rows, _default_lots(
-                read_overlay("account_values.csv", required=True), issues,
+                read_overlay("account_lots.csv", required=True), issues,
                 {a["name"] for a in accounts if a.get("subkind") in INVESTMENT_ASSET_SUBKINDS},
             ),
             ("account_name", "lot"),
@@ -922,7 +929,13 @@ def load_scenario(
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
     )
     _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues)
-    _validate_rmd_rules(scheduled_rows, leaves, chains, issues)
+    roth_leaves = frozenset(
+        leaves.leaf_of[(m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)]
+        for m in value_rows
+        if registries.RETIREMENT_LOT_SUBKINDS.get(m.get("subkind") or "") == "tax_free"
+        and (m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT) in leaves.leaf_of
+    )
+    _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
     _validate_lifespan(lifespan_rows, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
 
@@ -1567,7 +1580,7 @@ def _expand_account_growth(
             if not series and symbol in weight_sets:
                 blend = _allocation_blend(
                     symbol, weight_sets[symbol], rate_series,
-                    f"account_values.csv ({name} / {lot})", warnings,
+                    f"account_lots.csv ({name} / {lot})", warnings,
                 )
             lot_series.append((lot, series or ("" if blend else account_series), blend))
         if not any(series or blend for _, series, blend in lot_series):
@@ -1794,6 +1807,12 @@ def _validate_accounts(
         valid = registries.ACCOUNT_SUBKINDS.get(kind)
         if valid is None:
             issues.append(f"{where} ({name}): unknown kind '{kind}'")
+        elif kind == "asset" and subkind in registries.RETIREMENT_LOT_SUBKINDS:
+            issues.append(
+                f"{where} ({name}): subkind '{subkind}' is now account subkind "
+                f"'{registries.RETIREMENT_SUBKIND}' with lot subkind '{subkind}' (#217); "
+                "run scripts/migrate_217.py on the data repo"
+            )
         elif subkind not in valid:
             issues.append(
                 f"{where} ({name}): subkind '{subkind}' not allowed for kind '{kind}'"
@@ -1801,11 +1820,16 @@ def _validate_accounts(
         tt = row.get("tax_treatment", "")
         if tt and tt not in registries.TAX_TREATMENTS:
             issues.append(f"{where} ({name}): unknown tax_treatment '{tt}'")
+        elif tt and subkind == registries.RETIREMENT_SUBKIND:
+            issues.append(
+                f"{where} ({name}): a retirement account's tax_treatment is its lots' "
+                "subkinds' (Roth or traditional); leave it blank"
+            )
         moved = [c for c in registries.CASH_MANAGEMENT_COLUMNS if row.get(c)]
         if moved:
             issues.append(
                 f"{where} ({name}): {', '.join(moved)} moved to "
-                "account_values.csv, where each lot has its own"
+                "account_lots.csv, where each lot has its own"
             )
         series = row.get("series", "")
         if series:
@@ -1927,7 +1951,11 @@ def _validate_lot_money(
     accounts: list[dict[str, str]],
 ) -> None:
     account_names = {r.get("name", "") for r in accounts}
-    for where, row in _located(rows, "account_values.csv"):
+    retirement = {
+        r.get("name", "") for r in accounts
+        if r.get("subkind") == registries.RETIREMENT_SUBKIND
+    }
+    for where, row in _located(rows, "account_lots.csv"):
         name = row.get("account_name", "")
         if not name:
             issues.append(f"{where}: missing account_name")
@@ -1941,6 +1969,8 @@ def _validate_lot_money(
             issues.append(
                 f"{where} ({name}): account_name not in accounts.csv"
             )
+        _validate_lot_subkind(row.get("subkind", ""), name in retirement,
+                              f"{where} ({name} / {lot})", issues)
         ob = row.get("opening_balance", "")
         if ob == "":
             issues.append(
@@ -2009,15 +2039,38 @@ def _validate_lot_money(
         rows_by_account.setdefault(row.get("account_name", ""), []).append(row)
     for a in accounts:
         lots = rows_by_account.get(a.get("name", ""), [])
+        if not lots and a.get("name") in retirement:
+            # The zero-balance default lot an account gets otherwise would
+            # have no subkind, so nothing would say how it is taxed.
+            issues.append(
+                f"account_lots.csv ({a['name']}): a retirement account needs at least "
+                "one lot, with its subkind; add its row to account_lots.csv"
+            )
+        # Only lots that could owe an RMD need prior_year_end_balance; a Roth
+        # lot beside a traditional one needn't carry it (#217).
+        lots = [r for r in lots
+                if registries.RETIREMENT_LOT_SUBKINDS.get(r.get("subkind", "")) != "tax_free"]
         if len(lots) < 2:
             continue
         name = a["name"]
         with_pyeb = sum(1 for r in lots if r.get("prior_year_end_balance"))
         if 0 < with_pyeb < len(lots):
             issues.append(
-                f"account_values.csv ({name}): prior_year_end_balance must be set "
-                "on every lot of an account or on none"
+                f"account_lots.csv ({name}): prior_year_end_balance must be set "
+                "on every lot of an account or on none (Roth lots aside)"
             )
+
+
+def _validate_lot_subkind(subkind: str, retirement: bool, where: str, issues: list[str]) -> None:
+    """A retirement account's lot must say what it is (#217), and only such a
+    lot may: its subkind is what sets its tax treatment."""
+    allowed = sorted(registries.RETIREMENT_LOT_SUBKINDS)
+    if retirement and not subkind:
+        issues.append(f"{where}: a retirement account's lot needs a subkind ({', '.join(allowed)})")
+    elif retirement and subkind not in registries.RETIREMENT_LOT_SUBKINDS:
+        issues.append(f"{where}: unknown lot subkind '{subkind}' ({', '.join(allowed)})")
+    elif subkind and not retirement:
+        issues.append(f"{where}: subkind '{subkind}' is only for the lots of a retirement account")
 
 
 def _validate_cash_management(
@@ -2066,7 +2119,7 @@ def _derive_opening_balances(
     for kind, series, payload, effective in aux_rows:
         if kind == "security_price":
             prices.setdefault(series or "", []).append((effective, payload["price_micros"]))
-    for where, row in _located(value_rows, "account_values.csv"):
+    for where, row in _located(value_rows, "account_lots.csv"):
         if row.get("opening_balance") or not row.get("quantity"):
             continue
         name, symbol = row.get("account_name", ""), row.get("symbol", "")
@@ -2162,8 +2215,11 @@ def _validate_rmd_rules(
     leaves: _LeafIndex,
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     issues: list[str],
+    *,
+    roth_leaves: frozenset[str] = frozenset(),
 ) -> None:
-    """An ``rmd`` rule's amount comes from its *subject account* (all of its lots),
+    """An ``rmd`` rule's amount comes from its *subject account* (its traditional
+    lots: a Roth lot has no RMD and does not count toward one, #217),
     and the money comes from ``from_account``. On an account with several lots
     the source must be an explicit chain, so which lots fund the RMD, and in what
     order, is written down; the chain may only draw from the subject's own lots
@@ -2181,6 +2237,10 @@ def _validate_rmd_rules(
         if subject is not None and subject not in leaves.lot_labels:
             issues.append(f"{where}: subject_account '{subject}' is not an account")
             continue
+        drawn = _chain_leaf_names(source, chains) if source in chains else {source}
+        roth = sorted(drawn & roth_leaves)
+        if roth:
+            issues.append(f"{where}: an rmd may not draw from a Roth lot ({', '.join(roth)})")
         if source in leaves.account_of:
             account = leaves.account_of[source]
             if subject is not None and subject != account:
@@ -3070,7 +3130,7 @@ def _validate_chain_roles(
             where = f"{where} ({row.get('name', '')})" if row.get("name") else where
             check(where, from_col, row.get(from_col, ""), "source")
             check(where, to_col, row.get(to_col, ""), "destination")
-    for where, row in _located(value_rows, "account_values.csv"):
+    for where, row in _located(value_rows, "account_lots.csv"):
         where = f"{where} ({row.get('account_name', '')})"
         check(where, "refill_chain", row.get("refill_chain", ""), "source")
         check(where, "overflow_chain", row.get("overflow_chain", ""), "destination")
@@ -3186,7 +3246,7 @@ def _validate_chains(
         _validate_chain_tax_steps(role, rows, _chain_label(role, name), leaves,
                                   asset_accounts, issues)
 
-    for where, row in _located(value_rows, "account_values.csv"):
+    for where, row in _located(value_rows, "account_lots.csv"):
         holder = leaves.leaf_of.get(
             (row.get("account_name", ""), row.get("lot") or registries.DEFAULT_LOT)
         )
@@ -3393,7 +3453,7 @@ def _write_intent(
     counts["account"] = len(accounts)
 
     # One account_lot row per lot (ADR-005). An account with no
-    # account_values.csv row gets a single zero-balance default lot. Rows are
+    # account_lots.csv row gets a single zero-balance default lot. Rows are
     # written in accounts.csv order so lot ids follow account order.
     rows_by_account: dict[str, list[dict[str, str]]] = {}
     for m in value_rows:
@@ -3409,14 +3469,17 @@ def _write_intent(
             lot = m.get("lot") or registries.DEFAULT_LOT
             cur = con.execute(
                 "INSERT INTO account_lot("
-                "account_id, lot, symbol, acquired, quantity_micros, "
+                "account_id, lot, subkind, tax_treatment, symbol, acquired, quantity_micros, "
                 "series, opening_balance, opening_cost_basis, "
                 "prior_year_end_balance, minimum_balance_cents, "
                 "maximum_balance_cents, refill_target_cents, refill_amount_cents) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     account_ids[a["name"]],
                     lot,
+                    m.get("subkind") or None,
+                    registries.RETIREMENT_LOT_SUBKINDS.get(m.get("subkind") or "")
+                    or a.get("tax_treatment") or None,
                     m.get("symbol") or None,
                     m.get("acquired") or None,
                     _quantity_to_micros(m["quantity"]) if m.get("quantity") else None,

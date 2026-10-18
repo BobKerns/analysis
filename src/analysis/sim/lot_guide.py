@@ -1,11 +1,11 @@
 """Guided entry for ``sim account lot add|edit`` (issue #124).
 
-A lot is one ``account_values.csv`` row (ADR-003 §4.3, ADR-005). Its fields
+A lot is one ``account_lots.csv`` row (ADR-003 §4.3, ADR-005). Its fields
 are described here as data for ``calendar_guide.Guide`` to ask, as the
 calendar kinds are, so the questions follow the same rules: only what applies
 to the account and the answers so far is asked.
 
-Each field's ``param`` is its ``account_values.csv`` column, except
+Each field's ``param`` is its ``account_lots.csv`` column, except
 ``account`` (``account_name``), so a lot's answers and its row convert
 column for column.
 """
@@ -16,9 +16,6 @@ from collections.abc import Callable, Sequence
 
 from analysis.sim import registries
 from analysis.sim.calendar_guide import Answers, Field, GuideContext, KindSpec, chains_of, lot_needed
-
-# Subkinds whose lots may need a prior Dec 31 balance, for a first-year RMD.
-_RMD_SUBKINDS = frozenset({"traditional_ira", "traditional_401k"})
 
 MANAGE = "_manage"  # the question that opens the balance-management fields
 
@@ -39,8 +36,13 @@ def _taxable(ctx: GuideContext, answers: Answers) -> bool:
     return ctx.tax_treatments.get(answers.get("account", "")) == "taxable"
 
 
-def _rmd_account(ctx: GuideContext, answers: Answers) -> bool:
-    return ctx.subkinds.get(answers.get("account", "")) in _RMD_SUBKINDS
+def _retirement(ctx: GuideContext, answers: Answers) -> bool:
+    return ctx.subkinds.get(answers.get("account", "")) == registries.RETIREMENT_SUBKIND
+
+
+def _rmd_lot(ctx: GuideContext, answers: Answers) -> bool:
+    """A lot that may need a prior Dec 31 balance, for a first-year RMD."""
+    return _retirement(ctx, answers) and answers.get("subkind") in registries.RMD_LOT_SUBKINDS
 
 
 def _managed(ctx: GuideContext, answers: Answers) -> bool:  # noqa: ARG001
@@ -80,6 +82,11 @@ LOT = KindSpec(
             help="A label unique within the account, without ':'.",
         ),
         Field(
+            "subkind", "lot subkind", option="--subkind", applies=_retirement, strict=True,
+            choices=lambda ctx, answers: sorted(registries.RETIREMENT_LOT_SUBKINDS),  # noqa: ARG005
+            help="A retirement account's lot: Roth or traditional, IRA or 401k.",
+        ),
+        Field(
             "symbol", "symbol", option="--symbol", required=False,
             choices=lambda ctx, answers: list(ctx.securities),  # noqa: ARG005
             help="The security held; names its rate series and its price.",
@@ -109,7 +116,7 @@ LOT = KindSpec(
         Field(
             "prior_year_end_balance", "balance on the Dec 31 before the scenario starts",
             type="money", option="--prior-year-end-balance", required=False,
-            applies=_rmd_account,
+            applies=_rmd_lot,
             help="Needed when the owner reaches RMD age in the first year; "
                  "set on every lot of the account or on none.",
         ),
@@ -156,15 +163,15 @@ LOT = KindSpec(
     ),
 )
 
-# account_values.csv columns the lot's fields write, beside account_name/lot.
+# account_lots.csv columns the lot's fields write, beside account_name/lot.
 VALUE_COLUMNS: tuple[str, ...] = tuple(
-    column for column in registries.ACCOUNT_VALUES_CSV_HEADER
+    column for column in registries.ACCOUNT_LOTS_CSV_HEADER
     if column not in ("account_name", "lot")
 )
 
 
 def answers_of(row: dict[str, str]) -> Answers:
-    """An ``account_values.csv`` row as answers to ``LOT``'s fields."""
+    """An ``account_lots.csv`` row as answers to ``LOT``'s fields."""
     answers = {"account": row["account_name"], "lot": row["lot"] or registries.DEFAULT_LOT}
     answers |= {column: row.get(column, "") for column in VALUE_COLUMNS}
     managed = any(row.get(column) for column in registries.CASH_MANAGEMENT_COLUMNS)

@@ -31,7 +31,7 @@ def _derive_empty_child(repo: Path, parent_name: str, child_name: str) -> Path:
         encoding="utf-8",
     )
     for filename in (
-        "accounts.csv", "account_values.csv", "scheduled.csv",
+        "accounts.csv", "account_lots.csv", "scheduled.csv",
         "calendar.csv", "year_to_date.csv",
     ):
         header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
@@ -161,7 +161,7 @@ def _write_home_basis(path: Path, purchase: str) -> None:
 
 
 def _set_home_basis_reference(repo: Path, scenario: str = "retire_alice") -> None:
-    av = repo / "scenarios" / scenario / "account_values.csv"
+    av = repo / "scenarios" / scenario / "account_lots.csv"
     with av.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
         fields = list(rows[0].keys())

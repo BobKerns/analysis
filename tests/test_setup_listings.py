@@ -165,7 +165,7 @@ def test_itemizations_nearest_file_wins_and_totals_follow_nested_refs(
         "itemizations/repairs.csv": "Item,Value\nroof,12000.00\nfees,@fees\n",
         # Only the money column is a reference; the loader reads @repairs in
         # a description as text.
-        "account_values.csv": (
+        "account_lots.csv": (
             "account_name,lot,opening_cost_basis,description\nAsset_Home,,@repairs,@repairs\n"
         ),
         "chains/source/draw.csv": "account_name,lot,maximum\nAsset_Checking,,@fees\n",
@@ -178,13 +178,13 @@ def test_itemizations_nearest_file_wins_and_totals_follow_nested_refs(
     assert items["fees"].defined_in == "shared"
     refs = setup_listings.itemization_references(test_data_dir, child)
     assert [(r.path.name, r.line, r.column) for r in refs["repairs"]] == [
-        ("account_values.csv", 2, "opening_cost_basis"),
+        ("account_lots.csv", 2, "opening_cost_basis"),
     ]
     assert sorted(r.path.name for r in refs["fees"]) == ["draw.csv", "repairs.csv"]
 
     shown = sim("itemization", "show", "@repairs", "--scenario", "child").output
     assert "total: $12,050.00" in shown
-    assert "scenarios/child/account_values.csv line 2, opening_cost_basis" in shown
+    assert "scenarios/child/account_lots.csv line 2, opening_cost_basis" in shown
     listed = sim("itemization", "list", "--scenario", "child").output
     assert "$12,050.00" in listed and "$50.00" in listed
 

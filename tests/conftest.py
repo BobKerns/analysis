@@ -75,7 +75,7 @@ from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
-    ACCOUNT_VALUES_CSV_HEADER, ASSET_CLASSES, CALENDAR_HEADER, SCENARIO_HEADER,
+    ACCOUNT_LOTS_CSV_HEADER, ASSET_CLASSES, CALENDAR_HEADER, SCENARIO_HEADER,
     SCHEDULED_CSV_HEADER,
 )
 
@@ -489,12 +489,12 @@ def lot_variant_runs(
     derived ``variant`` that changes lot b's quantity, balance and basis, adds a
     lot c, and changes one inherited year-to-date row."""
     scenario.create_scenario(test_data_dir, "variant", "retire_alice")
-    header = ",".join(ACCOUNT_VALUES_CSV_HEADER)
+    header = ",".join(ACCOUNT_LOTS_CSV_HEADER)
     variant_dir = test_scenarios_dir / "variant"
-    (variant_dir / "account_values.csv").write_text(
+    (variant_dir / "account_lots.csv").write_text(
         f"{header}\n"
-        "Asset_Brokerage_Joint,b,BBB,2026-01-15,1500,,150000.00,100000.00,\n"
-        "Asset_Brokerage_Joint,c,CCC,2027-06-30,,,25000.00,20000.00,\n"
+        "Asset_Brokerage_Joint,b,,BBB,2026-01-15,1500,,150000.00,100000.00,\n"
+        "Asset_Brokerage_Joint,c,,CCC,2027-06-30,,,25000.00,20000.00,\n"
     )
     (variant_dir / "year_to_date.csv").write_text(
         "name,from_account,from_lot,to_account,to_lot,amount,tax_character,year,description\n"
@@ -595,7 +595,7 @@ def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
     import pandas as pd
 
     def _fund(extra: str = "100000.00") -> None:
-        values_path = test_scenarios_dir / "retire_alice" / "account_values.csv"
+        values_path = test_scenarios_dir / "retire_alice" / "account_lots.csv"
         df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
         mask = df["account_name"] == "Asset_Savings"
         current = float(df.loc[mask, "opening_balance"].iloc[0])
@@ -618,14 +618,15 @@ def add_alice_401k(
         accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
         accounts.loc[len(accounts)] = {
             **dict.fromkeys(accounts.columns, ""),
-            "name": "Asset_401k_Alice", "kind": "asset", "subkind": "traditional_401k",
-            "owner": "alice", "tax_treatment": "tax_deferred",
+            "name": "Asset_401k_Alice", "kind": "asset", "subkind": "retirement",
+            "owner": "alice", "tax_treatment": "",
             "series": "brokerage_growth", "tax_character": "deferred", "meta_json": "{}",
         }
         ira = accounts["name"] == "Asset_TraditionalIRA_Alice"
         accounts.loc[ira, ["series", "tax_character"]] = ["brokerage_growth", "deferred"]
         accounts.to_csv(path, index=False)
-        add_account_value("Asset_401k_Alice", lot="default", opening_balance=opening_balance)
+        add_account_value("Asset_401k_Alice", lot="default", subkind="traditional_401k",
+                          opening_balance=opening_balance)
     return _add
 
 
@@ -809,10 +810,15 @@ def _append_calendar_row_to(path: Path, **fields: str) -> None:
 
 @pytest.fixture(scope="function")
 def add_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
-    """Append a row to the private copy's account_values.csv, by column name."""
+    """Append a row to the private copy's account_lots.csv, by column name.
+    A new lot of an account whose lots have a subkind (a retirement account)
+    takes the first one's unless ``subkind`` is given."""
     def _add(account_name: str, **columns: str) -> None:
-        path = retire_alice_csv("account_values.csv")
+        path = retire_alice_csv("account_lots.csv")
         values = pd.read_csv(path, dtype=str, keep_default_na=False)
+        siblings = values.loc[values["account_name"] == account_name, "subkind"]
+        if "subkind" not in columns and len(siblings):
+            columns["subkind"] = siblings.iloc[0]
         values.loc[len(values)] = {**dict.fromkeys(values.columns, ""),
                                    "account_name": account_name, **columns}
         values.to_csv(path, index=False)
@@ -822,9 +828,9 @@ def add_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..., 
 @pytest.fixture(scope="function")
 def update_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Set columns on one existing (account, lot) row of the private copy's
-    account_values.csv."""
+    account_lots.csv."""
     def _update(account_name: str, lot: str, **columns: str) -> None:
-        path = retire_alice_csv("account_values.csv")
+        path = retire_alice_csv("account_lots.csv")
         values = pd.read_csv(path, dtype=str, keep_default_na=False)
         row = (values["account_name"] == account_name) & (values["lot"] == lot)
         assert row.any(), (account_name, lot)
@@ -836,16 +842,16 @@ def update_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..
 
 @pytest.fixture(scope="function")
 def set_brokerage_lots(retire_alice_csv: Callable[[str], Path]) -> Callable[[list[dict[str, str]]], None]:
-    """Replace Asset_Brokerage_Joint's account_values row with the given lots
-    (dicts of account_values.csv columns; ``account_name`` is filled in)."""
+    """Replace Asset_Brokerage_Joint's account_lots row with the given lots
+    (dicts of account_lots.csv columns; ``account_name`` is filled in)."""
     def _set(lots: list[dict[str, str]]) -> None:
-        values = pd.read_csv(retire_alice_csv("account_values.csv"), dtype=str, keep_default_na=False)
+        values = pd.read_csv(retire_alice_csv("account_lots.csv"), dtype=str, keep_default_na=False)
         values = values[values["account_name"] != "Asset_Brokerage_Joint"]
         for column in ("symbol", "quantity"):
             values[column] = ""
         rows = pd.DataFrame([{"account_name": "Asset_Brokerage_Joint", **lot} for lot in lots])
         pd.concat([values, rows], ignore_index=True).fillna("").to_csv(
-            retire_alice_csv("account_values.csv"), index=False)
+            retire_alice_csv("account_lots.csv"), index=False)
     return _set
 
 
@@ -855,7 +861,7 @@ def savings_lots(retire_alice_csv: Callable[[str], Path]) -> tuple[str, str]:
     investment) account, into lots ``emergency`` and ``travel``, neither
     named ``default``: a transfer must name one of them. The checking
     liquidity chain draws on ``emergency``. Returns the lots."""
-    path = retire_alice_csv("account_values.csv")
+    path = retire_alice_csv("account_lots.csv")
     values = pd.read_csv(path, dtype=str, keep_default_na=False)
     savings = values[values["account_name"] == "Asset_Savings"].iloc[0]
     lots = ("emergency", "travel")

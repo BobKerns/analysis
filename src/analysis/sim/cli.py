@@ -5035,7 +5035,10 @@ def account_group_command() -> None:
               help="Close date (YYYY-MM or YYYY-MM-DD), if any.")
 @click.option("--opening-balance", default=None,
               help="Initial balance in dollars; appended to the scenario's "
-                   "account_values.csv.")
+                   "account_lots.csv.")
+@click.option("--lot-subkind", default=None,
+              type=click.Choice(sorted(registries.RETIREMENT_LOT_SUBKINDS)),
+              help="A retirement account's first lot: Roth or traditional, IRA or 401k.")
 @click.option("--scenario", default=None,
               help="Scenario folder name (for opening-balance lookup).")
 @click.option("--data-dir",
@@ -5054,11 +5057,16 @@ def add_account(
     opened: str,
     closed: str,
     opening_balance: str | None,
+    lot_subkind: str | None,
     scenario: str | None,
     data_dir: Path | None,
     tags: str,
 ) -> None:
-    """Append an account to accounts.csv (and opening balance to the model)."""
+    """Append an account to accounts.csv (and opening balance to the model).
+
+    A retirement account always gets its first lot, ``default``, whose
+    --lot-subkind (asked if not given) says whether it is Roth or traditional.
+    """
     try:
         registries.parse_tags(tags)
     except ValueError as e:
@@ -5104,9 +5112,28 @@ def add_account(
             f"unknown owner {owner!r}; allowed: {persons + ['joint']}"
         )
 
+    retirement = subkind == registries.RETIREMENT_SUBKIND
+    if retirement:
+        if tax_treatment:
+            raise click.ClickException(
+                "a retirement account's tax treatment is its lots' subkinds'; "
+                "give --lot-subkind instead of --tax-treatment"
+            )
+        tax_treatment = ""
+        if lot_subkind is None:
+            lot_subkinds = sorted(registries.RETIREMENT_LOT_SUBKINDS)
+            click.echo(f"lot subkinds: {', '.join(lot_subkinds)}")
+            lot_subkind = _prompt_with_completion("lot subkind", choices=lot_subkinds)
+        if lot_subkind not in registries.RETIREMENT_LOT_SUBKINDS:
+            raise click.ClickException(
+                f"unknown lot subkind {lot_subkind!r}; "
+                f"allowed: {sorted(registries.RETIREMENT_LOT_SUBKINDS)}"
+            )
+    elif lot_subkind:
+        raise click.ClickException("--lot-subkind is only for a retirement account")
     if tax_treatment is None:
         tax_treatment = _default_tax_treatment(kind, subkind)
-    if tax_treatment not in registries.TAX_TREATMENTS:
+    if tax_treatment and tax_treatment not in registries.TAX_TREATMENTS:
         raise click.ClickException(
             f"unknown tax_treatment: {tax_treatment!r}; "
             f"allowed: {sorted(registries.TAX_TREATMENTS)}"
@@ -5138,20 +5165,23 @@ def add_account(
                 "opening balance (dollars, e.g. 1234.56)"
             )
     cents = _parse_amount_cents(opening_balance) if opening_balance else None
+    if cents is None and retirement:
+        cents = 0  # its lot row is what carries the lot subkind
 
     # Both rows go in as one edit, after every prompt: the account and its
     # opening balance are validated together and land together or not at all.
     accounts_path = data_dir_p / "scenarios" / scen_name / "accounts.csv"
-    values_path = data_dir_p / "scenarios" / scen_name / "account_values.csv"
+    values_path = data_dir_p / "scenarios" / scen_name / "account_lots.csv"
     with _scenario_edit(data_dir_p, scen_name) as edit:
         _append_csv_row(edit.path(accounts_path), registries.ACCOUNTS_CSV_HEADER, row)
         if cents is not None:
             _append_csv_row(
                 edit.path(values_path),
-                registries.ACCOUNT_VALUES_CSV_HEADER,
+                registries.ACCOUNT_LOTS_CSV_HEADER,
                 {
                     "account_name": name,
                     "lot": registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else "",
+                    "subkind": lot_subkind or "",
                     "opening_balance": f"{cents // 100}.{cents % 100:02d}",
                     "opening_cost_basis": "",
                     "prior_year_end_balance": "",
@@ -5174,7 +5204,7 @@ _CHAIN_DEPENDENT_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 _ACCOUNT_REFERENCE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("account_values.csv", ("account_name",)),
+    ("account_lots.csv", ("account_name",)),
     ("scheduled.csv", ("from_account", "to_account", "interest_account")),
     ("calendar.csv", ("account_1", "account_2")),
     ("quicken_account_map.csv", ("account_name",)),
@@ -5227,7 +5257,7 @@ def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = 
     """Return direct CSV references to an account in deterministic display order,
     plus calendar.csv's set_rate rows for its own growth ``series``."""
     references: list[str] = []
-    values_path = scenario_dir / "account_values.csv"
+    values_path = scenario_dir / "account_lots.csv"
     if values_path.exists():
         values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
         chain_fields = [
@@ -5239,7 +5269,7 @@ def _account_reference_rows(scenario_dir: Path, name: str, series: str | None = 
             matched_fields = [field for field in chain_fields if row[field] == name]
             if matched_fields:
                 references.append(
-                    f"  account_values.csv row {idx + 2}: {', '.join(matched_fields)}"
+                    f"  account_lots.csv row {idx + 2}: {', '.join(matched_fields)}"
                 )
 
     paths = [
@@ -5290,7 +5320,7 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
         if not keep.all():
             df.loc[keep].to_csv(path, index=False)
 
-    values_path = scenario_dir / "account_values.csv"
+    values_path = scenario_dir / "account_lots.csv"
     if values_path.exists():
         values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
         blanked = False
@@ -5461,7 +5491,8 @@ def edit_account(
             show_default=True,
         )
         owner = owner.strip() or "joint"
-        tax_treatment = click.prompt(
+        # A retirement account's lots set its tax treatment (#217).
+        tax_treatment = "" if subkind == registries.RETIREMENT_SUBKIND else click.prompt(
             "tax_treatment",
             default=current.get("tax_treatment", ""),
             show_default=True,
@@ -5488,6 +5519,12 @@ def edit_account(
     if subkind not in registries.ACCOUNT_SUBKINDS.get(kind, set()):
         raise click.ClickException(
             f"subkind {subkind!r} not allowed for kind {kind!r}; allowed: {sorted(registries.ACCOUNT_SUBKINDS[kind])}"
+        )
+    if (subkind == registries.RETIREMENT_SUBKIND) != (current.get("subkind") == registries.RETIREMENT_SUBKIND):
+        # Its lots' subkinds, which set how it is taxed, would have to change too.
+        raise click.ClickException(
+            f"{name!r} can't change to or from subkind {registries.RETIREMENT_SUBKIND!r}; "
+            "add a new account and move the money with a transfer_balance event"
         )
     if owner not in persons and owner != "joint":
         raise click.ClickException(
@@ -5582,10 +5619,10 @@ def rename_account(
 
 def _default_tax_treatment(kind: str, subkind: str) -> str:
     match (kind, subkind):
-        case ("asset", "traditional_ira" | "traditional_401k" | "hsa"):
+        case ("asset", "hsa"):
             return "tax_deferred"
-        case ("asset", "roth_ira" | "roth_401k"):
-            return "tax_free"
+        case ("asset", registries.RETIREMENT_SUBKIND):
+            return ""  # each lot's subkind says (#217)
         case ("asset", "real_estate" | "vehicle"):
             return "none"
         case ("asset", _):
@@ -6015,7 +6052,7 @@ def account_tag_rm(
     _scenario_write(data_dir, scenario, "account", name, tag_tokens, "rm")
 
 
-# ---------- account lot: one account_values.csv row (#124) ----------
+# ---------- account lot: one account_lots.csv row (#124) ----------
 
 # Per file, the (account, lot) column pairs that name a lot. A blank lot names
 # the account's `default` lot, the only one a blank may name (ADR-003 §7).
@@ -6025,7 +6062,7 @@ _LOT_REFERENCE_FIELDS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ("year_to_date.csv", (("from_account", "from_lot"), ("to_account", "to_lot"))),
 )
 
-# account_values.csv's own references: another lot's refill or overflow chain.
+# account_lots.csv's own references: another lot's refill or overflow chain.
 _LOT_CHAIN_LOT_FIELDS = (("refill_chain", "refill_lot"), ("overflow_chain", "overflow_lot"))
 
 _LOT_MONEY_COLUMNS = frozenset({
@@ -6082,11 +6119,11 @@ def _zero_lot(row: dict[str, str]) -> bool:
 
 
 def _read_values_rows(path: Path) -> list[dict[str, str]]:
-    """A scenario's own account_values.csv rows, every column present."""
+    """A scenario's own account_lots.csv rows, every column present."""
     if not path.exists() or path.stat().st_size == 0:
         return []
     frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-    frame = frame.reindex(columns=registries.ACCOUNT_VALUES_CSV_HEADER, fill_value="")
+    frame = frame.reindex(columns=registries.ACCOUNT_LOTS_CSV_HEADER, fill_value="")
     return [{str(k): str(v) for k, v in record.items()} for record in frame.to_dict("records")]
 
 
@@ -6095,7 +6132,7 @@ def _scenario_lots(scenario_dir: Path, name: str) -> list[_Lot]:
     loader overlays them, in the order they first appear."""
     lots: dict[tuple[str, str], _Lot] = {}
     for scenario_name in load_order(scenario_dir.parent, name):
-        rows = _read_values_rows(scenario_dir.parent / scenario_name / "account_values.csv")
+        rows = _read_values_rows(scenario_dir.parent / scenario_name / "account_lots.csv")
         for index, row in enumerate(rows):
             key = (row["account_name"].strip(), row["lot"].strip() or registries.DEFAULT_LOT)
             prior = lots.get(key)
@@ -6193,18 +6230,18 @@ def _lot_reference_rows(
     scenario_dir: Path, account: str, lot: str, *, own_row: bool = False,
 ) -> list[str]:
     """The rows of one scenario folder that name ``account``'s ``lot``, as
-    display lines; with ``own_row``, its own account_values.csv row too (an
+    display lines; with ``own_row``, its own account_lots.csv row too (an
     inheriting scenario's override of it)."""
     references: list[str] = []
-    values = _read_values_rows(scenario_dir / "account_values.csv")
+    values = _read_values_rows(scenario_dir / "account_lots.csv")
     for index, row in enumerate(values):
         if _names_lot(row, "account_name", "lot", account, lot):
             if own_row:
-                references.append(f"  account_values.csv row {index + 2}: an override of the lot")
+                references.append(f"  account_lots.csv row {index + 2}: an override of the lot")
             continue
         matched = [f"{a}/{b}" for a, b in _LOT_CHAIN_LOT_FIELDS if _names_lot(row, a, b, account, lot)]
         if matched:
-            references.append(f"  account_values.csv row {index + 2}: {', '.join(matched)}")
+            references.append(f"  account_lots.csv row {index + 2}: {', '.join(matched)}")
     for path, pairs in _lot_reference_files(scenario_dir):
         frame = pd.read_csv(path, dtype=str, keep_default_na=False)
         for index, (_, row) in enumerate(frame.iterrows()):
@@ -6253,7 +6290,7 @@ def _rewrite_lot_references(
     it and clear other lots' refill or overflow settings that name it. With
     ``own_row``, the lot's own row (an inheriting scenario's override of it)
     is renamed or deleted too."""
-    values_path = scenario_dir / "account_values.csv"
+    values_path = scenario_dir / "account_lots.csv"
     if values_path.exists() and values_path.stat().st_size > 0:
         values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
         changed = False
@@ -6327,7 +6364,7 @@ def _rewrite_lot_family(
 
 
 def _money_cell(text: str) -> str:
-    """A money answer as account_values.csv holds it: dollars and cents, or
+    """A money answer as account_lots.csv holds it: dollars and cents, or
     an ``@name`` reference as typed."""
     text = text.strip()
     if not text or text.startswith("@"):
@@ -6444,7 +6481,7 @@ def _check_lot_params(
 
 
 def _lot_row(params: dict[str, object], original: dict[str, str] | None, *, investment: bool) -> dict[str, str]:
-    """The account_values.csv row for a lot's answers. An unchanged cell is
+    """The account_lots.csv row for a lot's answers. An unchanged cell is
     kept as authored, and an ordinary account's ``default`` lot is written
     blank unless it was spelled out, as ``account add`` writes it."""
     lot = str(params["lot"]).strip()
@@ -6469,7 +6506,7 @@ def _write_lot(
     *, replace: _Lot | None = None, rename: tuple[str, str] | None = None,
     delete_references: tuple[str, str] | None = None,
 ) -> None:
-    """Write ``row`` into the scenario's own account_values.csv -- appended,
+    """Write ``row`` into the scenario's own account_lots.csv -- appended,
     or in place of ``replace``'s row; ``None`` removes that row instead --
     and rewrite the references ``rename`` (old, new lot) or
     ``delete_references`` (account, lot) asks for, as one staged edit."""
@@ -6489,9 +6526,9 @@ def _write_lot(
                 frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
                 frame.drop(index=replace.index).to_csv(staged, index=False)
             else:
-                _append_csv_row(staged, registries.ACCOUNT_VALUES_CSV_HEADER, row, replace=replace.index)
+                _append_csv_row(staged, registries.ACCOUNT_LOTS_CSV_HEADER, row, replace=replace.index)
         elif row is not None:
-            _append_csv_row(staged, registries.ACCOUNT_VALUES_CSV_HEADER, row)
+            _append_csv_row(staged, registries.ACCOUNT_LOTS_CSV_HEADER, row)
         if rename is not None and row is not None:
             _rewrite_lot_family(edit, row["account_name"], *rename)
         if delete_references is not None:
@@ -6514,7 +6551,7 @@ def _is_investment(context: calendar_guide.GuideContext, account: str) -> bool:
 
 @account_group_command.group(name="lot")
 def lot_group_command() -> None:
-    """Add, change or delete an account's lots (account_values.csv rows, ADR-005)."""
+    """Add, change or delete an account's lots (account_lots.csv rows, ADR-005)."""
 
 
 @lot_group_command.command("list")
@@ -6547,10 +6584,10 @@ def lot_list(account: str | None, scenario: str | None, data_dir: Path | None) -
                 raise click.ClickException(
                     f"no account {account!r} that holds lots in scenario {scenario_name!r}"
                 )
-            # The loader gives an account with no account_values.csv rows an
+            # The loader gives an account with no account_lots.csv rows an
             # empty default lot; say so rather than list nothing.
             click.echo(
-                f"{account!r} has no lots in account_values.csv, so it loads with an "
+                f"{account!r} has no lots in account_lots.csv, so it loads with an "
                 f"empty {registries.DEFAULT_LOT!r} lot"
             )
             return
@@ -6584,7 +6621,7 @@ def lot_add(
     ctx: click.Context, account: str | None, lot: str | None,
     scenario: str | None, data_dir: Path | None, **values: str | None,
 ) -> None:
-    """Add a lot to an account: one row of the scenario's account_values.csv.
+    """Add a lot to an account: one row of the scenario's account_lots.csv.
 
     With ACCOUNT and LOT, writes the lot from the options. Without them, asks
     for what applies to the account a question at a time (a cost basis only
@@ -6596,7 +6633,7 @@ def lot_add(
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    path = scenario_dir / "account_values.csv"
+    path = scenario_dir / "account_lots.csv"
     lots = _scenario_lots(scenario_dir, scenario_name)
     context = _lot_guide_context(data_dir_p, scenario_name, lots)
 
@@ -6656,7 +6693,7 @@ def lot_edit(
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    path = scenario_dir / "account_values.csv"
+    path = scenario_dir / "account_lots.csv"
     lots = _scenario_lots(scenario_dir, scenario_name)
     chosen = _select_lot(lots, account, lot)
     context = _lot_guide_context(data_dir_p, scenario_name, lots, editing=chosen)
@@ -6741,7 +6778,7 @@ def lot_delete(
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    path = scenario_dir / "account_values.csv"
+    path = scenario_dir / "account_lots.csv"
     chosen = _select_lot(_scenario_lots(scenario_dir, scenario_name), account, lot)
     label = f"lot {chosen.lot!r} of {chosen.account!r}"
 
@@ -6811,21 +6848,21 @@ def lot_delete(
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-def check_account_values(
+def check_account_lots(
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """Check for account_values alignment issues (missing, duplicate, unknown accounts)."""
+    """Check for account_lots alignment issues (missing, duplicate, unknown accounts)."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
 
     accounts_path = scenario_dir / "accounts.csv"
-    values_path = scenario_dir / "account_values.csv"
+    values_path = scenario_dir / "account_lots.csv"
 
     if not accounts_path.exists():
         raise click.ClickException(f"accounts.csv not found: {accounts_path}")
     if not values_path.exists():
-        raise click.ClickException(f"account_values.csv not found: {values_path}")
+        raise click.ClickException(f"account_lots.csv not found: {values_path}")
 
     # Read accounts
     account_names = set()
@@ -6837,13 +6874,13 @@ def check_account_values(
             if row.get("name"):
                 account_names.add(row["name"])
 
-    # Read account_values
+    # Read account_lots
     values_accounts = {}
     seen_lots: set[tuple[str, str]] = set()
     with values_path.open(newline="", encoding="utf-8") as f:
         reader = _csv.DictReader(f)
         if reader.fieldnames is None or "account_name" not in reader.fieldnames:
-            raise click.ClickException("account_values.csv missing 'account_name' column")
+            raise click.ClickException("account_lots.csv missing 'account_name' column")
         for i, row in enumerate(reader, start=2):
             acct = row.get("account_name", "")
             if (acct, row.get("lot", "")) in seen_lots:
@@ -6857,7 +6894,7 @@ def check_account_values(
 
     missing = account_names - set(values_accounts.keys())
     if missing:
-        click.echo(f"missing account_values rows for: {', '.join(sorted(missing))}", err=True)
+        click.echo(f"missing account_lots rows for: {', '.join(sorted(missing))}", err=True)
     if not missing and not any(v for k, v in values_accounts.items() if k not in account_names):
         click.echo("ok")
 
@@ -6868,21 +6905,21 @@ def check_account_values(
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-def sync_account_values(
+def sync_account_lots(
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """Sync account_values.csv: create missing rows for accounts (with zero opening_balance)."""
+    """Sync account_lots.csv: create missing rows for accounts (with zero opening_balance)."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scen_name = _resolve_scenario_dir(data_dir_p, scenario)
 
     accounts_path = scenario_dir / "accounts.csv"
-    values_path = scenario_dir / "account_values.csv"
+    values_path = scenario_dir / "account_lots.csv"
 
     if not accounts_path.exists():
         raise click.ClickException(f"accounts.csv not found: {accounts_path}")
     if not values_path.exists():
-        raise click.ClickException(f"account_values.csv not found: {values_path}")
+        raise click.ClickException(f"account_lots.csv not found: {values_path}")
 
     # Read accounts
     account_names = []
@@ -6896,23 +6933,31 @@ def sync_account_values(
                 account_names.append(row["name"])
                 account_subkinds[row["name"]] = row.get("subkind", "")
 
-    # Read existing account_values
+    # Read existing account_lots
     values_accounts = set()
     values_rows = []
     with values_path.open(newline="", encoding="utf-8") as f:
         reader = _csv.DictReader(f)
         if reader.fieldnames is None or "account_name" not in reader.fieldnames:
-            raise click.ClickException("account_values.csv missing 'account_name' column")
+            raise click.ClickException("account_lots.csv missing 'account_name' column")
         values_header = list(reader.fieldnames)
         for row in reader:
             values_rows.append(row)
             if row.get("account_name"):
                 values_accounts.add(row["account_name"])
 
-    # Find missing
+    # Find missing. A retirement account's lot must say Roth or traditional,
+    # which sync can't know, so those are left to `sim account lot add`.
     missing = [name for name in account_names if name not in values_accounts]
+    needs_subkind = [name for name in missing
+                     if account_subkinds.get(name) == registries.RETIREMENT_SUBKIND]
+    missing = [name for name in missing if name not in needs_subkind]
+    for name in needs_subkind:
+        click.echo(f"  skipped {name}: a retirement account's lot needs a subkind; "
+                   f"add it with `sim account lot add {name} default --subkind ...`", err=True)
     if not missing:
-        click.echo("ok (no missing accounts)")
+        if not needs_subkind:
+            click.echo("ok (no missing accounts)")
         return
 
     # Create rows for missing accounts
@@ -6964,7 +7009,7 @@ def import_quicken(
     data_dir: Path | None,
     dry_run: bool,
 ) -> None:
-    """Update account_values.csv from a Quicken account-tree report export.
+    """Update account_lots.csv from a Quicken account-tree report export.
 
     Without ``--year-end``, sets ``opening_balance`` from a "Net Worth Export"
     (and seeds ``prior_year_end_balance`` only when it's still blank, and only
@@ -6984,11 +7029,11 @@ def import_quicken(
         raise click.ClickException(f"mapping file not found: {map_path}")
 
     accounts_path = scenario_dir / "accounts.csv"
-    values_path = scenario_dir / "account_values.csv"
+    values_path = scenario_dir / "account_lots.csv"
     if not accounts_path.exists():
         raise click.ClickException(f"accounts.csv not found: {accounts_path}")
     if not values_path.exists():
-        raise click.ClickException(f"account_values.csv not found: {values_path}")
+        raise click.ClickException(f"account_lots.csv not found: {values_path}")
 
     account_info: dict[str, tuple[str, str]] = {}
     with accounts_path.open(newline="", encoding="utf-8") as f:
@@ -7051,14 +7096,14 @@ def import_quicken(
 
     df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
     if "account_name" not in df.columns:
-        raise click.ClickException(f"account_values.csv missing 'account_name' column: {values_path}")
+        raise click.ClickException(f"account_lots.csv missing 'account_name' column: {values_path}")
     known = set(df["account_name"])
 
     changed = 0
     for name, cents in updates.items():
         if name not in known:
             raise click.ClickException(
-                f"mapped account not found in account_values.csv: {name!r}"
+                f"mapped account not found in account_lots.csv: {name!r}"
             )
         dollars = format_dollars(cents)
         rows = df.index[df["account_name"] == name]
@@ -7407,7 +7452,7 @@ def prices_show_command(symbols: tuple[str, ...], since_text: str | None, data_d
 def prices_check_command(scenario: str | None, data_dir: Path | None, tolerance: float) -> None:
     """Compare each lot's stated balance with quantity x price.
 
-    For lots with a symbol and a quantity, shows the balance in account_values.csv
+    For lots with a symbol and a quantity, shows the balance in account_lots.csv
     against quantity times the price on or before the scenario start (they should
     agree, so a difference points at stale or wrong data) and against the latest
     price (how far the value has moved since). Exits nonzero if any lot is flagged.
@@ -8407,7 +8452,7 @@ def symbol_list_command(data_dir: Path | None) -> None:
     """List every symbol: its name, latest allocation, prices and the lots holding it.
 
     A symbol appears if any of securities.csv, allocations.csv, prices/, a
-    scenario's own prices/ or its account_values.csv names it. A missing
+    scenario's own prices/ or its account_lots.csv names it. A missing
     allocation or price is shown in red, since `sim allocation` or a lot's
     opening balance needs it; CASH and CD need no prices.
     """
@@ -8552,7 +8597,7 @@ def scenario_create(
 
     skeletons: dict[str, tuple[str, ...]] = {
         "accounts.csv": registries.ACCOUNTS_CSV_HEADER,
-        "account_values.csv": registries.ACCOUNT_VALUES_CSV_HEADER,
+        "account_lots.csv": registries.ACCOUNT_LOTS_CSV_HEADER,
         "scheduled.csv": registries.SCHEDULED_CSV_HEADER,
         "calendar.csv": registries.CALENDAR_HEADER,
     }
@@ -8815,7 +8860,7 @@ def series_rename(old: str, new: str, scenario: str | None, data_dir: Path | Non
 def _lot_defined(account: str, lot: str) -> rename.Defines:
     return lambda scenario_dir: any(
         _names_lot(row, "account_name", "lot", account, lot)
-        for row in _read_values_rows(scenario_dir / "account_values.csv"))
+        for row in _read_values_rows(scenario_dir / "account_lots.csv"))
 
 
 @lot_group_command.command("rename")
@@ -8838,7 +8883,7 @@ def lot_rename(account: str, lot: str, new_lot: str, scenario: str | None, data_
         changed = _rename_with_growth_rules(
             edit, f"lot of {account}", lot, new_lot,
             defines=lambda name: _lot_defined(account, name), rewrite=rewrite,
-            missing=lambda: (f"{account!r} has no lot {lot!r} in account_values.csv, in {edit.name} "
+            missing=lambda: (f"{account!r} has no lot {lot!r} in account_lots.csv, in {edit.name} "
                              "or the scenarios it builds on"),
             moved=lambda owner, label: (account, new_lot) if (owner, label) == (account, lot) else None,
         )

@@ -468,7 +468,7 @@ def test_sim_scenario_create_derives_and_activates(test_data_dir: Path, tmp_path
     assert "retire_alice" in scenario_rows[1]
 
     # Overlay files exist, header-only.
-    for name in ("accounts.csv", "account_values.csv", "scheduled.csv", "calendar.csv"):
+    for name in ("accounts.csv", "account_lots.csv", "scheduled.csv", "calendar.csv"):
         lines = header_of(name)
         assert len(lines) == 1, f"{name} should be a header-only skeleton"
     assert header_of("accounts.csv")[0].split(",")[:3] == ["name", "kind", "subkind"]
@@ -816,7 +816,7 @@ def test_sim_account_rename_updates_references(test_data_dir: Path) -> None:
     assert "Asset_Checking_Updated" in renamed
     assert "Asset_Checking" not in renamed
 
-    with (data / "scenarios" / "retire_alice" / "account_values.csv").open(
+    with (data / "scenarios" / "retire_alice" / "account_lots.csv").open(
         newline="", encoding="utf-8"
     ) as fh:
         values = list(csv.DictReader(fh))
@@ -832,7 +832,7 @@ def test_sim_account_delete_lists_references_and_removes_them(test_data_dir: Pat
 
     data = test_data_dir
     accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
-    values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
+    values_path = data / "scenarios" / "retire_alice" / "account_lots.csv"
     values = pd.read_csv(values_path, dtype=str, keep_default_na=False)
     values.loc[values["account_name"] == "Asset_Savings", "refill_chain"] = "Asset_Checking"
     values.to_csv(values_path, index=False)
@@ -847,8 +847,8 @@ def test_sim_account_delete_lists_references_and_removes_them(test_data_dir: Pat
     )
     assert result.exit_code == 0, result.output
     assert "account 'Asset_Checking' is referenced by:" in result.output
-    assert "account_values.csv row 3: refill_chain" in result.output
-    assert "account_values.csv row 2: account_name" in result.output
+    assert "account_lots.csv row 3: refill_chain" in result.output
+    assert "account_lots.csv row 2: account_name" in result.output
     assert "scheduled.csv row 2: to_account" in result.output
     assert "deleted account 'Asset_Checking'" in result.output
 
@@ -1054,7 +1054,7 @@ def test_sim_tag_add_rejects_bad_token(test_data_dir: Path) -> None:
 
 
 def test_sim_account_check_detects_missing_rows(test_data_dir: Path) -> None:
-    """account check reports accounts missing from account_values.csv."""
+    """account check reports accounts missing from account_lots.csv."""
 
     data = test_data_dir
     accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
@@ -1084,18 +1084,18 @@ def test_sim_account_check_detects_missing_rows(test_data_dir: Path) -> None:
          "--data-dir", str(data)],
     )
     assert result.exit_code == 0
-    assert "missing account_values rows for:" in result.output
+    assert "missing account_lots rows for:" in result.output
     # Verify our new account is in the missing list
     assert "Asset_NewAccount" in result.output
 
 
 def test_sim_account_sync_creates_missing_rows(test_data_dir: Path) -> None:
-    """account sync creates account_values rows for accounts missing them."""
+    """account sync creates account_lots rows for accounts missing them."""
     import pandas as pd
 
     data = test_data_dir
     accounts_path = data / "scenarios" / "retire_alice" / "accounts.csv"
-    values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
+    values_path = data / "scenarios" / "retire_alice" / "account_lots.csv"
 
     # Add a new account to accounts.csv using pandas
     df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
@@ -1124,7 +1124,7 @@ def test_sim_account_sync_creates_missing_rows(test_data_dir: Path) -> None:
     assert "synced" in result.output and "missing account" in result.output
     assert "Asset_NewAccount" in result.output
 
-    # Verify the row was added to account_values.csv
+    # Verify the row was added to account_lots.csv
     import csv as csv_mod
     with values_path.open(newline="", encoding="utf-8") as f:
         reader = csv_mod.DictReader(f)
@@ -1204,7 +1204,7 @@ def test_sim_account_import_quicken_updates_balances(test_data_dir: Path, tmp_pa
     assert result.exit_code == 0, result.output
 
     import csv as _csv
-    with (data / "scenarios" / "retire_alice" / "account_values.csv").open(
+    with (data / "scenarios" / "retire_alice" / "account_lots.csv").open(
         newline="", encoding="utf-8"
     ) as f:
         rows = {r["account_name"]: r for r in _csv.DictReader(f)}
@@ -1249,7 +1249,7 @@ def test_sim_account_import_quicken_year_end_sets_prior_year_only(test_data_dir:
     assert "2 ineligible" in result.output  # Asset_Checking, Liability_Mortgage
 
     import csv as _csv
-    with (data / "scenarios" / "retire_alice" / "account_values.csv").open(
+    with (data / "scenarios" / "retire_alice" / "account_lots.csv").open(
         newline="", encoding="utf-8"
     ) as f:
         rows = {r["account_name"]: r for r in _csv.DictReader(f)}
@@ -1296,7 +1296,7 @@ def test_sim_account_import_quicken_dry_run_does_not_write(test_data_dir: Path, 
     map_file = tmp_path / "map.csv"
     _write_quicken_map(map_file)
 
-    values_path = data / "scenarios" / "retire_alice" / "account_values.csv"
+    values_path = data / "scenarios" / "retire_alice" / "account_lots.csv"
     before = values_path.read_text(encoding="utf-8")
 
     runner = CliRunner()

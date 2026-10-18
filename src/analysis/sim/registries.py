@@ -9,8 +9,8 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     "asset": {
-        "cash", "brokerage_taxable", "traditional_ira", "roth_ira",
-        "traditional_401k", "roth_401k", "hsa", "real_estate", "vehicle", "other_asset",
+        "cash", "brokerage_taxable", "retirement", "hsa", "real_estate", "vehicle",
+        "other_asset",
     },
     "liability": {"mortgage", "heloc", "credit_card", "other_liability"},
     "income": {
@@ -67,8 +67,15 @@ TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER: dict[str, str] = {
 TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX: set[str] = {"cash"}
 
 
-def withdrawal_tax_character(tax_treatment: str | None, subkind: str) -> str | None:
-    """The tax_character of a leg drawn from an account with these attributes.
+def withdrawal_tax_character(
+    tax_treatment: str | None, subkind: str, to_tax_treatment: str | None = None,
+) -> str | None:
+    """The tax_character of a leg drawn from an account with these attributes
+    into one whose tax treatment is ``to_tax_treatment``.
+
+    Traditional retirement money moved into another tax-deferred lot is a
+    rollover, not a distribution, so it is untaxed (#217); into a Roth lot it stays
+    ``tax_deferred_out``, which is how a conversion is taxed.
 
     Returns ``None`` when the character can't be determined by a flat lookup
     (today: a `taxable` account that isn't cash-like, e.g. `brokerage_taxable`)
@@ -77,6 +84,9 @@ def withdrawal_tax_character(tax_treatment: str | None, subkind: str) -> str | N
     """
     if tax_treatment == "taxable":
         return "none" if subkind in TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX else None
+    if tax_treatment == "tax_deferred" and to_tax_treatment == "tax_deferred" \
+            and subkind == RETIREMENT_SUBKIND:
+        return "none"
     return TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER.get(tax_treatment or "none", "none")
 
 CALENDAR_EVENT_KINDS: set[str] = {
@@ -132,6 +142,23 @@ TAX_CHARACTERS: set[str] = {
 BASIS_TAX_CHARACTERS: frozenset[str] = frozenset({"return_of_capital", "home_sale"})
 
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
+
+RETIREMENT_SUBKIND = "retirement"
+
+# A `retirement` account's lot subkinds (#217) and the tax treatment each
+# gives its lot. One IRA is either Roth or traditional, but a 401k can hold
+# both, so the distinction lives on the lot; the account's own tax_treatment
+# stays blank.
+RETIREMENT_LOT_SUBKINDS: dict[str, str] = {
+    "traditional_ira": "tax_deferred",
+    "roth_ira": "tax_free",
+    "traditional_401k": "tax_deferred",
+    "roth_401k": "tax_free",
+}
+
+# Lot subkinds an RMD may be drawn from: Roth IRAs never had RMDs, and Roth
+# 401ks have none from 2024 (SECURE 2.0 §325).
+RMD_LOT_SUBKINDS: frozenset[str] = frozenset({"traditional_ira", "traditional_401k"})
 
 # transfer_event.reason_kind (schema.py CHECK), in a sensible display order:
 # a rule firing, the run's opening balances, partial-first-year catch-up
@@ -475,14 +502,14 @@ DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
 PERSONS_CSV_HEADER: tuple[str, ...] = ("id", "display", "birthdate", "role", "meta_json")
 LIFESPAN_CSV_HEADER: tuple[str, ...] = ("person", "final_month")
 
-ACCOUNT_VALUES_CSV_HEADER: tuple[str, ...] = (
-    "account_name", "lot", "symbol", "acquired", "quantity", "series",
+ACCOUNT_LOTS_CSV_HEADER: tuple[str, ...] = (
+    "account_name", "lot", "subkind", "symbol", "acquired", "quantity", "series",
     "opening_balance", "opening_cost_basis", "prior_year_end_balance",
     "minimum_balance", "maximum_balance", "refill_chain", "refill_lot",
     "refill_target", "refill_amount", "overflow_chain", "overflow_lot",
 )
 
-# The per-lot balance-management columns of account_values.csv (ADR-003 §4.3).
+# The per-lot balance-management columns of account_lots.csv (ADR-003 §4.3).
 CASH_MANAGEMENT_COLUMNS: tuple[str, ...] = (
     "minimum_balance", "maximum_balance", "refill_chain", "refill_lot",
     "refill_target", "refill_amount", "overflow_chain", "overflow_lot",

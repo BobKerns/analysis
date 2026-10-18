@@ -60,12 +60,12 @@ def _month_key(text: str) -> str:
 
 def _holders(scenarios_dir: Path) -> dict[str, list[str]]:
     """Symbol to the ``scenario: account (lot)`` rows that name it, as each
-    scenario's own ``account_values.csv`` writes them (an inherited lot is
+    scenario's own ``account_lots.csv`` writes them (an inherited lot is
     listed once, where it is defined)."""
     held: dict[str, list[str]] = {}
     if not scenarios_dir.is_dir():
         return held
-    for values in sorted(scenarios_dir.glob("*/account_values.csv")):
+    for values in sorted(scenarios_dir.glob("*/account_lots.csv")):
         for row in _read(values)[1]:
             if symbol := row.get("symbol", ""):
                 lot = row.get("lot") or registries.DEFAULT_LOT

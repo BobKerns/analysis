@@ -2,7 +2,7 @@
 
 A chain in this folder is **drawn from**: money comes out of its steps, the
 first step first. Name a source chain as a rule's `from_account`, a calendar
-transfer's `account_1`, or a lot's `refill_chain` in `account_values.csv`.
+transfer's `account_1`, or a lot's `refill_chain` in `account_lots.csv`.
 A step that names another chain must name another source chain.
 
 Each file is `<name>.csv`, and the chain is referred to by `<name>`.

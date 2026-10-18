@@ -1,5 +1,5 @@
 """``sim account lot add|edit|delete`` (issue #124): a lot is one
-account_values.csv row, added, changed or deleted with the references to it."""
+account_lots.csv row, added, changed or deleted with the references to it."""
 
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ def lot(test_data_dir: Path) -> Callable[..., Result]:
 
 @pytest.fixture
 def values(test_scenarios_dir: Path) -> Callable[[str], pd.DataFrame]:
-    """A scenario's own account_values.csv."""
+    """A scenario's own account_lots.csv."""
     def read(scenario: str = "retire_alice") -> pd.DataFrame:
-        path = test_scenarios_dir / scenario / "account_values.csv"
+        path = test_scenarios_dir / scenario / "account_lots.csv"
         return pd.read_csv(path, dtype=str, keep_default_na=False)
     return read
 
@@ -86,14 +86,44 @@ def test_add_refuses_a_lot_it_cannot_add(
 def test_guided_add_asks_only_what_applies(
     lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
 ) -> None:
-    # account, lot, symbol, acquired, quantity, series, balance, manage?, write
-    result = lot("add", answers=["Asset_Roth_Bill", "bonds", "BND", "", "", "", "2500", "n", "write"])
+    # account, lot, subkind, symbol, acquired, quantity, series, balance, manage?, write
+    result = lot("add", answers=[
+        "Asset_Roth_Bill", "bonds", "roth_ira", "BND", "", "", "", "2500", "n", "write",
+    ])
 
     assert result.exit_code == 0, result.output
-    # A Roth account isn't taxable, so no basis is asked for.
+    # A Roth lot isn't taxable, so no basis is asked for, nor (not traditional)
+    # a prior year-end balance for an RMD.
     assert "cost basis" not in result.output
-    assert "sim account lot add Asset_Roth_Bill bonds --symbol BND --opening-balance 2500" in result.output
-    assert _lot_row(values(), "Asset_Roth_Bill", "bonds")["opening_balance"] == "2500.00"
+    assert "Dec 31" not in result.output
+    assert ("sim account lot add Asset_Roth_Bill bonds --subkind roth_ira --symbol BND "
+            "--opening-balance 2500") in result.output
+    row = _lot_row(values(), "Asset_Roth_Bill", "bonds")
+    assert (row["subkind"], row["opening_balance"]) == ("roth_ira", "2500.00")
+
+
+def test_only_a_retirement_accounts_lot_is_asked_its_subkind(
+    lot: Callable[..., Result],
+) -> None:
+    # account, lot, symbol, acquired, quantity, series, balance, basis, manage?, write
+    result = lot("add", answers=[BROKERAGE, "bonds", "BND", "", "", "", "2500", "", "n", "write"])
+
+    assert result.exit_code == 0, result.output
+    assert "lot subkind" not in result.output
+
+
+def test_a_traditional_lot_is_asked_its_prior_year_end_balance(
+    lot: Callable[..., Result], add_alice_401k: Callable[[str], None],
+) -> None:
+    add_alice_401k("1000.00")
+    # account, lot, subkind, symbol, acquired, quantity, series, balance, pyeb, manage?, write
+    result = lot("add", answers=[
+        "Asset_401k_Alice", "bonds", "traditional_401k", "", "", "", "", "2500", "",
+        "n", "write",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "balance on the Dec 31 before the scenario starts" in result.output
 
 
 def test_edit_sets_a_field_and_keeps_the_rest_as_authored(
@@ -138,7 +168,7 @@ def test_renaming_a_lot_renames_its_references(
 ) -> None:
     frame = values()
     frame.loc[frame["account_name"] == "Asset_Savings", ["refill_chain", "refill_lot"]] = [BROKERAGE, "default"]
-    frame.to_csv(retire_alice_csv("account_values.csv"), index=False)
+    frame.to_csv(retire_alice_csv("account_lots.csv"), index=False)
 
     result = lot("edit", BROKERAGE, "default", "--new-lot", "core")
 
@@ -159,7 +189,7 @@ def test_delete_lists_references_and_removes_them_once_confirmed(
     frame.loc[frame["account_name"] == "Asset_Savings",
               ["minimum_balance", "refill_chain", "refill_lot", "refill_amount"]] = [
         "1000.00", BROKERAGE, "default", "500.00"]
-    frame.to_csv(retire_alice_csv("account_values.csv"), index=False)
+    frame.to_csv(retire_alice_csv("account_lots.csv"), index=False)
     calendar_before = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
 
     declined = lot("delete", BROKERAGE, "default", answers=["n"])
@@ -170,7 +200,7 @@ def test_delete_lists_references_and_removes_them_once_confirmed(
     result = lot("delete", BROKERAGE, "default", answers=["y"])
 
     assert result.exit_code == 0, result.output
-    assert "account_values.csv row 3: refill_chain/refill_lot" in result.output
+    assert "account_lots.csv row 3: refill_chain/refill_lot" in result.output
     assert "calendar.csv row 5: account_2/lot_2" in result.output
     after = values()
     assert BROKERAGE not in set(after["account_name"])
@@ -290,14 +320,25 @@ def test_list_shows_every_column_a_lot_uses(
 def test_deleting_an_accounts_last_lot_says_it_loads_with_an_empty_one(
     lot: Callable[..., Result], check: Callable[[str], None],
 ) -> None:
-    result = lot("delete", "Asset_Roth_Bill", "default")
+    result = lot("delete", "Asset_Home", "default")
 
     assert result.exit_code == 0, result.output
     assert "loads with an empty 'default' lot" in result.output
-    listed = lot("list", "Asset_Roth_Bill")
+    listed = lot("list", "Asset_Home")
     assert listed.exit_code == 0, listed.output
     assert "loads with an empty 'default' lot" in listed.output
     check("retire_alice")
+
+
+def test_deleting_a_retirement_accounts_last_lot_is_refused(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+) -> None:
+    # An empty default lot would have no subkind to say how it is taxed.
+    result = lot("delete", "Asset_Roth_Bill", "default")
+
+    assert result.exit_code != 0
+    assert "a retirement account needs at least one lot" in result.output
+    assert _lot_row(values(), "Asset_Roth_Bill", "default")["subkind"] == "roth_ira"
 
 
 def test_deleting_a_chains_only_step_is_refused(
@@ -362,7 +403,7 @@ def test_renaming_or_deleting_a_lot_follows_it_into_inheriting_scenarios(
 
     assert deleted.exit_code == 0, deleted.output
     assert "child: calendar.csv row 2: account_2/lot_2" in deleted.output
-    assert "child: account_values.csv row 2: an override of the lot" in deleted.output
+    assert "child: account_lots.csv row 2: an override of the lot" in deleted.output
     assert pd.read_csv(child / "calendar.csv", dtype=str, keep_default_na=False).empty
     assert values("child").empty
     check("child")

@@ -16,7 +16,7 @@ The column layout and how a draw moves through the steps are documented in:
   (chains as default policies)
 
 Refilling is not a chain column. A lot's `minimum_balance` and `refill_chain`
-are set on its row in `account_values.csv`; before any payment that would take
+are set on its row in `account_lots.csv`; before any payment that would take
 the lot below its minimum, the simulator first draws from the refill chain.
 
 ## Chains defined in this scenario

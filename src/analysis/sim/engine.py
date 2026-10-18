@@ -93,7 +93,7 @@ def run_scenario(
         # subkind, tax treatment, owner and name.
         lots = con.execute(
             "SELECT m.id, m.opening_balance, m.opening_cost_basis, "
-            "       m.prior_year_end_balance, a.kind, a.subkind, a.tax_treatment, "
+            "       m.prior_year_end_balance, a.kind, a.subkind, m.tax_treatment, "
             "       a.owner, m.quantity_micros, a.name, m.acquired "
             "FROM account_lot m "
             "JOIN account a ON a.id = m.account_id "
@@ -418,7 +418,13 @@ def run_scenario(
                             con, balances, account_kinds, step_id, month_s, month,
                             params, from_account, to,
                             person_birthdates, prior_year_end_balances, aux,
-                            tax_char, tid, subject_lots=lots_by_account[subject],
+                            tax_char, tid,
+                            # A Roth lot of a retirement account owes no RMD
+                            # and counts toward none (#217).
+                            subject_lots=[
+                                lot for lot in lots_by_account[subject]
+                                if account_tax_treatment.get(lot) != "tax_free"
+                            ],
                             graph=chain_graph, source_chain_id=frm,
                             account_tax_treatment=account_tax_treatment,
                             account_subkind=account_subkind, account_name=account_name,
@@ -1737,6 +1743,7 @@ def _post_withdrawal(
     """
     tax_char = tax_character or registries.withdrawal_tax_character(
         account_tax_treatment.get(from_id), account_subkind.get(from_id, ""),
+        account_tax_treatment.get(to_id),
     )
     if tax_char is not None:
         _post_transfer(
@@ -1751,7 +1758,7 @@ def _post_withdrawal(
         raise EngineError(
             f"account {account_name.get(from_id)!r}: withdrawal needs cost-basis "
             "tracking (taxable, non-cash) but opening_cost_basis was never set -- "
-            "add it to account_values.csv"
+            "add it to account_lots.csv"
         )
     if account_kinds[to_id] == "liability":
         amount = min(amount, max(0, balances.get(to_id, 0)))
@@ -1968,7 +1975,7 @@ def _sale_basis(
         name = None if refill_ctx is None else refill_ctx.account_name.get(lot_id)
         raise EngineError(
             f"account {name!r}: a chain step recovers its basis, but it has none -- "
-            "set opening_cost_basis in account_values.csv"
+            "set opening_cost_basis in account_lots.csv"
         )
     prior = balances.get(lot_id, 0)
     return _SaleBasis(basis if prior <= amount else basis * amount // prior)
@@ -2167,7 +2174,7 @@ def _add_basis(
     if ctx is None or basis is None:
         raise EngineError(
             f"account {account_name.get(lot_id)!r}: a capital_improvement step adds "
-            "to its basis, but it has none -- set opening_cost_basis in account_values.csv"
+            "to its basis, but it has none -- set opening_cost_basis in account_lots.csv"
         )
     ctx.cost_bases[lot_id] = basis + amount
 
@@ -2822,35 +2829,51 @@ def _cadence_count(
 
 
 def _calendar_tax_character(
-    payload: Mapping[str, Any], from_chain: int, ctx: RefillContext,
+    payload: Mapping[str, Any], from_chain: int, to_chain: int, ctx: RefillContext,
 ) -> str | None:
     """The tax character a ``one_off_transfer`` or ``transfer_balance`` row
     moves its money with (#201). One the row sets is used as written. Left
     blank, money out of a lot that tracks cost basis (a brokerage lot, say)
-    is a sale: None, so ``_post_withdrawal`` splits it into the basis
-    returned and the gain, as a sweep out of that lot would. From anywhere
-    else it is ``none``, right for a rollover between tax-deferred accounts.
+    is a sale, and money out of a traditional retirement lot is taxed by
+    where each leg lands (#217): a rollover into another traditional lot is
+    untaxed, anywhere else (a Roth lot, checking) it is ``tax_deferred_out``.
+    Both return None, so ``_post_withdrawal`` decides per leg, as for a sweep
+    out of that lot, even through a destination chain. From anywhere else
+    a blank is ``none``.
     """
     if character := payload.get("tax_character"):
         return character
     lot = ctx.graph.leaf_lot.get(from_chain)
-    if lot is not None and registries.withdrawal_tax_character(
-        ctx.account_tax_treatment.get(lot), ctx.account_subkind.get(lot, ""),
-    ) is None:
+    if lot is None:
+        return "none"
+    treatment = ctx.account_tax_treatment.get(lot)
+    if treatment == "tax_deferred" or registries.withdrawal_tax_character(
+            treatment, ctx.account_subkind.get(lot, "")) is None:
         return None
     return "none"
+
+
+def _split_rule_character(from_chain: int, ctx: RefillContext) -> str:
+    """What the synthesized rule of a calendar row whose legs each decide
+    their own character records: traditional money's ``tax_deferred_out``,
+    or a sale's first leg, ``return_of_capital``."""
+    lot = ctx.graph.leaf_lot.get(from_chain)
+    if lot is not None and ctx.account_tax_treatment.get(lot) == "tax_deferred":
+        return "tax_deferred_out"
+    return "return_of_capital"
 
 
 def _synthesize_one_off_rule(
     con, name: str, from_id: int, to_id: int, amount: int,
     tax_char: str | None, ev_date: str, ev_id: int, description: str | None,
+    split_character: str = "return_of_capital",
 ) -> int:
     """Insert the cadence='one_off' fixed_amount rule a rule-synthesizing
     calendar event fires through (ADR-003 \u00a73), and return its id.
 
-    A ``tax_char`` of None (a basis split, see ``_calendar_tax_character``)
-    is recorded as ``return_of_capital``, the character of the split's first
-    leg; the legs themselves carry the characters that are taxed."""
+    A ``tax_char`` of None (each leg decides, see ``_calendar_tax_character``)
+    is recorded as ``split_character``; the legs themselves carry the
+    characters that are taxed."""
     cur = con.execute(
         "INSERT INTO scheduled_transaction("
         "  name, from_account, to_account, cadence, "
@@ -2858,7 +2881,7 @@ def _synthesize_one_off_rule(
         "  priority, created_by_event_id, description"
         ") VALUES (?, ?, ?, 'one_off', 'fixed_amount', ?, ?, ?, ?, "
         "  200, ?, ?)",
-        (name, from_id, to_id, amount, tax_char or "return_of_capital",
+        (name, from_id, to_id, amount, tax_char or split_character,
          ev_date, ev_date, ev_id, description),
     )
     return inserted_id(cur)
@@ -3027,10 +3050,11 @@ def _apply_calendar_event(
                     f"one_off_transfer event id={ev_id}: unknown account or chain "
                     f"(account_1={frm_name!r} or account_2={to_name!r})"
                 )
-            tax_char = _calendar_tax_character(payload, from_id, refill_ctx)
+            tax_char = _calendar_tax_character(payload, from_id, to_id, refill_ctx)
             tid = _synthesize_one_off_rule(
                 con, f"oneoff_evt_{ev_id}", from_id, to_id, int(amount),
                 tax_char, ev_date, ev_id, payload.get("description"),
+                split_character=_split_rule_character(from_id, refill_ctx),
             )
             _post_fixed_amount(
                 con, balances, account_kinds, step_id, month_s, refill_ctx,
@@ -3063,7 +3087,7 @@ def _apply_calendar_event(
             # and the month's growth accrues at the destination. Nothing to
             # move is a no-op, as for on_death.
             lot_id = lot[0]
-            tax_char = _calendar_tax_character(payload, from_id, refill_ctx)
+            tax_char = _calendar_tax_character(payload, from_id, to_id, refill_ctx)
             amount = max(0, balances.get(lot_id, 0))
             if amount == 0:
                 return
@@ -3075,6 +3099,7 @@ def _apply_calendar_event(
             tid = _synthesize_one_off_rule(
                 con, f"balance_evt_{ev_id}", from_id, to_id, amount,
                 tax_char, ev_date, ev_id, description,
+                split_character=_split_rule_character(from_id, refill_ctx),
             )
             # Emptying the lot is the point, so its refill look-ahead must not
             # top it back up to its minimum_balance first: marked as already

@@ -209,7 +209,7 @@ def prices_in_use(scenarios_dir: Path, scenario: str | None = None) -> PriceUse:
     starts: list[date] = []
     for name in names:
         folder = scenarios_dir / name
-        values = folder / "account_values.csv"
+        values = folder / "account_lots.csv"
         if values.exists():
             with values.open(newline="", encoding="utf-8") as fh:
                 for row in csv.DictReader(fh):

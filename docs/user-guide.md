@@ -25,7 +25,7 @@ which one it derives from in its own `scenario.csv`, using the
 `parent_scenario` column.
 
 A derived scenario only needs to list what is different. Its CSV files
-(`accounts.csv`, `account_values.csv`, `scheduled.csv`, `calendar.csv`, and
+(`accounts.csv`, `account_lots.csv`, `scheduled.csv`, `calendar.csv`, and
 others) are combined with its parent's files. Each row has a key, such as a
 name, or an account plus a lot. If you add a row with a new key, it is added.
 If you add a row with a key that already exists in the parent, it replaces
@@ -37,7 +37,7 @@ picks up the change automatically, the next time it loads.
 flowchart TB
     base["base\n(your main model)"]
     cut["current-cut\noverrides: SS benefit cut in scheduled.csv"]
-    hsa["hsa_2027\noverrides: one HSA account_values row"]
+    hsa["hsa_2027\noverrides: one HSA account_lots row"]
     sell["sell_stock\noverrides: a calendar.csv row"]
     base --> cut
     base --> hsa
@@ -267,7 +267,7 @@ met a word gets an answer about how it's used here.
 | **Cost basis** | What you originally paid for something (plus the cost of home improvements, for a house). The simulator tracks this per lot, in `opening_cost_basis`, for taxable assets other than cash. It updates this number as money moves in or out. |
 | **Capital gain/loss** | The sale price minus the cost basis. **Long-term** gains (`ltcg`, held more than a year) usually get a lower tax rate. **Short-term** gains (`stcg`, held a year or less) are taxed as ordinary income. See Part 3. |
 | **RMD (Required Minimum Distribution)** | The smallest amount the IRS requires you to withdraw each year from a pre-tax retirement account, once you reach a certain age. A real tax rule; also the name of a rule kind in this tool (`rmd`). |
-| **Traditional vs. Roth** | A Traditional account delays tax until you withdraw money (`tax_deferred_out`). A Roth account is already taxed, so withdrawals come out tax-free (`tax_free`). Set with `tax_treatment` in `accounts.csv`. |
+| **Traditional vs. Roth** | Traditional money delays tax until you withdraw it (`tax_deferred_out`). Roth money is already taxed, so withdrawals come out tax-free (`tax_free`). An IRA or 401k is an account of subkind `retirement`, and each of its lots says which it is, with `subkind` in `account_lots.csv` (`traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`). Traditional money moved into a Roth lot is a conversion, taxed as ordinary income; moved into another traditional lot it is an untaxed rollover. |
 | **Filing status** | `MFJ` (married filing jointly), `Single`, or `MFS` (married filing separately). This tool does not model Head of Household. Filing status changes automatically after a spouse's death, based on `lifespan.csv`; see Part 4.7. |
 | **Standard deduction** | A flat amount the IRS lets you subtract from income before tax is calculated. This simulator always uses the standard deduction; it does not yet model choosing to itemize deductions instead. |
 | **Itemized deduction** | An IRS alternative to the standard deduction: instead of the flat amount, you add up specific expenses (mortgage interest, large medical bills, and so on) and use that total if it's bigger. See Part 4.9 for how to add one for a given year. This is a different idea from this tool's *itemization* files, above, which just add up a list of dollar amounts for any purpose — the similar name is confusing, but it predates this guide. |
@@ -323,11 +323,11 @@ sim account add "Asset_Savings_Emergency" asset cash --owner joint
 ```
 
 This adds a row to `accounts.csv`. If you add `--opening-balance`, it also
-adds a matching row to `account_values.csv`. If you run the command with no
+adds a matching row to `account_lots.csv`. If you run the command with no
 arguments, it asks you questions and shows the valid choices for kind,
 subkind, and owner. Afterward, run `sim account check` — it tells you about
 anything that still needs your attention. Run `sim account sync` to add any
-missing `account_values.csv` rows, with a balance of zero, ready for you to
+missing `account_lots.csv` rows, with a balance of zero, ready for you to
 fill in with `sim account lot edit` (Part 4.2).
 
 ### 4.2 Add, change or delete a lot
@@ -344,7 +344,7 @@ flowchart LR
     end
 ```
 
-Each lot is one row of `account_values.csv`. The `sim account lot` commands
+Each lot is one row of `account_lots.csv`. The `sim account lot` commands
 add, change, delete and list them, so you don't have to edit that file by
 hand (though you still can):
 
@@ -360,13 +360,14 @@ Given a price for `AAA` (see below; otherwise add `--opening-balance`), the
 `add` above writes this row:
 
 ```csv
-account_name,lot,symbol,acquired,quantity,series,opening_balance,opening_cost_basis
-Asset_Brokerage_Joint,inherited_2029,AAA,2029-03-15,500,,,50000.00
+account_name,lot,subkind,symbol,acquired,quantity,series,opening_balance,opening_cost_basis
+Asset_Brokerage_Joint,inherited_2029,,AAA,2029-03-15,500,,,50000.00
 ```
 
 - Run `add` or `edit` without the account and lot to be asked instead. `add`
-  asks only what applies to the account: a cost basis only for a taxable
-  account, and the refill and overflow settings (Part 4.6) only if you want
+  asks only what applies to the account: a lot `--subkind` (Roth or
+  traditional, IRA or 401k) only for a `retirement` account, a cost basis
+  only for a taxable account, and the refill and overflow settings (Part 4.6) only if you want
   them. `edit` lists the lots to pick from, then shows the lot's fields; name
   one to change it, and `write` when you are done. `add` prints the
   equivalent command, to reuse in a script.
@@ -469,7 +470,7 @@ date,kind,account_1,account_2,description
 
 The basis step (`basis_of` the home, `tax_character` `home_sale`) takes as
 much of the price as the home's basis, which needs an `opening_cost_basis` in
-`account_values.csv`. Leave its `maximum` and `percent` blank. The exclusion
+`account_lots.csv`. Leave its `maximum` and `percent` blank. The exclusion
 is the `excluded_gain` step's `maximum`: $500,000 married filing jointly,
 $250,000 single, if you meet the IRS ownership and use tests. A mortgage
 step takes only what is still owed. If the home sells for less than its
@@ -531,7 +532,7 @@ use a chain:
    except a `transfer_balance`'s source. A transfer names a chain on one
    side at most.
 2. **As a lot's own rule for refilling or overflowing.** This is set
-   directly on the lot's row in `account_values.csv` (with
+   directly on the lot's row in `account_lots.csv` (with
    `sim account lot edit`, or by hand), not as a separate rule:
 
 ```mermaid
@@ -616,8 +617,11 @@ only for ensembles, Part 4.10):
 Leave `tax_character` blank on a `one_off_transfer` or `transfer_balance` out
 of a brokerage lot and the move is a sale: the lot's share of basis comes out
 as `return_of_capital`, the rest as a capital gain, and the lot's basis drops.
-From other accounts a blank means `none`, which suits a rollover between
-tax-deferred accounts. Set `tax_character` to override either.
+Out of a traditional IRA or 401k lot, a blank is taxed as ordinary income
+(`tax_deferred_out`) wherever the money lands, a Roth lot included (a
+conversion), except in another traditional lot, which is an untaxed rollover.
+Into a chain, each step's money is decided this way. From other accounts a
+blank means `none`. Set `tax_character` to override any of these.
 
 A rule that should start on a future date needs no calendar event: give its
 `scheduled.csv` row that `start` date.

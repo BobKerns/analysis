@@ -24,14 +24,24 @@ CHECK-constrained at load time (the loader validates; the DDL keeps `subkind` as
 | --- | --- |
 | `cash` | bank and money-market money: checking, savings, or any cash position (by convention its lots use the symbol `CASH`). Checking and savings were once separate subkinds, but the engine never distinguished them and one account can now hold both as lots |
 | `brokerage_taxable` | taxable investment account |
-| `traditional_ira` | pre-tax IRA |
-| `roth_ira` | post-tax IRA |
-| `traditional_401k` | pre-tax employer plan (also 403b, 457b) |
-| `roth_401k` | post-tax employer plan |
+| `retirement` | an IRA or employer plan; each of its lots says which kind (§1a) |
 | `hsa` | health savings account |
 | `real_estate` | primary residence or other real property |
 | `vehicle` | car, boat, etc. (depreciating asset) |
 | `other_asset` | catch-all; populates `meta_json` for explanation |
+
+#### 1a. Retirement lot subkinds
+
+The lots of a `retirement` account, and only they, carry a `subkind` (§4.3), which sets the lot's tax treatment. One IRA is either Roth or traditional, but a 401k can hold both, so the distinction lives on the lot; the account's own `tax_treatment` is left blank.
+
+| lot subkind | meaning | tax treatment |
+| --- | --- | --- |
+| `traditional_ira` | pre-tax IRA | `tax_deferred` |
+| `roth_ira` | post-tax IRA | `tax_free` |
+| `traditional_401k` | pre-tax employer plan (also 403b, 457b) | `tax_deferred` |
+| `roth_401k` | post-tax employer plan | `tax_free` |
+
+Money moved out of a traditional lot is `tax_deferred_out` (ordinary income), including into a Roth lot, which is how a conversion is taxed; into another traditional lot it is a rollover, `none`. An `rmd` counts and draws only traditional lots: Roth IRAs have no RMDs, and Roth 401ks none from 2024. A retirement account must have at least one lot, since an empty default lot would have no subkind.
 
 **Liability:**
 
@@ -121,7 +131,7 @@ Depreciation is a book entry, not spending. Reporting that totals cash outflows 
 IRS Required Minimum Distribution.
 
 - **Params:** the row's `from_account` is the subject IRA/401k account (the one being drawn down) and `person` = person id. When the subject account has several lots ([ADR-005](ADR-005-lots-and-per-lot-state.md)), `from_account` is instead a chain listing the lots to draw from, in order, and `params_json` names the account the RMD is for: `{"subject_account": "<account>"}`; the chain may only draw from that account's lots. The amount is that account's total on the prior Dec 31 over the age factor. Aggregation across an owner's several IRAs is deliberately not modelled: a brokerage distributes per account, without regard to distributions taken elsewhere. Factor table is `rmd_factors`; start-age series is `rmd_start_age` (both fixed aux references).
-- **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state` (the subject account's lots added together); for the partial first year it comes from `account_lot.prior_year_end_balance` (which the author must supply for any `traditional_ira` / `traditional_401k` account whose owner reaches RMD age during the scenario's first calendar year).
+- **Compute:** Fires once per year (cadence = `annual`, `month_of_year` typically 12). `amount = round(dec31_prev_year_balance / uniform_lifetime_factor(person_age_year_end))`. `dec31_prev_year_balance` comes from end-of-prior-year `account_state` (the subject account's traditional lots added together; Roth lots owe no RMD, §1a); for the partial first year it comes from `account_lot.prior_year_end_balance` (which the author must supply for any `traditional_ira` / `traditional_401k` lot whose owner reaches RMD age during the scenario's first calendar year).
 - **Start semantics:** the row's `start` column is a lower bound on candidate fire dates. The actual first fire is `max(row.start, year-end of the year person reaches start_age)`. Authors typically set `start = scenario.start` and let the age gate dominate.
 - **Emits:** one event, `from_account = subject_account`, `to_account = <taxable landing>` (typically `Asset_Checking`); `tax_character = 'tax_deferred_out'` (the retrospective tax scan reclassifies as ordinary income).
 - **Use:** post-age-73 required distributions for either spouse.
@@ -232,7 +242,7 @@ End an active `ScheduledTransaction`.
 A single one-shot movement, expressed as a synthesized rule so the §2 invariant holds.
 
 - **Columns:** `account_1` = from account or chain, `account_2` = to account or chain (not both chains), `amount` = dollars (stored in cents), `tax_character` = tax character.
-- **A blank `tax_character`** ([#201](https://github.com/BobKerns/analysis/issues/201)) lets the source decide, as it does for a sweep (§4.7). Money out of a lot that tracks cost basis (a taxable, non-cash lot such as `brokerage_taxable`) is a sale: each leg splits into `return_of_capital`, its pro-rata share of the lot's basis, and the gain (`ltcg`, or `stcg` for a lot held a year or less), and the lot's basis falls by the share ([ADR-005](ADR-005-lots-and-per-lot-state.md)). From any other source it is `none`, which is right for a direct rollover between tax-deferred accounts. A `tax_character` the row sets is used as written. The synthesized rule records a split as `return_of_capital`; its legs carry the characters that are taxed.
+- **A blank `tax_character`** ([#201](https://github.com/BobKerns/analysis/issues/201)) lets the source decide, as it does for a sweep (§4.7). Money out of a lot that tracks cost basis (a taxable, non-cash lot such as `brokerage_taxable`) is a sale: each leg splits into `return_of_capital`, its pro-rata share of the lot's basis, and the gain (`ltcg`, or `stcg` for a lot held a year or less), and the lot's basis falls by the share ([ADR-005](ADR-005-lots-and-per-lot-state.md)). Money out of a traditional lot is taxed by where each leg lands, as for a sweep (§1a): `none` into another traditional lot (a rollover), `tax_deferred_out` anywhere else, a Roth lot (a conversion) or checking alike, and through a destination chain each step's leg is decided this way. From any other source it is `none`. A `tax_character` the row sets is used as written. The synthesized rule records a sale as `return_of_capital` and traditional money as `tax_deferred_out`; its legs carry the characters that are taxed.
 - **Expansion:** synthesize one `scheduled_transaction` with `amount_rule_kind='fixed_amount'`, `cadence='one_off'`, `start = end = event.date`, `amount` from the payload, fields from payload, `created_by_event_id = calendar_event.id`. The engine fires it on `event.date` and routes it as it does any `fixed_amount` rule: lot to lot directly, or through a chain's sweep or draw, each `transfer_event` traced to that synthesized rule.
 - **Use:** windfalls, gifts, one-time settlements that have no recurring structure.
 
@@ -257,7 +267,7 @@ A shared influence that varying rows correlate with but that isn't itself a mode
 
 Move one lot's whole balance, with the amount the simulated balance when the event fires rather than one written in advance: a 401(k) rolled into an IRA at a future date ([#134](https://github.com/BobKerns/analysis/issues/134)).
 
-- **Columns:** `account_1` (+ `lot_1`) = the source, which must be an asset account's lot, not a chain: "the balance" only means something for one real balance. `account_2` (+ `lot_2`) = the destination, an account's lot or a chain, as for §3.4, but not the source lot itself. A blank `tax_character` is treated as for §3.4: `none`, right for a direct rollover between tax-deferred accounts, except that the balance of a lot tracking cost basis is sold, taking all of the lot's basis. `amount` must be blank, so `vary_target='amount'` is refused; `vary_target='date'` draws the transfer's date per ensemble member.
+- **Columns:** `account_1` (+ `lot_1`) = the source, which must be an asset account's lot, not a chain: "the balance" only means something for one real balance. `account_2` (+ `lot_2`) = the destination, an account's lot or a chain, as for §3.4, but not the source lot itself. A blank `tax_character` is treated as for §3.4: the balance of a lot tracking cost basis is sold, taking all of the lot's basis; a traditional lot's balance is taxed by where it lands (a rollover into another traditional lot is untaxed); from anything else it is `none`. `amount` must be blank, so `vary_target='amount'` is refused; `vary_target='date'` draws the transfer's date per ensemble member.
 - **Expansion:** calendar events apply at the start of their month, before its rules, in date order, so the amount is the source lot's balance at the previous month end plus whatever calendar events earlier in the month moved into or out of it; that month's growth accrues at the destination. A zero or negative balance is a no-op, as for `on_death` (§2). Otherwise the event synthesizes one `fixed_amount` `cadence='one_off'` rule for that amount, exactly as §3.4 does, so the transfer routes as a `one_off_transfer` of that amount would and its `transfer_event` traces to the synthesized rule. The one difference is that the source's refill look-ahead (§4.7) does not run: emptying the lot is the point, so a source with a `minimum_balance` is not topped up first. A later debit that month still refills it as usual. Basis and share quantity move with the money through the usual lot tracking ([ADR-005](ADR-005-lots-and-per-lot-state.md)).
 - **Lots:** there are no implicit chains ([ADR-005](ADR-005-lots-and-per-lot-state.md) §3), so emptying an account with several lots is one row per lot.
 - **Afterwards:** nothing stops the scenario moving money into the emptied lot later; end the rules that do (contributions, or an RMD rule that would otherwise draw on the old prior year-end balance) with `retire_scheduled` (§3.3) at the same date.
@@ -288,7 +298,7 @@ flowchart TB
         itemizations["itemizations/*.csv — @name rollups"]
     end
     subgraph base["scenarios/base/ (root scenario)"]
-        base_files["accounts.csv, account_values.csv,
+        base_files["accounts.csv, account_lots.csv,
 scheduled.csv, calendar.csv, chains/*/*.csv, ..."]
         base_series["series/*.csv — this scenario's
 growth-rate/inflation projections"]
@@ -323,7 +333,7 @@ arrowhead."
 flowchart LR
     accounts["accounts.csv
 (name, kind, subkind, series, tax_character)"]
-    values["account_values.csv
+    values["account_lots.csv
 (account_name, lot, symbol, series, ...)"]
     chains["chains/*/*.csv
 (account_name, lot)"]
@@ -438,7 +448,7 @@ lots use).
   up, mix-ins after the main parent's line, so a mix-in's file beats the main parent's), else — for
   `aux/`/`prices/`/`itemizations/` only — the shared file at the data repo root. A match
   replaces the entire file; there is no row-level merge across tiers (unlike
-  `accounts.csv`/`account_values.csv`/etc., which do merge by key, §4.5).
+  `accounts.csv`/`account_lots.csv`/etc., which do merge by key, §4.5).
 - **A derived scenario without its own override inherits its parent's.** Overriding a
   file only where it first needs to differ, and leaving every descendant to inherit that
   override, is the intended shape. For `series/` this is not optional: since there is no
@@ -476,28 +486,29 @@ Required in a root scenario; optional in a derived one, where it overlays the pa
 | `kind` | enum | ✓ | `asset`, `liability`, `income`, `expense` |
 | `subkind` | enum | ✓ | per §1 |
 | `owner` | text | | `person.id`; NULL for jointly-held |
-| `tax_treatment` | enum | | `taxable`, `tax_deferred`, `tax_free`, `none` |
+| `tax_treatment` | enum | | `taxable`, `tax_deferred`, `tax_free`, `none`; blank on a `retirement` account, whose lots' subkinds set it (§1a) |
 | `series` | text | | asset accounts only: aux rate-series driving monthly growth; synthesizes a `percent_of_balance` rule (§2.2) |
 | `tax_character` | enum | | required with `series`, and only meaningful with it: `ordinary`, `gains`, `deferred`, `tax_free` — selects the built-in income account that funds the growth (§2.2) |
 | `opened` | YYYY-MM | | informational |
 | `closed` | YYYY-MM | | informational |
 | `meta_json` | json | | default `{}` |
 
-#### 4.3 Per-scenario: `data_repo/scenarios/<name>/account_values.csv`
+#### 4.3 Per-scenario: `data_repo/scenarios/<name>/account_lots.csv`
 
 Opening state for the accounts declared in §4.2, **one row per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)): a position inside one account. An account that is not split has one lot named `default`, for which the `lot` column may be left blank. Required in a root scenario; optional in a derived one, where it overlays the parent's rows by (`account_name`, `lot`) (§4.5).
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `account_name` | text | ✓ | resolves to `account.id` |
-| `lot` | text | | free-form label, unique within the account, without `:`; blank means `default`. **Required for investment subkinds** (`brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) |
+| `lot` | text | | free-form label, unique within the account, without `:`; blank means `default`. **Required for investment subkinds** (`brokerage_taxable`, `retirement`, `hsa`) |
+| `subkind` | enum | on a `retirement` account | the lot's retirement subkind (§1a); required on, and only allowed on, the lots of a `retirement` account |
 | `symbol` | text | | the security held; names its rate series (§2.2) and its price (§4.4) |
 | `acquired` | YYYY-MM-DD | | starts the holding period: a sale within a year of it books its gain as `stcg`, later as `ltcg`; blank means long-term |
 | `quantity` | number | | shares; tracked through withdrawals and purchases. Leave blank for dollar-denominated funds |
 | `series` | text | | growth-rate series for this lot, overriding the symbol's and the account's |
 | `opening_balance` | dollars | ✓ unless derivable | balance at the model's effective start. May be left blank when `quantity`, `symbol` and a `security_price` are given: it is then `quantity × price` on or before `scenario.start`. A given balance is used as written |
 | `opening_cost_basis` | dollars | | required for lots in `tax_treatment IN ('taxable')` accounts holding appreciable assets. A taxable asset lot with a zero balance and no basis starts at basis 0 |
-| `prior_year_end_balance` | dollars | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` accounts whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. Set on every lot of an account or on none. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
+| `prior_year_end_balance` | dollars | | balance at the Dec 31 *preceding* `scenario.start`; required for `traditional_ira` / `traditional_401k` lots whose owner reaches RMD age during the scenario's first calendar year, so the partial-first-year RMD has a Dec-31 balance to divide by. Set on every lot of an account or on none, Roth lots aside: they owe no RMD, so they needn't carry it. NULL for all other accounts and for scenarios that start on Jan 1 of a year in which RMDs are computed against the *current* simulated year-end. |
 
 **Balance management is per lot**, so the lots of one account can differ (a cash lot that refills from the fund lots beside it, next to a lot that does not). These columns are not accepted on `accounts.csv`. The chain columns follow the same lot rule as every other reference: a `refill_chain` or `overflow_chain` that names an account is completed by `refill_lot` / `overflow_lot` (required for investment subkinds, blank meaning `default` otherwise, and blank when the name is a chain).
 
@@ -529,7 +540,7 @@ The folder a kind lives in is a convention for humans and for what's most likely
 per-scenario override, not something the loader validates by kind — a misplaced file still
 loads correctly (it just won't be found via the tier it "should" have used).
 
-Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_values.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it. A symbol is also upper case, as tickers are: a lower-case spelling would be a second symbol that no price file or allocation matches, so the loader rejects one in `securities.csv`, `allocations.csv`, `account_values.csv` or a `security_price__<symbol>.csv` filename (`_validate_symbol_case`), and the commands that write a symbol upper-case it.
+Filename pattern: `federal_brackets.csv`, `rate__Asset_Checking.csv`, `inflation__cpi.csv`. Columns vary by kind; the loader switches on filename. **The series name is the filename stem after `__`, literally -- no decoding.** So `rate__Asset_Checking.csv` has series `Asset_Checking`, and every reference to it (`series` columns in accounts.csv/scheduled.csv/calendar.csv/account_lots.csv/chains rows, `rate_series` in `amount_rule_params_json`) must use that exact literal string. Series, symbol, and chain names -- anything that becomes a `<kind>__<name>.csv`-style filename segment -- may not contain a space: it's legal on most filesystems but needs shell quoting and reads awkwardly, so the loader rejects it outright (`_validate_no_spaces`) rather than encoding/decoding around it. A symbol is also upper case, as tickers are: a lower-case spelling would be a second symbol that no price file or allocation matches, so the loader rejects one in `securities.csv`, `allocations.csv`, `account_lots.csv` or a `security_price__<symbol>.csv` filename (`_validate_symbol_case`), and the commands that write a symbol upper-case it.
 
 - **`federal_brackets.csv`**, **`state_brackets__<state>.csv`**:
   `effective_date`, `filing_status`, `bracket_index`, `floor`, `marginal_rate` (percent)
@@ -586,16 +597,16 @@ The main parent's whole line comes first; each mix-in then contributes its own l
 | file | key |
 | --- | --- |
 | `accounts.csv` | `name` |
-| `account_values.csv` | `account_name` |
+| `account_lots.csv` | `account_name` |
 | `scheduled.csv` | `name` |
 | `chains/<role>/<name>.csv` | whole file by chain name, in either role folder |
 | `calendar.csv` | a named row overrides the inherited row with the same `name`, whatever its other fields; any other row matches on (`date`, `kind`, `scheduled_name`, `account_1`, `lot_1`, `account_2`, `lot_2`, `series`, `amount`), so naming an inherited unnamed row (to vary it) still replaces it; two differently named rows sharing all those fields are an error. A `latent_factor` row's key is its `name` alone, since its other key fields are blank |
 | `lifespan.csv` | `person` |
 | `year_to_date.csv` | `name` |
 
-A child row with a new key is appended; one whose key matches the parent replaces every column the child's file has, a blank cell included, so an override must repeat every column it wants to keep, not just the changed ones. A column the child's header leaves out keeps the parent's value. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits; only a scenario with no parent of its own must supply `accounts.csv`, `account_values.csv`, and `scheduled.csv`. A load error about a row names the file it was authored in, by its path within the data repo, and the line its record starts on (blank lines counted), not its position among the merged rows.
+A child row with a new key is appended; one whose key matches the parent replaces every column the child's file has, a blank cell included, so an override must repeat every column it wants to keep, not just the changed ones. A column the child's header leaves out keeps the parent's value. There is no delete operator: to suppress an inherited rule, override it with an `end` date at or before `scenario.start`. A child's overlay files are optional — a missing file simply inherits; only a scenario with no parent of its own must supply `accounts.csv`, `account_lots.csv`, and `scheduled.csv`. A load error about a row names the file it was authored in, by its path within the data repo, and the line its record starts on (blank lines counted), not its position among the merged rows.
 
-`analysis sim scenario create <name> <parent> [<mixin> ...]` creates one: it writes `scenario.csv` with the parent link (and any mix-ins) header-only `accounts.csv`, `account_values.csv`, `scheduled.csv`, and `calendar.csv` skeletons, a `series/` folder holding a `README.md` that explains what goes there (so the folder isn't empty), `chains/source/` and `chains/destination/`, each kept by an empty `.gitignore`, with a header-only `_example.csv` in `source/` that the loader skips, and a `README.md` (§4.1e) titled with the name, whose first paragraph is the description, followed by a line naming the parent and mix-ins and a placeholder section for what the scenario is for, which the command suggests editing; it verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a). Its `meta_json` is `{"ensemble_size":0}` and its `seed` blank, so it is never an ensemble, even under one ([ADR-006](ADR-006-ensemble-scenarios.md) §7). `analysis sim ensemble create <name> <parent> [<mixin> ...]` writes the same files for an ensemble, and `sim scenario list` / `sim ensemble list` show each scenario's merged `seed` and `ensemble_size` (ADR-006 §7).
+`analysis sim scenario create <name> <parent> [<mixin> ...]` creates one: it writes `scenario.csv` with the parent link (and any mix-ins) header-only `accounts.csv`, `account_lots.csv`, `scheduled.csv`, and `calendar.csv` skeletons, a `series/` folder holding a `README.md` that explains what goes there (so the folder isn't empty), `chains/source/` and `chains/destination/`, each kept by an empty `.gitignore`, with a header-only `_example.csv` in `source/` that the loader skips, and a `README.md` (§4.1e) titled with the name, whose first paragraph is the description, followed by a line naming the parent and mix-ins and a placeholder section for what the scenario is for, which the command suggests editing; it verifies the result loads, and records it as the current scenario ([ADR-004](ADR-004-reproducibility-and-activation.md) §4a). Its `meta_json` is `{"ensemble_size":0}` and its `seed` blank, so it is never an ensemble, even under one ([ADR-006](ADR-006-ensemble-scenarios.md) §7). `analysis sim ensemble create <name> <parent> [<mixin> ...]` writes the same files for an ensemble, and `sim scenario list` / `sim ensemble list` show each scenario's merged `seed` and `ensemble_size` (ADR-006 §7).
 
 `analysis sim scenario edit [<name>]` (the same command as `sim ensemble edit`) is guided, like every `edit` command: without a name it asks for one, and without options it shows the fields and asks which to change, with completion, writing when done (a seed of `new` draws a fresh one). With options, it sets `scenario.csv`'s `description`, `start`, `end`, `parent_scenario` and `seed`, and the `meta_json` keys `ensemble_size` and `reserve`; a blank value clears a column, or drops a key, so it inherits, except that a blank description restores the default one (`Derived from <parents>`; a root scenario has none, so there it is refused), since an inherited description would describe the parent. It goes through a staged edit (§7), so it is written only if the scenario and every scenario built on it still load: a cycle, or a root scenario left with no `start` or `end` anywhere in its lineage (a load error), is refused. A default description (`Derived from <parents>`) follows a change of parents, as it does a rename. In a `README.md` the command wrote, the first paragraph and the parents line follow the description and parents while they are still word for word as generated; otherwise it warns that the README is what is shown. A scenario with no `README.md` (one made before `scenario create` wrote one) gets the generated one with its first edit. `analysis sim scenario delete <name>` (also `sim ensemble delete`) removes the folder after asking (`--yes` skips the question). It is refused while any scenario names it in `parent_scenario`, listing them; nothing else can depend on it, so it doesn't validate and also takes a scenario that fails to load. It clears `.current_scenario` if that names it, keeps the runs, and lists the markdown files that still mention it.
 
@@ -672,7 +683,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 
 **A chain's role is the folder its file is in** (`registries.CHAIN_ROLES`), and the file name is the chain name. A `source` chain is drawn from: a rule's `from_account`, a calendar transfer's `account_1`, a lot's `refill_chain`, an `rmd` rule's chain. A `destination` chain is paid into: a rule's `to_account`, a calendar transfer's `account_2`, a lot's `overflow_chain`. A step naming another chain names one of the same role. The loader rejects a chain used against its role, a chain file directly under `chains/` or in a folder that names no role, and one name in both folders of one scenario; a leaf chain (one lot) plays either part. No chain is both: money drawn through a chain and money paid through it follow different policies, so the role also says which one a reader follows. Money drawn from a source chain may first refill the lots it reaches, but never passes through their overflow; money paid into a destination chain may overflow on from the lots it reaches, but never passes through their refill chains. `sim chain show --graph` (and the Mermaid source `--mermaid` prints) draws a chain that way, every arrow pointing the way money moves.
 
-**Withdrawing from a taxable lot.** A draw or sweep leg out of a `taxable` non-cash lot (e.g. in a `brokerage_taxable` account) splits into a `return_of_capital` leg and a gain leg (`engine._post_withdrawal`). Basis is tracked **per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)); an account's basis is the sum over its lots (the `account_state` view). The split is pro-rata to the fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount // balance`); it reduces that lot's basis, and its `quantity` when tracked. The gain leg is `stcg` if the lot was acquired a year or less before the sale, else `ltcg`. Money moved into a basis-tracked lot adds to its basis (and shares), except built-in growth, which is total return and leaves basis alone. A realized loss (basis exceeds proceeds) is a negative gain leg, the same convention as a `year_to_date.csv` loss carryforward; the tax accumulator nets and limits it (§2.6). A sweep into a destination chain with a basis step for the lot is not split this way; the chain characterizes it (below). The lot needs an `opening_cost_basis` (a zero balance starts at basis 0); an untracked basis (`NULL`) raises, telling the author to add it to `account_values.csv`.
+**Withdrawing from a taxable lot.** A draw or sweep leg out of a `taxable` non-cash lot (e.g. in a `brokerage_taxable` account) splits into a `return_of_capital` leg and a gain leg (`engine._post_withdrawal`). Basis is tracked **per lot** ([ADR-005](ADR-005-lots-and-per-lot-state.md)); an account's basis is the sum over its lots (the `account_state` view). The split is pro-rata to the fraction of the lot's balance withdrawn (`basis_out = cost_basis * amount // balance`); it reduces that lot's basis, and its `quantity` when tracked. The gain leg is `stcg` if the lot was acquired a year or less before the sale, else `ltcg`. Money moved into a basis-tracked lot adds to its basis (and shares), except built-in growth, which is total return and leaves basis alone. A realized loss (basis exceeds proceeds) is a negative gain leg, the same convention as a `year_to_date.csv` loss carryforward; the tax accumulator nets and limits it (§2.6). A sweep into a destination chain with a basis step for the lot is not split this way; the chain characterizes it (below). The lot needs an `opening_cost_basis` (a zero balance starts at basis 0); an untracked basis (`NULL`) raises, telling the author to add it to `account_lots.csv`.
 
 #### 4.8 Per-scenario: `data_repo/scenarios/<name>/calendar.csv`
 
@@ -689,7 +700,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `series` | text | | rate series name; required for `set_rate`. For `swap_aux_table`, the series being replaced (§3.5) |
 | `amount` | number | | a percent for `set_rate` (`4.5%`), dollars for `one_off_transfer` and `set_amount` (`1234.56`); the loader converts to micros or cents. Blank for `transfer_balance`, which moves whatever the lot holds. A placeholder, unused, when this row's own `vary_target='amount'` |
 | `param_date` | YYYY-MM | | effective date for `set_amount` new base |
-| `tax_character` | enum | | tax character for `one_off_transfer` and `transfer_balance`; blank splits a sale out of a basis-tracked lot into basis and gain, and is `none` otherwise (§3.4) |
+| `tax_character` | enum | | tax character for `one_off_transfer` and `transfer_balance`; blank splits a sale out of a basis-tracked lot into basis and gain, taxes traditional money unless it lands in a traditional lot, and is `none` otherwise (§3.4) |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
 | `description` | text | | shows up in `explain` output |
 | `tags` | text | | see §6 |
@@ -871,7 +882,7 @@ edit it first confirms the file still has the chosen row at that position,
 and refuses if not: the commit check above cannot see a change made before
 staging began.
 
-`account lot add|edit|delete` work on one lot, one `account_values.csv` row
+`account lot add|edit|delete` work on one lot, one `account_lots.csv` row
 (§4.3), named by its account and its label as two arguments; `account lot
 list` shows an account's lots and where each comes from. Without them,
 `add` asks only what applies to the account (a cost basis for a taxable
@@ -887,7 +898,7 @@ listing them. Both reach the scenarios that inherit from this one too,
 including their overrides of the lot, since the staged edit loads them. A
 chain left with no steps is an error, so deleting a chain's only step is
 refused. An account left with no lots loads with an empty `default` lot,
-as an account with no `account_values.csv` row always has.
+as an account with no `account_lots.csv` row always has.
 
 A lot the scenario inherits is edited by writing an override of the whole
 row into the scenario's own file (§4.5); `lot edit` won't rename it, and
@@ -981,7 +992,7 @@ columns. A step's `series` and `cadence` are asked only once it has a
 ### Negative / accepted
 
 - Free-text `kind`/`subkind` in the DDL with loader-side validation means a hand-written SQL `INSERT` could bypass the registry. The loader is the only sanctioned writer; ad-hoc edits to `state/intent/*.sqlite3` are out of scope (and would be overwritten on next reload anyway).
-- Account-level state at the scenario start lives as columns on `account_lot` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`), so "what's in the accounts at scenario start" is one file (`account_values.csv`, §4.3), and prior tax-year activity is a thin feed in `year_to_date.csv` (§4.10).
+- Account-level state at the scenario start lives as columns on `account_lot` (`opening_balance`, `opening_cost_basis`, `prior_year_end_balance`), so "what's in the accounts at scenario start" is one file (`account_lots.csv`, §4.3), and prior tax-year activity is a thin feed in `year_to_date.csv` (§4.10).
 
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 
@@ -1003,10 +1014,10 @@ These amendments to [ADR-002](ADR-002-storage-schema.md) fall out of the §2 inv
 
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
 
-- [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_values.csv` (§4.3).
+- [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): a `lot` column beside every account column, `securities.csv`, the `security_price` and `ltcg_brackets` aux kinds, the `stcg` tax character, and the RMD subject account; and `minimum_balance`, refill and overflow moved from `accounts.csv` to a per-lot home in `account_lots.csv` (§4.3).
 - 2026-09-27: `aux/` (shared tax-law facts, including `state_brackets__*`) split off `prices/` (shared security prices) and `series/` (growth-rate and non-CPI inflation series, per-scenario only — no shared root tier), and `itemizations/` made overridable per scenario too; the default root scenario name is now `base` (was `current`) (§4.1c, §4.1d).
 - [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar.csv` gains `name` and the `vary_*` columns (§4.8); §3 notes the ensemble resolution requirement and §3.1 documents the ramp-as-expansion behavior.
-- After acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_values.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7).
+- After acceptance: liquidity chains replaced the `waterfall_fill`/`refill_transfer` rules; per-scenario `accounts.csv`/`account_lots.csv` with dollar money columns; chain allocation (`maximum`/`percent`) and the `income` chain kind; per-lot taxable withdrawals (§4.7).
 - [#31](https://github.com/BobKerns/analysis/issues/31) (`vary_median`, the shape columns and `triangular`, §4.8).
 - [ADR-008](ADR-008-correlated-parameters.md): the `latent_factor` kind (§3.6), the correlation columns (§4.8), and factors merged by name (§4.5).
 - [#34](https://github.com/BobKerns/analysis/issues/34): month date columns accept `YYYY-MM` or `YYYY-MM-DD`, pinned to month-end; day-precise columns are named, a biweekly rule's dates and a `retire_scheduled` date keep a full date's day, and a date-varying row's bare-month bounds span the month (§4, §4.8).
@@ -1044,3 +1055,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#183](https://github.com/BobKerns/analysis/issues/183), [#184](https://github.com/BobKerns/analysis/issues/184): `scheduled add --kind` writes every rule kind; `scheduled edit|delete` and `calendar delete`, `calendar tag add|rm`; deleting an inherited rule ends it before the scenario starts (§7).
 - [#192](https://github.com/BobKerns/analysis/issues/192): `person add|edit` change the shared `persons.csv`, validated against every scenario; `person lifespan set|clear` edit the scenario's `lifespan.csv`, and clearing refuses an inherited lifespan (§7).
 - [#190](https://github.com/BobKerns/analysis/issues/190): `scenario create` writes a `README.md`; `scenario|ensemble edit` and `delete`; a `start` or `end` blank down the whole lineage is a load error (§4.5).
+- [#217](https://github.com/BobKerns/analysis/issues/217): `account_values.csv` is renamed `account_lots.csv`; the Roth and traditional IRA/401k account subkinds become `retirement`, with the old names as lot subkinds that set each lot's tax treatment; traditional-to-traditional moves are untaxed rollovers; RMDs count only traditional lots (§1, §1a, §2.3, §4.2, §4.3).
+- [#217](https://github.com/BobKerns/analysis/issues/217): a blank `tax_character` on a `one_off_transfer` or `transfer_balance` out of a traditional lot is taxed by where each leg lands, through a destination chain too, instead of posting as `none` (§3.4, §3.7, §4.8).

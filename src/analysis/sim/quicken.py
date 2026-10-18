@@ -40,7 +40,7 @@ class AccountMapEntry:
     """One row of ``quicken_account_map.csv``."""
 
     action: str  # "map" or "skip"
-    account_name: str  # target account_name in account_values.csv; "" if skip
+    account_name: str  # target account_name in account_lots.csv; "" if skip
     note: str
 
 
@@ -108,7 +108,7 @@ def load_account_map(path: Path) -> dict[str, AccountMapEntry]:
 
 
 def format_dollars(cents: int) -> str:
-    """Format integer cents as the dollars-and-cents string account_values.csv expects."""
+    """Format integer cents as the dollars-and-cents string account_lots.csv expects."""
     sign = "-" if cents < 0 else ""
     dollars, rem = divmod(abs(cents), 100)
     return f"{sign}{dollars}.{rem:02d}"

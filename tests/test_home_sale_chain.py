@@ -47,7 +47,7 @@ def _home_sale_chain(retire_alice_csv: Callable[[str], Path], exclusion: str = "
 
 
 def _set_value(retire_alice_csv: Callable[[str], Path], account: str, **columns: str) -> None:
-    path = retire_alice_csv("account_values.csv")
+    path = retire_alice_csv("account_lots.csv")
     values = pd.read_csv(path, dtype=str, keep_default_na=False)
     for column, value in columns.items():
         values.loc[values["account_name"] == account, column] = value

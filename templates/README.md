@@ -25,7 +25,7 @@ SQL schema alongside the source CSV.
     scenarios/<name>/
         scenario.csv              # one-row scenario header
         accounts.csv              # chart of accounts for this scenario
-        account_values.csv        # opening balances, one row per lot ([ADR-005](../docs/architecture/ADR-005-lots-and-per-lot-state.md))
+        account_lots.csv        # opening balances, one row per lot ([ADR-005](../docs/architecture/ADR-005-lots-and-per-lot-state.md))
         scheduled.csv             # ScheduledTransactions
         calendar.csv              # CalendarEvents
         lifespan.csv              # optional per-person final_month override ([ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.9)
@@ -108,8 +108,8 @@ CSVs are the source of truth and can be edited by hand, by an AI assistant given
 ```sh
 sim account list                          # tabular view with balances and rates
 sim account add <name> <kind> <subkind> [--opening-balance ...]
-sim account check                         # report missing/duplicate/unknown account_values rows
-sim account sync                          # scaffold missing account_values rows with zero balance
+sim account check                         # report missing/duplicate/unknown account_lots rows
+sim account sync                          # scaffold missing account_lots rows with zero balance
 sim account lot list [<account>]          # an account's lots, and where each comes from
 sim account lot add <account> <lot> [--symbol ...] [--opening-balance ...]
 sim account lot edit <account> <lot>      # change a lot's fields, or rename it
@@ -126,23 +126,25 @@ sim scenario delete <name>                # refused while another scenario build
 
 The CLI is interactive (tab completion on account names, prompts when arguments are omitted) and validates against the registries in [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) before writing. Prefer it when you want precise control or want to script the same edit across scenarios; ask the assistant when the change is exploratory or spans many rows.
 
-### account_values.csv data hygiene
+### account_lots.csv data hygiene
 
-`accounts.csv` defines your chart of accounts; `account_values.csv` holds scenario-specific opening balances and prior year balances. To keep them in sync:
+`accounts.csv` defines your chart of accounts; `account_lots.csv` holds scenario-specific opening balances and prior year balances. To keep them in sync:
 
 - **Check first**: `sim account check` reports any missing, duplicate, or unknown accounts.
-- **Sync**: `sim account sync` creates missing account_values rows (with `opening_balance = 0.00`).
+- **Sync**: `sim account sync` creates missing account_lots rows (with `opening_balance = 0.00`).
 - **Edit balances**: After syncing, use your editor or `sim account lot edit` to set opening balances as needed.
 
 The loader enforces referential integrity (strict join validation), so missing or mismatched account names will raise a clear error before the scenario loads.
 
 ### Lots
 
-Each `account_values.csv` row is one **lot**: a position inside one account. An account you don't split has a single lot named `default`, and you can leave the `lot` column blank for it. Every file that names an account has a `lot` column beside it: `lot` in `account_values.csv` and the chain files, `from_lot`/`to_lot` in `scheduled.csv` and `year_to_date.csv`, `lot_1`/`lot_2` in `calendar.csv`. Lot names are free-form (`default`, `1`, `2024-03`, ...) but may not contain `:`.
+Each `account_lots.csv` row is one **lot**: a position inside one account. An account you don't split has a single lot named `default`, and you can leave the `lot` column blank for it. Every file that names an account has a `lot` column beside it: `lot` in `account_lots.csv` and the chain files, `from_lot`/`to_lot` in `scheduled.csv` and `year_to_date.csv`, `lot_1`/`lot_2` in `calendar.csv`. Lot names are free-form (`default`, `1`, `2024-03`, ...) but may not contain `:`.
 
-**Investment accounts** (`brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`, `hsa`) must always name their lot, everywhere; a blank lot is a load error that lists the account's lots. Other accounts can leave it blank. A chain named in an account column takes no lot.
+**Investment accounts** (`brokerage_taxable`, `retirement`, `hsa`) must always name their lot, everywhere; a blank lot is a load error that lists the account's lots. Other accounts can leave it blank. A chain named in an account column takes no lot.
 
-To split an account, give it several rows with different `lot` values, each with its own `opening_balance` and `opening_cost_basis`; `sim account lot add|edit|delete|list` write and show these rows for you, and keep the other files' lot references in step (see the [user guide](../docs/user-guide.md), Part 4.2). The columns are `account_name, lot, symbol, acquired, quantity, series, opening_balance, opening_cost_basis, prior_year_end_balance`, then the balance-management columns described below. `symbol`, `acquired` (ISO date), `quantity` (shares) and `series` (the lot's growth-rate series) are optional and may stay blank; they are in the file so you can see where that information goes. A lot grows at its `series`, else at a rate series named for its `symbol`, else at the account's `series`. A withdrawal drawn from one lot (through a chain that lists it) splits that lot's basis pro-rata and leaves the other lots alone.
+**Retirement accounts.** An IRA or 401k is an account of subkind `retirement`, with its `tax_treatment` left blank. Each of its lots gives its `subkind`: `traditional_ira`, `roth_ira`, `traditional_401k` or `roth_401k`. That sets how the lot is taxed, and lets a 401k hold Roth and traditional money side by side. A retirement account needs at least one lot. Traditional money moved into a Roth lot is a conversion (ordinary income); into another traditional lot, a rollover (untaxed). An RMD counts and draws only traditional lots.
+
+To split an account, give it several rows with different `lot` values, each with its own `opening_balance` and `opening_cost_basis`; `sim account lot add|edit|delete|list` write and show these rows for you, and keep the other files' lot references in step (see the [user guide](../docs/user-guide.md), Part 4.2). The columns are `account_name, lot, subkind, symbol, acquired, quantity, series, opening_balance, opening_cost_basis, prior_year_end_balance`, then the balance-management columns described below. `symbol`, `acquired` (ISO date), `quantity` (shares) and `series` (the lot's growth-rate series) are optional and may stay blank; they are in the file so you can see where that information goes. A lot grows at its `series`, else at a rate series named for its `symbol`, else at the account's `series`. A withdrawal drawn from one lot (through a chain that lists it) splits that lot's basis pro-rata and leaves the other lots alone.
 
 **Prices and derived balances.** Leave a lot's `opening_balance` blank and give its `symbol` and `quantity`, and the loader fills it in as `quantity × price`, using the latest price on or before the scenario start from `prices/security_price__<SYMBOL>.csv` (columns `effective_date,price`; price is decimal dollars, up to 6 places). If you fill in `opening_balance` yourself it is used as given and no price is needed. A symbol may not be the same as an account name. A lot's blank `prior_year_end_balance` is derived the same way, as its `quantity` times the price on or before the prior Dec 31, when another lot of the same account states one (an account must give it on every lot or none). It uses today's share count, so it ignores buys and reinvestment since; a value you enter wins. Prices are only used for these two values; after that a lot grows by its rate series, not by price.
 
@@ -164,18 +166,17 @@ To split an account, give it several rows with different `lot` values, each with
 
 **RMDs from an account with several lots.** The `rmd` rule's amount is based on the whole account (all its lots together), and it must draw from a chain that lists the lots to take from, in order. Set `from_account` to the chain and put `{"subject_account": "<the IRA>"}` in `params_json`; the chain may only contain that account's lots.
 
-**Minimum balance, refill and overflow are per lot.** `minimum_balance`, `refill_chain`, `refill_lot`, `refill_target`, `refill_amount`, `maximum_balance`, `overflow_chain` and `overflow_lot` are the last columns of `account_values.csv` (they used to be on `accounts.csv`, where a value is now an error). A debit that would take a lot below its `minimum_balance` first draws from its `refill_chain`, which can be a named chain or another lot: `refill_chain` an account name with `refill_lot` its lot. The lots of one account can differ, so a cash lot can refill from the fund lots beside it, or several bank accounts can be lots of one account with only some of them refilling. `maximum_balance` and `overflow_chain` sweep a lot's excess at month end in the same way.
+**Minimum balance, refill and overflow are per lot.** `minimum_balance`, `refill_chain`, `refill_lot`, `refill_target`, `refill_amount`, `maximum_balance`, `overflow_chain` and `overflow_lot` are the last columns of `account_lots.csv` (they used to be on `accounts.csv`, where a value is now an error). A debit that would take a lot below its `minimum_balance` first draws from its `refill_chain`, which can be a named chain or another lot: `refill_chain` an account name with `refill_lot` its lot. The lots of one account can differ, so a cash lot can refill from the fund lots beside it, or several bank accounts can be lots of one account with only some of them refilling. `maximum_balance` and `overflow_chain` sweep a lot's excess at month end in the same way.
 
 ### Importing balances from Quicken
 
-`sim account import-quicken` updates `account_values.csv` from a Quicken account-tree
+`sim account import-quicken` updates `account_lots.csv` from a Quicken account-tree
 report export, without ever renaming Quicken's own account names. It has two modes:
 
 - **Opening balances** (default): use **My Reports → Net Worth Export** (re-run "as of"
   today before each export). Sets `opening_balance` for every mapped account. Also
   *seeds* `prior_year_end_balance` from the same figure, but only for investment asset
-  accounts (`brokerage_taxable`, `traditional_ira`, `roth_ira`, `traditional_401k`,
-  `roth_401k`, `hsa`) whose `prior_year_end_balance` is still blank — it never overwrites
+  accounts (`brokerage_taxable`, `retirement`, `hsa`) whose `prior_year_end_balance` is still blank — it never overwrites
   an existing value, and never touches non-investment or liability accounts.
 - **Year-end balances** (`--year-end`): use **My Reports → Year End Export** (as of
   12/31 of the prior year). Sets `prior_year_end_balance` for investment asset accounts
@@ -205,7 +206,7 @@ investment-asset restriction.
 
 **Bookkeeping:** `sim account rename` and `sim account edit --new-name` already update
 `quicken_account_map.csv`'s `account_name` column alongside `accounts.csv`,
-`account_values.csv`, `scheduled.csv`, `calendar.csv`, `year_to_date.csv` and chain
+`account_lots.csv`, `scheduled.csv`, `calendar.csv`, `year_to_date.csv` and chain
 files, in every scenario that shares the account — no manual edit of the map is needed
 after a rename. If you add a new account, add its
 `quicken_account_map.csv` row (or a `skip` row with a `note` explaining why) before the
