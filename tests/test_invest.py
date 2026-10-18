@@ -83,9 +83,42 @@ def test_a_roth_conversion_is_one_command(
                     "--subkind", "roth_ira", "--amount", "20000", "--date", "2027-01")
 
     assert result.exit_code == 0, result.output
-    assert _legs_into(_run(load_test_copy, runs_dir), "Asset_Roth_Alice", "conv_2027") == [
+    run = _run(load_test_copy, runs_dir)
+    assert _legs_into(run, "Asset_Roth_Alice", "conv_2027") == [
         ("2027-01-31", "Asset_TraditionalIRA_Alice", 2_000_000, "tax_deferred_out"),
     ]
+    assert _basis(run, "conv_2027", "2027-01-31") == 2_000_000
+
+
+def _basis(run: Path, lot: str, month: str) -> int:
+    with sqlite3.connect(run) as con:
+        return con.execute(
+            "SELECT ls.cost_basis FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
+            "JOIN account_lot m ON m.id = ls.lot_id WHERE m.lot = ? AND s.month = ?", (lot, month),
+        ).fetchone()[0]
+
+
+def test_investing_a_growing_symbol_sets_an_existing_accounts_growth_character(
+    invest: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """An account with no growth character has no lot that grows yet, so its
+    first growing lot sets one, as it would for a new account."""
+    result = invest("Asset_Savings", "Asset_Roth_Bill", "vti", "--subkind", "roth_ira",
+                    "--symbol", "vti", "--weight", "stock_us=100%", "--no-fetch",
+                    "--amount", "7000", "--date", "2027-02")
+
+    assert result.exit_code == 0, result.output
+    [account] = _rows(retire_alice_csv("accounts.csv"), name="Asset_Roth_Bill")
+    assert account["tax_character"] == "tax_free"
+    run = _run(load_test_copy, runs_dir)
+    with sqlite3.connect(run) as con:
+        grown = con.execute(
+            "SELECT count(*) FROM transfer_event te JOIN account_lot m ON m.id = te.to_lot_id "
+            "JOIN account a ON a.id = m.account_id JOIN account fa ON fa.id = te.from_account "
+            "WHERE a.name = 'Asset_Roth_Bill' AND m.lot = 'vti' AND fa.kind != 'asset'"
+        ).fetchone()[0]
+    assert grown > 0
 
 
 def test_invest_adds_a_new_account_and_symbol(
@@ -126,6 +159,8 @@ def test_guided_invest_asks_and_prints_the_command(
     (("Asset_Roth_Alice", "x", "--amount", "1"), "a retirement account's lot needs --subkind"),
     ((BROKERAGE, "x", "--subkind", "roth_ira", "--amount", "1"), "--subkind is only for"),
     ((BROKERAGE, "x", "--amount", "0"), "more than zero"),
+    # The engine posts nothing before the first month; that's an opening holding.
+    ((BROKERAGE, "x", "--amount", "1", "--date", "2026-04"), "before the scenario starts"),
     # A retirement account belongs to a person, not the household.
     (("Asset_IRA_New", "x", "--account-subkind", "retirement", "--subkind", "roth_ira",
       "--amount", "1"), "a retirement account needs --owner"),

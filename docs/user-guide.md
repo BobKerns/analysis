@@ -808,8 +808,10 @@ sim invest Asset_Savings Asset_Brokerage_Joint bonds --symbol ABCDX --amount 100
 ```
 
 The source can be an account (with `--source-lot` if it has several lots) or
-a source chain. The date defaults to the scenario's first month; a day within
-the month still buys at its end. A new account takes `--account-subkind` and
+a source chain. The date defaults to the scenario's first month and can't be
+earlier; a day within the month still buys at its end. If the lot's symbol
+grows and the account has no `tax_character` yet, the command sets one, as it
+does for a new account. A new account takes `--account-subkind` and
 `--owner` (`joint` unless you say otherwise, but a retirement account needs a
 person). A new symbol takes `--symbol-name` and `--weight`, as for
 `sim symbol add`, and its prices are fetched unless you pass `--no-fetch`; if

@@ -9969,6 +9969,12 @@ def invest_command(
     if when is None:
         when = _ask("date (YYYY-MM)", default=start[:7]) if guided else start[:7]
     when = _validate_month_date(when)
+    if when[:7] < start[:7]:
+        # The engine posts calendar events only in simulated months, so an
+        # earlier purchase would leave the lot empty; it is an opening holding.
+        raise click.ClickException(
+            f"{when} is before the scenario starts ({start[:7]}); for a holding it starts "
+            "with, use `sim account lot add`")
 
     if new_symbol:
         assert symbol is not None
@@ -9986,13 +9992,21 @@ def invest_command(
 
     dollars = _money_cell(amount)
     grows = symbol is not None and (symbol in growing or bool(weights))
+    # An existing account with no growth character has no lot that grows yet,
+    # so this lot sets it, as a new account's first lot does.
+    found = None if new_account else _overlay_rows(scenario_dir, "accounts.csv").get(account)
+    set_character = grows and (new_account or (found is not None and not found.row.get("tax_character")))
     growth = ""
-    if new_account and grows:
+    if set_character:
         growth = (
             ("tax_free" if registries.RETIREMENT_LOT_SUBKINDS.get(lot_subkind or "") == "tax_free"
              else "deferred") if retirement else _GROWTH_CHARACTER.get(str(account_subkind), "gains")
         )
     with _scenario_edit(data, scenario_name) as edit:
+        if set_character and found is not None:
+            # A whole-row override when the account is inherited (#202).
+            _append_csv_row(edit.path(scenario_dir / "accounts.csv"), registries.ACCOUNTS_CSV_HEADER,
+                            {**found.row, "tax_character": growth}, replace=found.index)
         if new_account:
             _append_csv_row(edit.path(scenario_dir / "accounts.csv"), registries.ACCOUNTS_CSV_HEADER, {
                 "name": account, "kind": "asset", "subkind": account_subkind, "owner": owner or "joint",
@@ -10012,6 +10026,8 @@ def invest_command(
             "account_1": source, "lot_1": source_lot or "", "account_2": account, "lot_2": lot,
             "amount": dollars, "description": f"invest in {account} ({lot})",
         })
+    if set_character and not new_account:
+        click.echo(f"set {account!r}'s tax_character to {growth!r}, so the new lot grows")
     click.echo(f"{'added account ' + repr(account) + ', ' if new_account else ''}"
                f"added lot {lot!r} of {account!r} and a {when} transfer of {dollars} "
                f"from {source} in scenario {scenario_name}")
