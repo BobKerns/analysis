@@ -9880,6 +9880,10 @@ def invest_command(
         ) if r[0]}
         start = con.execute("SELECT start FROM scenario").fetchone()[0]
         persons = [r[0] for r in con.execute("SELECT id FROM person ORDER BY id")]
+        people = [r[0] for r in con.execute(  # who may own a retirement account (#217)
+            "SELECT id FROM person WHERE trim(coalesce(role, '')) IN "
+            f"({', '.join('?' * len(registries.PERSON_ROLES))}) ORDER BY id",
+            sorted(registries.PERSON_ROLES))]
     assets = sorted(n for n, k in kinds.items() if k == "asset" and n in lot_info)
     if guided:
         _echo_guided_scenario(scenario_name, scenario_dir / "calendar.csv", defaulted=scenario is None)
@@ -9905,10 +9909,15 @@ def invest_command(
             account_subkind = _ask("new account's subkind", sorted(registries.ACCOUNT_SUBKINDS["asset"]))
         if account_subkind not in registries.ACCOUNT_SUBKINDS["asset"]:
             raise click.ClickException(f"unknown asset subkind {account_subkind!r}")
+        # A retirement account belongs to one person, never `joint` (#217).
+        owners = people if account_subkind == registries.RETIREMENT_SUBKIND else [*persons, "joint"]
         if owner is None:
-            owner = _ask("owner", [*persons, "joint"], default="joint") if guided else "joint"
-        if owner not in (*persons, "joint"):
-            raise click.ClickException(f"unknown owner {owner!r}; allowed: {[*persons, 'joint']}")
+            if owners is people and not guided:
+                raise click.ClickException(f"a retirement account needs --owner ({', '.join(people)})")
+            owner = (_ask("owner", owners, default=None if owners is people else "joint")
+                     if guided else "joint")
+        if owner not in owners:
+            raise click.ClickException(f"owner {owner!r} can't own this account; allowed: {owners}")
     else:
         if kinds[account] != "asset":
             raise click.ClickException(f"{account!r} is not an asset account")
@@ -9970,7 +9979,10 @@ def invest_command(
         click.echo(f"added symbol {added.symbol}" + ("" if added.weighted else
                    "; no allocation yet, so it shows as unclassified"))
         if fetch and _fetch_prices(data, [added.symbol], None, "yahoo"):
-            click.echo(f"{added.symbol}: prices not fetched; `sim prices fetch {added.symbol}` later")
+            # As for `sim symbol add`: stop with the symbol added, before the investment.
+            raise click.ClickException(
+                f"{added.symbol}: prices not fetched, so nothing else was written; fetch them "
+                f"with `sim prices fetch {added.symbol}`, then run sim invest again")
 
     dollars = _money_cell(amount)
     grows = symbol is not None and (symbol in growing or bool(weights))
@@ -9991,7 +10003,8 @@ def invest_command(
             "account_name": account,
             "lot": lot if investment or lot != registries.DEFAULT_LOT else "",
             "subkind": lot_subkind or "", "symbol": symbol or "",
-            "acquired": when if is_full_date(when) else month_end_iso(when),
+            # The purchase posts at month end, so the lot is acquired then too.
+            "acquired": month_end_iso(when),
             "opening_balance": "0.00",
         })
         _append_csv_row(edit.path(scenario_dir / "calendar.csv"), registries.CALENDAR_HEADER, {
@@ -10012,6 +10025,8 @@ def invest_command(
             words += ["--weight", spec]
         if new_account:
             words += ["--account-subkind", str(account_subkind), "--owner", str(owner)]
+        if not fetch:
+            words.append("--no-fetch")
         click.echo("Equivalent command:")
         click.echo("  " + shlex.join(words))
 

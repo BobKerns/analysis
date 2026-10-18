@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
+from analysis.sim import cli
 from analysis.sim.engine import run_scenario
 from analysis.sim.loader import LoadResult
 
@@ -109,13 +110,13 @@ def test_guided_invest_asks_and_prints_the_command(
     invest: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
 ) -> None:
     # source, account, lot, lot subkind, symbol, amount, date
-    result = invest(answers=(
+    result = invest("--no-fetch", answers=(
         "Asset_Savings", "Asset_Roth_Bill", "contrib_2027", "roth_ira", "", "7000", "2027-02",
     ))
 
     assert result.exit_code == 0, result.output
     assert ("sim invest Asset_Savings Asset_Roth_Bill contrib_2027 --amount 7000.00 --date 2027-02 "
-            "--subkind roth_ira") in result.output
+            "--subkind roth_ira --no-fetch") in result.output
     [lot] = _rows(retire_alice_csv("account_lots.csv"), account_name="Asset_Roth_Bill", lot="contrib_2027")
     assert lot["subkind"] == "roth_ira"
 
@@ -125,6 +126,11 @@ def test_guided_invest_asks_and_prints_the_command(
     (("Asset_Roth_Alice", "x", "--amount", "1"), "a retirement account's lot needs --subkind"),
     ((BROKERAGE, "x", "--subkind", "roth_ira", "--amount", "1"), "--subkind is only for"),
     ((BROKERAGE, "x", "--amount", "0"), "more than zero"),
+    # A retirement account belongs to a person, not the household.
+    (("Asset_IRA_New", "x", "--account-subkind", "retirement", "--subkind", "roth_ira",
+      "--amount", "1"), "a retirement account needs --owner"),
+    (("Asset_IRA_New", "x", "--account-subkind", "retirement", "--subkind", "roth_ira",
+      "--owner", "joint", "--amount", "1"), "'joint' can't own this account"),
 ])
 def test_invest_refuses(
     invest: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
@@ -134,4 +140,28 @@ def test_invest_refuses(
     result = invest("Asset_Savings", *args, answers=("",))
     assert result.exit_code != 0
     assert error in result.output
+    assert retire_alice_csv("calendar.csv").read_text() == before
+
+
+def test_a_lot_bought_on_a_day_is_acquired_at_its_month_end(
+    invest: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    """The purchase posts at month end, so the holding period starts there too."""
+    result = invest("Asset_Savings", BROKERAGE, "bonds", "--amount", "100", "--date", "2027-03-01")
+
+    assert result.exit_code == 0, result.output
+    [lot] = _rows(retire_alice_csv("account_lots.csv"), account_name=BROKERAGE, lot="bonds")
+    assert lot["acquired"] == "2027-03-31"
+
+
+def test_invest_stops_when_a_new_symbols_prices_cant_be_fetched(
+    invest: Callable[..., Result], retire_alice_csv: Callable[[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_fetch_prices", lambda *_args, **_kw: 1)
+    before = retire_alice_csv("calendar.csv").read_text()
+    result = invest("Asset_Savings", BROKERAGE, "vti", "--symbol", "vti", "--amount", "100")
+
+    assert result.exit_code != 0
+    assert "prices not fetched, so nothing else was written" in result.output
     assert retire_alice_csv("calendar.csv").read_text() == before
