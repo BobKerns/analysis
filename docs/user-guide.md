@@ -793,6 +793,34 @@ Check the answer against the fund's own fact sheet before you save it. An
 AI's figures can be out of date or simply wrong, and nothing in the
 simulator can tell.
 
+### 4.12 Make a new investment, or a Roth conversion
+
+`sim invest` sets up a purchase the scenario makes later in one command. It
+writes a new lot, holding the symbol you name and acquired on the date, and a
+calendar `one_off_transfer` that moves the money into it. If the account or
+the symbol is new, it adds that too.
+
+```sh
+sim invest Asset_Savings Asset_Brokerage_Joint bonds --symbol ABCDX --amount 10000 --date 2027-03
+```
+
+The source can be an account (with `--source-lot` if it has several lots) or
+a source chain. The date defaults to the scenario's first month. A new account
+takes `--account-subkind` and `--owner`. A new symbol takes `--symbol-name`
+and `--weight`, as for `sim symbol add`, and its prices are fetched unless you
+pass `--no-fetch`. Run it with nothing after `invest` to be asked for each
+part; it then prints the equivalent command. A holding you already own when
+the scenario starts is a `sim account lot add` instead (Part 4.2).
+
+A Roth conversion is an investment from a traditional lot into a new Roth lot
+of its own. The money leaving the traditional lot is taxed as ordinary
+income, and the new lot's basis is the amount converted:
+
+```sh
+sim invest Asset_TraditionalIRA_Alice Asset_Roth_Alice conv_2027 \
+    --subkind roth_ira --amount 20000 --date 2027-01
+```
+
 ## 5. Looking at your results
 
 A **run** is what happens when the simulator plays a scenario forward, month

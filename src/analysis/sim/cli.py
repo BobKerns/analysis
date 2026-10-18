@@ -9790,6 +9790,214 @@ def scenario_show(name: str | None, data_dir: Path | None, runs_dir: Path | None
         click.echo(readme.relevel_heading(shown.description, 1))
 
 
+# ---------- sim invest (#217) ----------
+
+
+# The growth character a new account gets when its first lot grows (holds a
+# symbol with a rate series or weights): the built-in account its growth comes
+# from (ADR-003 §2.2). A retirement account's follows its first lot.
+_GROWTH_CHARACTER = {
+    "cash": "ordinary", "brokerage_taxable": "gains", "hsa": "deferred",
+    "real_estate": "gains", "vehicle": "depreciation", "other_asset": "gains",
+}
+
+
+def _ask(text: str, choices: list[str] | None = None, default: str | None = None) -> str:
+    if choices:
+        click.echo(f"  choices: {', '.join(choices)}")
+    return _prompt_with_completion(text, choices=choices, default=default).strip()
+
+
+@sim_group_command.command("invest")
+@click.argument("source", required=False, shell_complete=_complete_account)
+@click.argument("account", required=False, shell_complete=_complete_account)
+@click.argument("lot", required=False)
+@click.option("--source-lot", default=None, help="SOURCE's lot, when SOURCE is an account with lots.")
+@click.option("--amount", default=None, help="Dollars to invest.")
+@click.option("--date", "when", default=None, metavar="YYYY-MM",
+              help="When (default: the scenario's first month).")
+@click.option("--symbol", default=None, help="What the lot holds: a known symbol, or a new one.")
+@click.option("--symbol-name", default=None, help="A new symbol's name, for securities.csv.")
+@click.option("--weight", "weight_specs", multiple=True, metavar="CLASS=PERCENT",
+              help="A new symbol's share in one asset class (repeatable), as for `sim symbol add`.")
+@click.option("--fetch/--no-fetch", default=True, show_default=True,
+              help="Fetch a new symbol's prices.")
+@click.option("--subkind", "lot_subkind", default=None,
+              type=click.Choice(sorted(registries.RETIREMENT_LOT_SUBKINDS)),
+              help="The lot's subkind, in a retirement account: Roth or traditional, IRA or 401k.")
+@click.option("--account-subkind", default=None,
+              type=click.Choice(sorted(registries.ACCOUNT_SUBKINDS["asset"])),
+              help="A new ACCOUNT's subkind.")
+@click.option("--owner", default=None, help="A new ACCOUNT's owner (default: joint).")
+@click.option("--scenario", default=None, help="Scenario folder name (default: the current scenario).")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None)
+def invest_command(
+    source: str | None, account: str | None, lot: str | None, source_lot: str | None,
+    amount: str | None, when: str | None, symbol: str | None, symbol_name: str | None,
+    weight_specs: tuple[str, ...], fetch: bool, lot_subkind: str | None,
+    account_subkind: str | None, owner: str | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Invest AMOUNT from SOURCE in a new LOT of ACCOUNT, on a date.
+
+    Writes, as one edit, the new lot (holding --symbol, acquired on the date),
+    the account if ACCOUNT is new, and a calendar one_off_transfer from SOURCE
+    into the lot. A new symbol is added first, as `sim symbol add` would
+    (--symbol-name, --weight, and its prices unless --no-fetch). SOURCE is an
+    account or a source chain. Whatever is left out is asked for, and the
+    equivalent command is printed.
+
+    For a holding the scenario starts with, use `sim account lot add` instead.
+    """
+    data = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data, scenario)
+    guided = None in (source, account, lot, amount)
+    with _intent_db(data, scenario_name) as (con, _name):
+        kinds = dict(con.execute("SELECT name, kind FROM account").fetchall())
+        subkinds = dict(con.execute("SELECT name, subkind FROM account").fetchall())
+        lot_info = _lot_info(con)
+        chains = _interior_chains(con, "source")
+        known_symbols = [r[0] for r in con.execute("SELECT symbol FROM security ORDER BY symbol")]
+        growing = {r[0] for r in con.execute(
+            "SELECT symbol FROM security_allocation UNION SELECT series FROM aux_table WHERE kind = 'rate'"
+        ) if r[0]}
+        start = con.execute("SELECT start FROM scenario").fetchone()[0]
+        persons = [r[0] for r in con.execute("SELECT id FROM person ORDER BY id")]
+    assets = sorted(n for n, k in kinds.items() if k == "asset" and n in lot_info)
+    if guided:
+        _echo_guided_scenario(scenario_name, scenario_dir / "calendar.csv", defaulted=scenario is None)
+
+    if source is None:
+        source = _ask("invest from (account or source chain)", [*sorted(lot_info), *chains])
+    if source not in lot_info and source not in chains:
+        raise click.ClickException(f"unknown source {source!r}: not an account or a source chain")
+    if source in lot_info and calendar_guide.lot_needed(lot_info[source]):
+        if source_lot is None:
+            labels = lot_info[source][1]
+            source_lot = labels[0] if len(labels) == 1 else _ask(f"lot of {source}", labels)
+        if source_lot not in lot_info[source][1]:
+            raise click.ClickException(f"{source!r} has no lot {source_lot!r}")
+    elif source_lot:
+        raise click.ClickException(f"{source!r} takes no --source-lot")
+
+    if account is None:
+        account = _ask("invest in (account; a new name adds one)", assets)
+    new_account = account not in kinds
+    if new_account:
+        if account_subkind is None:
+            account_subkind = _ask("new account's subkind", sorted(registries.ACCOUNT_SUBKINDS["asset"]))
+        if account_subkind not in registries.ACCOUNT_SUBKINDS["asset"]:
+            raise click.ClickException(f"unknown asset subkind {account_subkind!r}")
+        if owner is None:
+            owner = _ask("owner", [*persons, "joint"], default="joint") if guided else "joint"
+        if owner not in (*persons, "joint"):
+            raise click.ClickException(f"unknown owner {owner!r}; allowed: {[*persons, 'joint']}")
+    else:
+        if kinds[account] != "asset":
+            raise click.ClickException(f"{account!r} is not an asset account")
+        if account_subkind or owner:
+            raise click.ClickException("--account-subkind and --owner are only for a new account")
+        account_subkind = subkinds[account]
+    investment = account_subkind in INVESTMENT_ASSET_SUBKINDS
+    taken = [] if new_account else lot_info.get(account, (False, []))[1]
+
+    if lot is None:
+        lot = _ask("new lot", default=symbol)
+    lot = lot.strip()
+    if not lot or ":" in lot:
+        raise click.ClickException("a lot label is required, without ':'")
+    if lot in taken:
+        raise click.ClickException(f"{account!r} already has a lot {lot!r}; a new investment is a new lot")
+    retirement = account_subkind == registries.RETIREMENT_SUBKIND
+    if retirement and lot_subkind is None:
+        if not guided:
+            raise click.ClickException("a retirement account's lot needs --subkind")
+        lot_subkind = _ask("lot subkind", sorted(registries.RETIREMENT_LOT_SUBKINDS))
+    if lot_subkind and lot_subkind not in registries.RETIREMENT_LOT_SUBKINDS:
+        raise click.ClickException(f"unknown lot subkind {lot_subkind!r}")
+    if lot_subkind and not retirement:
+        raise click.ClickException("--subkind is only for a lot of a retirement account")
+
+    if symbol is None and guided:
+        symbol = _ask("symbol (optional; a new one is added)", known_symbols, default="") or None
+    symbol = symbol.strip().upper() if symbol else None
+    new_symbol = symbol is not None and symbol not in known_symbols \
+        and symbol not in registries.SYMBOL_ASSET_CLASS
+    if new_symbol and guided and symbol_name is None and not weight_specs:
+        symbol_name = click.prompt("its name (optional)", default="", show_default=False).strip() or None
+        text = click.prompt("its weights, e.g. stock_us=60% bond=40% (optional)",
+                            default="", show_default=False).strip()
+        weight_specs = tuple(text.split())
+    try:
+        weights = symbols.parse_weights(list(weight_specs))
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if (symbol_name or weights) and not new_symbol:
+        raise click.ClickException("--symbol-name and --weight are only for a new symbol")
+
+    if amount is None:
+        amount = _ask("amount in dollars")
+    cents = _parse_amount_cents(amount)
+    if cents <= 0:
+        raise click.ClickException("the amount must be more than zero")
+    if when is None:
+        when = _ask("date (YYYY-MM)", default=start[:7]) if guided else start[:7]
+    when = _validate_month_date(when)
+
+    if new_symbol:
+        assert symbol is not None
+        try:
+            added = symbols.add_symbol(data, symbol, name=symbol_name, weights=weights or None)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+        click.echo(f"added symbol {added.symbol}" + ("" if added.weighted else
+                   "; no allocation yet, so it shows as unclassified"))
+        if fetch and _fetch_prices(data, [added.symbol], None, "yahoo"):
+            click.echo(f"{added.symbol}: prices not fetched; `sim prices fetch {added.symbol}` later")
+
+    dollars = _money_cell(amount)
+    grows = symbol is not None and (symbol in growing or bool(weights))
+    growth = ""
+    if new_account and grows:
+        growth = (
+            ("tax_free" if registries.RETIREMENT_LOT_SUBKINDS.get(lot_subkind or "") == "tax_free"
+             else "deferred") if retirement else _GROWTH_CHARACTER.get(str(account_subkind), "gains")
+        )
+    with _scenario_edit(data, scenario_name) as edit:
+        if new_account:
+            _append_csv_row(edit.path(scenario_dir / "accounts.csv"), registries.ACCOUNTS_CSV_HEADER, {
+                "name": account, "kind": "asset", "subkind": account_subkind, "owner": owner or "joint",
+                "tax_treatment": _default_tax_treatment("asset", str(account_subkind)),
+                "tax_character": growth, "opened": when, "meta_json": "{}",
+            })
+        _append_csv_row(edit.path(scenario_dir / "account_lots.csv"), registries.ACCOUNT_LOTS_CSV_HEADER, {
+            "account_name": account,
+            "lot": lot if investment or lot != registries.DEFAULT_LOT else "",
+            "subkind": lot_subkind or "", "symbol": symbol or "",
+            "acquired": when if is_full_date(when) else month_end_iso(when),
+            "opening_balance": "0.00",
+        })
+        _append_csv_row(edit.path(scenario_dir / "calendar.csv"), registries.CALENDAR_HEADER, {
+            "date": when, "kind": "one_off_transfer",
+            "account_1": source, "lot_1": source_lot or "", "account_2": account, "lot_2": lot,
+            "amount": dollars, "description": f"invest in {account} ({lot})",
+        })
+    click.echo(f"{'added account ' + repr(account) + ', ' if new_account else ''}"
+               f"added lot {lot!r} of {account!r} and a {when} transfer of {dollars} "
+               f"from {source} in scenario {scenario_name}")
+    if guided:
+        words = ["sim", "invest", source, account, lot, "--amount", dollars, "--date", when]
+        for option, value in (("--source-lot", source_lot), ("--symbol", symbol),
+                              ("--symbol-name", symbol_name), ("--subkind", lot_subkind)):
+            if value:
+                words += [option, value]
+        for spec in weight_specs:
+            words += ["--weight", spec]
+        if new_account:
+            words += ["--account-subkind", str(account_subkind), "--owner", str(owner)]
+        click.echo("Equivalent command:")
+        click.echo("  " + shlex.join(words))
+
+
 # ---------- Silent alias: accounts -> account ----------
 
 # Create silent alias for backwards compatibility

@@ -830,7 +830,7 @@ The CSVs are the source of truth and the loader is their only validator, so
 every `analysis sim` command that edits scenario CSVs or the shared
 `persons.csv` (`calendar add|edit|delete`, `person add|edit`, `person lifespan set|clear`,
 `transfer add`, `scheduled add|edit|delete`/`import-baseline`, `account
-add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|rename|delete`,
+add|edit|rename|delete|sync|import-quicken`, `account lot add|edit|rename|delete`, `invest`,
 the `tag` commands, `chain` and `series` edits, the other `rename` commands,
 `scenario create|rename`, `ensemble create|rename`) goes through one staged edit
 (`analysis.sim.staging.staged_edit`):
@@ -1065,3 +1065,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#190](https://github.com/BobKerns/analysis/issues/190): `scenario create` writes a `README.md`; `scenario|ensemble edit` and `delete`; a `start` or `end` blank down the whole lineage is a load error (§4.5).
 - [#217](https://github.com/BobKerns/analysis/issues/217): `account_values.csv` is renamed `account_lots.csv`; the Roth and traditional IRA/401k account subkinds become `retirement`, with the old names as lot subkinds that set each lot's tax treatment; traditional-to-traditional moves are untaxed rollovers; RMDs count only traditional lots (§1, §1a, §2.3, §4.2, §4.3).
 - [#217](https://github.com/BobKerns/analysis/issues/217): Roth lots track basis and follow the five-year rule: earnings before a qualified distribution are the new `roth_nonqualified` character, and a chain skips such a Roth step unless it is the last (§1a, §4.3, §4.6, §4.7).
+- [#217](https://github.com/BobKerns/analysis/issues/217): `sim invest` writes a new lot, its account if new, and the `one_off_transfer` that buys it, as one staged edit (§7).
