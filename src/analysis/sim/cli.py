@@ -6939,10 +6939,18 @@ def sync_account_lots(
             if row.get("account_name"):
                 values_accounts.add(row["account_name"])
 
-    # Find missing
+    # Find missing. A retirement account's lot must say Roth or traditional,
+    # which sync can't know, so those are left to `sim account lot add`.
     missing = [name for name in account_names if name not in values_accounts]
+    needs_subkind = [name for name in missing
+                     if account_subkinds.get(name) == registries.RETIREMENT_SUBKIND]
+    missing = [name for name in missing if name not in needs_subkind]
+    for name in needs_subkind:
+        click.echo(f"  skipped {name}: a retirement account's lot needs a subkind; "
+                   f"add it with `sim account lot add {name} default --subkind ...`", err=True)
     if not missing:
-        click.echo("ok (no missing accounts)")
+        if not needs_subkind:
+            click.echo("ok (no missing accounts)")
         return
 
     # Create rows for missing accounts
