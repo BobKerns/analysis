@@ -196,7 +196,6 @@ def load(
     omitting it reuses that recorded scenario. Pass --no-run to only load.
     """
     resolved = _resolve_data_dir(data_dir)
-    explicit = scenario_name is not None
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved)
     ref = _resolve_scenario(resolved, scenario_name, intent_dir=resolved_intent_dir)
     try:
@@ -213,8 +212,6 @@ def load(
         raise click.ClickException("data dirty; refusing to load") from None
     if not run_after_load:
         _echo_load_warnings(result)  # otherwise `run` reloads and prints them, once
-    if explicit:
-        write_current_scenario(resolved, ref.name)
     click.echo(f"loaded {result.intent_path}")
     click.echo(f"  current scenario: {ref.name}")
     for table, n in result.counts.items():
@@ -313,14 +310,50 @@ def _echo_load_warnings(result: LoadResult, *, unused: bool = False) -> None:
         click.echo(f"WARN: {warning}", err=True)  # ADR-004 §6's format
 
 
+_SCENARIO_ANNOUNCED = "analysis.sim.scenario_announced"
+
+
 def _resolve_scenario(
     data_dir: Path, scenario: str | None, *, intent_dir: Path | None = None,
+    runs_dir: Path | None = None, remember: bool = True,
 ) -> ScenarioRef:
-    """Scenario resolution shared with the notebooks (see loader)."""
+    """The scenario a command works on (#214): the one named, which becomes
+    the data repo's current scenario, or else the current scenario, announced
+    on stderr so a stale default is never a surprise. With no current
+    scenario, the command asks for one by name rather than guessing.
+
+    ``remember=False`` is for a name that is only a reference, such as a new
+    scenario's parent.
+    """
+    defaulted = scenario is None
+    if scenario is None:
+        scenario = read_current_scenario(data_dir)
+        if scenario is None:
+            names = ", ".join(list_scenario_names(data_dir)) or "(none)"
+            raise click.UsageError(
+                f"no current scenario; name one (scenarios: {names})"
+            )
     try:
-        return sc.resolve_scenario_name(data_dir, scenario, intent_dir=intent_dir)
+        ref = sc.resolve_scenario_name(
+            data_dir, scenario, intent_dir=intent_dir, runs_dir=runs_dir,
+        )
     except LoadError as exc:
+        if defaulted:
+            raise click.ClickException(
+                f"{current_scenario_path(data_dir)} names a missing scenario: {scenario!r}; "
+                "name one"
+            ) from None
         raise click.ClickException("; ".join(exc.issues)) from None
+    if defaulted:
+        # Once per command, though several steps of it may resolve the default.
+        ctx = click.get_current_context(silent=True)
+        if ctx is None or not ctx.meta.get(_SCENARIO_ANNOUNCED):
+            click.echo(f"Using scenario {ref.name}", err=True)
+            if ctx is not None:
+                ctx.meta[_SCENARIO_ANNOUNCED] = True
+    elif remember and read_current_scenario(data_dir) != ref.name:
+        write_current_scenario(data_dir, ref.name)
+    return ref
 
 
 def _resolve_data_dir(data_dir: Path | None) -> Path:
@@ -423,12 +456,11 @@ def run(
         sensitivity=sensitivity, ensemble_size=ensemble_size, only=only,
         quantiles_text=quantiles_text, jobs=jobs,
     )
-    explicit = scenario_name is not None
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
-    if scenario_name is None:
+    if resolved_data_dir is not None or scenario_name is None:
         resolved_data_dir = resolved_data_dir or _resolve_data_dir(data_dir)
-        scenario_name = _resolve_scenario(resolved_data_dir, None).name
+        scenario_name = _resolve_scenario(resolved_data_dir, scenario_name).name
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
@@ -450,9 +482,6 @@ def run(
             f"intent file not found: {intent_path}\n"
             f"  run: analysis sim load {scenario_name}"
         )
-    if explicit and resolved_data_dir is not None:
-        write_current_scenario(resolved_data_dir, scenario_name)
-
     resolved_by = run_by or os.environ.get("USER") or "unknown"
 
     if sensitivity:
@@ -880,7 +909,7 @@ def ensemble_create(
         raise click.UsageError("--seed and --new-seed are exclusive")
     data_dir_p = _resolve_data_dir(data_dir)
     # Preflights PARENT, then creates and validates the recipe in a staged copy.
-    with _scenario_edit(data_dir_p, parent) as edit:
+    with _scenario_edit(data_dir_p, parent, remember=False) as edit:
         try:
             staged = sc.create_scenario(
                 edit.data_dir, name, parent, description=description, mixins=mixins,
@@ -907,7 +936,7 @@ def ensemble_create(
         df.to_csv(scenario_csv, index=False)
     target = data_dir_p / "scenarios" / name
 
-    inherits = [_resolve_scenario(data_dir_p, p).name for p in (parent, *mixins)]
+    inherits = [_resolve_scenario(data_dir_p, p, remember=False).name for p in (parent, *mixins)]
     write_current_scenario(data_dir_p, name)
     click.echo(f"created ensemble recipe {target}")
     click.echo(f"  inherits: {' + '.join(inherits)}")
@@ -1641,11 +1670,7 @@ def _resolve_run_target(
         return runfile
     if target is not None and Path(target).is_file():
         return Path(target)
-    data_dir_p = _resolve_data_dir(data_dir)
-    try:
-        ref = sc.resolve_scenario_name(data_dir_p, target, runs_dir=runs_dir)
-    except LoadError as exc:
-        raise click.ClickException("; ".join(exc.issues)) from None
+    ref = _resolve_scenario(_resolve_data_dir(data_dir), target, runs_dir=runs_dir)
     if ref.run_path is None:
         raise click.ClickException(
             f"no runs for {ref.name!r} in {ref.runs_dir}; run `sim run` first"
@@ -2113,10 +2138,14 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
 
 
 @contextmanager
-def _scenario_edit(data_dir: Path, scenario: str | None) -> Generator[StagedEdit]:
+def _scenario_edit(
+    data_dir: Path, scenario: str | None, *, remember: bool = True,
+) -> Generator[StagedEdit]:
     """``staged_edit`` for a CLI command: edits land only if every affected
     scenario still loads (issue #44). Issues go to stderr as ``error:`` lines,
-    like ``sim check``, and the command fails with nothing written."""
+    like ``sim check``, and the command fails with nothing written.
+    ``scenario`` and ``remember`` are as for ``_resolve_scenario``."""
+    scenario = _resolve_scenario(data_dir, scenario, remember=remember).name
     try:
         with staged_edit(data_dir, scenario) as edit:
             yield edit
@@ -2149,6 +2178,7 @@ def _intent_db(data_dir: Path, scenario: str | None) -> Generator[tuple[sqlite3.
     """``open_intent_db`` for an edit command's up-front checks: a scenario
     that doesn't load says so plainly, rather than as a traceback or as if the
     row being added were at fault."""
+    scenario = _resolve_scenario(data_dir, scenario).name
     with ExitStack() as stack:
         try:
             con, name = stack.enter_context(open_intent_db(data_dir, scenario))
@@ -2156,7 +2186,7 @@ def _intent_db(data_dir: Path, scenario: str | None) -> Generator[tuple[sqlite3.
             for issue in exc.issues:
                 click.echo(f"  error: {issue}", err=True)
             raise click.ClickException(
-                f"scenario {scenario or 'current'!r} already fails to load "
+                f"scenario {scenario!r} already fails to load "
                 f"({len(exc.issues)} issue(s)); fix it first (sim check). Nothing was written."
             ) from None
         yield con, name
@@ -2974,7 +3004,7 @@ def _do_add_transfer(
 @click.option("--to-lot", default=None,
               help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3195,7 +3225,7 @@ def _ask_missing_arguments(
 @calendar_group_command.group(name="add", invoke_without_command=True)
 @click.option("--scenario", default=None,
               help="For the guided mode: scenario folder name "
-                   "(default: the only scenario in data-dir).")
+                   "(default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="For the guided mode: data repo (default: $ANALYSIS_DATA_DIR).")
@@ -3249,9 +3279,10 @@ def calendar_add_group_command(
 
 def _echo_guided_scenario(name: str, path: Path, *, defaulted: bool) -> None:
     """Say which scenario file a guided command is about to change, before
-    it asks anything: a defaulted scenario may not be the one meant."""
-    how = " (the default; use --scenario for another)" if defaulted else ""
-    click.echo(f"Scenario: {name}{how}")
+    it asks anything. A defaulted scenario was already named by its
+    ``Using scenario`` line (``_resolve_scenario``), so only its file follows."""
+    if not defaulted:
+        click.echo(f"Scenario: {name}")
     click.echo(f"  {path}")
 
 
@@ -3325,7 +3356,7 @@ def _check_own_calendar_row(staged: Path, path: Path, index: int, chosen: dict[s
 @calendar_group_command.command("edit")
 @click.argument("row", required=False)
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3397,7 +3428,7 @@ def calendar_edit(
 @click.argument("row", required=False)
 @click.option("--yes", is_flag=True, help="Don't ask before deleting.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3558,7 +3589,7 @@ def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
          "inflation/COLA series such as cpi (scheduled.csv rows reference it by series name).",
 )
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3632,7 +3663,7 @@ def calendar_add_set_rate(
 @click.option("--param-date", default="",
               help="New base date for the rule (YYYY-MM or YYYY-MM-DD), optional.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3703,7 +3734,7 @@ def calendar_add_set_amount(
 @click.argument("date", required=False)
 @click.argument("scheduled_name", required=False)
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3768,7 +3799,7 @@ def calendar_add_retire_scheduled(
 @calendar_add_group_command.command("latent-factor")
 @click.argument("name", required=False)
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3812,7 +3843,7 @@ def calendar_add_latent_factor(
 @click.option("--to-lot", default=None,
               help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3873,7 +3904,7 @@ def calendar_add_transfer(
 @click.option("--to-lot", default=None,
               help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3973,7 +4004,7 @@ def calendar_add_transfer_balance(
 @click.option("--series", default="",
               help="The series replaced; blank for a kind without one (federal_brackets).")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -4299,7 +4330,7 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
 @click.option("--to-lot", default=None,
               help="Lot of the to account; asked for when a blank one would not say which.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -4462,7 +4493,7 @@ def scheduled_add(
 
 @scheduled_group_command.command("import-baseline")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -4623,7 +4654,7 @@ def scheduled_import_baseline(
 
 @scheduled_group_command.command("list")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -4635,7 +4666,7 @@ def scheduled_list(scenario: str | None, data_dir: Path | None) -> None:
     from analysis.sim.notebook_ui.scenario_view import scheduled_view
 
     data_dir_p = _resolve_data_dir(data_dir)
-    with open_scenario(data_dir_p, scenario) as sc:
+    with open_scenario(data_dir_p, _resolve_scenario(data_dir_p, scenario).name) as sc:
         scen_name = sc.name
         rows = scheduled_view(sc)
     table = Table(title=f"scheduled ({data_dir_p.name} / {scen_name})")
@@ -4768,7 +4799,7 @@ def _write_scheduled(
 @click.argument("name")
 @_scheduled_options
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -4842,7 +4873,7 @@ def _month_before(iso: str) -> str:
 @click.argument("name")
 @click.option("--yes", is_flag=True, help="Don't ask first.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -5233,7 +5264,7 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
 @account_group_command.command("delete")
 @click.argument("name")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -5297,7 +5328,7 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
 @click.option("--meta-json", default=None, help="JSON payload for the account metadata.")
 @click.option("--tags", default=None, help="Space-separated '<role>:<name>' tokens.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -5475,7 +5506,7 @@ def edit_account(
 @click.argument("old_name")
 @click.argument("new_name")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -5522,7 +5553,7 @@ def _default_tax_treatment(kind: str, subkind: str) -> str:
 
 @account_group_command.command("list")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -5545,7 +5576,7 @@ def list_accounts(
     data_dir_p = _resolve_data_dir(data_dir)
     if as_of:
         as_of = month_end_iso(_validate_month_date(as_of))
-    with open_scenario(data_dir_p, scenario) as sc:
+    with open_scenario(data_dir_p, _resolve_scenario(data_dir_p, scenario).name) as sc:
         rows = load_accounts_view(sc, as_of=as_of)
     if kind is not None:
         rows = [r for r in rows if r.kind == kind]
@@ -5567,7 +5598,7 @@ def _holdings_options(fn):
     """The options ``account holdings`` and ``account holders`` share."""
     for option in reversed([
         click.option("--scenario", default=None,
-                     help="Scenario folder name (default: the only scenario in data-dir)."),
+                     help="Scenario folder name (default: the current scenario)."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
         click.option("--month", default=None,
@@ -6241,7 +6272,7 @@ def lot_group_command() -> None:
 @lot_group_command.command("list")
 @click.argument("account", required=False, shell_complete=_complete_account)
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6296,7 +6327,7 @@ def lot_list(account: str | None, scenario: str | None, data_dir: Path | None) -
 @click.argument("lot", required=False)
 @_lot_value_options
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6353,7 +6384,7 @@ def lot_add(
               help="Rename the lot; this scenario's references to it follow.")
 @_lot_value_options
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6436,7 +6467,7 @@ def lot_edit(
 @click.argument("lot", required=False)
 @click.option("--yes", is_flag=True, help="Don't ask before deleting the rows that reference the lot.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6528,7 +6559,7 @@ def lot_delete(
 
 @account_group_command.command("check")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6585,7 +6616,7 @@ def check_account_values(
 
 @account_group_command.command("sync")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6671,7 +6702,7 @@ def sync_account_values(
                    "prior_year_end_balance instead of opening_balance, for "
                    "investment asset accounts only.")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6829,7 +6860,7 @@ def import_quicken(
 
 @transfer_group_command.command("list")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6840,7 +6871,7 @@ def list_transfers(scenario: str | None, data_dir: Path | None) -> None:
     from rich.table import Table
 
     data_dir_p = _resolve_data_dir(data_dir)
-    with open_intent_db(data_dir_p, scenario) as (con, scen_name):
+    with open_intent_db(data_dir_p, _resolve_scenario(data_dir_p, scenario).name) as (con, scen_name):
         table = Table(title=f"transfers ({data_dir_p.name} / {scen_name})")
         table.add_column("Date")
         table.add_column("Source")
@@ -7120,7 +7151,7 @@ def prices_show_command(symbols: tuple[str, ...], since_text: str | None, data_d
 
 @prices_group_command.command("check")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 @click.option("--tolerance", type=float, default=1.0, show_default=True,
@@ -7183,7 +7214,7 @@ def chain_group_command() -> None:
 
 @chain_group_command.command("list")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
@@ -7246,7 +7277,7 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
               help="With --mermaid, --graph or --graph-file, how far to follow each chain: "
                    "1 step, as far as the first lot (lots), or all the way (all, the default).")
 @click.option("--scenario", default=None,
-              help="Scenario folder name (default: the only scenario in data-dir).")
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def chain_show_command(
@@ -7385,7 +7416,7 @@ def _scenario_options(f):
     f = click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")(f)
     return click.option("--scenario", default=None,
-                        help="Scenario folder name (default: the only scenario in data-dir).")(f)
+                        help="Scenario folder name (default: the current scenario).")(f)
 
 
 def _step_row(
@@ -8280,14 +8311,14 @@ def scenario_create(
     try:
         data_dir_p = _resolve_data_dir(data_dir)
         # Preflights PARENT, then creates and validates NAME in a staged copy.
-        with _scenario_edit(data_dir_p, parent) as edit:
+        with _scenario_edit(data_dir_p, parent, remember=False) as edit:
             sc.create_scenario(
                 edit.data_dir, name, parent, description=description, mixins=mixins,
                 ensemble_size=0,
             )
         target = data_dir_p / "scenarios" / name
 
-        inherits = [_resolve_scenario(data_dir_p, p).name for p in (parent, *mixins)]
+        inherits = [_resolve_scenario(data_dir_p, p, remember=False).name for p in (parent, *mixins)]
         write_current_scenario(data_dir_p, name)
         click.echo(f"created {target}")
         click.echo(f"  inherits: {' + '.join(inherits)}")
@@ -8325,7 +8356,7 @@ def tags_group_command(
     if ctx.invoked_subcommand is not None:
         return
     data_dir_p = _resolve_data_dir(data_dir)
-    with open_scenario(data_dir_p, scenario) as sc:
+    with open_scenario(data_dir_p, _resolve_scenario(data_dir_p, scenario).name) as sc:
         df = sc.list_tags(role=role)
     if df.empty:
         click.echo("(no tags)")
@@ -8364,7 +8395,7 @@ def tags_items(
     elif not role:
         raise click.ClickException("wildcard needs a role, e.g. 'estimate:*'")
     data_dir_p = _resolve_data_dir(data_dir)
-    with open_scenario(data_dir_p, scenario) as sc:
+    with open_scenario(data_dir_p, _resolve_scenario(data_dir_p, scenario).name) as sc:
         found = False
         for it in ("account", "scheduled", "calendar_event"):
             df = sc.items(it, tags=tag_token)  # type: ignore[arg-type]
@@ -8580,7 +8611,7 @@ def _rename_scenario(old: str, new: str, data_dir: Path | None) -> None:
             "starting with a letter or digit)")
     if (data / "scenarios" / new).exists():
         raise click.ClickException(f"scenario already exists: {data / 'scenarios' / new}")
-    with _scenario_edit(data, old) as edit:
+    with _scenario_edit(data, old, remember=False) as edit:
         try:
             changed = rename.rename_scenario(edit.data_dir, old, new)
         except (OSError, ValueError) as exc:
@@ -8675,6 +8706,8 @@ def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, *
     name = name.strip()
     if name not in names:
         raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
+    # Named or picked at the prompt, it becomes current, even if nothing changes.
+    _resolve_scenario(data, name)
     if new_seed or any(value is not None for value in fields.values()):
         _apply_scenario_edit(data, name, new_seed=new_seed, **fields)
         return

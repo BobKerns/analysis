@@ -125,10 +125,21 @@ fi
 
 # Prompt segment, in the style of oh-my-zsh's git_prompt_info: PS1 holds a
 # literal $(analysis_prompt_info) that is expanded at each prompt, so it is
-# added only once no matter how many times this script is sourced.
+# added only once no matter how many times this script is sourced. It reads
+# .current_scenario afresh each time, since any sim command naming a scenario
+# changes it; with no current scenario the segment leaves it out (#214).
 analysis_prompt_info() {
 	[ -n "${ANALYSIS_DATA_REPO_NAME-}" ] && [ -n "${ANALYSIS_USER-}" ] || return 0
-	printf '[analysis:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER"
+	_analysis_scenario=""
+	if [ -r "${ANALYSIS_DATA_DIR-}/.current_scenario" ]; then
+		IFS= read -r _analysis_scenario < "$ANALYSIS_DATA_DIR/.current_scenario"
+	fi
+	if [ -n "$_analysis_scenario" ]; then
+		printf '[analysis:%s:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER" "$_analysis_scenario"
+	else
+		printf '[analysis:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER"
+	fi
+	unset _analysis_scenario
 }
 
 if [ -n "${ZSH_VERSION-}" ]; then

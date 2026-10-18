@@ -106,7 +106,7 @@ The data repo provides a sourceable `activate` script (venv-style) that sets:
 - `ANALYSIS_USER` — short identifier (`rwk`, `mwk`, …) matching a row `id` in `persons.csv` in the data repo. Refuses to run if unset or unknown. (Persons and operator identities are the same set: every operator is a person, though not every person needs to be an operator.)
 - `ANALYSIS_DATA_REPO_NAME` — display label, defaults to basename of `ANALYSIS_DATA_DIR`.
 
-`PS1` is prefixed `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER]` so the active context is visible in a shared shell. `deactivate` reverses all of it.
+`PS1` is prefixed `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER:<current scenario>]` (the scenario left out when none is current) so the active context is visible in a shared shell. `deactivate` reverses all of it.
 
 ### Prototype data
 
@@ -181,3 +181,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#105](https://github.com/BobKerns/analysis/issues/105): a negative-balance warning records the refill chain it tried and what that chain supplied (principle 7).
 - [#197](https://github.com/BobKerns/analysis/issues/197): principle 5 no longer relies on `life_transition` events, which are dropped.
 - [#186](https://github.com/BobKerns/analysis/issues/186): `sim explain` takes a scenario and lists negative-balance warnings; `sim networth` added (CLI surface).
+- [#214](https://github.com/BobKerns/analysis/issues/214): the prompt shows the current scenario (Activation).

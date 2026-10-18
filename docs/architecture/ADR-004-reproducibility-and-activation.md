@@ -94,7 +94,7 @@ Required behavior:
 - Set `ANALYSIS_DATA_DIR` to that absolute path.
 - Set `ANALYSIS_DATA_REPO_NAME` to the basename, unless already set by the user.
 - Take `ANALYSIS_USER` from the environment, else from the remembered `.analysis_user`. If it is unset, or `persons.csv` (column 1) has no such id, list the `primary` persons (id and display), read an id or display name, re-prompt on miss, abort on EOF, and remember the choice in `.analysis_user`. The list and prompt are `python -m analysis.sim.choose_user`, shared with `scripts/link-data.sh`.
-- Define `analysis_prompt_info`, which prints `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER]` and a trailing space, and prefix `PS1` with a literal `$(analysis_prompt_info)` only if it is not already present (so re-sourcing is idempotent; zsh gets `setopt prompt_subst`). `deactivate-analysis` strips it again.
+- Define `analysis_prompt_info`, which prints `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER:<scenario>]` and a trailing space, reading `<scenario>` from `.current_scenario` (§4a) at each prompt and leaving it and its colon out when there is none, and prefix `PS1` with a literal `$(analysis_prompt_info)` only if it is not already present (so re-sourcing is idempotent; zsh gets `setopt prompt_subst`). `deactivate-analysis` strips it again.
 - Define a `deactivate` function that restores all saved values and unsets itself.
 
 The script is shell-agnostic at the user-visible level (works in bash and zsh); fish gets a separate `activate.fish` if/when needed.
@@ -107,7 +107,15 @@ A Python equivalent `src/analysis/activate.py` is **not** sourceable but perform
 
 The data repo records the scenario the user is currently working on in a `.current_scenario` file at its root (one line, the scenario folder name). It is per-user working state, not data: `activate` adds it to the data repo's `.gitignore`, and it is outside the scenario's scoped paths, so it never affects `data_version`/`scenario_tree_id` or dirty gating.
 
-`analysis sim load <scenario>` writes the file; any command (or notebook) that takes an optional scenario resolves an omitted one via `analysis.sim.loader.resolve_scenario_name`, in this order:
+Every `sim` command that takes an optional scenario treats it the same way (`cli._resolve_scenario`):
+
+- **Named:** the name is validated against `scenarios/` and becomes the current scenario. A name that is only a reference — a new scenario's parent or mix-ins — does not; `sim scenario create` and `sim ensemble create` make the new scenario current instead. Commands whose scenario argument is required (`rename`, `delete`, `compare`, the ensemble reports) leave the file alone, except that renaming or deleting the current scenario follows it.
+- **Omitted:** the name in `.current_scenario` is used (an error if it names a missing scenario), and the command says so with one `Using scenario <name>` line on stderr, once per command.
+- **Omitted, with no `.current_scenario`:** a usage error asking for a name and listing the scenarios. The CLI never guesses.
+
+The prompt (§4) shows the current scenario, so the default a command will take is always in view.
+
+Notebooks resolve an omitted scenario via `analysis.sim.loader.resolve_scenario_name`, which keeps fallbacks for a fresh data repo:
 
 1. the explicitly supplied name (validated against `scenarios/`),
 2. the name recorded in `.current_scenario` (error if it names a missing scenario),
@@ -201,3 +209,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#106](https://github.com/BobKerns/analysis/issues/106): `sim check --all`.
 - [#131](https://github.com/BobKerns/analysis/issues/131): `scripts/link-data.sh` links the data repo at `data/shared` or builds template data there, and the user prompt lists the primary persons (§4).
 - [#204](https://github.com/BobKerns/analysis/issues/204): only `sim check` prints defined-but-not-read warnings, and `sim check --all` only with `--verbose` (§6).
+- [#214](https://github.com/BobKerns/analysis/issues/214): every CLI command naming a scenario makes it current, a defaulted one is announced, the CLI no longer falls back past `.current_scenario`, and the prompt shows the current scenario (§4, §4a).
