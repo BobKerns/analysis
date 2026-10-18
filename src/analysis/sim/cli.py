@@ -33,7 +33,8 @@ from analysis.expenses.baseline import (
 )
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, readme, registries,
-    rename, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols, units,
+    rename, reports, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols,
+    units,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -5700,9 +5701,6 @@ def allocation_command(
     can look the weights up from the fund's published breakdown; see the user
     guide, Part 4.11 "Add a stock or fund".
     """
-    from rich.console import Console
-    from rich.measure import Measurement
-
     with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
         try:
             frame = allocation.lot_classes(source, month)
@@ -5715,17 +5713,219 @@ def allocation_command(
     title = f"asset allocation ({described}; {as_of})"
     if excluded:
         title += f", excluding {', '.join(excluded)}"
-    rendered = allocation.render_allocation_table(table, title=title)
+    _print_unclipped(allocation.render_allocation_table(table, title=title))
+    if allocation.UNCLASSIFIED in table.index:
+        click.echo("unclassified: lots whose symbol has no rows in allocations.csv"
+                   " (user guide Part 4.11: Add a stock or fund)", err=True)
+
+
+def _print_unclipped(rendered) -> None:
+    """Print a ``rich`` table at its full width, never cropping amounts to fit
+    the terminal: a wide table prints whole (the terminal wraps it;
+    `| less -S` scrolls it) rather than losing columns."""
+    from rich.console import Console
+    from rich.measure import Measurement
+
     console = Console()
-    # Never crop amounts to fit the terminal: a wide --by split prints at its full
-    # width (the terminal wraps it; `| less -S` scrolls it) rather than losing columns.
     needed = Measurement.get(console, console.options.update(max_width=10_000), rendered).maximum
     if needed > console.width:
         console = Console(width=needed)
     console.print(rendered)
-    if allocation.UNCLASSIFIED in table.index:
-        click.echo("unclassified: lots whose symbol has no rows in allocations.csv"
-                   " (user guide Part 4.11: Add a stock or fund)", err=True)
+
+
+# ---------- Result reports (#187): account history, sim report ----------
+
+_DOLLAR_LABELS = {DollarMode.NOMINAL: "nominal dollars", DollarMode.CPI_CONSTANT: "CPI-constant dollars"}
+
+
+def _report_options(fn):
+    """The run and dollar options every result report takes."""
+    for option in reversed([
+        click.option("--dollars", type=click.Choice([m.value for m in DollarMode]),
+                     default=DollarMode.CPI_CONSTANT.value, show_default=True,
+                     help="CPI-constant (today's) dollars, or nominal dollars."),
+        click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+                     default=None, help="Run file (default: the scenario's latest run)."),
+        click.option("--scenario", default=None,
+                     help="Scenario whose latest run to read (default: the current scenario)."),
+        click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+                     default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
+    ]):
+        fn = option(fn)
+    return fn
+
+
+@contextmanager
+def _report_run(
+    scenario: str | None, data_dir: Path | None, runfile: Path | None,
+) -> Generator[tuple[RunConnection, str]]:
+    """The run a report reads (``--runfile``, else the scenario's latest), and
+    a description of it for the report's title.
+
+    A run file is a snapshot holding everything a report reads, so
+    ``--runfile`` needs no data repo and no scenario: the run names its own.
+    """
+    if runfile is not None:
+        if scenario is not None:
+            raise click.ClickException("--scenario cannot be combined with --runfile")
+        with RunConnection(runfile) as rc:
+            yield rc, f"{rc.name}, run {runfile.name}"
+        return
+    data_dir_p = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data_dir_p, scenario)
+    run_path = ref.run_path
+    if run_path is None:
+        raise click.ClickException(f"no runs for {ref.name!r}; run `sim run` first")
+    with RunConnection(run_path, ref.name) as rc:
+        yield rc, f"{ref.name}, run {Path(run_path).name}"
+
+
+def _print_report(frame: pd.DataFrame, what: str, described: str, mode: DollarMode, *,
+                  total_row: bool = False) -> None:
+    """Print a report: a line saying what it shows, in which dollars and from
+    which run, then the table. Not the table's own title, which would wrap
+    over a narrow table."""
+    click.echo(f"{what}, {_DOLLAR_LABELS[mode]} ({described})")
+    _print_unclipped(reports.render_report_table(frame, total_row=total_row))
+
+
+@account_group_command.command("history")
+@click.argument("account")
+@click.option("--lot", default=None,
+              help="One lot of the account: adds its basis, unrealized gain and quantity.")
+@click.option("--start", default=None, help="First month (YYYY-MM or YYYY-MM-DD).")
+@click.option("--end", default=None, help="Last month (YYYY-MM or YYYY-MM-DD).")
+@click.option("--yearly", is_flag=True, default=False, help="Year-end rows instead of month-end.")
+@_report_options
+def account_history_command(
+    account: str, lot: str | None, start: str | None, end: str | None, yearly: bool,
+    dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Show ACCOUNT's balance month by month (or year by year) from a run.
+
+    Change is the balance's change since the row before; for an income or
+    expense account, whose balance is a running total, it is the period's
+    flow. With --lot, an asset lot also shows its cost basis, unrealized gain
+    and quantity where the run tracks them.
+    """
+    start_iso = month_end_iso(_validate_month_date(start)) if start else None
+    end_iso = month_end_iso(_validate_month_date(end)) if end else None
+    if start_iso and end_iso and end_iso < start_iso:
+        raise click.ClickException("--end must be on or after --start")
+    mode = DollarMode(dollars)
+    with _report_run(scenario, data_dir, runfile) as (rc, described):
+        try:
+            frame = reports.account_history(rc, account, lot=lot, start=start_iso, end=end_iso,
+                                            yearly=yearly, mode=mode)
+        except KeyError as exc:
+            raise click.ClickException(exc.args[0]) from None
+    if frame.empty:
+        click.echo(f"no balances for {account} in that range ({described})")
+        return
+    _print_report(frame, f"{account}/{lot}" if lot else account, described, mode)
+
+
+@sim_group_command.group(name="report")
+def report_group_command() -> None:
+    """Income, expenses, gains and tax by year, from a run."""
+
+
+def _flow_report(side: reports.FlowSide, year: int | None, by: str, dollars: str,
+                 runfile: Path | None, scenario: str | None, data_dir: Path | None) -> None:
+    if by not in ("category", "account") and not (by.startswith("tag:") and by != "tag:"):
+        raise click.ClickException("--by must be category, account or tag:ROLE")
+    mode = DollarMode(dollars)
+    with _report_run(scenario, data_dir, runfile) as (rc, described):
+        try:
+            frame = (reports.flows_by_year(rc, side, by=by, mode=mode) if year is None
+                     else reports.flows_for_year(rc, side, year, by=by, mode=mode))
+        except KeyError as exc:
+            raise click.ClickException(exc.args[0]) from None
+    period = "" if year is None else f" in {year}"
+    _print_report(frame, f"{side}{period} by {by.removeprefix('tag:')}", described, mode,
+                  total_row=year is not None)
+
+
+_BY_HELP = ("Group by category (default), account, or tag:ROLE: each flow's tag in ROLE,"
+            " from its scheduled rule or else its account.")
+
+
+@report_group_command.command("income")
+@click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
+@click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
+@_report_options
+def report_income_command(
+    year: int | None, by: str, dollars: str,
+    runfile: Path | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Show income by year: what each income account paid out.
+
+    Categories are salary, social security, investment (interest, dividends,
+    capital gains, including growth that stays invested) and other.
+    """
+    _flow_report("income", year, by, dollars, runfile, scenario, data_dir)
+
+
+@report_group_command.command("expenses")
+@click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
+@click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
+@_report_options
+def report_expenses_command(
+    year: int | None, by: str, dollars: str,
+    runfile: Path | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Show expenses by year: what was paid into each expense account.
+
+    Categories are housing, healthcare, taxes, living and other. Depreciation
+    is left out: it records value a vehicle loses, not money spent.
+    """
+    _flow_report("expenses", year, by, dollars, runfile, scenario, data_dir)
+
+
+@report_group_command.command("gains")
+@_report_options
+def report_gains_command(
+    dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Show realized vs. unrealized gains by year, against that year's expenses.
+
+    taxable and non-taxable are income that reached cash (Social Security
+    split by the year's computed taxable share); unrealized is growth that
+    stayed invested. distribution_coverage is realized_total minus expenses:
+    a negative year spent principal.
+    """
+    mode = DollarMode(dollars)
+    with _report_run(scenario, data_dir, runfile) as (rc, described):
+        frame = reports.gains_by_year(rc, mode)
+    _print_report(frame, "realized vs. unrealized gains", described, mode)
+
+
+@report_group_command.command("tax")
+@click.option("--reconciliation", is_flag=True, default=False,
+              help="Each year's liability, what was paid during it, and the April balance due or refund.")
+@_report_options
+def report_tax_command(
+    reconciliation: bool, dollars: str,
+    runfile: Path | None, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Show federal and state tax by year, and the after-tax income left.
+
+    Tax belongs to the year the income was earned in; its balance due or
+    refund settles the April after (see --reconciliation). after_tax_surplus
+    is after-tax income less non-tax expenses.
+    """
+    mode = DollarMode(dollars)
+    with _report_run(scenario, data_dir, runfile) as (rc, described):
+        frame = (reports.tax_reconciliation(rc, mode) if reconciliation
+                 else reports.tax_by_year(rc, mode))
+    no_tax = frame.empty if reconciliation else frame["total_tax"].isna().all()
+    if no_tax and reconciliation:
+        click.echo(f"no tax was computed in this run ({described})")
+        return
+    _print_report(frame, "tax reconciliation" if reconciliation else "tax and after-tax income",
+                  described, mode)
+    if no_tax:
+        click.echo("no tax was computed in this run, so the tax columns are blank", err=True)
 
 
 @account_group_command.group(name="tag")

@@ -76,6 +76,7 @@ from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_sce
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
     ACCOUNT_VALUES_CSV_HEADER, ASSET_CLASSES, CALENDAR_HEADER, SCENARIO_HEADER,
+    SCHEDULED_CSV_HEADER,
 )
 
 _ANALYSIS_ENV_VARS = (
@@ -466,6 +467,15 @@ def two_lot_run(two_lot_run_file: Path, test_data_dir: Path) -> Generator[RunCon
     """Connection to the ``two_lot_run_file`` run."""
     with open_scenario(test_data_dir, "retire_alice") as scenario_conn:
         with open_run(two_lot_run_file, scenario_conn,
+                      scenarios_dir=test_data_dir / "scenarios") as run:
+            yield run
+
+
+@pytest.fixture(scope="function")
+def report_run(report_run_file: Path, test_data_dir: Path) -> Generator[RunConnection]:
+    """Connection to the ``report_run_file`` run."""
+    with open_scenario(test_data_dir, "retire_alice") as scenario_conn:
+        with open_run(report_run_file, scenario_conn,
                       scenarios_dir=test_data_dir / "scenarios") as run:
             yield run
 
@@ -897,6 +907,40 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
 
     intent = load_test_copy().intent_path
     return run_scenario(intent, runs_dir / "two_lot.sqlite3", run_by="TEST",
+                        allow_dirty_data=True, allow_dirty_code=True)
+
+
+@pytest.fixture(scope="function")
+def report_run_file(retire_alice_csv: Callable[[str], Path],
+                    fund_asset_savings: Callable[..., None],
+                    load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:
+    """Run of a retire_alice copy that computes federal tax (a ``tax_accumulator``
+    rule paying the previous year's tax each April) and tags its spending in
+    role ``budget``: Expense_Living and Expense_Healthcare are ``budget:core``,
+    Expense_Housing is ``budget:home``, and the ``living`` rule's own
+    ``budget:fun`` overrides its account's tag. For the result reports (#187)."""
+    fund_asset_savings()
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    for name, tag in [("Expense_Living", "budget:core"), ("Expense_Healthcare", "budget:core"),
+                      ("Expense_Housing", "budget:home")]:
+        accounts.loc[accounts["name"] == name, "tags"] = tag
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+
+    scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    scheduled.loc[scheduled["name"] == "living", "tags"] = "budget:fun"
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
+        "name": "tax_federal_prev_year", "from_account": "Asset_Checking",
+        "to_account": "Expense_Taxes_Federal", "cadence": "annual", "month_of_year": "4",
+        "amount_rule_kind": "tax_accumulator", "tax_character": "none",
+        "start": "2027-04-30", "priority": "400", "meta_json": "{}",
+        "params_json": '{"year":"previous","scope":"federal"}',
+    }
+    scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+
+    intent = load_test_copy().intent_path
+    return run_scenario(intent, runs_dir / "report.sqlite3", run_by="TEST",
                         allow_dirty_data=True, allow_dirty_code=True)
 
 

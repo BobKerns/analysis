@@ -863,6 +863,13 @@ machine too small for a notebook comfortably.
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
 | net worth by year or month, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal]` |
+| one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly]` |
+| income or expenses by year, by category, account or tag | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
+| realized vs. unrealized gains by year | `sim report gains` |
+| federal and state tax by year, and after-tax income | `sim report tax [--reconciliation]` |
+
+The result views read the scenario's latest run (or `--runfile`) and show
+CPI-constant (today's) dollars unless you pass `--dollars nominal`.
 
 [notebooks/README.md](../notebooks/README.md) keeps the full, up-to-date list, including which
 notebook views don't have a terminal command yet.

@@ -102,6 +102,24 @@ def year_end_values(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series
     return year_end
 
 
+def event_month(events: pd.DataFrame) -> pd.Series:
+    """The month end of each transfer event's own date. Not its step's month:
+    a year-to-date catch-up posts in the first step but is dated before the
+    scenario starts, a prior year's one at that year's Dec 31."""
+    return pd.to_datetime(events["date"]) + pd.offsets.MonthEnd(0)
+
+
+def _cpi_factor(index: pd.Series, at: pd.Index):
+    """``1e6 / index`` at each of ``at``, clamped to ``index``'s first and last
+    entries: CPI-constant dollars for a period outside the run use its
+    nearest one."""
+    index = index.dropna()
+    if index.empty:
+        return pd.Series(float("nan"), index=at)
+    lookup = pd.Series(at).clip(index.index.min(), index.index.max())
+    return pd.Series(1_000_000 / index.reindex(lookup).to_numpy(), index=at)
+
+
 def yearly_totals(monthly: pd.DataFrame) -> pd.DataFrame:
     """Sum a month-indexed frame (e.g. from ``income_by_category``) by calendar year."""
     yearly = monthly.groupby(index_years(monthly)).sum()
@@ -619,15 +637,20 @@ class RunConnection(Connection):
         )
 
     def to_cpi_constant(self, monthly: pd.DataFrame | pd.Series):
-        """Convert a month-indexed dollar series/frame to this run's CPI-constant dollars."""
-        factor = 1_000_000 / self.cpi_index().reindex(monthly.index)
-        return monthly.mul(factor, axis=0)
+        """Convert a month-indexed dollar series/frame to this run's CPI-constant dollars.
+
+        A month before the run's first (a year-to-date catch-up dated before
+        the scenario starts) takes the first month's CPI, and one after its
+        last the last's: the run has no index for them.
+        """
+        return monthly.mul(_cpi_factor(self.cpi_index(), monthly.index), axis=0)
 
     def to_cpi_constant_annual(self, yearly: pd.DataFrame | pd.Series):
-        """Convert a year-indexed dollar series/frame using each year's year-end CPI."""
+        """Convert a year-indexed dollar series/frame using each year's year-end CPI,
+        the first or last year's for a year outside the run."""
         cpi = self.cpi_index()
         year_end_index = cpi.groupby(index_years(cpi)).last()
-        return yearly.mul(1_000_000 / year_end_index.reindex(yearly.index), axis=0)
+        return yearly.mul(_cpi_factor(year_end_index, yearly.index), axis=0)
 
     def account_kinds(self) -> pd.Series:
         """Account name -> kind, from this run's account-balance history."""
@@ -805,7 +828,7 @@ class RunConnection(Connection):
 
         def _build() -> pd.DataFrame:
             xfer = self.items("transfer_event", from_kind="income").copy()
-            xfer["month"] = pd.to_datetime(xfer["month"])
+            xfer["month"] = event_month(xfer)
             xfer["category"] = xfer["from_subkind"].map(subkind_to_category).fillna("other")
             income = (
                 xfer.groupby(["month", "category"])["amount"].sum()
@@ -828,7 +851,7 @@ class RunConnection(Connection):
         def _build() -> pd.DataFrame:
             xfer_exp = self.items("transfer_event", to_kind="expense").copy()
             xfer_exp = xfer_exp[~xfer_exp["to_name"].isin(non_cash_accounts)]
-            xfer_exp["month"] = pd.to_datetime(xfer_exp["month"])
+            xfer_exp["month"] = event_month(xfer_exp)
             xfer_exp["category"] = (
                 xfer_exp["to_subkind"].map(subkind_to_category).fillna("other")
             )
@@ -856,7 +879,9 @@ class RunConnection(Connection):
             gains = self.items("transfer_event")
             gains = gains[gains["reason_kind"] != "initial"].copy()
             gains["month"] = pd.to_datetime(gains["month"])
-            gains["year"] = gains["month"].dt.year
+            # The event's own date, not its step: a prior year's year-to-date
+            # row posts in the first step but belongs to that year.
+            gains["year"] = pd.to_datetime(gains["date"]).dt.year
 
             reaches_cash = gains["to_subkind"].isin(LIQUID_SUBKINDS)
             is_unrealized = (gains["from_kind"] == "income") & ~reaches_cash

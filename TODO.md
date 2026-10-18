@@ -15,9 +15,6 @@ walk the notebooks and `analysis.sim.notebook_ui`, check each view against `anal
 
 Known gaps (last reviewed 2026-10-17; each has an issue):
 
-- account and lot balance history (`notebooks/accounts.ipynb`): no terminal equivalent (#187)
-- income, expenses by category, realized and unrealized gains, tax by year
-  (`notebooks/net_worth.ipynb`): no terminal equivalent (#187)
 - plain-run scenario comparison (account and lot definition differences, rule and event
   differences, net worth differences, break-even): only `sim ensemble compare`, which is
   ensembles' risk only (#188)
