@@ -107,6 +107,9 @@ def plan(data_dir: Path) -> Plan:
         if "subkind" in header:
             result.problems.append(f"{path}: already has a subkind column")
             continue
+        if path.with_name(NEW_NAME).exists():
+            result.problems.append(f"{path}: {NEW_NAME} already exists beside it; merge them by hand")
+            continue
         at = header.index("lot") + 1 if "lot" in header else len(header)
         set_count = 0
         for row in rows:
