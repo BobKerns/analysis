@@ -73,8 +73,8 @@ def withdrawal_tax_character(
     """The tax_character of a leg drawn from an account with these attributes
     into one whose tax treatment is ``to_tax_treatment``.
 
-    Traditional money moved into another traditional lot is a rollover, not a
-    distribution, so it is untaxed (#217); into a Roth lot it stays
+    Traditional retirement money moved into another tax-deferred lot is a
+    rollover, not a distribution, so it is untaxed (#217); into a Roth lot it stays
     ``tax_deferred_out``, which is how a conversion is taxed.
 
     Returns ``None`` when the character can't be determined by a flat lookup
@@ -84,7 +84,8 @@ def withdrawal_tax_character(
     """
     if tax_treatment == "taxable":
         return "none" if subkind in TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX else None
-    if tax_treatment == "tax_deferred" and to_tax_treatment == "tax_deferred":
+    if tax_treatment == "tax_deferred" and to_tax_treatment == "tax_deferred" \
+            and subkind == RETIREMENT_SUBKIND:
         return "none"
     return TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER.get(tax_treatment or "none", "none")
 
