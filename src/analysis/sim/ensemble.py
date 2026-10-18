@@ -461,7 +461,7 @@ def _has_columns(con: sqlite3.Connection, table: str, *columns: str) -> bool:
 
 def _lifespan_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
     """The varying lifespans (#221), each with its person's birthdate and its
-    correlation node name; none in a file written before schema 39."""
+    correlation node name; none in a file written before schema 40."""
     if not _has_columns(con, "person_lifespan", "vary_distribution"):
         return []
     cur = con.cursor()

@@ -117,6 +117,7 @@ nextstrain
 NOCASE
 nonflat
 nonpositive
+nonqualified
 nunique
 OBBBA
 oneoff

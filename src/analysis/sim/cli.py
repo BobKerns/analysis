@@ -2988,7 +2988,7 @@ def _do_add_transfer(
     if cents <= 0:
         raise click.ClickException("amount must be positive")
 
-    if tax_character not in registries.TAX_CHARACTERS:
+    if tax_character and tax_character not in registries.TAX_CHARACTERS:
         raise click.ClickException(
             f"unknown tax_character: {tax_character!r}; "
             f"allowed: {sorted(registries.TAX_CHARACTERS)}"
@@ -3050,8 +3050,9 @@ def _do_add_transfer(
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-@click.option("--tax-character", default="none", show_default=True,
-              help="ADR-003 tax_character (e.g. ordinary, ltcg, none).")
+@click.option("--tax-character", default="",
+              help="ADR-003 tax_character (e.g. ordinary, ltcg, none); "
+                   "left out, it follows from the accounts (ADR-003 §3.4).")
 @click.option("--description", default="", help="Free-text description.")
 @click.option("--series", default="", help="Optional series tag.")
 @_vary_row_options
@@ -3143,7 +3144,7 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
         "param_date": row["param_date"],
         "from_account": row["account_1"], "from_lot": row["lot_1"],
         "to_account": row["account_2"], "to_lot": row["lot_2"],
-        "tax_character": row["tax_character"] or "none",
+        "tax_character": row["tax_character"],
         "description": row["description"] or (
             # Only a one_off_transfer's command keeps a copy of it in params_json.
             str(params.get("description", "")) if command == "transfer" else ""
@@ -3892,8 +3893,9 @@ def calendar_add_latent_factor(
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-@click.option("--tax-character", default="none", show_default=True,
-              help="ADR-003 tax_character (e.g. ordinary, ltcg, none).")
+@click.option("--tax-character", default="",
+              help="ADR-003 tax_character (e.g. ordinary, ltcg, none); "
+                   "left out, it follows from the accounts (ADR-003 §3.4).")
 @click.option("--description", default="", help="Free-text description.")
 @click.option("--series", default="", help="Optional series tag.")
 @_vary_row_options
@@ -3953,8 +3955,9 @@ def calendar_add_transfer(
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-@click.option("--tax-character", default="none", show_default=True,
-              help="ADR-003 tax_character; none for a direct rollover.")
+@click.option("--tax-character", default="",
+              help="ADR-003 tax_character; left out, it follows from the "
+                   "accounts, so a rollover is untaxed (ADR-003 §3.4).")
 @click.option("--description", default="", help="Free-text description.")
 @click.option("--tags", default="",
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
@@ -3988,7 +3991,7 @@ def calendar_add_transfer_balance(
         registries.parse_tags(tags)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
-    if tax_character not in registries.TAX_CHARACTERS:
+    if tax_character and tax_character not in registries.TAX_CHARACTERS:
         raise click.ClickException(
             f"unknown tax_character: {tax_character!r}; "
             f"allowed: {sorted(registries.TAX_CHARACTERS)}"

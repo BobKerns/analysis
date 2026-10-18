@@ -134,6 +134,9 @@ TAX_CHARACTERS: set[str] = {
     "home_sale",
     # Money spent on an asset (a remodel) that adds to its cost basis.
     "capital_improvement",
+    # Earnings out of a Roth lot before the owner's 5-year clock has run (or
+    # before 59½): ordinary income (#217). Its basis comes out tax_free.
+    "roth_nonqualified",
 }
 
 # The characters of a chain step that recovers a sold lot's basis (#199): the
@@ -144,6 +147,11 @@ BASIS_TAX_CHARACTERS: frozenset[str] = frozenset({"return_of_capital", "home_sal
 TAX_TREATMENTS: set[str] = {"taxable", "tax_deferred", "tax_free", "none"}
 
 RETIREMENT_SUBKIND = "retirement"
+
+# persons.csv roles of an actual person (ADR-003 §4.1), who needs a birthdate
+# and may own a retirement account (#217). A blank role is a pseudo-person
+# such as `joint`, or someone who only appears (an ancestor, an heir).
+PERSON_ROLES: frozenset[str] = frozenset({"primary", "secondary"})
 
 # A `retirement` account's lot subkinds (#217) and the tax treatment each
 # gives its lot. One IRA is either Roth or traditional, but a 401k can hold

@@ -141,9 +141,10 @@ def run_scenario(
                 "SELECT person, final_month FROM person_lifespan"
             )
         }
+        # A pseudo-person such as `joint` may have no birthdate (#217).
         person_birthdates: dict[str, date] = {
             r[0]: _parse_date(r[1])
-            for r in con.execute("SELECT id, birthdate FROM person")
+            for r in con.execute("SELECT id, birthdate FROM person WHERE birthdate != ''")
         }
         # The people who file taxes: role 'primary', or everyone if none is marked.
         taxpayers = {
@@ -201,7 +202,14 @@ def run_scenario(
             account_tax_treatment, account_subkind, account_name, cost_bases,
             quantities, growth_sources, acquired,
             chain_name=dict(con.execute("SELECT id, name FROM chain").fetchall()),
+            roth=_roth_lots(con, person_birthdates),
         )
+        # A Roth lot tracks its basis (contributions and conversions), which
+        # comes out tax-free whatever the clock says. A blank opening basis
+        # takes the whole opening balance as basis.
+        for lot_id in refill_ctx.roth:
+            if cost_bases.get(lot_id) is None:
+                cost_bases[lot_id] = balances.get(lot_id, 0)
 
         skipped_counts: dict[str, int] = {}
         applied_event_ids: set[int] = set()
@@ -549,6 +557,96 @@ def run_scenario(
     return Path(run_path)
 
 
+class RothLot(NamedTuple):
+    """A Roth lot's tax rules (#217). Its earnings come out tax-free only once
+    the distribution is *qualified*: the owner is 59½ and five tax years have
+    passed since ``clock_start``. Until then its basis still comes out
+    tax-free and its earnings are ordinary income (the 10% additional tax
+    under 59½ is not modeled)."""
+
+    basis_first: bool
+    """A Roth IRA pays out basis before earnings (IRC §408A(d)(4)); a Roth
+    401k's nonqualified distribution is pro-rata."""
+    clock_start: date | None
+    """Jan 1 of the five-year clock's first year; None means it has run."""
+    birthdate: date | None
+
+
+def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
+    """Every Roth lot, by lot id, with its owner's five-year clock (#217).
+
+    A Roth IRA's clock is the owner's, across all their Roth IRA lots; a Roth
+    401k's is the plan's, across that account's Roth lots. It starts on Jan 1
+    of the year of the earliest of those lots' ``acquired`` dates, or of the
+    account's ``opened`` when a lot has none. With neither, it has run."""
+    rows = con.execute(
+        "SELECT m.id, m.subkind, m.acquired, a.opened, a.owner, a.id FROM account_lot m "
+        "JOIN account a ON a.id = m.account_id WHERE m.subkind IN ('roth_ira', 'roth_401k')"
+    ).fetchall()
+
+    def clock_key(subkind: str, owner: str | None, account_id: int) -> tuple[str, object]:
+        return ("ira", owner or account_id) if subkind == "roth_ira" else ("401k", account_id)
+
+    years: dict[tuple[str, object], list[int]] = {}
+    undated: set[tuple[str, object]] = set()  # a lot with no date: the clock has run
+    for _lot, subkind, acquired, opened, owner, account_id in rows:
+        key = clock_key(subkind, owner, account_id)
+        dated = acquired or opened
+        if dated:
+            years.setdefault(key, []).append(int(dated[:4]))
+        else:
+            undated.add(key)
+    lots: dict[int, RothLot] = {}
+    for lot, subkind, _acquired, _opened, owner, account_id in rows:
+        key = clock_key(subkind, owner, account_id)
+        year = None if key in undated else min(years[key])
+        lots[lot] = RothLot(
+            basis_first=subkind == "roth_ira",
+            clock_start=None if year is None else date(year, 1, 1),
+            birthdate=birthdates.get(owner) if owner else None,
+        )
+    return lots
+
+
+def _roth_qualified(roth: RothLot, on: date) -> bool:
+    """Whether a distribution on ``on`` is qualified: five tax years since the
+    clock started, and the owner 59½. The loader requires a Roth owner's
+    birthdate; with none (a hand-built ``RothLot``) the age test passes."""
+    if roth.clock_start is not None and on < roth.clock_start.replace(year=roth.clock_start.year + 5):
+        return False
+    if roth.birthdate is None:
+        return True
+    months = (on.year - roth.birthdate.year) * 12 + on.month - roth.birthdate.month
+    return months > 59 * 12 + 6 or (months == 59 * 12 + 6 and on.day >= roth.birthdate.day)
+
+
+def _roth_basis_out(ctx: RefillContext, balances: Mapping[int, int], lot: int, amount: int) -> int:
+    """The basis in ``amount`` drawn from Roth ``lot``: basis first for a Roth
+    IRA, pro-rata for a Roth 401k, qualified or not. Never more than the
+    amount, so a lot worth less than its basis pays out basis only."""
+    basis = ctx.cost_bases.get(lot) or 0
+    if ctx.roth[lot].basis_first:
+        return min(basis, amount)
+    balance = balances.get(lot, 0)
+    return min(amount, basis) if balance <= 0 else min(amount, basis, basis * amount // balance)
+
+
+def _roth_taxed(ctx: RefillContext, balances: Mapping[int, int], lot: int, amount: int, on: date) -> int:
+    """How much of ``amount`` drawn from Roth ``lot`` on ``on`` is taxed."""
+    if _roth_qualified(ctx.roth[lot], on):
+        return 0
+    return amount - _roth_basis_out(ctx, balances, lot, amount)
+
+
+def _leaves_roth(ctx: RefillContext | None, from_id: int, to_id: int) -> bool:
+    """Money out of a Roth lot that leaves the retirement wrapper (a
+    distribution, not a rollover into another retirement lot)."""
+    return (
+        ctx is not None and from_id in ctx.roth
+        and ctx.account_subkind.get(to_id) != registries.RETIREMENT_SUBKIND
+    )
+
+
 class RefillAttempt(NamedTuple):
     """What the refill look-ahead did for an account's latest debit (#105),
     kept so a negative-balance warning can say which chain it tried and how
@@ -579,7 +677,7 @@ class RefillContext:
                  "account_tax_treatment", "account_subkind", "account_name",
                  "cost_bases", "quantities", "growth_sources", "acquired",
                  "chain_name", "refilling", "last_refill", "negative_since",
-                 "negative_events")
+                 "negative_events", "roth")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
@@ -591,6 +689,7 @@ class RefillContext:
         growth_sources: frozenset[int] = frozenset(),
         acquired: dict[int, date | None] | None = None,
         chain_name: dict[int, str] | None = None,
+        roth: dict[int, RothLot] | None = None,
     ) -> None:
         self.graph = graph
         self.aux = aux
@@ -604,6 +703,7 @@ class RefillContext:
         self.growth_sources = growth_sources
         self.acquired = acquired if acquired is not None else {}
         self.chain_name = chain_name if chain_name is not None else {}
+        self.roth = roth if roth is not None else {}
         self.refilling: set[int] = set()  # reentrancy guard against refill cycles
         self.last_refill: dict[int, RefillAttempt] = {}
         self.negative_since: dict[int, bool] = {}
@@ -817,7 +917,7 @@ def _post_transfer(
          remainder, tax_char, tax_year, reason_kind, reason_id, parent_event_id),
     )
     if track is not None:
-        _track_lots(track, account_kinds, balances, from_id, to_id, amount)
+        _track_lots(track, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
     if track is not None:
@@ -829,12 +929,23 @@ def _post_transfer(
 
 def _track_lots(
     ctx: RefillContext, account_kinds: dict[int, str], balances: dict[int, int],
-    from_id: int, to_id: int, amount: int,
+    from_id: int, to_id: int, amount: int, on: date,
 ) -> None:
     """Shares leave ``from_id`` in proportion to the value withdrawn, and
-    ``to_id`` records a purchase. Call before ``balances`` moves."""
+    ``to_id`` records a purchase. Call before ``balances`` moves.
+
+    Money out of a Roth lot takes its basis with it (``_roth_basis_out``).
+    Rolled into another Roth lot, it carries that basis, or all of it as
+    basis when the draw would have been qualified, as a qualified Roth 401k
+    rollover into a Roth IRA does."""
     if amount <= 0:
         return
+    carried = amount
+    if from_id in ctx.roth:
+        basis_out = _roth_basis_out(ctx, balances, from_id, amount)
+        ctx.cost_bases[from_id] = (ctx.cost_bases.get(from_id) or 0) - basis_out
+        if to_id in ctx.roth and not _roth_qualified(ctx.roth[from_id], on):
+            carried = basis_out
     if account_kinds[from_id] == "asset":
         quantity = ctx.quantities.get(from_id)
         prior_balance = balances.get(from_id, 0)
@@ -844,6 +955,8 @@ def _track_lots(
             )
     if account_kinds[to_id] == "asset":
         _record_purchase(ctx, balances, from_id, to_id, amount)
+        if carried < amount and (to_basis := ctx.cost_bases.get(to_id)) is not None:
+            ctx.cost_bases[to_id] = to_basis - (amount - carried)
 
 
 def _post_fixed_amount(
@@ -1741,6 +1854,16 @@ def _post_withdrawal(
     ``amount`` rather than per leg (issue #101): per leg, the overshoot drew
     a phantom refill or warned of a negative balance the pair never reaches.
     """
+    if tax_character is None and _leaves_roth(refill_ctx, from_id, to_id):
+        assert refill_ctx is not None
+        _post_roth_withdrawal(
+            con, balances, account_kinds, refill_ctx, step_id, month_s, from_id, to_id,
+            amount, reason_id, parent_event_id=parent_event_id, reason_kind=reason_kind,
+            tax_year=tax_year, requested=requested, remainder=remainder, refill_mark=refill_mark,
+        )
+        return
+    if tax_character is None and refill_ctx is not None and from_id in refill_ctx.roth:
+        tax_character = "none"  # a rollover into another retirement lot (_leaves_roth)
     tax_char = tax_character or registries.withdrawal_tax_character(
         account_tax_treatment.get(from_id), account_subkind.get(from_id, ""),
         account_tax_treatment.get(to_id),
@@ -1776,7 +1899,7 @@ def _post_withdrawal(
     basis_out = 0 if prior_balance <= 0 else min(basis, basis * amount // prior_balance)
     gain = amount - basis_out
     if refill_ctx is not None:
-        _track_lots(refill_ctx, account_kinds, balances, from_id, to_id, amount)
+        _track_lots(refill_ctx, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
     basis_leg_id = _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_id, to_id, basis_out,
         "return_of_capital", reason_id, parent_event_id, reason_kind=reason_kind,
@@ -1800,6 +1923,57 @@ def _post_withdrawal(
     cost_bases[from_id] = basis - basis_out
     if refill_ctx is not None:
         _warn_if_negative(refill_ctx, account_kinds, from_id, balances, month_s)
+
+
+def _post_roth_withdrawal(
+    con, balances: dict[int, int], account_kinds: dict[int, str], ctx: RefillContext,
+    step_id: int, month_s: str, from_id: int, to_id: int, amount: int, reason_id: int,
+    *, parent_event_id: int | None, reason_kind: str, tax_year: int | None,
+    requested: int | None, remainder: int | None, refill_mark: int | None,
+) -> None:
+    """Post a distribution out of a Roth lot (#217): basis as ``tax_free``,
+    and earnings as ``tax_free`` when the distribution is qualified, else as
+    ``roth_nonqualified`` (``RothLot``). The lot's basis falls by the basis
+    paid out. As in ``_post_withdrawal``'s split, the refill, lot tracking
+    and negative-balance check run once, on the whole amount."""
+    if account_kinds[to_id] == "liability":
+        amount = min(amount, max(0, balances.get(to_id, 0)))
+        if amount == 0:
+            return
+    if amount > 0 and refill_mark is None:
+        refill_mark = _ensure_min_balance(
+            con, balances, account_kinds, step_id, month_s, ctx, from_id, amount,
+        )
+    taxed = _roth_taxed(ctx, balances, from_id, amount, _parse_date(month_s))
+    # _track_lots spends the lot's basis by the same rule, qualified or not.
+    _track_lots(ctx, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
+    free_leg = _post_transfer(
+        con, balances, account_kinds, step_id, month_s, from_id, to_id, amount - taxed,
+        "tax_free", reason_id, parent_event_id, reason_kind=reason_kind, tax_year=tax_year,
+        refill_ctx=ctx, requested=requested, remainder=remainder, net_effects=False,
+        refill_mark=refill_mark,
+    )
+    _post_transfer(
+        con, balances, account_kinds, step_id, month_s, from_id, to_id, taxed,
+        "roth_nonqualified", reason_id, free_leg if free_leg is not None else parent_event_id,
+        reason_kind=reason_kind, tax_year=tax_year, refill_ctx=ctx,
+        requested=requested, remainder=remainder, net_effects=False,
+        refill_mark=refill_mark if free_leg is None else None,
+    )
+    _warn_if_negative(ctx, account_kinds, from_id, balances, month_s)
+
+
+def _roth_draw_taxed(
+    ctx: RefillContext | None, balances: Mapping[int, int], graph: ChainGraph,
+    step_chain: int, target: int, allocation: int, month_s: str,
+) -> bool:
+    """Whether a chain step on a Roth lot would pay out taxed earnings (#217):
+    such a step is skipped unless it is its chain's last."""
+    lot = graph.leaf_lot.get(step_chain)
+    if lot is None or ctx is None or not _leaves_roth(ctx, lot, target):
+        return False
+    take = min(allocation, max(0, balances.get(lot, 0) - graph.minimum_of.get(lot, 0)))
+    return take > 0 and _roth_taxed(ctx, balances, lot, take, _parse_date(month_s)) > 0
 
 
 def _chain_step_allocation(
@@ -1859,6 +2033,7 @@ def _chain_draw(
     aux=None, chain_base_date: date | None = None,
     inflation_factor_cache: dict | None = None,
     _progress: _ChainProgress | None = None,
+    _fallback: bool = False,
 ) -> int:
     """Recursively draw up to ``amount_needed`` into ``target_account_id``,
     scanning ``chain_id``'s steps in order (ADR-003 §4.7).
@@ -1873,7 +2048,9 @@ def _chain_draw(
     it depends on which account actually supplied it. ``_progress`` (created
     here at the top-level call, then threaded through the recursion) is what
     lets every leg's transfer_event report the ORIGINAL ``amount_needed`` as
-    ``requested`` rather than its own shrunk-down allocation.
+    ``requested`` rather than its own shrunk-down allocation. ``_fallback``
+    says a step after this chain, in a chain above it, can still pay, so a
+    taxed Roth step here is skipped even when it is this chain's last.
     """
     if amount_needed <= 0:
         return 0
@@ -1918,8 +2095,9 @@ def _chain_draw(
         )
         return take
     total = 0
-    for draw_from_id, step_maximum, step_percent, step_series, step_cadence, *_tax in (
-            graph.members.get(chain_id, [])):
+    members = graph.members.get(chain_id, [])
+    for number, (draw_from_id, step_maximum, step_percent, step_series, step_cadence, *_tax) in (
+            enumerate(members, 1)):
         remaining = amount_needed - total
         if remaining <= 0:
             break
@@ -1929,6 +2107,11 @@ def _chain_draw(
         )
         if allocation <= 0:
             continue
+        fallback = _fallback or number < len(members)
+        if fallback and _roth_draw_taxed(
+            refill_ctx, balances, graph, draw_from_id, target_account_id, allocation, month_s,
+        ):
+            continue  # a later step can pay without tax; a Roth last step still pays (#217)
         total += _chain_draw(
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, step_id, month_s, graph,
@@ -1937,7 +2120,7 @@ def _chain_draw(
             reason_id=reason_id, tax_year=tax_year,
             aux=aux, chain_base_date=chain_base_date,
             inflation_factor_cache=inflation_factor_cache,
-            _progress=_progress,
+            _progress=_progress, _fallback=fallback,
         )
     return total
 
@@ -2471,6 +2654,7 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
     ordinary = (
         by_char.get("ordinary", 0)
         + by_char.get("tax_deferred_out", 0)
+        + by_char.get("roth_nonqualified", 0)
         - by_char.get("tax_deferred_in", 0)
     )
     return ordinary, by_char.get("ss_benefit", 0)
@@ -2837,15 +3021,22 @@ def _calendar_tax_character(
     is a sale, and money out of a traditional retirement lot is taxed by
     where each leg lands (#217): a rollover into another traditional lot is
     untaxed, anywhere else (a Roth lot, checking) it is ``tax_deferred_out``.
-    Both return None, so ``_post_withdrawal`` decides per leg, as for a sweep
-    out of that lot, even through a destination chain. From anywhere else
-    a blank is ``none``.
+    Money out of a Roth lot that leaves the wrapper is a distribution, under
+    the five-year rule. All of these return None, so ``_post_withdrawal``
+    decides per leg, as for a sweep out of that lot, even through a
+    destination chain. From anywhere else a blank is ``none``, as it is for
+    a Roth rollover straight into another retirement lot.
     """
     if character := payload.get("tax_character"):
         return character
     lot = ctx.graph.leaf_lot.get(from_chain)
     if lot is None:
         return "none"
+    to_lot = ctx.graph.leaf_lot.get(to_chain)
+    if lot in ctx.roth and (to_lot is None or _leaves_roth(ctx, lot, to_lot)):
+        # A Roth distribution, or money a chain may carry out of the wrapper:
+        # _post_withdrawal applies the five-year rule to each leg that leaves.
+        return None
     treatment = ctx.account_tax_treatment.get(lot)
     if treatment == "tax_deferred" or registries.withdrawal_tax_character(
             treatment, ctx.account_subkind.get(lot, "")) is None:
@@ -2856,10 +3047,13 @@ def _calendar_tax_character(
 def _split_rule_character(from_chain: int, ctx: RefillContext) -> str:
     """What the synthesized rule of a calendar row whose legs each decide
     their own character records: traditional money's ``tax_deferred_out``,
-    or a sale's first leg, ``return_of_capital``."""
+    a Roth lot's ``tax_free`` (its basis comes out first), or a sale's first
+    leg, ``return_of_capital``."""
     lot = ctx.graph.leaf_lot.get(from_chain)
     if lot is not None and ctx.account_tax_treatment.get(lot) == "tax_deferred":
         return "tax_deferred_out"
+    if lot is not None and lot in ctx.roth:
+        return "tax_free"
     return "return_of_capital"
 
 

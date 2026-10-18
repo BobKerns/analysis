@@ -135,6 +135,18 @@ def test_a_bad_lifespan_row_fails_the_load(
         load_test_copy()
 
 
+def test_a_lifespan_needs_the_persons_birthdate(
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    test_data_dir: Path,
+) -> None:
+    persons = test_data_dir / "persons.csv"
+    persons.write_text(persons.read_text() + "carol,Carol (fake),,,{}\n")
+    write_lifespans("carol,84,,,,,,")
+
+    with pytest.raises(LoadError, match="needs 'carol's birthdate"):
+        load_test_copy()
+
+
 def test_two_lifespans_correlating_in_a_cycle_fail_the_load(
     write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
