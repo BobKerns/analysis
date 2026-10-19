@@ -171,6 +171,7 @@ servname
 setopt
 setp
 sharex
+SHASUMS
 shellcheck
 Shiller
 sidefx

@@ -25,11 +25,16 @@ It also installs the `ripwire` CLI if it is missing. The CLI is used to save
 token usage and improve quality by creating and using
 deterministic repository maps and code-navigation checks; its optional MCP
 server is registered separately per coding-agent client below.
-Finally, if a recent enough Node.js is available (22.22.2+, 24.15+, or 26+;
-see `engines` in `package.json`), it installs the spelling and markdown linters
-(`cspell`, `markdownlint-cli`) at the versions pinned in `package.json` /
-`package-lock.json`. Without Node.js, or with an older one, the script warns and carries on: the
-simulator and notebooks don't need it, only those two verification gates do.
+Finally, it installs the spelling and markdown linters (`cspell`,
+`markdownlint-cli`) at the versions pinned in `package.json` /
+`package-lock.json`. They need Node.js 22.22.2+, 24.15+, or 26+ (see `engines`
+in `package.json`); if `node` is missing or older, the script downloads the
+version in `.node-version` from nodejs.org, checks it against the published
+SHA-256 sums, unpacks it under `~/.local/share/node`, and links `node`, `npm`
+and `npx` into `~/.local/bin`. That one then comes first on your `PATH`, for
+everything, not just this repo. If that fails, the script warns and carries
+on: the simulator and notebooks don't need Node.js, only those two
+verification gates do.
 
 Last, it links the data and code repositories together. It asks for the path to
 your data repo, makes `data/shared` point to it, and asks which of the data
@@ -78,8 +83,8 @@ source data/shared/sim/activate-analysis
     this nbstripout version — the additional commands are required. The second
     `git config` enables it for `git diff`)
 7. Install the pinned lint tools (needs [Node.js](https://nodejs.org) 22.22.2+,
-   24.15+, or 26+; `.npmrc` sets `engine-strict`, so `npm ci` refuses an
-   unsupported version):
+   24.15+, or 26+, such as the version in `.node-version`; `.npmrc` sets
+   `engine-strict`, so `npm ci` refuses an unsupported version):
     ```sh
     npm ci
     ```

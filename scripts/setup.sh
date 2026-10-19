@@ -1,6 +1,6 @@
 #!/bin/sh
 # One-time repo setup: uv, pinned Python, git hooks, deps, notebook filter,
-# lint tools, and the link to the data repo.
+# Node.js and the lint tools, and the link to the data repo.
 # Safe to re-run; every step is idempotent.
 set -eu
 
@@ -94,7 +94,8 @@ git config filter.nbstripout.clean '"$(git rev-parse --show-toplevel)/.venv/bin/
 git config diff.ipynb.textconv '"$(git rev-parse --show-toplevel)/.venv/bin/python" -m nbstripout -t --extra-keys "metadata.kernelspec.display_name metadata.language_info.version"'
 
 # The pinned lint tools need a recent Node. Keep this test in step with
-# "engines" in package.json, the strictest range among the locked packages.
+# "engines" in package.json, the strictest range among the locked packages,
+# and .node-version (the version installed below) inside it.
 node_supported() {
     node -e '
         const [major, minor, patch] = process.versions.node.split(".").map(Number);
@@ -105,15 +106,78 @@ node_supported() {
     '
 }
 
-# Neither case below is fatal: running the simulator and notebooks needs no
-# Node. Only the spelling and markdown gates do.
-if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
-    echo "Node.js not found; skipping cspell/markdownlint. Install Node.js and re-run" >&2
-    echo "this script before using 'npm run spell' / 'npm run markdownlint'." >&2
-elif ! node_supported; then
-    echo "Node.js $(node --version) is too old for the pinned cspell/markdownlint, which" >&2
-    echo "need 22.22.2+, 24.15+, or 26+; skipping them. Upgrade Node.js and re-run" >&2
-    echo "this script before using 'npm run spell' / 'npm run markdownlint'." >&2
+# Install the Node.js pinned in .node-version from nodejs.org, unpacked under
+# ~/.local/share/node with node, npm and npx linked into ~/.local/bin, after
+# checking it against nodejs.org's published SHA-256 sums.
+install_node() {
+    version=$(cat .node-version)
+    case $(uname -s) in
+        Darwin) os=darwin ;;
+        Linux) os=linux ;;
+        *) echo "No Node.js download for $(uname -s); install Node.js yourself." >&2; return 1 ;;
+    esac
+    case $(uname -m) in
+        x86_64|amd64) arch=x64 ;;
+        arm64|aarch64) arch=arm64 ;;
+        *) echo "No Node.js download for $(uname -m); install Node.js yourself." >&2; return 1 ;;
+    esac
+    name=node-v$version-$os-$arch
+    dest=$HOME/.local/share/node/$name
+    if [ ! -x "$dest/bin/node" ]; then
+        echo "Installing Node.js $version into $dest..."
+        url=https://nodejs.org/dist/v$version
+        tmp=$(mktemp -d) || return 1
+        if ! curl -fsSL -o "$tmp/$name.tar.gz" "$url/$name.tar.gz" \
+            || ! curl -fsSL -o "$tmp/SHASUMS256.txt" "$url/SHASUMS256.txt"; then
+            rm -rf "$tmp"
+            return 1
+        fi
+        want=$(awk -v f="$name.tar.gz" '$2 == f { print $1 }' "$tmp/SHASUMS256.txt")
+        if command -v sha256sum >/dev/null 2>&1; then
+            got=$(sha256sum "$tmp/$name.tar.gz" | cut -d' ' -f1)
+        else
+            got=$(shasum -a 256 "$tmp/$name.tar.gz" | cut -d' ' -f1)
+        fi
+        if [ -z "$want" ] || [ "$got" != "$want" ]; then
+            echo "$name.tar.gz doesn't match nodejs.org's SHA-256 sum; not installing it." >&2
+            rm -rf "$tmp"
+            return 1
+        fi
+        if ! mkdir -p "$HOME/.local/share/node" \
+            || ! tar -xzf "$tmp/$name.tar.gz" -C "$HOME/.local/share/node"; then
+            rm -rf "$tmp"
+            return 1
+        fi
+        rm -rf "$tmp"
+    fi
+    mkdir -p "$HOME/.local/bin" || return 1
+    for tool in node npm npx; do
+        ln -sf "../share/node/$name/bin/$tool" "$HOME/.local/bin/$tool" || return 1
+    done
+}
+
+# Neither failure below is fatal: running the simulator and notebooks needs
+# no Node. Only the spelling and markdown gates do.
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || ! node_supported; then
+    if command -v node >/dev/null 2>&1; then
+        echo "Node.js $(node --version) is too old for the pinned cspell/markdownlint."
+    else
+        echo "Node.js not found."
+    fi
+    if install_node; then
+        hash -r 2>/dev/null || true
+        if ! node_supported; then
+            # An older node earlier on PATH than ~/.local/bin hides the new one.
+            echo "An older node ($(command -v node)) comes before ~/.local/bin on PATH;" >&2
+            echo "using ~/.local/bin/node for this run. Put ~/.local/bin first to use it everywhere." >&2
+            export PATH="$HOME/.local/bin:$PATH"
+        fi
+    fi
+fi
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || ! node_supported; then
+    echo "Couldn't get a Node.js new enough for cspell/markdownlint (22.22.2+, 24.15+," >&2
+    echo "or 26+); skipping them. Install one and re-run this script before using" >&2
+    echo "'npm run spell' / 'npm run markdownlint'." >&2
 else
     echo "Installing pinned lint tools (cspell, markdownlint)..."
     npm ci --no-audit --no-fund
