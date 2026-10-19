@@ -49,13 +49,19 @@ clone_if_missing() {
         return 0
     fi
     if [ -n "$ref" ]; then
-        echo "Cloning $url ($ref) into $dir..."
-        if git clone --branch "$ref" "$url" "$dir"; then
-            return 0
+        echo "Cloning ($ref) into $dir..."
+        if git ls-remote --exit-code "$url" "refs/heads/$ref" "refs/tags/$ref" >/dev/null; then
+            git clone --branch "$ref" "$url" "$dir"
+            return $?
+        else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+                return "$status"
+            fi
         fi
-        echo "No $ref at $url (not pushed yet?); cloning its default branch instead." >&2
+        echo "No $ref at the remote (not pushed yet?); cloning its default branch instead." >&2
     else
-        echo "Cloning $url into $dir..."
+        echo "Cloning into $dir..."
     fi
     git clone "$url" "$dir"
 }

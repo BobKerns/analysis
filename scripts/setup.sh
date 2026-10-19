@@ -66,7 +66,8 @@ fi
 
 if ! command -v ripwire >/dev/null 2>&1; then
     echo "ripwire not found; installing..."
-    RIPWIRE_REPO=redhat-et/ripwire bash -c \
+    RIPWIRE_REPO=redhat-et/ripwire \
+    REPWIRE_INSTALL_YES=1 bash -c \
         "$(curl -fsSL https://raw.githubusercontent.com/redhat-et/ripwire/main/scripts/install.sh)"
 fi
 
