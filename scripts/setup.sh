@@ -1,6 +1,6 @@
 #!/bin/sh
-# One-time repo setup: uv, pinned Python, git hooks, deps, notebook filter,
-# Node.js and the lint tools, and the link to the data repo.
+# One-time repo setup: a C toolchain, uv, pinned Python, git hooks, deps,
+# notebook filter, Node.js and the lint tools, and the link to the data repo.
 # Safe to re-run; every step is idempotent.
 set -eu
 
@@ -58,6 +58,55 @@ case ":$PATH:" in
         ;;
 esac
 
+# Some dependencies build C extensions where no wheel fits, so a C and C++
+# compiler and make must be there. On Linux, install them with the system's
+# package manager: apt (Ubuntu and Debian, WSL included), or on a best-effort
+# basis dnf, zypper, pacman or apk. If that can't be done, say what to
+# install and stop.
+toolchain_missing() {
+    echo "setup.sh needs a C compiler, a C++ compiler and make to build some" >&2
+    echo "dependencies. Install them, then re-run this script:" >&2
+    echo "    $1" >&2
+    exit 1
+}
+have_toolchain() {
+    command -v cc >/dev/null 2>&1 && command -v c++ >/dev/null 2>&1 \
+        && command -v make >/dev/null 2>&1
+}
+if [ "$(uname -s)" = Darwin ]; then
+    # /usr/bin/cc exists even without the command-line tools; it just offers
+    # to install them, so ask xcode-select instead.
+    if ! xcode-select -p >/dev/null 2>&1; then
+        toolchain_missing "xcode-select --install"
+    fi
+elif ! have_toolchain; then
+    if [ "$(id -u)" -eq 0 ]; then
+        sudo=
+    else
+        sudo="sudo "
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        install="${sudo}apt-get update && ${sudo}apt-get install -y build-essential"
+    elif command -v dnf >/dev/null 2>&1; then
+        install="${sudo}dnf install -y gcc gcc-c++ make"
+    elif command -v zypper >/dev/null 2>&1; then
+        install="${sudo}zypper install -y gcc gcc-c++ make"
+    elif command -v pacman >/dev/null 2>&1; then
+        install="${sudo}pacman -S --needed --noconfirm base-devel"
+    elif command -v apk >/dev/null 2>&1; then
+        install="${sudo}apk add build-base"
+    else
+        toolchain_missing "your distribution's C compiler, C++ compiler and make"
+    fi
+    if [ -n "$sudo" ] && ! command -v sudo >/dev/null 2>&1; then
+        toolchain_missing "$install"
+    fi
+    echo "C compiler or make not found; installing them with: $install"
+    if ! sh -c "$install" || ! have_toolchain; then
+        toolchain_missing "$install"
+    fi
+fi
+
 if ! command -v uv >/dev/null 2>&1; then
     echo "uv not found; installing..."
     # The step above owns the startup files; keep uv's installer out of them.
@@ -79,6 +128,15 @@ echo "Using $(ripwire --version)"
 
 echo "Configuring git hooks path..."
 git config core.hooksPath .githooks
+
+# An explicit merge always records a merge commit; a pull still
+# fast-forwards when it can (pull.ff overrides merge.ff for pulls).
+set_merge_config() {
+    git -C "$1" config merge.ff false
+    git -C "$1" config pull.ff true
+}
+echo "Configuring merges (merge.ff false, pull.ff true)..."
+set_merge_config .
 
 echo "Syncing dependencies..."
 if ! uv sync --group dev; then
@@ -188,5 +246,10 @@ fi
 # path; a blank answer (or no terminal) builds template data instead.
 echo "Linking the data repo at data/shared..."
 scripts/link-data.sh
+
+# Template data (CI's) is a plain directory inside this repo, so there this
+# just sets this repo's identical values again.
+echo "Configuring merges in the data repo..."
+set_merge_config data/shared
 
 echo "Setup complete."

@@ -1,9 +1,9 @@
 #!/bin/sh
 # Prepare the container, then run the command it was given (bash by default).
 #
-# The host's ~/.ssh arrives read-only at /root/.ssh-host. It is copied into
-# /root/.ssh rather than used in place, so ssh sees the file modes it insists
-# on and can add to known_hosts.
+# The host's ~/.ssh arrives read-only at ~/.ssh-host. It is copied into
+# ~/.ssh rather than used in place, so ssh sees the owner and file modes it
+# insists on and can add to known_hosts.
 #
 # On a fresh /work volume, clone the code repo (CODE_REPO_URL, at
 # CODE_REPO_REF if set) into /work/analysis and, if DATA_REPO_URL is set, the
@@ -21,17 +21,17 @@ if [ -z "${CODE_REPO_URL:-}" ]; then
     exit 2
 fi
 
-if [ -d /root/.ssh-host ]; then
+if [ -d "$HOME/.ssh-host" ]; then
     # Regular files only: agent and ControlMaster sockets can't be copied,
     # and one can vanish mid-copy.
-    rm -rf /root/.ssh
-    (cd /root/.ssh-host && find . -type d) | while read -r d; do
-        mkdir -p "/root/.ssh/$d"
+    rm -rf "$HOME/.ssh"
+    (cd "$HOME/.ssh-host" && find . -type d) | while read -r d; do
+        mkdir -p "$HOME/.ssh/$d"
     done
-    (cd /root/.ssh-host && find . -type f) | while read -r f; do
-        cp "/root/.ssh-host/$f" "/root/.ssh/$f" 2>/dev/null || true
+    (cd "$HOME/.ssh-host" && find . -type f) | while read -r f; do
+        cp "$HOME/.ssh-host/$f" "$HOME/.ssh/$f" 2>/dev/null || true
     done
-    chmod -R go= /root/.ssh
+    chmod -R go= "$HOME/.ssh"
 fi
 
 # Clone $1 into $2, at branch $3 if given and the remote has it.

@@ -10,13 +10,20 @@ Run the setup script (idempotent — safe to re-run):
 ./scripts/setup.sh
 ```
 
+It first makes sure there's a C compiler, a C++ compiler and `make`, which some
+dependencies need to build. On Linux it installs them if they're missing:
+`build-essential` with apt on Ubuntu and Debian (WSL included), using `sudo`,
+or the equivalent with dnf, zypper, pacman or apk. On macOS it checks for the
+Xcode command-line tools. If it can't, it says what to install and stops.
 It puts `~/.local/bin`, where uv and `ripwire` are installed, on your `PATH`
 if it isn't already there, adding it to your bash and zsh startup files
 (`.bashrc` and the bash login file, `.zshrc`); for another shell it reminds
 you to add it yourself.
 It installs [uv](https://github.com/astral-sh/uv) if missing, configures the
 `.githooks` hooks (which keep runtime data and real account names out of
-commits), runs `uv sync --group dev` (installing the Python
+commits), sets `merge.ff false` and `pull.ff true` in this repo and the linked
+data repo (an explicit merge always makes a merge commit; a pull still
+fast-forwards when it can), runs `uv sync --group dev` (installing the Python
 version pinned in `.python-version` only if `uv sync` can't find a usable
 interpreter), and installs the notebook-cleaning `nbstripout` filter (strips
 outputs and per-run/per-machine metadata churn like `kernelspec.display_name`
@@ -48,23 +55,28 @@ source data/shared/sim/activate-analysis
 
 ## What the script does, step by step (for reference or manual setup)
 
-1. Put `~/.local/bin` on `PATH`, where the next two steps install their
+1. Install a C toolchain: on Ubuntu, Debian or WSL,
+   `sudo apt-get install build-essential`; on macOS, `xcode-select --install`.
+2. Put `~/.local/bin` on `PATH`, where the next two steps install their
    binaries. If it isn't there already, add this line to your shell startup
    file (`~/.zshrc`, or `~/.bashrc` and your bash login file):
     ```sh
     case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac
     ```
-2. Install [uv](https://github.com/astral-sh/uv)
-3. Install and verify `ripwire`:
+3. Install [uv](https://github.com/astral-sh/uv)
+4. Install and verify `ripwire`:
     ```sh
     RIPWIRE_REPO=redhat-et/ripwire bash -c "$(curl -fsSL https://raw.githubusercontent.com/redhat-et/ripwire/main/scripts/install.sh)"
     ripwire --version
     ```
-4. Configure the git hooks (pre-commit and commit-msg):
+5. Configure the git hooks (pre-commit and commit-msg) and merges:
     ```sh
     git config core.hooksPath .githooks
+    git config merge.ff false
+    git config pull.ff true
     ```
-5. Run `uv sync --group dev` (installing the pinned Python from
+    Run the last two in the data repo as well.
+6. Run `uv sync --group dev` (installing the pinned Python from
    `.python-version` first with `uv python install` only if this fails)
 
    This also puts `analysis_truststore.pth` in the venv's site-packages. It
@@ -73,7 +85,7 @@ source data/shared/sim/activate-analysis
    verified with the operating system's trust store and a root you've
    trusted locally (a corporate proxy, a home CA) is honored, even by
    libraries that bring certifi's bundle.
-6. Install the notebook-cleaning filter:
+7. Install the notebook-cleaning filter:
     ```sh
     uv run nbstripout --install
     git config filter.nbstripout.clean '"$(git rev-parse --show-toplevel)/.venv/bin/python" -m nbstripout --extra-keys "metadata.kernelspec.display_name metadata.language_info.version"'
@@ -82,7 +94,7 @@ source data/shared/sim/activate-analysis
     (`--install --extra-keys` in one call does *not* persist the extra keys in
     this nbstripout version — the additional commands are required. The second
     `git config` enables it for `git diff`)
-7. Install the pinned lint tools (needs [Node.js](https://nodejs.org) 22.22.2+,
+8. Install the pinned lint tools (needs [Node.js](https://nodejs.org) 22.22.2+,
    24.15+, or 26+, such as the version in `.node-version`; `.npmrc` sets
    `engine-strict`, so `npm ci` refuses an unsupported version):
     ```sh
@@ -91,7 +103,7 @@ source data/shared/sim/activate-analysis
     This puts `cspell` and `markdownlint` in `node_modules/` (gitignored). Run
     them with `npm run spell` and `npm run markdownlint`. To change a version, edit
     `package.json` and run `npm install` to update the lockfile.
-8. Link the data and code repositories:
+9. Link the data and code repositories:
     ```sh
     scripts/link-data.sh /path/to/data-repo   # or --template for template data
     ```
