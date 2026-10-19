@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 39) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 42) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -158,7 +158,7 @@ CREATE TABLE account (
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
         (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
-            'retirement','hsa','real_estate','vehicle','other_asset'))
+            'retirement','hsa','real_estate','vehicle','other_asset','business'))
         OR (kind = 'liability' AND subkind IN ('mortgage','heloc','credit_card',
             'other_liability'))
         OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
@@ -361,7 +361,8 @@ CREATE TABLE scheduled_transaction (
                                  'tax_deferred_in','tax_deferred_out',
                                  'return_of_capital','property_tax','none',
                                  'excluded_gain','home_sale',
-                                 'capital_improvement','roth_nonqualified')),
+                                 'capital_improvement','roth_nonqualified',
+                                 'business_income','business_expense')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
     priority                INTEGER NOT NULL DEFAULT 500,
@@ -455,7 +456,7 @@ CREATE TABLE year_to_date (
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
                          'excluded_gain','home_sale','capital_improvement',
-                         'roth_nonqualified')),
+                         'roth_nonqualified','business_income','business_expense')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)
@@ -895,3 +896,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#217](https://github.com/BobKerns/analysis/issues/217): tax character `roth_nonqualified`, a Roth lot's earnings paid out before the distribution is qualified (Intent DDL; schema 39).
 - [#221](https://github.com/BobKerns/analysis/issues/221): `person_lifespan` gains `age_at_death` and the `vary_*` columns; `ensemble_draw` records a lifespan under `lifespan:<person>` with target `age_at_death` (Intent layer DDL, glossary; schema 40).
 - [#222](https://github.com/BobKerns/analysis/issues/222): `person.sex` and `person_lifespan.life_table_set_forward`, for a lifespan drawn from the new aux kind `life_table` (Intent layer DDL; schema 41).
+- [#231](https://github.com/BobKerns/analysis/issues/231): asset subkind `business` and tax characters `business_income` and `business_expense` (Intent and Run layer DDL; schema 42).

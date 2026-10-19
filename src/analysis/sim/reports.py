@@ -271,8 +271,20 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     frame["after_tax_income"] = frame["gross_income"] - frame["total_tax"]
     frame["non_tax_expenses"] = (expenses["total"] - expenses["taxes"]).reindex(frame.index).fillna(0)
     frame["after_tax_surplus"] = frame["after_tax_income"] - frame["non_tax_expenses"]
+    # A run with a business (#231) also shows its federal Schedule C result,
+    # the expenses a hobby couldn't deduct, and the loss carried forward.
+    business = _tax_buckets(rc, list(_BUSINESS_COLUMNS)).rename(columns=_BUSINESS_COLUMNS)
+    if business.fillna(0).ne(0).any().any():
+        frame = frame.join(business.reindex(frame.index))
     frame.index.name = "year"
     return _cpi(rc, frame, mode, annual=True)
+
+
+_BUSINESS_COLUMNS = {
+    "federal_schedule_c_net": "business_net",
+    "federal_hobby_expense_disallowed": "hobby_disallowed",
+    "federal_nol_carryover": "nol_carryover",
+}
 
 
 _RECONCILIATION_COLUMNS = {

@@ -10011,7 +10011,8 @@ def scenario_show(name: str | None, data_dir: Path | None, runs_dir: Path | None
 # symbol with a rate series or weights): the built-in account its growth comes
 # from (ADR-003 §2.2). A retirement account's follows its first lot.
 _GROWTH_CHARACTER = {
-    "cash": "ordinary", "brokerage_taxable": "gains", "hsa": "deferred",
+    "cash": "ordinary", registries.BUSINESS_SUBKIND: "ordinary", "brokerage_taxable": "gains",
+    "hsa": "deferred",
     "real_estate": "gains", "vehicle": "depreciation", "other_asset": "gains",
 }
 

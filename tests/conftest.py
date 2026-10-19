@@ -700,6 +700,17 @@ def scheduled_override(prototype_data: Path) -> Callable[..., str]:
 
 
 @pytest.fixture(scope="function")
+def business_scenarios(test_scenarios_dir: Path, test_data: Path) -> Path:
+    """Alice's software business (#231) in the private data copy:
+    ``alice_business`` builds on retire_alice, and ``alice_business_hobby`` is
+    the same business ruled a hobby. Kept out of ``prototype_data`` so the
+    prototype's scenario list stays the one other tests expect."""
+    for folder in (test_data / "sim" / "business").iterdir():
+        shutil.copytree(folder, test_scenarios_dir / folder.name)
+    return test_scenarios_dir
+
+
+@pytest.fixture(scope="function")
 def load_test_scenario(test_data_dir: Path, intent_dir: Path) -> Callable[[str], Path]:
     """Load any scenario of the private data copy (after a test has added or
     edited it); returns its intent file."""

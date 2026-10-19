@@ -18,6 +18,7 @@ from collections.abc import Collection
 import pandas as pd
 from rich.console import Console
 
+from analysis.sim import registries
 from analysis.sim.types import AccountKind
 
 if TYPE_CHECKING:
@@ -47,8 +48,7 @@ class AccountRow:
 
 
 def _rate_role(subkind: str) -> str:
-    cash = {"cash"}
-    return "yield" if subkind in cash else "growth"
+    return "yield" if subkind in registries.CASH_SUBKINDS else "growth"
 
 
 def _latest_rate_micros(

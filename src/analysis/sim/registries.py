@@ -10,7 +10,7 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     "asset": {
         "cash", "brokerage_taxable", "retirement", "hsa", "real_estate", "vehicle",
-        "other_asset",
+        "other_asset", "business",
     },
     "liability": {"mortgage", "heloc", "credit_card", "other_liability"},
     "income": {
@@ -62,9 +62,16 @@ TAX_TREATMENT_TO_WITHDRAWAL_CHARACTER: dict[str, str] = {
     "none": "none",
 }
 
+# A sole proprietor's business bank account (#231): cash, but the place a
+# Schedule C's receipts arrive and its expenses are paid from.
+BUSINESS_SUBKIND = "business"
+
+# Cash accounts: they earn a yield, are liquid, and hold cash-class money.
+CASH_SUBKINDS: frozenset[str] = frozenset({"cash", BUSINESS_SUBKIND})
+
 # Subkinds whose 'taxable' tax_treatment still withdraws tax-free (principal,
 # already taxed when earned) -- i.e. cash-like accounts, not brokerage.
-TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX: set[str] = {"cash"}
+TAXABLE_SUBKINDS_WITH_NO_WITHDRAWAL_TAX: frozenset[str] = CASH_SUBKINDS
 
 
 def withdrawal_tax_character(
@@ -121,6 +128,11 @@ ordinary draws (its median is about 1e-6 at nu = 0.1, 0 at nu = 0.01)."""
 
 CADENCES: set[str] = {"monthly", "biweekly", "quarterly", "annual", "one_off"}
 
+# A sole proprietor's receipts into, and deductible spending out of, a
+# `business` account (#231): netted per year into Schedule C.
+BUSINESS_INCOME, BUSINESS_EXPENSE = "business_income", "business_expense"
+BUSINESS_TAX_CHARACTERS: frozenset[str] = frozenset({BUSINESS_INCOME, BUSINESS_EXPENSE})
+
 TAX_CHARACTERS: set[str] = {
     "ordinary", "ltcg", "stcg", "gains", "deferred", "ss_benefit", "tax_free",
     "tax_deferred_in", "tax_deferred_out", "return_of_capital", "property_tax", "none",
@@ -137,6 +149,7 @@ TAX_CHARACTERS: set[str] = {
     # Earnings out of a Roth lot before the owner's 5-year clock has run (or
     # before 59½): ordinary income (#217). Its basis comes out tax_free.
     "roth_nonqualified",
+    *BUSINESS_TAX_CHARACTERS,
 }
 
 # The characters of a chain step that recovers a sold lot's basis (#199): the
@@ -203,7 +216,8 @@ SYMBOL_ASSET_CLASS: dict[str, AssetClass] = {"CASH": "cash", "CD": "cd"}
 # (a `CASH` or `CD` symbol is that class whatever the account). Investment subkinds are absent:
 # what they hold has to be said, and an unclassified lot shows up as such.
 SUBKIND_ASSET_CLASS: dict[str, AssetClass] = {
-    "cash": "cash", "real_estate": "real_estate", "vehicle": "other", "other_asset": "other",
+    "cash": "cash", BUSINESS_SUBKIND: "cash", "real_estate": "real_estate", "vehicle": "other",
+    "other_asset": "other",
 }
 
 # Canonical accounts.csv column order (ADR-003 §4.2).
