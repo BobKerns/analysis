@@ -122,20 +122,24 @@ npm run markdownlint                              # markdown (markdownlint)
 
 [`.github/workflows/gates.yml`](workflows/gates.yml) runs the first five gates,
 with every test including the slow ones, and the blocked-keyword check on every
-pull request and push to `main`. It skips the tests, lint and types when a
-change touches only prose or editor settings (the list is in the workflow).
+pull request that isn't a draft and every push to `main`. It skips the tests,
+lint and types when a change touches only prose or editor settings (the list is
+in the workflow).
 
-Tests marked `@pytest.mark.slow` (about a second or more each) are left to CI.
-When a change touches a slow test or the code it exercises, run that test
-locally too (`-m slow`, or the test by name). Mark a new test `slow` when it
-takes about a second on its own.
+Tests marked `@pytest.mark.slow` (about a second or more each) are left out of
+the everyday local run. When a change touches a slow test or the code it
+exercises, run that test locally too (`-m slow`, or the test by name). Mark a
+new test `slow` when it takes about a second on its own.
 
 Copilot reviews a pull request when it leaves draft, and every push after
-that. So open pull requests as drafts, let CI run the slow tests, fix anything
-red, and mark the pull request ready only once CI is green. When a ready pull
-request needs several more pushes (a merge from `main`, a batch of review
-fixes), turn it back into a draft first, push, and mark it ready again once CI
-is green: one review per return to ready, not one per push.
+that; Gates skips drafts too, since Actions minutes are billed. So open pull
+requests as drafts and iterate there with the local gates. Before marking one
+ready, merge `main` and run the whole suite locally, slow tests included
+(`pytest -q -n auto`). Marking it ready starts Copilot's review and one Gates
+run together; fix anything either finds. When a ready pull request needs
+several more pushes (a merge from `main`, a batch of review fixes), turn it
+back into a draft first, push, and mark it ready again: one review and one
+Gates run per return to ready, not one per push.
 
 Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_name -q`
 (or `-k pattern` to match by substring).
