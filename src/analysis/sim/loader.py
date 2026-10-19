@@ -1576,10 +1576,10 @@ def _expand_account_growth(
     A lot's series is its own ``series``, else a rate series named for its
     ``symbol``, else the blend of its symbol's allocation slices
     (:func:`_allocation_blend`), else its account's ``series`` (ADR-005 §5).
-    The income side is
-    the built-in account for the account's ``tax_character`` (ADR-003 §2.2),
-    created here on first use so scenarios never wire it up by hand. Rules are
-    named by :func:`growth_rule_name`.
+    The income side is the built-in account for the account's
+    ``tax_character`` (ADR-003 §2.2), or for a retirement lot, the one its
+    subkind names, created here on first use so scenarios never wire it up by
+    hand. Rules are named by :func:`growth_rule_name`.
     """
     account_names = {row.get("name", "") for row in accounts}
     rule_names = {row.get("name", "") for row in scheduled_rows}
@@ -1593,8 +1593,12 @@ def _expand_account_growth(
         name = row.get("name", "")
         account_series = row.get("series", "")
         character = row.get("tax_character", "")
-        # (lot, series, blend): a blend replaces the series when it is set.
-        lot_series: list[tuple[str, str, AllocationBlend | None]] = []
+        retirement = row.get("subkind") == registries.RETIREMENT_SUBKIND
+        # (lot, series, blend, character): a blend replaces the series when it
+        # is set. A retirement lot's subkind says how its growth is sheltered,
+        # so Roth and traditional lots in one account grow from different
+        # built-ins whatever the account's tax_character says (#224).
+        lot_series: list[tuple[str, str, AllocationBlend | None, str]] = []
         for m in lots_by_account.get(name) or [{}]:
             symbol = m.get("symbol") or ""
             lot = m.get("lot") or registries.DEFAULT_LOT
@@ -1605,8 +1609,15 @@ def _expand_account_growth(
                     symbol, weight_sets[symbol], rate_series,
                     f"account_lots.csv ({name} / {lot})", warnings,
                 )
-            lot_series.append((lot, series or ("" if blend else account_series), blend))
-        if not any(series or blend for _, series, blend in lot_series):
+            shelter = registries.RETIREMENT_LOT_SUBKINDS.get(m.get("subkind") or "")
+            lot_character = (
+                ("tax_free" if shelter == "tax_free" else "deferred")
+                if retirement and shelter else character
+            )
+            lot_series.append(
+                (lot, series or ("" if blend else account_series), blend, lot_character))
+        growing = [entry for entry in lot_series if entry[1] or entry[2]]
+        if not growing:
             if character:
                 issues.append(
                     f"{where} ({name}): tax_character without series "
@@ -1619,14 +1630,19 @@ def _expand_account_growth(
                 "asset accounts"
             )
             continue
-        counterparty = registries.GROWTH_COUNTERPARTY_ACCOUNTS.get(character)
-        if counterparty is None:
+        # A retirement account's own character, if set, must still be valid.
+        checked = {c for *_, c in growing} | ({character} if character else set())
+        unknown = sorted(checked - registries.GROWTH_COUNTERPARTY_ACCOUNTS.keys())
+        if unknown:
             issues.append(
                 f"{where} ({name}): series requires tax_character in "
-                f"{sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)}, got '{character}'"
+                f"{sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)}, got '{unknown[0]}'"
             )
             continue
-        if counterparty.name not in account_names:
+        for *_, lot_character in growing:
+            counterparty = registries.GROWTH_COUNTERPARTY_ACCOUNTS[lot_character]
+            if counterparty.name in account_names:
+                continue
             account_names.add(counterparty.name)
             accounts.append({
                 "name": counterparty.name, "kind": counterparty.kind,
@@ -1641,9 +1657,8 @@ def _expand_account_growth(
             value_rows.append({
                 "account_name": counterparty.name, "opening_balance": "0.00",
             })
-        for lot, series, blend in lot_series:
-            if not series and not blend:
-                continue
+        for lot, series, blend, lot_character in growing:
+            counterparty = registries.GROWTH_COUNTERPARTY_ACCOUNTS[lot_character]
             rule_name = growth_rule_name(name, lot, rule_names)
             if rule_name in rule_names:
                 issues.append(

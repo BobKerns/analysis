@@ -5027,7 +5027,8 @@ def account_group_command() -> None:
               help="Aux rate series; gives an asset account monthly growth.")
 @click.option("--tax-character", default="",
               type=click.Choice(["", *sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)]),
-              help="Character of the growth flow; required with --series.")
+              help="Character of the growth flow; required with --series, except "
+                   "for a retirement account, whose lot subkind decides.")
 @click.option("--opened", "opened", default="",
               help="Open date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--closed", "closed", default="",
@@ -5143,7 +5144,8 @@ def add_account(
     if closed:
         closed = _validate_month_date(closed)
 
-    if series and not tax_character:
+    # A retirement lot's subkind picks its growth character (ADR-003 §2.2, #224).
+    if series and not tax_character and not retirement:
         raise click.ClickException(
             "--series requires --tax-character "
             f"({', '.join(sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS))})"
