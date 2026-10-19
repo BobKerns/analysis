@@ -29,6 +29,7 @@ from analysis.frames import index_years
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.correlation import Link, implied_correlation, rho_from_kendall_tau, tree_root
 from analysis.sim.distributions import Discrete, Distribution, Triangular, TruncatedNormal, moments
+from analysis.sim.life_table import LifeTableAge
 from analysis.sim.ensemble import (
     EnsembleError,
     correlation_links,
@@ -1086,14 +1087,22 @@ def _lifespan_record(
     if row is None or not distribution:
         return record
     try:
-        dist = lifespan_distribution({**dict(row), "vary_distribution": distribution})
+        dist = lifespan_distribution({**dict(row), "vary_distribution": distribution}, con)
     except EnsembleError:
         return record
     m = moments(dist)
+    if isinstance(dist, LifeTableAge):
+        # A life table runs to the oldest age it allows; its 1st to 99th
+        # percentiles say more about the range a member actually draws (#222).
+        span = f"age {dist.quantile(0.01):.1f} to {dist.quantile(0.99):.1f} (1st to 99th percentile)"
+        shape = f"set-forward {dist.set_forward:+.1f} years"
+    else:
+        span = f"age {dist.low:g} to {dist.high:g}"
+        shape = f"mode age {dist.mode:g}" if isinstance(dist, Triangular) else ""
     record.update({
-        "range": f"age {dist.low:g} to {dist.high:g}",
+        "range": span,
         "center": f"age {base_ages[person]:.1f}" if person in base_ages else "",
-        "shape": f"mode age {dist.mode:g}" if isinstance(dist, Triangular) else "",
+        "shape": shape,
         "moments": (f"mean age {m.mean:.1f}, sd {m.sd:.1f} years, skew {m.skewness:+.2f}, "
                     f"excess kurtosis {m.excess_kurtosis:+.2f}"),
     })

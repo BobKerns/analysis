@@ -301,7 +301,7 @@ def test_a_person_needs_a_birthdate(
     role: str, test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
 ) -> None:
     persons = test_data_dir / "persons.csv"
-    persons.write_text(persons.read_text() + f"carol,Carol (fake),,{role},{{}}\n")
+    persons.write_text(persons.read_text() + f"carol,Carol (fake),,,{role},{{}}\n")
     with pytest.raises(LoadError, match=f"carol.*{role} person needs a birthdate"):
         load_test_copy()
 

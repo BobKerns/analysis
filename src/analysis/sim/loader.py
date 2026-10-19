@@ -22,7 +22,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import registries, units
+from analysis.sim import life_table, registries, units
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, month_end_iso, parse_day,
     vary_date_iso,
@@ -924,8 +924,11 @@ def load_scenario(
         calendar_rows, leaves, set(chains), issues,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
     )
+    life_tables_ok = _validate_life_tables(aux_rows, issues)
     lifespan_links = _validate_lifespan(
         lifespan_rows, persons, scenario_row.get("start", ""), issues,
+        life_tables=[(eff, payload) for kind, _, payload, eff in aux_rows
+                     if kind == life_table.LIFE_TABLE_KIND] if life_tables_ok else None,
     )
     _validate_calendar_correlation(calendar_rows, issues, unused, lifespan_links)
     _validate_series_references(
@@ -1775,6 +1778,12 @@ def _validate_birthdates(rows: list[dict[str, str]], issues: list[str]) -> None:
                     f"{where} ({row.get('id') or '?'}): birthdate "
                     f"'{birthdate}' is not YYYY-MM-DD"
                 )
+        sex = (row.get("sex") or "").strip()
+        if sex and sex not in registries.PERSON_SEXES:
+            issues.append(
+                f"{where} ({row.get('id') or '?'}): sex must be one of "
+                f"{list(registries.PERSON_SEXES)} or blank (got '{sex}')"
+            )
 
 
 def _validate_securities(rows: list[dict[str, str]], issues: list[str]) -> None:
@@ -3453,6 +3462,8 @@ def _validate_lifespan(
     persons: list[dict[str, str]],
     scenario_start: str,
     issues: list[str],
+    *,
+    life_tables: list[tuple[str, dict[str, Any]]] | None = None,
 ) -> dict[str, tuple[str, str]]:
     """lifespan.csv (#221): each row names a person and an ``age_at_death``,
     which becomes the row's ``final_month`` from the person's birthdate. A
@@ -3460,11 +3471,16 @@ def _validate_lifespan(
     its mode; its lowest age can't fall before the scenario starts, since
     no member can die before then. ``vary_correlate_with``/
     ``vary_correlation`` go together, on a varying row, rho in [-1, 1]; the
-    parent is checked with the calendar's forest.
+    parent is checked with the calendar's forest. A ``life_table`` row
+    (#222) takes no bounds; its set-forward is solved here from the person's
+    sex and the aux ``life_table`` in ``life_tables`` (effective date,
+    payload), and kept on the row for the writer; ``None`` (a broken table,
+    already reported) skips that.
 
     Returns each varying row's correlation node (``lifespan:<person>``),
     mapped to its parent (or "") and where to report it."""
     birthdates = {p["id"]: p.get("birthdate", "") for p in persons if p.get("id")}
+    sexes = {p["id"]: (p.get("sex") or "").strip() for p in persons if p.get("id")}
     seen: set[str] = set()
     links: dict[str, tuple[str, str]] = {}
     for where, row in _located(rows, "lifespan.csv"):
@@ -3495,7 +3511,68 @@ def _validate_lifespan(
         except ValueError:
             continue  # persons.csv reports the bad birthdate
         _validate_lifespan_vary(row, age, birthdates[person], scenario_start, where, issues, links)
+        if (row.get("vary_distribution") or "").strip() == registries.LIFE_TABLE_DISTRIBUTION:
+            _solve_life_table(
+                row, sexes[person], birthdates[person], scenario_start, life_tables,
+                where, issues,
+            )
     return links
+
+
+_SET_FORWARD_KEY = "life_table_set_forward"
+"""Where ``_solve_life_table`` leaves a row's solved set-forward (#222)."""
+
+
+def _solve_life_table(
+    row: dict[str, Any], sex: str, birthdate: str, scenario_start: str,
+    life_tables: list[tuple[str, dict[str, Any]]] | None, where: str, issues: list[str],
+) -> None:
+    """A ``life_table`` lifespan's set-forward (#222): the one that puts the
+    table's median age at death, given alive at the scenario start, at
+    ``age_at_death``."""
+    if sex not in registries.PERSON_SEXES:
+        issues.append(
+            f"{where}: a life_table lifespan needs '{row['person']}'s sex "
+            f"({'/'.join(registries.PERSON_SEXES)}) in persons.csv's sex column"
+        )
+        return
+    if not scenario_start or life_tables is None:
+        return  # reported where the start or the table is read
+    try:
+        table = life_table.life_table_for(life_tables, sex, scenario_start)
+        start = life_table.months_since_birth(birthdate, scenario_start)
+        median = round(float(row["age_at_death"]) * 12)
+        row[_SET_FORWARD_KEY] = life_table.solve_set_forward(table, start, median)
+    except life_table.LifeTableError as e:
+        issues.append(f"{where}: life_table age_at_death {row['age_at_death']}: {e}")
+    except ValueError:
+        return  # the bad birthdate or start is reported where it's read
+
+
+def _validate_life_tables(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> bool:
+    """Each ``life_table`` vintage (#222): its ages run 0, 1, 2, ... once
+    each, and every q is a probability. Whether all of them do."""
+    before = len(issues)
+    vintages: dict[str, list[dict[str, Any]]] = {}
+    for kind, _, payload, effective in aux_rows:
+        if kind == life_table.LIFE_TABLE_KIND:
+            vintages.setdefault(effective, []).append(payload)
+    for effective, payloads in sorted(vintages.items()):
+        where = f"aux life_table.csv ({effective[:7]})"
+        ages = sorted(p["age"] for p in payloads if isinstance(p["age"], int))
+        if len(ages) != len(payloads) or ages != list(range(len(ages))):
+            issues.append(f"{where}: ages must be whole numbers 0, 1, 2, ... each once, no gaps")
+        for p in payloads:
+            for column in registries.LIFE_TABLE_Q_COLUMNS.values():
+                q = p[column + "_micros"]
+                if not 0 <= q <= 1_000_000:
+                    issues.append(
+                        f"{where} age {p['age']}: {column} must be between 0 and 1 "
+                        f"(got {q / 1_000_000:g})"
+                    )
+    return len(issues) == before
 
 
 def _validate_lifespan_vary(
@@ -3518,6 +3595,15 @@ def _validate_lifespan_vary(
             f"{where}: a lifespan's vary_distribution must be one of "
             f"{list(registries.LIFESPAN_DISTRIBUTIONS)} (got '{distribution}')"
         )
+        return
+    if distribution == registries.LIFE_TABLE_DISTRIBUTION:
+        bounded = [c for c in ("vary_low", "vary_high", "vary_mode") if (row.get(c) or "").strip()]
+        if bounded:
+            issues.append(
+                f"{where}: life_table draws around age_at_death, its median; "
+                f"{', '.join(bounded)} must be blank"
+            )
+        _validate_lifespan_link(row, where, issues, links)
         return
     bounds: dict[str, float] = {}
     for col in ("vary_low", "vary_high", "vary_mode"):
@@ -3552,6 +3638,13 @@ def _validate_lifespan_vary(
             f"{where}: vary_low {low:g} is the month {final_month_for_age(birthdate, low)[:7]}, "
             f"before the scenario starts ({scenario_start[:7]}); a member can't die before then"
         )
+    _validate_lifespan_link(row, where, issues, links)
+
+
+def _validate_lifespan_link(
+    row: dict[str, str], where: str, issues: list[str], links: dict[str, tuple[str, str]],
+) -> None:
+    """A varying lifespan's correlation cells, and its node in ``links``."""
     parent = (row.get("vary_correlate_with") or "").strip()
     raw_rho = (row.get("vary_correlation") or "").strip()
     node = registries.LIFESPAN_NODE_PREFIX + row["person"]
@@ -3628,10 +3721,11 @@ def _write_intent(
 
     for p in persons:
         con.execute(
-            "INSERT INTO person(id, display, birthdate, role, meta_json) "
-            "VALUES (?,?,?,?,?)",
+            "INSERT INTO person(id, display, birthdate, sex, role, meta_json) "
+            "VALUES (?,?,?,?,?,?)",
             (
                 p["id"], p["display"], p["birthdate"],
+                (p.get("sex") or "").strip() or None,
                 p.get("role") or None,
                 p.get("meta_json") or "{}",
             ),
@@ -3908,7 +4002,7 @@ def _write_intent(
         con.execute(
             "INSERT INTO person_lifespan(scenario_id, person, age_at_death, final_month, "
             "vary_distribution, vary_low, vary_high, vary_mode, vary_correlate_with, "
-            "vary_correlation) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "vary_correlation, life_table_set_forward) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 scenario_id, lf["person"], float(lf["age_at_death"]), lf["final_month"],
                 lf.get("vary_distribution") or None,
@@ -3918,6 +4012,7 @@ def _write_intent(
                 (_opt_float(lf.get("vary_mode")) or float(lf["age_at_death"]))
                 if lf.get("vary_distribution") == "triangular" else None,
                 lf.get("vary_correlate_with") or None, _opt_float(lf.get("vary_correlation")),
+                lf.get(_SET_FORWARD_KEY),
             ),
         )
     counts["person_lifespan"] = len(lifespan_rows)

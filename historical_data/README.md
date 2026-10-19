@@ -22,11 +22,12 @@ two CSVs noted below.
 | `damodaran/` | Annual returns on stocks, bonds, bills, real estate and gold, 1928–2025 | [Damodaran](https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histretSP.html) |
 | `fred/` | PCEPI and DGS10 | [FRED](https://fred.stlouisfed.org/) |
 | `cms/` | 2025 Medicare Trustees Report (PDF) and the 2026 Part B premium fact sheet | [Trustees Report](https://www.cms.gov/oact/tr/2025), [fact sheet](https://www.cms.gov/newsroom/fact-sheets/2026-medicare-parts-b-premiums-deductibles) |
-| `ssa/` | Social Security COLAs, 1975–2025 | [SSA](https://www.ssa.gov/oact/cola/colaseries.html) |
+| `ssa/` | Social Security COLAs, 1975–2025; the 2023 period life table (2026 Trustees Report) | [SSA COLAs](https://www.ssa.gov/oact/cola/colaseries.html), [life table](https://www.ssa.gov/oact/STATS/table4c6.html) |
 
-Two files are extracted rather than downloaded, and are read as
-`csv:historical_data/cms/part-b-premium.csv` and
-`csv:historical_data/ssa/cola.csv`. `--refresh` doesn't update them;
+Three files are extracted rather than downloaded. This guide reads two of
+them, as `csv:historical_data/cms/part-b-premium.csv` and
+`csv:historical_data/ssa/cola.csv`; the simulator reads the third,
+`ssa/life_table.csv` (below). `--refresh` doesn't update any of them;
 re-extract them by hand before committing a new vintage:
 
 - `cms/part-b-premium.csv` is the standard Part B monthly premium
@@ -36,3 +37,10 @@ re-extract them by hand before committing a new vintage:
 - `ssa/cola.csv` is the COLA history table (`date,rate`), dated December of
   each year. COLAs from 1975 to 1982 took effect in June. ssa.gov refuses
   scripted downloads, so the page was saved from a browser.
+
+`ssa/life_table.csv` is the period life table as the aux kind `life_table` reads it
+(`effective_date,age,q_female,q_male`), dated December of the table's year,
+and `templates/aux/` and `prototype_data/aux/` carry copies. For a new vintage,
+save the page from a browser, run
+`scripts/extract_ssa_life_table.py PAGE.html historical_data/ssa/life_table.csv`,
+and copy the result to both.

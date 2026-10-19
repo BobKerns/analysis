@@ -49,7 +49,9 @@ def persons_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
     ``-`` if the scenario has no lifespan for them. ``varies`` is how an
     unresolved recipe's age varies across members.
     """
-    persons = sc.items("person")[["id", "display", "birthdate", "role"]].fillna('')
+    items = sc.items("person")
+    columns = ["id", "display", "birthdate", *(["sex"] if "sex" in items.columns else []), "role"]
+    persons = items[columns].fillna('')
     lifespans = sc.items("person_lifespan").set_index("person")
     persons = persons.set_index("id")
     persons["age_at_death"] = lifespans["age_at_death"].reindex(persons.index).map(
@@ -65,9 +67,14 @@ def persons_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
 
 
 def _lifespan_varies(row: pd.Series) -> str:
-    """``triangular 75..95, mode 84``, or '' for a fixed age."""
+    """``triangular 75..95, mode 84``, ``life_table, set-forward +6.4``, or
+    '' for a fixed age."""
     if pd.isna(row["vary_distribution"]):
         return ''
+    if row["vary_distribution"] == "life_table":
+        # Drawn around age_at_death as its median (#222): no bounds.
+        set_forward = row.get("life_table_set_forward")
+        return "life_table" + ('' if pd.isna(set_forward) else f", set-forward {set_forward:+.1f}")
     text = f"{row['vary_distribution']} {row['vary_low']:g}..{row['vary_high']:g}"
     if not pd.isna(row["vary_mode"]):
         text += f", mode {row['vary_mode']:g}"

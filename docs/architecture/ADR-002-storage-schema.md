@@ -122,6 +122,7 @@ CREATE TABLE person (
     id          TEXT PRIMARY KEY,
     display     TEXT NOT NULL,
     birthdate   TEXT NOT NULL,
+    sex         TEXT,  -- 'f' or 'm', or NULL; a life_table lifespan needs it
     role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}'
 );
@@ -423,6 +424,9 @@ CREATE TABLE person_lifespan (
     vary_mode           REAL,
     vary_correlate_with TEXT,
     vary_correlation    REAL,
+    -- a life_table lifespan's set-forward in years (negative is a set-back),
+    -- solved at load so the table's median is age_at_death
+    life_table_set_forward REAL,
     PRIMARY KEY (scenario_id, person)
 );
 
@@ -890,3 +894,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#217](https://github.com/BobKerns/analysis/issues/217): account subkind `retirement` replaces the four IRA/401k subkinds; `account_lot` gains `subkind` and the effective `tax_treatment` the engine reads (Intent DDL; schema 38).
 - [#217](https://github.com/BobKerns/analysis/issues/217): tax character `roth_nonqualified`, a Roth lot's earnings paid out before the distribution is qualified (Intent DDL; schema 39).
 - [#221](https://github.com/BobKerns/analysis/issues/221): `person_lifespan` gains `age_at_death` and the `vary_*` columns; `ensemble_draw` records a lifespan under `lifespan:<person>` with target `age_at_death` (Intent layer DDL, glossary; schema 40).
+- [#222](https://github.com/BobKerns/analysis/issues/222): `person.sex` and `person_lifespan.life_table_set_forward`, for a lifespan drawn from the new aux kind `life_table` (Intent layer DDL; schema 41).

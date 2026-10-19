@@ -15,7 +15,10 @@ import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from statistics import NormalDist
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from analysis.sim.life_table import LifeTableAge
 
 __all__ = [
     "DistributionError", "Uniform", "TruncatedNormal", "Triangular", "Discrete", "Outcome",
@@ -575,7 +578,7 @@ class Moments:
 
 
 def moments(
-    dist: Distribution, points: int = 4_000, *, whole_days: bool = False, rounded: bool = False,
+    dist: Distribution | LifeTableAge, points: int = 4_000, *, whole_days: bool = False, rounded: bool = False,
 ) -> Moments:
     """Mean, SD, skewness and excess kurtosis, integrated numerically over
     the quantile function (midpoint rule) -- one method for every family,

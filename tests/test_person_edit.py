@@ -49,7 +49,7 @@ def test_person_add_with_options_writes_the_row(
     assert result.exit_code == 0, result.output
     assert "every scenario" in result.output
     assert _persons(test_data_dir)["carol"] == {
-        "id": "carol", "display": "Carol (fake)", "birthdate": "1995-02-03",
+        "id": "carol", "display": "Carol (fake)", "birthdate": "1995-02-03", "sex": "",
         "role": "secondary", "meta_json": "{}",
     }
 
@@ -57,11 +57,12 @@ def test_person_add_with_options_writes_the_row(
 def test_person_add_asks_for_what_is_missing(
     sim: Callable[..., Result], test_data_dir: Path,
 ) -> None:
-    result = sim("person", "add", "carol", input="Carol (fake)\n1995-02-03\n\n\n")
+    result = sim("person", "add", "carol", input="Carol (fake)\n1995-02-03\nf\n\n\n")
 
     assert result.exit_code == 0, result.output
     carol = _persons(test_data_dir)["carol"]
-    assert (carol["display"], carol["birthdate"], carol["role"]) == ("Carol (fake)", "1995-02-03", "")
+    assert (carol["display"], carol["birthdate"], carol["sex"], carol["role"]) == (
+        "Carol (fake)", "1995-02-03", "f", "")
 
 
 @pytest.mark.parametrize(("args", "message"), [
@@ -112,8 +113,8 @@ def test_person_edit_asks_with_current_values_as_defaults(
 ) -> None:
     before = _persons(test_data_dir)["bill"]
 
-    # Keep display and role; change the birthdate and meta_json.
-    result = sim("person", "edit", "bill", input='\n1967-09-01\n\n{"note": 1}\n')
+    # Keep display, sex and role; change the birthdate and meta_json.
+    result = sim("person", "edit", "bill", input='\n1967-09-01\n\n\n{"note": 1}\n')
 
     assert result.exit_code == 0, result.output
     assert _persons(test_data_dir)["bill"] == {
@@ -128,7 +129,8 @@ def test_person_edit_refuses_when_persons_csv_changes_meanwhile(
     persons = test_data_dir / "persons.csv"
 
     def role_prompt(*_args: object, **_kwargs: object) -> str:
-        persons.write_text(persons.read_text() + "carol,Carol (fake),1995-02-03,,{}\n")
+        if "carol" not in persons.read_text():
+            persons.write_text(persons.read_text() + "carol,Carol (fake),1995-02-03,,,{}\n")
         return ""
     monkeypatch.setattr("analysis.sim.cli._prompt_with_completion", role_prompt)
 
