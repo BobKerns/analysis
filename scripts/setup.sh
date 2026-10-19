@@ -247,14 +247,9 @@ fi
 echo "Linking the data repo at data/shared..."
 scripts/link-data.sh
 
-# Template data is a plain directory inside this repo, not a repo of its own,
-# so only a linked data repo gets the merge settings.
-if [ -L data/shared ]; then
-    data_repo=$(cd data/shared && pwd -P)
-    if [ "$(git -C "$data_repo" rev-parse --show-toplevel 2>/dev/null)" = "$data_repo" ]; then
-        echo "Configuring merges in the data repo at $data_repo..."
-        set_merge_config "$data_repo"
-    fi
-fi
+# Template data (CI's) is a plain directory inside this repo, so there this
+# just sets this repo's identical values again.
+echo "Configuring merges in the data repo..."
+set_merge_config data/shared
 
 echo "Setup complete."

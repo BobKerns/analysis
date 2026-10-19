@@ -21,7 +21,7 @@ if it isn't already there, adding it to your bash and zsh startup files
 you to add it yourself.
 It installs [uv](https://github.com/astral-sh/uv) if missing, configures the
 `.githooks` hooks (which keep runtime data and real account names out of
-commits), sets `merge.ff false` and `pull.ff true` in this repo and a linked
+commits), sets `merge.ff false` and `pull.ff true` in this repo and the linked
 data repo (an explicit merge always makes a merge commit; a pull still
 fast-forwards when it can), runs `uv sync --group dev` (installing the Python
 version pinned in `.python-version` only if `uv sync` can't find a usable
