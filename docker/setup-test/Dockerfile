@@ -10,7 +10,8 @@
 # it with a named volume at /work holding the clones (see entrypoint.sh) and
 # the host's ~/.ssh mounted read-only for the clones' ssh URLs. Inside, run
 # ./scripts/setup.sh (or start with --setup) and give it /work/finance-data
-# as the data repo; `start-container.sh --fresh` starts the next run from
+# as the data repo if DATA_REPO_URL cloned one, or a blank answer for
+# template data; `start-container.sh --fresh` starts the next run from
 # scratch.
 
 FROM ubuntu:24.04

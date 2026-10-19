@@ -5,16 +5,21 @@
 # /root/.ssh rather than used in place, so ssh sees the file modes it insists
 # on and can add to known_hosts.
 #
-# On a fresh /work volume, clone the code and data repos into it; a volume
-# that already has them is left as it is, so a half-finished setup survives a
-# restart. Delete the volume to start over.
+# On a fresh /work volume, clone the code repo (CODE_REPO_URL, at
+# CODE_REPO_REF if set) into /work/analysis and, if DATA_REPO_URL is set, the
+# data repo into /work/finance-data. A clone already in the volume is left as
+# it is, so a half-finished setup survives a restart. Delete the volume to
+# start over. scripts/start-container.sh sets the code repo's URL and ref
+# from the checkout it runs in.
 #
 # With RUN_SETUP=1, run scripts/setup.sh in the code repo after that. A
 # failure is reported but still leaves you in the container to look around.
 set -eu
 
-CODE_REPO_URL=${CODE_REPO_URL:-git@github.com:BobKerns/analysis.git}
-DATA_REPO_URL=${DATA_REPO_URL:-git:finance-data.git}
+if [ -z "${CODE_REPO_URL:-}" ]; then
+    echo "entrypoint: CODE_REPO_URL is not set; start the container with scripts/start-container.sh." >&2
+    exit 2
+fi
 
 if [ -d /root/.ssh-host ]; then
     # Regular files only: agent and ControlMaster sockets can't be copied,
@@ -29,19 +34,38 @@ if [ -d /root/.ssh-host ]; then
     chmod -R go= /root/.ssh
 fi
 
+# Clone $1 into $2, at branch $3 if given and the remote has it.
 clone_if_missing() {
     url=$1
     dir=$2
+    ref=${3:-}
     if [ -d "$dir/.git" ]; then
-        echo "$dir already cloned; leaving it."
+        current=$(git -C "$dir" branch --show-current)
+        if [ -n "$ref" ] && [ "$current" != "$ref" ]; then
+            echo "$dir already cloned, on ${current:-a detached HEAD} rather than $ref; leaving it." >&2
+        else
+            echo "$dir already cloned; leaving it."
+        fi
+        return 0
+    fi
+    if [ -n "$ref" ]; then
+        echo "Cloning $url ($ref) into $dir..."
+        if git clone --branch "$ref" "$url" "$dir"; then
+            return 0
+        fi
+        echo "No $ref at $url (not pushed yet?); cloning its default branch instead." >&2
     else
         echo "Cloning $url into $dir..."
-        git clone "$url" "$dir"
     fi
+    git clone "$url" "$dir"
 }
 
-clone_if_missing "$CODE_REPO_URL" /work/analysis
-clone_if_missing "$DATA_REPO_URL" /work/finance-data
+clone_if_missing "$CODE_REPO_URL" /work/analysis "${CODE_REPO_REF:-}"
+if [ -n "${DATA_REPO_URL:-}" ]; then
+    clone_if_missing "$DATA_REPO_URL" /work/finance-data
+else
+    echo "DATA_REPO_URL is not set; no data repo cloned (setup.sh can build template data)."
+fi
 
 cd /work/analysis
 if [ "${RUN_SETUP:-}" = 1 ]; then

@@ -40,14 +40,16 @@ case ":$PATH:" in
         fi
         if [ "$shell_name" = bash ] || [ -f "$HOME/.bashrc" ]; then
             # Interactive shells read .bashrc; a login shell reads only the
-            # first of these that exists.
+            # first of these that exists, or none, so .profile is the default.
             add_local_bin "$HOME/.bashrc"
-            for login_file in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
-                if [ -f "$login_file" ]; then
-                    add_local_bin "$login_file" .bashrc
+            login_file=$HOME/.profile
+            for f in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+                if [ -f "$f" ]; then
+                    login_file=$f
                     break
                 fi
             done
+            add_local_bin "$login_file" .bashrc
         fi
         case $shell_name in
             zsh|bash|"") ;;

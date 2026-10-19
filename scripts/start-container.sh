@@ -8,8 +8,10 @@
 # --fresh deletes the volume first, so the clones (and anything setup.sh
 # left in them) start over. --setup runs scripts/setup.sh in the container's
 # clone before the command, which defaults to an interactive bash.
-# CODE_REPO_URL and DATA_REPO_URL, if set, are passed through to override
-# the clone URLs.
+#
+# The container clones this checkout's origin at its current branch (which
+# must be pushed); CODE_REPO_URL and CODE_REPO_REF override them. It clones
+# a data repo only if DATA_REPO_URL is set, e.g. in your shell profile.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -23,7 +25,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --fresh) fresh=1 ;;
         --setup) setup_args="-e RUN_SETUP=1" ;;
-        -h|--help) sed -n '2,12s/^# \{0,1\}//p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,14s/^# \{0,1\}//p' "$0"; exit 0 ;;
         --) shift; break ;;
         -*) echo "start-container: unknown option $1" >&2; exit 2 ;;
         *) break ;;
@@ -38,8 +40,12 @@ fi
 
 docker build -q -t "$image" docker/setup-test >/dev/null
 
+CODE_REPO_URL=${CODE_REPO_URL:-$(git remote get-url origin)}
+CODE_REPO_REF=${CODE_REPO_REF:-$(git branch --show-current)}
+export CODE_REPO_URL CODE_REPO_REF
+
 env_args=
-for v in CODE_REPO_URL DATA_REPO_URL; do
+for v in CODE_REPO_URL CODE_REPO_REF DATA_REPO_URL; do
     if eval "[ -n \"\${$v:-}\" ]"; then
         env_args="$env_args -e $v"
     fi
