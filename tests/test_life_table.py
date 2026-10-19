@@ -13,8 +13,8 @@ from analysis.cli import main
 from analysis.sim.dates import final_month_for_age
 from analysis.sim.ensemble import life_table_age, oat_plan, resolve_member, varying_names
 from analysis.sim.life_table import (
-    LifeTable, LifeTableAge, LifeTableError, equivalent_multiplier, months_since_birth,
-    solve_set_forward,
+    LifeTable, LifeTableAge, LifeTableError, equivalent_multiplier, life_table_from_rows,
+    months_since_birth, solve_set_forward,
 )
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.sensitivity import parameters
@@ -81,6 +81,16 @@ def test_q_interpolates_between_ages_and_is_one_past_the_table() -> None:
     assert table.at(1.5) == pytest.approx(0.65)  # halfway to the 1 past the end
     assert table.at(2) == 1.0
     assert table.at(-3) == 0.1
+
+
+@pytest.mark.parametrize("rows", [
+    [(0, 0.1), (2, 0.3)],              # a gap
+    [(0, 0.1), (0, 0.2), (1, 0.3)],    # an age twice
+    [(1, 0.1), (2, 0.3)],              # not from 0
+])
+def test_a_table_needs_each_age_from_0_once(rows: list[tuple[int, float]]) -> None:
+    with pytest.raises(LifeTableError, match="once each, with no gaps"):
+        life_table_from_rows(rows)
 
 
 @pytest.mark.parametrize("median_age", [72, 80, 84.5, 95])

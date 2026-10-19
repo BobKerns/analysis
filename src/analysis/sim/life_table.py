@@ -70,11 +70,11 @@ class LifeTable:
 
 
 def life_table_from_rows(rows: list[tuple[int, float]]) -> LifeTable:
-    """A table from ``(age, q)`` rows, which must cover 0..n contiguously."""
+    """A table from ``(age, q)`` rows, which must cover 0..n, each age once."""
     by_age = dict(rows)
     ages = sorted(by_age)
-    if ages != list(range(len(ages))):
-        raise LifeTableError("a life table's ages must run 0, 1, 2, ... with no gaps")
+    if len(ages) != len(rows) or ages != list(range(len(ages))):
+        raise LifeTableError("a life table's ages must run 0, 1, 2, ... once each, with no gaps")
     return LifeTable(tuple(by_age[a] for a in ages))
 
 
