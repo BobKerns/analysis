@@ -1,6 +1,6 @@
 #!/bin/sh
-# One-time repo setup: uv, pinned Python, git hooks, deps, notebook filter,
-# Node.js and the lint tools, and the link to the data repo.
+# One-time repo setup: a C toolchain, uv, pinned Python, git hooks, deps,
+# notebook filter, Node.js and the lint tools, and the link to the data repo.
 # Safe to re-run; every step is idempotent.
 set -eu
 
@@ -57,6 +57,55 @@ case ":$PATH:" in
         esac
         ;;
 esac
+
+# Some dependencies build C extensions where no wheel fits, so a C and C++
+# compiler and make must be there. On Linux, install them with the system's
+# package manager: apt (Ubuntu and Debian, WSL included), or on a best-effort
+# basis dnf, zypper, pacman or apk. If that can't be done, say what to
+# install and stop.
+toolchain_missing() {
+    echo "setup.sh needs a C compiler, a C++ compiler and make to build some" >&2
+    echo "dependencies. Install them, then re-run this script:" >&2
+    echo "    $1" >&2
+    exit 1
+}
+have_toolchain() {
+    command -v cc >/dev/null 2>&1 && command -v c++ >/dev/null 2>&1 \
+        && command -v make >/dev/null 2>&1
+}
+if [ "$(uname -s)" = Darwin ]; then
+    # /usr/bin/cc exists even without the command-line tools; it just offers
+    # to install them, so ask xcode-select instead.
+    if ! xcode-select -p >/dev/null 2>&1; then
+        toolchain_missing "xcode-select --install"
+    fi
+elif ! have_toolchain; then
+    if [ "$(id -u)" -eq 0 ]; then
+        sudo=
+    else
+        sudo="sudo "
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        install="${sudo}apt-get update && ${sudo}apt-get install -y build-essential"
+    elif command -v dnf >/dev/null 2>&1; then
+        install="${sudo}dnf install -y gcc gcc-c++ make"
+    elif command -v zypper >/dev/null 2>&1; then
+        install="${sudo}zypper install -y gcc gcc-c++ make"
+    elif command -v pacman >/dev/null 2>&1; then
+        install="${sudo}pacman -S --needed --noconfirm base-devel"
+    elif command -v apk >/dev/null 2>&1; then
+        install="${sudo}apk add build-base"
+    else
+        toolchain_missing "your distribution's C compiler, C++ compiler and make"
+    fi
+    if [ -n "$sudo" ] && ! command -v sudo >/dev/null 2>&1; then
+        toolchain_missing "$install"
+    fi
+    echo "C compiler or make not found; installing them with: $install"
+    if ! sh -c "$install" || ! have_toolchain; then
+        toolchain_missing "$install"
+    fi
+fi
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "uv not found; installing..."

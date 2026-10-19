@@ -60,5 +60,5 @@ fi
 # shellcheck disable=SC2086  # the *_args are lists of words, split on purpose
 exec docker run --rm $tty_args $setup_args $env_args \
     -v "$volume":/work \
-    -v "$HOME/.ssh":/root/.ssh-host:ro \
+    -v "$HOME/.ssh":/home/ubuntu/.ssh-host:ro \
     "$image" "$@"
