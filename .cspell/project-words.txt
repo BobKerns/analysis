@@ -89,6 +89,7 @@ labelrotation
 LABSTAT
 lastrowid
 liab
+libc
 libedit
 linalg
 linestyle
@@ -116,6 +117,7 @@ networth
 nextstrain
 NOCASE
 nonflat
+noninteractive
 nonpositive
 nonqualified
 nunique

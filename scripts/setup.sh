@@ -31,11 +31,11 @@ case ":$PATH:" in
     *)
         export PATH="$HOME/.local/bin:$PATH"
         shell_name=$(basename "${SHELL:-}")
-        zdot=${ZDOTDIR:-$HOME}
-        if [ "$shell_name" = zsh ] || [ -f "$zdot/.zshrc" ]; then
+        zsh_dir=${ZDOTDIR:-$HOME}
+        if [ "$shell_name" = zsh ] || [ -f "$zsh_dir/.zshrc" ]; then
             # Every interactive zsh reads .zshenv, then .zshrc.
-            if ! grep -qs '\.local/bin' "$zdot/.zshenv"; then
-                add_local_bin "$zdot/.zshrc"
+            if ! grep -qs '\.local/bin' "$zsh_dir/.zshenv"; then
+                add_local_bin "$zsh_dir/.zshrc"
             fi
         fi
         if [ "$shell_name" = bash ] || [ -f "$HOME/.bashrc" ]; then
