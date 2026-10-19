@@ -608,16 +608,74 @@ death follows it. The base case, member 0, dies at `age_at_death` exactly.
 another's (`lifespan:<person>`), as in `calendar.csv`; here Bill's age moves
 partly with Alice's. `vary_low` can't fall before the scenario starts.
 
+#### Drawing the age from a life table
+
+A triangular range assumes little, but real mortality has a particular
+shape. Deaths are spread over many years before the median and bunched
+into fewer years after it. `vary_distribution` `life_table` gives that shape. The
+age comes from a period life table, by default SSA's (`aux/life_table.csv`),
+for someone of the person's sex who is alive when the scenario starts.
+`age_at_death` is the median you believe, and the base case:
+
+```csv
+person,age_at_death,vary_distribution,vary_low,vary_high,vary_mode,vary_correlate_with,vary_correlation
+alice,80,life_table,,,,,
+```
+
+A median below the table's means worse health than average, and one above it
+means better. The table is read as if Alice were a few years older or
+younger (an age set-forward or set-back), however much puts its median at 80.
+The table supplies the spread. `vary_low`, `vary_high` and `vary_mode` stay
+blank. The person needs a `sex` (`f` or `m`) in `persons.csv`, which `sim
+person edit <id> --sex f` sets.
+
+`sim person lifespan set alice 80 --vary life_table` prints what the median
+means: how many years older or younger the table is read, the mortality
+multiplier that would give the same median (an insurer's "table rating",
+e.g. about 200% of the table's death rates), and the ages at the 10th, 25th,
+50th, 75th and 90th percentiles. For a man 70 at the start with a median of
+80, the 2023 table gives about 72 at the 10th percentile and 88 at the 90th.
+
+There's deliberately no separate multiplier to set. With the median held
+fixed, multiplying the death rates changes the spread by a year or two at
+most, because the table's shape dominates. To weigh a different median,
+compare scenarios, or run a sensitivity sweep, which moves the age to the
+percentiles you ask for.
+
+#### When to correlate a lifespan
+
+Correlating a lifespan with something else is worth it when the two really
+share a cause. The values below are illustrative, not measured; pick your
+own.
+
+- **Spouses.** Couples' ages at death are modestly correlated: they share
+  habits, income and surroundings, and the survivor's risk rises after one
+  dies. What matters financially is the gap between the deaths, which sets
+  how long the survivor lives on one Social Security check and files as
+  single. Independent draws make long, lopsided gaps a little too common.
+  Bill's row above might use `vary_correlate_with` `lifespan:alice` and
+  `vary_correlation` `0.3`.
+- **Health costs.** Poor health means both an earlier death and higher medical
+  or long-term-care costs before it. Give a varying `set_amount` row for those
+  costs `vary_correlate_with` `lifespan:alice` and a negative
+  `vary_correlation` such as `-0.5`, so the costly members tend to be the
+  ones who die sooner. Independent draws would mix up "expensive years, then
+  an early death" with "cheap years, then a long life".
+
+Markets and inflation have no real link to a lifespan, so leave those
+uncorrelated.
+
 `sim person lifespan set <person> <age>` writes a person's row into the
 scenario's own `lifespan.csv`; `--vary`, `--low`, `--high`, `--mode`,
 `--correlate-with` and `--correlation` set how it varies (`--vary none`
-drops it), and with no age and no options it asks for each field. `sim
+drops it; `--vary life_table` takes no bounds), and with no age and no options it asks for each field. `sim
 person lifespan clear <person>` removes the row. `sim person list` shows
 each person's age at death, final month, how it varies, and which scenario
 sets it.
 
 The people themselves are in `persons.csv`, at the top of the data repo:
-`id`, `display` name, `birthdate` and an optional `role` (`primary` for a
+`id`, `display` name, `birthdate`, an optional `sex` (`f` or `m`, needed only
+for a life-table lifespan) and an optional `role` (`primary` for a
 spouse whose death changes the filing status). `sim person add <id>` and
 `sim person edit <id>` change it, asking for any field you don't give as an
 option. The file is shared, so a change there reaches every scenario, and is

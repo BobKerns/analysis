@@ -315,6 +315,10 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # income, by filing status ($3,000; $1,500 married filing separately).
     # The rest carries forward (§1212(b)).
     "capital_loss_limit": ("effective_date", "filing_status", "amount"),
+    # A period life table (#222): q, the chance of dying before the next
+    # birthday, at each whole age from 0, by sex. Read only at load and when
+    # an ensemble member draws a `life_table` lifespan, never monthly.
+    "life_table": ("effective_date", "age", "q_female", "q_male"),
 }
 
 # Aux kinds that are no longer read, with what replaced them: a file of one
@@ -329,7 +333,9 @@ RETIRED_AUX_KINDS: dict[str, str] = {
 # The aux kinds a swap_aux_table event may replace (ADR-003 §3.5). Security
 # prices are read only at load, to value lots at the scenario start, so a
 # swap of one during the run would change nothing.
-SWAPPABLE_AUX_KINDS: frozenset[str] = frozenset(AUX_KIND_COLUMNS) - {"security_price"}
+SWAPPABLE_AUX_KINDS: frozenset[str] = (
+    frozenset(AUX_KIND_COLUMNS) - {"security_price", "life_table"}
+)
 
 # Columns authored in a natural unit but stored as integer micros, by kind:
 # {kind: {csv column: (payload key, unit)}} (#130). The unit is `price`
@@ -344,6 +350,8 @@ AUX_MICROS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
     "rate": {"annual_rate": ("annual_rate_micros", "percent")},
     "inflation": {"annual_rate": ("annual_rate_micros", "percent")},
     "energy_credits": {"rate": ("rate_micros", "percent")},
+    "life_table": {"q_female": ("q_female_micros", "number"),
+                   "q_male": ("q_male_micros", "number")},
 }
 
 # Column names the CSVs used before #130, when rates and factors were
@@ -507,17 +515,26 @@ DISTRIBUTION_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
 
 
 # ADR-003 §4.1 and §4.9.
-PERSONS_CSV_HEADER: tuple[str, ...] = ("id", "display", "birthdate", "role", "meta_json")
+PERSONS_CSV_HEADER: tuple[str, ...] = (
+    "id", "display", "birthdate", "sex", "role", "meta_json",
+)
+# #222: persons.csv `sex`, which picks a life table's column. Optional (an
+# older persons.csv has no such column), but required of a person with a
+# `life_table` lifespan.
+PERSON_SEXES: tuple[str, ...] = ("f", "m")
+LIFE_TABLE_Q_COLUMNS: dict[str, str] = {"f": "q_female", "m": "q_male"}
 LIFESPAN_CSV_HEADER: tuple[str, ...] = (
     "person", "age_at_death", "vary_distribution", "vary_low", "vary_high", "vary_mode",
     "vary_correlate_with", "vary_correlation",
 )
 
-# #221: a lifespan varies by age, uniform or triangular for now (#222 adds a
-# life table). Its node in correlation trees, sensitivity sweeps and
+# #221: a lifespan varies by age, uniform or triangular; #222 adds
+# `life_table`, drawn from aux life_table.csv around a median of
+# age_at_death, with no vary_low/high/mode. Its node in correlation trees, sensitivity sweeps and
 # ensemble_draw is `lifespan:<person>`, a name no calendar row may take, and
 # its draws are recorded with target `age_at_death`.
-LIFESPAN_DISTRIBUTIONS: tuple[str, ...] = ("uniform", "triangular")
+LIFESPAN_DISTRIBUTIONS: tuple[str, ...] = ("uniform", "triangular", "life_table")
+LIFE_TABLE_DISTRIBUTION = "life_table"
 LIFESPAN_NODE_PREFIX = "lifespan:"
 LIFESPAN_TARGET = "age_at_death"
 

@@ -58,9 +58,13 @@ from analysis.sim.correlation import (
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
 from analysis.sim import units
 from analysis.sim.dates import final_month_for_age
+from analysis.sim.life_table import (
+    LifeTableAge, LifeTableError, life_table_in, months_since_birth,
+)
 from analysis.sim.registries import (
     ENSEMBLE_MODES,
     LATENT_FACTOR_KIND,
+    LIFE_TABLE_DISTRIBUTION,
     LIFESPAN_NODE_PREFIX,
     LIFESPAN_TARGET,
     PROCESS_SHOCK_CLAMP,
@@ -74,6 +78,7 @@ __all__ = [
     "QUINTILES", "REPORT_PERCENTILES", "percentiles", "summary_with_percentiles",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
     "factor_reach", "process_path", "varying_names", "lifespan_distribution",
+    "life_table_age",
     "correlation_links",
     "members_balance_by_month", "TAIL_LEVELS", "tail_means", "reserve_shares",
     "recipe_reserve", "quantile_deltas", "member_pairs", "paired_deltas",
@@ -384,16 +389,19 @@ def _yearly_shocks(
     return shocks
 
 
-def _discrete(dist: Distribution, row: sqlite3.Row) -> Uniform | Triangular | Discrete:
+def _discrete(
+    dist: Distribution | LifeTableAge, row: sqlite3.Row,
+) -> Uniform | Triangular | Discrete:
     """``dist`` for a date target, which needs its whole-day (``*_int``) forms;
-    the loader rejects truncated_normal there, which has none."""
-    if isinstance(dist, TruncatedNormal):
-        raise EnsembleError(f"row {row['name']!r}: truncated_normal can't vary a date")
+    the loader rejects truncated_normal there, which has none (and a life
+    table only ever varies a lifespan)."""
+    if isinstance(dist, TruncatedNormal | LifeTableAge):
+        raise EnsembleError(f"row {row['name']!r}: {row['vary_distribution']} can't vary a date")
     return dist
 
 
 def _resolve_value(
-    row: sqlite3.Row, dist: Distribution, *, as_int: bool,
+    row: sqlite3.Row, dist: Distribution | LifeTableAge, *, as_int: bool,
     overrides: dict[str, float] | None, seed: int | None, member_index: int,
     score: float | None = None, conditional: bool = False, nu: float | None = None,
 ) -> tuple[float, float | None]:
@@ -435,7 +443,7 @@ def _resolve_value(
 
 
 def _resolve_lifespan(
-    row: sqlite3.Row, *, overrides: dict[str, float] | None, seed: int | None,
+    row: sqlite3.Row, con: sqlite3.Connection, *, overrides: dict[str, float] | None, seed: int | None,
     member_index: int, score: float | None, conditional: bool, nu: float | None,
 ) -> tuple[float, float | None]:
     """A varying lifespan's age on one member (#221), and the OAT quantile it
@@ -443,7 +451,7 @@ def _resolve_lifespan(
     base case (member 0, and an OAT member that doesn't move it) is the
     authored ``age_at_death``, not the distribution's median, so a run dies at
     the age written down. The age is whole months, as its final month is."""
-    dist = lifespan_distribution(row)
+    dist = lifespan_distribution(row, con)
     if overrides is None and member_index != 0 or row["name"] in (overrides or {}) or conditional:
         value, quantile = _resolve_value(
             row, dist, as_int=False, overrides=overrides, seed=seed,
@@ -510,9 +518,16 @@ def correlation_links(con: sqlite3.Connection) -> dict[str, Link]:
     return links
 
 
-def lifespan_distribution(row: sqlite3.Row | Mapping[str, Any]) -> Uniform | Triangular:
+def lifespan_distribution(
+    row: sqlite3.Row | Mapping[str, Any], con: sqlite3.Connection,
+) -> Uniform | Triangular | LifeTableAge:
     """A varying lifespan's distribution over ages (#221). A triangular's
-    mode was filled with the authored age at load when left blank."""
+    mode was filled with the authored age at load when left blank. A
+    ``life_table`` one (#222) reads the person's sex and birthdate, the
+    scenario start and the life table from ``con``, with the set-forward the
+    loader solved."""
+    if row["vary_distribution"] == LIFE_TABLE_DISTRIBUTION:
+        return life_table_age(con, row["person"], row["life_table_set_forward"])
     try:
         if row["vary_distribution"] == "uniform":
             return Uniform(row["vary_low"], row["vary_high"])
@@ -523,6 +538,20 @@ def lifespan_distribution(row: sqlite3.Row | Mapping[str, Any]) -> Uniform | Tri
     raise EnsembleError(
         f"lifespan of {row['person']!r}: {row['vary_distribution']!r} can't vary a lifespan"
     )
+
+
+def life_table_age(con: sqlite3.Connection, person: str, set_forward: float) -> LifeTableAge:
+    """``person``'s ``life_table`` distribution in the intent or run file
+    behind ``con`` (#222), read ``set_forward`` years older."""
+    found = con.execute("SELECT birthdate, sex FROM person WHERE id = ?", (person,)).fetchone()
+    start = con.execute("SELECT start FROM scenario").fetchone()
+    if found is None or not found[1] or start is None or set_forward is None:
+        raise EnsembleError(f"lifespan of {person!r}: life_table needs a sex and a solved set-forward")
+    try:
+        table = life_table_in(con, found[1], start[0])
+    except LifeTableError as e:
+        raise EnsembleError(f"lifespan of {person!r}: {e}") from e
+    return LifeTableAge(table, months_since_birth(found[0], start[0]), set_forward)
 
 
 def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[str]]:
@@ -725,7 +754,7 @@ def resolve_member(
 
         for row in lifespans:
             age, quantile = _resolve_lifespan(
-                row, overrides=overrides, seed=seed, member_index=member_index,
+                row, con, overrides=overrides, seed=seed, member_index=member_index,
                 score=scores.get(row["name"]), conditional=row["name"] in moved,
                 nu=node_tails.get(row["name"]),
             )

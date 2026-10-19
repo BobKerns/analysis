@@ -177,7 +177,8 @@ def lifespan_vary_text(row: dict[str, str]) -> str:
     distribution = row.get("vary_distribution", "")
     if not distribution:
         return ""
-    parts = [f"{distribution} {row.get('vary_low', '')}..{row.get('vary_high', '')}"]
+    parts = [distribution if distribution == registries.LIFE_TABLE_DISTRIBUTION
+             else f"{distribution} {row.get('vary_low', '')}..{row.get('vary_high', '')}"]
     if row.get("vary_mode"):
         parts.append(f"mode {row['vary_mode']}")
     if row.get("vary_correlate_with"):
