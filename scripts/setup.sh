@@ -129,6 +129,15 @@ echo "Using $(ripwire --version)"
 echo "Configuring git hooks path..."
 git config core.hooksPath .githooks
 
+# An explicit merge always records a merge commit; a pull still
+# fast-forwards when it can (pull.ff overrides merge.ff for pulls).
+set_merge_config() {
+    git -C "$1" config merge.ff false
+    git -C "$1" config pull.ff true
+}
+echo "Configuring merges (merge.ff false, pull.ff true)..."
+set_merge_config .
+
 echo "Syncing dependencies..."
 if ! uv sync --group dev; then
     echo "uv sync failed; installing pinned Python ($(cat .python-version)) and retrying..."
@@ -237,5 +246,15 @@ fi
 # path; a blank answer (or no terminal) builds template data instead.
 echo "Linking the data repo at data/shared..."
 scripts/link-data.sh
+
+# Template data is a plain directory inside this repo, not a repo of its own,
+# so only a linked data repo gets the merge settings.
+if [ -L data/shared ]; then
+    data_repo=$(cd data/shared && pwd -P)
+    if [ "$(git -C "$data_repo" rev-parse --show-toplevel 2>/dev/null)" = "$data_repo" ]; then
+        echo "Configuring merges in the data repo at $data_repo..."
+        set_merge_config "$data_repo"
+    fi
+fi
 
 echo "Setup complete."

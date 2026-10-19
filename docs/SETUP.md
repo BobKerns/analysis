@@ -21,7 +21,9 @@ if it isn't already there, adding it to your bash and zsh startup files
 you to add it yourself.
 It installs [uv](https://github.com/astral-sh/uv) if missing, configures the
 `.githooks` hooks (which keep runtime data and real account names out of
-commits), runs `uv sync --group dev` (installing the Python
+commits), sets `merge.ff false` and `pull.ff true` in this repo and a linked
+data repo (an explicit merge always makes a merge commit; a pull still
+fast-forwards when it can), runs `uv sync --group dev` (installing the Python
 version pinned in `.python-version` only if `uv sync` can't find a usable
 interpreter), and installs the notebook-cleaning `nbstripout` filter (strips
 outputs and per-run/per-machine metadata churn like `kernelspec.display_name`
@@ -67,10 +69,13 @@ source data/shared/sim/activate-analysis
     RIPWIRE_REPO=redhat-et/ripwire bash -c "$(curl -fsSL https://raw.githubusercontent.com/redhat-et/ripwire/main/scripts/install.sh)"
     ripwire --version
     ```
-5. Configure the git hooks (pre-commit and commit-msg):
+5. Configure the git hooks (pre-commit and commit-msg) and merges:
     ```sh
     git config core.hooksPath .githooks
+    git config merge.ff false
+    git config pull.ff true
     ```
+    Run the last two in the data repo as well.
 6. Run `uv sync --group dev` (installing the pinned Python from
    `.python-version` first with `uv python install` only if this fails)
 
