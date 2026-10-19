@@ -17,9 +17,12 @@ FROM ubuntu:24.04
 
 # UV_LINK_MODE=copy: the uv cache and /work are on different filesystems,
 # so uv can't hard-link from one to the other (and warns each time it tries).
+# PATH has ~/.local/bin from the start, so uv and ripwire are found by every
+# command, not just shells that read .bashrc.
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # build-essential: gcc, g++, make and the libc headers. python3-dev adds
 # Python.h for the distribution's Python; pkg-config and the other -dev
