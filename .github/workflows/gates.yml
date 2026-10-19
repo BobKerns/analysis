@@ -3,6 +3,11 @@
 # --no-verify) is caught before merge. Mark these jobs as required checks in the
 # ruleset for main; they block merging, not pushing. The sixth gate, loading the
 # real scenarios, needs the private data repo and stays local.
+#
+# Every job skips on a draft pull request, where the gates run locally and
+# Copilot doesn't review: Actions minutes are billed, and a draft can't merge.
+# A skipped job still reports its required check, and marking the pull request
+# ready (ready_for_review) runs everything on that commit.
 name: Gates
 
 on:
@@ -24,6 +29,7 @@ concurrency:
 jobs:
   keywords:
     name: Blocked keywords
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -73,6 +79,7 @@ jobs:
 
   python:
     name: Tests and lint
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -150,6 +157,7 @@ jobs:
 
   docs:
     name: Spelling and markdown
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
