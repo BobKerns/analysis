@@ -6,21 +6,11 @@
 # is already there (git, curl, a POSIX shell, bash for the ripwire installer),
 # ssh for cloning, and a C toolchain for packages that build from source.
 #
-# /work is a named volume holding the clones (see entrypoint.sh); the host's
-# ~/.ssh is mounted read-only for the clones' ssh URLs:
-#
-#   docker build -t analysis-setup-test docker/setup-test
-#   docker run --rm -it \
-#       -v analysis-test:/work \
-#       -v ~/.ssh:/root/.ssh-host:ro \
-#       analysis-setup-test
-#
-# The container doesn't inherit the host's DNS search domains, so if a clone
-# URL's host is a short name the host completes from one, pass that domain
-# with --dns-search. CODE_REPO_URL and DATA_REPO_URL (-e) override the URLs.
-#
-# Inside, run ./scripts/setup.sh and give it /work/finance-data as the data
-# repo. `docker volume rm analysis-test` starts the next run from scratch.
+# Start it with scripts/start-container.sh, which builds the image and runs
+# it with a named volume at /work holding the clones (see entrypoint.sh) and
+# the host's ~/.ssh mounted read-only for the clones' ssh URLs. Inside, run
+# ./scripts/setup.sh and give it /work/finance-data as the data repo;
+# `start-container.sh --fresh` starts the next run from scratch.
 
 FROM ubuntu:24.04
 
