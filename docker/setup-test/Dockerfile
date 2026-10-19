@@ -9,13 +9,17 @@
 # Start it with scripts/start-container.sh, which builds the image and runs
 # it with a named volume at /work holding the clones (see entrypoint.sh) and
 # the host's ~/.ssh mounted read-only for the clones' ssh URLs. Inside, run
-# ./scripts/setup.sh and give it /work/finance-data as the data repo;
-# `start-container.sh --fresh` starts the next run from scratch.
+# ./scripts/setup.sh (or start with --setup) and give it /work/finance-data
+# as the data repo; `start-container.sh --fresh` starts the next run from
+# scratch.
 
 FROM ubuntu:24.04
 
+# UV_LINK_MODE=copy: the uv cache and /work are on different filesystems,
+# so uv can't hard-link from one to the other (and warns each time it tries).
 ENV DEBIAN_FRONTEND=noninteractive \
-    LANG=C.UTF-8
+    LANG=C.UTF-8 \
+    UV_LINK_MODE=copy
 
 # build-essential: gcc, g++, make and the libc headers. python3-dev adds
 # Python.h for the distribution's Python; pkg-config and the other -dev

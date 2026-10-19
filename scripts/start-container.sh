@@ -3,10 +3,11 @@
 # Ubuntu for running scripts/setup.sh from scratch, with the code and data
 # repos cloned into the analysis-test volume on first start.
 #
-#   scripts/start-container.sh [--fresh] [command ...]
+#   scripts/start-container.sh [--fresh] [--setup] [command ...]
 #
 # --fresh deletes the volume first, so the clones (and anything setup.sh
-# left in them) start over. The command defaults to an interactive bash.
+# left in them) start over. --setup runs scripts/setup.sh in the container's
+# clone before the command, which defaults to an interactive bash.
 # CODE_REPO_URL and DATA_REPO_URL, if set, are passed through to override
 # the clone URLs.
 set -eu
@@ -16,8 +17,21 @@ cd "$(dirname "$0")/.."
 image=analysis-setup-test
 volume=analysis-test
 
-if [ "${1:-}" = --fresh ]; then
+fresh=
+setup_args=
+while [ $# -gt 0 ]; do
+    case $1 in
+        --fresh) fresh=1 ;;
+        --setup) setup_args="-e RUN_SETUP=1" ;;
+        -h|--help) sed -n '2,12s/^# \{0,1\}//p' "$0"; exit 0 ;;
+        --) shift; break ;;
+        -*) echo "start-container: unknown option $1" >&2; exit 2 ;;
+        *) break ;;
+    esac
     shift
+done
+
+if [ -n "$fresh" ]; then
     echo "Removing volume $volume..."
     docker volume rm -f "$volume" >/dev/null
 fi
@@ -38,7 +52,7 @@ else
 fi
 
 # shellcheck disable=SC2086  # the *_args are lists of words, split on purpose
-exec docker run --rm $tty_args $env_args \
+exec docker run --rm $tty_args $setup_args $env_args \
     -v "$volume":/work \
     -v "$HOME/.ssh":/root/.ssh-host:ro \
     "$image" "$@"

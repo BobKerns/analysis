@@ -6,19 +6,66 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
+# Append the PATH line to startup file $1, unless it already mentions
+# ~/.local/bin or, for a login file, sources the rc file named by $2 (which
+# gets the line itself).
+add_local_bin() {
+    if grep -qs '\.local/bin' "$1"; then
+        return 0
+    fi
+    if [ -n "${2:-}" ] && grep -qs "$2" "$1"; then
+        return 0
+    fi
+    cat >> "$1" <<'EOF'
+
+# Added by the analysis repo's scripts/setup.sh: uv and ripwire live here.
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac
+EOF
+    echo "Added ~/.local/bin to PATH in $1; new shells will pick it up."
+}
+
+# uv's and ripwire's installers put their binaries in ~/.local/bin. If it
+# isn't on PATH, add it for this run and in the shell's startup files.
+case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *)
+        export PATH="$HOME/.local/bin:$PATH"
+        shell_name=$(basename "${SHELL:-}")
+        zdot=${ZDOTDIR:-$HOME}
+        if [ "$shell_name" = zsh ] || [ -f "$zdot/.zshrc" ]; then
+            # Every interactive zsh reads .zshenv, then .zshrc.
+            if ! grep -qs '\.local/bin' "$zdot/.zshenv"; then
+                add_local_bin "$zdot/.zshrc"
+            fi
+        fi
+        if [ "$shell_name" = bash ] || [ -f "$HOME/.bashrc" ]; then
+            # Interactive shells read .bashrc; a login shell reads only the
+            # first of these that exists.
+            add_local_bin "$HOME/.bashrc"
+            for login_file in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+                if [ -f "$login_file" ]; then
+                    add_local_bin "$login_file" .bashrc
+                    break
+                fi
+            done
+        fi
+        case $shell_name in
+            zsh|bash|"") ;;
+            *) echo "Add ~/.local/bin to PATH in your $shell_name startup file." >&2 ;;
+        esac
+        ;;
+esac
+
 if ! command -v uv >/dev/null 2>&1; then
     echo "uv not found; installing..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # uv's installer puts the binary in ~/.local/bin, which may not be on PATH yet.
-    export PATH="$HOME/.local/bin:$PATH"
+    # The step above owns the startup files; keep uv's installer out of them.
+    curl -LsSf https://astral.sh/uv/install.sh | UV_NO_MODIFY_PATH=1 sh
 fi
 
 if ! command -v ripwire >/dev/null 2>&1; then
     echo "ripwire not found; installing..."
     RIPWIRE_REPO=redhat-et/ripwire bash -c \
         "$(curl -fsSL https://raw.githubusercontent.com/redhat-et/ripwire/main/scripts/install.sh)"
-    # ripwire's installer puts the binary in ~/.local/bin, which may not be on PATH yet.
-    export PATH="$HOME/.local/bin:$PATH"
 fi
 
 if ! command -v ripwire >/dev/null 2>&1; then

@@ -8,6 +8,9 @@
 # On a fresh /work volume, clone the code and data repos into it; a volume
 # that already has them is left as it is, so a half-finished setup survives a
 # restart. Delete the volume to start over.
+#
+# With RUN_SETUP=1, run scripts/setup.sh in the code repo after that. A
+# failure is reported but still leaves you in the container to look around.
 set -eu
 
 CODE_REPO_URL=${CODE_REPO_URL:-git@github.com:BobKerns/analysis.git}
@@ -41,4 +44,11 @@ clone_if_missing "$CODE_REPO_URL" /work/analysis
 clone_if_missing "$DATA_REPO_URL" /work/finance-data
 
 cd /work/analysis
+if [ "${RUN_SETUP:-}" = 1 ]; then
+    if ./scripts/setup.sh; then
+        :
+    else
+        echo "scripts/setup.sh failed (exit $?)." >&2
+    fi
+fi
 exec "$@"
