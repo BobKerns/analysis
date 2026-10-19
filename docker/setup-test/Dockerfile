@@ -3,8 +3,9 @@
 # Deliberately leaves out uv and any Python newer than the distribution's:
 # installing those is the setup script's job, so the container must start
 # without them. It carries the distribution's Python, what the script assumes
-# is already there (git, curl, a POSIX shell, bash for the ripwire installer),
-# ssh for cloning, and a C toolchain for packages that build from source.
+# is already there (git, curl, a POSIX shell, bash for the ripwire installer,
+# Node.js for the lint tools), ssh for cloning, and a C toolchain for
+# packages that build from source.
 #
 # Start it with scripts/start-container.sh, which builds the image and runs
 # it with a named volume at /work holding the clones (see entrypoint.sh) and
@@ -43,6 +44,14 @@ RUN apt-get update \
         libssl-dev \
         zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# Node.js for the pinned cspell/markdownlint. Ubuntu's nodejs (18) is older
+# than package.json's "engines" allow, so take Node 24 from the official
+# image (Debian-built, and this Ubuntu's glibc is newer) instead.
+COPY --from=node:24-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:24-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
