@@ -1,0 +1,151 @@
+"""A name left off a command's line is asked for, with completion (#240)."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from pathlib import Path
+
+import click
+import pandas as pd
+import pytest
+from click.testing import CliRunner, Result
+
+from analysis.cli import main
+from analysis.sim import names
+from analysis.sim.cli import sim_group_command
+
+
+@pytest.fixture
+def sim(test_data_dir: Path) -> Callable[..., Result]:
+    """Run a ``sim`` command against the private data copy; ``input`` answers
+    its prompts."""
+    def run(*args: str, input: str | None = None) -> Result:  # noqa: A002 -- CliRunner's name
+        return CliRunner().invoke(
+            main, ["sim", *args, "--data-dir", str(test_data_dir)], input=input,
+        )
+    return run
+
+
+def _column(path: Path, column: str) -> list[str]:
+    return list(pd.read_csv(path, dtype=str, keep_default_na=False)[column])
+
+
+def test_rename_asks_for_both_names(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("account", "rename", "--scenario", "retire_alice", input="Asset_Savings\nAsset_Rainy_Day\n")
+    assert result.exit_code == 0, result.output
+    assert "accounts: " in result.output  # the choices are listed first
+    accounts = names.account_names(test_data_dir, "retire_alice")
+    assert "Asset_Rainy_Day" in accounts and "Asset_Savings" not in accounts
+
+
+def test_a_prompted_name_is_asked_again_until_it_is_one(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    result = sim("scheduled", "rename", "--scenario", "retire_alice",
+                 input="no_such_rule\nliving\ncost_of_living\n")
+    assert result.exit_code == 0, result.output
+    assert "one of: " in result.output
+    assert "cost_of_living" in names.scheduled_names(test_data_dir, "retire_alice")
+
+
+def test_lot_rename_asks_account_then_its_lots(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("account", "lot", "rename", "--scenario", "retire_alice",
+                 input="Asset_Brokerage_Joint\ndefault\ncore\n")
+    assert result.exit_code == 0, result.output
+    assert names.lot_names(test_data_dir, "retire_alice", "Asset_Brokerage_Joint") == ["core"]
+
+
+def test_tag_add_asks_for_the_account_and_tags(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("account", "tag", "add", "--scenario", "retire_alice",
+                 input="Asset_Checking\nbucket:cash use:spending\n")
+    assert result.exit_code == 0, result.output
+    assert {"bucket:cash", "use:spending"} <= set(names.tag_tokens(test_data_dir, "retire_alice"))
+    listed = sim("tags", "items", "--scenario", "retire_alice", input="bucket:cash\n")
+    assert listed.exit_code == 0, listed.output
+    assert "Asset_Checking" in listed.output
+
+
+def test_calendar_tag_add_asks_for_the_tags(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("calendar", "tag", "add", "salary_alice", "--scenario", "retire_alice",
+                 input="event:retire\n")
+    assert result.exit_code == 0, result.output
+    assert "event:retire" in names.tag_tokens(test_data_dir, "retire_alice")
+
+
+def test_scheduled_delete_asks_which(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("scheduled", "delete", "--yes", "--scenario", "retire_alice", input="housing\n")
+    assert result.exit_code == 0, result.output
+    assert "housing" not in names.scheduled_names(test_data_dir, "retire_alice")
+
+
+def test_scenario_create_and_delete_ask(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    created = sim("scenario", "create", input="kid\nretire_alice\n")
+    assert created.exit_code == 0, created.output
+    assert _column(test_data_dir / "scenarios" / "kid" / "scenario.csv", "parent_scenario") == ["retire_alice"]
+    deleted = sim("scenario", "delete", "--yes", input="kid\n")
+    assert deleted.exit_code == 0, deleted.output
+    assert not (test_data_dir / "scenarios" / "kid").exists()
+
+
+def test_ensemble_rename_offers_only_ensembles(
+    sim: Callable[..., Result], test_data_dir: Path, test_ensemble_scenario: str,
+) -> None:
+    result = sim("ensemble", "rename", input=f"{test_ensemble_scenario}\nrecipe_9\n")
+    assert result.exit_code == 0, result.output
+    assert f"ensembles: {test_ensemble_scenario}\n" in result.output
+    assert (test_data_dir / "scenarios" / "recipe_9").is_dir()
+
+
+def test_person_edit_asks_which_person(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("person", "edit", "--display", "Alice A.", input="alice\n")
+    assert result.exit_code == 0, result.output
+    frame = pd.read_csv(test_data_dir / "persons.csv", dtype=str, keep_default_na=False)
+    assert frame.set_index("id").at["alice", "display"] == "Alice A."
+
+
+def test_holdings_asks_for_the_account(sim: Callable[..., Result]) -> None:
+    result = sim("account", "holdings", "--opening", "--scenario", "retire_alice",
+                 input="Asset_Brokerage_Joint\n")
+    assert result.exit_code == 0, result.output
+    assert "holdings of Asset_Brokerage_Joint" in result.output
+
+
+def test_nothing_to_choose_from_says_so(sim: Callable[..., Result]) -> None:
+    result = sim("itemization", "show", "--scenario", "retire_alice")
+    assert result.exit_code != 0
+    assert "there are no itemizations to choose from" in result.output
+    result = sim("person", "lifespan", "clear", "--scenario", "retire_alice")
+    assert "there are no persons with a lifespan set here to choose from" in result.output
+
+
+def test_ensemble_summary_with_no_runs_says_so(
+    test_data_dir: Path, runs_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "summary", "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir),
+    ])
+    assert result.exit_code != 0
+    assert "there are no ensembles with runs to choose from" in result.output
+
+
+def test_a_name_given_on_the_line_is_not_asked(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("account", "rename", "Asset_Savings", "Asset_Rainy_Day", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "accounts: " not in result.output
+
+
+# Required params that aren't names a scenario defines: a date, and the
+# inputs of the two importers, which are run from scripts.
+_STILL_REQUIRED = {"sim items start", "sim scheduled import-baseline from_account",
+                   "sim account import-quicken quicken_file"}
+
+
+def test_only_non_names_are_required() -> None:
+    def required(command: click.Command, path: str) -> set[str]:
+        found = {f"{path} {p.name}" for p in command.params if p.required}
+        if isinstance(command, click.Group):
+            for name, sub in command.commands.items():
+                found |= required(sub, f"{path} {'account' if name == 'accounts' else name}")
+        return found
+
+    assert required(sim_group_command, "sim") == _STILL_REQUIRED

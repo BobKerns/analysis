@@ -135,7 +135,7 @@ Copilot reviews a pull request when it leaves draft, and every push after
 that; Gates skips drafts too, since Actions minutes are billed. So open pull
 requests as drafts and iterate there with the local gates. Before marking one
 ready, merge `main` and run the whole suite locally, slow tests included
-(`pytest -q -n auto`). Marking it ready starts Copilot's review and one Gates
+(`.venv/bin/python -m pytest -q -n auto`). Marking it ready starts Copilot's review and one Gates
 run together; fix anything either finds. When a ready pull request needs
 several more pushes (a merge from `main`, a batch of review fixes), turn it
 back into a draft first, push, and mark it ready again: one review and one
@@ -160,6 +160,12 @@ narrow `# ty: ignore[<rule>]` with a reason is the last resort.
   options, it shows the fields and asks which to change). A command that only
   takes its changes as options is named `sim <type> change` instead, so the
   name says which kind it is.
+- **Names complete, and are asked for.** An argument or option naming
+  something a scenario defines takes a completing type from
+  `sim/completion.py` (`type=completion.ACCOUNT`), so TAB offers the names.
+  A name a command needs is optional on its line and, when left out, asked
+  for with `cli._ask_name` (completion over `sim/names.py`'s readers).
+  `tests/test_completion.py` and `tests/test_prompt_names.py` check both.
 - `uv` manages the environment; the venv is `.venv/`. Prefer `.venv/bin/...` or
   `uv run ...` over a bare `python`.
 - Notebooks are stripped with `nbstripout`. Don't commit output cells or churn
