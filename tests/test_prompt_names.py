@@ -15,7 +15,7 @@ from click.testing import CliRunner, Result
 
 from analysis.cli import main
 from analysis.sim import cli as sim_cli
-from analysis.sim import names
+from analysis.sim import completion, names
 from analysis.sim.cli import sim_group_command
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME
 
@@ -217,6 +217,47 @@ def test_off_a_terminal_a_mistyped_name_fails_as_before(sim: Callable[..., Resul
     assert result.exit_code != 0
     assert "no account 'Asset_Savngs' in retire_alice" in result.output  # the command's own error
     assert "unknown account" not in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_tag_filter_may_match_nothing(sim: Callable[..., Result]) -> None:
+    assert sim("account", "tag", "add", "Asset_Checking", "bucket:cash", "--scenario", "retire_alice").exit_code == 0
+    result = sim("tags", "items", "unused:*", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_tag_being_removed_is_not_a_pattern(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    assert sim("account", "tag", "add", "Asset_Checking", "bucket:cash", "--scenario", "retire_alice").exit_code == 0
+    result = sim("account", "tag", "rm", "Asset_Checking", "bucket:*", "--scenario", "retire_alice",
+                 input="bucket:cash\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown tag: 'bucket:*'" in result.output
+    assert "bucket:cash" not in names.tag_tokens(test_data_dir, "retire_alice")
+
+
+@pytest.mark.usefixtures("terminal")
+def test_fixed_is_a_scheduled_rules_series(sim: Callable[..., Result]) -> None:
+    result = sim("scheduled", "edit", "living", "--series", "fixed", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_run_files_names_are_not_checked_against_the_scenario(
+    sim: Callable[..., Result], tmp_path: Path,
+) -> None:
+    runfile = tmp_path / "other.sqlite3"
+    runfile.write_bytes(b"")
+    result = sim("account", "history", "Asset_Elsewhere", "--runfile", str(runfile))
+    assert "unknown account" not in result.output
+
+
+def test_a_compared_variants_names_count(test_data_dir: Path) -> None:
+    ctx = click.Context(sim_group_command.commands["ensemble"].commands["compare"])  # ty: ignore[unresolved-attribute] -- a Group
+    ctx.params = {"baseline": "base", "variant": "retire_alice", "data_dir": str(test_data_dir)}
+    assert "Asset_Checking" in completion.ACCOUNT.choices(ctx)  # base has no accounts
 
 
 @pytest.mark.usefixtures("terminal")

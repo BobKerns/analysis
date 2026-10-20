@@ -29,12 +29,16 @@ from analysis.sim.loader import read_current_scenario
 __all__ = [
     "ACCOUNT", "ACCOUNT_OR_NEW", "ANY_TAG", "AUX_KIND", "CALENDAR_ROW", "CHAIN",
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
-    "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SYMBOL", "TAG", "LotName",
+    "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SYMBOL", "TAG", "TAG_FILTER",
+    "LotName",
     "NameType", "SeriesName", "type_for",
 ]
 
 # The params, nearest first, whose value is the scenario a name belongs to.
 SCENARIO_PARAMS = ("scenario", "scenario_name", "baseline")
+# A second scenario whose names count too: `ensemble compare`'s --account
+# may name an account only the variant has.
+_OTHER_SCENARIO_PARAM = "variant"
 
 
 def _line_params(ctx: click.Context) -> dict[str, Any]:
@@ -82,6 +86,20 @@ def _scenario(ctx: click.Context, data_dir: Path) -> str | None:
         if isinstance(value := _given(ctx, key), str):
             return value
     return read_current_scenario(data_dir)
+
+
+def _line_scenarios(ctx: click.Context, data_dir: Path) -> list[str]:
+    """The scenarios whose names the line may use: the scenario, and a
+    compared variant."""
+    found = [scenario] if (scenario := _scenario(ctx, data_dir)) else []
+    other = _given(ctx, _OTHER_SCENARIO_PARAM)
+    if isinstance(other, str) and other not in found:
+        found.append(other)
+    return found
+
+
+def _union(read: Callable[[str], Sequence[str]], scenarios: Sequence[str]) -> list[str]:
+    return list(dict.fromkeys(n for s in scenarios for n in read(s)))
 
 
 class NameType(click.ParamType):
@@ -139,8 +157,7 @@ def _in_scenario(
 ) -> Callable[[click.Context, Path], Sequence[str]]:
     """A lister for names that belong to the line's scenario."""
     def lister(ctx: click.Context, data_dir: Path) -> Sequence[str]:
-        scenario = _scenario(ctx, data_dir)
-        return read(data_dir, scenario) if scenario else []
+        return _union(lambda s: read(data_dir, s), _line_scenarios(ctx, data_dir))
     return lister
 
 
@@ -187,10 +204,13 @@ def _tag_patterns(data_dir: Path, scenario: str) -> list[str]:
     return sorted({f"{t.partition(':')[0]}:*" for t in names.tag_tokens(data_dir, scenario)})
 
 
-TAG = NameType(_in_scenario(names.tag_tokens), "tag", known=_in_scenario(_tag_patterns))
-# A tag being added, or a filter: completes from the tags in use, but may
-# be new, or match nothing.
+# A tag being removed: one in use.
+TAG = NameType(_in_scenario(names.tag_tokens), "tag")
+# A tag being added: completes from the tags in use, but may be new.
 ANY_TAG = NameType(_in_scenario(names.tag_tokens), "tag", check=False)
+# A filter: a tag or a role:* pattern, which may match nothing.
+TAG_FILTER = NameType(_in_scenario(lambda d, s: [*names.tag_tokens(d, s), *_tag_patterns(d, s)]),
+                      "tag", check=False)
 ITEMIZATION = NameType(_in_scenario(names.itemization_names), "itemization",
                        known=_in_scenario(lambda d, s: [f"@{n}" for n in names.itemization_names(d, s)]))
 PERSON = NameType(lambda ctx, data_dir: names.person_ids(data_dir), "person")  # noqa: ARG005
@@ -207,17 +227,19 @@ class LotName(NameType):
 
     def __init__(self, account_param: str) -> None:
         def lister(ctx: click.Context, data_dir: Path) -> Sequence[str]:
-            scenario = _scenario(ctx, data_dir)
             account = _line_params(ctx).get(account_param)
-            if not scenario or not isinstance(account, str):
+            if not isinstance(account, str):
                 return []
-            return names.lot_names(data_dir, scenario, account)
+            return _union(lambda s: names.lot_names(data_dir, s, account),
+                          _line_scenarios(ctx, data_dir))
         super().__init__(lister, "lot")
 
 
 class SeriesName(NameType):
     """A series of ``kind`` (``rate``, ``inflation``), or of the kind the
-    ``kind_param`` param names, or of any kind."""
+    ``kind_param`` param names, or of any kind. A scheduled rule's series
+    may be ``fixed`` (no inflation), so a series of any kind or of
+    ``inflation`` takes that too."""
 
     def __init__(self, kind: str | None = None, *, kind_param: str | None = None) -> None:
         def lister(ctx: click.Context, data_dir: Path) -> Sequence[str]:
@@ -226,7 +248,9 @@ class SeriesName(NameType):
                 return []
             wanted = _line_params(ctx).get(kind_param) if kind_param else kind
             return names.series_names(data_dir, scenario, wanted if isinstance(wanted, str) else None)
-        super().__init__(lister, "series", plural="series")
+        fixed = kind_param is None and kind in (None, "inflation")
+        super().__init__(lister, "series", plural="series",
+                         known=(lambda ctx, data_dir: ["fixed"]) if fixed else None)  # noqa: ARG005
 
 
 # The types of the params that the guides' field lists turn into options

@@ -2279,7 +2279,8 @@ def _wrap_to_ask_again(command: click.Command) -> None:
         # own review for a rejected value.
         typed = ctx.command is command and ctx.parent is not None and (
             ctx.parent.invoked_subcommand is not None)
-        if typed and _interactive():
+        # A run file holds its own names, whatever the current scenario has.
+        if typed and _interactive() and not kwargs.get("runfile"):
             kwargs = _ask_again_for_mistyped(ctx, kwargs)
         return original(*args, **kwargs)
 
@@ -9038,7 +9039,7 @@ def tags_group_command(
 
 
 @tags_group_command.command("items")
-@click.argument("tag_token", required=False, type=completion.TAG)
+@click.argument("tag_token", required=False, type=completion.TAG_FILTER)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -9713,7 +9714,7 @@ _CALENDAR_LIST_KINDS = sorted({*registries.CALENDAR_EVENT_KINDS, *_CALENDAR_COMM
 @calendar_group_command.command("list")
 @click.option("--kind", type=click.Choice(_CALENDAR_LIST_KINDS), default=None,
               help="Only rows of this kind (the CSV kind, or its add command's name).")
-@click.option("--tag", type=completion.ANY_TAG, default=None,
+@click.option("--tag", type=completion.TAG_FILTER, default=None,
               help="Only rows carrying this tag ('role:name', or 'role:*' for a whole role).")
 @click.option("-v", "--verbose", is_flag=True, default=False,
               help="Also show each row's description and params_json.")
