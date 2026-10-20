@@ -246,3 +246,114 @@ def test_sim_ensemble_compare_shows_a_one_sided_account_without_deltas(
     assert "Δp05" not in result.output
     assert "child tail, year end:" in result.output
     assert "baseline tail" not in result.output
+
+
+# --graph and --graph-file (#167)
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def test_sim_ensemble_summary_graph_file_writes_an_svg_after_the_tables(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path, tmp_path: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    chart = tmp_path / "fan.svg"
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "summary", "baseline", "--runs-dir", str(runs_dir),
+        "--graph-file", str(chart),
+    ])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[1].split()[0] == "year"  # the table still comes first
+    assert result.output.splitlines()[-1] == f"wrote {chart}"
+    svg = chart.read_text()
+    assert "<svg" in svg and "net worth fan chart (nominal) (baseline)" in svg
+
+
+def test_sim_ensemble_compare_graph_draws_every_panel_the_options_ask_for(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Paired recipes and a reserve: all four of the notebook's panels, in
+    the dollars --dollars asks for; with no image terminal, as a PNG file."""
+    import tempfile
+
+    from analysis.sim import ensemble_plots
+
+    figures: list = []
+    real_figure = ensemble_plots.ensemble_compare_figure
+
+    def _spy(*args, **kwargs):
+        figures.append(real_figure(*args, **kwargs))
+        return figures[-1]
+
+    monkeypatch.setattr(ensemble_plots, "ensemble_compare_figure", _spy)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("child", 1)
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child", "--runs-dir", str(runs_dir),
+        "--reserve", "1000000", "--dollars", "nominal", "--graph",
+    ])
+    assert result.exit_code == 0, result.output
+    (figure,) = figures
+    titles = [ax.get_title() for ax in figure.axes]
+    assert len(titles) == 4
+    assert "(nominal)" in titles[0] and "3 paired members" in titles[1]
+    assert "CVaR" in titles[2] and "$1,000,000 reserve" in titles[3]
+    written = next(tmp_path.glob("ensemble-*.png"))
+    assert f"wrote {written}" in result.output and written.read_bytes().startswith(PNG_MAGIC)
+    assert "can't show images" in result.output
+
+
+def test_sim_ensemble_compare_graph_of_a_one_sided_account_is_its_fan_chart(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path, tmp_path: Path,
+) -> None:
+    seeded_ensemble_batch("baseline", 1)
+    _rename_account(seeded_ensemble_batch("child", 1), "Asset_Checking", "Asset_Renamed")
+    chart = tmp_path / "one-sided.svg"
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "compare", "baseline", "child", "--runs-dir", str(runs_dir),
+        "--account", "Asset_Renamed", "--graph-file", str(chart),
+    ])
+    assert result.exit_code == 0, result.output
+    assert "account Asset_Renamed fan chart (CPI-constant) (child)" in chart.read_text()
+
+
+def test_sim_ensemble_graph_shows_in_an_image_terminal(
+    seeded_ensemble_batch: Callable[..., Path], runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import chain_graph
+
+    monkeypatch.setattr(chain_graph, "terminal_protocol", lambda: "kitty")
+    monkeypatch.setattr(chain_graph, "cell_size", lambda: (10.0, 24.0))
+    monkeypatch.setattr(chain_graph, "swallow_replies", lambda: None)
+    seeded_ensemble_batch("baseline", 1)
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "summary", "baseline", "--runs-dir", str(runs_dir), "--graph",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "\x1b_Ga=T,f=100,q=2" in result.output
+    assert "wrote" not in result.output
+
+
+@pytest.mark.parametrize("options, message", [
+    (["--graph", "--graph-file", "chart.png"], "use one of --graph and --graph-file"),
+    (["--graph-file", "chart.gif"], "must end in .png or .svg"),
+])
+def test_sim_ensemble_graph_options_are_checked_before_loading(
+    runs_dir: Path, options: list[str], message: str,
+) -> None:
+    for command in (["summary", "baseline"], ["compare", "baseline", "child"]):
+        result = CliRunner().invoke(main, [
+            "sim", "ensemble", *command, "--runs-dir", str(runs_dir), *options,
+        ])
+        assert result.exit_code == 2 and message in result.output, result.output
+
+
+def test_figure_dpi_matches_the_terminal_text_height() -> None:
+    from analysis.sim.cli import _figure_dpi
+
+    # 10pt text in a 24px cell's 20px line: 20px per 10pt is 144 dpi.
+    assert _figure_dpi((10.0, 24.0)) == pytest.approx(144.0)
+    assert _figure_dpi(None) == 200.0
+    assert _figure_dpi((1.0, 2.0)) == 72.0  # never below matplotlib's point size

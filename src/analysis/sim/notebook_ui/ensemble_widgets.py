@@ -5,14 +5,11 @@ breakpoints."""
 
 from __future__ import annotations
 
-import io
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 import ipywidgets as widgets
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import pandas as pd
 from IPython.display import Image, clear_output, display
@@ -27,10 +24,16 @@ from analysis.sim.ensemble import (
     member_pairs,
     member_run_statuses,
     members_balance_by_month,
-    paired_deltas,
     recipe_reserve,
     risk_summary,
     summary_with_percentiles,
+)
+from analysis.sim.ensemble_plots import (
+    band_edges,
+    ensemble_compare_figure,
+    ensemble_fan_chart,
+    ensemble_fan_figure,
+    figure_bytes,
 )
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.notebook_ui.pickers import (
@@ -41,7 +44,6 @@ from analysis.sim.notebook_ui.pickers import (
     find_data_dir,
     find_runs_dir,
 )
-from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.readme import description_view
 from analysis.sim.types import DollarMode, LogLinearMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -81,92 +83,9 @@ def ensemble_summary_view(
     return heading, yearly
 
 
-def _band_edges(monthly_summary: pd.DataFrame) -> list[str]:
-    """The ``pNN`` percentile columns in ascending order -- the fan chart's
-    band boundaries, outermost first and last -- or ``min``/``max`` for a
-    plain ``summary()`` frame that has none."""
-    edges = sorted(
-        (c for c in monthly_summary.columns if c[:1] == "p" and c[1:].replace(".", "").isdigit()),
-        key=lambda c: float(c[1:]),
-    )
-    return edges or ["min", "max"]
-
-
-def _band_label(low: str, high: str) -> str:
-    if (low, high) == ("min", "max"):
-        return "range"
-    return f"{float(low[1:]):g}–{float(high[1:]):g}%"
-
-
-def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
-    """Shade the member distribution month by month behind mean/median
-    lines: one band between each pair of adjacent ``pNN`` columns
-    (``ensemble.summary_with_percentiles()``'s 5th to 95th percentiles),
-    darker toward the middle, so the chart shows where members cluster
-    rather than how far apart one lucky and one unlucky member ended up.
-    A plain ``summary()`` frame, with no ``pNN`` columns, gets the single
-    min-max band."""
-    if ax is None:
-        _fig, ax = plt.subplots(figsize=(10, 5))
-    edges = _band_edges(monthly_summary)
-    bands = list(zip(edges, edges[1:], strict=False))
-    depth_count = (len(bands) + 1) // 2
-    base = mcolors.to_rgb("steelblue")
-    labelled: set[int] = set()
-    for i, (low, high) in enumerate(bands):
-        depth = min(i, len(bands) - 1 - i)  # 0 for the outermost bands
-        # Opaque blends with white rather than alpha: a translucent
-        # steelblue (alpha=0.2) was visible in Jupyter but washed out of VS
-        # Code's inline PNG rendering entirely, and opaque bands also can't
-        # double up where adjacent fills overlap by a pixel. Even the
-        # outermost band starts at half strength: a lighter one (~0.35) still
-        # read as plain white in VS Code while looking fine in JupyterLab.
-        strength = 0.5 + 0.4 * depth / max(depth_count - 1, 1)
-        color = tuple(1 - strength * (1 - c) for c in base)
-        # The band is labelled by the edges it shares a depth with -- the
-        # outer pair is "5–95%", the next "20–80%", and so on -- once each.
-        label = None
-        if depth not in labelled:
-            labelled.add(depth)
-            label = _band_label(edges[depth], edges[len(edges) - 1 - depth])
-        ax.fill_between(
-            monthly_summary.index, monthly_summary[low], monthly_summary[high],
-            # A full-strength edge outlines every band, so the outer
-            # envelope stays visible however a renderer treats pale fills.
-            color=color, edgecolor=base, linewidth=0.6, label=label,
-        )
-    ax.plot(monthly_summary.index, monthly_summary["mean"], color="midnightblue",
-            linewidth=2, label="mean")
-    ax.plot(monthly_summary.index, monthly_summary["median"], color="midnightblue",
-            linewidth=1, linestyle="--", label="median")
-    # No forced bottom=0: a shortfall scenario can carry a real negative net
-    # worth, and clipping it would hide the low end of the range (and
-    # potentially the mean/median themselves) rather than show it. A thin
-    # zero rule instead -- but axhline, left to itself, feeds into autoscale
-    # like any other artist and would drag the axis down to include 0 even
-    # when the data is nowhere near it (the exact distortion this chart is
-    # trying to avoid), so the autoscaled limits are captured first and
-    # restored after: the rule only ends up visible when 0 already falls
-    # within the range the data itself earned. Meaningless on a log axis
-    # (zero has no position there), so skipped entirely rather than drawn
-    # and silently invisible.
-    if ax.get_yscale() != "log":
-        ylim = ax.get_ylim()
-        ax.axhline(0, color="red", linewidth=0.8, zorder=2.5)
-        ax.set_ylim(ylim)
-    ax.set_xlabel("month")
-    ax.set_ylabel("USD")
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-    ax.grid(True, axis="y", alpha=0.3)
-    ax.legend(framealpha=FRAME_ALPHA)
-    return ax
-
-
 def _png(fig: Figure) -> Image:
     """``fig`` as an inline PNG, cropped like matplotlib-inline's own output."""
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    return Image(data=buf.getvalue(), format="png")
+    return Image(data=figure_bytes(fig), format="png")
 
 
 NET_WORTH = "Net worth"
@@ -510,13 +429,8 @@ def ensemble_widget(*_,
             # pyplot doesn't know about can't be flushed by anyone else, and
             # rendering it ourselves doesn't depend on the inline backend
             # having registered a Figure formatter, which only pyplot use does.
-            fig = Figure(figsize=(10, 5))
-            ax = fig.subplots()
-            # Scale before drawing: matplotlib's set_yscale resets the
-            # major formatter to its own log-scale default, which would
-            # otherwise clobber ensemble_fan_chart's dollar formatting.
             wants_log = log_linear_picker.value == LogLinearMode.LOG
-            plotted = [_band_edges(monthly_summary)[0], "mean", "median"]
+            plotted = [band_edges(monthly_summary)[0], "mean", "median"]
             if wants_log and (monthly_summary[plotted] <= 0).any().any():
                 # Log scale can't represent zero or negative values --
                 # silently switching to linear would clip exactly the
@@ -527,16 +441,11 @@ def ensemble_widget(*_,
                     "that reaches zero or below; showing linear instead._"
                 ))
                 wants_log = False
-            if wants_log:
-                ax.set_yscale("log")
-            ensemble_fan_chart(monthly_summary, ax=ax)
-            if reserve is not None and mode == DollarMode.CPI_CONSTANT:
-                ax.axhline(reserve, color="darkorange", linewidth=1, linestyle="--",
-                           label="reserve")
-                ax.legend(framealpha=FRAME_ALPHA)
-            ax.set_title(f"{subject} fan chart ({mode_label}) ({recipe})")
-            ax.tick_params(axis="x", labelrotation=90)
-            display(_png(fig))
+            display(_png(ensemble_fan_figure(
+                monthly_summary, f"{subject} fan chart ({mode_label}) ({recipe})",
+                reserve=reserve if mode == DollarMode.CPI_CONSTANT else None,
+                log_scale=wants_log,
+            )))
             display(yearly.style.format(_share_format(yearly.columns)))
         finally:
             for con in connections.values():
@@ -547,86 +456,6 @@ def ensemble_widget(*_,
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
     return widgets.VBox([dropdown, controls.row(lot_picker), loading, out])
-
-
-def _symlog(ax: Any, values: pd.DataFrame) -> None:
-    """A log scale for deltas, which run both ways: symmetric log, linear
-    within 1% of the largest swing of ``values`` so small deltas near zero
-    don't explode. Set before drawing: matplotlib resets the formatter."""
-    peak = float(values.abs().max().max()) if values.size else 0.0
-    ax.set_yscale("symlog", linthresh=max(peak / 100, 1.0))
-
-
-def _delta_lines(
-    deltas: pd.DataFrame, columns: list[str], ax: Any, title: str, shares: bool = False,
-    log_scale: bool = False,
-) -> None:
-    """One line per column of ``deltas``, light to dark, labelled at the
-    right end, over a zero rule; dollars, or percentage points for
-    ``shares``, on a symmetric log scale for ``log_scale`` (dollars only)."""
-    if log_scale and not shares:
-        _symlog(ax, deltas[columns])
-    shades = plt.get_cmap("Blues")
-    for i, column in enumerate(columns):
-        color = shades(0.35 + 0.6 * i / max(len(columns) - 1, 1))
-        ax.plot(deltas.index, deltas[column], color=color, linewidth=2, label=column)
-        ax.annotate(column, (deltas.index[-1], deltas[column].iloc[-1]),
-                    xytext=(4, 0), textcoords="offset points", va="center", fontsize=8)
-    ax.axhline(0, color="gray", linewidth=0.8)
-    ax.set_title(title)
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(
-        (lambda v, _: f"{v * 100:+.0f} pts") if shares else (lambda v, _: f"${v:,.0f}")
-    ))
-    ax.grid(True, axis="y", alpha=0.3)
-    ax.legend(framealpha=FRAME_ALPHA, ncol=4, fontsize=8)
-
-
-def ensemble_compare_figure(
-    baseline: str, variant: str,
-    baseline_frame: pd.DataFrame, variant_frame: pd.DataFrame,
-    pairs: list[tuple[str, str]], mode_label: str,
-    reserve: float | None = None,
-    cpi_frames: tuple[pd.DataFrame, pd.DataFrame] | None = None,
-    log_scale: bool = False,
-) -> Figure:
-    """The comparison's panels, top to bottom (#163): each percentile
-    breakpoint's delta; the fan of paired per-future deltas when the
-    recipes pair; the delta in each tail mean (CVaR); and, given a
-    ``reserve``, the change in the shares below it (see
-    ``comparison_deltas`` for ``cpi_frames``). ``log_scale`` puts the dollar
-    panels on a symmetric log scale (#171), since deltas run both ways."""
-    deltas = comparison_deltas(baseline_frame, variant_frame, reserve=reserve, cpi_frames=cpi_frames)
-    panels = 2 + bool(pairs) + (reserve is not None)
-    fig = Figure(figsize=(10, 4 * panels))
-    axes = list(fig.subplots(panels, 1, sharex=True))
-    _delta_lines(
-        deltas, [c for c in deltas.columns if c.startswith("Δp")], axes[0],
-        f"{variant} − {baseline}: each percentile vs the same percentile ({mode_label})",
-        log_scale=log_scale,
-    )
-    if pairs:
-        paired = summary_with_percentiles(paired_deltas(baseline_frame, variant_frame, pairs))
-        if log_scale:
-            _symlog(axes[1], paired)
-        ensemble_fan_chart(paired, ax=axes[1])
-        axes[1].set_title(
-            f"{variant} − {baseline}, future by future ({len(pairs)} paired members)"
-        )
-        axes[1].set_xlabel("")
-    _delta_lines(
-        deltas, [c for c in deltas.columns if c.startswith("Δcvar")], axes[1 + bool(pairs)],
-        f"{variant} − {baseline}: mean of the worst 5% and 20% (CVaR)",
-        log_scale=log_scale,
-    )
-    if reserve is not None:
-        _delta_lines(
-            deltas, ["Δbelow_reserve", "Δever_below_reserve"], axes[-1],
-            f"{variant} − {baseline}: share of members below the ${reserve:,.0f} reserve",
-            shares=True,
-        )
-    axes[-1].tick_params(axis="x", labelrotation=90)
-    fig.tight_layout()
-    return fig
 
 
 def ensemble_compare_widget(*_,
@@ -776,13 +605,11 @@ def ensemble_compare_widget(*_,
             compared = baseline in frames and any(v in frames for v in variants)
             if not compared:
                 for name, frame in frames.items():
-                    fig = Figure(figsize=(10, 4))
-                    ax = fig.subplots()
-                    if log_scale and (frame > 0).all().all():
-                        ax.set_yscale("log")
-                    ensemble_fan_chart(summary_with_percentiles(frame), ax=ax)
-                    ax.set_title(f"{subject} fan chart ({mode_label}) ({name})")
-                    outputs.append(_png(fig))
+                    outputs.append(_png(ensemble_fan_figure(
+                        summary_with_percentiles(frame),
+                        f"{subject} fan chart ({mode_label}) ({name})",
+                        log_scale=log_scale and bool((frame > 0).all().all()), height=4,
+                    )))
             tails = [risk_summary(frame, reserve, cpi_frames.get(name))
                      for name, frame in frames.items()]
             tail_table = year_end_values(pd.concat(tails, axis=1, keys=list(frames)))
