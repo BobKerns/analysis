@@ -122,6 +122,8 @@ def test_sim_compare_refuses_a_scenario_unknown_without_a_run_or_named_twice(
     # A path to a real scenario folder is still not a scenario name.
     outside = compare_runs("retire_alice", "../scenarios/higher_pay")
     assert outside.exit_code == 1 and "no scenario '../scenarios/higher_pay'" in outside.output
+    as_baseline = compare_runs("../scenarios/retire_alice", "higher_pay")
+    assert as_baseline.exit_code != 0 and "scenario not found" in as_baseline.output
     twice = compare_runs("retire_alice", "higher_pay", "retire_alice")
     assert twice.exit_code == 2 and "name each scenario once" in twice.output
 

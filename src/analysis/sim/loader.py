@@ -375,7 +375,10 @@ def resolve_scenario_name(
     state_dir = (Path(state_dir) if state_dir is not None
                  else find_state_dir(data_dir, data_dir.parent / "state"))
     if scenario:
-        if not (scenarios_dir / scenario).is_dir():
+        # A scenario is a folder directly under scenarios/: a path such as
+        # "../x" never names one, even when it reaches a folder.
+        if (scenario in (".", "..") or Path(scenario).name != scenario
+                or not (scenarios_dir / scenario).is_dir()):
             raise LoadError([f"scenario not found: {scenarios_dir / scenario}"])
         name = scenario
     else:
