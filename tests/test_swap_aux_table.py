@@ -220,3 +220,48 @@ def test_calendar_add_swap_aux_table_writes_a_row_that_loads(
     assert row["series"] == "CA"
     assert json.loads(row["params_json"]) == {"aux_kind": "state_brackets", "source_series": "WA"}
     load_test_copy()
+
+
+def test_a_move_to_another_state_takes_its_standard_deduction(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    """Swapping state_brackets swaps state_standard_deduction with it (#248),
+    so the new state's brackets don't run with the old state's deduction."""
+    add_state_tax(bracket_series="CA")
+    write_aux("state_brackets__WA.csv",
+              "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+              "2026-01-31,MFJ,0,0.00,0%\n")
+    write_aux("state_standard_deduction__WA.csv",
+              "effective_date,filing_status,amount\n2026-01-31,MFJ,1000.00\n")
+    _swap(append_calendar_row, "2028-03", "state_brackets", "CA", "WA")
+    assert not any("standard deduction" in w for w in load_test_copy().warnings)
+    run = _run(load_test_copy, runs_dir, "move")
+    with sqlite3.connect(run) as con:
+        deduction = dict(con.execute(
+            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_standard_deduction'"
+        ).fetchall())
+    assert deduction[2026] == 11_080_00  # California's, before the move
+    assert deduction[2028] == 1_000_00
+
+
+def test_a_move_to_a_state_without_a_standard_deduction_falls_back_to_federal(
+    add_state_tax: Callable[..., None], write_aux: Callable[[str, str], Path],
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    add_state_tax(bracket_series="CA")
+    write_aux("state_brackets__WA.csv",
+              "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+              "2026-01-31,MFJ,0,0.00,0%\n")
+    _swap(append_calendar_row, "2028-03", "state_brackets", "CA", "WA")
+    warnings = load_test_copy().warnings
+    assert any("after the move to WA" in w and "state_standard_deduction__WA.csv" in w
+               for w in warnings)
+    run = _run(load_test_copy, runs_dir, "move")
+    with sqlite3.connect(run) as con:
+        deduction = dict(con.execute(
+            "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_standard_deduction'"
+        ).fetchall())
+    assert deduction[2028] == 32_200_00  # the federal figure, not California's

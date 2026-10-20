@@ -11,7 +11,8 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim import reports
-from analysis.sim.connection import RunConnection
+from analysis.sim.connection import RunConnection, open_run, open_scenario
+from analysis.sim.engine import run_scenario
 from analysis.sim.types import DollarMode
 
 BROKERAGE = "Asset_Brokerage_Joint"
@@ -25,7 +26,8 @@ def _invoke(*args: str, run_file: Path):
 
 def test_income_by_category_keeps_other_and_adds_up(report_run: RunConnection) -> None:
     income = reports.flows_by_year(report_run, "income")
-    assert list(income.columns) == [*reports.INCOME_REPORT_CATEGORIES, "total"]
+    assert list(income.columns) == [*reports.INCOME_REPORT_CATEGORIES, "total",
+                                    reports.CASH_INCOME, reports.CASH_FLOW]
     events = report_run.items("transfer_event", from_kind="income")
     by_year = events.groupby(pd.to_datetime(events["date"]).dt.year)["amount"].sum() / 100
     assert income["total"].to_numpy() == pytest.approx(by_year.reindex(income.index).to_numpy())
@@ -36,6 +38,25 @@ def test_income_by_category_keeps_other_and_adds_up(report_run: RunConnection) -
     assert income.loc[2025, "investment"] == pytest.approx(-1_500)
     constant = reports.flows_by_year(report_run, "income", mode=DollarMode.CPI_CONSTANT)
     assert constant.loc[2025, "total"] == pytest.approx(-1_500, rel=0.05)
+
+
+def test_cash_income_leaves_out_growth_and_cash_flow_adds_withdrawals(
+    two_lot_run: RunConnection,
+) -> None:
+    income = reports.flows_by_year(two_lot_run, "income")
+    # Brokerage growth stays invested: in the total, not in cash income.
+    growth = income["total"] - income[reports.CASH_INCOME]
+    assert (growth.loc[2026:] > 0).all()
+    events = two_lot_run.items("transfer_event", from_kind="income", to_name="Asset_Checking")
+    in_2027 = events[events["date"].str.startswith("2027")]["amount"].sum() / 100
+    assert income.loc[2027, reports.CASH_INCOME] >= in_2027 > 0
+    # lot_b_draw moves $1,000 a month from the brokerage into checking.
+    assert income.loc[2027, reports.CASH_FLOW] - income.loc[2027, reports.CASH_INCOME] \
+        == pytest.approx(12_000)
+    expenses = reports.flows_by_year(two_lot_run, "expenses")
+    assert reports.CASH_INCOME not in expenses.columns
+    year = reports.flows_for_year(two_lot_run, "income", 2027)
+    assert reports.CASH_FLOW not in year.index
 
 
 def test_expenses_by_tag_prefer_the_rules_tag_to_its_accounts(report_run: RunConnection) -> None:
@@ -81,17 +102,58 @@ def test_gains_count_a_prior_years_catch_up_in_that_year(report_run: RunConnecti
         expenses.reindex(gains.index).fillna(0).to_numpy())
 
 
-def test_tax_by_year_leaves_after_tax_income(report_run: RunConnection) -> None:
+def test_tax_by_year_shows_the_federal_income_it_taxed_without_a_state_rule(report_run: RunConnection) -> None:
     tax = reports.tax_by_year(report_run)
+    # No state tax rule, so no state columns.
+    assert list(tax.columns) == ["fed_agi", "fed_deduction", "fed_income",
+                                 "fed_tax", "total_tax", "effective_rate"]
     liability = report_run.tax_liability_by_year()
     assert tax.loc[2026, "total_tax"] == pytest.approx(liability[2026]) and liability[2026] > 0
-    taxed = tax.dropna(subset=["total_tax"])
-    assert (taxed["after_tax_income"] == taxed["gross_income"] - taxed["total_tax"]).all()
-    expenses = reports.flows_by_year(report_run, "expenses")
-    assert tax.loc[2027, "non_tax_expenses"] == pytest.approx(
-        expenses.loc[2027, "total"] - expenses.loc[2027, "taxes"])
+    summary = report_run.items("tax_year_summary").set_index(["year", "bucket"])["amount"] / 100
+    assert tax.loc[2026, "fed_agi"] == pytest.approx(summary[2026, "federal_adjusted_gross_income"])
+    assert tax.loc[2026, "fed_income"] == pytest.approx(
+        max(0, tax.loc[2026, "fed_agi"] - tax.loc[2026, "fed_deduction"]))
+    assert tax.loc[2026, "effective_rate"] == pytest.approx(
+        tax.loc[2026, "total_tax"] / tax.loc[2026, "fed_agi"])
+    # The rate is a ratio, so CPI-constant dollars leave it alone.
+    constant = reports.tax_by_year(report_run, DollarMode.CPI_CONSTANT)
+    assert constant["effective_rate"].to_numpy() == pytest.approx(
+        tax["effective_rate"].to_numpy(), nan_ok=True)
+    assert constant.loc[2030, "fed_agi"] < tax.loc[2030, "fed_agi"]
     reconciliation = reports.tax_reconciliation(report_run)
-    assert reconciliation.loc[2026, "federal_liability"] == pytest.approx(liability[2026])
+    assert reconciliation.loc[2026, "fed_liability"] == pytest.approx(liability[2026])
+
+
+def test_tax_by_year_adds_the_states_own_figures(
+    add_state_tax, load_test_copy, runs_dir: Path, test_data_dir: Path,
+) -> None:
+    add_state_tax()
+    run_file = run_scenario(load_test_copy().intent_path, runs_dir / "state.sqlite3",
+                            run_by="TEST", allow_dirty_data=True, allow_dirty_code=True)
+    with open_scenario(test_data_dir, "retire_alice") as scenario_conn, \
+            open_run(run_file, scenario_conn, scenarios_dir=test_data_dir / "scenarios") as rc:
+        tax = reports.tax_by_year(rc)
+    assert {"state_agi", "state_deduction", "state_income", "state_tax"} <= set(tax)
+    assert tax.loc[2026, "state_deduction"] == pytest.approx(11_080)
+    assert tax.loc[2026, "total_tax"] == pytest.approx(tax.loc[2026, "state_tax"])
+
+
+def test_a_market_drop_takes_back_that_years_gains(
+    write_series, load_test_copy, runs_dir: Path, test_data_dir: Path,
+) -> None:
+    # A negative rate posts brokerage -> capital_gains: it counts negative (#248).
+    write_series("brokerage_growth", "2026-01-31,6%\n2028-01-31,-20%\n2029-01-31,6%")
+    run_file = run_scenario(load_test_copy().intent_path, runs_dir / "drop.sqlite3",
+                            run_by="TEST", allow_dirty_data=True, allow_dirty_code=True)
+    with open_scenario(test_data_dir, "retire_alice") as scenario_conn, \
+            open_run(run_file, scenario_conn, scenarios_dir=test_data_dir / "scenarios") as rc:
+        income = reports.flows_by_year(rc, "income", by="account")
+        history = reports.account_history(rc, "capital_gains", yearly=True)
+    assert income.loc[2028, "capital_gains"] < 0
+    assert income.loc[2027, "capital_gains"] > 0
+    # The growth account's balance is its running total, so its change is the flow.
+    assert history["change"].to_numpy() == pytest.approx(
+        income["capital_gains"].reindex(history.index).to_numpy())
 
 
 def test_lot_history_adds_basis_and_quantity(two_lot_run: RunConnection) -> None:
@@ -127,8 +189,10 @@ def test_report_commands_print_their_tables(report_run_file: Path) -> None:
     assert "expenses in 2030 by budget" in run("report", "expenses", "--year", "2030",
                                                "--by", "tag:budget")
     assert "gains, nominal dollars" in run("report", "gains", "--dollars", "nominal")
-    assert "after_tax_surplus" in run("report", "tax")
-    assert "federal_refund" in run("report", "tax", "--reconciliation")
+    tax = run("report", "tax")
+    assert "tax and taxable income" in tax and "fed_income" in tax
+    assert "gross_income" not in tax and "%" in tax
+    assert "fed_refund" in run("report", "tax", "--reconciliation")
     history = run("account", "history", "Liability_Mortgage", "--yearly", "--dollars", "nominal")
     assert "Liability_Mortgage, nominal dollars" in history and "-$" in history
 
