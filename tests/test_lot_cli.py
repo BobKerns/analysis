@@ -163,6 +163,27 @@ def test_writing_a_lot_unchanged_writes_nothing(
     pd.testing.assert_frame_equal(values(), before)
 
 
+@pytest.mark.parametrize("lot_args", [("default",), ()])
+def test_edit_adds_the_row_of_an_accounts_implicit_default_lot(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+    test_scenarios_dir: Path, check: Callable[[str], None], lot_args: tuple[str, ...],
+) -> None:
+    """An account with no lot rows loads with an empty default lot, so it
+    can be edited like one (#233)."""
+    frame = values()
+    frame[frame["account_name"] != "Asset_Savings"].to_csv(
+        test_scenarios_dir / "retire_alice" / "account_lots.csv", index=False,
+    )
+
+    result = lot("edit", "Asset_Savings", *lot_args, "--minimum-balance", "100")
+
+    assert result.exit_code == 0, result.output
+    assert "added lot 'default' of 'Asset_Savings'" in result.output
+    row = _lot_row(values(), "Asset_Savings", "")
+    assert (row["opening_balance"], row["minimum_balance"]) == ("0.00", "100.00")
+    check("retire_alice")
+
+
 def test_renaming_a_lot_renames_its_references(
     lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
     retire_alice_csv: Callable[[str], Path], check: Callable[[str], None],
