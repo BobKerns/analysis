@@ -816,12 +816,31 @@ def _read_scenario_inputs(
             meta["ensemble_size"] = units.json_ensemble_size(meta["ensemble_size"])
         except ValueError as exc:
             issues.append(f"{scenario_name}: scenario.csv meta_json {exc}")
+    if "after_tax" in meta:
+        _check_after_tax(meta["after_tax"], scenario_name, issues)
     scenario_row["name"] = scenario_name
     scenario_row["meta_json"] = json.dumps(meta, separators=(",", ":"))
     return (
         scenario_row, accounts, value_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
     )
+
+
+def _check_after_tax(settings: object, scenario_name: str, issues: list[str]) -> None:
+    """#251: the after-tax net worth's settings, ``{"drawdown_years": N,
+    "step_up": bool}``, both optional; the engine reads them each year-end."""
+    where = f"{scenario_name}: scenario.csv meta_json after_tax"
+    if not isinstance(settings, dict):
+        issues.append(f"{where} must be a JSON object (got {settings!r})")
+        return
+    for key in sorted(set(settings) - {"drawdown_years", "step_up"}):
+        issues.append(f"{where}: unknown key {key!r} (expected drawdown_years, step_up)")
+    years = settings.get("drawdown_years", 1)
+    if isinstance(years, bool) or not isinstance(years, int) or years < 1:
+        issues.append(f"{where} drawdown_years must be a whole number of years, at least 1 "
+                      f"(got {years!r})")
+    if not isinstance(settings.get("step_up", False), bool):
+        issues.append(f"{where} step_up must be true or false (got {settings['step_up']!r})")
 
 
 @contextmanager

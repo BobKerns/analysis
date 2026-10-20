@@ -23,6 +23,7 @@ from analysis.sim.ensemble_plots import figure_bytes
 from analysis.sim.notebook_ui.pickers import (
     _TOGGLE_LAYOUT,
     AccountPicker,
+    AfterTaxPicker,
     DollarModePicker,
     MultiScenarioConnections,
     TimeRangePicker,
@@ -43,11 +44,12 @@ from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 def net_worth_by_month(
     container: MultiScenarioConnections,
-    mode: DollarMode = DollarMode.NOMINAL,
+    mode: DollarMode = DollarMode.NOMINAL, *, after_tax: bool = False,
 ) -> pd.DataFrame:
-    """Net worth (USD) by month, one column per scenario; see
-    :func:`analysis.sim.compare.net_worth_by_month`."""
-    return compare.net_worth_by_month(container.connections, container.scenarios, mode)
+    """Net worth (USD) by month, one column per scenario, after tax with
+    ``after_tax``; see :func:`analysis.sim.compare.net_worth_by_month`."""
+    return compare.net_worth_by_month(
+        container.connections, container.scenarios, mode, after_tax=after_tax)
 
 
 def variant_delta(nw: pd.DataFrame, container: MultiScenarioConnections) -> pd.DataFrame:
@@ -234,43 +236,49 @@ def net_worth_compare_widget(
     container: MultiScenarioConnections,
     dollar_mode: DollarModePicker | None = None,
     time_range: TimeRangePicker | None = None,
+    after_tax: AfterTaxPicker | None = None,
     **_
 ) -> widgets.VBox:
-    """Net worth per scenario, plus each variant's delta vs. the baseline."""
+    """Net worth per scenario, plus each variant's delta vs. the baseline,
+    pre-tax or after tax (#251)."""
 
     dollar_mode = dollar_mode or DollarModePicker()
+    after_tax = after_tax or AfterTaxPicker()
     time_range = _time_range(time_range, container)
     output = widgets.Output()
 
     def _redraw(*_):
         mode = dollar_mode.value
-        nw = time_range.clip(net_worth_by_month(container, mode))
+        nw = time_range.clip(net_worth_by_month(container, mode, after_tax=after_tax.value))
         delta = variant_delta(nw, container)
         with output:
             clear_output(wait=True)
             plot_net_worth_and_delta(nw, delta, container, mode)
 
     observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(after_tax, _redraw)
     observe_while_shown(time_range, _redraw)
     if container.ok:
         _redraw()
-    return widgets.VBox([controls_row(dollar_mode, time_range), output])
+    return widgets.VBox([controls_row(dollar_mode, after_tax, time_range), output])
 
 
 def breakeven_widget(
     container: MultiScenarioConnections,
     dollar_mode: DollarModePicker | None = None,
     baseline: str = "current",
+    after_tax: AfterTaxPicker | None = None,
     **_
 ) -> widgets.VBox:
-    """Per-variant break-even summary table."""
+    """Per-variant break-even summary table, pre-tax or after tax (#251)."""
 
     dollar_mode = dollar_mode or DollarModePicker()
+    after_tax = after_tax or AfterTaxPicker()
     output = widgets.Output()
 
     def _redraw(*_):
         mode = dollar_mode.value
-        nw = net_worth_by_month(container, mode)
+        nw = net_worth_by_month(container, mode, after_tax=after_tax.value)
         delta = variant_delta(nw, container)
         summary = breakeven_summary(nw, delta, container)
         with output:
@@ -291,9 +299,10 @@ def breakeven_widget(
             ))
 
     observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(after_tax, _redraw)
     if container.ok:
         _redraw()
-    return widgets.VBox([dollar_mode, output])
+    return widgets.VBox([controls_row(dollar_mode, after_tax), output])
 
 
 def horizon_widget(container: MultiScenarioConnections, comparisons: dict) -> None:
@@ -321,27 +330,31 @@ def year_end_widget(
     dollar_mode: DollarModePicker | None = None,
     baseline: str | None = "current",
     time_range: TimeRangePicker | None = None,
+    after_tax: AfterTaxPicker | None = None,
     **_
 ) -> widgets.VBox:
-    """Year-end net worth per scenario, with each variant's delta vs. the baseline."""
+    """Year-end net worth per scenario, with each variant's delta vs. the
+    baseline, pre-tax or after tax (#251)."""
 
     dollar_mode = dollar_mode or DollarModePicker()
+    after_tax = after_tax or AfterTaxPicker()
     time_range = _time_range(time_range, container)
     output = widgets.Output()
 
     def _redraw(*_):
         mode = dollar_mode.value
-        nw = time_range.clip(net_worth_by_month(container, mode))
+        nw = time_range.clip(net_worth_by_month(container, mode, after_tax=after_tax.value))
         year_end = compare.year_end_comparison(nw, baseline or container.baseline, container.variants)
         with output:
             clear_output(wait=True)
             display(year_end.style.format("${:,.0f}"))
 
     observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(after_tax, _redraw)
     observe_while_shown(time_range, _redraw)
     if container.ok:
         _redraw()
-    return widgets.VBox([controls_row(dollar_mode, time_range), output])
+    return widgets.VBox([controls_row(dollar_mode, after_tax, time_range), output])
 
 
 def ss_gross_widget(container: MultiScenarioConnections) -> None:

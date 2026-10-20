@@ -1015,13 +1015,12 @@ def _each_member(
 
 def members_net_worth_by_month(
     connections: dict[str, RunConnection], mode: DollarMode = DollarMode.NOMINAL,
-    on_member: Callable[[], None] | None = None,
+    on_member: Callable[[], None] | None = None, *, after_tax: bool = False,
 ) -> pd.DataFrame:
-    """Net worth (USD) by month, one column per member. ``on_member`` is
-    called after each member is read."""
-    value_column = "cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    """Net worth (USD) by month, one column per member, after tax with
+    ``after_tax`` (#251). ``on_member`` is called after each member is read."""
     return pd.DataFrame({
-        name: con.net_worth_frame()[value_column]
+        name: con.net_worth_series(mode, after_tax=after_tax)
         for name, con in _each_member(connections, on_member)
     })
 
@@ -1074,17 +1073,19 @@ def summary_with_percentiles(
 def members_balance_by_month(
     connections: dict[str, RunConnection], account: str | None = None,
     mode: DollarMode = DollarMode.NOMINAL, lot: str | None = None,
-    on_member: Callable[[], None] | None = None,
+    on_member: Callable[[], None] | None = None, *, after_tax: bool = False,
 ) -> pd.DataFrame:
     """One account's balance (USD) by month, one column per member, or net
-    worth when ``account`` is None (#163), or one ``lot`` of the account
-    (#170). Each member converts its own series to CPI-constant dollars,
+    worth when ``account`` is None (#163), after tax with ``after_tax``
+    (#251), or one ``lot`` of the account (#170). Each member converts its own series to CPI-constant dollars,
     since its inflation path is its own. ``on_member`` is called after
     each member is read (#235)."""
     if account is None:
         if lot is not None:
             raise EnsembleError("a lot needs its account")
-        return members_net_worth_by_month(connections, mode, on_member)
+        return members_net_worth_by_month(connections, mode, on_member, after_tax=after_tax)
+    if after_tax:
+        raise EnsembleError("after-tax figures are for net worth, not one account")
     if lot is None:
         frame = pd.DataFrame({
             name: con.account_balance(account, mode)

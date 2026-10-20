@@ -125,7 +125,7 @@ from analysis.sim.overlay import (
     overlay_rows as _overlay_rows,
     scenario_calendar_rows as _scenario_calendar_rows,
 )
-from analysis.frames import named_rows
+from analysis.frames import index_years, named_rows
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, DollarMode, ItemType
 from analysis.sim.retention import RetentionError, prune_state
 from analysis.sim.schema import connect_sim_file
@@ -1109,6 +1109,11 @@ _ENSEMBLE_RESERVE_OPTION = click.option(
          "overriding the recipe's scenario.meta_json reserve (which applies to "
          "net worth only).",
 )
+_AFTER_TAX_OPTION = click.option(
+    "--after-tax", is_flag=True,
+    help="Net worth after tax (#251): less the tax a drawdown of traditional balances "
+         "and taxable gains would owe, and any tax due but not yet paid.",
+)
 _ENSEMBLE_GRAPH_OPTION = click.option(
     "--graph", "as_graph", is_flag=True,
     help="After the tables, draw them as the notebook's chart in the terminal (kitty or "
@@ -1166,23 +1171,26 @@ def _reserve_dollars(
 
 def _member_frame(
     connections: dict[str, RunConnection], account: str | None, mode: DollarMode,
-    lot: str | None = None,
+    lot: str | None = None, *, after_tax: bool = False,
 ) -> pd.DataFrame:
     try:
-        return members_balance_by_month(connections, account, mode, lot)
+        return members_balance_by_month(connections, account, mode, lot, after_tax=after_tax)
     except EnsembleError as exc:
         raise click.ClickException(str(exc)) from exc
 
 
-def _check_lot_has_account(account: str | None, lot: str | None) -> None:
+def _check_lot_has_account(account: str | None, lot: str | None,
+                           after_tax: bool = False) -> None:
     if lot is not None and account is None:
         raise click.UsageError("--lot needs --account")
+    if after_tax and account is not None:
+        raise click.UsageError("--after-tax is for net worth, not --account")
 
 
-def _subject(account: str | None, lot: str | None) -> str:
+def _subject(account: str | None, lot: str | None, after_tax: bool = False) -> str:
     """What an ensemble report is about, for its heading."""
     if account is None:
-        return "net worth"
+        return "after-tax net worth" if after_tax else "net worth"
     return f"account {account}" + (f" lot {lot}" if lot is not None else "")
 
 
@@ -1197,11 +1205,12 @@ def _subject(account: str | None, lot: str | None) -> str:
 @_ENSEMBLE_ACCOUNT_OPTION
 @_ENSEMBLE_LOT_OPTION
 @_ENSEMBLE_RESERVE_OPTION
+@_AFTER_TAX_OPTION
 @_ENSEMBLE_GRAPH_OPTION
 @_ENSEMBLE_GRAPH_FILE_OPTION
 def ensemble_summary(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
-    account: str | None, lot: str | None, reserve: str | None,
+    account: str | None, lot: str | None, reserve: str | None, after_tax: bool,
     as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Mean/median/SD, 5th/20th/.../95th percentiles and the mean of the
@@ -1210,7 +1219,7 @@ def ensemble_summary(
     the reserve when one is set. --graph draws the members' fan chart.
 
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
-    _check_lot_has_account(account, lot)
+    _check_lot_has_account(account, lot, after_tax)
     _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
@@ -1222,11 +1231,12 @@ def ensemble_summary(
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
     connections = load_ensemble(batch_dir)
     try:
-        frame = _member_frame(connections, account, DollarMode.NOMINAL, lot)
+        frame = _member_frame(connections, account, DollarMode.NOMINAL, lot, after_tax=after_tax)
         reserve_dollars = _reserve_dollars(reserve, connections, account)
         cpi_frame = (
             None if reserve_dollars is None
-            else _member_frame(connections, account, DollarMode.CPI_CONSTANT, lot)
+            else _member_frame(connections, account, DollarMode.CPI_CONSTANT, lot,
+                               after_tax=after_tax)
         )
         monthly_summary = summary_with_percentiles(frame)
         table = year_end_values(pd.concat(
@@ -1235,7 +1245,7 @@ def ensemble_summary(
         click.echo(
             f"ensemble {scenario_name} ({batch_dir.name}): {len(connections)} succeeded "
             f"member(s), {len(failed)} failed"
-            + (f"; {_subject(account, lot)}" if account else "")
+            + (f"; {_subject(account, lot, after_tax)}" if account or after_tax else "")
             + ("" if reserve_dollars is None
                else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)")
         )
@@ -1250,7 +1260,8 @@ def ensemble_summary(
             # Nominal, as the table is, so no reserve line: the reserve is
             # in CPI-constant dollars, and the notebook draws it only there.
             _draw_figure(ensemble_fan_figure(
-                monthly_summary, f"{_subject(account, lot)} fan chart (nominal) ({scenario_name})",
+                monthly_summary,
+                f"{_subject(account, lot, after_tax)} fan chart (nominal) ({scenario_name})",
             ), graph_file, "ensemble-")
     finally:
         _close_all(connections)
@@ -1269,12 +1280,13 @@ def ensemble_summary(
     default=DollarMode.CPI_CONSTANT.value, show_default=True,
     help="Dollars the percentiles and tail means are reported in.",
 )
+@_AFTER_TAX_OPTION
 @_ENSEMBLE_GRAPH_OPTION
 @_ENSEMBLE_GRAPH_FILE_OPTION
 def ensemble_compare(
     baseline: str | None, variant: str | None, runs_dir: Path | None, data_dir: Path | None,
     account: str | None, lot: str | None, reserve: str | None, dollars: str,
-    as_graph: bool, graph_file: Path | None,
+    after_tax: bool, as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Compare VARIANT's ensemble with BASELINE's on risk (#163), each from
     its latest batch: by year end, each percentile breakpoint's delta, the
@@ -1289,7 +1301,7 @@ def ensemble_compare(
     has the account, it draws that recipe's fan chart instead.
 
     Either ensemble left out is asked for, from those that have been run."""
-    _check_lot_has_account(account, lot)
+    _check_lot_has_account(account, lot, after_tax)
     _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if baseline is None or variant is None:
@@ -1310,17 +1322,19 @@ def ensemble_compare(
         frames: dict[str, pd.DataFrame] = {}
         for name, conns in sides.items():
             try:
-                frames[name] = members_balance_by_month(conns, account, mode, lot)
+                frames[name] = members_balance_by_month(
+                    conns, account, mode, lot, after_tax=after_tax)
             except EnsembleError:
                 pass
-        subject = _subject(account, lot)
+        subject = _subject(account, lot, after_tax)
         if not frames:
             raise click.ClickException(f"no {subject} in {baseline} or {variant}")
         reserve_dollars = _reserve_dollars(reserve, base_conns, account)
         cpi_frames = {
             name: (
                 frames[name] if mode == DollarMode.CPI_CONSTANT
-                else members_balance_by_month(sides[name], account, DollarMode.CPI_CONSTANT, lot)
+                else members_balance_by_month(sides[name], account, DollarMode.CPI_CONSTANT, lot,
+                                              after_tax=after_tax)
             )
             for name in frames
         } if reserve_dollars is not None else {}
@@ -1956,14 +1970,19 @@ def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
               default=DollarMode.CPI_CONSTANT.value, show_default=True,
               help="cpi_constant (deflated by the run's CPI series, so decades "
                    "compare at a glance), or nominal.")
+@_AFTER_TAX_OPTION
 @_run_target_options
 def networth_command(
-    scenario: str | None, period: str, dollars: str,
+    scenario: str | None, period: str, dollars: str, after_tax: bool,
     runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
     """Net worth by year or month from a run: the scenario's latest (the
-    current scenario's by default), or --runfile. As in net_worth.ipynb."""
+    current scenario's by default), or --runfile. As in net_worth.ipynb.
+    --after-tax subtracts the tax still owed on it (#251)."""
     runfile = _resolve_run_target(scenario, runfile, data_dir, runs_dir)
+    if after_tax:
+        _echo_after_tax_networth(runfile, period, DollarMode(dollars))
+        return
     # Nominal reads net_worth itself, so a run without a CPI series still has it.
     view, column = (("net_worth_constant_cpi", "constant_cents")
                     if dollars == DollarMode.CPI_CONSTANT else ("net_worth", "net_worth"))
@@ -1997,6 +2016,37 @@ def networth_command(
     for month, cents in rows:
         when = month if period == "monthly" else month[:4]
         click.echo(f"  {when}  {_fmt_cents(cents)}")
+
+
+def _echo_after_tax_networth(runfile: Path, period: str, mode: DollarMode) -> None:
+    """``sim networth --after-tax``: net worth, the deferred and unpaid tax
+    taken from it, and what's left, from the run's RunConnection."""
+    with RunConnection(runfile) as rc:
+        name = rc.name
+        frame = rc.after_tax_net_worth_frame()
+        pre = rc.net_worth_series(mode)
+        taxes = frame[["deferred_tax", "unpaid_tax"]]
+        if mode == DollarMode.CPI_CONSTANT:
+            if pre.isna().all() and not pre.empty:
+                raise click.ClickException(
+                    f"{runfile.name} has no 'cpi' inflation index, so no CPI-constant "
+                    "net worth; pass --dollars nominal")
+            taxes = rc.to_cpi_constant(taxes)
+    table = pd.DataFrame({
+        "net_worth": pre, "deferred_tax": taxes["deferred_tax"],
+        "unpaid_tax": taxes["unpaid_tax"],
+        "after_tax": frame["cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"],
+    })
+    if period != "monthly":
+        table = table.groupby(index_years(table)).tail(1)
+    label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    click.echo(f"after-tax net worth, {label} dollars ({name}, run {runfile.name}):")
+    _echo_table(
+        ["month" if period == "monthly" else "year", *table.columns],
+        ([month.strftime("%Y-%m") if period == "monthly" else str(month.year),
+          *(_cell(float(v)) for v in row)]
+         for month, row in zip(table.index, table.itertuples(index=False), strict=True)),
+    )
 
 
 COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "account")
@@ -2056,6 +2106,7 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
 @click.option("--dollars", type=click.Choice([m.value for m in DollarMode]),
               default=DollarMode.CPI_CONSTANT.value, show_default=True,
               help="Dollars net worth and balances are reported in.")
+@_AFTER_TAX_OPTION
 @click.option("--account", type=completion.ACCOUNT, default=None,
               help="Also compare this account's balance (a section of its own).")
 @click.option("--lot", type=completion.LotName("account"), default=None,
@@ -2072,7 +2123,7 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
               default=None, help="Directory to find each scenario's latest run in.")
 def compare_command(
     baseline: str | None, variants: tuple[str, ...], sections: tuple[str, ...], dollars: str,
-    account: str | None, lot: str | None, as_graph: bool, graph_file: Path | None,
+    after_tax: bool, account: str | None, lot: str | None, as_graph: bool, graph_file: Path | None,
     data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
     """Compare VARIANTS with BASELINE (#188), each from its latest run (an
@@ -2174,13 +2225,14 @@ def compare_command(
         # Only the sections that use it read net worth, so --section runs, say,
         # still works on a run with no CPI series.
         if shown & {"net-worth", "break-even"} or (graphed and account is None):
-            nw = compare.net_worth_by_month(connections, scenarios, mode)
+            nw = compare.net_worth_by_month(connections, scenarios, mode, after_tax=after_tax)
             if no_cpi := compare.all_nan_columns(nw):
                 raise click.ClickException(
                     f"no 'cpi' inflation index in the run of {', '.join(no_cpi)}, so no "
                     "CPI-constant net worth; pass --dollars nominal")
         if "net-worth" in shown:
-            click.echo(f"\nNet worth at year end ({mode_label}):")
+            click.echo(f"\n{'After-tax net worth' if after_tax else 'Net worth'} "
+                       f"at year end ({mode_label}):")
             _echo_frame(compare.year_end_comparison(nw, baseline, variants).map(_cell))
 
         if "break-even" in shown:

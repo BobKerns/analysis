@@ -2519,7 +2519,7 @@ def _apply_tax_accumulator(
     ordinary_income = other_ordinary + business.net + capital.stcg - capital.loss_deduction
     ltcg_income = capital.ltcg
 
-    taxable_ss = 0
+    ss_tiers: tuple[int, int] | None = None
     if scope == "federal" and ss_income > 0:
         thresholds = _active_aux_rows(aux, ss_threshold_aux, None, as_of)
         thresholds = [r for r in thresholds if r.get("filing_status") == filing_status]
@@ -2527,15 +2527,7 @@ def _apply_tax_accumulator(
             raise EngineError(
                 f"tax_accumulator id={tid}: missing ss thresholds for filing_status={filing_status!r}"
             )
-        tier1 = int(thresholds[0]["tier1_floor"])
-        tier2 = int(thresholds[0]["tier2_floor"])
-        taxable_ss = _taxable_social_security_cents(
-            ordinary_income=ordinary_income,
-            ltcg_income=ltcg_income,
-            ss_income=ss_income,
-            tier1=tier1,
-            tier2=tier2,
-        )
+        ss_tiers = (int(thresholds[0]["tier1_floor"]), int(thresholds[0]["tier2_floor"]))
 
     deduction_rows = _active_aux_rows(aux, standard_deduction_aux, None, as_of)
     deduction_rows = [r for r in deduction_rows if r.get("filing_status") == filing_status]
@@ -2558,6 +2550,48 @@ def _apply_tax_accumulator(
     itemized_deduction = int(itemized_rows[0]["amount"]) if itemized_rows else 0
     deduction = max(standard_deduction, itemized_deduction)
 
+    bracket_rows = _active_aux_rows(aux, bracket_aux, bracket_series, as_of)
+    bracket_rows = [r for r in bracket_rows if r.get("filing_status") == filing_status]
+    if not bracket_rows:
+        raise EngineError(
+            f"tax_accumulator id={tid}: missing brackets kind={bracket_aux!r} "
+            f"series={bracket_series!r} filing_status={filing_status!r}"
+        )
+    brackets: list[tuple[int, int]] = sorted(
+        (int(r["floor"]), int(r["marginal_rate_micros"]))
+        for r in bracket_rows
+    )
+    ltcg_rows = [
+        r for r in _active_aux_rows(aux, ltcg_bracket_aux, None, as_of)
+        if r.get("filing_status") == filing_status
+    ] if scope == "federal" else []
+    ltcg_brackets = sorted(
+        (int(r["floor"]), int(r["marginal_rate_micros"])) for r in ltcg_rows
+    )
+
+    def taxable_ss_for(ordinary: int, ltcg: int) -> int:
+        if ss_tiers is None:
+            return 0
+        return _taxable_social_security_cents(
+            ordinary_income=ordinary, ltcg_income=ltcg, ss_income=ss_income,
+            tier1=ss_tiers[0], tier2=ss_tiers[1],
+        )
+
+    def tax_on(taxable: int, ltcg: int) -> int:
+        """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term gain."""
+        if not (ltcg_brackets and ltcg > 0):
+            return _progressive_tax_cents(taxable, brackets)
+        # Long-term gains sit on top of ordinary taxable income and are taxed at
+        # the preferential rates for the band each part lands in.
+        gain_taxable = min(ltcg, taxable)
+        ordinary_taxable = taxable - gain_taxable
+        return (
+            _progressive_tax_cents(ordinary_taxable, brackets)
+            + _progressive_tax_cents(taxable, ltcg_brackets)
+            - _progressive_tax_cents(ordinary_taxable, ltcg_brackets)
+        )
+
+    taxable_ss = taxable_ss_for(ordinary_income, ltcg_income)
     income_before_nol = ordinary_income + ltcg_income + taxable_ss - deduction
     # A net operating loss carried in offsets part of this year's taxable
     # income (#231). It doesn't lower AGI first, as the NOL deduction really
@@ -2576,36 +2610,15 @@ def _apply_tax_accumulator(
     # nonbusiness income, §172(d)(4)), nor does the capital-loss deduction.
     nonbusiness_income = other_ordinary + capital.stcg + ltcg_income + taxable_ss
     nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
+    tax_liability = tax_on(taxable_income, ltcg_income)
 
-    bracket_rows = _active_aux_rows(aux, bracket_aux, bracket_series, as_of)
-    bracket_rows = [r for r in bracket_rows if r.get("filing_status") == filing_status]
-    if not bracket_rows:
-        raise EngineError(
-            f"tax_accumulator id={tid}: missing brackets kind={bracket_aux!r} "
-            f"series={bracket_series!r} filing_status={filing_status!r}"
-        )
-    brackets: list[tuple[int, int]] = sorted(
-        (int(r["floor"]), int(r["marginal_rate_micros"]))
-        for r in bracket_rows
-    )
-    tax_liability = _progressive_tax_cents(taxable_income, brackets)
-    ltcg_rows = [
-        r for r in _active_aux_rows(aux, ltcg_bracket_aux, None, as_of)
-        if r.get("filing_status") == filing_status
-    ] if scope == "federal" else []
-    if ltcg_rows and ltcg_income > 0:
-        # Long-term gains sit on top of ordinary taxable income and are taxed at
-        # the preferential rates for the band each part lands in.
-        ltcg_brackets = sorted(
-            (int(r["floor"]), int(r["marginal_rate_micros"])) for r in ltcg_rows
-        )
-        gain_taxable = min(ltcg_income, taxable_income)
-        ordinary_taxable = taxable_income - gain_taxable
-        tax_liability = (
-            _progressive_tax_cents(ordinary_taxable, brackets)
-            + _progressive_tax_cents(taxable_income, ltcg_brackets)
-            - _progressive_tax_cents(ordinary_taxable, ltcg_brackets)
-        )
+    def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
+        """This year's tax with more ordinary income and long-term gain on top."""
+        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
+        before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
+        return tax_on(max(0, before_nol - nol_used), ltcg)
+
+    drawdown_base, drawdown_tax = _drawdown_tax(con, tax_year, tax_with)
 
     paid_transfers = con.execute(
         "SELECT COALESCE(SUM(amount), 0) "
@@ -2659,6 +2672,9 @@ def _apply_tax_accumulator(
         f"{scope}_tax_due": tax_due,
         f"{scope}_tax_overpaid": tax_overpaid,
     }
+    if drawdown_base is not None:
+        summary_rows[f"{scope}_drawdown_base"] = drawdown_base
+        summary_rows[f"{scope}_drawdown_tax"] = drawdown_tax
 
     for bucket, amount in summary_rows.items():
         con.execute(
@@ -2666,6 +2682,50 @@ def _apply_tax_accumulator(
             "VALUES (?, ?, ?, ?)",
             (tax_year, bucket, int(amount), computed_at),
         )
+
+
+DEFAULT_DRAWDOWN_YEARS = 10
+"""Years an after-tax drawdown spreads a traditional balance over (#251):
+the inherited-IRA rule's ten (SECURE Act, 2019)."""
+
+
+def _drawdown_tax(
+    con, tax_year: int, tax_with: Callable[[int, int], int],
+) -> tuple[int | None, int]:
+    """The money ``tax_year``'s after-tax net worth taxes and the extra tax on
+    it (#251): its year-end traditional (tax_deferred) balances, and the
+    unrealized gain of its taxable lots with a basis unless ``after_tax``
+    says ``step_up``, drawn down evenly over ``drawdown_years`` with this
+    year's brackets, filing status and other income. ``(None, 0)`` for a year
+    the run has no month of (a year-to-date one)."""
+    step = con.execute(
+        "SELECT id FROM simulation_step WHERE substr(month, 1, 4) = ? "
+        "ORDER BY month DESC LIMIT 1", (str(tax_year),),
+    ).fetchone()
+    if step is None:
+        return None, 0
+    settings = json.loads(
+        con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}"
+    ).get("after_tax") or {}
+    years = int(settings.get("drawdown_years", DEFAULT_DRAWDOWN_YEARS))
+    deferred = gains = 0
+    for treatment, subkind, balance, basis in con.execute(
+        "SELECT m.tax_treatment, a.subkind, ls.balance, ls.cost_basis "
+        "FROM lot_state ls JOIN account_lot m ON m.id = ls.lot_id "
+        "JOIN account a ON a.id = m.account_id "
+        "WHERE ls.step_id = ? AND a.kind = 'asset'", (step[0],),
+    ):
+        if treatment == "tax_deferred":
+            deferred += max(0, balance)
+        elif (treatment == "taxable" and basis is not None
+              and subkind not in registries.CASH_SUBKINDS):
+            gains += max(0, balance - basis)
+    if settings.get("step_up"):
+        gains = 0
+    if deferred + gains == 0:
+        return 0, 0
+    extra = years * (tax_with(deferred // years, gains // years) - tax_with(0, 0))
+    return deferred + gains, extra
 
 
 def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:

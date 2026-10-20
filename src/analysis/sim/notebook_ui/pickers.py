@@ -766,6 +766,22 @@ class DollarModePicker(widgets.ToggleButtons):
         self.label = "CPI-constant" if self.value == DollarMode.CPI_CONSTANT else "Nominal"
 
 
+class AfterTaxPicker(widgets.ToggleButtons):
+    """Pre-tax or after-tax net worth (#251): ``value`` is True for after
+    tax, which subtracts the tax a drawdown would owe and tax due unpaid."""
+    value: bool = _trait(traitlets.Bool(False))
+
+    def __init__(self, after_tax: bool = False):
+        super().__init__(
+            options=[("Pre-tax", False), ("After-tax", True)],
+            description="Net worth:",
+            layout=widgets.Layout(
+                border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+            ),
+        )
+        self.value = after_tax
+
+
 class ValuePlotModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting total vs. monthly values."""
     value: ValuePlotMode = _trait(traitlets.UseEnum(ValuePlotMode))
