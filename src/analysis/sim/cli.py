@@ -374,8 +374,15 @@ def _make_current(data_dir: Path, name: str) -> None:
     if previous == name:
         return
     write_current_scenario(data_dir, name)
+    _announce_current(name, previous)
+
+
+def _announce_current(name: str | None, previous: str | None) -> None:
+    """The notice of a change to the current scenario (#233), also for one
+    renamed or deleted along with its scenario."""
     was = f" (was {previous})" if previous else ""
-    click.secho(f"Current scenario is now {name}{was}", err=True, bold=True)
+    now = f"Current scenario is now {name}" if name else "No scenario is current now"
+    click.secho(f"{now}{was}", err=True, bold=True)
 
 
 def _resolve_data_dir(data_dir: Path | None) -> Path:
@@ -9059,6 +9066,8 @@ def _rename_scenario(old: str, new: str, data_dir: Path | None) -> None:
     if leftover.is_dir() and not any(path.is_file() or path.is_symlink() for path in leftover.rglob("*")):
         shutil.rmtree(leftover)
     _echo_renamed("scenario", old, new, changed)
+    if rename.CURRENT_SCENARIO_FILE in changed:
+        _announce_current(new, old)
     runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
     if latest_run_path(runs, old) or (runs / old).is_dir():
         click.echo(f"  runs already made of {old} keep that name; `sim run {new}` makes new ones")
@@ -9327,7 +9336,7 @@ def _delete_scenario(name: str, data_dir: Path | None, yes: bool) -> None:
     click.echo(f"deleted scenario {name}")
     if read_current_scenario(data) == name:
         current_scenario_path(data).unlink(missing_ok=True)
-        click.echo("  it was the current scenario; none is current now")
+        _announce_current(None, name)
     for path in mentions:
         click.echo(f"  {path.relative_to(data)} still mentions it")
     runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
