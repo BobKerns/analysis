@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import csv as _csv
+import functools
 import json
 import math
 import secrets
 import shlex
 import shutil
+import sys
 from collections.abc import Callable, Generator, Iterable, Mapping, Set
 from contextlib import ExitStack, contextmanager
 import os
@@ -1778,7 +1780,7 @@ def _resolve_run_target(
 
 
 @sim_group_command.command()
-@click.argument("target", type=completion.SCENARIO, metavar="[SCENARIO | RUNFILE]", required=False)
+@click.argument("target", type=completion.SCENARIO_OR_RUNFILE, metavar="[SCENARIO | RUNFILE]", required=False)
 @_run_target_options
 def explain(
     target: str | None, runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
@@ -2204,6 +2206,67 @@ def _ask_tags(given: tuple[str, ...], choices: Iterable[str]) -> tuple[str, ...]
             "tags (role:name, space-separated)", choices=list(choices)).split()):
         pass
     return tuple(answer)
+
+
+def _interactive() -> bool:
+    """Whether a mistyped name can be asked for again: stdin is a terminal.
+    Scripts, pipes and tests get the command's own error, as before."""
+    return sys.stdin.isatty()
+
+
+def _ask_again_for_mistyped(ctx: click.Context, params: dict[str, Any]) -> dict[str, Any]:
+    """``params`` with each name the scenario doesn't have asked for again
+    (#240). The scenario goes first, since the other names are its."""
+    checked = [
+        p for p in ctx.command.params
+        if p.name and isinstance(p.type, completion.NameType) and p.type.check
+    ]
+    checked.sort(key=lambda p: p.name not in completion.SCENARIO_PARAMS)
+    if "tag_tokens" in params:  # a tag command's NAME may be its first tag
+        first = next(p.name for p in ctx.command.params if isinstance(p, click.Argument))
+        if first and first != "tag_tokens":
+            params[first], params["tag_tokens"] = _name_and_tags(params[first], params["tag_tokens"])
+    ctx.params.update(params)  # what the completion listers read
+    for param in checked:
+        name_type = param.type
+        assert isinstance(name_type, completion.NameType) and param.name
+        value = params.get(param.name)
+        if value in (None, "", ()) or not (choices := name_type.choices(ctx)):
+            continue
+        values = value if isinstance(value, tuple) else (value,)
+        fixed = []
+        for v in values:
+            if v not in choices and not name_type.is_known(ctx, v):
+                click.echo(f"unknown {name_type.what}: {v!r}", err=True)
+                v = _ask_name(name_type.what, choices, plural=name_type.plural)
+            fixed.append(v)
+        params[param.name] = ctx.params[param.name] = (
+            tuple(fixed) if isinstance(value, tuple) else fixed[0])
+    return params
+
+
+def _wrap_to_ask_again(command: click.Command) -> None:
+    """Make ``command`` re-ask, at a terminal, for a name it was given that
+    isn't one (#240), by wrapping its callback."""
+    original = command.callback
+    if original is None or not any(
+        isinstance(p.type, completion.NameType) and p.type.check for p in command.params
+    ):
+        return
+
+    @functools.wraps(original)
+    def callback(*args: Any, **kwargs: Any) -> Any:
+        ctx = click.get_current_context()
+        # Only names typed on the line: a command a guide invokes with its
+        # answers (`calendar edit` running `calendar add set-rate`) has its
+        # own review for a rejected value.
+        typed = ctx.command is command and ctx.parent is not None and (
+            ctx.parent.invoked_subcommand is not None)
+        if typed and _interactive():
+            kwargs = _ask_again_for_mistyped(ctx, kwargs)
+        return original(*args, **kwargs)
+
+    command.callback = callback
 
 
 def _parse_amount_cents(s: str) -> int:
@@ -3712,7 +3775,7 @@ def _calendar_tag(
 
 @calendar_tag_group.command("add")
 @click.argument("row", required=False, type=completion.CALENDAR_ROW)
-@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=False)
+@click.argument("tag_tokens", type=completion.ANY_TAG, nargs=-1, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4872,7 +4935,7 @@ def scheduled_tag_group() -> None:
 
 @scheduled_tag_group.command("add")
 @click.argument("name", required=False, type=completion.RULE)
-@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=False)
+@click.argument("tag_tokens", type=completion.ANY_TAG, nargs=-1, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -5173,7 +5236,7 @@ def account_group_command() -> None:
 @click.argument("name", required=False)
 @click.argument("kind", required=False, shell_complete=_complete_kind)
 @click.argument("subkind", required=False, shell_complete=_complete_subkind)
-@click.option("--owner", type=completion.PERSON, default=None,
+@click.option("--owner", type=completion.OWNER, default=None,
               help="Person id from persons.csv (default: joint).")
 @click.option("--tax-treatment", default=None,
               type=click.Choice(sorted(registries.TAX_TREATMENTS)),
@@ -5557,7 +5620,7 @@ def delete_account(name: str | None, scenario: str | None, data_dir: Path | None
 @click.option("--new-name", default=None, help="Update the account name.")
 @click.option("--kind", default=None, help="New account kind.")
 @click.option("--subkind", default=None, help="New account subkind.")
-@click.option("--owner", type=completion.PERSON, default=None, help="New owner (person id or 'joint').")
+@click.option("--owner", type=completion.OWNER, default=None, help="New owner (person id or 'joint').")
 @click.option("--tax-treatment", default=None, help="New tax treatment.")
 @click.option("--opened", default=None, help="Open date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--closed", default=None, help="Close date (YYYY-MM or YYYY-MM-DD).")
@@ -5818,7 +5881,7 @@ def _default_tax_treatment(kind: str, subkind: str) -> str:
               help="Resolve rates effective on or before this date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--kind", default=None,
               help="Filter to accounts of this kind (e.g. asset, liability).")
-@click.option("--owner", type=completion.PERSON, default=None,
+@click.option("--owner", type=completion.OWNER, default=None,
               help="Filter to accounts owned by this person or 'joint'.")
 def list_accounts(
     scenario: str | None,
@@ -6205,7 +6268,7 @@ def account_tag_group() -> None:
 
 @account_tag_group.command("add")
 @click.argument("name", required=False, type=completion.ACCOUNT)
-@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=False)
+@click.argument("tag_tokens", type=completion.ANY_TAG, nargs=-1, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -9621,7 +9684,7 @@ _CALENDAR_LIST_KINDS = sorted({*registries.CALENDAR_EVENT_KINDS, *_CALENDAR_COMM
 @calendar_group_command.command("list")
 @click.option("--kind", type=click.Choice(_CALENDAR_LIST_KINDS), default=None,
               help="Only rows of this kind (the CSV kind, or its add command's name).")
-@click.option("--tag", type=completion.TAG, default=None,
+@click.option("--tag", type=completion.ANY_TAG, default=None,
               help="Only rows carrying this tag ('role:name', or 'role:*' for a whole role).")
 @click.option("-v", "--verbose", is_flag=True, default=False,
               help="Also show each row's description and params_json.")
@@ -10403,7 +10466,7 @@ def _ask(text: str, choices: list[str] | None = None, default: str | None = None
 
 @sim_group_command.command("invest")
 @click.argument("source", required=False, type=completion.ENDPOINT)
-@click.argument("account", required=False, type=completion.ACCOUNT)
+@click.argument("account", required=False, type=completion.ACCOUNT_OR_NEW)
 @click.argument("lot", required=False)
 @click.option("--source-lot", type=completion.LotName("source"), default=None,
               help="SOURCE's lot, when SOURCE is an account with lots.")
@@ -10423,7 +10486,7 @@ def _ask(text: str, choices: list[str] | None = None, default: str | None = None
 @click.option("--account-subkind", default=None,
               type=click.Choice(sorted(registries.ACCOUNT_SUBKINDS["asset"])),
               help="A new ACCOUNT's subkind.")
-@click.option("--owner", type=completion.PERSON, default=None, help="A new ACCOUNT's owner (default: joint).")
+@click.option("--owner", type=completion.OWNER, default=None, help="A new ACCOUNT's owner (default: joint).")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None)
@@ -10637,3 +10700,19 @@ def accounts_group_command() -> None:
 # Dynamically copy all commands from account_group to accounts_group
 for cmd_name, cmd in account_group_command.commands.items():
     accounts_group_command.add_command(cmd, name=cmd_name)
+
+
+def _walk_commands(command: click.Command, seen: set[int]) -> Iterable[click.Command]:
+    """``command`` and every command under it, once each: `sim accounts`
+    shares `sim account`'s."""
+    if id(command) in seen:
+        return
+    seen.add(id(command))
+    yield command
+    if isinstance(command, click.Group):
+        for sub in command.commands.values():
+            yield from _walk_commands(sub, seen)
+
+
+for _command in _walk_commands(sim_group_command, set()):
+    _wrap_to_ask_again(_command)

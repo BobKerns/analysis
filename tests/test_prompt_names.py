@@ -1,4 +1,6 @@
-"""A name left off a command's line is asked for, with completion (#240)."""
+"""A name left off a command's line, or mistyped at a terminal, is asked for,
+with completion (#240)."""
+# cspell:ignore Savngs Jiont alcie defalt csh
 
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
+from analysis.sim import cli as sim_cli
 from analysis.sim import names
 from analysis.sim.cli import sim_group_command
 
@@ -149,6 +152,76 @@ def test_only_non_names_are_required() -> None:
         return found
 
     assert required(sim_group_command, "sim") == _STILL_REQUIRED
+
+
+# ---------- a mistyped name is asked for again, at a terminal ----------
+
+@pytest.fixture
+def terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run as if stdin were a terminal, where a mistyped name is re-asked."""
+    monkeypatch.setattr(sim_cli, "_interactive", lambda: True)
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_mistyped_name_is_asked_again(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("account", "rename", "Asset_Savngs", "Asset_Rainy_Day", "--scenario", "retire_alice",
+                 input="Asset_Savings\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown account: 'Asset_Savngs'" in result.output
+    assert "Asset_Rainy_Day" in names.account_names(test_data_dir, "retire_alice")
+
+
+@pytest.mark.usefixtures("terminal")
+def test_the_scenario_is_asked_again_first(sim: Callable[..., Result]) -> None:
+    # The account can only be checked once the scenario is one.
+    result = sim("account", "holdings", "Asset_Brokerage_Jiont", "--opening", "--scenario", "retire_alcie",
+                 input="retire_alice\nAsset_Brokerage_Joint\n")
+    assert result.exit_code == 0, result.output
+    assert result.output.index("unknown scenario") < result.output.index("unknown account")
+    assert "holdings of Asset_Brokerage_Joint" in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_each_mistyped_value_of_a_list_is_asked_again(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    assert sim("account", "tag", "add", "Asset_Checking", "bucket:cash", "use:spending",
+               "--scenario", "retire_alice").exit_code == 0
+    result = sim("account", "tag", "rm", "Asset_Checking", "bucket:csh", "use:spending",
+                 "--scenario", "retire_alice", input="bucket:cash\n")
+    assert result.exit_code == 0, result.output
+    assert not {"bucket:cash", "use:spending"} & set(names.tag_tokens(test_data_dir, "retire_alice"))
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_lot_is_checked_against_its_account(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("account", "lot", "rename", "Asset_Brokerage_Joint", "defalt", "core",
+                 "--scenario", "retire_alice", input="default\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown lot: 'defalt'" in result.output
+    assert names.lot_names(test_data_dir, "retire_alice", "Asset_Brokerage_Joint") == ["core"]
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_new_tag_is_not_a_mistyped_one(sim: Callable[..., Result]) -> None:
+    result = sim("account", "tag", "add", "Asset_Checking", "brand:new", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+
+
+def test_off_a_terminal_a_mistyped_name_fails_as_before(sim: Callable[..., Result]) -> None:
+    result = sim("account", "rename", "Asset_Savngs", "Asset_Rainy_Day", "--scenario", "retire_alice",
+                 input="Asset_Savings\n")
+    assert result.exit_code != 0
+    assert "no account 'Asset_Savngs' in retire_alice" in result.output  # the command's own error
+    assert "unknown account" not in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_joint_is_an_owner(sim: Callable[..., Result]) -> None:
+    result = sim("account", "edit", "Asset_Checking", "--owner", "joint", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
 
 
 def test_tags_given_without_the_name_ask_for_the_name(

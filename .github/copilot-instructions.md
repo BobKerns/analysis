@@ -164,8 +164,11 @@ narrow `# ty: ignore[<rule>]` with a reason is the last resort.
   something a scenario defines takes a completing type from
   `sim/completion.py` (`type=completion.ACCOUNT`), so TAB offers the names.
   A name a command needs is optional on its line and, when left out, asked
-  for with `cli._ask_name` (completion over `sim/names.py`'s readers).
-  `tests/test_completion.py` and `tests/test_prompt_names.py` check both.
+  for with `cli._ask_name` (completion over `sim/names.py`'s readers). At a
+  terminal, a given name that isn't among its type's choices is re-asked
+  before the command runs; pass `check=False` to a `NameType` whose value may
+  be new (a tag being added, a symbol). `tests/test_completion.py` and
+  `tests/test_prompt_names.py` check all three.
 - `uv` manages the environment; the venv is `.venv/`. Prefer `.venv/bin/...` or
   `uv run ...` over a bare `python`.
 - Notebooks are stripped with `nbstripout`. Don't commit output cells or churn

@@ -2,9 +2,10 @@
 (#240): ``type=ACCOUNT`` on an argument or option makes ``sim ... <TAB>``
 offer the scenario's accounts.
 
-A type here only completes. It takes any text, as ``click.STRING`` does,
-because the scenario a name belongs to may come later on the line; the
-command checks the name once it has everything.
+A type here takes any text, as ``click.STRING`` does, because the scenario
+a name belongs to may come later on the line. Once the whole line is parsed,
+``cli`` re-asks at a terminal for a name that isn't among ``choices`` (a
+mistyped one); otherwise the command checks the name itself.
 
 Completion reads what the line has so far. The data repo is ``--data-dir``
 or ``$ANALYSIS_DATA_DIR``; the scenario is the ``--scenario`` option or the
@@ -26,13 +27,14 @@ from analysis.sim import names, registries
 from analysis.sim.loader import read_current_scenario
 
 __all__ = [
-    "ACCOUNT", "AUX_KIND", "CALENDAR_ROW", "CHAIN", "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE",
-    "ITEMIZATION", "PERSON", "RULE", "SCENARIO", "SYMBOL", "TAG", "LotName", "NameType",
-    "SeriesName", "type_for",
+    "ACCOUNT", "ACCOUNT_OR_NEW", "ANY_TAG", "AUX_KIND", "CALENDAR_ROW", "CHAIN",
+    "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
+    "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SYMBOL", "TAG", "LotName",
+    "NameType", "SeriesName", "type_for",
 ]
 
 # The params, nearest first, whose value is the scenario a name belongs to.
-_SCENARIO_PARAMS = ("scenario", "scenario_name", "baseline")
+SCENARIO_PARAMS = ("scenario", "scenario_name", "baseline")
 
 
 def _line_params(ctx: click.Context) -> dict[str, Any]:
@@ -76,7 +78,7 @@ def _data_dir(ctx: click.Context) -> Path | None:
 
 
 def _scenario(ctx: click.Context, data_dir: Path) -> str | None:
-    for key in _SCENARIO_PARAMS:
+    for key in SCENARIO_PARAMS:
         if isinstance(value := _given(ctx, key), str):
             return value
     return read_current_scenario(data_dir)
@@ -86,28 +88,50 @@ class NameType(click.ParamType):
     """Any text, completed from ``lister(ctx, data_dir)``.
 
     The lister gets the data repo already found; it returns [] when what it
-    needs (a scenario, an account) isn't known yet."""
+    needs (a scenario, an account) isn't known yet. ``what`` (and ``plural``,
+    when adding an "s" won't do) names the thing for a re-ask; ``check`` is
+    False where a name not in the list is fine (a new tag, a new symbol).
+    ``known`` lists more names that aren't mistyped, though TAB doesn't
+    offer them."""
 
     name = "text"  # so help shows TEXT, as it did for a plain string
 
-    def __init__(self, lister: Callable[[click.Context, Path], Sequence[str]]) -> None:
+    def __init__(self, lister: Callable[[click.Context, Path], Sequence[str]], what: str, *,
+                 plural: str | None = None, check: bool = True,
+                 known: Callable[[click.Context, Path], Sequence[str]] | None = None) -> None:
         self.lister = lister
+        self.what = what
+        self.plural = plural or f"{what}s"
+        self.check = check
+        self.known = known
 
     def convert(self, value: Any, param: click.Parameter | None, ctx: click.Context | None) -> Any:
         return value
 
-    def shell_complete(
-        self, ctx: click.Context, param: click.Parameter, incomplete: str,
-    ) -> list[CompletionItem]:
+    def choices(self, ctx: click.Context) -> list[str]:
+        """The names the line so far allows; [] when they can't be known
+        (no data repo, an unknown scenario, a broken file)."""
+        return self._read(self.lister, ctx)
+
+    def is_known(self, ctx: click.Context, value: str) -> bool:
+        """Whether ``value`` is one of ``known``'s names (not a typo)."""
+        return self.known is not None and value in self._read(self.known, ctx)
+
+    @staticmethod
+    def _read(lister: Callable[[click.Context, Path], Sequence[str]], ctx: click.Context) -> list[str]:
         data_dir = _data_dir(ctx)
         if data_dir is None:
             return []
         try:
-            choices = self.lister(ctx, data_dir)
-        except Exception:  # noqa: BLE001 - a traceback would land in the user's shell
+            return list(lister(ctx, data_dir))
+        except Exception:  # noqa: BLE001 - completion and re-asking are best effort
             return []
+
+    def shell_complete(
+        self, ctx: click.Context, param: click.Parameter, incomplete: str,
+    ) -> list[CompletionItem]:
         typed = incomplete.lower()
-        return [CompletionItem(c) for c in choices if c.lower().startswith(typed)]
+        return [CompletionItem(c) for c in self.choices(ctx) if c.lower().startswith(typed)]
 
 
 def _in_scenario(
@@ -135,20 +159,46 @@ def _correlate_with(data_dir: Path, scenario: str) -> list[str]:
     return [*names.calendar_row_names(data_dir, scenario), *lifespans]
 
 
-SCENARIO = NameType(lambda ctx, data_dir: names.scenario_names(data_dir))  # noqa: ARG005
-ENSEMBLE = NameType(_ensembles)
-ACCOUNT = NameType(_in_scenario(names.account_names))
-CHAIN = NameType(_in_scenario(names.chain_names))
+def _scenarios(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
+    return names.scenario_names(data_dir)
+
+
+SCENARIO = NameType(_scenarios, "scenario")
+# `sim explain`'s target: a scenario, or a run file's path, which no list holds.
+SCENARIO_OR_RUNFILE = NameType(_scenarios, "scenario", check=False)
+ENSEMBLE = NameType(_ensembles, "ensemble")
+ACCOUNT = NameType(_in_scenario(names.account_names), "account")
+# `sim invest` makes the account when it's new.
+ACCOUNT_OR_NEW = NameType(_in_scenario(names.account_names), "account", check=False)
+# A chain command given an account names its one-step leaf chain, which the
+# command explains better than a re-ask would.
+CHAIN = NameType(_in_scenario(names.chain_names), "chain",
+                 known=_in_scenario(names.account_names))
 # Either end of a transfer, or a chain step: an account or a chain.
-ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=True)))
-RULE = NameType(_in_scenario(names.scheduled_names))
-CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names))
-CORRELATE_WITH = NameType(_in_scenario(_correlate_with))
-TAG = NameType(_in_scenario(names.tag_tokens))
-ITEMIZATION = NameType(_in_scenario(names.itemization_names))
-PERSON = NameType(lambda ctx, data_dir: names.person_ids(data_dir))  # noqa: ARG005
-SYMBOL = NameType(lambda ctx, data_dir: names.symbols(data_dir))  # noqa: ARG005
-AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS))  # noqa: ARG005
+ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=True)),
+                    "account or chain", plural="accounts and chains")
+RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
+# A row may also be picked by its number or by text in it, so any value goes.
+CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
+CORRELATE_WITH = NameType(_in_scenario(_correlate_with), "calendar row or lifespan",
+                          plural="calendar rows and lifespans")
+def _tag_patterns(data_dir: Path, scenario: str) -> list[str]:
+    """``role:*`` for each role in use: a pattern `tags items` takes."""
+    return sorted({f"{t.partition(':')[0]}:*" for t in names.tag_tokens(data_dir, scenario)})
+
+
+TAG = NameType(_in_scenario(names.tag_tokens), "tag", known=_in_scenario(_tag_patterns))
+# A tag being added, or a filter: completes from the tags in use, but may
+# be new, or match nothing.
+ANY_TAG = NameType(_in_scenario(names.tag_tokens), "tag", check=False)
+ITEMIZATION = NameType(_in_scenario(names.itemization_names), "itemization",
+                       known=_in_scenario(lambda d, s: [f"@{n}" for n in names.itemization_names(d, s)]))
+PERSON = NameType(lambda ctx, data_dir: names.person_ids(data_dir), "person")  # noqa: ARG005
+# An account's owner: a person, or both of them.
+OWNER = NameType(lambda ctx, data_dir: [*names.person_ids(data_dir), "joint"], "owner")  # noqa: ARG005
+# A lot may hold a symbol nothing names yet, and prices can fetch one.
+SYMBOL = NameType(lambda ctx, data_dir: names.symbols(data_dir), "symbol", check=False)  # noqa: ARG005
+AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS), "aux kind")  # noqa: ARG005
 
 
 class LotName(NameType):
@@ -162,7 +212,7 @@ class LotName(NameType):
             if not scenario or not isinstance(account, str):
                 return []
             return names.lot_names(data_dir, scenario, account)
-        super().__init__(lister)
+        super().__init__(lister, "lot")
 
 
 class SeriesName(NameType):
@@ -176,7 +226,7 @@ class SeriesName(NameType):
                 return []
             wanted = _line_params(ctx).get(kind_param) if kind_param else kind
             return names.series_names(data_dir, scenario, wanted if isinstance(wanted, str) else None)
-        super().__init__(lister)
+        super().__init__(lister, "series", plural="series")
 
 
 # The types of the params that the guides' field lists turn into options
@@ -188,7 +238,7 @@ _FIELD_TYPES: dict[str, NameType] = {
     "to_lot": LotName("to_account"),
     "interest_account": ACCOUNT,
     "person": PERSON,
-    "owner": PERSON,
+    "owner": OWNER,
     "series": SeriesName(),
     "symbol": SYMBOL,
     "refill_chain": ENDPOINT,
