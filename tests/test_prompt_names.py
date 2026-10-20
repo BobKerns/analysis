@@ -1,4 +1,6 @@
-"""A name left off a command's line is asked for, with completion (#240)."""
+"""A name left off a command's line, or mistyped at a terminal, is asked for,
+with completion (#240)."""
+# cspell:ignore Savngs Jiont alcie defalt csh Chekcing
 
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from click.testing import CliRunner, Result
 
 from analysis.cli import main
 from analysis.sim import cli as sim_cli
-from analysis.sim import names
+from analysis.sim import completion, names
 from analysis.sim.cli import sim_group_command
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME
 
@@ -154,6 +156,144 @@ def test_only_non_names_are_required() -> None:
     assert required(sim_group_command, "sim") == _STILL_REQUIRED
 
 
+# ---------- a mistyped name is asked for again, at a terminal ----------
+
+@pytest.fixture
+def terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run as if stdin were a terminal, where a mistyped name is re-asked."""
+    monkeypatch.setattr(sim_cli, "_interactive", lambda: True)
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_mistyped_name_is_asked_again(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("account", "rename", "Asset_Savngs", "Asset_Rainy_Day", "--scenario", "retire_alice",
+                 input="Asset_Savings\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown account: 'Asset_Savngs'" in result.output
+    assert "Asset_Rainy_Day" in names.account_names(test_data_dir, "retire_alice")
+
+
+@pytest.mark.usefixtures("terminal")
+def test_the_scenario_is_asked_again_first(sim: Callable[..., Result]) -> None:
+    # The account can only be checked once the scenario is one.
+    result = sim("account", "holdings", "Asset_Brokerage_Jiont", "--opening", "--scenario", "retire_alcie",
+                 input="retire_alice\nAsset_Brokerage_Joint\n")
+    assert result.exit_code == 0, result.output
+    assert result.output.index("unknown scenario") < result.output.index("unknown account")
+    assert "holdings of Asset_Brokerage_Joint" in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_each_mistyped_value_of_a_list_is_asked_again(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    assert sim("account", "tag", "add", "Asset_Checking", "bucket:cash", "use:spending",
+               "--scenario", "retire_alice").exit_code == 0
+    result = sim("account", "tag", "rm", "Asset_Checking", "bucket:csh", "use:spending",
+                 "--scenario", "retire_alice", input="bucket:cash\n")
+    assert result.exit_code == 0, result.output
+    assert not {"bucket:cash", "use:spending"} & set(names.tag_tokens(test_data_dir, "retire_alice"))
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_lot_is_checked_against_its_account(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    result = sim("account", "lot", "rename", "Asset_Brokerage_Joint", "defalt", "core",
+                 "--scenario", "retire_alice", input="default\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown lot: 'defalt'" in result.output
+    assert names.lot_names(test_data_dir, "retire_alice", "Asset_Brokerage_Joint") == ["core"]
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_new_tag_is_not_a_mistyped_one(sim: Callable[..., Result]) -> None:
+    result = sim("account", "tag", "add", "Asset_Checking", "brand:new", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+
+
+def test_off_a_terminal_a_mistyped_name_fails_as_before(sim: Callable[..., Result]) -> None:
+    result = sim("account", "rename", "Asset_Savngs", "Asset_Rainy_Day", "--scenario", "retire_alice",
+                 input="Asset_Savings\n")
+    assert result.exit_code != 0
+    assert "no account 'Asset_Savngs' in retire_alice" in result.output  # the command's own error
+    assert "unknown account" not in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_tag_filter_may_match_nothing(sim: Callable[..., Result]) -> None:
+    assert sim("account", "tag", "add", "Asset_Checking", "bucket:cash", "--scenario", "retire_alice").exit_code == 0
+    result = sim("tags", "items", "unused:*", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_tag_being_removed_is_not_a_pattern(sim: Callable[..., Result], test_data_dir: Path) -> None:
+    assert sim("account", "tag", "add", "Asset_Checking", "bucket:cash", "--scenario", "retire_alice").exit_code == 0
+    result = sim("account", "tag", "rm", "Asset_Checking", "bucket:*", "--scenario", "retire_alice",
+                 input="bucket:cash\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown tag: 'bucket:*'" in result.output
+    assert "bucket:cash" not in names.tag_tokens(test_data_dir, "retire_alice")
+
+
+@pytest.mark.usefixtures("terminal")
+def test_fixed_is_a_scheduled_rules_series(sim: Callable[..., Result]) -> None:
+    result = sim("scheduled", "edit", "living", "--series", "fixed", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_fixed_is_no_chain_steps_series(sim: Callable[..., Result]) -> None:
+    result = sim("chain", "step", "add", "asset_checking_liquidity", "Asset_Savings", "--series", "fixed",
+                 "--scenario", "retire_alice", input="cpi\n")
+    assert "unknown series: 'fixed'" in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_run_files_names_are_not_checked_against_the_scenario(
+    sim: Callable[..., Result], tmp_path: Path,
+) -> None:
+    runfile = tmp_path / "other.sqlite3"
+    runfile.write_bytes(b"")
+    result = sim("account", "history", "Asset_Elsewhere", "--runfile", str(runfile))
+    assert "unknown account" not in result.output
+
+
+@pytest.mark.usefixtures("terminal")
+def test_an_ensemble_reports_names_wait_for_the_ensemble(sim: Callable[..., Result]) -> None:
+    # Not checked against the current scenario: the ensemble asked for may have it.
+    assert sim("switch", "retire_alice").exit_code == 0
+    for command in (("summary",), ("compare",), ("compare", "retire_alice")):
+        result = sim("ensemble", *command, "--account", "Asset_Only_In_The_Ensemble")
+        assert "unknown account" not in result.output, command
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_mistyped_account_is_asked_again_once_the_ensemble_is(
+    sim: Callable[..., Result], ensemble_recipe: str, runs_dir: Path,
+) -> None:
+    result = sim("ensemble", "summary", "--account", "Asset_Chekcing", "--runs-dir", str(runs_dir),
+                 input=f"{ensemble_recipe}\nAsset_Checking\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown account: 'Asset_Chekcing'" in result.output
+    assert "account Asset_Checking" in result.output
+
+
+def test_a_compared_variants_names_count(test_data_dir: Path) -> None:
+    ctx = click.Context(sim_group_command.commands["ensemble"].commands["compare"])  # ty: ignore[unresolved-attribute] -- a Group
+    ctx.params = {"baseline": "base", "variant": "retire_alice", "data_dir": str(test_data_dir)}
+    assert "Asset_Checking" in completion.ACCOUNT.choices(ctx)  # base has no accounts
+
+
+@pytest.mark.usefixtures("terminal")
+def test_joint_is_an_owner(sim: Callable[..., Result]) -> None:
+    result = sim("account", "edit", "Asset_Checking", "--owner", "joint", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+
+
 def test_tags_given_without_the_name_ask_for_the_name(
     sim: Callable[..., Result], test_data_dir: Path,
 ) -> None:
@@ -207,6 +347,17 @@ def test_a_name_with_a_colon_is_not_taken_for_a_tag(
 
 
 
+@pytest.mark.usefixtures("terminal")
+def test_at_a_terminal_a_tag_first_asks_for_the_name_not_again(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    # The leading tag isn't reported as a mistyped account: it's moved to the tags.
+    result = sim("account", "tag", "add", "bucket:cash", "--scenario", "retire_alice", input="Asset_Checking\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+    assert "bucket:cash" in names.tag_tokens(test_data_dir, "retire_alice")
+
+
 def test_series_rename_offers_only_series_it_can_rename(sim: Callable[..., Result]) -> None:
     result = sim("series", "rename", "--scenario", "retire_alice", input="brokerage_growth\nbroker_growth\n")
     assert result.exit_code == 0, result.output
@@ -222,11 +373,12 @@ def test_lot_names_can_leave_out_the_implicit_default(data_dir: Path) -> None:
     assert names.lot_names(data_dir, "retire_alice", "Income_Salary_Alice", implicit=False) == []
 
 
-def test_a_named_batch_is_offered_only_in_the_mode_asked_for(tmp_path: Path) -> None:
+def test_a_named_batch_is_offered_only_when_it_holds_runs_of_the_mode(tmp_path: Path) -> None:
     for recipe, mode in (("mc_recipe", "monte_carlo"), ("oat_recipe", "sensitivity")):
         batch = tmp_path / recipe / "b1"
         batch.mkdir(parents=True)
         (batch / BATCH_MANIFEST_FILENAME).write_text(json.dumps({"mode": mode}))
+    (tmp_path / "stale_recipe" / "b1").mkdir(parents=True)  # no manifest, no members
     result = CliRunner().invoke(click.Command("ask", callback=lambda: click.echo(
         sim_cli._ask_ensemble_run(tmp_path, "monte_carlo", batch="b1"))), input="mc_recipe\n")
     assert result.exit_code == 0, result.output
