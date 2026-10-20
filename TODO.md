@@ -18,6 +18,9 @@ Known gaps (last reviewed 2026-10-17; each has an issue):
 - plain-run scenario comparison (account and lot definition differences, rule and event
   differences, net worth differences, break-even): only `sim ensemble compare`, which is
   ensembles' risk only (#188)
+- after-tax income and surplus (`net_worth.ipynb`'s after-tax chart): `sim report tax`
+  dropped them, since they count untaxed growth as after-tax income; to return as
+  economic income and net worth change (#249)
 - events (`notebooks/events.ipynb`): filtering the full `transfer_event` ledger by reason
   kind/tax character/account/date range; `sim items` covers one account and a date range
   only (#189)

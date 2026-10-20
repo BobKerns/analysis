@@ -6287,7 +6287,10 @@ def report_income_command(
     """Show income by year: what each income account paid out.
 
     Categories are salary, social security, investment (interest, dividends,
-    capital gains, including growth that stays invested) and other.
+    capital gains, including growth that stays invested, less market drops)
+    and other. Each year also shows cash_income, the income paid into a cash
+    account (no paper growth), and cash_flow, that plus what was withdrawn
+    into cash from investments and retirement accounts.
     """
     _flow_report("income", year, by, dollars, runfile, scenario, data_dir)
 
@@ -6334,24 +6337,23 @@ def report_tax_command(
     reconciliation: bool, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Show federal and state tax by year, and the after-tax income left.
+    """Show federal and state tax by year, and the federal income it was figured on.
 
-    Tax belongs to the year the income was earned in; its balance due or
-    refund settles the April after (see --reconciliation). after_tax_surplus
-    is after-tax income less non-tax expenses.
+    agi, deduction and taxable_income are federal: AGI, the larger of the
+    standard and itemized deduction, and the income the brackets taxed.
+    effective_rate is total tax over AGI. Tax belongs to the year the income
+    was earned in; its balance due or refund settles the April after (see
+    --reconciliation).
     """
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         frame = (reports.tax_reconciliation(rc, mode) if reconciliation
                  else reports.tax_by_year(rc, mode))
-    no_tax = frame.empty if reconciliation else frame["total_tax"].isna().all()
-    if no_tax and reconciliation:
+    if frame.empty:
         click.echo(f"no tax was computed in this run ({described})")
         return
-    _print_report(frame, "tax reconciliation" if reconciliation else "tax and after-tax income",
+    _print_report(frame, "tax reconciliation" if reconciliation else "tax and taxable income",
                   described, mode)
-    if no_tax:
-        click.echo("no tax was computed in this run, so the tax columns are blank", err=True)
 
 
 @account_group_command.group(name="tag")
