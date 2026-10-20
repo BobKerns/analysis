@@ -1109,10 +1109,11 @@ _ENSEMBLE_RESERVE_OPTION = click.option(
          "overriding the recipe's scenario.meta_json reserve (which applies to "
          "net worth only).",
 )
-_AFTER_TAX_OPTION = click.option(
-    "--after-tax", is_flag=True,
-    help="Net worth after tax (#251): less the tax a drawdown of traditional balances "
-         "and taxable gains would owe, and any tax due but not yet paid.",
+_PRE_TAX_OPTION = click.option(
+    "--pre-tax", is_flag=True,
+    help="Net worth before tax. By default it is after tax (#251): less the tax a "
+         "drawdown of traditional balances and taxable gains would owe, and any tax "
+         "due but not yet paid. An account's balance is always before tax.",
 )
 _ENSEMBLE_GRAPH_OPTION = click.option(
     "--graph", "as_graph", is_flag=True,
@@ -1179,12 +1180,9 @@ def _member_frame(
         raise click.ClickException(str(exc)) from exc
 
 
-def _check_lot_has_account(account: str | None, lot: str | None,
-                           after_tax: bool = False) -> None:
+def _check_lot_has_account(account: str | None, lot: str | None) -> None:
     if lot is not None and account is None:
         raise click.UsageError("--lot needs --account")
-    if after_tax and account is not None:
-        raise click.UsageError("--after-tax is for net worth, not --account")
 
 
 def _subject(account: str | None, lot: str | None, after_tax: bool = False) -> str:
@@ -1205,12 +1203,12 @@ def _subject(account: str | None, lot: str | None, after_tax: bool = False) -> s
 @_ENSEMBLE_ACCOUNT_OPTION
 @_ENSEMBLE_LOT_OPTION
 @_ENSEMBLE_RESERVE_OPTION
-@_AFTER_TAX_OPTION
+@_PRE_TAX_OPTION
 @_ENSEMBLE_GRAPH_OPTION
 @_ENSEMBLE_GRAPH_FILE_OPTION
 def ensemble_summary(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
-    account: str | None, lot: str | None, reserve: str | None, after_tax: bool,
+    account: str | None, lot: str | None, reserve: str | None, pre_tax: bool,
     as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Mean/median/SD, 5th/20th/.../95th percentiles and the mean of the
@@ -1219,13 +1217,14 @@ def ensemble_summary(
     the reserve when one is set. --graph draws the members' fan chart.
 
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
-    _check_lot_has_account(account, lot, after_tax)
+    _check_lot_has_account(account, lot)
     _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
         scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
         known = _ask_again_once_known(scenario_name=scenario_name)
         account, lot = known["account"], known["lot"]
+    after_tax = not pre_tax and account is None
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
@@ -1280,13 +1279,13 @@ def ensemble_summary(
     default=DollarMode.CPI_CONSTANT.value, show_default=True,
     help="Dollars the percentiles and tail means are reported in.",
 )
-@_AFTER_TAX_OPTION
+@_PRE_TAX_OPTION
 @_ENSEMBLE_GRAPH_OPTION
 @_ENSEMBLE_GRAPH_FILE_OPTION
 def ensemble_compare(
     baseline: str | None, variant: str | None, runs_dir: Path | None, data_dir: Path | None,
     account: str | None, lot: str | None, reserve: str | None, dollars: str,
-    after_tax: bool, as_graph: bool, graph_file: Path | None,
+    pre_tax: bool, as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Compare VARIANT's ensemble with BASELINE's on risk (#163), each from
     its latest batch: by year end, each percentile breakpoint's delta, the
@@ -1301,7 +1300,7 @@ def ensemble_compare(
     has the account, it draws that recipe's fan chart instead.
 
     Either ensemble left out is asked for, from those that have been run."""
-    _check_lot_has_account(account, lot, after_tax)
+    _check_lot_has_account(account, lot)
     _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if baseline is None or variant is None:
@@ -1311,6 +1310,7 @@ def ensemble_compare(
             variant = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant", exclude=baseline)
         known = _ask_again_once_known(baseline=baseline, variant=variant)
         account, lot = known["account"], known["lot"]
+    after_tax = not pre_tax and account is None
     mode = DollarMode(dollars)
     sides: dict[str, dict[str, RunConnection]] = {}
     try:
@@ -1970,17 +1970,17 @@ def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
               default=DollarMode.CPI_CONSTANT.value, show_default=True,
               help="cpi_constant (deflated by the run's CPI series, so decades "
                    "compare at a glance), or nominal.")
-@_AFTER_TAX_OPTION
+@_PRE_TAX_OPTION
 @_run_target_options
 def networth_command(
-    scenario: str | None, period: str, dollars: str, after_tax: bool,
+    scenario: str | None, period: str, dollars: str, pre_tax: bool,
     runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
     """Net worth by year or month from a run: the scenario's latest (the
     current scenario's by default), or --runfile. As in net_worth.ipynb.
-    --after-tax subtracts the tax still owed on it (#251)."""
+    It is after the tax still owed on it (#251) unless --pre-tax."""
     runfile = _resolve_run_target(scenario, runfile, data_dir, runs_dir)
-    if after_tax:
+    if not pre_tax:
         _echo_after_tax_networth(runfile, period, DollarMode(dollars))
         return
     # Nominal reads net_worth itself, so a run without a CPI series still has it.
@@ -2019,7 +2019,7 @@ def networth_command(
 
 
 def _echo_after_tax_networth(runfile: Path, period: str, mode: DollarMode) -> None:
-    """``sim networth --after-tax``: net worth, the deferred and unpaid tax
+    """``sim networth`` without --pre-tax: net worth, the deferred and unpaid tax
     taken from it, and what's left, from the run's RunConnection."""
     with RunConnection(runfile) as rc:
         name = rc.name
@@ -2106,7 +2106,7 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
 @click.option("--dollars", type=click.Choice([m.value for m in DollarMode]),
               default=DollarMode.CPI_CONSTANT.value, show_default=True,
               help="Dollars net worth and balances are reported in.")
-@_AFTER_TAX_OPTION
+@_PRE_TAX_OPTION
 @click.option("--account", type=completion.ACCOUNT, default=None,
               help="Also compare this account's balance (a section of its own).")
 @click.option("--lot", type=completion.LotName("account"), default=None,
@@ -2123,15 +2123,15 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
               default=None, help="Directory to find each scenario's latest run in.")
 def compare_command(
     baseline: str | None, variants: tuple[str, ...], sections: tuple[str, ...], dollars: str,
-    after_tax: bool, account: str | None, lot: str | None, as_graph: bool, graph_file: Path | None,
+    pre_tax: bool, account: str | None, lot: str | None, as_graph: bool, graph_file: Path | None,
     data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
     """Compare VARIANTS with BASELINE (#188), each from its latest run (an
     ensemble's from member 0 of its latest batch), as scenario_compare.ipynb
     does: whether the runs are comparable, what the scenarios define
     differently, net worth at each year end with each variant's difference,
-    where each variant breaks even, and with --account, that account's
-    balance.
+    where each variant breaks even (net worth after tax unless --pre-tax),
+    and with --account, that account's balance.
 
     BASELINE left out is the current scenario; with no VARIANTS, one is
     asked for. A scenario with no accounts is a valid compare point."""
@@ -2153,6 +2153,7 @@ def compare_command(
         raise click.UsageError(
             f"--graph draws at most {_COMPARE_MAX_GRAPHED} variants; name fewer, "
             "or leave --graph off for the tables")
+    after_tax = not pre_tax
     shown = set(sections) or {*COMPARE_SECTIONS[:-1], *(["account"] if account else [])}
     mode = DollarMode(dollars)
     mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"

@@ -134,10 +134,9 @@ def test_compare_net_worth_after_tax(report_run: RunConnection,
     pd.testing.assert_series_equal(post["untaxed"], pre["untaxed"])
 
 
-def test_sim_networth_after_tax(report_run_file: Path) -> None:
+def test_sim_networth_is_after_tax_unless_pre_tax(report_run_file: Path) -> None:
     result = CliRunner().invoke(main, [
-        "sim", "networth", "--runfile", str(report_run_file), "--after-tax",
-        "--dollars", "nominal",
+        "sim", "networth", "--runfile", str(report_run_file), "--dollars", "nominal",
     ])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
@@ -148,12 +147,9 @@ def test_sim_networth_after_tax(report_run_file: Path) -> None:
     last = frame["nominal"].iloc[-1]
     assert lines[-1].split()[-1] == f"{last:,.0f}"
 
-
-@pytest.mark.parametrize("command", ["summary", "compare"])
-def test_ensemble_after_tax_is_for_net_worth_only(command: str, tmp_path: Path) -> None:
-    result = CliRunner().invoke(main, [
-        "sim", "ensemble", command, "a", *(["b"] if command == "compare" else []),
-        "--runs-dir", str(tmp_path), "--account", "Asset_Checking", "--after-tax",
+    pre = CliRunner().invoke(main, [
+        "sim", "networth", "--runfile", str(report_run_file), "--dollars", "nominal",
+        "--pre-tax",
     ])
-    assert result.exit_code == 2
-    assert "--after-tax is for net worth, not --account" in result.output
+    assert pre.output.splitlines()[0].startswith("net worth, nominal dollars")
+

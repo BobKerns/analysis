@@ -226,7 +226,8 @@ def test_sim_networth_yearly_and_monthly(retire_alice_run_file: Path) -> None:
         con.close()
     runner = CliRunner()
     yearly = runner.invoke(
-        main, ["sim", "networth", "--dollars", "nominal", "--runfile", str(retire_alice_run_file)],
+        main, ["sim", "networth", "--pre-tax", "--dollars", "nominal",
+               "--runfile", str(retire_alice_run_file)],
     )
     assert yearly.exit_code == 0, yearly.output
     lines = yearly.output.splitlines()
@@ -235,7 +236,7 @@ def test_sim_networth_yearly_and_monthly(retire_alice_run_file: Path) -> None:
     assert [line.split()[0] for line in lines[1:]] == years
 
     monthly = runner.invoke(
-        main, ["sim", "networth", "--monthly", "--dollars", "nominal",
+        main, ["sim", "networth", "--pre-tax", "--monthly", "--dollars", "nominal",
                "--runfile", str(retire_alice_run_file)],
     )
     assert monthly.exit_code == 0, monthly.output
@@ -249,7 +250,7 @@ def test_sim_networth_cpi_constant_deflates_later_months(retire_alice_run_file: 
     """CPI-constant dollars are the default (Bob: inflated future numbers
     mislead): later months come out smaller than nominal under inflation."""
     runner = CliRunner()
-    args = ["sim", "networth", "--monthly", "--runfile", str(retire_alice_run_file)]
+    args = ["sim", "networth", "--pre-tax", "--monthly", "--runfile", str(retire_alice_run_file)]
     nominal = runner.invoke(main, [*args, "--dollars", "nominal"]).output.splitlines()
     real = runner.invoke(main, args).output.splitlines()
     assert real[0].startswith("net worth, CPI-constant dollars")
@@ -295,7 +296,7 @@ def test_sim_explain_year_end_net_worth_has_both_dollar_modes(
     lines = explain.split("year-end net worth:", 1)[1].splitlines()
     last_year = [line for line in lines if line.startswith("  20")][-1]
     nominal, real = last_year.split("$")[1:]
-    args = ["sim", "networth", "--runfile", str(retire_alice_run_file)]
+    args = ["sim", "networth", "--pre-tax", "--runfile", str(retire_alice_run_file)]
     expected_nominal = runner.invoke(main, [*args, "--dollars", "nominal"]).output
     expected_real = runner.invoke(main, args).output
     assert expected_nominal.splitlines()[-1].split("$")[1].strip() == nominal.strip()

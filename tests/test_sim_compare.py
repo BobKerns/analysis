@@ -58,7 +58,7 @@ def test_sim_compare_prints_every_section(compare_runs: Callable[..., Result]) -
     assert rules[1].split() == ["salary_alice", "amount", "$8,000.00", "$9,000.00"]
     assert _section(result.output, "Calendar events that differ:") == ["  none"]
     assert _section(result.output, "Accounts and lots defined differently:") == ["  none"]
-    net_worth = _section(result.output, "Net worth at year end (CPI-constant):")
+    net_worth = _section(result.output, "After-tax net worth at year end (CPI-constant):")
     assert net_worth[0].split() == ["year", "retire_alice", "higher_pay", "Δ", "higher_pay"]
     assert all(not line.split()[-1].startswith("-") for line in net_worth[1:])
     breakeven = _section(result.output, "Break-even vs retire_alice")
@@ -150,7 +150,7 @@ def test_sim_compare_treats_an_empty_scenario_as_zero(
     result = compare_runs("empty", "retire_alice", "--section", "net-worth",
                           "--dollars", "nominal")
     assert result.exit_code == 0, result.output
-    rows = _section(result.output, "Net worth at year end (nominal):")[1:]
+    rows = _section(result.output, "After-tax net worth at year end (nominal):")[1:]
     assert rows and all(row.split()[1] == "0" for row in rows)
 
 

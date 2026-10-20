@@ -768,10 +768,11 @@ class DollarModePicker(widgets.ToggleButtons):
 
 class AfterTaxPicker(widgets.ToggleButtons):
     """Pre-tax or after-tax net worth (#251): ``value`` is True for after
-    tax, which subtracts the tax a drawdown would owe and tax due unpaid."""
-    value: bool = _trait(traitlets.Bool(False))
+    tax (the default), which subtracts the tax a drawdown would owe and tax
+    due unpaid."""
+    value: bool = _trait(traitlets.Bool(True))
 
-    def __init__(self, after_tax: bool = False):
+    def __init__(self, after_tax: bool = True):
         super().__init__(
             options=[("Pre-tax", False), ("After-tax", True)],
             description="Net worth:",

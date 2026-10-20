@@ -157,7 +157,7 @@ def test_sim_ensemble_compare_prints_deltas_and_each_recipes_tail(
     ])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert lines[0].startswith("child vs baseline: net worth, CPI-constant dollars; 3 and 3")
+    assert lines[0].startswith("child vs baseline: after-tax net worth, CPI-constant dollars; 3 and 3")
     assert lines[1] == "  paired: 3 future(s)"
     assert lines[3].split() == [
         "year", "Δp05", "Δp20", "Δp40", "Δp60", "Δp80", "Δp95", "Δcvar05", "Δcvar20",
