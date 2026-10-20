@@ -81,7 +81,7 @@ def test_the_tax_report_shows_the_business(run_file: Callable[[str], Path]) -> N
         main, ["sim", "report", "tax", "--runfile", str(run_file("alice_business_hobby"))],
     )
     assert result.exit_code == 0, result.output
-    # A hobby has sales and undeductible expenses, but no loss to carry.
+    # A hobby has sales and expenses it can't deduct, but no loss to carry.
     for column in ("business_net", "hobby_disallowed"):
         assert column in result.output
     assert "nol_carryover" not in result.output
