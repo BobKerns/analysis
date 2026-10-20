@@ -21,7 +21,7 @@ from analysis.sim.types import DollarMode
 
 __all__ = [
     "ABSENT", "META_COLUMNS", "RULE_COMPARE_COLUMNS",
-    "account_definition_differences", "balance_by_month", "breakeven_month",
+    "account_definition_differences", "all_nan_columns", "balance_by_month", "breakeven_month",
     "breakeven_summary", "comparability", "event_differences", "net_worth_by_month",
     "rule_differences", "variant_delta", "year_end_comparison", "year_to_date_differences",
 ]
@@ -295,6 +295,13 @@ def net_worth_by_month(
     return nw
 
 
+def all_nan_columns(frame: pd.DataFrame) -> list[str]:
+    """The columns of a frame with rows whose every value is NaN: a
+    CPI-constant series from a run with no CPI index. NaN in only some months
+    is runs with different horizons, not missing data."""
+    return [] if frame.empty else [str(name) for name in frame.columns[frame.isna().all()]]
+
+
 def variant_delta(nw: pd.DataFrame, baseline: str, variants: Sequence[str]) -> pd.DataFrame:
     """Each variant's column minus the baseline's, by month."""
     return nw[list(variants)].sub(nw[baseline], axis=0)
@@ -321,7 +328,9 @@ def breakeven_summary(
     """Per-variant break-even month, deepest deficit, and end-of-run comparison."""
     rows = {}
     for name in variants:
-        series = delta[name]
+        # Runs with different horizons leave NaN outside the months both
+        # cover; break-even and the end values come from the shared months.
+        series = delta[name].dropna()
         month = breakeven_month(series)
         if series.empty:  # no months to compare: nothing to report but that
             rows[name] = {"break-even": "never", "deepest deficit": None, "when": None,
@@ -332,7 +341,7 @@ def breakeven_summary(
             "deepest deficit": series.min(),
             "when": f"{series.idxmin():%Y-%m}",
             "at scenario end": series.iloc[-1],
-            "final net worth": nw[name].iloc[-1],
+            "final net worth": nw[name].dropna().iloc[-1],
         }
     summary = pd.DataFrame(rows).T
     summary.index.name = f"vs {baseline}"

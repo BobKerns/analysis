@@ -2175,10 +2175,10 @@ def compare_command(
         # still works on a run with no CPI series.
         if shown & {"net-worth", "break-even"} or (graphed and account is None):
             nw = compare.net_worth_by_month(connections, scenarios, mode)
-            if nw.isna().any().any():
+            if no_cpi := compare.all_nan_columns(nw):
                 raise click.ClickException(
-                    "a run has no 'cpi' inflation index, so no CPI-constant net worth; "
-                    "pass --dollars nominal")
+                    f"no 'cpi' inflation index in the run of {', '.join(no_cpi)}, so no "
+                    "CPI-constant net worth; pass --dollars nominal")
         if "net-worth" in shown:
             click.echo(f"\nNet worth at year end ({mode_label}):")
             _echo_frame(compare.year_end_comparison(nw, baseline, variants).map(_cell))
@@ -2198,10 +2198,10 @@ def compare_command(
                 raise click.ClickException(
                     f"no {'lot ' + lot + ' of ' if lot else ''}{account} with a balance "
                     f"in {', '.join(scenarios)}")
-            if balances.isna().any().any():
+            if no_cpi := compare.all_nan_columns(balances):
                 raise click.ClickException(
-                    "a run has no 'cpi' inflation index, so no CPI-constant balance; "
-                    "pass --dollars nominal")
+                    f"no 'cpi' inflation index in the run of {', '.join(no_cpi)}, so no "
+                    "CPI-constant balance; pass --dollars nominal")
             if "account" in shown:
                 click.echo(f"\n{subject} at year end ({mode_label}):")
                 _echo_frame(compare.year_end_comparison(balances, baseline, variants).map(_cell))

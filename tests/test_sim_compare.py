@@ -275,3 +275,36 @@ def test_breakeven_of_no_months_is_none() -> None:
     from analysis.sim.compare import breakeven_month
 
     assert breakeven_month(pd.Series([], dtype=float)) is None
+
+
+def test_scenario_run_path_matches_the_whole_scenario_name(runs_dir: Path) -> None:
+    """``base``'s run is never ``higher_base``'s, though the file names share
+    a ``_base_`` segment."""
+    from analysis.sim.loader import scenario_run_path
+
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    other = runs_dir / "2030-01-02T000000Z_higher_base_abc1234.sqlite3"
+    other.touch()
+    assert scenario_run_path(runs_dir, "base") is None
+    own = runs_dir / "2030-01-01T000000Z_base_abc1234.sqlite3"
+    own.touch()
+    assert scenario_run_path(runs_dir, "base") == own
+    assert scenario_run_path(runs_dir, "higher_base") == other
+
+
+def test_runs_with_different_horizons_compare_over_their_shared_months() -> None:
+    """NaN outside one run's months is not missing CPI data, and break-even
+    looks only at the months both runs cover."""
+    import pandas as pd
+
+    from analysis.sim.compare import all_nan_columns, breakeven_summary, variant_delta
+
+    months = pd.period_range("2030-01", periods=4, freq="M").to_timestamp()
+    nw = pd.DataFrame({"a": [1.0, 1.0, 1.0, None], "b": [None, 0.0, 2.0, 3.0]}, index=months)
+    assert all_nan_columns(nw) == []
+    summary = breakeven_summary(nw, variant_delta(nw, "a", ["b"]), "a", ["b"])
+    assert summary.loc["b", "break-even"] == "2030-03"
+    assert summary.loc["b", "at scenario end"] == 1.0
+    assert summary.loc["b", "final net worth"] == 3.0
+    assert all_nan_columns(nw.assign(c=float("nan"))) == ["c"]
+    assert all_nan_columns(nw.iloc[:0]) == []
