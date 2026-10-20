@@ -214,6 +214,56 @@ def test_sim_compare_two_empty_scenarios_and_a_zero_account(
     missing = compare_runs("retire_alice", "higher_pay", "--section", "account",
                            "--account", "No_Such_Account")
     assert missing.exit_code == 1 and "no No_Such_Account" in missing.output
+    # --section leaves out the account section, so --account goes unchecked.
+    runs_only = compare_runs("retire_alice", "higher_pay", "--section", "runs",
+                             "--account", "No_Such_Account")
+    assert runs_only.exit_code == 0, runs_only.output
+
+
+@pytest.mark.slow
+def test_sim_compare_refuses_a_cpi_constant_balance_without_a_cpi_index(
+    compare_runs: Callable[..., Result], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run with no CPI index has an all-NaN CPI-constant balance: an error
+    naming the cause, not a balance of zero."""
+    import pandas as pd
+
+    from analysis.sim.connection import RunConnection
+    from analysis.sim.types import DollarMode
+
+    original = RunConnection.account_balance
+
+    def no_cpi(self: RunConnection, account: str, mode: DollarMode = DollarMode.NOMINAL) -> pd.Series:
+        balance = original(self, account)
+        return balance * float("nan") if mode == DollarMode.CPI_CONSTANT else balance
+    monkeypatch.setattr(RunConnection, "account_balance", no_cpi)
+    result = compare_runs("retire_alice", "higher_pay", "--section", "account",
+                          "--account", "Asset_Checking")
+    assert result.exit_code == 1 and "no 'cpi' inflation index" in result.output
+
+
+def test_balance_by_month_keeps_an_all_nan_balance_and_zero_fills_a_missing_one() -> None:
+    import pandas as pd
+
+    from analysis.sim.compare import balance_by_month
+
+    months = pd.period_range("2030-01", periods=2, freq="M").to_timestamp()
+
+    class Run:
+        def __init__(self, balance: pd.Series) -> None:
+            self.balance = balance
+
+        def account_balance(self, account: str, mode: object) -> pd.Series:
+            return self.balance
+
+    connections = {
+        "has": Run(pd.Series([1.0, 2.0], index=months)),
+        "lacks": Run(pd.Series([], dtype=float)),
+        "no_cpi": Run(pd.Series([float("nan")] * 2, index=months)),
+    }
+    frame = balance_by_month(connections, list(connections), "X")  # ty: ignore[invalid-argument-type]  # duck-typed runs
+    assert (frame["lacks"] == 0).all()
+    assert frame["no_cpi"].isna().all()
 
 
 def test_breakeven_of_no_months_is_none() -> None:

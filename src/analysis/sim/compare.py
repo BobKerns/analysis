@@ -358,10 +358,18 @@ def balance_by_month(
 ) -> pd.DataFrame:
     """One account's balance by month (or one ``lot`` of it), one column per
     scenario, over every scenario's months: zero in a scenario without it
-    (#174). Signed as ``RunConnection.account_balance`` shows it."""
+    (#174). Signed as ``RunConnection.account_balance`` shows it.
+
+    A balance that is all NaN (a CPI-constant balance from a run with no CPI
+    index) stays NaN rather than reading as zero, so callers can say why.
+    """
     columns = {
         name: (connections[name].lot_balance(account, lot, mode) if lot is not None
                else connections[name].account_balance(account, mode))
         for name in scenarios
     }
-    return pd.DataFrame(columns).fillna(0.0)
+    frame = pd.DataFrame(columns)
+    for name, column in columns.items():
+        if column.empty or column.notna().any():
+            frame[name] = frame[name].fillna(0.0)
+    return frame

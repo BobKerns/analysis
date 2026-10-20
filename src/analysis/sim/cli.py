@@ -2188,13 +2188,17 @@ def compare_command(
             _echo_frame(summary.map(_cell))
 
         balances = None
-        if account is not None:
+        if account is not None and ("account" in shown or graphed):
             balances = compare.balance_by_month(connections, scenarios, account, lot, mode)
             subject = f"{account}" + (f", lot {lot}" if lot else "")
             if balances.empty:  # a balance of zero throughout is still a balance
                 raise click.ClickException(
                     f"no {'lot ' + lot + ' of ' if lot else ''}{account} with a balance "
                     f"in {', '.join(scenarios)}")
+            if balances.isna().any().any():
+                raise click.ClickException(
+                    "a run has no 'cpi' inflation index, so no CPI-constant balance; "
+                    "pass --dollars nominal")
             if "account" in shown:
                 click.echo(f"\n{subject} at year end ({mode_label}):")
                 _echo_frame(compare.year_end_comparison(balances, baseline, variants).map(_cell))

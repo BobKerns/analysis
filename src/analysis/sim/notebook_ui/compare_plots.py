@@ -281,6 +281,8 @@ def breakeven_widget(
                     "final net worth": "${:,.0f}",
                 })
             )
+            if nw.empty:  # two empty scenarios have no months (#174)
+                return
             mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
             display(StyledMarkdown(
                 f"`{baseline}` final net worth ({mode_label}): "
