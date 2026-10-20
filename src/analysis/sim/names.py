@@ -74,17 +74,18 @@ def account_names(data_dir: Path, scenario: str) -> list[str]:
     return _column((d / "accounts.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
 
 
-def lot_names(data_dir: Path, scenario: str, account: str) -> list[str]:
+def lot_names(data_dir: Path, scenario: str, account: str, *, implicit: bool = True) -> list[str]:
     """``account``'s lots: the ones account_lots.csv names, a blank lot
-    being the default one, or just the default lot of an account with no
-    rows there. None for a name that isn't an account (a chain, say)."""
+    being the default one, or (when ``implicit``) just the default lot of an
+    account with no rows there. None for a name that isn't an account (a
+    chain, say)."""
     dirs = _lineage_dirs(data_dir, scenario)
     lots = {
         row.get("lot") or registries.DEFAULT_LOT
         for d in dirs for row in _rows(d / "account_lots.csv")
         if row.get("account_name") == account
     }
-    if not lots and account in account_names(data_dir, scenario):
+    if implicit and not lots and account in account_names(data_dir, scenario):
         lots = {registries.DEFAULT_LOT}
     return sorted(lots)
 

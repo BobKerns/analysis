@@ -202,3 +202,18 @@ def test_a_name_with_a_colon_is_not_taken_for_a_tag(
     assert "scheduled rules: " not in result.output  # nothing was asked
     assert "bucket:fixed" in names.tag_tokens(test_data_dir, "retire_alice")
 
+
+
+def test_series_rename_offers_only_series_it_can_rename(sim: Callable[..., Result]) -> None:
+    result = sim("series", "rename", "--scenario", "retire_alice", input="brokerage_growth\nbroker_growth\n")
+    assert result.exit_code == 0, result.output
+    offered = next(line for line in result.output.splitlines() if line.startswith("series: "))
+    choices = offered.removeprefix("series: ").split(", ")
+    assert "brokerage_growth" in choices
+    assert "cpi" not in choices  # in the shared aux/ folder
+    assert "stock" not in choices  # an asset class
+
+
+def test_lot_names_can_leave_out_the_implicit_default(data_dir: Path) -> None:
+    assert names.lot_names(data_dir, "retire_alice", "Income_Salary_Alice") == ["default"]
+    assert names.lot_names(data_dir, "retire_alice", "Income_Salary_Alice", implicit=False) == []
