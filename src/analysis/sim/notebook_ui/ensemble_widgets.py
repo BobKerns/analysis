@@ -41,8 +41,10 @@ from analysis.sim.notebook_ui.pickers import (
     DollarModePicker,
     LotPicker,
     LogLinearModePicker,
+    TimeRangePicker,
     find_data_dir,
     find_runs_dir,
+    run_years,
 )
 from analysis.sim.readme import description_view
 from analysis.sim.types import DollarMode, LogLinearMode
@@ -101,14 +103,16 @@ def _account(choice: object) -> str | None:
 
 def recipe_accounts(
     runs_dir: Path, recipes: list[str],
-) -> tuple[list[str], dict[str, dict[str, list[str]]]]:
+) -> tuple[list[str], dict[str, dict[str, list[str]]], list[int]]:
     """Every account any of ``recipes`` has, by name, and each recipe's own
     accounts and their lots (#170), single-lot ones included so a union
-    across recipes misses none (a Lot dropdown shows for two or more), read from one member
+    across recipes misses none (a Lot dropdown shows for two or more), and
+    every calendar year any of them runs over (#245), read from one member
     of each recipe's latest batch, since a recipe's members share their
-    accounts."""
+    accounts and dates."""
     accounts: set[str] = set()
     lots: dict[str, dict[str, list[str]]] = {}
+    years: set[int] = set()
     for recipe in recipes:
         batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
         if batch_dir is None:
@@ -123,9 +127,10 @@ def recipe_accounts(
         try:
             accounts.update(con.account_kinds().index)
             lots[recipe] = con.lots_by_account(single=True)
+            years.update(run_years(con))
         finally:
             con.close()
-    return sorted(accounts), lots
+    return sorted(accounts), lots, sorted(years)
 
 
 def _reserve_field() -> widgets.Text:
@@ -141,12 +146,13 @@ def _reserve_field() -> widgets.Text:
 
 
 class EnsembleControls:
-    """Scale, dollars, account (and its lots) and reserve: the controls the
-    ensemble widgets draw by (#171). Build one and hand it to each widget
-    as ``controls=``, and one change redraws them all; a widget given none
-    builds its own.
+    """Scale, dollars, account (and its lots), reserve and the years shown
+    (#245): the controls the ensemble widgets draw by (#171). Build one and
+    hand it to each widget as ``controls=``, and one change redraws them
+    all; a widget given none builds its own.
 
     The account list is every account any recipe under ``runs_dir`` has,
+    and the Years slider spans every year any of them runs over, both
     fixed when built, like the widgets' recipe lists: one recipe may lack
     an account another has, and the widgets say so rather than draw it.
     The Lot dropdown can't be shared across both kinds of widget, since each
@@ -163,9 +169,16 @@ class EnsembleControls:
                  dollar_mode: DollarMode = DollarMode.CPI_CONSTANT,
                  log_linear_mode: LogLinearMode = LogLinearMode.LINEAR,
                  log_linear_picker: LogLinearModePicker | None = None,
-                 dollar_picker: DollarModePicker | None = None):
+                 dollar_picker: DollarModePicker | None = None,
+                 time_range: TimeRangePicker | None = None):
         resolved = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-        accounts, self._recipe_lots = recipe_accounts(resolved, list_ensemble_recipes(resolved))
+        accounts, self._recipe_lots, years = recipe_accounts(
+            resolved, list_ensemble_recipes(resolved),
+        )
+        # Spanned here, not as each widget draws: the span would otherwise
+        # move the slider mid-draw, and that redraws every widget.
+        self.time_range = time_range or TimeRangePicker()
+        self.time_range.cover(years)
         self.log_linear_picker = log_linear_picker or LogLinearModePicker(log_linear_mode)
         self.dollar_picker = dollar_picker or DollarModePicker(dollar_mode)
         self.account_picker = AccountDropdown(
@@ -205,7 +218,8 @@ class EnsembleControls:
 
     def observe_all(self, redraw: Callable[..., None]) -> None:
         """Call ``redraw`` whenever any control changes."""
-        for picker in (self.log_linear_picker, self.dollar_picker, self.reserve_field):
+        for picker in (self.log_linear_picker, self.dollar_picker, self.reserve_field,
+                       self.time_range):
             picker.observe(redraw, names="value")
         self.account_picker.observe(redraw, names="selection")
 
@@ -221,8 +235,8 @@ class ControlsRow(widgets.HBox):
         super().__init__([
             controls.log_linear_picker, controls.dollar_picker,
             widgets.VBox([controls.account_picker, lot_picker]),
-            controls.reserve_field,
-        ])
+            controls.reserve_field, controls.time_range,
+        ], layout=widgets.Layout(flex_flow="row wrap", align_items="center"))
 
 
 class LoadingIndicator(widgets.HBox):
@@ -266,6 +280,31 @@ class LoadingIndicator(widgets.HBox):
 
     def finish(self) -> None:
         self.layout.display = "none"
+
+
+class _MemberFrames:
+    """The members' balances a widget has read, by batch, account, dollars
+    and lot (#245): a change that needs no new data, such as the years
+    shown, redraws without reading every member again. Holds the last few;
+    a new run of a recipe is a new batch, so it is read afresh."""
+
+    def __init__(self, size: int = 8) -> None:
+        self._size = size
+        self._frames: dict[tuple[Any, ...], pd.DataFrame] = {}
+
+    def read(
+        self, batch_dir: Path, connections: dict[str, RunConnection],
+        account: str | None, mode: DollarMode, lot: str | None,
+        on_member: Callable[[], None] | None = None,
+    ) -> pd.DataFrame:
+        """``members_balance_by_month``, read once per batch and choice."""
+        key = (batch_dir, account, mode, lot)
+        if key not in self._frames:
+            frame = members_balance_by_month(connections, account, mode, lot, on_member)
+            if len(self._frames) >= self._size:
+                del self._frames[next(iter(self._frames))]
+            self._frames[key] = frame
+        return self._frames[key]
 
 
 def _subject(account: str | None, lot: str | None) -> str:
@@ -345,8 +384,10 @@ def ensemble_widget(*_,
     dollar_picker = controls.dollar_picker
     reserve_field = controls.reserve_field
     lot_picker = controls.recipe_lot_picker
+    time_range = controls.time_range
     loading = LoadingIndicator()
     out = widgets.Output()
+    member_frames = _MemberFrames()
 
     def _redraw(*_: object) -> None:
         # Everything runs inside `out` so a load error shows as a traceback
@@ -388,8 +429,8 @@ def ensemble_widget(*_,
             # reflects its own inflation path, which can differ member to
             # member when the varying row is itself inflation/CPI-linked.
             try:
-                frame = members_balance_by_month(
-                    connections, account, mode, lot,
+                frame = member_frames.read(
+                    batch_dir, connections, account, mode, lot,
                     loading.counter(f"Loading {recipe}", count),
                 )
             except EnsembleError:
@@ -398,16 +439,21 @@ def ensemble_widget(*_,
                 display(StyledMarkdown(f"**{recipe} has no {_described(subject)}.**"))
                 return
             cpi_frame = (
-                members_balance_by_month(
-                    connections, account, DollarMode.CPI_CONSTANT, lot,
+                member_frames.read(
+                    batch_dir, connections, account, DollarMode.CPI_CONSTANT, lot,
                     loading.counter(f"{recipe} in CPI-constant dollars", count),
                 )
                 if needs_cpi else None
             )
             loading.note(f"Summarizing and drawing {recipe}")
-            monthly_summary = summary_with_percentiles(frame)
+            # Summarized over the whole run, then cut to the years shown:
+            # the share ever below the reserve looks back to the start.
+            whole_run = summary_with_percentiles(frame)
+            monthly_summary = time_range.clip(whole_run)
             heading, yearly = ensemble_summary_view(
-                pd.concat([monthly_summary, risk_summary(frame, reserve, cpi_frame)], axis=1),
+                time_range.clip(pd.concat(
+                    [whole_run, risk_summary(frame, reserve, cpi_frame)], axis=1,
+                )),
                 len(connections), failed_count,
             )
             if reserve is not None:
@@ -493,8 +539,10 @@ def ensemble_compare_widget(*_,
     dollar_picker = controls.dollar_picker
     reserve_field = controls.reserve_field
     lot_picker = controls.compare_lot_picker
+    time_range = controls.time_range
     loading = LoadingIndicator()
     out = widgets.Output()
+    member_frames = _MemberFrames()
 
     def _redraw(*_: object) -> None:
         with out:
@@ -514,10 +562,12 @@ def ensemble_compare_widget(*_,
 
     def _draw(baseline: str, variants: list[str]) -> None:
         sides: dict[str, dict[str, RunConnection]] = {}
+        batches: dict[str, Path] = {}
         try:
             for name in (baseline, *variants):
                 batch_dir = latest_ensemble_batch(runs_dir / name, mode="monte_carlo")
                 assert batch_dir is not None  # listed recipes all have a batch
+                batches[name] = batch_dir
                 sides[name] = load_ensemble(batch_dir)
             account, lot = controls.account, _lot(lot_picker)
             subject = _subject(account, lot)
@@ -535,8 +585,8 @@ def ensemble_compare_widget(*_,
             frames: dict[str, pd.DataFrame] = {}
             for name, conns in sides.items():
                 try:
-                    frames[name] = members_balance_by_month(
-                        conns, account, mode, lot,
+                    frames[name] = member_frames.read(
+                        batches[name], conns, account, mode, lot,
                         loading.counter(f"Loading {name}", len(conns)),
                     )
                 except EnsembleError:
@@ -547,8 +597,8 @@ def ensemble_compare_widget(*_,
             cpi_frames = {
                 name: (
                     frame if not needs_cpi
-                    else members_balance_by_month(
-                        sides[name], account, DollarMode.CPI_CONSTANT, lot,
+                    else member_frames.read(
+                        batches[name], sides[name], account, DollarMode.CPI_CONSTANT, lot,
                         loading.counter(f"{name} in CPI-constant dollars", len(sides[name])),
                     )
                 )
@@ -592,11 +642,11 @@ def ensemble_compare_widget(*_,
                 cpi_pair = (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None
                 outputs.append(_png(ensemble_compare_figure(
                     baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
-                    reserve, cpi_pair, log_scale,
+                    reserve, cpi_pair, log_scale, clip=time_range.clip,
                 )))
-                table = year_end_values(comparison_deltas(
+                table = year_end_values(time_range.clip(comparison_deltas(
                     frames[baseline], frames[variant], pairs, reserve, cpi_pair,
-                ))
+                )))
                 table.index.name = "year"
                 outputs.append(table.style.format(_share_format(table.columns)))
             # A one-sided account's own spread, where no delta shows it:
@@ -606,14 +656,17 @@ def ensemble_compare_widget(*_,
             if not compared:
                 for name, frame in frames.items():
                     outputs.append(_png(ensemble_fan_figure(
-                        summary_with_percentiles(frame),
+                        time_range.clip(summary_with_percentiles(frame)),
                         f"{subject} fan chart ({mode_label}) ({name})",
                         reserve=reserve if mode == DollarMode.CPI_CONSTANT else None,
-                        log_scale=log_scale and bool((frame > 0).all().all()), height=4,
+                        log_scale=log_scale and bool((time_range.clip(frame) > 0).all().all()),
+                        height=4,
                     )))
             tails = [risk_summary(frame, reserve, cpi_frames.get(name))
                      for name, frame in frames.items()]
-            tail_table = year_end_values(pd.concat(tails, axis=1, keys=list(frames)))
+            tail_table = year_end_values(
+                time_range.clip(pd.concat(tails, axis=1, keys=list(frames))),
+            )
             tail_table.index.name = "year"
             outputs.append(StyledMarkdown("### Tail and reserve, by recipe"))
             outputs.append(tail_table.style.format(_share_format(tail_table.columns)))

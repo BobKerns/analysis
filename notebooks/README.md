@@ -89,3 +89,5 @@ function should not.
   the widget (not when redrawing: a widget left over from the previous scenario still
   redraws), cut what you draw with `time_range.clip(frame)`, and observe its `value`.
   Clip only what is drawn: results such as a break-even month stay whole-run.
+  The ensemble widgets take it from `EnsembleControls.time_range`, spanned when the
+  controls are built.

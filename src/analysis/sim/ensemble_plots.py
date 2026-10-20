@@ -9,6 +9,7 @@ backend in a terminal."""
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from typing import Any
 
 import matplotlib
@@ -175,14 +176,21 @@ def ensemble_compare_figure(
     reserve: float | None = None,
     cpi_frames: tuple[pd.DataFrame, pd.DataFrame] | None = None,
     log_scale: bool = False,
+    clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> Figure:
     """The comparison's panels, top to bottom (#163): each percentile
     breakpoint's delta; the fan of paired per-future deltas when the
     recipes pair; the delta in each tail mean (CVaR); and, given a
     ``reserve``, the change in the shares below it (see
     ``comparison_deltas`` for ``cpi_frames``). ``log_scale`` puts the dollar
-    panels on a symmetric log scale (#171), since deltas run both ways."""
-    deltas = comparison_deltas(baseline_frame, variant_frame, reserve=reserve, cpi_frames=cpi_frames)
+    panels on a symmetric log scale (#171), since deltas run both ways.
+    ``clip`` cuts what is drawn to the months shown (#245), after the deltas
+    are taken over the whole run: the share ever below the reserve looks
+    back to the start."""
+    clip = clip or (lambda frame: frame)
+    deltas = clip(comparison_deltas(
+        baseline_frame, variant_frame, reserve=reserve, cpi_frames=cpi_frames,
+    ))
     panels = 2 + bool(pairs) + (reserve is not None)
     fig = Figure(figsize=(10, 4 * panels))
     axes = list(fig.subplots(panels, 1, sharex=True))
@@ -192,7 +200,9 @@ def ensemble_compare_figure(
         log_scale=log_scale,
     )
     if pairs:
-        paired = summary_with_percentiles(paired_deltas(baseline_frame, variant_frame, pairs))
+        paired = clip(summary_with_percentiles(
+            paired_deltas(baseline_frame, variant_frame, pairs),
+        ))
         if log_scale:
             _symlog(axes[1], paired)
         ensemble_fan_chart(paired, ax=axes[1])
