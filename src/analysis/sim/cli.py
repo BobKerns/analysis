@@ -6561,7 +6561,7 @@ def report_tax_command(
     """Show federal and state tax by year, and the income each was figured on.
 
     For federal, and for state when the run computes it: AGI, the larger of
-    the standard and itemized deduction, the taxable income the brackets
+    the standard and itemized deduction, the taxable income (income) the brackets
     taxed, and the tax. effective_rate is total tax over federal AGI. Tax
     belongs to the year the income was earned in; its balance due or refund
     settles the April after (see --reconciliation).

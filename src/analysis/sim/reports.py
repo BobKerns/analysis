@@ -302,16 +302,16 @@ def _tax_buckets(rc: RunConnection, buckets: list[str]) -> pd.DataFrame:
 def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.DataFrame:
     """Federal and state tax by year, with the income each was figured on.
 
-    For each of federal and state: ``agi``, the larger of the standard and
-    itemized ``deduction``, the ``taxable_income`` its brackets taxed, and the
-    ``tax``. Federal AGI is Form 1040 line 11, except that a carried loss
-    comes off taxable income instead and there are no adjustments such as half
-    of self-employment tax; state AGI leaves out Social Security. The state
-    columns appear only when the run computes state tax. ``effective_rate``
-    is total tax over federal AGI (``fed_agi``). Liability belongs to the tax year the
-    income was earned in, whatever year it is paid or refunded. CPI-constant
-    dollars use each year's year-end CPI, as the notebook does; the rate is
-    the same in either.
+    For each of federal (``fed_``) and state (``state_``): ``agi``, the
+    larger of the standard and itemized ``deduction``, ``income`` (the taxable
+    income its brackets taxed), and ``tax``. Federal AGI is Form 1040 line
+    11, except that a carried loss comes off taxable income instead and there
+    are no adjustments such as half of self-employment tax; state AGI leaves
+    out Social Security. The state columns appear only when the run computes
+    state tax. ``effective_rate`` is total tax over federal AGI. Liability
+    belongs to the tax year the income was earned in, whatever year it is
+    paid or refunded. CPI-constant dollars use each year's year-end CPI, as
+    the notebook does; the rate is the same in either.
     """
     frame = _tax_buckets(rc, list(_TAX_COLUMNS)).rename(columns=_TAX_COLUMNS)
     if frame["state_tax"].isna().all():
@@ -343,7 +343,7 @@ _TAX_COLUMNS = {
     for bucket, column in (
         ("adjusted_gross_income", "agi"),
         ("deduction_used", "deduction"),
-        ("taxable_income", "taxable_income"),
+        ("taxable_income", "income"),
         ("tax_liability", "tax"),
     )
 }
