@@ -2248,6 +2248,11 @@ def _ask_again_for_mistyped(ctx: click.Context, params: dict[str, Any]) -> dict[
     for param in checked:
         if param.name in completion.SCENARIO_PARAMS:
             fix(param)
+    if any(p.name in completion.SCENARIO_PARAMS and p.type is completion.ENSEMBLE
+           and params.get(p.name) is None for p in ctx.command.params):
+        # The ensemble is asked for later, not the current scenario, so
+        # whose names to check against isn't known yet.
+        return params
     if "tag_tokens" in params:  # a tag command's NAME may be its first tag
         first = next(p for p in ctx.command.params if isinstance(p, click.Argument))
         if first.name and first.name != "tag_tokens":

@@ -261,6 +261,15 @@ def test_a_run_files_names_are_not_checked_against_the_scenario(
     assert "unknown account" not in result.output
 
 
+@pytest.mark.usefixtures("terminal")
+def test_an_ensemble_reports_names_wait_for_the_ensemble(sim: Callable[..., Result]) -> None:
+    # Not checked against the current scenario: the ensemble asked for may have it.
+    assert sim("switch", "retire_alice").exit_code == 0
+    for command in (("summary",), ("compare",), ("sensitivity",)):
+        result = sim("ensemble", *command, "--account", "Asset_Only_In_The_Ensemble")
+        assert "unknown account" not in result.output, command
+
+
 def test_a_compared_variants_names_count(test_data_dir: Path) -> None:
     ctx = click.Context(sim_group_command.commands["ensemble"].commands["compare"])  # ty: ignore[unresolved-attribute] -- a Group
     ctx.params = {"baseline": "base", "variant": "retire_alice", "data_dir": str(test_data_dir)}

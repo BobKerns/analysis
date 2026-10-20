@@ -198,6 +198,8 @@ RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
 CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
 CORRELATE_WITH = NameType(_in_scenario(_correlate_with), "calendar row or lifespan",
                           plural="calendar rows and lifespans")
+
+
 def _tag_patterns(data_dir: Path, scenario: str) -> list[str]:
     """``role:*`` for each role in use: a pattern `tags items` takes."""
     return sorted({f"{t.partition(':')[0]}:*" for t in names.tag_tokens(data_dir, scenario)})
