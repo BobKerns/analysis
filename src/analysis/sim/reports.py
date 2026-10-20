@@ -317,11 +317,12 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     # A scenario may compute federal tax and not state tax: a blank is "not
     # computed", so the total is blank only when neither is.
     frame["total_tax"] = frame[["federal_tax", "state_tax"]].sum(axis=1, min_count=1)
-    # A run with a business (#231) also shows its federal Schedule C result,
-    # the expenses a hobby couldn't deduct, and the loss carried forward.
-    if (rc.items("account")["subkind"] == registries.BUSINESS_SUBKIND).any():
-        business = _tax_buckets(rc, list(_BUSINESS_COLUMNS)).rename(columns=_BUSINESS_COLUMNS)
-        frame = frame.join(business.reindex(frame.index))
+    # A business (#231) adds its federal Schedule C result, the expenses a
+    # hobby couldn't deduct, and the loss carried forward: each only when
+    # some year has one, since most scenarios have none of them.
+    business = _tax_buckets(rc, list(_BUSINESS_COLUMNS)).rename(columns=_BUSINESS_COLUMNS)
+    business = business.reindex(frame.index)
+    frame = frame.join(business.loc[:, business.fillna(0).ne(0).any()])
     frame.index.name = "year"
     frame = _cpi(rc, frame, mode, annual=True)
     agi = frame["agi"].where(frame["agi"] > 0)
