@@ -608,6 +608,7 @@ def ensemble_compare_widget(*_,
                     outputs.append(_png(ensemble_fan_figure(
                         summary_with_percentiles(frame),
                         f"{subject} fan chart ({mode_label}) ({name})",
+                        reserve=reserve if mode == DollarMode.CPI_CONSTANT else None,
                         log_scale=log_scale and bool((frame > 0).all().all()), height=4,
                     )))
             tails = [risk_summary(frame, reserve, cpi_frames.get(name))

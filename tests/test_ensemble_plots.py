@@ -135,3 +135,15 @@ def test_figure_bytes_renders_png_or_svg() -> None:
     assert b"<svg" in figure_bytes(fig, "svg")
     small, large = figure_bytes(fig, dpi=50), figure_bytes(fig, dpi=200)
     assert int.from_bytes(small[16:20]) < int.from_bytes(large[16:20])
+
+
+def test_importing_the_charts_leaves_pyplot_unloaded() -> None:
+    """The CLI draws with these in a terminal: importing pyplot would pick a
+    GUI backend there."""
+    import subprocess
+    import sys
+
+    code = ("import sys, analysis.sim.ensemble_plots; "
+            "print('matplotlib.pyplot' in sys.modules)")
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "False"

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.ticker import FuncFormatter
@@ -51,6 +50,17 @@ def include_zero(ax: Axes, *, margin: float = 0.05) -> None:
     ax.set_ylim(lo, hi)
 
 
+def _new_axes() -> Axes:
+    """Axes on a new pyplot figure, so a notebook shows it inline. pyplot is
+    imported only here: importing it picks a GUI backend, which the CLI's
+    charts (``ensemble_plots``, which takes ``FRAME_ALPHA`` from here) must
+    not do."""
+    import matplotlib.pyplot as plt
+
+    _, ax = plt.subplots(figsize=(10, 5))
+    return ax
+
+
 def _finish(ax: Axes, title: str, ylabel: str) -> None:
     ax.set_title(title)
     ax.set_ylabel(ylabel)
@@ -68,7 +78,7 @@ def plot_timeseries(
 ) -> Axes:
     """Line chart of one or more named series sharing a datetime index."""
     if ax is None:
-        _, ax = plt.subplots(figsize=(10, 5))
+        ax = _new_axes()
     for label, s in series.items():
         if s.notna().any():
             ax.plot(s.index, s, label=label)
@@ -91,7 +101,7 @@ def plot_stacked_bar(
 ) -> Axes:
     """Stacked bar chart of ``columns`` from a year-indexed DataFrame."""
     if ax is None:
-        _, ax = plt.subplots(figsize=(10, 5))
+        ax = _new_axes()
     df[list(columns)].plot(kind="bar", stacked=True, ax=ax, color=list(colors))
     _finish(ax, title, ylabel)
     ax.set_xlabel(xlabel)
@@ -103,7 +113,7 @@ def plot_stacked_bar(
 def plot_income_expense_net(net: pd.DataFrame, *, title: str, ax: Axes | None = None) -> Axes:
     """Income (positive bars), expenses (negative bars), and net (line) by year."""
     if ax is None:
-        _, ax = plt.subplots(figsize=(10, 5))
+        ax = _new_axes()
     years = net.index.astype(str)
     ax.bar(years, net["income"], label="income", color="#2ca02c", alpha=0.7)
     ax.bar(years, -net["expenses"], label="expenses", color="#d62728", alpha=0.7)
@@ -113,5 +123,5 @@ def plot_income_expense_net(net: pd.DataFrame, *, title: str, ax: Axes | None = 
     ax.set_xlabel("year")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend(framealpha=FRAME_ALPHA)
-    plt.setp(ax.get_xticklabels(), rotation=90)
+    ax.tick_params(axis="x", labelrotation=90)
     return ax
