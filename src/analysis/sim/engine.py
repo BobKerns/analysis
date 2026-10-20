@@ -2434,6 +2434,9 @@ def _apply_tax_accumulator(
       is used. "state_deductions" falls back to "federal_deductions" when the
       scenario has no "state_deductions" rows at all.
     - ss_threshold_aux: defaults to "ss_taxation_thresholds" (federal only)
+    - nol_limit_percent: how much of a year's taxable income a carried net
+      operating loss may offset (#231); defaults to 80 (federal, IRC §172) or
+      100 (state; California, for one, has no 80% limit)
 
     ``post_transfer=False`` (used for the trailing-year tax tail; see
     ``run_scenario``) computes and writes ``tax_year_summary`` as normal but
@@ -2509,9 +2512,11 @@ def _apply_tax_accumulator(
             )
         return int(row["amount"])
 
-    ordinary_income, ss_income = _tax_year_income_buckets(con, tax_year=tax_year)
+    other_ordinary, ss_income = _tax_year_income_buckets(con, tax_year=tax_year)
+    business = _business_result(con, tax_year=tax_year)
     capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit)
-    ordinary_income += capital.stcg - capital.loss_deduction
+    # A Schedule C loss offsets the year's other income (#231).
+    ordinary_income = other_ordinary + business.net + capital.stcg - capital.loss_deduction
     ltcg_income = capital.ltcg
 
     taxable_ss = 0
@@ -2553,7 +2558,24 @@ def _apply_tax_accumulator(
     itemized_deduction = int(itemized_rows[0]["amount"]) if itemized_rows else 0
     deduction = max(standard_deduction, itemized_deduction)
 
-    taxable_income = max(0, ordinary_income + ltcg_income + taxable_ss - deduction)
+    income_before_nol = ordinary_income + ltcg_income + taxable_ss - deduction
+    # A net operating loss carried in offsets part of this year's taxable
+    # income (#231). It doesn't lower AGI first, as the NOL deduction really
+    # does, so taxable Social Security can come out a little high in a year
+    # that uses one.
+    nol_limit_percent = int(params.get("nol_limit_percent", 80 if scope == "federal" else 100))
+    if not 0 <= nol_limit_percent <= 100:
+        raise EngineError(
+            f"tax_accumulator nol_limit_percent must be 0 to 100, got {nol_limit_percent}"
+        )
+    nol_in = _summary_amount(con, tax_year - 1, f"{scope}_nol_carryover")
+    nol_used = min(nol_in, max(0, income_before_nol) * nol_limit_percent // 100)
+    taxable_income = max(0, income_before_nol - nol_used)
+    # The loss that carries: the business loss less the income it absorbed.
+    # The deduction never adds to it (a nonbusiness deduction offsets only
+    # nonbusiness income, §172(d)(4)), nor does the capital-loss deduction.
+    nonbusiness_income = other_ordinary + capital.stcg + ltcg_income + taxable_ss
+    nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
 
     bracket_rows = _active_aux_rows(aux, bracket_aux, bracket_series, as_of)
     bracket_rows = [r for r in bracket_rows if r.get("filing_status") == filing_status]
@@ -2618,6 +2640,10 @@ def _apply_tax_accumulator(
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     summary_rows = {
         f"{scope}_ordinary_income": ordinary_income,
+        f"{scope}_schedule_c_net": business.net,
+        f"{scope}_hobby_expense_disallowed": business.disallowed,
+        f"{scope}_nol_used": nol_used,
+        f"{scope}_nol_carryover": nol_in - nol_used + nol_new,
         f"{scope}_ltcg_income": ltcg_income,
         f"{scope}_capital_loss_deduction": capital.loss_deduction,
         f"{scope}_capital_loss_carryover": capital.carryover_st + capital.carryover_lt,
@@ -2660,6 +2686,56 @@ def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
         - by_char.get("tax_deferred_in", 0)
     )
     return ordinary, by_char.get("ss_benefit", 0)
+
+
+class BusinessResult(NamedTuple):
+    """One tax year's Schedule C result (#231): receipts less deductible
+    expenses, a loss negative, and the expenses not deducted because the
+    business is a hobby."""
+    net: int
+    disallowed: int
+
+
+def _business_result(con, *, tax_year: int) -> BusinessResult:
+    """``tax_year``'s ``business_income`` legs into, less its
+    ``business_expense`` legs out of, ``business`` accounts. A business whose
+    account's meta_json says ``"hobby": true`` isn't engaged in for profit
+    (IRC §183): its receipts are still income, but none of its expenses are
+    deductible."""
+    net = disallowed = 0
+    for event_id, character, amount, from_name, from_subkind, from_meta, to_name, to_subkind in con.execute(
+        "SELECT te.id, te.tax_character, te.amount, fa.name, fa.subkind, fa.meta_json, "
+        "       ta.name, ta.subkind "
+        "FROM transfer_event te "
+        "JOIN account fa ON fa.id = te.from_account JOIN account ta ON ta.id = te.to_account "
+        "WHERE te.tax_character IN (?, ?) "
+        "  AND COALESCE(te.tax_year, CAST(substr(te.date, 1, 4) AS INTEGER)) = ?",
+        (registries.BUSINESS_INCOME, registries.BUSINESS_EXPENSE, tax_year),
+    ):
+        income = character == registries.BUSINESS_INCOME
+        name, subkind = (to_name, to_subkind) if income else (from_name, from_subkind)
+        if subkind != registries.BUSINESS_SUBKIND:
+            # The loader checks the rows it can; this catches the rest.
+            side = "into" if income else "out of"
+            raise EngineError(
+                f"transfer_event id={event_id}: {character} must be paid {side} a "
+                f"{registries.BUSINESS_SUBKIND} account, not '{name}'"
+            )
+        if income:
+            net += int(amount)
+        elif json.loads(from_meta or "{}").get("hobby") is True:
+            disallowed += int(amount)
+        else:
+            net -= int(amount)
+    return BusinessResult(net, disallowed)
+
+
+def _summary_amount(con, year: int, bucket: str) -> int:
+    """A ``tax_year_summary`` amount, 0 if that year wasn't computed."""
+    row = con.execute(
+        "SELECT amount FROM tax_year_summary WHERE year = ? AND bucket = ?", (year, bucket),
+    ).fetchone()
+    return int(row[0]) if row else 0
 
 
 class CapitalGains(NamedTuple):

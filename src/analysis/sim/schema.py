@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 41
+SCHEMA_VERSION = 42
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -64,14 +64,14 @@ CREATE TABLE account (
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
         (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
-            'retirement','hsa','real_estate','vehicle','other_asset'))
+            'retirement','hsa','real_estate','vehicle','other_asset','business'))
         OR (kind = 'liability' AND subkind IN ('mortgage','heloc','credit_card',
             'other_liability'))
         OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
             'dividend','capital_gain','rental','other_income'))
         OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
             'interest_expense','taxes_federal','taxes_state','taxes_property',
-            'other_expense'))
+            'business','other_expense'))
     )
 );
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
@@ -267,7 +267,8 @@ CREATE TABLE scheduled_transaction (
                                  'tax_deferred_in','tax_deferred_out',
                                  'return_of_capital','property_tax','none',
                                  'excluded_gain','home_sale',
-                                 'capital_improvement','roth_nonqualified')),
+                                 'capital_improvement','roth_nonqualified',
+                                 'business_income','business_expense')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
     priority                INTEGER NOT NULL DEFAULT 500,
@@ -361,7 +362,7 @@ CREATE TABLE year_to_date (
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
                          'excluded_gain','home_sale','capital_improvement',
-                         'roth_nonqualified')),
+                         'roth_nonqualified','business_income','business_expense')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)

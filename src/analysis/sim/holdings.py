@@ -14,6 +14,7 @@ import pandas as pd
 
 from analysis.sim.connection import RunConnection, Connection
 from analysis.frames import named_rows
+from analysis.sim import registries
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 if TYPE_CHECKING:
@@ -134,7 +135,7 @@ def symbol_holders(
 def _symbol_holders(frame: pd.DataFrame) -> pd.DataFrame:
     """Lots whose symbol the symbol views list: those in investment accounts and
     cash lots (by convention, symbol ``CASH``)."""
-    return frame[frame["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | {"cash"})]
+    return frame[frame["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | registries.CASH_SUBKINDS)]
 
 
 def holding_accounts(source: Connection) -> list[str]:

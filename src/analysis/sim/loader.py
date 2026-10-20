@@ -963,6 +963,9 @@ def load_scenario(
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
     _validate_retirement_owners(accounts, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
+    _validate_business(
+        accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
+    )
 
     for account, replacing, replaced in account_clashes:
         if any(f"({account})" in issue or f"({account} /" in issue for issue in issues):
@@ -2373,6 +2376,79 @@ def _validate_rmd_rules(
                 issues.append(
                     f"{where}: chain '{source}' draws from {', '.join(outside)}, "
                     f"which are not lots of the subject account '{subject}'"
+                )
+
+
+def _validate_business(
+    accounts: list[dict[str, str]],
+    scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
+    ytd_rows: list[dict[str, str]],
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
+    leaves: _LeafIndex,
+    issues: list[str],
+) -> None:
+    """A sole proprietor's business (#231): ``business_income`` is paid into a
+    ``business`` account and ``business_expense`` out of one, each named
+    directly, so the tax accumulator knows whose Schedule C it is and whether
+    it's a hobby. Runs after the references are resolved to leaf chains."""
+    business = frozenset(
+        a.get("name", "") for a in accounts if a.get("subkind") == registries.BUSINESS_SUBKIND
+    )
+    for where, row in _located(accounts, "accounts.csv"):
+        try:
+            meta = json.loads(row.get("meta_json") or "{}")
+        except json.JSONDecodeError:
+            meta = None
+        if not isinstance(meta, dict):
+            # The tax accumulator reads a business account's hobby flag.
+            if row.get("name") in business:
+                issues.append(
+                    f"{where} ({row.get('name')}): meta_json must be a JSON object"
+                )
+            continue
+        if "hobby" not in meta:
+            continue
+        if row.get("name") not in business:
+            issues.append(
+                f"{where} ({row.get('name')}): meta_json hobby belongs on a "
+                f"{registries.BUSINESS_SUBKIND} account"
+            )
+        elif not isinstance(meta["hobby"], bool):
+            issues.append(f"{where} ({row.get('name')}): meta_json hobby must be true or false")
+
+    def check(where: str, character: str, from_ref: str, to_ref: str) -> None:
+        if character not in registries.BUSINESS_TAX_CHARACTERS:
+            return
+        income = character == registries.BUSINESS_INCOME
+        ref, side = (to_ref, "to") if income else (from_ref, "from")
+        account = leaves.account_of.get(ref)
+        if account not in business:
+            issues.append(
+                f"{where}: tax_character {character} must be paid "
+                f"{'into' if income else 'out of'} a {registries.BUSINESS_SUBKIND} "
+                f"account, named directly ({side}: '{account or ref}'); give the "
+                "account a refill chain to fund it from household cash"
+            )
+
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        check(f"{where} ({row.get('name', '')})", row.get("tax_character", ""),
+              row.get("from_account", ""), row.get("to_account", ""))
+    for where, row in _located(ytd_rows, "year_to_date.csv"):
+        check(f"{where} ({row.get('name', '')})", row.get("tax_character", ""),
+              row.get("from_account", ""), row.get("to_account", ""))
+    for where, row in _located(calendar_rows, "calendar.csv"):
+        character = row.get("tax_character", "")
+        if row.get("kind") == "one_off_transfer":
+            check(where, character, row.get("account_1", ""), row.get("account_2", ""))
+        elif character in registries.BUSINESS_TAX_CHARACTERS:
+            issues.append(f"{where}: tax_character {character} is only for one_off_transfer")
+    for name, (role, rows) in chains.items():
+        for where, row in _located(rows, _chain_label(role, name)):
+            if row.get("tax_character") in registries.BUSINESS_TAX_CHARACTERS:
+                issues.append(
+                    f"{where}: tax_character {row.get('tax_character')} isn't for a chain "
+                    f"step; pay the {registries.BUSINESS_SUBKIND} account directly"
                 )
 
 
