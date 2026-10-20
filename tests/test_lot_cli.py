@@ -499,3 +499,82 @@ def test_overflow_takes_a_destination_chain_not_a_source(lot: Callable[..., Resu
                  "--overflow-chain", "asset_checking_liquidity")
     assert result.exit_code != 0
     assert "overflow_chain 'asset_checking_liquidity' is a source chain" in result.output
+
+
+# Asset_Savings is a cash account with no growth series, so no tax character.
+SAVINGS = "Asset_Savings"
+
+
+def _account_row(scenarios_dir: Path, scenario: str, name: str) -> list[dict[str, str]]:
+    frame = pd.read_csv(scenarios_dir / scenario / "accounts.csv", dtype=str, keep_default_na=False)
+    return frame[frame["name"] == name].to_dict("records")
+
+
+def test_guided_add_of_an_accounts_first_growing_lot_asks_its_tax_character(
+    lot: Callable[..., Result], test_scenarios_dir: Path, check: Callable[[str], None],
+) -> None:
+    """#233: without one, the loader refuses the lot; cash usually grows as
+    ordinary interest, the default offered."""
+    # account, lot, symbol, acquired, quantity, series, tax character, balance, basis, manage?, write
+    result = lot("add", answers=[SAVINGS, "cd", "", "", "", "brokerage_growth", "", "1000", "", "n", "write"])
+
+    assert result.exit_code == 0, result.output
+    assert "tax character of the account's growth [ordinary]" in result.output
+    assert "--series brokerage_growth --tax-character ordinary" in result.output
+    [account] = _account_row(test_scenarios_dir, "retire_alice", SAVINGS)
+    assert account["tax_character"] == "ordinary"
+    assert f"set the tax_character of '{SAVINGS}' to 'ordinary'" in result.output
+    check("retire_alice")
+
+
+def test_a_lot_that_does_not_grow_is_not_asked_a_tax_character(lot: Callable[..., Result]) -> None:
+    # account, lot, symbol, acquired, quantity, series, balance, basis, manage?, write
+    result = lot("add", answers=[SAVINGS, "cd", "", "", "", "", "1000", "", "n", "write"])
+
+    assert result.exit_code == 0, result.output
+    assert "tax character" not in result.output
+
+
+def test_add_from_options_gives_an_accounts_first_growing_lot_the_usual_character(
+    lot: Callable[..., Result], test_scenarios_dir: Path, check: Callable[[str], None],
+) -> None:
+    result = lot("add", SAVINGS, "cd", "--series", "brokerage_growth", "--opening-balance", "1000")
+
+    assert result.exit_code == 0, result.output
+    assert f"set the tax_character of '{SAVINGS}' to 'ordinary', so the lot grows" in result.output
+    [account] = _account_row(test_scenarios_dir, "retire_alice", SAVINGS)
+    assert account["tax_character"] == "ordinary"
+    check("retire_alice")
+
+
+@pytest.mark.usefixtures("test_child_scenario")
+def test_an_inherited_accounts_tax_character_is_set_by_an_override(
+    lot: Callable[..., Result], test_scenarios_dir: Path, check: Callable[[str], None],
+) -> None:
+    result = lot("add", SAVINGS, "cd", "--series", "brokerage_growth", "--tax-character", "gains",
+                 "--opening-balance", "1000", scenario="child")
+
+    assert result.exit_code == 0, result.output
+    [override] = _account_row(test_scenarios_dir, "child", SAVINGS)
+    assert (override["subkind"], override["tax_character"]) == ("cash", "gains")
+    [parent] = _account_row(test_scenarios_dir, "retire_alice", SAVINGS)
+    assert parent["tax_character"] == ""
+    check("child")
+
+
+@pytest.mark.parametrize(("account", "series", "message"), [
+    (BROKERAGE, "brokerage_growth", "already has one"),
+    (SAVINGS, "", "doesn't grow with this lot"),
+])
+def test_add_refuses_a_tax_character_it_would_not_use(
+    lot: Callable[..., Result], values: Callable[..., pd.DataFrame],
+    account: str, series: str, message: str,
+) -> None:
+    before = values()
+
+    result = lot("add", account, "cd", "--series", series, "--tax-character", "tax_free",
+                 "--opening-balance", "1000")
+
+    assert result.exit_code != 0
+    assert message in result.output
+    pd.testing.assert_frame_equal(values(), before)

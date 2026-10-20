@@ -96,6 +96,7 @@ def test_scenario_rename_moves_it_and_repoints_everything(
     assert _column(test_scenarios_dir / "mixed" / "scenario.csv", "description") == [
         "Hand-written, naming retire_alice"]
     assert (test_data_dir / ".current_scenario").read_text() == "retire_early\n"
+    assert "Current scenario is now retire_early (was retire_alice)" in result.stderr
     assert (test_data_dir / "README.md").read_text() == (
         "Start with [Alice](scenarios/retire_early/README.md).\n")
     assert "`retire_early` derives from this scenario" in (test_scenarios_dir / "base" / "README.md").read_text()
