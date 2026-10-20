@@ -246,13 +246,17 @@ def latest_ensemble_batch(recipe_dir: Path, mode: str | None = None) -> Path | N
     recipe_dir = Path(recipe_dir)
     if not recipe_dir.is_dir():
         return None
-    batches = sorted(
-        p for p in recipe_dir.iterdir()
-        if p.is_dir() and (
-            any(p.glob("member_*.sqlite3")) or (p / BATCH_MANIFEST_FILENAME).is_file()
-        ) and (mode is None or batch_mode(p) == mode)
-    )
+    batches = sorted(p for p in recipe_dir.iterdir() if is_ensemble_batch(p, mode))
     return batches[-1] if batches else None
+
+
+def is_ensemble_batch(batch_dir: Path, mode: str | None = None) -> bool:
+    """Whether ``batch_dir`` is a run batch (of ``mode``, any when ``None``):
+    a folder holding a member run file or a batch manifest."""
+    return batch_dir.is_dir() and (
+        any(batch_dir.glob("member_*.sqlite3"))
+        or (batch_dir / BATCH_MANIFEST_FILENAME).is_file()
+    ) and (mode is None or batch_mode(batch_dir) == mode)
 
 
 def _latest_ensemble_member_zero(runs_dir: Path, name: str) -> Path | None:

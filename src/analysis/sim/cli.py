@@ -90,6 +90,7 @@ from analysis.sim.loader import (
     batch_mode,
     calendar_row_key,
     current_scenario_path,
+    is_ensemble_batch,
     list_scenario_names,
     load_scenario,
     open_intent_db,
@@ -1116,8 +1117,7 @@ def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble"
     ``exclude``."""
     def has_runs(recipe: Path) -> bool:
         if batch:
-            batch_dir = recipe / batch
-            return batch_dir.is_dir() and (mode is None or batch_mode(batch_dir) == mode)
+            return is_ensemble_batch(recipe / batch, mode)
         return latest_ensemble_batch(recipe, mode=mode) is not None
 
     recipes = sorted(
