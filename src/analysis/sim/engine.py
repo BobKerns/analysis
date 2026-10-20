@@ -3186,7 +3186,8 @@ def _swap_aux_table(
 ) -> None:
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
-    ``source_series``) would.
+    ``source_series``) would. Swapping ``state_brackets`` swaps the state's
+    standard deduction with it.
 
     Lookups only move forward, so the target simply becomes a copy of the
     source -- which keeps each lookup style exact: the latest row, the
@@ -3241,6 +3242,16 @@ def _swap_aux_table(
         ],
     )
     aux[(aux_kind, series)] = kept + written
+    if aux_kind == "state_brackets":
+        # A move to another state takes its standard deduction too (#248):
+        # the new state's state_standard_deduction__<state>, or, with none,
+        # the federal fallback rather than the old state's figure.
+        deduction = registries.STATE_STANDARD_DEDUCTION
+        if aux.get((deduction, source_series)):
+            _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": deduction}, aux)
+        elif aux.pop((deduction, series), None):
+            con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
+                        (deduction, series))
 
 
 def _apply_calendar_event(

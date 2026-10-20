@@ -964,7 +964,7 @@ def load_scenario(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
-    _warn_state_standard_deduction(scheduled_rows, aux_rows, warnings)
+    _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -2641,13 +2641,15 @@ def _validate_swap_aux_table_row(
 
 def _warn_state_standard_deduction(
     scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     warnings: list[str],
 ) -> None:
     """A state tax rule with no state_standard_deduction__<state> table for
     its brackets' state uses the federal standard deduction (#248), which
     overstates most states' (California's is about a third of it), so its
-    tax comes out low."""
+    tax comes out low. A move to a state (a swap_aux_table of its
+    state_brackets) with no such table falls back the same way."""
     supplied = {(kind, series) for kind, series, *_ in aux_rows}
     states = sorted(series for kind, series in supplied
                     if kind == "state_brackets" and series is not None)
@@ -2665,6 +2667,16 @@ def _warn_state_standard_deduction(
             f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv "
             "(effective_date, filing_status, amount) with the state's own"
         )
+    for where, row in _located(calendar_rows, "calendar.csv"):
+        params = _safe_json(row.get("params_json")) or {}
+        state = params.get("source_series")
+        if (row.get("kind") == "swap_aux_table" and params.get("aux_kind") == "state_brackets"
+                and isinstance(state, str)
+                and (registries.STATE_STANDARD_DEDUCTION, state) not in supplied):
+            warnings.append(
+                f"{where}: after the move to {state}, state tax uses the federal standard "
+                f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv"
+            )
 
 
 def _validate_swap_aux_tables(
