@@ -2172,3 +2172,28 @@ def test_day_precise_dates_are_strict(
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any(f"birthdate '{bad}' is not YYYY-MM-DD" in issue for issue in ei.value.issues)
     assert any(f"acquired '{bad}' is not YYYY-MM-DD" in issue for issue in ei.value.issues)
+
+
+def test_an_account_defined_by_unrelated_scenarios_gets_a_hint(
+    derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
+    prototype_data: Path,
+) -> None:
+    """A mix-in that defines an account its parent scenario also defines
+    replaces the parent's row but adds its lots to the parent's (#233). The
+    error then names each lot's scenario and says why both apply."""
+    accounts = pd.read_csv(prototype_data / "scenarios" / "retire_alice" / "accounts.csv",
+                           dtype=str, keep_default_na=False)
+    lots_header = (prototype_data / "scenarios" / "base" / "account_lots.csv").read_text()
+    derive_scenario("side", "base", files={
+        "accounts.csv": accounts[accounts["name"] == "Asset_Brokerage_Joint"].to_csv(index=False),
+        "account_lots.csv": lots_header + "Asset_Brokerage_Joint,side_lot,,,,,,100.00,100.00,"
+                                          "100.00,,,,,,,,\n",
+    })
+    derive_scenario("both", "retire_alice:side")
+    with pytest.raises(LoadError) as raised:
+        load_test_scenario("both")
+    issues = raised.value.issues
+    assert any("set on side_lot (scenarios/side/account_lots.csv line 2), but not on "
+               "default (scenarios/retire_alice/account_lots.csv line 4)" in i for i in issues)
+    assert ("(Asset_Brokerage_Joint): the account is defined in both retire_alice and side, "
+            "which doesn't build on retire_alice") in "\n".join(issues)

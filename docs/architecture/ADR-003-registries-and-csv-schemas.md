@@ -858,7 +858,10 @@ the `tag` commands, `chain` and `series` edits, the other `rename` commands,
    shared top-level file such as `persons.csv` changed. Any failure -- a load issue
    or a loader crash -- rejects the edit with nothing written. An inheriting
    scenario that already failed before the edit is reported as a warning,
-   not blamed on it.
+   not blamed on it. The edited scenario's own errors come first; each
+   inheriting scenario that would fail gets a line saying it builds on the
+   edited one and that every such scenario is checked, then its errors, so
+   they don't read as errors in the scenario the command named.
 4. **Commit.** Only then are the changed files copied back, each by an
    atomic rename. If a file the edit would write changed on disk since it was
    staged (another edit got there first), the edit is refused rather than
@@ -918,7 +921,9 @@ listing them. Both reach the scenarios that inherit from this one too,
 including their overrides of the lot, since the staged edit loads them. A
 chain left with no steps is an error, so deleting a chain's only step is
 refused. An account left with no lots loads with an empty `default` lot,
-as an account with no `account_lots.csv` row always has.
+as an account with no `account_lots.csv` row always has; `lot edit ACCOUNT`
+treats that lot as one to change, writing its row with a zero opening
+balance and the fields given.
 
 A lot the scenario inherits is edited by writing an override of the whole
 row into the scenario's own file (§4.5); `lot edit` won't rename it, and
@@ -1083,3 +1088,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#221](https://github.com/BobKerns/analysis/issues/221): `lifespan.csv`'s `final_month` is replaced by `age_at_death`, which can vary across ensemble members (`uniform` or `triangular` bounds in years) and join correlation trees as `lifespan:<person>`, a name calendar rows can no longer take; the tax accumulator and `on_death` read the derived final month (§2.6, §2.9, §4.8, §4.9).
 - [#222](https://github.com/BobKerns/analysis/issues/222): a lifespan can vary as `life_table`, drawn from the new aux `life_table.csv` around `age_at_death` as its median by a solved age set-forward; `persons.csv` gains an optional `sex` (§3.5, §4.1, §4.4, §4.9).
 - [#224](https://github.com/BobKerns/analysis/issues/224): a `retirement` lot's growth counterparty follows its subkind (`tax_free` for Roth, `deferred` for traditional), not the account's `tax_character` (§2.2, §4.2).
+- [#233](https://github.com/BobKerns/analysis/issues/233): a rejected edit says which errors belong to a scenario built on the edited one, and `lot edit` changes an account's implicit empty `default` lot by adding its row (§7).
