@@ -85,6 +85,14 @@ def test_the_tax_report_shows_the_business(run_file: Callable[[str], Path]) -> N
         assert column in result.output
 
 
+def test_the_expense_report_has_a_business_category(run_file: Callable[[str], Path]) -> None:
+    result = CliRunner().invoke(
+        main, ["sim", "report", "expenses", "--runfile", str(run_file("alice_business"))],
+    )
+    assert result.exit_code == 0, result.output
+    assert "business" in result.output
+
+
 def test_a_loss_larger_than_the_years_income_carries_forward(
     business_scenarios: Path, run_business: Callable[[str], dict[int, dict[str, int]]],
 ) -> None:

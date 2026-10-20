@@ -83,6 +83,7 @@ Money moved out of a traditional lot is `tax_deferred_out` (ordinary income), in
 | `taxes_federal` | federal income tax paid |
 | `taxes_state` | state income tax paid |
 | `taxes_property` | real estate tax |
+| `business` | a business's spending, paid out of a `business` account as `business_expense` (§2.6) |
 | `other_expense` | catch-all |
 
 The expense vocabulary intentionally mixes categories (`housing`) with mechanisms (`interest_expense`); a future ADR is expected to refactor `housing` into finer-grained subkinds without disturbing the others.
@@ -1084,4 +1085,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#221](https://github.com/BobKerns/analysis/issues/221): `lifespan.csv`'s `final_month` is replaced by `age_at_death`, which can vary across ensemble members (`uniform` or `triangular` bounds in years) and join correlation trees as `lifespan:<person>`, a name calendar rows can no longer take; the tax accumulator and `on_death` read the derived final month (§2.6, §2.9, §4.8, §4.9).
 - [#222](https://github.com/BobKerns/analysis/issues/222): a lifespan can vary as `life_table`, drawn from the new aux `life_table.csv` around `age_at_death` as its median by a solved age set-forward; `persons.csv` gains an optional `sex` (§3.5, §4.1, §4.4, §4.9).
 - [#224](https://github.com/BobKerns/analysis/issues/224): a `retirement` lot's growth counterparty follows its subkind (`tax_free` for Roth, `deferred` for traditional), not the account's `tax_character` (§2.2, §4.2).
-- [#231](https://github.com/BobKerns/analysis/issues/231): asset subkind `business` and tax characters `business_income`/`business_expense`; the tax accumulator nets a Schedule C result into ordinary income, carries a net operating loss forward, and disallows a hobby's expenses (§1, §2.6, §4.6).
+- [#231](https://github.com/BobKerns/analysis/issues/231): asset and expense subkinds `business` and tax characters `business_income`/`business_expense`; the tax accumulator nets a Schedule C result into ordinary income, carries a net operating loss forward, and disallows a hobby's expenses (§1, §2.6, §4.6).

@@ -1,4 +1,4 @@
 name,kind,subkind,owner,tax_treatment,series,tax_character,opened,closed,meta_json,tags
 Asset_Business_Alice,asset,business,alice,taxable,,,2028-07-31,,{},
 Income_Business_Alice,income,other_income,alice,taxable,,,2028-07-31,,{},
-Expense_Business_Alice,expense,other_expense,alice,none,,,2028-07-31,,{},
+Expense_Business_Alice,expense,business,alice,none,,,2028-07-31,,{},

@@ -53,8 +53,9 @@ EXPENSE_SUBKIND_TO_CATEGORY: dict[str, str] = {
     "taxes_state": "taxes",
     "living": "living",
     "food": "living",
+    "business": "business",
 }
-EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "other"]
+EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "business", "other"]
 # depreciation is a book entry, not spending -- see ADR-002 gains/losses.
 NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 

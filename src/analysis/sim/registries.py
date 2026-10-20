@@ -19,7 +19,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
     },
     "expense": {
         "living", "healthcare", "housing", "interest_expense", "taxes_federal",
-        "taxes_state", "taxes_property", "other_expense",
+        "taxes_state", "taxes_property", "business", "other_expense",
     },
 }
 
