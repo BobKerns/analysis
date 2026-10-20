@@ -391,7 +391,7 @@ def test_a_rebuild_moving_a_shared_control_redraws_no_old_widget() -> None:
     stale: list[str] = []
     current = {"scenario": "old"}
 
-    def respanning(*, time_range: TimeRangePicker, **_) -> None:
+    def moving_the_span(*, time_range: TimeRangePicker, **_) -> None:
         time_range.cover(next(spans))
 
     def watching(*, time_range: TimeRangePicker, **_) -> None:
@@ -401,7 +401,7 @@ def test_a_rebuild_moving_a_shared_control_redraws_no_old_widget() -> None:
             lambda *_: stale.append(built_for) if built_for != current["scenario"] else None,
         )
 
-    shown.show(respanning, time_range=time_range)
+    shown.show(moving_the_span, time_range=time_range)
     shown.show(watching, time_range=time_range)
     current["scenario"] = "new"
     shown.notify_changed()
