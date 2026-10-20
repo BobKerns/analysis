@@ -1020,6 +1020,16 @@ def retire_alice_test_run(test_data_dir: Path, intent_dir: Path, runs_dir: Path)
 
 
 @pytest.fixture(scope="function")
+def test_ensemble_scenario(test_data_dir: Path) -> str:
+    """``recipe_0``, a three-member ensemble over retire_alice in the private
+    data copy, created but not run. Returns its name."""
+    name = "recipe_0"
+    _sim("ensemble", "create", name, "retire_alice", "--size", "3",
+         "--data-dir", str(test_data_dir))
+    return name
+
+
+@pytest.fixture(scope="function")
 def ensemble_recipe(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> str:
     """``recipe_1``, a three-member ensemble recipe over retire_alice in the
     private data copy (one varied rate), run into the function's state dir.

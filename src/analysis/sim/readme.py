@@ -17,8 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from analysis.sim.connection import Connection
-
-from analysis.sim.notebook_ui.styled import StyledMarkdown
+    from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = ["ReadmeSummary", "parse_readme_summary", "readme_description"]
 
@@ -176,6 +175,8 @@ def description_view(conn: Connection, *,
     if data_dir is not None:
         description = _regenerate_more_link(description, Path(data_dir))
     parts = [relevel_heading(description, heading_level), lineage_markdown(row)]
+    # Imported here: it brings in IPython, which the CLI has no use for.
+    from analysis.sim.notebook_ui.styled import StyledMarkdown
     return StyledMarkdown("\n\n".join(part for part in parts if part))
 
 

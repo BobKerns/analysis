@@ -23,7 +23,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from scipy.stats import t as student_t
 
 from analysis.frames import index_years
 from analysis.sim.connection import RunConnection, year_end_values
@@ -655,6 +654,7 @@ def _srrc_intervals(
         return low, high, prcc
     sigma2 = float(residuals @ residuals) / dof
     se = np.sqrt(sigma2 * np.diag(np.linalg.inv(gram)))
+    from scipy.stats import t as student_t  # slow to import; most commands never get here
     half = float(student_t.ppf(0.975, dof)) * se
     b = coef[varying]
     with np.errstate(divide="ignore", invalid="ignore"):

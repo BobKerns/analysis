@@ -32,7 +32,7 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, lot_guide, prices, readme, registries,
+    allocation, calendar_guide, chain_edit, chain_map, completion, lot_guide, prices, readme, registries,
     rename, reports, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols,
     units,
 )
@@ -144,7 +144,7 @@ def sim_group_command() -> None:
 
 
 @sim_group_command.command()
-@click.argument("scenario_name", required=False)
+@click.argument("scenario_name", type=completion.SCENARIO, required=False)
 @click.option(
     "--data-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -241,7 +241,7 @@ def load(
 
 
 @sim_group_command.command()
-@click.argument("scenario_name", required=False)
+@click.argument("scenario_name", type=completion.SCENARIO, required=False)
 @click.option(
     "--data-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -378,7 +378,7 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
 
 
 @sim_group_command.command()
-@click.argument("scenario_name", required=False)
+@click.argument("scenario_name", type=completion.SCENARIO, required=False)
 @click.option(
     "--data-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -897,8 +897,8 @@ def ensemble_group_command() -> None:
 
 @ensemble_group_command.command("create")
 @click.argument("name")
-@click.argument("parent")
-@click.argument("mixins", nargs=-1)
+@click.argument("parent", type=completion.SCENARIO)
+@click.argument("mixins", type=completion.SCENARIO, nargs=-1)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -1069,11 +1069,11 @@ _ENSEMBLE_DATA_DIR_OPTION = click.option(
     help="Data repo (default: $ANALYSIS_DATA_DIR)",
 )
 _ENSEMBLE_ACCOUNT_OPTION = click.option(
-    "--account", default=None,
+    "--account", default=None, type=completion.ACCOUNT,
     help="Report one account's balance instead of net worth.",
 )
 _ENSEMBLE_LOT_OPTION = click.option(
-    "--lot", default=None,
+    "--lot", default=None, type=completion.LotName("account"),
     help="With --account: report one lot of the account instead of its total.",
 )
 _ENSEMBLE_RESERVE_OPTION = click.option(
@@ -1127,7 +1127,7 @@ def _subject(account: str | None, lot: str | None) -> str:
 
 
 @ensemble_group_command.command("summary")
-@click.argument("scenario_name")
+@click.argument("scenario_name", type=completion.ENSEMBLE)
 @_ENSEMBLE_RUNS_DIR_OPTION
 @_ENSEMBLE_DATA_DIR_OPTION
 @click.option(
@@ -1178,8 +1178,8 @@ def ensemble_summary(
 
 
 @ensemble_group_command.command("compare")
-@click.argument("baseline")
-@click.argument("variant")
+@click.argument("baseline", type=completion.ENSEMBLE)
+@click.argument("variant", type=completion.ENSEMBLE)
 @_ENSEMBLE_RUNS_DIR_OPTION
 @_ENSEMBLE_DATA_DIR_OPTION
 @_ENSEMBLE_ACCOUNT_OPTION
@@ -1261,7 +1261,7 @@ def ensemble_compare(
 
 
 @ensemble_group_command.command("sensitivity")
-@click.argument("scenario_name")
+@click.argument("scenario_name", type=completion.ENSEMBLE)
 @click.option(
     "--runs-dir",
     type=click.Path(file_okay=False, path_type=Path),
@@ -1723,7 +1723,7 @@ def _resolve_run_target(
 
 
 @sim_group_command.command()
-@click.argument("target", metavar="[SCENARIO | RUNFILE]", required=False)
+@click.argument("target", type=completion.SCENARIO, metavar="[SCENARIO | RUNFILE]", required=False)
 @_run_target_options
 def explain(
     target: str | None, runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
@@ -1829,7 +1829,7 @@ def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
 
 
 @sim_group_command.command("networth")
-@click.argument("scenario", required=False)
+@click.argument("scenario", type=completion.SCENARIO, required=False)
 @click.option("--monthly", "period", flag_value="monthly",
               help="One row per month.")
 @click.option("--yearly", "period", flag_value="yearly", default=True,
@@ -1882,7 +1882,7 @@ def networth_command(
 
 
 @sim_group_command.command("switch")
-@click.argument("scenario", required=False)
+@click.argument("scenario", type=completion.SCENARIO, required=False)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -1906,8 +1906,8 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
 
 
 @sim_group_command.command("items")
-@click.option("--account", required=True, help="Account name in the selected run.")
-@click.option("--lot", default=None,
+@click.option("--account", type=completion.ACCOUNT, required=True, help="Account name in the selected run.")
+@click.option("--lot", type=completion.LotName("account"), default=None,
               help="Only events touching this lot of the account (default: every lot).")
 @click.option("--start", required=True, help="First month (YYYY-MM or YYYY-MM-DD).")
 @click.option("--end", default=None, help="Last month (YYYY-MM or YYYY-MM-DD); overrides --months.")
@@ -1915,7 +1915,7 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
               help="Number of months to include when --end is omitted.")
 @click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="Run file (default: selected scenario's latest run).")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario name used to find the latest run.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
@@ -2058,30 +2058,6 @@ def _fmt_cents(cents: int | None) -> str:
 def _resolve_scenario_dir(data_dir: Path, scenario: str | None) -> tuple[Path, str]:
     ref = _resolve_scenario(data_dir, scenario)
     return ref.path, ref.name
-
-
-def _read_account_names(data_dir: Path) -> list[str]:
-    """Cheap CSV-only reader used for shell tab-completion (no scenario context).
-
-    Validation and listing commands go through ``open_intent_db`` instead so
-    the loader stays the single CSV reader.
-    """
-    p = data_dir / "accounts.csv"
-    if not p.exists():
-        return []
-    with p.open(newline="", encoding="utf-8") as fh:
-        return [r["name"] for r in _csv.DictReader(fh) if r.get("name")]
-
-
-def _complete_account(ctx, param, incomplete):  # noqa: ARG001
-    env = os.environ.get("ANALYSIS_DATA_DIR")
-    if not env:
-        return []
-    try:
-        names = _read_account_names(Path(env))
-    except OSError:
-        return []
-    return [n for n in names if n.lower().startswith(incomplete.lower())]
 
 
 def _line_completions(line: str, word_start: int, choices: list[str]) -> list[str]:
@@ -2708,7 +2684,7 @@ def _vary_row_options(f):
              "(ADR-008). Siblings under one parent correlate at the product of their rhos.",
     )(f)
     f = click.option(
-        "--vary-correlate-with", default=None,
+        "--vary-correlate-with", type=completion.CORRELATE_WITH, default=None,
         help="Another varying row's or a latent factor's name: this row's parent in a "
              "correlation tree (ADR-008). Requires --vary-correlation.",
     )(f)
@@ -3081,14 +3057,14 @@ def _do_add_transfer(
 
 @transfer_group_command.command("add")
 @click.argument("date", required=False)
-@click.argument("from_account", required=False, shell_complete=_complete_account)
-@click.argument("to_account", required=False, shell_complete=_complete_account)
+@click.argument("from_account", required=False, type=completion.ENDPOINT)
+@click.argument("to_account", required=False, type=completion.ENDPOINT)
 @click.argument("amount", required=False)
-@click.option("--from-lot", default=None,
+@click.option("--from-lot", type=completion.LotName("from_account"), default=None,
               help="Lot of the from account; asked for when a blank one would not say which.")
-@click.option("--to-lot", default=None,
+@click.option("--to-lot", type=completion.LotName("to_account"), default=None,
               help="Lot of the to account; asked for when a blank one would not say which.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -3097,7 +3073,7 @@ def _do_add_transfer(
               help="ADR-003 tax_character (e.g. ordinary, ltcg, none); "
                    "left out, it follows from the accounts (ADR-003 §3.4).")
 @click.option("--description", default="", help="Free-text description.")
-@click.option("--series", default="", help="Optional series tag.")
+@click.option("--series", type=completion.SeriesName(), default="", help="Optional series tag.")
 @_vary_row_options
 def transfer_add(
     date: str | None,
@@ -3312,7 +3288,7 @@ def _ask_missing_arguments(
 
 
 @calendar_group_command.group(name="add", invoke_without_command=True)
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="For the guided mode: scenario folder name "
                    "(default: the current scenario).")
 @click.option("--data-dir",
@@ -3443,8 +3419,8 @@ def _check_own_calendar_row(staged: Path, path: Path, index: int, chosen: dict[s
 
 
 @calendar_group_command.command("edit")
-@click.argument("row", required=False)
-@click.option("--scenario", default=None,
+@click.argument("row", type=completion.CALENDAR_ROW, required=False)
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -3514,9 +3490,9 @@ def calendar_edit(
 
 
 @calendar_group_command.command("delete")
-@click.argument("row", required=False)
+@click.argument("row", type=completion.CALENDAR_ROW, required=False)
 @click.option("--yes", is_flag=True, help="Don't ask before deleting.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -3629,9 +3605,9 @@ def _calendar_tag(
 
 
 @calendar_tag_group.command("add")
-@click.argument("row")
-@click.argument("tag_tokens", nargs=-1, required=True)
-@click.option("--scenario", default=None)
+@click.argument("row", type=completion.CALENDAR_ROW)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3648,9 +3624,9 @@ def calendar_tag_add(
 
 
 @calendar_tag_group.command("rm")
-@click.argument("row")
-@click.argument("tag_tokens", nargs=-1, required=True)
-@click.option("--scenario", default=None)
+@click.argument("row", type=completion.CALENDAR_ROW)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -3669,15 +3645,15 @@ def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
 
 @calendar_add_group_command.command("set-rate")
 @click.argument("date", required=False)
-@click.argument("series", required=False)
+@click.argument("series", type=completion.SeriesName(kind_param="aux_kind"), required=False)
 @click.argument("rate_percent", required=False)
 @click.option(
-    "--aux-kind", default="rate", show_default=True,
+    "--aux-kind", type=completion.AUX_KIND, default="rate", show_default=True,
     help="aux_table kind this rate belongs to. The default 'rate' is an asset's own "
          "growth series (accounts.csv's own series column); use 'inflation' to vary an "
          "inflation/COLA series such as cpi (scheduled.csv rows reference it by series name).",
 )
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -3747,11 +3723,11 @@ def calendar_add_set_rate(
 
 @calendar_add_group_command.command("set-amount")
 @click.argument("date", required=False)
-@click.argument("scheduled_name", required=False)
+@click.argument("scheduled_name", type=completion.RULE, required=False)
 @click.argument("amount", required=False)
 @click.option("--param-date", default="",
               help="New base date for the rule (YYYY-MM or YYYY-MM-DD), optional.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -3821,8 +3797,8 @@ def calendar_add_set_amount(
 
 @calendar_add_group_command.command("retire-scheduled")
 @click.argument("date", required=False)
-@click.argument("scheduled_name", required=False)
-@click.option("--scenario", default=None,
+@click.argument("scheduled_name", type=completion.RULE, required=False)
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -3887,13 +3863,13 @@ def calendar_add_retire_scheduled(
 
 @calendar_add_group_command.command("latent-factor")
 @click.argument("name", required=False)
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 @click.option("--description", default="", help="What this factor stands for.")
-@click.option("--vary-correlate-with", default=None,
+@click.option("--vary-correlate-with", type=completion.CORRELATE_WITH, default=None,
               help="Another factor (or varying row) this factor depends on, for a hierarchy.")
 @click.option("--vary-correlation", default=None,
               help="rho with --vary-correlate-with, between -1 and 1.")
@@ -3924,14 +3900,14 @@ def calendar_add_latent_factor(
 
 @calendar_add_group_command.command("transfer")
 @click.argument("date", required=False)
-@click.argument("from_account", required=False, shell_complete=_complete_account)
-@click.argument("to_account", required=False, shell_complete=_complete_account)
+@click.argument("from_account", required=False, type=completion.ENDPOINT)
+@click.argument("to_account", required=False, type=completion.ENDPOINT)
 @click.argument("amount", required=False)
-@click.option("--from-lot", default=None,
+@click.option("--from-lot", type=completion.LotName("from_account"), default=None,
               help="Lot of the from account; asked for when a blank one would not say which.")
-@click.option("--to-lot", default=None,
+@click.option("--to-lot", type=completion.LotName("to_account"), default=None,
               help="Lot of the to account; asked for when a blank one would not say which.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -3940,7 +3916,7 @@ def calendar_add_latent_factor(
               help="ADR-003 tax_character (e.g. ordinary, ltcg, none); "
                    "left out, it follows from the accounts (ADR-003 §3.4).")
 @click.option("--description", default="", help="Free-text description.")
-@click.option("--series", default="", help="Optional series tag.")
+@click.option("--series", type=completion.SeriesName(), default="", help="Optional series tag.")
 @_vary_row_options
 def calendar_add_transfer(
     date: str | None,
@@ -3987,13 +3963,13 @@ def calendar_add_transfer(
 
 @calendar_add_group_command.command("transfer-balance")
 @click.argument("date", required=False)
-@click.argument("from_account", required=False, shell_complete=_complete_account)
-@click.argument("to_account", required=False, shell_complete=_complete_account)
-@click.option("--from-lot", default=None,
+@click.argument("from_account", required=False, type=completion.ENDPOINT)
+@click.argument("to_account", required=False, type=completion.ENDPOINT)
+@click.option("--from-lot", type=completion.LotName("from_account"), default=None,
               help="Lot of the from account; asked for when a blank one would not say which.")
-@click.option("--to-lot", default=None,
+@click.option("--to-lot", type=completion.LotName("to_account"), default=None,
               help="Lot of the to account; asked for when a blank one would not say which.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4090,11 +4066,11 @@ def calendar_add_transfer_balance(
 
 @calendar_add_group_command.command("swap-aux-table")
 @click.argument("date", required=False)
-@click.argument("aux_kind", required=False)
-@click.argument("source_series", required=False)
-@click.option("--series", default="",
+@click.argument("aux_kind", type=completion.AUX_KIND, required=False)
+@click.argument("source_series", type=completion.SeriesName(kind_param="aux_kind"), required=False)
+@click.option("--series", type=completion.SeriesName(kind_param="aux_kind"), default="",
               help="The series replaced; blank for a kind without one (federal_brackets).")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4403,24 +4379,25 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
         if field_.option is not None:
             f = click.option(
                 field_.option, field_.param, default=None, help=field_.help or field_.label,
+                type=completion.type_for(field_.param),
             )(f)
     return f
 
 
 @scheduled_group_command.command("add")
 @click.argument("date", required=False)
-@click.argument("from_account", required=False, shell_complete=_complete_account)
-@click.argument("to_account", required=False, shell_complete=_complete_account)
+@click.argument("from_account", required=False, type=completion.ENDPOINT)
+@click.argument("to_account", required=False, type=completion.ENDPOINT)
 @click.argument("amount", required=False)
 @click.option("--kind", "rule_kind", default="fixed_amount", show_default=True,
               type=click.Choice(sorted(registries.AMOUNT_RULE_KINDS)),
               help="How the amount is worked out (ADR-003 §2). AMOUNT is given only "
                    "for fixed_amount, ss_benefit (PIA at FRA) and mortgage_payment (P&I).")
-@click.option("--from-lot", default=None,
+@click.option("--from-lot", type=completion.LotName("from_account"), default=None,
               help="Lot of the from account; asked for when a blank one would not say which.")
-@click.option("--to-lot", default=None,
+@click.option("--to-lot", type=completion.LotName("to_account"), default=None,
               help="Lot of the to account; asked for when a blank one would not say which.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4437,17 +4414,18 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
 @click.option("--tax-character", default=None,
               help="Default: the kind's usual one (none; ss_benefit, tax_deferred_out for rmd, "
                    "tax_free for on_death).")
-@click.option("--series", default=None,
+@click.option("--series", type=completion.SeriesName(), default=None,
               help="fixed_amount: 'fixed' (the default) for no inflation, else an inflation "
                    "series (e.g. cpi). ss_benefit: the COLA series. percent_of_balance: the rate series.")
 @click.option("--base-date", default=None,
               help="The date inflation is measured from (default: DATE).")
 @click.option("--inflation-cadence", type=click.Choice(["monthly", "annual"]), default=None,
               help="annual steps once each January, as a COLA does (default: monthly).")
-@click.option("--person", default=None, help="Person id: required for rmd, ss_benefit and on_death.")
+@click.option("--person", type=completion.PERSON, default=None,
+              help="Person id: required for rmd, ss_benefit and on_death.")
 @click.option("--claim-age", type=int, default=None, help="Required for ss_benefit.")
 @click.option("--rate", default=None, help="Annual rate, e.g. 6%: required for mortgage_payment.")
-@click.option("--interest-account", default=None,
+@click.option("--interest-account", type=completion.ACCOUNT, default=None,
               help="Interest expense account: required for mortgage_payment.")
 @click.option("--tax-year", default=None,
               help="The tax year the transfer counts toward, when not its own.")
@@ -4583,7 +4561,7 @@ def scheduled_add(
 
 
 @scheduled_group_command.command("import-baseline")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4608,13 +4586,13 @@ def scheduled_add(
 @click.option("--account-map", type=click.Path(dir_okay=False, path_type=Path),
               default=None,
               help="Optional category account map (default: sibling data-repo/quicken/expense_account_map.csv).")
-@click.option("--from-account", required=True,
+@click.option("--from-account", type=completion.ENDPOINT, required=True,
               help="Scenario account that funds all generated expense rows.")
-@click.option("--from-lot", default="",
+@click.option("--from-lot", type=completion.LotName("from_account"), default="",
               help="Lot of --from-account (required for investment accounts).")
 @click.option("--start", default=None,
               help="First scheduled month YYYY-MM or YYYY-MM-DD (default: scenario start).")
-@click.option("--series", default="cpi", show_default=True,
+@click.option("--series", type=completion.SeriesName(), default="cpi", show_default=True,
               help="Inflation series applied to generated rows ('fixed' for none).")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show generated rows without rewriting scheduled.csv.")
@@ -4744,7 +4722,7 @@ def scheduled_import_baseline(
 
 
 @scheduled_group_command.command("list")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4787,9 +4765,9 @@ def scheduled_tag_group() -> None:
 
 
 @scheduled_tag_group.command("add")
-@click.argument("name")
-@click.argument("tag_tokens", nargs=-1, required=True)
-@click.option("--scenario", default=None)
+@click.argument("name", type=completion.RULE)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -4804,9 +4782,9 @@ def scheduled_tag_add(
 
 
 @scheduled_tag_group.command("rm")
-@click.argument("name")
-@click.argument("tag_tokens", nargs=-1, required=True)
-@click.option("--scenario", default=None)
+@click.argument("name", type=completion.RULE)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -4887,9 +4865,9 @@ def _write_scheduled(
 
 
 @scheduled_group_command.command("edit")
-@click.argument("name")
+@click.argument("name", type=completion.RULE)
 @_scheduled_options
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -4961,9 +4939,9 @@ def _month_before(iso: str) -> str:
 
 
 @scheduled_group_command.command("delete")
-@click.argument("name")
+@click.argument("name", type=completion.RULE)
 @click.option("--yes", is_flag=True, help="Don't ask first.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -5061,12 +5039,12 @@ def account_group_command() -> None:
 @click.argument("name", required=False)
 @click.argument("kind", required=False, shell_complete=_complete_kind)
 @click.argument("subkind", required=False, shell_complete=_complete_subkind)
-@click.option("--owner", default=None,
+@click.option("--owner", type=completion.PERSON, default=None,
               help="Person id from persons.csv (default: joint).")
 @click.option("--tax-treatment", default=None,
               type=click.Choice(sorted(registries.TAX_TREATMENTS)),
               help="Default inferred from kind.")
-@click.option("--series", default="",
+@click.option("--series", type=completion.SeriesName("rate"), default="",
               help="Aux rate series; gives an asset account monthly growth.")
 @click.option("--tax-character", default="",
               type=click.Choice(["", *sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)]),
@@ -5082,7 +5060,7 @@ def account_group_command() -> None:
 @click.option("--lot-subkind", default=None,
               type=click.Choice(sorted(registries.RETIREMENT_LOT_SUBKINDS)),
               help="A retirement account's first lot: Roth or traditional, IRA or 401k.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (for opening-balance lookup).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -5385,8 +5363,8 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
 
 
 @account_group_command.command("delete")
-@click.argument("name")
-@click.option("--scenario", default=None,
+@click.argument("name", type=completion.ACCOUNT)
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -5440,17 +5418,17 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
 
 
 @account_group_command.command("edit")
-@click.argument("name")
+@click.argument("name", type=completion.ACCOUNT)
 @click.option("--new-name", default=None, help="Update the account name.")
 @click.option("--kind", default=None, help="New account kind.")
 @click.option("--subkind", default=None, help="New account subkind.")
-@click.option("--owner", default=None, help="New owner (person id or 'joint').")
+@click.option("--owner", type=completion.PERSON, default=None, help="New owner (person id or 'joint').")
 @click.option("--tax-treatment", default=None, help="New tax treatment.")
 @click.option("--opened", default=None, help="Open date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--closed", default=None, help="Close date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--meta-json", default=None, help="JSON payload for the account metadata.")
 @click.option("--tags", default=None, help="Space-separated '<role>:<name>' tokens.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -5633,9 +5611,9 @@ def edit_account(
 
 
 @account_group_command.command("rename")
-@click.argument("old_name")
+@click.argument("old_name", type=completion.ACCOUNT)
 @click.argument("new_name")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -5682,7 +5660,7 @@ def _default_tax_treatment(kind: str, subkind: str) -> str:
 
 
 @account_group_command.command("list")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -5691,7 +5669,7 @@ def _default_tax_treatment(kind: str, subkind: str) -> str:
               help="Resolve rates effective on or before this date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--kind", default=None,
               help="Filter to accounts of this kind (e.g. asset, liability).")
-@click.option("--owner", default=None,
+@click.option("--owner", type=completion.PERSON, default=None,
               help="Filter to accounts owned by this person or 'joint'.")
 def list_accounts(
     scenario: str | None,
@@ -5727,7 +5705,7 @@ def list_accounts(
 def _holdings_options(fn):
     """The options ``account holdings`` and ``account holders`` share."""
     for option in reversed([
-        click.option("--scenario", default=None,
+        click.option("--scenario", type=completion.SCENARIO, default=None,
                      help="Scenario folder name (default: the current scenario)."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
@@ -5770,7 +5748,7 @@ def _holdings_source(
 
 
 @account_group_command.command("holdings")
-@click.argument("account")
+@click.argument("account", type=completion.ACCOUNT)
 @_holdings_options
 def account_holdings_command(
     account: str, scenario: str | None, data_dir: Path | None, month: str | None,
@@ -5789,7 +5767,7 @@ def account_holdings_command(
 
 
 @account_group_command.command("holders")
-@click.argument("symbol")
+@click.argument("symbol", type=completion.SYMBOL)
 @_holdings_options
 def account_holders_command(
     symbol: str, scenario: str | None, data_dir: Path | None, month: str | None,
@@ -5875,7 +5853,7 @@ def _report_options(fn):
                      help="CPI-constant (today's) dollars, or nominal dollars."),
         click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
                      default=None, help="Run file (default: the scenario's latest run)."),
-        click.option("--scenario", default=None,
+        click.option("--scenario", type=completion.SCENARIO, default=None,
                      help="Scenario whose latest run to read (default: the current scenario)."),
         click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)."),
@@ -5919,8 +5897,8 @@ def _print_report(frame: pd.DataFrame, what: str, described: str, mode: DollarMo
 
 
 @account_group_command.command("history")
-@click.argument("account")
-@click.option("--lot", default=None,
+@click.argument("account", type=completion.ACCOUNT)
+@click.option("--lot", type=completion.LotName("account"), default=None,
               help="One lot of the account: adds its basis, unrealized gain and quantity.")
 @click.option("--start", default=None, help="First month (YYYY-MM or YYYY-MM-DD).")
 @click.option("--end", default=None, help="Last month (YYYY-MM or YYYY-MM-DD).")
@@ -6063,9 +6041,9 @@ def account_tag_group() -> None:
 
 
 @account_tag_group.command("add")
-@click.argument("name")
-@click.argument("tag_tokens", nargs=-1, required=True)
-@click.option("--scenario", default=None)
+@click.argument("name", type=completion.ACCOUNT)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6080,9 +6058,9 @@ def account_tag_add(
 
 
 @account_tag_group.command("rm")
-@click.argument("name")
-@click.argument("tag_tokens", nargs=-1, required=True)
-@click.option("--scenario", default=None)
+@click.argument("name", type=completion.ACCOUNT)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -6611,7 +6589,8 @@ def _lot_value_options[F: Callable[..., object]](f: F) -> F:
     ``None`` (not given); ``""`` clears a field."""
     for field_ in reversed(lot_guide.LOT.fields):
         if field_.option is not None:
-            f = click.option(field_.option, default=None, help=field_.help or field_.label)(f)
+            f = click.option(field_.option, default=None, help=field_.help or field_.label,
+                             type=completion.type_for(field_.param))(f)
     return f
 
 
@@ -6625,8 +6604,8 @@ def lot_group_command() -> None:
 
 
 @lot_group_command.command("list")
-@click.argument("account", required=False, shell_complete=_complete_account)
-@click.option("--scenario", default=None,
+@click.argument("account", required=False, type=completion.ACCOUNT)
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -6678,10 +6657,10 @@ def lot_list(account: str | None, scenario: str | None, data_dir: Path | None) -
 
 
 @lot_group_command.command("add")
-@click.argument("account", required=False, shell_complete=_complete_account)
+@click.argument("account", required=False, type=completion.ACCOUNT)
 @click.argument("lot", required=False)
 @_lot_value_options
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -6733,12 +6712,12 @@ def lot_add(
 
 
 @lot_group_command.command("edit")
-@click.argument("account", required=False, shell_complete=_complete_account)
-@click.argument("lot", required=False)
+@click.argument("account", required=False, type=completion.ACCOUNT)
+@click.argument("lot", type=completion.LotName("account"), required=False)
 @click.option("--new-lot", default=None,
               help="Rename the lot; this scenario's references to it follow.")
 @_lot_value_options
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -6824,10 +6803,10 @@ def lot_edit(
 
 
 @lot_group_command.command("delete")
-@click.argument("account", required=False, shell_complete=_complete_account)
-@click.argument("lot", required=False)
+@click.argument("account", required=False, type=completion.ACCOUNT)
+@click.argument("lot", type=completion.LotName("account"), required=False)
 @click.option("--yes", is_flag=True, help="Don't ask before deleting the rows that reference the lot.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -6919,7 +6898,7 @@ def lot_delete(
 
 
 @account_group_command.command("check")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -6976,7 +6955,7 @@ def check_account_lots(
 
 
 @account_group_command.command("sync")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -7070,7 +7049,7 @@ def sync_account_lots(
               help="Treat quicken_file as a Quicken \"Year End Export\" and write "
                    "prior_year_end_balance instead of opening_balance, for "
                    "investment asset accounts only.")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -7228,7 +7207,7 @@ def import_quicken(
 
 
 @transfer_group_command.command("list")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -7354,7 +7333,7 @@ def prices_group_command() -> None:
 
 
 @prices_group_command.command("fetch")
-@click.argument("symbols", nargs=-1)
+@click.argument("symbols", type=completion.SYMBOL, nargs=-1)
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 @click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
@@ -7441,7 +7420,7 @@ def _fetch_prices(
 
 
 @prices_group_command.command("show")
-@click.argument("symbols", nargs=-1)
+@click.argument("symbols", type=completion.SYMBOL, nargs=-1)
 @click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
               help="With SYMBOLS, show only prices from this date on.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -7519,7 +7498,7 @@ def prices_show_command(symbols: tuple[str, ...], since_text: str | None, data_d
 
 
 @prices_group_command.command("check")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
@@ -7582,7 +7561,7 @@ def chain_group_command() -> None:
 
 
 @chain_group_command.command("list")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
@@ -7631,7 +7610,7 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
 
 
 @chain_group_command.command("show")
-@click.argument("names", nargs=-1)
+@click.argument("names", type=completion.ENDPOINT, nargs=-1)
 @click.option("--mermaid", "as_mermaid", is_flag=True,
               help="Print the flowchart's Mermaid source (to paste into markdown) instead of a tree.")
 @click.option("--graph", "as_graph", is_flag=True,
@@ -7645,7 +7624,7 @@ def chain_list_command(scenario: str | None, data_dir: Path | None) -> None:
 @click.option("--depth", type=click.Choice(chain_map.DEPTHS), default=None,
               help="With --mermaid, --graph or --graph-file, how far to follow each chain: "
                    "1 step, as far as the first lot (lots), or all the way (all, the default).")
-@click.option("--scenario", default=None,
+@click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
@@ -7771,20 +7750,27 @@ _STEP_OPTIONS_HELP = {
                       "one; a destination chain's (e.g. home_sale, excluded_gain, ltcg)."),
 }
 
+_STEP_OPTION_TYPES = {
+    "lot": completion.LotName("account"),
+    "basis_of": completion.ACCOUNT,
+    "basis_of_lot": completion.LotName("basis_of"),
+    "series": completion.SeriesName("inflation"),
+}
+
 _STEP_TAX_COLUMNS = chain_edit.TAX_COLUMNS
 
 
 def _step_options(f):
     for option in ("basis_of_lot", "basis_of", "tax_character", "cadence", "series", "maximum", "percent", "lot"):
         f = click.option(f"--{option.replace('_', '-')}", option, default=None,
-                         help=_STEP_OPTIONS_HELP[option])(f)
+                         help=_STEP_OPTIONS_HELP[option], type=_STEP_OPTION_TYPES.get(option))(f)
     return f
 
 
 def _scenario_options(f):
     f = click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
                      default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")(f)
-    return click.option("--scenario", default=None,
+    return click.option("--scenario", type=completion.SCENARIO, default=None,
                         help="Scenario folder name (default: the current scenario).")(f)
 
 
@@ -8013,7 +7999,7 @@ def _step_index(steps: list[dict[str, str]], number: int, name: str) -> int:
 
 @chain_group_command.command("add")
 @click.argument("name", required=False)
-@click.argument("account", required=False, shell_complete=_complete_account)
+@click.argument("account", required=False, type=completion.ENDPOINT)
 @click.option("--role", type=click.Choice(registries.CHAIN_ROLES), default=None,
               help="source: money is drawn from it; destination: money is paid into it (asked if left out).")
 @_step_options
@@ -8181,8 +8167,8 @@ def chain_step_group() -> None:
 
 
 @chain_step_group.command("add")
-@click.argument("name", required=False)
-@click.argument("account", required=False, shell_complete=_complete_account)
+@click.argument("name", type=completion.CHAIN, required=False)
+@click.argument("account", required=False, type=completion.ENDPOINT)
 @click.option("--position", type=int, default=None,
               help="Step number the new step takes, moving later steps down (default: last).")
 @_step_options
@@ -8238,7 +8224,7 @@ def _step_label(row: Mapping[str, str]) -> str:
 
 
 @chain_step_group.command("edit")
-@click.argument("name", required=False)
+@click.argument("name", type=completion.CHAIN, required=False)
 @click.argument("number", type=int, required=False)
 @_step_options
 @_scenario_options
@@ -8300,7 +8286,7 @@ def chain_step_edit_command(
 
 
 @chain_step_group.command("rm")
-@click.argument("name", required=False)
+@click.argument("name", type=completion.CHAIN, required=False)
 @click.argument("number", type=int, required=False)
 @_scenario_options
 def chain_step_rm_command(name: str | None, number: int | None, scenario: str | None, data_dir: Path | None) -> None:
@@ -8319,7 +8305,7 @@ def chain_step_rm_command(name: str | None, number: int | None, scenario: str | 
 
 
 @chain_step_group.command("move")
-@click.argument("name", required=False)
+@click.argument("name", type=completion.CHAIN, required=False)
 @click.argument("number", type=int, required=False)
 @click.argument("to", type=int, required=False)
 @_scenario_options
@@ -8342,7 +8328,7 @@ def chain_step_move_command(
 
 
 @chain_group_command.command("rename")
-@click.argument("old", required=False)
+@click.argument("old", type=completion.CHAIN, required=False)
 @click.argument("new", required=False)
 @_scenario_options
 def chain_rename_command(old: str | None, new: str | None, scenario: str | None, data_dir: Path | None) -> None:
@@ -8375,7 +8361,7 @@ def chain_rename_command(old: str | None, new: str | None, scenario: str | None,
 
 
 @chain_group_command.command("delete")
-@click.argument("name", required=False)
+@click.argument("name", type=completion.CHAIN, required=False)
 @_scenario_options
 def chain_delete_command(name: str | None, scenario: str | None, data_dir: Path | None) -> None:
     """Delete chain NAME. Refused while a rule, a calendar transfer, a lot's
@@ -8644,8 +8630,8 @@ def _list_scenarios(data_dir: Path | None, verbose: bool, *, ensembles_only: boo
 
 @scenario_group_command.command("create")
 @click.argument("name")
-@click.argument("parent")
-@click.argument("mixins", nargs=-1)
+@click.argument("parent", type=completion.SCENARIO)
+@click.argument("mixins", type=completion.SCENARIO, nargs=-1)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -8710,7 +8696,7 @@ def scenario_create(
 
 @sim_group_command.group(name="tags", invoke_without_command=True)
 @click.pass_context
-@click.option("--scenario", default=None)
+@click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -8739,8 +8725,8 @@ def tags_group_command(
 
 
 @tags_group_command.command("items")
-@click.argument("tag_token")
-@click.option("--scenario", default=None)
+@click.argument("tag_token", type=completion.TAG)
+@click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
@@ -8866,7 +8852,7 @@ def _echo_renamed(what: str, old: str, new: str, changed: list[str]) -> None:
 
 
 @scheduled_group_command.command("rename")
-@click.argument("old")
+@click.argument("old", type=completion.RULE)
 @click.argument("new")
 @_scenario_options
 def scheduled_rename(old: str, new: str, scenario: str | None, data_dir: Path | None) -> None:
@@ -8881,7 +8867,7 @@ def scheduled_rename(old: str, new: str, scenario: str | None, data_dir: Path | 
 
 
 @calendar_group_command.command("rename")
-@click.argument("old")
+@click.argument("old", type=completion.CALENDAR_ROW)
 @click.argument("new")
 @_scenario_options
 def calendar_rename(old: str, new: str, scenario: str | None, data_dir: Path | None) -> None:
@@ -8900,7 +8886,7 @@ def series_group_command() -> None:
 
 
 @series_group_command.command("rename")
-@click.argument("old")
+@click.argument("old", type=completion.SeriesName())
 @click.argument("new")
 @_scenario_options
 def series_rename(old: str, new: str, scenario: str | None, data_dir: Path | None) -> None:
@@ -8940,8 +8926,8 @@ def _lot_defined(account: str, lot: str) -> rename.Defines:
 
 
 @lot_group_command.command("rename")
-@click.argument("account", shell_complete=_complete_account)
-@click.argument("lot")
+@click.argument("account", type=completion.ACCOUNT)
+@click.argument("lot", type=completion.LotName("account"))
 @click.argument("new_lot")
 @_scenario_options
 def lot_rename(account: str, lot: str, new_lot: str, scenario: str | None, data_dir: Path | None) -> None:
@@ -8997,7 +8983,7 @@ def _rename_scenario(old: str, new: str, data_dir: Path | None) -> None:
 
 
 @scenario_group_command.command("rename")
-@click.argument("old")
+@click.argument("old", type=completion.SCENARIO)
 @click.argument("new")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -9011,7 +8997,7 @@ def scenario_rename(old: str, new: str, data_dir: Path | None) -> None:
 
 
 @ensemble_group_command.command("rename")
-@click.argument("old")
+@click.argument("old", type=completion.ENSEMBLE)
 @click.argument("new")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -9188,7 +9174,7 @@ def _apply_scenario_edit(
 
 def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
     options = [
-        click.argument("name", required=False),
+        click.argument("name", required=False, type=completion.SCENARIO),
         click.option("--description", default=None,
                      help="The scenario's description; '' restores the default, 'Derived from <parents>'."),
         click.option("--start", default=None, help=f"First month ({MONTH_FORMAT_HINT}); '' inherits."),
@@ -9268,7 +9254,7 @@ def _delete_scenario(name: str, data_dir: Path | None, yes: bool) -> None:
 
 
 @scenario_group_command.command("delete")
-@click.argument("name")
+@click.argument("name", type=completion.SCENARIO)
 @click.option("--yes", is_flag=True, help="Don't ask before deleting.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
@@ -9280,7 +9266,7 @@ def scenario_delete(name: str, yes: bool, data_dir: Path | None) -> None:
 
 
 @ensemble_group_command.command("delete")
-@click.argument("name")
+@click.argument("name", type=completion.ENSEMBLE)
 @click.option("--yes", is_flag=True, help="Don't ask before deleting.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
@@ -9292,7 +9278,7 @@ def ensemble_delete(name: str, yes: bool, data_dir: Path | None) -> None:
 # ---------- setup listings (#185) ----------
 
 _LISTING_SCENARIO_OPTION = click.option(
-    "--scenario", default=None,
+    "--scenario", type=completion.SCENARIO, default=None,
     help="Scenario folder name (default: the current scenario).",
 )
 _LISTING_DATA_DIR_OPTION = click.option(
@@ -9331,7 +9317,7 @@ _CALENDAR_LIST_KINDS = sorted({*registries.CALENDAR_EVENT_KINDS, *_CALENDAR_COMM
 @calendar_group_command.command("list")
 @click.option("--kind", type=click.Choice(_CALENDAR_LIST_KINDS), default=None,
               help="Only rows of this kind (the CSV kind, or its add command's name).")
-@click.option("--tag", default=None,
+@click.option("--tag", type=completion.TAG, default=None,
               help="Only rows carrying this tag ('role:name', or 'role:*' for a whole role).")
 @click.option("-v", "--verbose", is_flag=True, default=False,
               help="Also show each row's description and params_json.")
@@ -9535,7 +9521,7 @@ _PERSON_OPTIONS = (
     click.option("--role", default=None,
                  help="primary, secondary, or another role; '' for none."),
     click.option("--meta-json", default=None, help="JSON metadata (default {})."),
-    click.option("--scenario", default=None,
+    click.option("--scenario", type=completion.SCENARIO, default=None,
                  help="Scenario checked first (default: the current one); "
                       "every scenario must still load."),
     _LISTING_DATA_DIR_OPTION,
@@ -9604,7 +9590,7 @@ def person_add(
 
 
 @person_group_command.command("edit")
-@click.argument("person_id", metavar="ID")
+@click.argument("person_id", type=completion.PERSON, metavar="ID")
 @_person_options
 def person_edit(
     person_id: str, display: str | None, birthdate: str | None, sex: str | None,
@@ -9769,7 +9755,7 @@ def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
 
 
 @lifespan_group_command.command("set")
-@click.argument("person")
+@click.argument("person", type=completion.PERSON)
 @click.argument("age", required=False)
 @click.option("--vary", default=None,
               help=f"How the age varies across ensemble members: {_NO_VARY}, "
@@ -9778,7 +9764,7 @@ def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
 @click.option("--high", default=None, help="Highest age a member draws.")
 @click.option("--mode", default=None,
               help="Most likely age, for triangular ('' for the age at death).")
-@click.option("--correlate-with", default=None,
+@click.option("--correlate-with", type=completion.CORRELATE_WITH, default=None,
               help="Correlation parent: lifespan:<person>, a varying calendar row "
                    "or a latent factor ('' for none).")
 @click.option("--correlation", default=None, help="Correlation with that parent, -1..1.")
@@ -9860,7 +9846,7 @@ def _life_table_summary(data_dir: Path, scenario: str, person: str) -> str:
 
 
 @lifespan_group_command.command("clear")
-@click.argument("person")
+@click.argument("person", type=completion.PERSON)
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
 def lifespan_clear(person: str, scenario: str | None, data_dir: Path | None) -> None:
@@ -9991,7 +9977,7 @@ def itemization_list(scenario: str | None, data_dir: Path | None) -> None:
 
 
 @itemization_group_command.command("show")
-@click.argument("name")
+@click.argument("name", type=completion.ITEMIZATION)
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
 def itemization_show(name: str, scenario: str | None, data_dir: Path | None) -> None:
@@ -10031,7 +10017,7 @@ def itemization_show(name: str, scenario: str | None, data_dir: Path | None) -> 
 
 
 @scenario_group_command.command("show")
-@click.argument("name", required=False)
+@click.argument("name", type=completion.SCENARIO, required=False)
 @_LISTING_DATA_DIR_OPTION
 @click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path), default=None,
               help="Where run files are (default: state/runs beside the data repo).")
@@ -10097,14 +10083,16 @@ def _ask(text: str, choices: list[str] | None = None, default: str | None = None
 
 
 @sim_group_command.command("invest")
-@click.argument("source", required=False, shell_complete=_complete_account)
-@click.argument("account", required=False, shell_complete=_complete_account)
+@click.argument("source", required=False, type=completion.ENDPOINT)
+@click.argument("account", required=False, type=completion.ACCOUNT)
 @click.argument("lot", required=False)
-@click.option("--source-lot", default=None, help="SOURCE's lot, when SOURCE is an account with lots.")
+@click.option("--source-lot", type=completion.LotName("source"), default=None,
+              help="SOURCE's lot, when SOURCE is an account with lots.")
 @click.option("--amount", default=None, help="Dollars to invest.")
 @click.option("--date", "when", default=None, metavar="YYYY-MM",
               help="When (default: the scenario's first month).")
-@click.option("--symbol", default=None, help="What the lot holds: a known symbol, or a new one.")
+@click.option("--symbol", type=completion.SYMBOL, default=None,
+              help="What the lot holds: a known symbol, or a new one.")
 @click.option("--symbol-name", default=None, help="A new symbol's name, for securities.csv.")
 @click.option("--weight", "weight_specs", multiple=True, metavar="CLASS=PERCENT",
               help="A new symbol's share in one asset class (repeatable), as for `sim symbol add`.")
@@ -10116,8 +10104,9 @@ def _ask(text: str, choices: list[str] | None = None, default: str | None = None
 @click.option("--account-subkind", default=None,
               type=click.Choice(sorted(registries.ACCOUNT_SUBKINDS["asset"])),
               help="A new ACCOUNT's subkind.")
-@click.option("--owner", default=None, help="A new ACCOUNT's owner (default: joint).")
-@click.option("--scenario", default=None, help="Scenario folder name (default: the current scenario).")
+@click.option("--owner", type=completion.PERSON, default=None, help="A new ACCOUNT's owner (default: joint).")
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None)
 def invest_command(
     source: str | None, account: str | None, lot: str | None, source_lot: str | None,
