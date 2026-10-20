@@ -113,12 +113,15 @@ def test_sim_compare_checks_its_options_first(
 
 
 @pytest.mark.slow
-def test_sim_compare_refuses_a_scenario_without_a_run_or_named_twice(
+def test_sim_compare_refuses_a_scenario_unknown_without_a_run_or_named_twice(
     compare_runs: Callable[..., Result],
 ) -> None:
     result = compare_runs("retire_alice", "base")
     assert result.exit_code == 1
     assert "no runs for 'base'" in result.output and "sim run base" in result.output
+    # A path to a real scenario folder is still not a scenario name.
+    outside = compare_runs("retire_alice", "../scenarios/higher_pay")
+    assert outside.exit_code == 1 and "no scenario '../scenarios/higher_pay'" in outside.output
     twice = compare_runs("retire_alice", "higher_pay", "retire_alice")
     assert twice.exit_code == 2 and "name each scenario once" in twice.output
 

@@ -2108,10 +2108,13 @@ def compare_command(
     scenarios = [baseline, *variants]
     with ExitStack() as stack:
         connections: dict[str, RunConnection] = {}
+        # Matched against the folder list, not joined onto a path, so a name
+        # like "../x" can't reach outside scenarios/ or the runs directory.
+        known = set(list_scenario_names(data, ref.scenarios_dir))
         for name in scenarios:
-            run_path = scenario_run_path(ref.runs_dir, name)
-            if not (ref.scenarios_dir / name).is_dir():
+            if name not in known:
                 raise click.ClickException(f"no scenario {name!r} in {ref.scenarios_dir}")
+            run_path = scenario_run_path(ref.runs_dir, name)
             if run_path is None:
                 raise click.ClickException(
                     f"no runs for {name!r} in {ref.runs_dir}; run `sim run {name}` first")
