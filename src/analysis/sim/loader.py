@@ -59,7 +59,7 @@ __all__ = [
     "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
     "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
-    "read_current_scenario", "resolve_scenario_name", "find_state_dir",
+    "read_current_scenario", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
     "write_current_scenario",
 ]
@@ -273,6 +273,13 @@ def _latest_ensemble_member_zero(runs_dir: Path, name: str) -> Path | None:
     return member if member.exists() else None
 
 
+def scenario_run_path(runs_dir: Path | str, name: str) -> Path | None:
+    """The run file that stands for scenario ``name`` under ``runs_dir``: its
+    latest run, else member 0 of its latest ensemble batch; ``None`` when it
+    has neither."""
+    return latest_run_path(runs_dir, name) or _latest_ensemble_member_zero(Path(runs_dir), name)
+
+
 @dataclass(frozen=True)
 class ScenarioRef:
     """A resolved scenario: what it is called, where it lives, what state it is in."""
@@ -383,8 +390,7 @@ def resolve_scenario_name(
         )
     )
     run_path = (Path(run_path).resolve() if run_path is not None
-                else latest_run_path(resolved_runs_dir, name)
-                     or _latest_ensemble_member_zero(resolved_runs_dir, name)
+                else scenario_run_path(resolved_runs_dir, name)
     )
     return ScenarioRef(
         name=name,

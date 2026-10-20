@@ -43,6 +43,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | after-tax income and tax reconciliation (`net_worth.ipynb`) | `analysis sim report tax [--reconciliation]` |
 | every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
 | an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]]` |
+| two or more scenarios side by side: run versions, what differs, year-end net worth, break-even, one account or lot (`scenario_compare.ipynb`) | `analysis sim compare [BASELINE] [VARIANT ...] [--account NAME [--lot LOT]] [--graph]` |
 | two ensembles compared on risk: percentile, paired and tail-mean deltas | `analysis sim ensemble compare <baseline> <variant> [--account NAME [--lot LOT]]` |
 | which varying rows matter, and when (`sensitivity.ipynb`) | `analysis sim ensemble sensitivity <recipe>` |
 

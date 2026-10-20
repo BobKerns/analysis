@@ -35,9 +35,9 @@ __all__ = [
 
 # The params, nearest first, whose value is the scenario a name belongs to.
 SCENARIO_PARAMS = ("scenario", "scenario_name", "baseline")
-# A second scenario whose names count too: `ensemble compare`'s --account
-# may name an account only the variant has.
-_OTHER_SCENARIO_PARAM = "variant"
+# More scenarios whose names count too: `ensemble compare`'s and `sim
+# compare`'s --account may name an account only a variant has.
+_OTHER_SCENARIO_PARAMS = ("variant", "variants")
 
 
 def _line_params(ctx: click.Context) -> dict[str, Any]:
@@ -88,12 +88,14 @@ def _scenario(ctx: click.Context, data_dir: Path) -> str | None:
 
 
 def _line_scenarios(ctx: click.Context, data_dir: Path) -> list[str]:
-    """The scenarios whose names the line may use: the scenario, and a
-    compared variant."""
+    """The scenarios whose names the line may use: the scenario, and the
+    compared variants."""
     found = [scenario] if (scenario := _scenario(ctx, data_dir)) else []
-    other = _given(ctx, _OTHER_SCENARIO_PARAM)
-    if isinstance(other, str) and other not in found:
-        found.append(other)
+    for key in _OTHER_SCENARIO_PARAMS:
+        other = _given(ctx, key)
+        for name in (other if isinstance(other, tuple) else (other,)):
+            if isinstance(name, str) and name not in found:
+                found.append(name)
     return found
 
 

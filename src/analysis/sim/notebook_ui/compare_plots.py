@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
 from weakref import WeakKeyDictionary
 
 import ipywidgets as widgets
 import pandas as pd
-from IPython.display import clear_output, display
+from IPython.display import Image, clear_output, display
 
-from analysis.sim.connection import RunConnection, year_end_values
+from analysis.sim import compare
+from analysis.sim.compare import breakeven_month
+from analysis.sim.compare_charts import comparison_figure
+from analysis.sim.connection import RunConnection
+from analysis.sim.ensemble_plots import figure_bytes
 from analysis.sim.notebook_ui.pickers import (
     _TOGGLE_LAYOUT,
     AccountPicker,
@@ -39,57 +42,21 @@ def net_worth_by_month(
     container: MultiScenarioConnections,
     mode: DollarMode = DollarMode.NOMINAL,
 ) -> pd.DataFrame:
-    """Net worth (USD) by month, one column per scenario.
-
-    A run with no accounts has no net-worth rows; it counts as zero net worth
-    over the others' months (#174), not as missing data.
-    """
-    value_column = "cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-    columns = {
-        name: container.connections[name].net_worth_frame()[value_column]
-        for name in container.scenarios
-    }
-    nw = pd.DataFrame(columns)
-    for name, column in columns.items():
-        if column.empty:
-            nw[name] = 0.0
-    return nw
+    """Net worth (USD) by month, one column per scenario; see
+    :func:`analysis.sim.compare.net_worth_by_month`."""
+    return compare.net_worth_by_month(container.connections, container.scenarios, mode)
 
 
 def variant_delta(nw: pd.DataFrame, container: MultiScenarioConnections) -> pd.DataFrame:
     """Each variant's net worth minus the baseline's, by month."""
-    return nw[container.variants].sub(nw[container.baseline], axis=0)
-
-
-def breakeven_month(series: pd.Series) -> datetime | None:
-    """First month after which `series` never dips back to/below zero again."""
-    ahead = series > 0
-    if ahead.all():
-        return series.index[0]
-    if not ahead.any():
-        return None
-    after_last_deficit = series.index[series.index > series[~ahead].index.max()]
-    return after_last_deficit.min() if len(after_last_deficit) else None
+    return compare.variant_delta(nw, container.baseline, container.variants)
 
 
 def breakeven_summary(
     nw: pd.DataFrame, delta: pd.DataFrame, container: MultiScenarioConnections,
 ) -> pd.DataFrame:
     """Per-variant break-even month, deepest deficit, and end-of-run comparison."""
-    rows = {}
-    for name in container.variants:
-        series = delta[name]
-        month = breakeven_month(series)
-        rows[name] = {
-            "break-even": f"{month:%Y-%m}" if month is not None else "never",
-            "deepest deficit": series.min(),
-            "when": f"{series.idxmin():%Y-%m}",
-            "at scenario end": series.iloc[-1],
-            "final net worth": nw[name].iloc[-1],
-        }
-    summary = pd.DataFrame(rows).T
-    summary.index.name = f"vs {container.baseline}"
-    return summary
+    return compare.breakeven_summary(nw, delta, container.baseline, container.variants)
 
 
 def filter_comparisons(comparisons: dict, available: list[str]) -> dict:
@@ -141,38 +108,16 @@ def plot_net_worth_and_delta(
     nw: pd.DataFrame, delta: pd.DataFrame, container: MultiScenarioConnections,
     mode: str = "nominal",
 ) -> None:
-    """Two-panel chart: net worth per scenario, and each variant's delta vs baseline."""
-    import matplotlib.pyplot as plt
-
-    baseline, variants, colors = container.baseline, container.variants, container.colors
-    scenarios = [baseline, *variants]
-    fig, (ax_nw, ax_delta) = plt.subplots(
-        2, 1, figsize=(11, 9), sharex=True, height_ratios=[2, 1]
-    )
-    for name in scenarios:
-        ax_nw.plot(
-            nw.index, nw[name], label=name, color=colors[name],
-            linestyle="-" if name == baseline else "--",
-            linewidth=2 if name == baseline else 1.5,
-        )
-    ax_nw.set_ylabel("net worth (USD)")
+    """Two-panel chart: net worth per scenario, and each variant's delta vs
+    baseline, as ``sim compare --graph`` draws it. ``delta`` is
+    ``variant_delta(nw, container)``, which the chart recomputes."""
+    del delta
     mode_label = "CPI-constant" if mode == "cpi_constant" else "nominal"
-    ax_nw.set_title(f"Net worth, {mode_label}")
-    # ax_nw.legend(framealpha=FRAME_ALPHA)
-
-    for name in variants:
-        ax_delta.plot(delta.index, delta[name], label=name, color=colors[name])
-    ax_delta.axhline(0, color="grey", linewidth=0.8)
-    ax_delta.set_ylabel(f"difference vs {baseline}")
-    ax_delta.set_xlabel("month")
-    ax_delta.legend(framealpha=FRAME_ALPHA)
-
-    for ax in (ax_nw, ax_delta):
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-        ax.grid(True, axis="y", alpha=0.3)
-        include_zero(ax)
-    plt.tight_layout()
-    plt.show()
+    figure = comparison_figure(
+        nw, container.baseline, container.variants, f"Net worth, {mode_label}",
+        colors=container.colors,
+    )
+    display(Image(data=figure_bytes(figure), format="png"))
 
 
 def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:
@@ -245,26 +190,8 @@ def comparability_widget(container: MultiScenarioConnections,
     variants = variants or list(runs.keys())
 
     def _redraw():
-        meta = pd.concat(
-            [
-                runs[name].items("simulation_run")[_META_COLS]
-                for name in variants
-            ],
-            ignore_index=True,
-        )
-        for column in ("code_version", "data_version"):
-            meta[column] = meta[column].str[:12]
+        meta, warnings = compare.comparability(runs, variants)
         display(meta.set_index("scenario_name").T)
-
-        warnings = []
-        if meta["data_version"].nunique() > 1:
-            warnings.append("different **data versions** — the data repo changed between runs")
-        if meta["code_version"].nunique() > 1:
-            warnings.append("different **code versions** — the engine changed between runs")
-        if meta[["code_dirty", "data_dirty"]].to_numpy().any():
-            warnings.append("at least one run was made from **uncommitted** code or data")
-        if (meta["status"] != "succeeded").any():
-            warnings.append("at least one run did **not succeed**")
         if warnings:
             for warning in warnings:
                 display_warning(warning)
@@ -277,9 +204,6 @@ def comparability_widget(container: MultiScenarioConnections,
         _redraw()
 
 
-_RULE_COMPARE_COLS = ["amount_cents", "start", "end", "series", "cadence", "tax_character"]
-
-
 def rules_and_events_widget(container: MultiScenarioConnections,
                             connections: Mapping[str, RunConnection],
                             scenarios: Sequence[str],
@@ -290,60 +214,19 @@ def rules_and_events_widget(container: MultiScenarioConnections,
     """What actually differs between scenarios: rules (as of run end) and calendar events."""
 
     def _redraw():
-        rules = {
-            name: connections[name].items("scheduled")
-                .set_index("name").reindex(columns=_RULE_COMPARE_COLS)
-            for name in scenarios
-        }
-        index = sorted(set().union(*(frame.index for frame in rules.values())))
-        rules = {name: frame.reindex(index) for name, frame in rules.items()}
-
-        base_rules = rules[baseline]
-        differs = pd.DataFrame(False, index=index, columns=_RULE_COMPARE_COLS)
-        for name in variants:
-            other = rules[name]
-            differs |= (base_rules != other) & ~(base_rules.isna() & other.isna())
-
-        rows = [
-            {"rule": rule, "field": field,
-             **{name: rules[name].at[rule, field] for name in scenarios}}
-            for rule in index if differs.loc[rule].any()
-            for field in _RULE_COMPARE_COLS if differs.at[rule, field]
-        ]
-        differences = pd.DataFrame(rows)
+        differences = compare.rule_differences(connections, scenarios, baseline)
         if differences.empty:
             display_warning("**All scenarios have identical rules.**")
         else:
-            display(differences.set_index(["rule", "field"]).fillna("—"))
-
-        events = pd.concat(
-            [
-                connections[name].items("calendar_event").assign(scenario=name)
-                for name in scenarios
-            ],
-            ignore_index=True,
-        )
-        if events.empty:
+            display(differences.fillna("—"))
+        if all(connections[name].items("calendar_event").empty for name in scenarios):
             display(StyledMarkdown("_No calendar events in any scenario._"))
             return
-
-        events["amount"] = (events["amount"].astype("Float64") / 100).map(
-            lambda v: "" if pd.isna(v) else f"${v:,.2f}"
-        )
-        # Drop events whose (date, kind, scheduled_name, amount, description) is
-        # identical across every scenario -- only differences are worth showing.
-        sig_cols = ["date", "kind", "scheduled_name", "amount", "description"]
-        sig = events[sig_cols].apply(tuple, axis=1)
-        sig_scenario_count = events.groupby(sig)["scenario"].transform("nunique")
-        events = events[sig_scenario_count < len(scenarios)]
-
+        events = compare.event_differences(connections, scenarios)
         if events.empty:
             display_warning("**All scenarios have identical calendar events.**")
         else:
-            display(
-                events[["scenario", "date", "kind", "scheduled_name", "amount", "description"]]
-                .set_index(["scenario", "date"])
-            )
+            display(events.set_index(["scenario", "date"]))
 
     if container.ok:
         _redraw()
@@ -444,10 +327,7 @@ def year_end_widget(
     def _redraw(*_):
         mode = dollar_mode.value
         nw = net_worth_by_month(container, mode)
-        year_end = year_end_values(nw)
-        year_end.index.name = "year"
-        for name in container.variants:
-            year_end[f"Δ {name}"] = year_end[name] - year_end[baseline]
+        year_end = compare.year_end_comparison(nw, baseline or container.baseline, container.variants)
         with output:
             clear_output(wait=True)
             display(year_end.style.format("${:,.0f}"))
