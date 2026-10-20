@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
-from weakref import WeakKeyDictionary
 
 import ipywidgets as widgets
 import pandas as pd
@@ -27,6 +26,7 @@ from analysis.sim.notebook_ui.pickers import (
     ValuePlotModePicker,
     controls_row,
     display_warning,
+    observe_while_shown,
     merged_lots_by_account,
     run_years,
     to_markdown,
@@ -121,22 +121,6 @@ def comparison_frame(nw: pd.DataFrame, comparisons: dict) -> pd.DataFrame:
         for label, (a, b) in pairs.items():
             result[label] = nw[a] - nw[b]
     return result
-
-
-# Each shared control's compare-widget observers, by widget key.
-_compare_plot_redraws: WeakKeyDictionary[widgets.Widget, dict[str, Callable]] = WeakKeyDictionary()
-
-
-def _observe_shared(control: widgets.Widget, key: str, redraw: Callable) -> None:
-    """Keep one observer per compare widget on a shared control (the dollar
-    toggle, the time range): a picker change rebuilds every widget, and the
-    old one's observer would go on redrawing a widget no longer shown."""
-    observers = _compare_plot_redraws.setdefault(control, {})
-    previous = observers.get(key)
-    if previous is not None:
-        control.unobserve(previous, names="value")
-    observers[key] = redraw
-    control.observe(redraw, names="value")
 
 
 def _time_range(
@@ -383,8 +367,8 @@ def net_worth_compare_widget(
             clear_output(wait=True)
             plot_net_worth_and_delta(nw, delta, container, mode)
 
-    _observe_shared(dollar_mode, "net_worth", _redraw)
-    _observe_shared(time_range, "net_worth", _redraw)
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     if container.ok:
         _redraw()
     return widgets.VBox([controls_row(dollar_mode, time_range), output])
@@ -421,7 +405,7 @@ def breakeven_widget(
                 f"**${nw[baseline].iloc[-1]:,.0f}**"
             ))
 
-    _observe_shared(dollar_mode, "breakeven", _redraw)
+    observe_while_shown(dollar_mode, _redraw)
     if container.ok:
         _redraw()
     return widgets.VBox([dollar_mode, output])
@@ -471,8 +455,8 @@ def year_end_widget(
             clear_output(wait=True)
             display(year_end.style.format("${:,.0f}"))
 
-    _observe_shared(dollar_mode, "year_end", _redraw)
-    _observe_shared(time_range, "year_end", _redraw)
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     if container.ok:
         _redraw()
     return widgets.VBox([controls_row(dollar_mode, time_range), output])
@@ -846,9 +830,9 @@ def _show_account_balance_diffs(
 
     account_picker.observe(show_selected, names="selection")
     measure_picker.observe(show_selected, names="value")
-    _observe_shared(dollar_mode, "account_diffs", show_selected)
-    _observe_shared(time_range, "account_diffs", show_selected)
-    value_mode.observe(show_selected, names="value")
+    observe_while_shown(dollar_mode, show_selected)
+    observe_while_shown(time_range, show_selected)
+    observe_while_shown(value_mode, show_selected)
     show_selected()
 
     with pd.option_context('display.max_rows', None,

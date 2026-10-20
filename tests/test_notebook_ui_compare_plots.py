@@ -175,37 +175,40 @@ def test_year_end_widget_includes_delta_column(multi_connections: MultiScenarioC
     assert widget is not None
 
 
-def test_compare_widgets_share_dollar_mode_observers(multi_connections: MultiScenarioConnections) -> None:
+def _two_runs(retire_alice_run: RunConnection, variant_a_run: RunConnection,
+              ) -> MultiScenarioConnections:
+    # Built directly: the multi_connections fixture's picker finds no runs.
+    return MultiScenarioConnections(
+        connections={"retire_alice": retire_alice_run, "variant_a": variant_a_run},
+        baseline="retire_alice", variants=["variant_a"],
+        colors={"retire_alice": "C0", "variant_a": "C1"},
+    )
+
+
+def test_compare_widgets_redraw_on_a_shared_dollar_toggle(
+    retire_alice_run: RunConnection, variant_a_run: RunConnection,
+) -> None:
+    multi_connections = _two_runs(retire_alice_run, variant_a_run)
     dollar_mode = DollarModePicker()
 
     cp.net_worth_compare_widget(multi_connections, dollar_mode=dollar_mode)
     cp.breakeven_widget(multi_connections, dollar_mode=dollar_mode, baseline="retire_alice")
     cp.year_end_widget(multi_connections, dollar_mode=dollar_mode, baseline="retire_alice")
 
-    assert set(cp._compare_plot_redraws[dollar_mode]) == {
-        "net_worth", "breakeven", "year_end",
-    }
+    dollar_mode.value = DollarMode.CPI_CONSTANT  # redraws all three; must not raise
 
 
 def test_compare_widgets_share_one_time_range_over_every_run(
     retire_alice_run: RunConnection, variant_a_run: RunConnection,
 ) -> None:
-    # Built directly: the multi_connections fixture's picker finds no runs.
-    multi_connections = MultiScenarioConnections(
-        connections={"retire_alice": retire_alice_run, "variant_a": variant_a_run},
-        baseline="retire_alice", variants=["variant_a"],
-        colors={"retire_alice": "C0", "variant_a": "C1"},
-    )
+    multi_connections = _two_runs(retire_alice_run, variant_a_run)
     time_range = TimeRangePicker()
 
     cp.net_worth_compare_widget(multi_connections, time_range=time_range)
     cp.year_end_widget(multi_connections, time_range=time_range, baseline="retire_alice")
-    # A rebuilt widget replaces its observer rather than adding one.
-    cp.year_end_widget(multi_connections, time_range=time_range, baseline="retire_alice")
 
     years = run_years(*multi_connections.connections.values())
     assert (time_range.min, time_range.max) == (years[0], years[-1])
-    assert set(cp._compare_plot_redraws[time_range]) == {"net_worth", "year_end"}
     time_range.value = (years[0], years[0])  # redraws both; must not raise
 
 

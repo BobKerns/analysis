@@ -18,10 +18,12 @@ from analysis.cli import main
 from analysis.sim import notebook_ui
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.notebook_ui.pickers import (
+    Connections,
     MultiScenarioConnections,
     TimeRangePicker,
     display_warning,
     multi_scenario_picker,
+    observe_while_shown,
     scenario_picker,
     warning_html,
 )
@@ -348,3 +350,32 @@ def test_time_range_clips_by_month_or_by_year() -> None:
     assert time_range.clip(monthly.to_period("M")).index.year.unique().tolist() == [2027]
     assert time_range.clip(yearly).index.tolist() == [2027]
     assert time_range.clip(labelled).index.tolist() == ["2027"]
+
+
+class _Shown(Connections):
+    """Connections whose show() calls the widget function as is."""
+
+    def _invoke(self, fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+
+def test_a_rebuilt_widget_stops_observing_shared_controls() -> None:
+    time_range = TimeRangePicker()
+    time_range.cover(range(2026, 2031))
+    builds: list[int] = []
+    redraws: list[int] = []
+
+    def widget(*, time_range: TimeRangePicker, **_) -> None:
+        build = len(builds)
+        builds.append(build)
+        observe_while_shown(time_range, lambda *_: redraws.append(build))
+
+    shown = _Shown()
+    shown.show(widget, time_range=time_range)
+    shown.notify_changed()  # a scenario change rebuilds the widget
+    shown.notify_changed()
+
+    time_range.value = (2026, 2027)
+
+    assert builds == [0, 1, 2]
+    assert redraws == [2]  # only the widget now shown redraws

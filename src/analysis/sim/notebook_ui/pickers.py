@@ -11,6 +11,7 @@ notebook cell that captured it once keeps seeing the current selection.
 from __future__ import annotations
 
 from abc import abstractmethod
+from contextvars import ContextVar
 import html as html_lib
 import os
 import re
@@ -81,6 +82,30 @@ def display_warning(message: str) -> None:
     display(HTML(warning_html(message)))
 
 
+# The detachers of the observers the widget now being drawn by
+# Connections.show() puts on shared controls; None outside such a draw.
+_shown_observers: ContextVar[list[Callable[[], None]] | None] = ContextVar(
+    "_shown_observers", default=None,
+)
+
+
+def observe_while_shown(control: traitlets.HasTraits, handler: Callable[..., Any],
+                        names: str = "value") -> None:
+    """``control.observe(handler, names=names)``, for as long as the widget
+    being drawn is shown.
+
+    A shared control (the dollar toggle, the Years slider) outlives the
+    widgets that observe it: ``Connections.show`` rebuilds its widget on a
+    scenario change and closes the old run. Observed this way, the old
+    widget's handler is detached before the rebuild, rather than going on
+    redrawing a closed run, or raising and so stopping the handlers after
+    it. Outside a ``show()`` draw it is a plain ``observe``."""
+    control.observe(handler, names=names)
+    detachers = _shown_observers.get()
+    if detachers is not None:
+        detachers.append(lambda: control.unobserve(handler, names=names))
+
+
 def _trait(descriptor: traitlets.TraitType) -> Any:
     """``descriptor``, typed as the value it holds on an instance.
 
@@ -136,10 +161,22 @@ class Connections(traitlets.HasTraits):
         
         """
         out = widgets.Output()
+        # What the shown widget observes on shared controls (observe_while_shown).
+        detachers: list[Callable[[], None]] = []
+
         def _draw():
+            # Detached before the new widget is built: building it can move a
+            # shared control (TimeRangePicker.cover), which must not redraw
+            # the widget it replaces.
+            while detachers:
+                detachers.pop()()
             with out:
                 clear_output(wait=True)
-                result = self._invoke(fn, *args, member=self.member, **kwargs)
+                token = _shown_observers.set(detachers)
+                try:
+                    result = self._invoke(fn, *args, member=self.member, **kwargs)
+                finally:
+                    _shown_observers.reset(token)
                 if result is not None:
                     display(result)
 

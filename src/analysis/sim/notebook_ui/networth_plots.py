@@ -20,7 +20,7 @@ from analysis.sim.connection import (
     yearly_totals,
 )
 from analysis.sim.notebook_ui.pickers import (
-    DollarModePicker, TimeRangePicker, controls_row, run_years,
+    DollarModePicker, TimeRangePicker, controls_row, observe_while_shown, run_years,
 )
 from analysis.sim.types import INCOME_CATEGORIES, DollarMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -61,7 +61,7 @@ def net_worth_widget(rc: RunConnection,
             clear_output(wait=True)
             display(year_end.style.format({"nominal": "${:,.0f}", "cpi_constant": "${:,.0f}"}))
 
-    time_range.observe(_redraw, names="value")
+    observe_while_shown(time_range, _redraw)
     _redraw()
 
     return widgets.VBox([time_range, chart_out, table_out])
@@ -109,8 +109,8 @@ def income_widget(rc: RunConnection,
             clear_output(wait=True)
             display(income_yearly.style.format("${:,.0f}"))
 
-    dollar_mode.observe(_redraw, names="value")
-    time_range.observe(_redraw, names="value")
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     _redraw()
 
     return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])
@@ -171,8 +171,8 @@ def expenses_widget(rc: RunConnection,
             clear_output(wait=True)
             display(expenses_yearly.style.format("${:,.0f}"))
 
-    dollar_mode.observe(_redraw, names="value")
-    time_range.observe(_redraw, names="value")
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     _redraw()
 
     return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, caveat_out, table_out])
@@ -225,8 +225,8 @@ def gains_widget(rc: RunConnection,
             clear_output(wait=True)
             display(gains_yearly.style.format("${:,.0f}"))
 
-    dollar_mode.observe(_redraw, names="value")
-    time_range.observe(_redraw, names="value")
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     _redraw()
 
     return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])
@@ -316,8 +316,8 @@ def after_tax_widget(rc: RunConnection,
             display(reconciliation.style.format({c: "${:,.0f}" for c in money_columns}))
             display(net.style.format("${:,.0f}"))
 
-    dollar_mode.observe(_redraw, names="value")
-    time_range.observe(_redraw, names="value")
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     _redraw()
 
     return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])

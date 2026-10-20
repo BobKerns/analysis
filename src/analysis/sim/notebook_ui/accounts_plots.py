@@ -21,7 +21,7 @@ from analysis.sim.plotting import include_zero
 from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.pickers import (
     AccountPicker, DollarModePicker, TimeRangePicker, ValuePlotModePicker,
-    YAxisPlotModePicker, controls_row, run_years,
+    YAxisPlotModePicker, controls_row, observe_while_shown, run_years,
 )
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
@@ -125,10 +125,8 @@ def account_balance_history_widget(
 
     picker.observe(_redraw_caveat, names="kind")
     picker.observe(_redraw, names="selection")
-    dollar_mode.observe(_redraw, names="value")
-    y_axis_mode.observe(_redraw, names="value")
-    value_mode.observe(_redraw, names="value")
-    time_range.observe(_redraw, names="value")
+    for control in (dollar_mode, y_axis_mode, value_mode, time_range):
+        observe_while_shown(control, _redraw)
 
     _redraw_caveat()
     _redraw()
