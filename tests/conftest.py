@@ -57,6 +57,7 @@ own data, that setup belongs in a fixture instead.
 
 from __future__ import annotations
 from collections.abc import Callable, Generator
+import json
 from pathlib import Path
 import shutil
 import sqlite3
@@ -927,6 +928,40 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
     intent = load_test_copy().intent_path
     return run_scenario(intent, runs_dir / "two_lot.sqlite3", run_by="TEST",
                         allow_dirty_data=True, allow_dirty_code=True)
+
+
+@pytest.fixture(scope="function")
+def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Give the private retire_alice copy a state income tax: an
+    Expense_Taxes_State account and a ``tax_accumulator`` rule (scope state)
+    paying the previous year's state tax each April. ``bracket_series`` names
+    the state when more than one ``state_brackets`` table exists."""
+    def _add(bracket_series: str | None = None) -> None:
+        params = {"year": "previous", "scope": "state"}
+        if bracket_series:
+            params["bracket_series"] = bracket_series
+        accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str,
+                               keep_default_na=False)
+        accounts.loc[len(accounts)] = {
+            **dict.fromkeys(accounts.columns, ""),
+            "name": "Expense_Taxes_State", "kind": "expense", "subkind": "taxes_state",
+            "owner": "joint", "tax_treatment": "none", "opened": "2020-01-31",
+            "meta_json": "{}",
+        }
+        accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+        scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str,
+                                keep_default_na=False)
+        scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+        scheduled.loc[len(scheduled)] = {
+            **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
+            "name": "tax_state_prev_year", "from_account": "Asset_Checking",
+            "to_account": "Expense_Taxes_State", "cadence": "annual", "month_of_year": "4",
+            "amount_rule_kind": "tax_accumulator", "tax_character": "none",
+            "start": "2027-04-30", "priority": "400", "meta_json": "{}",
+            "params_json": json.dumps(params),
+        }
+        scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+    return _add
 
 
 @pytest.fixture(scope="function")

@@ -286,6 +286,9 @@ DEFAULT_PRIORITIES: dict[str, int] = {
 # CSV money columns are written in decimal dollars (e.g. ``1234.56``); the loader
 # converts them to integer cents stored under the same column name in the
 # payload JSON.
+STATE_STANDARD_DEDUCTION = "state_standard_deduction"
+"""The aux kind of a state's own standard deduction (#248)."""
+
 AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "federal_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
@@ -298,6 +301,11 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "ltcg_brackets":
         ("effective_date", "filing_status", "bracket_index", "floor", "marginal_rate"),
     "standard_deduction": ("effective_date", "filing_status", "amount"),
+    # The state's own standard deduction (#248), which is often far smaller
+    # than the federal one. A state tax rule falls back to standard_deduction
+    # when there is no state_standard_deduction__<state> for its brackets'
+    # state, and the loader warns that it did.
+    STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount"),
     # Itemized deductions: a dated total, no filing_status split (unlike
     # standard_deduction). Optional; when present, the tax_accumulator rule uses
     # whichever is greater, itemized or standard. `amount` may be a literal
@@ -386,6 +394,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "ltcg_brackets": frozenset({"floor"}),
     "state_brackets": frozenset({"floor"}),
     "standard_deduction": frozenset({"amount"}),
+    STATE_STANDARD_DEDUCTION: frozenset({"amount"}),
     "federal_deductions": frozenset({"amount"}),
     "state_deductions": frozenset({"amount"}),
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),

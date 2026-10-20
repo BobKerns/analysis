@@ -983,6 +983,7 @@ def load_scenario(
         scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
+    _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
@@ -2655,6 +2656,51 @@ def _validate_swap_aux_table_row(
                 "scheduled_name", "param_date", "tax_character"):
         if (row.get(col) or "").strip():
             issues.append(f"{where}: swap_aux_table takes no {col}; leave it blank")
+
+
+def _warn_state_standard_deduction(
+    scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    warnings: list[str],
+) -> None:
+    """A state tax rule with no state_standard_deduction__<state> table for
+    its brackets' state uses the federal standard deduction (#248), which
+    overstates most states' (California's is about a third of it), so its
+    tax comes out low. A move to a state (a swap_aux_table of its
+    state_brackets) with no such table falls back the same way; without a
+    state tax rule, nothing reads either table, so a move says nothing."""
+    supplied = {(kind, series) for kind, series, *_ in aux_rows}
+    state_rule = False
+    states = sorted(series for kind, series in supplied
+                    if kind == "state_brackets" and series is not None)
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") != "tax_accumulator":
+            continue
+        params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
+        if params.get("scope") != "state":
+            continue
+        state_rule = True
+        if "standard_deduction_aux" in params:
+            continue
+        state = params.get("bracket_series") or (states[0] if len(states) == 1 else None)
+        if state is None or (registries.STATE_STANDARD_DEDUCTION, state) in supplied:
+            continue  # no state to name: the run reports the missing bracket_series
+        warnings.append(
+            f"{where} ({row.get('name', '')}): state tax uses the federal standard "
+            f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv "
+            "(effective_date, filing_status, amount) with the state's own"
+        )
+    for where, row in _located(calendar_rows, "calendar.csv") if state_rule else ():
+        params = _safe_json(row.get("params_json")) or {}
+        state = params.get("source_series")
+        if (row.get("kind") == "swap_aux_table" and params.get("aux_kind") == "state_brackets"
+                and isinstance(state, str)
+                and (registries.STATE_STANDARD_DEDUCTION, state) not in supplied):
+            warnings.append(
+                f"{where}: after the move to {state}, state tax uses the federal standard "
+                f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv"
+            )
 
 
 def _validate_swap_aux_tables(

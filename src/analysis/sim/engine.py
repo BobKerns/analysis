@@ -2428,7 +2428,10 @@ def _apply_tax_accumulator(
     - filing_status_aux: defaults to "filing_status"
     - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
     - bracket_series: optional, required when state_brackets has multiple series
-    - standard_deduction_aux: defaults to "standard_deduction"
+    - standard_deduction_aux: defaults to "standard_deduction" (federal) or
+      "state_standard_deduction" (state), whose series is bracket_series's
+      (state_standard_deduction__CA.csv); with no such file the state falls
+      back to "standard_deduction"
     - itemized_deduction_aux: defaults to "federal_deductions" (federal) or
       "state_deductions" (state); the greater of it and the standard deduction
       is used. "state_deductions" falls back to "federal_deductions" when the
@@ -2463,7 +2466,10 @@ def _apply_tax_accumulator(
             ) from e
 
     filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
-    standard_deduction_aux = str(params.get("standard_deduction_aux", "standard_deduction"))
+    standard_deduction_aux = str(params.get(
+        "standard_deduction_aux",
+        "standard_deduction" if scope == "federal" else registries.STATE_STANDARD_DEDUCTION,
+    ))
     ss_threshold_aux = str(params.get("ss_threshold_aux", "ss_taxation_thresholds"))
     ltcg_bracket_aux = str(params.get("ltcg_bracket_aux", "ltcg_brackets"))
     bracket_aux = str(
@@ -2529,7 +2535,16 @@ def _apply_tax_accumulator(
             )
         ss_tiers = (int(thresholds[0]["tier1_floor"]), int(thresholds[0]["tier2_floor"]))
 
-    deduction_rows = _active_aux_rows(aux, standard_deduction_aux, None, as_of)
+    # A state's standard deduction is keyed by state, like its brackets
+    # (state_standard_deduction__CA.csv), so it follows bracket_series.
+    deduction_series = (
+        bracket_series if standard_deduction_aux == registries.STATE_STANDARD_DEDUCTION
+        else None
+    )
+    if deduction_series is not None and not aux.get((standard_deduction_aux, deduction_series)):
+        # The loader warned: the federal figure stands in for the state's.
+        standard_deduction_aux, deduction_series = "standard_deduction", None
+    deduction_rows = _active_aux_rows(aux, standard_deduction_aux, deduction_series, as_of)
     deduction_rows = [r for r in deduction_rows if r.get("filing_status") == filing_status]
     if not deduction_rows:
         raise EngineError(
@@ -3231,7 +3246,8 @@ def _swap_aux_table(
 ) -> None:
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
-    ``source_series``) would.
+    ``source_series``) would. Swapping ``state_brackets`` swaps the state's
+    standard deduction with it.
 
     Lookups only move forward, so the target simply becomes a copy of the
     source -- which keeps each lookup style exact: the latest row, the
@@ -3286,6 +3302,16 @@ def _swap_aux_table(
         ],
     )
     aux[(aux_kind, series)] = kept + written
+    if aux_kind == "state_brackets":
+        # A move to another state takes its standard deduction too (#248):
+        # the new state's state_standard_deduction__<state>, or, with none,
+        # the federal fallback rather than the old state's figure.
+        deduction = registries.STATE_STANDARD_DEDUCTION
+        if aux.get((deduction, source_series)):
+            _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": deduction}, aux)
+        elif aux.pop((deduction, series), None):
+            con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
+                        (deduction, series))
 
 
 def _apply_calendar_event(
