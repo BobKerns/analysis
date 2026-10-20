@@ -2428,7 +2428,9 @@ def _apply_tax_accumulator(
     - filing_status_aux: defaults to "filing_status"
     - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
     - bracket_series: optional, required when state_brackets has multiple series
-    - standard_deduction_aux: defaults to "standard_deduction"
+    - standard_deduction_aux: defaults to "standard_deduction" (federal) or
+      "state_standard_deduction" (state), which falls back to
+      "standard_deduction" when the scenario has no rows of it at all
     - itemized_deduction_aux: defaults to "federal_deductions" (federal) or
       "state_deductions" (state); the greater of it and the standard deduction
       is used. "state_deductions" falls back to "federal_deductions" when the
@@ -2463,7 +2465,15 @@ def _apply_tax_accumulator(
             ) from e
 
     filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
-    standard_deduction_aux = str(params.get("standard_deduction_aux", "standard_deduction"))
+    standard_deduction_aux = str(params.get(
+        "standard_deduction_aux",
+        "standard_deduction" if scope == "federal" else registries.STATE_STANDARD_DEDUCTION,
+    ))
+    if standard_deduction_aux == registries.STATE_STANDARD_DEDUCTION and not aux.get(
+        (registries.STATE_STANDARD_DEDUCTION, None)
+    ):
+        # The loader warned: the federal figure stands in for the state's.
+        standard_deduction_aux = "standard_deduction"
     ss_threshold_aux = str(params.get("ss_threshold_aux", "ss_taxation_thresholds"))
     ltcg_bracket_aux = str(params.get("ltcg_bracket_aux", "ltcg_brackets"))
     bracket_aux = str(

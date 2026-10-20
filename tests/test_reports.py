@@ -102,25 +102,40 @@ def test_gains_count_a_prior_years_catch_up_in_that_year(report_run: RunConnecti
         expenses.reindex(gains.index).fillna(0).to_numpy())
 
 
-def test_tax_by_year_shows_the_federal_income_it_taxed(report_run: RunConnection) -> None:
+def test_tax_by_year_shows_the_federal_income_it_taxed_without_a_state_rule(report_run: RunConnection) -> None:
     tax = reports.tax_by_year(report_run)
-    assert list(tax.columns) == ["agi", "deduction", "taxable_income", "federal_tax",
-                                 "state_tax", "total_tax", "effective_rate"]
+    # No state tax rule, so no state columns.
+    assert list(tax.columns) == ["fed_agi", "fed_deduction", "fed_taxable_income",
+                                 "fed_tax", "total_tax", "effective_rate"]
     liability = report_run.tax_liability_by_year()
     assert tax.loc[2026, "total_tax"] == pytest.approx(liability[2026]) and liability[2026] > 0
     summary = report_run.items("tax_year_summary").set_index(["year", "bucket"])["amount"] / 100
-    assert tax.loc[2026, "agi"] == pytest.approx(summary[2026, "federal_adjusted_gross_income"])
-    assert tax.loc[2026, "taxable_income"] == pytest.approx(
-        max(0, tax.loc[2026, "agi"] - tax.loc[2026, "deduction"]))
+    assert tax.loc[2026, "fed_agi"] == pytest.approx(summary[2026, "federal_adjusted_gross_income"])
+    assert tax.loc[2026, "fed_taxable_income"] == pytest.approx(
+        max(0, tax.loc[2026, "fed_agi"] - tax.loc[2026, "fed_deduction"]))
     assert tax.loc[2026, "effective_rate"] == pytest.approx(
-        tax.loc[2026, "total_tax"] / tax.loc[2026, "agi"])
+        tax.loc[2026, "total_tax"] / tax.loc[2026, "fed_agi"])
     # The rate is a ratio, so CPI-constant dollars leave it alone.
     constant = reports.tax_by_year(report_run, DollarMode.CPI_CONSTANT)
     assert constant["effective_rate"].to_numpy() == pytest.approx(
         tax["effective_rate"].to_numpy(), nan_ok=True)
-    assert constant.loc[2030, "agi"] < tax.loc[2030, "agi"]
+    assert constant.loc[2030, "fed_agi"] < tax.loc[2030, "fed_agi"]
     reconciliation = reports.tax_reconciliation(report_run)
-    assert reconciliation.loc[2026, "federal_liability"] == pytest.approx(liability[2026])
+    assert reconciliation.loc[2026, "fed_liability"] == pytest.approx(liability[2026])
+
+
+def test_tax_by_year_adds_the_states_own_figures(
+    add_state_tax, load_test_copy, runs_dir: Path, test_data_dir: Path,
+) -> None:
+    add_state_tax()
+    run_file = run_scenario(load_test_copy().intent_path, runs_dir / "state.sqlite3",
+                            run_by="TEST", allow_dirty_data=True, allow_dirty_code=True)
+    with open_scenario(test_data_dir, "retire_alice") as scenario_conn, \
+            open_run(run_file, scenario_conn, scenarios_dir=test_data_dir / "scenarios") as rc:
+        tax = reports.tax_by_year(rc)
+    assert {"state_agi", "state_deduction", "state_taxable_income", "state_tax"} <= set(tax)
+    assert tax.loc[2026, "state_deduction"] == pytest.approx(11_080)
+    assert tax.loc[2026, "total_tax"] == pytest.approx(tax.loc[2026, "state_tax"])
 
 
 def test_a_market_drop_takes_back_that_years_gains(
@@ -177,7 +192,7 @@ def test_report_commands_print_their_tables(report_run_file: Path) -> None:
     tax = run("report", "tax")
     assert "tax and taxable income" in tax and "taxable_income" in tax
     assert "gross_income" not in tax and "%" in tax
-    assert "federal_refund" in run("report", "tax", "--reconciliation")
+    assert "fed_refund" in run("report", "tax", "--reconciliation")
     history = run("account", "history", "Liability_Mortgage", "--yearly", "--dollars", "nominal")
     assert "Liability_Mortgage, nominal dollars" in history and "-$" in history
 

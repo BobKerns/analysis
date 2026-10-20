@@ -6337,13 +6337,13 @@ def report_tax_command(
     reconciliation: bool, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Show federal and state tax by year, and the federal income it was figured on.
+    """Show federal and state tax by year, and the income each was figured on.
 
-    agi, deduction and taxable_income are federal: AGI, the larger of the
-    standard and itemized deduction, and the income the brackets taxed.
-    effective_rate is total tax over AGI. Tax belongs to the year the income
-    was earned in; its balance due or refund settles the April after (see
-    --reconciliation).
+    For federal, and for state when the run computes it: AGI, the larger of
+    the standard and itemized deduction, the taxable income the brackets
+    taxed, and the tax. effective_rate is total tax over federal AGI. Tax
+    belongs to the year the income was earned in; its balance due or refund
+    settles the April after (see --reconciliation).
     """
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):

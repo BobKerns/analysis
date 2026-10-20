@@ -301,7 +301,12 @@ tax year, by looking back over everything that happened that year (the
   then uses whichever is greater. (See the glossary above — *itemization* and
   *itemized deduction* mean two different things in this guide.)
 - **State tax** works the same way as federal tax, using
-  `state_brackets__CA.csv` (or your own state's file, in `aux/`).
+  `state_brackets__CA.csv` (or your own state's file, in `aux/`) and the
+  state's standard deduction from `state_standard_deduction.csv`. Without
+  that file the federal standard deduction is used, and loading warns,
+  since most states' deduction is much smaller. State taxable income
+  leaves out Social Security, and long-term gains are taxed as ordinary
+  income.
 - **RMDs** are calculated from the account's lot balances on the previous
   December 31, divided by the IRS factor for that age. The factor comes from
   `rmd_factors.csv` and `rmd_start_age.csv`.
@@ -1006,7 +1011,7 @@ machine too small for a notebook comfortably.
 | one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly]` |
 | income or expenses by year, by category, account or tag (income adds cash income and cash flow) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
 | realized vs. unrealized gains by year | `sim report gains` |
-| federal and state tax by year, with AGI, deduction, taxable income and effective rate | `sim report tax [--reconciliation]` |
+| federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation]` |
 
 The result views read the scenario's latest run (or `--runfile`) and show
 CPI-constant (today's) dollars unless you pass `--dollars nominal`.

@@ -1410,50 +1410,64 @@ def test_itemized_deduction_amount_can_reference_an_itemization(
         con.close()
 
 
-def test_state_itemized_deduction_falls_back_to_federal_when_absent(test_data_dir: Path, tmp_path: Path) -> None:
+def _run_state_tax(
+    repo: Path, tmp_path: Path, add_state_tax: Callable[[], None],
+) -> tuple[sqlite3.Connection, list[str]]:
+    """Run retire_alice with ``add_state_tax``'s state tax rule, and return
+    the run's connection and the load's warnings."""
+    add_state_tax()
+    result = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    )
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(result.intent_path, run_path, run_by="test", allow_dirty_data=True)
+    con = sqlite3.connect(run_path)
+    con.row_factory = sqlite3.Row
+    return con, result.warnings
+
+
+def test_state_itemized_deduction_falls_back_to_federal_when_absent(
+    test_data_dir: Path, tmp_path: Path, add_state_tax: Callable[[], None],
+) -> None:
     """A scenario with no state_deductions rows at all uses federal_deductions'
     figure for the state scope too, so a state-specific file isn't needed just
     to reuse the same itemized total."""
-    import pandas as pd
-
     repo = test_data_dir
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
     )
-    accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
-    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
-    row = dict.fromkeys(df.columns, "")
-    row.update(name="Expense_Taxes_State", kind="expense", subkind="taxes_state",
-              owner="joint", tax_treatment="none", opened="2020-01-31", meta_json="{}")
-    df.loc[len(df)] = row
-    df.to_csv(accounts_path, index=False)
-
-    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    _append_scheduled(
-        sched_csv,
-        name="tax_state_prev_year",
-        from_account="Asset_Checking",
-        to_account="Expense_Taxes_State",
-        cadence="annual",
-        month_of_year="4",
-        amount_rule_kind="tax_accumulator",
-        tax_character="none",
-        start="2027-04-30",
-        priority="400",
-        meta_json="{}",
-        params_json='{"year":"previous","scope":"state"}',
-    )
-    intent_path = load_scenario(
-        repo, "retire_alice",
-        intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    run_path = tmp_path / "r.sqlite3"
-    run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
-    con = sqlite3.connect(run_path)
-    con.row_factory = sqlite3.Row
+    con, _ = _run_state_tax(repo, tmp_path, add_state_tax)
     try:
         assert _summary(con, 2026, "state_itemized_deduction") == 40_000_00
+    finally:
+        con.close()
+
+
+def test_state_tax_reads_its_own_standard_deduction(
+    test_data_dir: Path, tmp_path: Path, add_state_tax: Callable[[], None],
+) -> None:
+    """state_standard_deduction is the state's figure (#248); without one the
+    federal table stands in, and the load warns."""
+    repo = test_data_dir
+    con, warnings = _run_state_tax(repo, tmp_path, add_state_tax)
+    try:
+        # The prototype's California figure, not the federal $31,500.
+        assert _summary(con, 2026, "state_standard_deduction") == 11_080_00
+    finally:
+        con.close()
+    assert not any("standard deduction" in w for w in warnings)
+
+    (repo / "aux" / "state_standard_deduction.csv").unlink()
+    load = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "intent2",
+                         loaded_by="test", allow_dirty_data=True)
+    assert any("state tax uses the federal standard deduction" in w for w in load.warnings)
+    run_path = tmp_path / "r2.sqlite3"
+    run_scenario(load.intent_path, run_path, run_by="test", allow_dirty_data=True)
+    con = sqlite3.connect(run_path)
+    try:
+        assert _summary(con, 2026, "state_standard_deduction") == 31_500_00
     finally:
         con.close()
 

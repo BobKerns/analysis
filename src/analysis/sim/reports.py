@@ -300,23 +300,26 @@ def _tax_buckets(rc: RunConnection, buckets: list[str]) -> pd.DataFrame:
 
 
 def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.DataFrame:
-    """Federal and state tax by year, with the federal income it was figured on.
+    """Federal and state tax by year, with the income each was figured on.
 
-    ``agi``, ``deduction`` and ``taxable_income`` are the engine's federal
-    figures: AGI (Form 1040 line 11, except that a carried loss comes off
-    taxable income instead and there are no adjustments such as half of
-    self-employment tax), the larger of the standard and itemized deduction,
-    and what the brackets taxed.
-    ``effective_rate`` is total tax over AGI. Liability belongs to the tax
-    year the income was earned in, whatever year it is paid or refunded. A
-    year with no computed tax (a run with no tax rules) leaves the columns
-    blank. CPI-constant dollars use each year's year-end CPI, as the notebook
-    does; the rate is the same in either.
+    For each of federal and state: ``agi``, the larger of the standard and
+    itemized ``deduction``, the ``taxable_income`` its brackets taxed, and the
+    ``tax``. Federal AGI is Form 1040 line 11, except that a carried loss
+    comes off taxable income instead and there are no adjustments such as half
+    of self-employment tax; state AGI leaves out Social Security. The state
+    columns appear only when the run computes state tax. ``effective_rate``
+    is total tax over federal AGI (``fed_agi``). Liability belongs to the tax year the
+    income was earned in, whatever year it is paid or refunded. CPI-constant
+    dollars use each year's year-end CPI, as the notebook does; the rate is
+    the same in either.
     """
     frame = _tax_buckets(rc, list(_TAX_COLUMNS)).rename(columns=_TAX_COLUMNS)
+    if frame["state_tax"].isna().all():
+        frame = frame.drop(columns=[c for c in frame.columns if c.startswith("state_")])
     # A scenario may compute federal tax and not state tax: a blank is "not
     # computed", so the total is blank only when neither is.
-    frame["total_tax"] = frame[["federal_tax", "state_tax"]].sum(axis=1, min_count=1)
+    taxes = [c for c in ("fed_tax", "state_tax") if c in frame.columns]
+    frame["total_tax"] = frame[taxes].sum(axis=1, min_count=1)
     # A business (#231) adds its federal Schedule C result, the expenses a
     # hobby couldn't deduct, and the loss carried forward: each only when
     # some year has one, since most scenarios have none of them.
@@ -325,18 +328,24 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     frame = frame.join(business.loc[:, business.fillna(0).ne(0).any()])
     frame.index.name = "year"
     frame = _cpi(rc, frame, mode, annual=True)
-    agi = frame["agi"].where(frame["agi"] > 0)
+    agi = frame["fed_agi"].where(frame["fed_agi"] > 0)
     frame.insert(frame.columns.get_loc("total_tax") + 1, "effective_rate",
                  frame["total_tax"] / agi)
     return frame
 
 
+_SCOPE_PREFIX = {"federal": "fed", "state": "state"}
+"""Column prefixes: ``fed`` keeps the wide tax tables narrower."""
+
 _TAX_COLUMNS = {
-    "federal_adjusted_gross_income": "agi",
-    "federal_deduction_used": "deduction",
-    "federal_taxable_income": "taxable_income",
-    "federal_tax_liability": "federal_tax",
-    "state_tax_liability": "state_tax",
+    f"{scope}_{bucket}": f"{_SCOPE_PREFIX[scope]}_{column}"
+    for scope in ("federal", "state")
+    for bucket, column in (
+        ("adjusted_gross_income", "agi"),
+        ("deduction_used", "deduction"),
+        ("taxable_income", "taxable_income"),
+        ("tax_liability", "tax"),
+    )
 }
 
 
@@ -348,10 +357,10 @@ _BUSINESS_COLUMNS = {
 
 
 _RECONCILIATION_COLUMNS = {
-    "federal_tax_liability": "federal_liability",
-    "federal_tax_paid": "federal_paid",
-    "federal_tax_due": "federal_due",
-    "federal_tax_overpaid": "federal_refund",
+    "federal_tax_liability": "fed_liability",
+    "federal_tax_paid": "fed_paid",
+    "federal_tax_due": "fed_due",
+    "federal_tax_overpaid": "fed_refund",
     "state_tax_liability": "state_liability",
     "state_tax_paid": "state_paid",
     "state_tax_due": "state_due",
