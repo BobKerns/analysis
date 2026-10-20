@@ -194,3 +194,31 @@ def test_account_completion_offers_every_compared_scenarios_accounts(
     account = next(p for p in command.params if p.name == "account")
     offered = [item.value for item in account.type.shell_complete(ctx, account, "Asset_")]
     assert "Asset_Extra_Only" in offered and "Asset_Checking" in offered
+
+
+@pytest.mark.slow
+def test_sim_compare_two_empty_scenarios_and_a_zero_account(
+    compare_runs: Callable[..., Result], test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+    derive_scenario: Callable[..., Path],
+) -> None:
+    """Two scenarios with no months break even "never" rather than crash, and
+    an account that stays at zero is compared, not called missing."""
+    for name in ("empty", "empty_too"):
+        derive_scenario(name, "base")
+        _invoke("run", name, "--data-dir", str(test_data_dir), "--intent-dir",
+                str(intent_dir), "--runs-dir", str(runs_dir), "--allow-dirty-data")
+    result = compare_runs("empty", "empty_too", "--dollars", "nominal")
+    assert result.exit_code == 0, result.output
+    assert _section(result.output, "Break-even vs empty")[1].split()[:2] == ["empty_too", "never"]
+
+    missing = compare_runs("retire_alice", "higher_pay", "--section", "account",
+                           "--account", "No_Such_Account")
+    assert missing.exit_code == 1 and "no No_Such_Account" in missing.output
+
+
+def test_breakeven_of_no_months_is_none() -> None:
+    import pandas as pd
+
+    from analysis.sim.compare import breakeven_month
+
+    assert breakeven_month(pd.Series([], dtype=float)) is None

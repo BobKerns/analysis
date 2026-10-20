@@ -2166,11 +2166,16 @@ def compare_command(
             else:
                 _echo_frame(ytd.map(_cell))
 
-        nw = compare.net_worth_by_month(connections, scenarios, mode)
-        if nw.isna().any().any():
-            raise click.ClickException(
-                "a run has no 'cpi' inflation index, so no CPI-constant net worth; "
-                "pass --dollars nominal")
+        graphed = as_graph or graph_file is not None
+        nw = pd.DataFrame()
+        # Only the sections that use it read net worth, so --section runs, say,
+        # still works on a run with no CPI series.
+        if shown & {"net-worth", "break-even"} or (graphed and account is None):
+            nw = compare.net_worth_by_month(connections, scenarios, mode)
+            if nw.isna().any().any():
+                raise click.ClickException(
+                    "a run has no 'cpi' inflation index, so no CPI-constant net worth; "
+                    "pass --dollars nominal")
         if "net-worth" in shown:
             click.echo(f"\nNet worth at year end ({mode_label}):")
             _echo_frame(compare.year_end_comparison(nw, baseline, variants).map(_cell))
@@ -2186,7 +2191,7 @@ def compare_command(
         if account is not None:
             balances = compare.balance_by_month(connections, scenarios, account, lot, mode)
             subject = f"{account}" + (f", lot {lot}" if lot else "")
-            if balances.empty or not balances.ne(0).any().any():
+            if balances.empty:  # a balance of zero throughout is still a balance
                 raise click.ClickException(
                     f"no {'lot ' + lot + ' of ' if lot else ''}{account} with a balance "
                     f"in {', '.join(scenarios)}")
@@ -2194,7 +2199,7 @@ def compare_command(
                 click.echo(f"\n{subject} at year end ({mode_label}):")
                 _echo_frame(compare.year_end_comparison(balances, baseline, variants).map(_cell))
 
-        if as_graph or graph_file is not None:
+        if graphed:
             from analysis.sim.compare_charts import comparison_figure
 
             if balances is not None:

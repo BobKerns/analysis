@@ -301,7 +301,11 @@ def variant_delta(nw: pd.DataFrame, baseline: str, variants: Sequence[str]) -> p
 
 
 def breakeven_month(series: pd.Series) -> datetime | None:
-    """First month after which ``series`` never dips back to/below zero again."""
+    """First month after which ``series`` never dips back to/below zero
+    again; ``None`` when it never does, or has no months (two empty
+    scenarios)."""
+    if series.empty:
+        return None
     ahead = series > 0
     if ahead.all():
         return series.index[0]
@@ -319,6 +323,10 @@ def breakeven_summary(
     for name in variants:
         series = delta[name]
         month = breakeven_month(series)
+        if series.empty:  # no months to compare: nothing to report but that
+            rows[name] = {"break-even": "never", "deepest deficit": None, "when": None,
+                          "at scenario end": None, "final net worth": None}
+            continue
         rows[name] = {
             "break-even": f"{month:%Y-%m}" if month is not None else "never",
             "deepest deficit": series.min(),
