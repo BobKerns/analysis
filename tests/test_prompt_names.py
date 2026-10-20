@@ -222,11 +222,12 @@ def test_lot_names_can_leave_out_the_implicit_default(data_dir: Path) -> None:
     assert names.lot_names(data_dir, "retire_alice", "Income_Salary_Alice", implicit=False) == []
 
 
-def test_a_named_batch_is_offered_only_in_the_mode_asked_for(tmp_path: Path) -> None:
+def test_a_named_batch_is_offered_only_when_it_holds_runs_of_the_mode(tmp_path: Path) -> None:
     for recipe, mode in (("mc_recipe", "monte_carlo"), ("oat_recipe", "sensitivity")):
         batch = tmp_path / recipe / "b1"
         batch.mkdir(parents=True)
         (batch / BATCH_MANIFEST_FILENAME).write_text(json.dumps({"mode": mode}))
+    (tmp_path / "stale_recipe" / "b1").mkdir(parents=True)  # no manifest, no members
     result = CliRunner().invoke(click.Command("ask", callback=lambda: click.echo(
         sim_cli._ask_ensemble_run(tmp_path, "monte_carlo", batch="b1"))), input="mc_recipe\n")
     assert result.exit_code == 0, result.output
