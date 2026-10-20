@@ -69,6 +69,10 @@ def test_series_names_by_kind(data_dir: Path) -> None:
     assert set(rates) | set(inflation) <= set(names.series_names(data_dir, "retire_alice"))
 
 
+def test_symbols_come_from_every_source(symbol_sources_data_dir: Path) -> None:
+    assert {"ALLOC", "OVERRIDE", "HELD"} <= set(names.symbols(symbol_sources_data_dir))
+
+
 def test_readers_tolerate_a_missing_data_repo(tmp_path: Path) -> None:
     missing = tmp_path / "nowhere"
     assert names.scenario_names(missing) == []

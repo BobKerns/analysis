@@ -143,10 +143,19 @@ def tag_tokens(data_dir: Path, scenario: str) -> list[str]:
 
 
 def symbols(data_dir: Path) -> list[str]:
-    """The symbols securities.csv lists or prices/ has a price file for."""
-    found = set(_column([data_dir / "securities.csv"], "symbol"))
+    """Every symbol named anywhere, from the sources ``symbols.symbol_table``
+    lists: securities.csv, allocations.csv, the shared and every scenario's
+    ``prices/`` files, and every scenario's lots."""
+    scenarios = data_dir / "scenarios"
+    scenario_dirs = sorted(p for p in scenarios.iterdir() if p.is_dir()) if scenarios.is_dir() else []
+    found = set(_column(
+        [data_dir / "securities.csv", data_dir / "allocations.csv",
+         *(d / "account_lots.csv" for d in scenario_dirs)],
+        "symbol",
+    ))
     prefix = "security_price__"
-    found.update(s[len(prefix):] for s in _stems([data_dir / "prices"], f"{prefix}*.csv"))
+    price_dirs = [data_dir / "prices", *(d / "prices" for d in scenario_dirs)]
+    found.update(s[len(prefix):] for s in _stems(price_dirs, f"{prefix}*.csv"))
     return sorted(found)
 
 
