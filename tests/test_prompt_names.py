@@ -314,3 +314,4 @@ def test_a_named_batch_is_offered_only_in_the_mode_asked_for(tmp_path: Path) -> 
         sim_cli._ask_ensemble_run(tmp_path, "monte_carlo", batch="b1"))), input="mc_recipe\n")
     assert result.exit_code == 0, result.output
     assert "ensembles with a batch b1: mc_recipe\n" in result.output
+

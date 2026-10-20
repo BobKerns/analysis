@@ -1254,7 +1254,7 @@ def ensemble_compare(
     _check_lot_has_account(account, lot)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if baseline is None:
-        baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline")
+        baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline", exclude=variant)
     if variant is None:
         variant = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant", exclude=baseline)
     mode = DollarMode(dollars)
