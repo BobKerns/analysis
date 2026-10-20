@@ -11,15 +11,19 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+import pandas as pd
 from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim import notebook_ui
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.notebook_ui.pickers import (
+    Connections,
     MultiScenarioConnections,
+    TimeRangePicker,
     display_warning,
     multi_scenario_picker,
+    observe_while_shown,
     scenario_picker,
     warning_html,
 )
@@ -298,3 +302,109 @@ def test_warning_html_converts_markdown_lite_and_escapes_brackets() -> None:
 
 def test_display_warning_does_not_raise() -> None:
     display_warning("just a message")
+
+
+def test_time_range_takes_its_first_span_whole() -> None:
+    time_range = TimeRangePicker()
+
+    time_range.cover([2031, 2026, 2040])
+
+    assert (time_range.min, time_range.max) == (2026, 2040)
+    assert time_range.value == (2026, 2040)
+
+
+def test_a_full_time_range_follows_a_new_span() -> None:
+    time_range = TimeRangePicker()
+    time_range.cover(range(2026, 2041))
+
+    time_range.cover(range(2030, 2061))
+
+    assert time_range.value == (2030, 2060)
+
+
+def test_a_narrowed_time_range_keeps_its_years_clamped_to_a_new_span() -> None:
+    time_range = TimeRangePicker()
+    time_range.cover(range(2026, 2041))
+    time_range.value = (2026, 2031)
+
+    time_range.cover(range(2028, 2061))
+    assert time_range.value == (2028, 2031)
+
+    # None of its years left in the span: back to the whole of it.
+    time_range.cover(range(2040, 2051))
+    assert time_range.value == (2040, 2050)
+
+
+def test_time_range_clips_by_month_or_by_year() -> None:
+    time_range = TimeRangePicker()
+    time_range.cover([2026, 2027, 2028])
+    monthly = pd.Series(range(36), index=pd.date_range("2026-01-31", periods=36, freq="ME"))
+    yearly = pd.DataFrame({"total": [1, 2, 3]}, index=[2026, 2027, 2028])
+    labelled = pd.Series([1, 2, 3], index=["2026", "2027", "2028"])
+
+    # Full: nothing is cut, not even a row dated outside the span.
+    assert time_range.clip(monthly) is monthly
+
+    time_range.value = (2027, 2027)
+    assert time_range.clip(monthly).index.year.unique().tolist() == [2027]
+    assert time_range.clip(monthly.to_period("M")).index.year.unique().tolist() == [2027]
+    assert time_range.clip(yearly).index.tolist() == [2027]
+    assert time_range.clip(labelled).index.tolist() == ["2027"]
+
+
+class _Shown(Connections):
+    """Connections whose show() calls the widget function as is."""
+
+    def _invoke(self, fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+
+def test_a_rebuilt_widget_stops_observing_shared_controls() -> None:
+    time_range = TimeRangePicker()
+    time_range.cover(range(2026, 2031))
+    builds: list[int] = []
+    redraws: list[int] = []
+
+    def widget(*, time_range: TimeRangePicker, **_) -> None:
+        build = len(builds)
+        builds.append(build)
+        observe_while_shown(time_range, lambda *_: redraws.append(build))
+
+    shown = _Shown()
+    shown.show(widget, time_range=time_range)
+    shown.notify_changed()  # a scenario change rebuilds the widget
+    shown.notify_changed()
+
+    time_range.value = (2026, 2027)
+
+    assert builds == [0, 1, 2]
+    assert redraws == [2]  # only the widget now shown redraws
+
+
+def test_a_rebuild_moving_a_shared_control_redraws_no_old_widget() -> None:
+    """The first widget rebuilt after a scenario change re-spans the Years
+    slider; the other output's widget, not yet rebuilt, must not redraw."""
+    time_range = TimeRangePicker()
+    time_range.cover(range(2026, 2031))
+    shown = _Shown()
+    spans = iter([range(2026, 2031), range(2030, 2041)])
+    stale: list[str] = []
+    current = {"scenario": "old"}
+
+    def moving_the_span(*, time_range: TimeRangePicker, **_) -> None:
+        time_range.cover(next(spans))
+
+    def watching(*, time_range: TimeRangePicker, **_) -> None:
+        built_for = current["scenario"]
+        observe_while_shown(
+            time_range,
+            lambda *_: stale.append(built_for) if built_for != current["scenario"] else None,
+        )
+
+    shown.show(moving_the_span, time_range=time_range)
+    shown.show(watching, time_range=time_range)
+    current["scenario"] = "new"
+    shown.notify_changed()
+
+    assert (time_range.min, time_range.max) == (2030, 2040)
+    assert stale == []

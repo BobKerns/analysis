@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 import pandas as pd
@@ -151,6 +152,37 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
 
     dollar_mode.value = DollarMode.CPI_CONSTANT
     assert modes_seen[-1] == DollarMode.CPI_CONSTANT
+
+
+def test_ensemble_widget_years_redraw_without_reading_members_again(
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.pickers import TimeRangePicker
+
+    reads: list[object] = []
+    real = ensemble_widgets.members_balance_by_month
+
+    def _spy(*args, **kwargs):
+        reads.append(args)
+        return real(*args, **kwargs)
+
+    shown: list[Any] = []
+    monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    time_range = TimeRangePicker()
+    controls = ensemble_widgets.EnsembleControls(runs_dir=small_ensemble_runs_dir,
+                                                 time_range=time_range)
+    ensemble_widget(runs_dir=small_ensemble_runs_dir, controls=controls)
+    years = time_range.min, time_range.max
+    assert years[0] < years[1]  # spans the recipe's run
+    read_before = len(reads)
+
+    time_range.value = (years[0], years[0])
+
+    assert len(reads) == read_before
+    table = shown[-1].data
+    assert list(table.index) == [years[0]]
 
 
 def test_ensemble_widget_log_linear_mode_sets_the_yscale(
