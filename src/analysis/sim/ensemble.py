@@ -21,7 +21,7 @@ import shutil
 import sqlite3
 from calendar import monthrange
 from datetime import UTC, date, datetime
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -1002,13 +1002,27 @@ def load_ensemble(batch_dir: Path) -> dict[str, RunConnection]:
     return {stem: RunConnection(Path(batch_dir) / f"{stem}.sqlite3") for stem in succeeded}
 
 
+def _each_member(
+    connections: dict[str, RunConnection], on_member: Callable[[], None] | None,
+) -> Iterator[tuple[str, RunConnection]]:
+    """``connections``' items, calling ``on_member`` after each one's read,
+    so a notebook can show progress through a large ensemble (#235)."""
+    for item in connections.items():
+        yield item
+        if on_member is not None:
+            on_member()
+
+
 def members_net_worth_by_month(
     connections: dict[str, RunConnection], mode: DollarMode = DollarMode.NOMINAL,
+    on_member: Callable[[], None] | None = None,
 ) -> pd.DataFrame:
-    """Net worth (USD) by month, one column per member."""
+    """Net worth (USD) by month, one column per member. ``on_member`` is
+    called after each member is read."""
     value_column = "cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
     return pd.DataFrame({
-        name: con.net_worth_frame()[value_column] for name, con in connections.items()
+        name: con.net_worth_frame()[value_column]
+        for name, con in _each_member(connections, on_member)
     })
 
 
@@ -1060,24 +1074,28 @@ def summary_with_percentiles(
 def members_balance_by_month(
     connections: dict[str, RunConnection], account: str | None = None,
     mode: DollarMode = DollarMode.NOMINAL, lot: str | None = None,
+    on_member: Callable[[], None] | None = None,
 ) -> pd.DataFrame:
     """One account's balance (USD) by month, one column per member, or net
     worth when ``account`` is None (#163), or one ``lot`` of the account
     (#170). Each member converts its own series to CPI-constant dollars,
-    since its inflation path is its own."""
+    since its inflation path is its own. ``on_member`` is called after
+    each member is read (#235)."""
     if account is None:
         if lot is not None:
             raise EnsembleError("a lot needs its account")
-        return members_net_worth_by_month(connections, mode)
+        return members_net_worth_by_month(connections, mode, on_member)
     if lot is None:
         frame = pd.DataFrame({
-            name: con.account_balance(account, mode) for name, con in connections.items()
+            name: con.account_balance(account, mode)
+            for name, con in _each_member(connections, on_member)
         })
         if frame.empty:
             raise EnsembleError(f"no account {account!r} in these members")
         return frame
     frame = pd.DataFrame({
-        name: con.lot_balance(account, lot, mode) for name, con in connections.items()
+        name: con.lot_balance(account, lot, mode)
+        for name, con in _each_member(connections, on_member)
     })
     if frame.empty:
         raise EnsembleError(f"no lot {lot!r} of account {account!r} in these members")
