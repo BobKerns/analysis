@@ -17,15 +17,17 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 import calendar
 import datetime
 from dateutil import relativedelta
 
 import ipywidgets as widgets
+import pandas as pd
 import traitlets
 from IPython.display import clear_output, display
 
+from analysis.frames import index_years
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
 from analysis.sim.connection import RunConnection, ScenarioConnection
@@ -1291,3 +1293,87 @@ class DateRangeSlider(widgets.SelectionRangeSlider):
                          )
 
     
+
+def run_years(*runs: RunConnection | None) -> list[int]:
+    """The calendar years the given runs' months fall in, in order."""
+    years: set[int] = set()
+    for run in runs:
+        if run is not None:
+            years.update(int(year) for year in index_years(run.net_worth_frame()))
+    return sorted(years)
+
+
+class TimeRangePicker(widgets.IntRangeSlider):
+    """The calendar years the graphs and tables show (#245).
+
+    Build one per notebook and hand it to each widget as ``time_range=``, as
+    with :class:`DollarModePicker`: every widget shows the same slider, and a
+    change anywhere redraws them all. Each widget calls :meth:`cover` with
+    the years of the run(s) it shows, which sets the slider's ends; a widget
+    cuts what it draws with :meth:`clip`.
+
+    It starts at the whole run. Left there, it follows a scenario change to
+    the new run's whole span, and :meth:`clip` cuts nothing -- not even rows
+    dated outside the run, such as a year-to-date catch-up's prior year.
+    """
+
+    def __init__(self, first: int | None = None, last: int | None = None):
+        first = datetime.date.today().year if first is None else first
+        last = first if last is None else last
+        super().__init__(
+            min=first, max=last, value=(first, last), step=1,
+            description="Years:", continuous_update=False,
+            layout=widgets.Layout(width="60%"),
+        )
+        # Until the first cover() the ends are a placeholder, so it takes
+        # whatever span it's given, rather than clamping to the placeholder.
+        self._covered = first != last
+
+    @property
+    def is_full(self) -> bool:
+        """Whether every year is selected."""
+        return tuple(self.value) == (self.min, self.max)
+
+    def cover(self, years: Iterable[int]) -> None:
+        """Make the ends ``years``' first and last.
+
+        A full selection stays full; a narrowed one keeps its years, clamped
+        to the new span, unless none of them is left in it."""
+        years = list(years)
+        if not years:
+            return
+        first, last = min(years), max(years)
+        if self._covered and (first, last) == (self.min, self.max):
+            return
+        low, high = self.value
+        full = self.is_full or not self._covered
+        self._covered = True
+        # Widen first: the slider refuses a min above its max (and the reverse).
+        self.max = max(self.max, last)
+        self.min = min(self.min, first)
+        if full or high < first or low > last:
+            low, high = first, last
+        self.value = (max(low, first), min(high, last))
+        self.min, self.max = first, last
+
+    def clip(self, data: pd.DataFrame | pd.Series) -> Any:
+        """The rows of ``data`` in the selected years.
+
+        ``data`` is indexed by month (a ``DatetimeIndex`` or ``PeriodIndex``)
+        or by year (integers, or their strings). A full selection returns
+        ``data`` itself."""
+        if self.is_full:
+            return data
+        index = data.index
+        if isinstance(index, (pd.DatetimeIndex, pd.PeriodIndex)):
+            years = pd.Index([moment.year for moment in index])
+        else:
+            years = pd.Index([int(year) for year in index])
+        low, high = self.value
+        return data[(years >= low) & (years <= high)]
+
+
+def controls_row(*controls: widgets.Widget) -> widgets.HBox:
+    """Shared controls laid out side by side, wrapping when the cell is narrow."""
+    return widgets.HBox(list(controls), layout=widgets.Layout(flex_flow="row wrap",
+                                                              align_items="center"))

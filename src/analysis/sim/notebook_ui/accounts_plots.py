@@ -20,7 +20,8 @@ from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.plotting import include_zero
 from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.pickers import (
-    AccountPicker, DollarModePicker, ValuePlotModePicker, YAxisPlotModePicker,
+    AccountPicker, DollarModePicker, TimeRangePicker, ValuePlotModePicker,
+    YAxisPlotModePicker, controls_row, run_years,
 )
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
@@ -44,6 +45,7 @@ def account_balance_history_widget(
     y_axis_mode: YAxisPlotModePicker | None = None,
     lots_by_account: Mapping[str, Sequence[str]] | None = None,
     lot_balance: Callable[[str, str, DollarMode], pd.Series] | None = None,
+    time_range: TimeRangePicker | None = None,
 ) -> widgets.VBox:
     """Build a Kind + Accounts + Output widget set that plots on selection change.
 
@@ -54,7 +56,8 @@ def account_balance_history_widget(
     automatic cumulative-totals note; other kinds don't need one.
     Given ``lots_by_account`` and ``lot_balance``, a single account with
     several lots can be drilled into: picked lots plot one line apiece in
-    place of the account's (#170).
+    place of the account's (#170). ``time_range`` picks the years shown; the
+    caller has already set its ends (``TimeRangePicker.cover``).
     Returns the combined ``ipywidgets.VBox``; it is not displayed here, because
     ``Connections.show`` displays what a widget function returns.
     """
@@ -73,6 +76,7 @@ def account_balance_history_widget(
     value_mode = value_mode or ValuePlotModePicker()
     dollar_mode = dollar_mode or DollarModePicker()
     y_axis_mode = y_axis_mode or YAxisPlotModePicker()
+    time_range = time_range or TimeRangePicker()
     caveat_out = widgets.Output()
     out = widgets.Output()
 
@@ -109,7 +113,7 @@ def account_balance_history_widget(
             kind_title = KIND_LABELS[_kind()]
             fig = render_balance_history_figure(
                 pivot, selected, f"{title} ({kind_title}) [{mode_title}, {values_title}]",
-                zero_anchor=zero_anchor, value_mode=values,
+                zero_anchor=zero_anchor, value_mode=values, clip=time_range.clip,
             )
             if fig is None:
                 print("(pick one or more accounts)")
@@ -124,13 +128,14 @@ def account_balance_history_widget(
     dollar_mode.observe(_redraw, names="value")
     y_axis_mode.observe(_redraw, names="value")
     value_mode.observe(_redraw, names="value")
+    time_range.observe(_redraw, names="value")
 
     _redraw_caveat()
     _redraw()
 
     box = widgets.VBox([
         *( [scenario_picker] if scenario_picker is not None else () ),
-        widgets.HBox([value_mode, dollar_mode, y_axis_mode]),
+        controls_row(value_mode, dollar_mode, y_axis_mode, time_range),
         picker, out, caveat_out,
     ])
     return box
@@ -141,7 +146,8 @@ def account_history_widget(
     scenario_picker: widgets.Dropdown | None = None,
     dollar_mode: DollarModePicker | None = None,
     value_mode: ValuePlotModePicker | None = None,
-    y_axis_mode: YAxisPlotModePicker | None = None, **_,
+    y_axis_mode: YAxisPlotModePicker | None = None,
+    time_range: TimeRangePicker | None = None, **_,
 ):
     """Balance-history widget covering every account kind.
 
@@ -151,6 +157,8 @@ def account_history_widget(
     with several lots can be drilled into, lot by lot (#170).
     """
     title = f"{title} - {rc.label}"
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
     return account_balance_history_widget(
         rc.balance_pivot, rc.account_kinds(), title, kind,
         initial_count=initial_count, cpi_balance_pivot_by_kind=rc.cpi_balance_pivot,
@@ -160,6 +168,7 @@ def account_history_widget(
         y_axis_mode=y_axis_mode,
         lots_by_account=rc.lots_by_account(),
         lot_balance=rc.lot_balance,
+        time_range=time_range,
     )
 
 
@@ -187,6 +196,7 @@ def render_balance_history_figure(
     *,
     zero_anchor: bool = True,
     value_mode: ValuePlotMode = ValuePlotMode.TOTAL,
+    clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> None | plt.Figure:
     """Build the matplotlib Figure for selected account balance histories, or
     None if empty.
@@ -200,6 +210,9 @@ def render_balance_history_figure(
     ``ValuePlotMode.MONTHLY`` plots the change from the previous month -- the
     first month has no prior value to diff against, so the visible line
     effectively starts one month later.
+
+    ``clip`` cuts the rows to plot (``TimeRangePicker.clip``), after the
+    monthly change is taken, so a window's first month keeps its change.
     """
     if not selected:
         return None
@@ -211,6 +224,8 @@ def render_balance_history_figure(
     if value_mode == ValuePlotMode.MONTHLY:
         balance_pivot = balance_pivot.diff()
         ylabel = "USD / month"
+    if clip is not None:
+        balance_pivot = clip(balance_pivot)
     fig, ax = plt.subplots(figsize=(10, 5))
     for name in balance_pivot.columns:
         ax.plot(balance_pivot.index, balance_pivot[name], label=name)

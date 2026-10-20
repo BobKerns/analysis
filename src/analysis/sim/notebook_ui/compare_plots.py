@@ -23,9 +23,12 @@ from analysis.sim.notebook_ui.pickers import (
     AccountPicker,
     DollarModePicker,
     MultiScenarioConnections,
+    TimeRangePicker,
     ValuePlotModePicker,
+    controls_row,
     display_warning,
     merged_lots_by_account,
+    run_years,
     to_markdown,
 )
 from analysis.sim.plotting import FRAME_ALPHA, include_zero
@@ -120,18 +123,29 @@ def comparison_frame(nw: pd.DataFrame, comparisons: dict) -> pd.DataFrame:
     return result
 
 
-# Each shared plot-mode toggle's compare-widget observers, by widget key.
-_compare_plot_redraws: WeakKeyDictionary[DollarModePicker, dict[str, Callable]] = WeakKeyDictionary()
+# Each shared control's compare-widget observers, by widget key.
+_compare_plot_redraws: WeakKeyDictionary[widgets.Widget, dict[str, Callable]] = WeakKeyDictionary()
 
 
-def _observe_dollar_mode(dollar_mode: DollarModePicker, key: str, redraw: Callable) -> None:
-    """Keep one observer per compare widget on the shared plot-mode toggle."""
-    observers = _compare_plot_redraws.setdefault(dollar_mode, {})
+def _observe_shared(control: widgets.Widget, key: str, redraw: Callable) -> None:
+    """Keep one observer per compare widget on a shared control (the dollar
+    toggle, the time range): a picker change rebuilds every widget, and the
+    old one's observer would go on redrawing a widget no longer shown."""
+    observers = _compare_plot_redraws.setdefault(control, {})
     previous = observers.get(key)
     if previous is not None:
-        dollar_mode.unobserve(previous, names="value")
+        control.unobserve(previous, names="value")
     observers[key] = redraw
-    dollar_mode.observe(redraw, names="value")
+    control.observe(redraw, names="value")
+
+
+def _time_range(
+    time_range: TimeRangePicker | None, container: MultiScenarioConnections,
+) -> TimeRangePicker:
+    """``time_range`` (or a new one) spanning every compared run's years."""
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(*container.connections.values()))
+    return time_range
 
 
 # ---------- pure plotting (unchanged math from the old scenario_compare.py) ----------
@@ -352,25 +366,28 @@ def rules_and_events_widget(container: MultiScenarioConnections,
 def net_worth_compare_widget(
     container: MultiScenarioConnections,
     dollar_mode: DollarModePicker | None = None,
+    time_range: TimeRangePicker | None = None,
     **_
 ) -> widgets.VBox:
     """Net worth per scenario, plus each variant's delta vs. the baseline."""
 
     dollar_mode = dollar_mode or DollarModePicker()
+    time_range = _time_range(time_range, container)
     output = widgets.Output()
 
     def _redraw(*_):
         mode = dollar_mode.value
-        nw = net_worth_by_month(container, mode)
+        nw = time_range.clip(net_worth_by_month(container, mode))
         delta = variant_delta(nw, container)
         with output:
             clear_output(wait=True)
             plot_net_worth_and_delta(nw, delta, container, mode)
 
-    _observe_dollar_mode(dollar_mode, "net_worth", _redraw)
+    _observe_shared(dollar_mode, "net_worth", _redraw)
+    _observe_shared(time_range, "net_worth", _redraw)
     if container.ok:
         _redraw()
-    return widgets.VBox([dollar_mode, output])
+    return widgets.VBox([controls_row(dollar_mode, time_range), output])
 
 
 def breakeven_widget(
@@ -404,7 +421,7 @@ def breakeven_widget(
                 f"**${nw[baseline].iloc[-1]:,.0f}**"
             ))
 
-    _observe_dollar_mode(dollar_mode, "breakeven", _redraw)
+    _observe_shared(dollar_mode, "breakeven", _redraw)
     if container.ok:
         _redraw()
     return widgets.VBox([dollar_mode, output])
@@ -434,16 +451,18 @@ def year_end_widget(
     container: MultiScenarioConnections,
     dollar_mode: DollarModePicker | None = None,
     baseline: str | None = "current",
+    time_range: TimeRangePicker | None = None,
     **_
 ) -> widgets.VBox:
     """Year-end net worth per scenario, with each variant's delta vs. the baseline."""
 
     dollar_mode = dollar_mode or DollarModePicker()
+    time_range = _time_range(time_range, container)
     output = widgets.Output()
 
     def _redraw(*_):
         mode = dollar_mode.value
-        nw = net_worth_by_month(container, mode)
+        nw = time_range.clip(net_worth_by_month(container, mode))
         year_end = year_end_values(nw)
         year_end.index.name = "year"
         for name in container.variants:
@@ -452,10 +471,11 @@ def year_end_widget(
             clear_output(wait=True)
             display(year_end.style.format("${:,.0f}"))
 
-    _observe_dollar_mode(dollar_mode, "year_end", _redraw)
+    _observe_shared(dollar_mode, "year_end", _redraw)
+    _observe_shared(time_range, "year_end", _redraw)
     if container.ok:
         _redraw()
-    return widgets.VBox([dollar_mode, output])
+    return widgets.VBox([controls_row(dollar_mode, time_range), output])
 
 
 def ss_gross_widget(container: MultiScenarioConnections) -> None:
@@ -738,6 +758,7 @@ def _show_account_balance_diffs(
     value_mode: ValuePlotModePicker,
     account_kinds: Mapping[str, AccountKind],
     scenario_picker: widgets.Widget | None = None,
+    time_range: TimeRangePicker | None = None,
 ) -> widgets.VBox:
     measure_picker = widgets.ToggleButtons(
         options=[(text, key) for key, text in MEASURE_LABELS.items()],
@@ -745,7 +766,8 @@ def _show_account_balance_diffs(
         layout=widgets.Layout(**_TOGGLE_LAYOUT),  # framed like the dollar and value toggles
     )
     measure_picker.layout.display = "none"
-    mode_controls = widgets.HBox([dollar_mode, value_mode, measure_picker])
+    time_range = time_range or TimeRangePicker()
+    mode_controls = controls_row(dollar_mode, value_mode, time_range, measure_picker)
     if not accounts:
         return widgets.VBox([
             *( (scenario_picker,) if scenario_picker is not None else () ),
@@ -799,7 +821,8 @@ def _show_account_balance_diffs(
             frame[f"Δ{name}"] = frame[name] - frame["baseline"]
         if value_mode.value == ValuePlotMode.MONTHLY:
             frame = frame.diff()
-        return frame
+        # After the monthly change, so a window's first month keeps its own.
+        return time_range.clip(frame)
 
     def show_selected(*_):
         selected, lots = account_picker.selection
@@ -823,7 +846,8 @@ def _show_account_balance_diffs(
 
     account_picker.observe(show_selected, names="selection")
     measure_picker.observe(show_selected, names="value")
-    _observe_dollar_mode(dollar_mode, "account_diffs", show_selected)
+    _observe_shared(dollar_mode, "account_diffs", show_selected)
+    _observe_shared(time_range, "account_diffs", show_selected)
     value_mode.observe(show_selected, names="value")
     show_selected()
 
@@ -847,6 +871,7 @@ def show_account_balance_diffs(
     dollar_mode: DollarModePicker | None = None,
     value_mode: ValuePlotModePicker | None = None,
     scenario_picker: widgets.Widget | None = None,
+    time_range: TimeRangePicker | None = None,
     **kwargs,
 ) -> widgets.VBox:
     heading = f"## Account Balance Diffs for Baseline `{baseline}`"
@@ -858,6 +883,8 @@ def show_account_balance_diffs(
     )
     accounts = sorted(diffs)
     all_connections = (baseline_rc, *variant_rcs.values())
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(*all_connections))
     account_rows = pd.concat(
         [connection.items("account").set_index("name") for connection in all_connections]
     ).loc[lambda frame: ~frame.index.duplicated(keep="first")]
@@ -871,5 +898,5 @@ def show_account_balance_diffs(
     return _show_account_balance_diffs(
         heading, d_add, d_del, diffs, baseline_rc, accounts, accounts_by_kind,
         variant_rcs, dollar_mode or DollarModePicker(), value_mode or ValuePlotModePicker(),
-        account_kinds, scenario_picker,
+        account_kinds, scenario_picker, time_range,
     )

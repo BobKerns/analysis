@@ -113,6 +113,24 @@ def test_account_diffs_show_one_lots_measure_month_by_month(
     assert first["Δvariant"] < 0 and abs(first["Δvariant"] - expected_start) < abs(expected_start) * 0.5
 
 
+def test_account_diffs_show_only_the_picked_years(
+    lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui.pickers import TimeRangePicker
+
+    time_range = TimeRangePicker()
+    picker, _measure, shown = _account_diffs(lot_variant_runs, monkeypatch,
+                                             time_range=time_range)
+    picker.lot_picker.picker.value = ("b",)
+    whole = shown[-1].data
+    assert len(set(whole.index.year)) > 1
+    first = int(whole.index.year.min())
+
+    time_range.value = (first, first)
+
+    assert set(shown[-1].data.index.year) == {first}
+
+
 def test_a_lot_the_baseline_lacks_counts_as_zero_there(
     lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

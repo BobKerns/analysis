@@ -84,3 +84,8 @@ function should not.
   (`portfolio_allocation_widget`'s pie is the example) — sharing the `Output` with other
   content caused the two calls to reserve then misplace space.
 - Fill a picker's options before you observe it, so setting them does not trigger a draw.
+- A widget with a time axis takes `time_range: TimeRangePicker | None = None`, the
+  notebook's shared **Years** slider. Call `time_range.cover(run_years(rc))` when building
+  the widget (not when redrawing: a widget left over from the previous scenario still
+  redraws), cut what you draw with `time_range.clip(frame)`, and observe its `value`.
+  Clip only what is drawn: results such as a break-even month stay whole-run.
