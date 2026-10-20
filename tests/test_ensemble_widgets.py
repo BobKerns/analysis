@@ -22,8 +22,8 @@ from analysis.sim.ensemble import (
     summary_with_percentiles,
 )
 from analysis.sim.loader import LoadResult
+from analysis.sim import ensemble_plots
 from analysis.sim.notebook_ui.ensemble_widgets import (
-    ensemble_fan_chart,
     ensemble_summary_view,
     ensemble_widget,
     list_ensemble_recipes,
@@ -48,75 +48,6 @@ def test_ensemble_summary_view_returns_year_end_rows_and_member_count() -> None:
     assert yearly.index.name == "year"
     assert len(yearly) == 1  # all 6 months fall in 2026
     assert yearly.loc[2026, "mean"] == 150.0  # last month of the year
-
-
-def test_ensemble_fan_chart_builds_without_error() -> None:
-    ax = ensemble_fan_chart(_monthly_summary())
-    assert len(ax.lines) == 3  # mean, median, zero rule
-    assert len(ax.collections) == 1  # fill_between range band
-
-
-def test_ensemble_fan_chart_shades_quintile_bands_darker_toward_the_middle() -> None:
-    members = pd.DataFrame(
-        [[float(m * 10 + month) for m in range(11)] for month in range(6)],
-        index=pd.date_range("2026-01-31", periods=6, freq="ME"),
-    )
-    monthly = summary_with_percentiles(members)
-    ax = ensemble_fan_chart(monthly)
-    assert len(ax.collections) == 5  # p05-p20, p20-p40, p40-p60, p60-p80, p80-p95
-    _handles, labels = ax.get_legend_handles_labels()
-    assert labels == ["5–95%", "20–80%", "40–60%", "mean", "median"]
-    # Lighter (closer to white) at the edges, darkest in the middle band,
-    # and symmetric about it.
-    lightness = [sum(c.get_facecolor()[0][:3]) for c in ax.collections]
-    assert lightness[0] > lightness[1] > lightness[2]
-    assert lightness[0] == pytest.approx(lightness[4])
-    assert lightness[1] == pytest.approx(lightness[3])
-
-
-def test_ensemble_fan_chart_zero_rule_does_not_distort_a_far_off_range() -> None:
-    """The zero rule is drawn with axhline, which (left alone) would feed
-    into autoscale and pull the whole chart down to include 0 even when the
-    data never gets near it -- the exact distortion a fan chart is trying to
-    avoid. The axis limits must come out identical to a chart with no rule
-    at all when 0 is nowhere close."""
-    far_from_zero = pd.DataFrame({
-        "mean": [950_000.0, 1_020_000], "median": [945_000.0, 1_015_000],
-        "std": [5_000.0, 5_000], "min": [900_000.0, 950_000], "max": [1_000_000.0, 1_100_000],
-    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
-
-    fig1, ax1 = plt.subplots()
-    ax1.fill_between(far_from_zero.index, far_from_zero["min"], far_from_zero["max"])
-    ax1.plot(far_from_zero.index, far_from_zero["mean"])
-    ax1.plot(far_from_zero.index, far_from_zero["median"])
-    expected_ylim = ax1.get_ylim()
-
-    ax2 = ensemble_fan_chart(far_from_zero)
-    assert ax2.get_ylim() == expected_ylim
-    assert expected_ylim[0] > 0  # 0 genuinely isn't in (or near) this range
-
-
-def test_ensemble_fan_chart_zero_rule_shows_when_range_crosses_zero() -> None:
-    crosses_zero = pd.DataFrame({
-        "mean": [50.0, -10], "median": [45.0, -15],
-        "std": [5.0, 5], "min": [10.0, -80], "max": [100.0, 50],
-    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
-    ax = ensemble_fan_chart(crosses_zero)
-    ylim = ax.get_ylim()
-    assert ylim[0] < 0 < ylim[1]
-    zero_rules = [line for line in ax.lines if list(line.get_ydata()) == [0, 0]]
-    assert len(zero_rules) == 1
-
-
-def test_ensemble_fan_chart_zero_rule_skipped_on_log_scale() -> None:
-    far_from_zero = pd.DataFrame({
-        "mean": [950_000.0, 1_020_000], "median": [945_000.0, 1_015_000],
-        "std": [5_000.0, 5_000], "min": [900_000.0, 950_000], "max": [1_000_000.0, 1_100_000],
-    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
-    fig, ax = plt.subplots()
-    ax.set_yscale("log")
-    ensemble_fan_chart(far_from_zero, ax=ax)
-    assert len(ax.lines) == 2  # mean, median -- no zero rule added at all
 
 
 def test_list_ensemble_recipes_finds_only_directories_with_members(tmp_path: Path) -> None:
@@ -225,18 +156,17 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
 def test_ensemble_widget_log_linear_mode_sets_the_yscale(
     small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import ensemble_widgets
     from analysis.sim.notebook_ui.pickers import LogLinearModePicker
     from analysis.sim.types import LogLinearMode
 
     axes: list = []
-    real_fan_chart = ensemble_widgets.ensemble_fan_chart
+    real_fan_chart = ensemble_plots.ensemble_fan_chart
 
     def _spy_fan_chart(monthly_summary, ax=None):
         axes.append(ax)
         return real_fan_chart(monthly_summary, ax=ax)
 
-    monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
+    monkeypatch.setattr(ensemble_plots, "ensemble_fan_chart", _spy_fan_chart)
     log_linear_mode = LogLinearModePicker()
     ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
     assert axes[-1].get_yscale() == "linear"
@@ -256,13 +186,13 @@ def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_wort
     from analysis.sim.types import LogLinearMode
 
     axes: list = []
-    real_fan_chart = ensemble_widgets.ensemble_fan_chart
+    real_fan_chart = ensemble_plots.ensemble_fan_chart
 
     def _spy_fan_chart(monthly_summary, ax=None):
         axes.append(ax)
         return real_fan_chart(monthly_summary, ax=ax)
 
-    monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
+    monkeypatch.setattr(ensemble_plots, "ensemble_fan_chart", _spy_fan_chart)
     # The reported frame's shape, with only the lowest band (p05) reaching
     # zero: mean and median stay positive, so only the p05 check can trip.
     negative_summary = pd.DataFrame({
@@ -328,13 +258,13 @@ def test_ensemble_widget_account_picker_lists_net_worth_then_accounts(
     from analysis.sim.notebook_ui import ensemble_widgets
 
     axes: list = []
-    real_fan_chart = ensemble_widgets.ensemble_fan_chart
+    real_fan_chart = ensemble_plots.ensemble_fan_chart
 
     def _spy_fan_chart(monthly_summary, ax=None):
         axes.append(ax)
         return real_fan_chart(monthly_summary, ax=ax)
 
-    monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
+    monkeypatch.setattr(ensemble_plots, "ensemble_fan_chart", _spy_fan_chart)
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
     _dropdown, row, _loading, _out = box.children
     controls = row.controls
@@ -406,21 +336,6 @@ def test_ensemble_compare_widget_draws_one_section_per_variant(
     assert any("### other vs baseline" in h and "not paired" in h for h in headings)
     assert sum(isinstance(item, Image) for item in shown) == 2
     assert plt.get_fignums() == []
-
-
-def test_ensemble_compare_figure_skips_the_paired_panel_when_unpaired() -> None:
-    from analysis.sim.notebook_ui.ensemble_widgets import ensemble_compare_figure
-
-    months = pd.date_range("2027-01-31", periods=3, freq="ME")
-    baseline = pd.DataFrame({"member_0000": [1.0, 2.0, 3.0], "member_0001": [2.0, 3.0, 4.0]},
-                            index=months)
-    paired = ensemble_compare_figure("a", "b", baseline, baseline + 1,
-                                     [("member_0000", "member_0000")], "nominal")
-    unpaired = ensemble_compare_figure("a", "b", baseline, baseline + 1, [], "nominal")
-    assert (len(paired.axes), len(unpaired.axes)) == (3, 2)
-    with_reserve = ensemble_compare_figure("a", "b", baseline, baseline + 1, [], "nominal", 2.5)
-    assert len(with_reserve.axes) == 3
-    assert "reserve" in with_reserve.axes[-1].get_title()
 
 
 @pytest.mark.slow
