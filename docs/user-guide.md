@@ -302,7 +302,8 @@ tax year, by looking back over everything that happened that year (the
   *itemized deduction* mean two different things in this guide.)
 - **State tax** works the same way as federal tax, using
   `state_brackets__CA.csv` (or your own state's file, in `aux/`) and the
-  state's standard deduction from `state_standard_deduction.csv`. Without
+  state's standard deduction from `state_standard_deduction__CA.csv` (named
+  for the same state as the brackets). Without
   that file the federal standard deduction is used, and loading warns,
   since most states' deduction is much smaller. State taxable income
   leaves out Social Security, and long-term gains are taxed as ordinary

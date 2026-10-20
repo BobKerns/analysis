@@ -1459,10 +1459,11 @@ def test_state_tax_reads_its_own_standard_deduction(
         con.close()
     assert not any("standard deduction" in w for w in warnings)
 
-    (repo / "aux" / "state_standard_deduction.csv").unlink()
+    (repo / "aux" / "state_standard_deduction__CA.csv").unlink()
     load = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "intent2",
                          loaded_by="test", allow_dirty_data=True)
-    assert any("state tax uses the federal standard deduction" in w for w in load.warnings)
+    assert any("state tax uses the federal standard deduction" in w
+               and "state_standard_deduction__CA.csv" in w for w in load.warnings)
     run_path = tmp_path / "r2.sqlite3"
     run_scenario(load.intent_path, run_path, run_by="test", allow_dirty_data=True)
     con = sqlite3.connect(run_path)

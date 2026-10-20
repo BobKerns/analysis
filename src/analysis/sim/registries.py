@@ -303,8 +303,8 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "standard_deduction": ("effective_date", "filing_status", "amount"),
     # The state's own standard deduction (#248), which is often far smaller
     # than the federal one. A state tax rule falls back to standard_deduction
-    # when the scenario has no state_standard_deduction rows at all, and the
-    # loader warns that it did.
+    # when there is no state_standard_deduction__<state> for its brackets'
+    # state, and the loader warns that it did.
     STATE_STANDARD_DEDUCTION: ("effective_date", "filing_status", "amount"),
     # Itemized deductions: a dated total, no filing_status split (unlike
     # standard_deduction). Optional; when present, the tax_accumulator rule uses

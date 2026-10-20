@@ -2644,21 +2644,27 @@ def _warn_state_standard_deduction(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     warnings: list[str],
 ) -> None:
-    """A state tax rule with no state_standard_deduction table to read uses
-    the federal standard deduction (#248), which overstates most states'
-    (California's is about a third of it), so its tax comes out low."""
-    if any(kind == registries.STATE_STANDARD_DEDUCTION for kind, *_ in aux_rows):
-        return
+    """A state tax rule with no state_standard_deduction__<state> table for
+    its brackets' state uses the federal standard deduction (#248), which
+    overstates most states' (California's is about a third of it), so its
+    tax comes out low."""
+    supplied = {(kind, series) for kind, series, *_ in aux_rows}
+    states = sorted(series for kind, series in supplied
+                    if kind == "state_brackets" and series is not None)
     for where, row in _located(scheduled_rows, "scheduled.csv"):
         if row.get("amount_rule_kind") != "tax_accumulator":
             continue
         params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
-        if params.get("scope") == "state" and "standard_deduction_aux" not in params:
-            warnings.append(
-                f"{where} ({row.get('name', '')}): state tax uses the federal "
-                f"standard deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}.csv "
-                "(effective_date, filing_status, amount) with the state's own"
-            )
+        if params.get("scope") != "state" or "standard_deduction_aux" in params:
+            continue
+        state = params.get("bracket_series") or (states[0] if len(states) == 1 else None)
+        if state is None or (registries.STATE_STANDARD_DEDUCTION, state) in supplied:
+            continue  # no state to name: the run reports the missing bracket_series
+        warnings.append(
+            f"{where} ({row.get('name', '')}): state tax uses the federal standard "
+            f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv "
+            "(effective_date, filing_status, amount) with the state's own"
+        )
 
 
 def _validate_swap_aux_tables(

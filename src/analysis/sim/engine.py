@@ -2429,8 +2429,9 @@ def _apply_tax_accumulator(
     - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
     - bracket_series: optional, required when state_brackets has multiple series
     - standard_deduction_aux: defaults to "standard_deduction" (federal) or
-      "state_standard_deduction" (state), which falls back to
-      "standard_deduction" when the scenario has no rows of it at all
+      "state_standard_deduction" (state), whose series is bracket_series's
+      (state_standard_deduction__CA.csv); with no such file the state falls
+      back to "standard_deduction"
     - itemized_deduction_aux: defaults to "federal_deductions" (federal) or
       "state_deductions" (state); the greater of it and the standard deduction
       is used. "state_deductions" falls back to "federal_deductions" when the
@@ -2469,11 +2470,6 @@ def _apply_tax_accumulator(
         "standard_deduction_aux",
         "standard_deduction" if scope == "federal" else registries.STATE_STANDARD_DEDUCTION,
     ))
-    if standard_deduction_aux == registries.STATE_STANDARD_DEDUCTION and not aux.get(
-        (registries.STATE_STANDARD_DEDUCTION, None)
-    ):
-        # The loader warned: the federal figure stands in for the state's.
-        standard_deduction_aux = "standard_deduction"
     ss_threshold_aux = str(params.get("ss_threshold_aux", "ss_taxation_thresholds"))
     ltcg_bracket_aux = str(params.get("ltcg_bracket_aux", "ltcg_brackets"))
     bracket_aux = str(
@@ -2547,7 +2543,16 @@ def _apply_tax_accumulator(
             tier2=tier2,
         )
 
-    deduction_rows = _active_aux_rows(aux, standard_deduction_aux, None, as_of)
+    # A state's standard deduction is keyed by state, like its brackets
+    # (state_standard_deduction__CA.csv), so it follows bracket_series.
+    deduction_series = (
+        bracket_series if standard_deduction_aux == registries.STATE_STANDARD_DEDUCTION
+        else None
+    )
+    if deduction_series is not None and not aux.get((standard_deduction_aux, deduction_series)):
+        # The loader warned: the federal figure stands in for the state's.
+        standard_deduction_aux, deduction_series = "standard_deduction", None
+    deduction_rows = _active_aux_rows(aux, standard_deduction_aux, deduction_series, as_of)
     deduction_rows = [r for r in deduction_rows if r.get("filing_status") == filing_status]
     if not deduction_rows:
         raise EngineError(
