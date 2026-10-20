@@ -1111,11 +1111,13 @@ _ENSEMBLE_RESERVE_OPTION = click.option(
 
 def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
                       batch: str | None = None, exclude: str | None = None) -> str:
-    """An ensemble with a run batch under ``runs_dir`` asked for: one named
-    ``batch`` when given, else one of ``mode``; never ``exclude``."""
+    """An ensemble with a run batch of ``mode`` (any, when None) under
+    ``runs_dir`` asked for: the batch named ``batch`` when given; never
+    ``exclude``."""
     def has_runs(recipe: Path) -> bool:
         if batch:
-            return (recipe / batch).is_dir()
+            batch_dir = recipe / batch
+            return batch_dir.is_dir() and (mode is None or batch_mode(batch_dir) == mode)
         return latest_ensemble_batch(recipe, mode=mode) is not None
 
     recipes = sorted(

@@ -4,6 +4,7 @@ with completion (#240)."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from analysis.cli import main
 from analysis.sim import cli as sim_cli
 from analysis.sim import names
 from analysis.sim.cli import sim_group_command
+from analysis.sim.loader import BATCH_MANIFEST_FILENAME
 
 
 @pytest.fixture
@@ -301,3 +303,14 @@ def test_series_rename_offers_only_series_it_can_rename(sim: Callable[..., Resul
 def test_lot_names_can_leave_out_the_implicit_default(data_dir: Path) -> None:
     assert names.lot_names(data_dir, "retire_alice", "Income_Salary_Alice") == ["default"]
     assert names.lot_names(data_dir, "retire_alice", "Income_Salary_Alice", implicit=False) == []
+
+
+def test_a_named_batch_is_offered_only_in_the_mode_asked_for(tmp_path: Path) -> None:
+    for recipe, mode in (("mc_recipe", "monte_carlo"), ("oat_recipe", "sensitivity")):
+        batch = tmp_path / recipe / "b1"
+        batch.mkdir(parents=True)
+        (batch / BATCH_MANIFEST_FILENAME).write_text(json.dumps({"mode": mode}))
+    result = CliRunner().invoke(click.Command("ask", callback=lambda: click.echo(
+        sim_cli._ask_ensemble_run(tmp_path, "monte_carlo", batch="b1"))), input="mc_recipe\n")
+    assert result.exit_code == 0, result.output
+    assert "ensembles with a batch b1: mc_recipe\n" in result.output
