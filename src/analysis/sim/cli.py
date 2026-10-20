@@ -8,7 +8,7 @@ import math
 import secrets
 import shlex
 import shutil
-from collections.abc import Callable, Generator, Mapping, Set
+from collections.abc import Callable, Generator, Iterable, Mapping, Set
 from contextlib import ExitStack, contextmanager
 import os
 import sqlite3
@@ -32,8 +32,8 @@ from analysis.expenses.baseline import (
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
-    allocation, calendar_guide, chain_edit, chain_map, completion, lot_guide, prices, readme, registries,
-    rename, reports, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols,
+    allocation, calendar_guide, chain_edit, chain_map, completion, lot_guide, names, prices, readme,
+    registries, rename, reports, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols,
     units,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
@@ -42,6 +42,8 @@ from analysis.sim.connection import (
 )
 from analysis.sim.holdings import (
     account_holdings,
+    holding_accounts,
+    holding_symbols,
     render_holders_table,
     render_holdings_table,
     symbol_holders,
@@ -915,8 +917,8 @@ def ensemble_group_command() -> None:
 
 
 @ensemble_group_command.command("create")
-@click.argument("name")
-@click.argument("parent", type=completion.SCENARIO)
+@click.argument("name", required=False)
+@click.argument("parent", required=False, type=completion.SCENARIO)
 @click.argument("mixins", type=completion.SCENARIO, nargs=-1)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -944,8 +946,8 @@ def ensemble_group_command() -> None:
          "for this recipe.",
 )
 def ensemble_create(
-    name: str,
-    parent: str,
+    name: str | None,
+    parent: str | None,
     mixins: tuple[str, ...],
     data_dir: Path | None,
     description: str | None,
@@ -965,12 +967,15 @@ def ensemble_create(
     ``sim run NAME`` then generates and runs every member instead of a
     single run, using the recorded member count unless overridden by
     ``sim run NAME --ensemble-size N``.
+
+    Without NAME or PARENT, they are asked for.
     """
     if ensemble_size is not None and ensemble_size <= 0:
         raise click.ClickException(f"--size must be a positive integer (got {ensemble_size})")
     if seed is not None and new_seed:
         raise click.UsageError("--seed and --new-seed are exclusive")
     data_dir_p = _resolve_data_dir(data_dir)
+    name, parent = _ask_new_scenario(data_dir_p, "ensemble", name, parent)
     # Preflights PARENT, then creates and validates the recipe in a staged copy.
     with _scenario_edit(data_dir_p, parent, remember=False) as edit:
         try:
@@ -1102,6 +1107,25 @@ _ENSEMBLE_RESERVE_OPTION = click.option(
 )
 
 
+def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
+                      batch: str | None = None, exclude: str | None = None) -> str:
+    """An ensemble with a run batch of ``mode`` (any, when None) under
+    ``runs_dir`` asked for: the batch named ``batch`` when given; never
+    ``exclude``."""
+    def has_runs(recipe: Path) -> bool:
+        if batch:
+            batch_dir = recipe / batch
+            return batch_dir.is_dir() and (mode is None or batch_mode(batch_dir) == mode)
+        return latest_ensemble_batch(recipe, mode=mode) is not None
+
+    recipes = sorted(
+        p.name for p in (runs_dir.iterdir() if runs_dir.is_dir() else ())
+        if p.is_dir() and p.name != exclude and has_runs(p)
+    )
+    plural = f"ensembles with a batch {batch}" if batch else "ensembles with runs"
+    return _ask_name("ensemble", recipes, prompt=prompt, plural=plural)
+
+
 def _resolve_runs_dir(runs_dir: Path | None, data_dir: Path | None) -> Path:
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
@@ -1145,7 +1169,7 @@ def _subject(account: str | None, lot: str | None) -> str:
 
 
 @ensemble_group_command.command("summary")
-@click.argument("scenario_name", type=completion.ENSEMBLE)
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
 @_ENSEMBLE_RUNS_DIR_OPTION
 @_ENSEMBLE_DATA_DIR_OPTION
 @click.option(
@@ -1156,15 +1180,20 @@ def _subject(account: str | None, lot: str | None) -> str:
 @_ENSEMBLE_LOT_OPTION
 @_ENSEMBLE_RESERVE_OPTION
 def ensemble_summary(
-    scenario_name: str, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     account: str | None, lot: str | None, reserve: str | None,
 ) -> None:
     """Mean/median/SD, 5th/20th/.../95th percentiles and the mean of the
     worst 5% and 20% (CVaR) of year-end net worth (or --account's balance,
     or one --lot of it) across SCENARIO_NAME's members, and the share below
-    the reserve when one is set."""
+    the reserve when one is set.
+
+    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
     _check_lot_has_account(account, lot)
-    batch_dir = _ensemble_batch_dir(_resolve_runs_dir(runs_dir, data_dir), scenario_name, batch)
+    resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+    batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
     connections = load_ensemble(batch_dir)
@@ -1196,8 +1225,8 @@ def ensemble_summary(
 
 
 @ensemble_group_command.command("compare")
-@click.argument("baseline", type=completion.ENSEMBLE)
-@click.argument("variant", type=completion.ENSEMBLE)
+@click.argument("baseline", required=False, type=completion.ENSEMBLE)
+@click.argument("variant", required=False, type=completion.ENSEMBLE)
 @_ENSEMBLE_RUNS_DIR_OPTION
 @_ENSEMBLE_DATA_DIR_OPTION
 @_ENSEMBLE_ACCOUNT_OPTION
@@ -1209,7 +1238,7 @@ def ensemble_summary(
     help="Dollars the percentiles and tail means are reported in.",
 )
 def ensemble_compare(
-    baseline: str, variant: str, runs_dir: Path | None, data_dir: Path | None,
+    baseline: str | None, variant: str | None, runs_dir: Path | None, data_dir: Path | None,
     account: str | None, lot: str | None, reserve: str | None, dollars: str,
 ) -> None:
     """Compare VARIANT's ensemble with BASELINE's on risk (#163), each from
@@ -1217,9 +1246,15 @@ def ensemble_compare(
     delta in the mean of the worst 5% and 20% of members (CVaR), and, when
     the two recipes share a seed, the share of paired futures where VARIANT
     comes out ahead. Then each recipe's tail means and, when a reserve is
-    set, the share of members below it."""
+    set, the share of members below it.
+
+    Either ensemble left out is asked for, from those that have been run."""
     _check_lot_has_account(account, lot)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
+    if baseline is None:
+        baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline", exclude=variant)
+    if variant is None:
+        variant = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant", exclude=baseline)
     mode = DollarMode(dollars)
     sides: dict[str, dict[str, RunConnection]] = {}
     try:
@@ -1279,7 +1314,7 @@ def ensemble_compare(
 
 
 @ensemble_group_command.command("sensitivity")
-@click.argument("scenario_name", type=completion.ENSEMBLE)
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
 @click.option(
     "--runs-dir",
     type=click.Path(file_okay=False, path_type=Path),
@@ -1329,7 +1364,7 @@ def ensemble_compare(
                             "holding account.",
 )
 def ensemble_sensitivity(
-    scenario_name: str, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
+    scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     mode: str | None, dollars: str, relative: bool, measure: str, years: str | None,
     negligible: float, attribute: str | None, by: str,
 ) -> None:
@@ -1342,10 +1377,14 @@ def ensemble_sensitivity(
     pinned to a literal (judged by the regression coefficient when rows are
     correlated). A correlated batch also shows how closely its draws reproduce
     the specified correlations.
+
+    Without SCENARIO_NAME, an ensemble that has been run is asked for.
     """
     data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
@@ -1926,7 +1965,8 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
 
 
 @sim_group_command.command("items")
-@click.option("--account", type=completion.ACCOUNT, required=True, help="Account name in the selected run.")
+@click.option("--account", type=completion.ACCOUNT, default=None,
+              help="Account name in the selected run (asked for when left out).")
 @click.option("--lot", type=completion.LotName("account"), default=None,
               help="Only events touching this lot of the account (default: every lot).")
 @click.option("--start", required=True, help="First month (YYYY-MM or YYYY-MM-DD).")
@@ -1942,7 +1982,7 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
 @click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path), default=None,
               help="Directory to search for the latest run.")
 def items(
-    account: str,
+    account: str | None,
     lot: str | None,
     start: str,
     end: str | None,
@@ -1976,6 +2016,8 @@ def items(
 
     con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
     try:
+        if account is None:
+            account = _ask_name("account", (r[0] for r in con.execute("SELECT name FROM account ORDER BY name")))
         account_row = con.execute("SELECT id FROM account WHERE name = ?", (account,)).fetchone()
         if account_row is None:
             raise click.ClickException(f"unknown account in run: {account!r}")
@@ -2122,6 +2164,52 @@ def _prompt_with_completion(text: str, choices: list[str] | None = None,
     finally:
         readline.set_completer(old)
         readline.set_completer_delims(old_delims)
+
+
+def _ask_name(what: str, choices: Iterable[str], *, prompt: str | None = None,
+              plural: str | None = None) -> str:
+    """One of ``choices``, listed and then asked for with completion until
+    the answer is one: how a command takes a name left off its line (#240)."""
+    shown = list(dict.fromkeys(choices))
+    listed = plural or (what if what.endswith("series") else f"{what}s")
+    if not shown:
+        raise click.ClickException(f"there are no {listed} to choose from")
+    click.echo(f"{listed}: {', '.join(shown)}")
+    while (answer := _prompt_with_completion(prompt or what, choices=shown).strip()) not in shown:
+        click.echo(f"  one of: {', '.join(shown)}")
+    return answer
+
+
+def _ask_new_name(prompt: str) -> str:
+    """A name for something new, asked for until it isn't blank. The command
+    checks it as it would one given on its line."""
+    while not (answer := _prompt_with_completion(prompt).strip()):
+        pass
+    return answer
+
+
+def _name_and_tags(
+    name: str | None, tag_tokens: tuple[str, ...], existing: Callable[[], Iterable[str]],
+) -> tuple[str | None, tuple[str, ...]]:
+    """A tag command's NAME and TAG_TOKENS, given that click hands the first
+    word to NAME: when that word looks like a ``role:name`` tag and isn't one
+    of the ``existing`` names (a rule or row may have a colon in its name),
+    NAME was left out and is asked for."""
+    if (name is not None and registries.TAG_TOKEN_RE.match(name)
+            and name not in set(existing())):
+        return None, (name, *tag_tokens)
+    return name, tag_tokens
+
+
+def _ask_tags(given: tuple[str, ...], choices: Iterable[str]) -> tuple[str, ...]:
+    """``given``, or when none were, tag tokens asked for (completing the
+    first from ``choices``, the tags already in use)."""
+    if given:
+        return given
+    while not (answer := _prompt_with_completion(
+            "tags (role:name, space-separated)", choices=list(choices)).split()):
+        pass
+    return tuple(answer)
 
 
 def _parse_amount_cents(s: str) -> int:
@@ -3581,20 +3669,25 @@ def calendar_tag_group() -> None:
 
 
 def _calendar_tag(
-    row: str, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None, op: str,
+    row: str | None, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None,
+    op: str,
 ) -> None:
     """``sim calendar tag add|rm``: change one row's tags. An inherited row
-    gets an override carrying the new tags (#202)."""
-    try:
-        pairs = registries.parse_tags(" ".join(tag_tokens))
-    except ValueError as e:
-        raise click.ClickException(str(e)) from None
+    gets an override carrying the new tags (#202). A row or tags left out
+    are asked for."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
     entries, notes = _calendar_entries(scenario_dir, scenario_name, "tag")
+    row, tag_tokens = _name_and_tags(
+        row, tag_tokens, lambda: [(e.row.get("name") or "").strip() for e in entries])
     rows = [entry.row for entry in entries]
     chosen = entries[_select_calendar_row(rows, row, notes)]
+    tag_tokens = _ask_tags(tag_tokens, names.tag_tokens(data_dir_p, scenario_name))
+    try:
+        pairs = registries.parse_tags(" ".join(tag_tokens))
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
     old = registries.parse_tags(chosen.row["tags"])
     new = [*old, *(p for p in pairs if p not in old)] if op == "add" else [p for p in old if p not in pairs]
     tags = registries.format_tags(new)
@@ -3625,14 +3718,14 @@ def _calendar_tag(
 
 
 @calendar_tag_group.command("add")
-@click.argument("row", type=completion.CALENDAR_ROW)
-@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.argument("row", required=False, type=completion.CALENDAR_ROW)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def calendar_tag_add(
-    row: str, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None,
+    row: str | None, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Add one or more '<role>:<name>' tags to a calendar row.
 
@@ -3644,14 +3737,14 @@ def calendar_tag_add(
 
 
 @calendar_tag_group.command("rm")
-@click.argument("row", type=completion.CALENDAR_ROW)
-@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.argument("row", required=False, type=completion.CALENDAR_ROW)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def calendar_tag_rm(
-    row: str, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None,
+    row: str | None, tag_tokens: tuple[str, ...], scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Remove one or more '<role>:<name>' tags from a calendar row; an
     inherited row gets an override without them."""
@@ -4785,36 +4878,42 @@ def scheduled_tag_group() -> None:
 
 
 @scheduled_tag_group.command("add")
-@click.argument("name", type=completion.RULE)
-@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.argument("name", required=False, type=completion.RULE)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def scheduled_tag_add(
-    name: str,
+    name: str | None,
     tag_tokens: tuple[str, ...],
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """Add one or more '<role>:<name>' tags to a scheduled transaction."""
+    """Add one or more '<role>:<name>' tags to a scheduled transaction.
+
+    Without NAME or TAG_TOKENS, they are asked for.
+    """
     _scenario_write(data_dir, scenario, "scheduled", name, tag_tokens, "add")
 
 
 @scheduled_tag_group.command("rm")
-@click.argument("name", type=completion.RULE)
-@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.argument("name", required=False, type=completion.RULE)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def scheduled_tag_rm(
-    name: str,
+    name: str | None,
     tag_tokens: tuple[str, ...],
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """Remove one or more '<role>:<name>' tags from a scheduled transaction."""
+    """Remove one or more '<role>:<name>' tags from a scheduled transaction.
+
+    Without NAME or TAG_TOKENS, they are asked for.
+    """
     _scenario_write(data_dir, scenario, "scheduled", name, tag_tokens, "rm")
 
 
@@ -4885,7 +4984,7 @@ def _write_scheduled(
 
 
 @scheduled_group_command.command("edit")
-@click.argument("name", type=completion.RULE)
+@click.argument("name", required=False, type=completion.RULE)
 @_scheduled_options
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
@@ -4894,7 +4993,7 @@ def _write_scheduled(
               default=None)
 @click.pass_context
 def scheduled_edit(
-    ctx: click.Context, name: str, scenario: str | None, data_dir: Path | None,
+    ctx: click.Context, name: str | None, scenario: str | None, data_dir: Path | None,
     **values: str | None,
 ) -> None:
     """Change a scheduled rule.
@@ -4907,10 +5006,15 @@ def scheduled_edit(
     A rule the scenario inherits is changed by an override: the whole rule,
     edited, appended to this scenario's scheduled.csv; the parent keeps its
     own. `sim scheduled rename` changes a rule's name, everywhere it is shared.
+
+    Without NAME, it is asked for.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "scheduled.csv"
+    if name is None:
+        name = _ask_name("scheduled rule", names.scheduled_names(data_dir_p, scenario_name),
+                         prompt="rule to edit")
     picked = _pick_scheduled(scenario_dir, scenario_name, name)
     chosen = picked.found
     current = {column: chosen.row.get(column, "") for column in registries.SCHEDULED_CSV_HEADER}
@@ -4959,14 +5063,14 @@ def _month_before(iso: str) -> str:
 
 
 @scheduled_group_command.command("delete")
-@click.argument("name", type=completion.RULE)
+@click.argument("name", required=False, type=completion.RULE)
 @click.option("--yes", is_flag=True, help="Don't ask first.")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-def scheduled_delete(name: str, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
+def scheduled_delete(name: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
     """Delete a scheduled rule.
 
     A rule of this scenario's own is removed, with this scenario's calendar
@@ -4978,10 +5082,15 @@ def scheduled_delete(name: str, yes: bool, scenario: str | None, data_dir: Path 
     overlay can't remove a row (ADR-003 §4.5). Instead it is ended: an
     override whose end is the month before the scenario starts, so it never
     fires, and without a year-to-date catch-up.
+
+    Without NAME, it is asked for.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "scheduled.csv"
+    if name is None:
+        name = _ask_name("scheduled rule", names.scheduled_names(data_dir_p, scenario_name),
+                         prompt="rule to delete")
     picked = _pick_scheduled(scenario_dir, scenario_name, name)
     chosen = picked.found
     rule = chosen.row["name"]
@@ -5392,16 +5501,20 @@ def _delete_account_references(scenario_dir: Path, name: str, series: str | None
 
 
 @account_group_command.command("delete")
-@click.argument("name", type=completion.ACCOUNT)
+@click.argument("name", required=False, type=completion.ACCOUNT)
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> None:
-    """Delete an account and any direct CSV rows that reference it."""
+def delete_account(name: str | None, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete an account and any direct CSV rows that reference it. Without
+    NAME, it is asked for."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    if name is None:
+        name = _ask_name("account", names.account_names(data_dir_p, scenario_name),
+                         prompt="account to delete")
     accounts_path = scenario_dir / "accounts.csv"
     # Looked up first: a derived scenario may leave accounts.csv out entirely.
     found = _overlay_rows(scenario_dir, "accounts.csv").get(name)
@@ -5447,7 +5560,7 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
 
 
 @account_group_command.command("edit")
-@click.argument("name", type=completion.ACCOUNT)
+@click.argument("name", required=False, type=completion.ACCOUNT)
 @click.option("--new-name", default=None, help="Update the account name.")
 @click.option("--kind", default=None, help="New account kind.")
 @click.option("--subkind", default=None, help="New account subkind.")
@@ -5463,7 +5576,7 @@ def delete_account(name: str, scenario: str | None, data_dir: Path | None) -> No
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def edit_account(
-    name: str,
+    name: str | None,
     new_name: str | None,
     kind: str | None,
     subkind: str | None,
@@ -5482,10 +5595,15 @@ def edit_account(
     whole row, edited, written to this scenario's accounts.csv. The parent
     keeps its own. A new name renames the account everywhere it is shared,
     as ``sim account rename`` does.
+
+    Without NAME, it is asked for.
     """
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     accounts_path = scenario_dir / "accounts.csv"
+    if name is None:
+        name = _ask_name("account", names.account_names(data_dir_p, scenario_name),
+                         prompt="account to edit")
 
     chosen = _overlay_rows(scenario_dir, "accounts.csv").get(name)
     if chosen is None:
@@ -5640,22 +5758,31 @@ def edit_account(
 
 
 @account_group_command.command("rename")
-@click.argument("old_name", type=completion.ACCOUNT)
-@click.argument("new_name")
+@click.argument("old_name", required=False, type=completion.ACCOUNT)
+@click.argument("new_name", required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def rename_account(
-    old_name: str,
-    new_name: str,
+    old_name: str | None,
+    new_name: str | None,
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
     """Rename account OLD_NAME to NEW_NAME, and every reference to it, in
     every scenario that shares the account: where it is defined, a parent or
-    a mix-in included, and every scenario built on those."""
+    a mix-in included, and every scenario built on those. Either name left
+    out is asked for."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    if old_name is None or new_name is None:
+        scenario_name = _resolve_scenario(data_dir_p, scenario).name
+        if old_name is None:
+            old_name = _ask_name("account", names.account_names(data_dir_p, scenario_name),
+                                 prompt="account to rename")
+        if new_name is None:
+            new_name = _ask_new_name(f"new name for {old_name}")
     old_name = old_name.strip()
     new_name = new_name.strip()
     if not old_name:
@@ -5663,7 +5790,7 @@ def rename_account(
     if not new_name:
         raise click.ClickException("new account name required")
 
-    with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
+    with _scenario_edit(data_dir_p, scenario) as edit:
         changed = _rename_account(edit, old_name, new_name)
     _echo_renamed("account", old_name, new_name, changed)
 
@@ -5777,16 +5904,21 @@ def _holdings_source(
 
 
 @account_group_command.command("holdings")
-@click.argument("account", type=completion.ACCOUNT)
+@click.argument("account", required=False, type=completion.ACCOUNT)
 @_holdings_options
 def account_holdings_command(
-    account: str, scenario: str | None, data_dir: Path | None, month: str | None,
+    account: str | None, scenario: str | None, data_dir: Path | None, month: str | None,
     opening: bool, runfile: Path | None,
 ) -> None:
-    """Show the lots in ACCOUNT: symbol, quantity, balance, basis and unrealized gain."""
+    """Show the lots in ACCOUNT: symbol, quantity, balance, basis and unrealized gain.
+
+    Without ACCOUNT, it is asked for.
+    """
     from rich.console import Console
 
     with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
+        if account is None:
+            account = _ask_name("account", holding_accounts(source))
         try:
             frame = account_holdings(source, account, month=month)
         except (KeyError, ValueError) as exc:
@@ -5796,16 +5928,21 @@ def account_holdings_command(
 
 
 @account_group_command.command("holders")
-@click.argument("symbol", type=completion.SYMBOL)
+@click.argument("symbol", required=False, type=completion.SYMBOL)
 @_holdings_options
 def account_holders_command(
-    symbol: str, scenario: str | None, data_dir: Path | None, month: str | None,
+    symbol: str | None, scenario: str | None, data_dir: Path | None, month: str | None,
     opening: bool, runfile: Path | None,
 ) -> None:
-    """Show every account holding SYMBOL, lot by lot, with totals."""
+    """Show every account holding SYMBOL, lot by lot, with totals.
+
+    Without SYMBOL, it is asked for, from the symbols held.
+    """
     from rich.console import Console
 
     with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
+        if symbol is None:
+            symbol = _ask_name("symbol", holding_symbols(source))
         try:
             frame = symbol_holders(source, symbol, month=month)
         except ValueError as exc:
@@ -5926,7 +6063,7 @@ def _print_report(frame: pd.DataFrame, what: str, described: str, mode: DollarMo
 
 
 @account_group_command.command("history")
-@click.argument("account", type=completion.ACCOUNT)
+@click.argument("account", required=False, type=completion.ACCOUNT)
 @click.option("--lot", type=completion.LotName("account"), default=None,
               help="One lot of the account: adds its basis, unrealized gain and quantity.")
 @click.option("--start", default=None, help="First month (YYYY-MM or YYYY-MM-DD).")
@@ -5934,7 +6071,7 @@ def _print_report(frame: pd.DataFrame, what: str, described: str, mode: DollarMo
 @click.option("--yearly", is_flag=True, default=False, help="Year-end rows instead of month-end.")
 @_report_options
 def account_history_command(
-    account: str, lot: str | None, start: str | None, end: str | None, yearly: bool,
+    account: str | None, lot: str | None, start: str | None, end: str | None, yearly: bool,
     dollars: str, runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show ACCOUNT's balance month by month (or year by year) from a run.
@@ -5943,6 +6080,8 @@ def account_history_command(
     expense account, whose balance is a running total, it is the period's
     flow. With --lot, an asset lot also shows its cost basis, unrealized gain
     and quantity where the run tracks them.
+
+    Without ACCOUNT, it is asked for.
     """
     start_iso = month_end_iso(_validate_month_date(start)) if start else None
     end_iso = month_end_iso(_validate_month_date(end)) if end else None
@@ -5950,6 +6089,8 @@ def account_history_command(
         raise click.ClickException("--end must be on or after --start")
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
+        if account is None:
+            account = _ask_name("account", rc.items("account")["name"])
         try:
             frame = reports.account_history(rc, account, lot=lot, start=start_iso, end=end_iso,
                                             yearly=yearly, mode=mode)
@@ -6070,36 +6211,42 @@ def account_tag_group() -> None:
 
 
 @account_tag_group.command("add")
-@click.argument("name", type=completion.ACCOUNT)
-@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.argument("name", required=False, type=completion.ACCOUNT)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def account_tag_add(
-    name: str,
+    name: str | None,
     tag_tokens: tuple[str, ...],
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """Add one or more '<role>:<name>' tags to an account."""
+    """Add one or more '<role>:<name>' tags to an account.
+
+    Without NAME or TAG_TOKENS, they are asked for.
+    """
     _scenario_write(data_dir, scenario, "account", name, tag_tokens, "add")
 
 
 @account_tag_group.command("rm")
-@click.argument("name", type=completion.ACCOUNT)
-@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=True)
+@click.argument("name", required=False, type=completion.ACCOUNT)
+@click.argument("tag_tokens", type=completion.TAG, nargs=-1, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def account_tag_rm(
-    name: str,
+    name: str | None,
     tag_tokens: tuple[str, ...],
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
-    """Remove one or more '<role>:<name>' tags from an account."""
+    """Remove one or more '<role>:<name>' tags from an account.
+
+    Without NAME or TAG_TOKENS, they are asked for.
+    """
     _scenario_write(data_dir, scenario, "account", name, tag_tokens, "rm")
 
 
@@ -7374,10 +7521,24 @@ def _scenario_write(
     data_dir: Path | None,
     scenario: str | None,
     item_type: ItemType,
-    item_name: str,
+    item_name: str | None,
     tag_tokens: tuple[str, ...],
     op: str,  # 'add' | 'rm'
 ) -> None:
+    read, what = ((names.account_names, "account") if item_type == "account"
+                  else (names.scheduled_names, "scheduled rule"))
+
+    def existing() -> list[str]:
+        data = _resolve_data_dir(data_dir)
+        return read(data, _resolve_scenario(data, scenario).name)
+
+    item_name, tag_tokens = _name_and_tags(item_name, tag_tokens, existing)
+    if item_name is None or not tag_tokens:
+        data = _resolve_data_dir(data_dir)
+        scenario_name = _resolve_scenario(data, scenario).name
+        if item_name is None:
+            item_name = _ask_name(what, read(data, scenario_name))
+        tag_tokens = _ask_tags(tag_tokens, names.tag_tokens(data, scenario_name))
     try:
         registries.parse_tags(" ".join(tag_tokens))
     except ValueError as e:
@@ -8705,8 +8866,8 @@ def _list_scenarios(data_dir: Path | None, verbose: bool, *, ensembles_only: boo
 
 
 @scenario_group_command.command("create")
-@click.argument("name")
-@click.argument("parent", type=completion.SCENARIO)
+@click.argument("name", required=False)
+@click.argument("parent", required=False, type=completion.SCENARIO)
 @click.argument("mixins", type=completion.SCENARIO, nargs=-1)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -8714,8 +8875,8 @@ def _list_scenarios(data_dir: Path | None, verbose: bool, *, ensembles_only: boo
 @click.option("--description", default=None,
               help="Default: 'Derived from <parent> + <mixin>...'.")
 def scenario_create(
-    name: str,
-    parent: str,
+    name: str | None,
+    parent: str | None,
     mixins: tuple[str, ...],
     data_dir: Path | None,
     description: str | None,
@@ -8731,6 +8892,8 @@ def scenario_create(
     NAME is never an ensemble: it records ``ensemble_size`` 0, so under an
     ensemble parent ``sim run NAME`` runs the base case, each varying row at
     its central value. Use ``sim ensemble create`` for an ensemble.
+
+    Without NAME or PARENT, they are asked for.
     """
 
     skeletons: dict[str, tuple[str, ...]] = {
@@ -8741,6 +8904,7 @@ def scenario_create(
     }
     try:
         data_dir_p = _resolve_data_dir(data_dir)
+        name, parent = _ask_new_scenario(data_dir_p, "scenario", name, parent)
         # Preflights PARENT, then creates and validates NAME in a staged copy.
         with _scenario_edit(data_dir_p, parent, remember=False) as edit:
             sc.create_scenario(
@@ -8800,20 +8964,28 @@ def tags_group_command(
 
 
 @tags_group_command.command("items")
-@click.argument("tag_token", type=completion.TAG)
+@click.argument("tag_token", required=False, type=completion.TAG)
 @click.option("--scenario", type=completion.SCENARIO, default=None)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
 def tags_items(
-    tag_token: str,
+    tag_token: str | None,
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
     """List items (accounts, scheduled, calendar events) carrying the given tag.
 
-    ``<role>:*`` lists everything in a role (e.g. ``estimate:*``).
+    ``<role>:*`` lists everything in a role (e.g. ``estimate:*``). Without
+    TAG_TOKEN, it is asked for.
     """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_name = _resolve_scenario(data_dir_p, scenario).name
+    if tag_token is None:
+        choices = names.tag_tokens(data_dir_p, scenario_name)
+        while len(answer := _ask_tags((), choices)) != 1:
+            click.echo("  one tag: role:name, or role:* for the whole role")
+        tag_token = answer[0]
     role, _, name = tag_token.partition(":")
     if name != "*":
         try:
@@ -8824,8 +8996,7 @@ def tags_items(
             raise click.ClickException("exactly one tag token expected")
     elif not role:
         raise click.ClickException("wildcard needs a role, e.g. 'estimate:*'")
-    data_dir_p = _resolve_data_dir(data_dir)
-    with open_scenario(data_dir_p, _resolve_scenario(data_dir_p, scenario).name) as sc:
+    with open_scenario(data_dir_p, scenario_name) as sc:
         found = False
         for it in ("account", "scheduled", "calendar_event"):
             df = sc.items(it, tags=tag_token)  # type: ignore[arg-type]
@@ -8920,6 +9091,15 @@ def _rename_across(
         raise click.ClickException(str(exc)) from None
 
 
+def _ask_rename(what: str, old: str | None, new: str | None, choices: Iterable[str]) -> tuple[str, str]:
+    """A rename's OLD and NEW, either asked for when left out."""
+    if old is None:
+        old = _ask_name(what, choices, prompt=f"{what} to rename")
+    if new is None:
+        new = _ask_new_name(f"new name for {old}")
+    return old, new
+
+
 def _echo_renamed(what: str, old: str, new: str, changed: list[str]) -> None:
     click.echo(f"renamed {what} {old} to {new}")
     for line in changed:
@@ -8927,29 +9107,35 @@ def _echo_renamed(what: str, old: str, new: str, changed: list[str]) -> None:
 
 
 @scheduled_group_command.command("rename")
-@click.argument("old", type=completion.RULE)
-@click.argument("new")
+@click.argument("old", required=False, type=completion.RULE)
+@click.argument("new", required=False)
 @_scenario_options
-def scheduled_rename(old: str, new: str, scenario: str | None, data_dir: Path | None) -> None:
+def scheduled_rename(old: str | None, new: str | None, scenario: str | None, data_dir: Path | None) -> None:
     """Rename scheduled rule OLD to NEW, and the calendar rows that name it
     (set_amount, retire_scheduled), in every scenario that shares the rule:
     where it is defined, a parent or a mix-in included, and every scenario
-    built on those."""
+    built on those.
+
+    Either name left out is asked for."""
     with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
+        old, new = _ask_rename("scheduled rule", old, new, names.scheduled_names(edit.data_dir, edit.name))
         changed = _rename_across(edit, "scheduled rule", old, new, defines=rename.scheduled_defined,
                                  rewrite=rename.rename_scheduled)
     _echo_renamed("scheduled rule", old, new, changed)
 
 
 @calendar_group_command.command("rename")
-@click.argument("old", type=completion.CALENDAR_ROW)
-@click.argument("new")
+@click.argument("old", required=False, type=completion.CALENDAR_ROW)
+@click.argument("new", required=False)
 @_scenario_options
-def calendar_rename(old: str, new: str, scenario: str | None, data_dir: Path | None) -> None:
+def calendar_rename(old: str | None, new: str | None, scenario: str | None, data_dir: Path | None) -> None:
     """Rename the calendar row (or latent factor) named OLD to NEW, and the
     rows naming it as their correlation parent (vary_correlate_with), in
-    every scenario that shares it."""
+    every scenario that shares it.
+
+    Either name left out is asked for."""
     with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
+        old, new = _ask_rename("calendar row", old, new, names.calendar_row_names(edit.data_dir, edit.name))
         changed = _rename_across(edit, "calendar row", old, new, defines=rename.calendar_row_defined,
                                  rewrite=rename.rename_calendar_row)
     _echo_renamed("calendar row", old, new, changed)
@@ -8961,10 +9147,10 @@ def series_group_command() -> None:
 
 
 @series_group_command.command("rename")
-@click.argument("old", type=completion.SeriesName())
-@click.argument("new")
+@click.argument("old", required=False, type=completion.SeriesName())
+@click.argument("new", required=False)
 @_scenario_options
-def series_rename(old: str, new: str, scenario: str | None, data_dir: Path | None) -> None:
+def series_rename(old: str | None, new: str | None, scenario: str | None, data_dir: Path | None) -> None:
     """Rename series OLD to NEW in every scenario that shares it: its rate
     files (series/<kind>__OLD.csv and a scenario's aux/<kind>__OLD.csv), and
     every column naming it -- accounts', lots', rules', calendar rows' and
@@ -8972,7 +9158,18 @@ def series_rename(old: str, new: str, scenario: str | None, data_dir: Path | Non
 
     A series with a file in the shared aux/ folder (cpi) is read by every
     scenario and isn't renamed here, nor is an asset class's series, or one
-    named for a symbol (or <symbol>.<class>), which lots read by name."""
+    named for a symbol (or <symbol>.<class>), which lots read by name.
+
+    Either name left out is asked for."""
+    data = _resolve_data_dir(data_dir)
+    if old is None or new is None:
+        scenario_name = _resolve_scenario(data, scenario).name
+        can_rename = [
+            name for name in names.series_names(data, scenario_name)
+            if name not in registries.ASSET_CLASSES
+            and not rename.symbol_series(data, name) and not rename.shared_series_files(data, name)
+        ]
+        old, new = _ask_rename("series", old, new, can_rename)
     old, new = old.strip(), new.strip()
     if problem := rename.name_problem("series", new):
         raise click.ClickException(problem)
@@ -8980,7 +9177,6 @@ def series_rename(old: str, new: str, scenario: str | None, data_dir: Path | Non
         if name in registries.ASSET_CLASSES:
             raise click.ClickException(
                 f"{name!r} is an asset class, whose series name fund allocations rely on; it can't be renamed")
-    data = _resolve_data_dir(data_dir)
     for name in (old, new):
         if why := rename.symbol_series(data, name):
             raise click.ClickException(f"{why}; it can't be renamed")
@@ -9001,14 +9197,28 @@ def _lot_defined(account: str, lot: str) -> rename.Defines:
 
 
 @lot_group_command.command("rename")
-@click.argument("account", type=completion.ACCOUNT)
-@click.argument("lot", type=completion.LotName("account"))
-@click.argument("new_lot")
+@click.argument("account", required=False, type=completion.ACCOUNT)
+@click.argument("lot", required=False, type=completion.LotName("account"))
+@click.argument("new_lot", required=False)
 @_scenario_options
-def lot_rename(account: str, lot: str, new_lot: str, scenario: str | None, data_dir: Path | None) -> None:
+def lot_rename(
+    account: str | None, lot: str | None, new_lot: str | None, scenario: str | None,
+    data_dir: Path | None,
+) -> None:
     """Rename ACCOUNT's LOT to NEW_LOT, and every reference to it, in every
     scenario that shares the lot: where it is defined, a parent or a mix-in
-    included, and every scenario built on those."""
+    included, and every scenario built on those. Whatever is left out is
+    asked for."""
+    data = _resolve_data_dir(data_dir)
+    if account is None or lot is None or new_lot is None:
+        scenario_name = _resolve_scenario(data, scenario).name
+        if account is None:
+            account = _ask_name("account", names.account_names(data, scenario_name))
+        if lot is None:
+            lot = _ask_name("lot", names.lot_names(data, scenario_name, account, implicit=False),
+                            prompt=f"lot of {account}")
+        if new_lot is None:
+            new_lot = _ask_new_name(f"new name for {account}'s lot {lot}")
     account, lot, new_lot = account.strip(), lot.strip(), _check_lot_label(new_lot)
 
     def rewrite(scenario_dir: Path, old: str, new: str) -> list[str]:
@@ -9016,7 +9226,7 @@ def lot_rename(account: str, lot: str, new_lot: str, scenario: str | None, data_
         _rewrite_lot_references(scenario_dir, account, old, new, own_row=True)
         return lines
 
-    with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:
+    with _scenario_edit(data, scenario) as edit:
         changed = _rename_with_growth_rules(
             edit, f"lot of {account}", lot, new_lot,
             defines=lambda name: _lot_defined(account, name), rewrite=rewrite,
@@ -9027,9 +9237,31 @@ def lot_rename(account: str, lot: str, new_lot: str, scenario: str | None, data_
     _echo_renamed(f"lot of {account}", lot, new_lot, changed)
 
 
-def _rename_scenario(old: str, new: str, data_dir: Path | None) -> None:
-    """``sim scenario rename`` and ``sim ensemble rename``."""
+def _ask_new_scenario(
+    data: Path, what: str, name: str | None, parent: str | None,
+) -> tuple[str, str]:
+    """``scenario|ensemble create``'s NAME and PARENT, each asked for when
+    left out."""
+    if name is None:
+        name = _ask_new_name(f"name for the new {what}")
+    if parent is None:
+        parent = _ask_name("scenario", list_scenario_names(data), prompt=f"{name} builds on")
+    return name, parent
+
+
+def _ensemble_names(data: Path) -> list[str]:
+    """The scenarios that are ensembles (a merged ensemble_size above 0)."""
+    return [n for n in list_scenario_names(data) if sc.ensemble_settings(data, n)[1] is not None]
+
+
+def _rename_scenario(old: str | None, new: str | None, data_dir: Path | None, *, what: str) -> None:
+    """``sim scenario rename`` and ``sim ensemble rename`` (``what``)."""
     data = _resolve_data_dir(data_dir)
+    if old is None:
+        choices = _ensemble_names(data) if what == "ensemble" else list_scenario_names(data)
+        old = _ask_name(what, choices, prompt=f"{what} to rename")
+    if new is None:
+        new = _ask_new_name(f"new name for {old}")
     old, new = old.strip(), new.strip()
     # Only a folder's own name: anything else (a path, '..') could reach
     # outside scenarios/.
@@ -9060,28 +9292,33 @@ def _rename_scenario(old: str, new: str, data_dir: Path | None) -> None:
 
 
 @scenario_group_command.command("rename")
-@click.argument("old", type=completion.SCENARIO)
-@click.argument("new")
+@click.argument("old", required=False, type=completion.SCENARIO)
+@click.argument("new", required=False)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
-def scenario_rename(old: str, new: str, data_dir: Path | None) -> None:
+def scenario_rename(old: str | None, new: str | None, data_dir: Path | None) -> None:
     """Rename scenario OLD to NEW: its folder and scenario.csv name, every
     scenario naming it as a parent or mix-in, the current scenario if it is
     OLD, and the data repo's README links and mentions (`OLD`,
-    scenarios/OLD). Same as `sim ensemble rename`."""
-    _rename_scenario(old, new, data_dir)
+    scenarios/OLD). Same as `sim ensemble rename`.
+
+    Either name left out is asked for."""
+    _rename_scenario(old, new, data_dir, what="scenario")
 
 
 @ensemble_group_command.command("rename")
-@click.argument("old", type=completion.ENSEMBLE)
-@click.argument("new")
+@click.argument("old", required=False, type=completion.ENSEMBLE)
+@click.argument("new", required=False)
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
-def ensemble_rename(old: str, new: str, data_dir: Path | None) -> None:
-    """Rename ensemble OLD to NEW; the same as `sim scenario rename`."""
-    _rename_scenario(old, new, data_dir)
+def ensemble_rename(old: str | None, new: str | None, data_dir: Path | None) -> None:
+    """Rename ensemble OLD to NEW; the same as `sim scenario rename`.
+
+    Either name left out is asked for.
+    """
+    _rename_scenario(old, new, data_dir, what="ensemble")
 
 
 # ---------- editing and deleting a scenario (#190) ----------
@@ -9299,9 +9536,12 @@ def ensemble_edit(name: str | None, data_dir: Path | None, **fields: Any) -> Non
     _edit_scenario(name, data_dir, **fields)
 
 
-def _delete_scenario(name: str, data_dir: Path | None, yes: bool) -> None:
-    """``sim scenario delete`` and ``sim ensemble delete``."""
+def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what: str) -> None:
+    """``sim scenario delete`` and ``sim ensemble delete`` (``what``)."""
     data = _resolve_data_dir(data_dir)
+    if name is None:
+        choices = _ensemble_names(data) if what == "ensemble" else list_scenario_names(data)
+        name = _ask_name(what, choices, prompt=f"{what} to delete")
     name = name.strip()
     scenarios = data / "scenarios"
     # Only a folder's own name: anything else (a path, '..') could reach outside scenarios/.
@@ -9331,25 +9571,30 @@ def _delete_scenario(name: str, data_dir: Path | None, yes: bool) -> None:
 
 
 @scenario_group_command.command("delete")
-@click.argument("name", type=completion.SCENARIO)
+@click.argument("name", required=False, type=completion.SCENARIO)
 @click.option("--yes", is_flag=True, help="Don't ask before deleting.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
-def scenario_delete(name: str, yes: bool, data_dir: Path | None) -> None:
+def scenario_delete(name: str | None, yes: bool, data_dir: Path | None) -> None:
     """Delete scenario NAME's folder. Refused while another scenario names
     it as its parent or a mix-in. Clears the current scenario if it is NAME;
-    runs already made of it are kept. Same as `sim ensemble delete`."""
-    _delete_scenario(name, data_dir, yes)
+    runs already made of it are kept. Same as `sim ensemble delete`.
+
+    Without NAME, it is asked for."""
+    _delete_scenario(name, data_dir, yes, what="scenario")
 
 
 @ensemble_group_command.command("delete")
-@click.argument("name", type=completion.ENSEMBLE)
+@click.argument("name", required=False, type=completion.ENSEMBLE)
 @click.option("--yes", is_flag=True, help="Don't ask before deleting.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
-def ensemble_delete(name: str, yes: bool, data_dir: Path | None) -> None:
-    """Delete ensemble NAME; the same as `sim scenario delete`."""
-    _delete_scenario(name, data_dir, yes)
+def ensemble_delete(name: str | None, yes: bool, data_dir: Path | None) -> None:
+    """Delete ensemble NAME; the same as `sim scenario delete`.
+
+    Without NAME, it is asked for.
+    """
+    _delete_scenario(name, data_dir, yes, what="ensemble")
 
 
 # ---------- setup listings (#185) ----------
@@ -9637,21 +9882,25 @@ def _write_persons(
 
 
 @person_group_command.command("add")
-@click.argument("person_id", metavar="ID")
+@click.argument("person_id", required=False, metavar="ID")
 @_person_options
 def person_add(
-    person_id: str, display: str | None, birthdate: str | None, sex: str | None,
+    person_id: str | None, display: str | None, birthdate: str | None, sex: str | None,
     role: str | None, meta_json: str | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Add a person to persons.csv, asking for a display name and birthdate
     not given (and then the sex, role and meta_json).
 
     persons.csv is shared by every scenario, at the data repo's top level.
+
+    Without ID, it is asked for.
     """
     data = _resolve_data_dir(data_dir)
     path = data / "persons.csv"
     before = _file_bytes(path)
     df = _read_persons(path)
+    if person_id is None:
+        person_id = _ask_new_name("id for the new person")
     person_id = person_id.strip()
     if not person_id:
         raise click.ClickException("a person needs an id")
@@ -9667,10 +9916,10 @@ def person_add(
 
 
 @person_group_command.command("edit")
-@click.argument("person_id", type=completion.PERSON, metavar="ID")
+@click.argument("person_id", required=False, type=completion.PERSON, metavar="ID")
 @_person_options
 def person_edit(
-    person_id: str, display: str | None, birthdate: str | None, sex: str | None,
+    person_id: str | None, display: str | None, birthdate: str | None, sex: str | None,
     role: str | None, meta_json: str | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Change a person in persons.csv. With no options, asks for each field
@@ -9678,11 +9927,15 @@ def person_edit(
 
     persons.csv is shared by every scenario, at the data repo's top level.
     The id can't change here.
+
+    Without ID, it is asked for.
     """
     data = _resolve_data_dir(data_dir)
     path = data / "persons.csv"
     before = _file_bytes(path)
     df = _read_persons(path)
+    if person_id is None:
+        person_id = _ask_name("person", df["id"], prompt="person to edit")
     matches = df.index[df["id"] == person_id.strip()]
     if len(matches) == 0:
         raise click.ClickException(
@@ -9832,7 +10085,7 @@ def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
 
 
 @lifespan_group_command.command("set")
-@click.argument("person", type=completion.PERSON)
+@click.argument("person", required=False, type=completion.PERSON)
 @click.argument("age", required=False)
 @click.option("--vary", default=None,
               help=f"How the age varies across ensemble members: {_NO_VARY}, "
@@ -9848,7 +10101,7 @@ def _lifespan_parents(data_dir: Path, scenario: str, person: str) -> list[str]:
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
 def lifespan_set(
-    person: str, age: str | None, vary: str | None, low: str | None, high: str | None,
+    person: str | None, age: str | None, vary: str | None, low: str | None, high: str | None,
     mode: str | None, correlate_with: str | None, correlation: str | None,
     scenario: str | None, data_dir: Path | None,
 ) -> None:
@@ -9866,10 +10119,14 @@ def lifespan_set(
     as the default; otherwise just the fields given change. Written to this
     scenario's own lifespan.csv; one it inherits is overridden here, and the
     parent keeps its own.
+
+    Without PERSON, it is asked for.
     """
     data = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data, scenario)
     path = scenario_dir / "lifespan.csv"
+    if person is None:
+        person = _ask_name("person", _read_persons(data / "persons.csv")["id"])
     person = person.strip()
     persons = set(_read_persons(data / "persons.csv")["id"])
     if person not in persons:
@@ -9923,19 +10180,26 @@ def _life_table_summary(data_dir: Path, scenario: str, person: str) -> str:
 
 
 @lifespan_group_command.command("clear")
-@click.argument("person", type=completion.PERSON)
+@click.argument("person", required=False, type=completion.PERSON)
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
-def lifespan_clear(person: str, scenario: str | None, data_dir: Path | None) -> None:
+def lifespan_clear(person: str | None, scenario: str | None, data_dir: Path | None) -> None:
     """Remove PERSON's row from this scenario's lifespan.csv.
 
     A lifespan the scenario inherits can't be cleared here, since a row
     can only override a lifespan, not remove it: clear it where it is
     set, or set another age here.
+
+    Without PERSON, one with a lifespan set in this scenario is asked for.
     """
     data = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data, scenario)
     path = scenario_dir / "lifespan.csv"
+    if person is None:
+        own = _overlay_rows(scenario_dir, "lifespan.csv", key="person")
+        person = _ask_name("person", [p for p, row in own.items() if row.index is not None],
+                           prompt="person whose lifespan to clear",
+                           plural="persons with a lifespan set here")
     person = person.strip()
     before = _file_bytes(path)
     found = _overlay_rows(scenario_dir, "lifespan.csv", key="person").get(person)
@@ -10054,18 +10318,24 @@ def itemization_list(scenario: str | None, data_dir: Path | None) -> None:
 
 
 @itemization_group_command.command("show")
-@click.argument("name", type=completion.ITEMIZATION)
+@click.argument("name", required=False, type=completion.ITEMIZATION)
 @_LISTING_SCENARIO_OPTION
 @_LISTING_DATA_DIR_OPTION
-def itemization_show(name: str, scenario: str | None, data_dir: Path | None) -> None:
-    """Show itemization NAME's rows, its total, and what references it."""
+def itemization_show(name: str | None, scenario: str | None, data_dir: Path | None) -> None:
+    """Show itemization NAME's rows, its total, and what references it.
+
+    Without NAME, it is asked for.
+    """
     from rich.markup import escape
     from rich.table import Table
 
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
+    found = setup_listings.itemizations(data, ref.path)
+    if name is None:
+        name = _ask_name("itemization", [i.name for i in found])
     name = name.removeprefix("@")
-    item = next((i for i in setup_listings.itemizations(data, ref.path) if i.name == name), None)
+    item = next((i for i in found if i.name == name), None)
     if item is None:
         raise click.ClickException(f"no itemization {name!r} for {ref.name}")
     click.echo(f"@{item.name} ({item.defined_in}): {item.path}")

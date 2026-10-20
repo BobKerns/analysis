@@ -95,6 +95,9 @@ scenario, and include what it inherits. A lot completes from the account
 before it (`--to-lot` from TO_ACCOUNT). The data repo is `--data-dir` or
 `$ANALYSIS_DATA_DIR`, which the data repo's `activate-analysis` sets.
 
+A command run without a name it needs asks for it, listing the choices,
+with the same completion at the prompt.
+
 ### Amazon Expense Categorizer
 
 Run the interactive categorizer on one or more Amazon CSVs covering any date range:
