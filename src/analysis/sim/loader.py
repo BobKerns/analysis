@@ -655,6 +655,7 @@ def _read_scenario_inputs(
     issues: list[str],
     *,
     scenarios_dir: Path | None = None,
+    account_clashes: list[tuple[str, str, str]] | None = None,
 ) -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]],
            list[dict[str, str]], list[dict[str, str]]]:
@@ -670,6 +671,7 @@ def _read_scenario_inputs(
     lifespan_rows: list[dict[str, str]] = []
     ytd_rows: list[dict[str, str]] = []
     meta: dict[str, Any] = {}
+    account_from: dict[str, str] = {}  # account name -> the scenario whose row is in force
     for name in _strict_load_order(scenarios_dir, scenario_name):
         scenario_dir = scenarios_dir / name
         if not scenario_dir.is_dir():
@@ -739,9 +741,18 @@ def _read_scenario_inputs(
                         f"{name}: scenario.csv meta_json must be a JSON object "
                         f"(got {own_meta!r})"
                     )
-        accounts = _merge_scenario_rows(
-            accounts, read_overlay("accounts.csv", required=True), ("name",)
-        )
+        own_accounts = read_overlay("accounts.csv", required=True)
+        # A row replacing an account from a scenario this one doesn't build on
+        # (a parent's account, say, from a mix-in) is likely a name clash
+        # rather than an override; its lots from both still apply (#233).
+        ancestors = set(_scenario_lineage_names(scenarios_dir, name))
+        for row in own_accounts:
+            account = row.get("name", "")
+            earlier = account_from.get(account)
+            if earlier is not None and earlier not in ancestors and account_clashes is not None:
+                account_clashes.append((account, name, earlier))
+            account_from[account] = name
+        accounts = _merge_scenario_rows(accounts, own_accounts, ("name",))
         # #217 renamed the lots file; a leftover old one would otherwise be
         # silently ignored, losing every opening balance in it.
         if (scenario_dir / "account_values.csv").exists():
@@ -879,7 +890,8 @@ def load_scenario(
     ) = _read_scenario_inputs(data_dir,
                               scenario_name,
                               issues,
-                              scenarios_dir=scenarios_dir)
+                              scenarios_dir=scenarios_dir,
+                              account_clashes=(account_clashes := []))
     _normalize_vary_dates(calendar_rows)
     parents = read_parents(scenarios_dir / scenario_name)
     load_order_names = _strict_load_order(scenarios_dir, scenario_name)
@@ -954,6 +966,15 @@ def load_scenario(
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
     )
+
+    for account, replacing, replaced in account_clashes:
+        if any(f"({account})" in issue or f"({account} /" in issue for issue in issues):
+            issues.append(
+                f"({account}): the account is defined in both {replaced} and {replacing}, "
+                f"which doesn't build on {replaced}; {replacing}'s row replaces "
+                f"{replaced}'s here, but the lots of both apply. If they are two "
+                "accounts, rename one; if one, define it in one scenario only"
+            )
 
     if issues:
         raise LoadError(issues)
@@ -2111,9 +2132,18 @@ def _validate_lot_money(
         name = a["name"]
         with_pyeb = sum(1 for r in lots if r.get("prior_year_end_balance"))
         if 0 < with_pyeb < len(lots):
+            # The lots may come from different scenarios of the lineage, so
+            # say where each is and which side it is on (#233).
+            sides = {True: [], False: []}
+            for r in lots:
+                sides[bool(r.get("prior_year_end_balance"))].append(
+                    (r.get("lot") or registries.DEFAULT_LOT)
+                    + (f" ({r[ORIGIN]})" if r.get(ORIGIN) else "")
+                )
             issues.append(
                 f"account_lots.csv ({name}): prior_year_end_balance must be set "
-                "on every lot of an account or on none (Roth lots aside)"
+                "on every lot of an account or on none (Roth lots aside); "
+                f"set on {'; '.join(sides[True])}, but not on {'; '.join(sides[False])}"
             )
 
 

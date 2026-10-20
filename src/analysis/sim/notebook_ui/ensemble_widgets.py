@@ -49,7 +49,7 @@ from analysis.sim.notebook_ui.styled import StyledMarkdown
 __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget", "NET_WORTH",
-    "EnsembleControls", "recipe_accounts",
+    "EnsembleControls", "recipe_accounts", "LoadingIndicator",
 ]
 
 
@@ -306,6 +306,49 @@ class ControlsRow(widgets.HBox):
         ])
 
 
+class LoadingIndicator(widgets.HBox):
+    """A progress bar and a line saying what's being read, shown above a
+    widget's output while it loads and analyzes ensemble members (#235),
+    which can take a long while for a big ensemble on a cold disk cache.
+    The previous chart stays below it until the new one is ready. Hidden
+    when idle."""
+
+    def __init__(self) -> None:
+        self.bar = widgets.IntProgress(min=0, max=1, value=0, bar_style="info")
+        self.label = widgets.Label()
+        super().__init__([self.bar, self.label], layout=widgets.Layout(display="none"))
+
+    def start(self, total: int, text: str) -> None:
+        """Show the bar, empty, out of ``total`` steps."""
+        self.bar.max = max(total, 1)
+        self.bar.value = 0
+        self.label.value = text
+        self.layout.display = "flex"
+
+    def counter(self, text: str, count: int) -> Callable[[], None]:
+        """A callback for one pass over ``count`` members: each call
+        advances the bar a step and says ``text: member k of count``."""
+        done = 0
+
+        def step() -> None:
+            nonlocal done
+            done += 1
+            self.bar.value = min(self.bar.value + 1, self.bar.max)
+            self.label.value = f"{text}: member {done} of {count}"
+        return step
+
+    def remaining(self, steps: int) -> None:
+        """Re-total the bar: ``steps`` more to go from where it stands."""
+        self.bar.max = max(self.bar.value + steps, 1)
+
+    def note(self, text: str) -> None:
+        """Say what's happening now, without moving the bar."""
+        self.label.value = text
+
+    def finish(self) -> None:
+        self.layout.display = "none"
+
+
 def _subject(account: str | None, lot: str | None) -> str:
     """What's shown: net worth, an account, or one lot of it."""
     if account is None:
@@ -383,6 +426,7 @@ def ensemble_widget(*_,
     dollar_picker = controls.dollar_picker
     reserve_field = controls.reserve_field
     lot_picker = controls.recipe_lot_picker
+    loading = LoadingIndicator()
     out = widgets.Output()
 
     def _redraw(*_: object) -> None:
@@ -397,7 +441,10 @@ def ensemble_widget(*_,
             if not dropdown.value:
                 clear_output()
                 return
-            _draw(dropdown.value)
+            try:
+                _draw(dropdown.value)
+            finally:
+                loading.finish()
 
     def _draw(recipe: str) -> None:
         batch_dir = latest_ensemble_batch(runs_dir / recipe, mode="monte_carlo")
@@ -413,22 +460,32 @@ def ensemble_widget(*_,
             subject = _subject(account, lot)
             mode = dollar_picker.value
             mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+            reserve = _reserve(reserve_field, connections, account)
+            needs_cpi = reserve is not None and mode != DollarMode.CPI_CONSTANT
+            count = len(connections)
+            loading.start(count * (1 + needs_cpi), f"Loading {recipe}")
             # Each member's own series is converted before aggregating, not
             # the aggregate after the fact: a member's CPI-constant series
             # reflects its own inflation path, which can differ member to
             # member when the varying row is itself inflation/CPI-linked.
             try:
-                frame = members_balance_by_month(connections, account, mode, lot)
+                frame = members_balance_by_month(
+                    connections, account, mode, lot,
+                    loading.counter(f"Loading {recipe}", count),
+                )
             except EnsembleError:
                 # The account list spans every recipe; this one lacks it.
                 clear_output(wait=True)
                 display(StyledMarkdown(f"**{recipe} has no {_described(subject)}.**"))
                 return
-            reserve = _reserve(reserve_field, connections, account)
             cpi_frame = (
-                members_balance_by_month(connections, account, DollarMode.CPI_CONSTANT, lot)
-                if reserve is not None and mode != DollarMode.CPI_CONSTANT else None
+                members_balance_by_month(
+                    connections, account, DollarMode.CPI_CONSTANT, lot,
+                    loading.counter(f"{recipe} in CPI-constant dollars", count),
+                )
+                if needs_cpi else None
             )
+            loading.note(f"Summarizing and drawing {recipe}")
             monthly_summary = summary_with_percentiles(frame)
             heading, yearly = ensemble_summary_view(
                 pd.concat([monthly_summary, risk_summary(frame, reserve, cpi_frame)], axis=1),
@@ -489,7 +546,7 @@ def ensemble_widget(*_,
     lot_picker.observe(_redraw, names="lots")
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
-    return widgets.VBox([dropdown, controls.row(lot_picker), out])
+    return widgets.VBox([dropdown, controls.row(lot_picker), loading, out])
 
 
 def _symlog(ax: Any, values: pd.DataFrame) -> None:
@@ -607,6 +664,7 @@ def ensemble_compare_widget(*_,
     dollar_picker = controls.dollar_picker
     reserve_field = controls.reserve_field
     lot_picker = controls.compare_lot_picker
+    loading = LoadingIndicator()
     out = widgets.Output()
 
     def _redraw(*_: object) -> None:
@@ -620,7 +678,10 @@ def ensemble_compare_widget(*_,
                 clear_output()
                 display(StyledMarkdown("_Pick a baseline and at least one other recipe._"))
                 return
-            _draw(baseline, variants)
+            try:
+                _draw(baseline, variants)
+            finally:
+                loading.finish()
 
     def _draw(baseline: str, variants: list[str]) -> None:
         sides: dict[str, dict[str, RunConnection]] = {}
@@ -635,23 +696,36 @@ def ensemble_compare_widget(*_,
             mode = dollar_picker.value
             mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
             reserve = _reserve(reserve_field, sides[baseline], account)
+            needs_cpi = reserve is not None and mode != DollarMode.CPI_CONSTANT
+            loading.start(
+                sum(len(conns) for conns in sides.values()) * (1 + needs_cpi),
+                f"Loading {', '.join(sides)}",
+            )
             # The picker lists every recipe's accounts, so an account may be
             # missing on some sides: those get a note, not a delta.
             frames: dict[str, pd.DataFrame] = {}
             for name, conns in sides.items():
                 try:
-                    frames[name] = members_balance_by_month(conns, account, mode, lot)
+                    frames[name] = members_balance_by_month(
+                        conns, account, mode, lot,
+                        loading.counter(f"Loading {name}", len(conns)),
+                    )
                 except EnsembleError:
                     pass
+            if needs_cpi:
+                # A side without the account skips the CPI pass too.
+                loading.remaining(sum(len(sides[name]) for name in frames))
             cpi_frames = {
                 name: (
-                    frame if mode == DollarMode.CPI_CONSTANT
+                    frame if not needs_cpi
                     else members_balance_by_month(
                         sides[name], account, DollarMode.CPI_CONSTANT, lot,
+                        loading.counter(f"{name} in CPI-constant dollars", len(sides[name])),
                     )
                 )
                 for name, frame in frames.items()
             } if reserve is not None else {}
+            loading.note("Comparing and drawing")
             outputs: list[Any] = []
             heading = (
                 f"**{subject}**, {mode_label} dollars; baseline "
@@ -729,5 +803,5 @@ def ensemble_compare_widget(*_,
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
     return widgets.VBox([
-        widgets.HBox([baseline_picker, variant_picker]), controls.row(lot_picker), out,
+        widgets.HBox([baseline_picker, variant_picker]), controls.row(lot_picker), loading, out,
     ])

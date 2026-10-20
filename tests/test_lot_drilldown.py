@@ -280,7 +280,7 @@ def test_lot_picker_offers_only_the_shown_recipes_lots(
     _copy_recipe(two_lot_ensemble_runs_dir, "base_ensemble", rename_lot="a")
     fan = ensemble_widgets.ensemble_widget(runs_dir=two_lot_ensemble_runs_dir,
                                            default="base_ensemble")
-    dropdown, row, _out = fan.children
+    dropdown, row, _loading, _out = fan.children
     controls, lot_picker = row.controls, row.lot_picker
     controls.account_picker.account_picker.value = BROKERAGE
     assert [label for label, _ in lot_picker.picker.options] == [ALL_LOTS, "renamed", "b"]
@@ -310,7 +310,7 @@ def test_compare_lots_are_the_baseline_and_variants_own(
                                            controls=controls, default="base_ensemble")
     compare = ensemble_widgets.ensemble_compare_widget(
         runs_dir=two_lot_ensemble_runs_dir, controls=controls, default="base_ensemble")
-    recipe_pickers, row, _out = compare.children
+    recipe_pickers, row, _loading, _out = compare.children
     lot_picker = row.lot_picker
     controls.account_picker.account_picker.value = BROKERAGE
 
@@ -366,7 +366,7 @@ def test_compare_widget_log_scale_uses_symlog(
     seeded_ensemble_batch("baseline", 1)
     seeded_ensemble_batch("child", 1)
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir, default="baseline")
-    recipe_pickers, row, _out = box.children
+    recipe_pickers, row, _loading, _out = box.children
     controls = row.controls
     recipe_pickers.children[1].value = ("child",)
     assert figures[-1].axes[0].get_yscale() == "linear"

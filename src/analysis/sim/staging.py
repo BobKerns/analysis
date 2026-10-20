@@ -47,7 +47,23 @@ class ScenarioAlreadyBroken(LoadError):
 
 
 class EditRejected(LoadError):
-    """The edit would leave a scenario that no longer loads; nothing was written."""
+    """The edit would leave a scenario that no longer loads; nothing was written.
+
+    ``issues`` holds every issue, a dependent's prefixed ``scenario <name>: ``.
+    ``own`` is the edited scenario's own issues, and ``dependents`` each
+    scenario built on it that would fail, with its issues unprefixed (#233):
+    an edit is checked against every scenario built on the one changed, and a
+    failure there needs saying as such, or it reads as an edit to the wrong
+    scenario."""
+
+    def __init__(
+        self, issues: list[str], *, scenario: str = "",
+        own: list[str] | None = None, dependents: dict[str, list[str]] | None = None,
+    ) -> None:
+        super().__init__(issues)
+        self.scenario = scenario
+        self.own = list(issues if own is None and dependents is None else own or [])
+        self.dependents = dict(dependents or {})
 
 
 @dataclass
@@ -288,6 +304,8 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedE
         if any(rel.parts[0] != SCENARIOS for rel in (*changed, *removed)):
             touched |= {d.name for d in (stage / SCENARIOS).iterdir() if d.is_dir()}
         issues: list[str] = []
+        own: list[str] = []
+        dependents: dict[str, list[str]] = {}
         for affected in _affected_scenarios(stage, touched or {name}):
             found, result = _load_issues(stage, affected)
             label = "" if affected == name else f"scenario {affected}: "
@@ -303,10 +321,13 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedE
                     f"run 'sim check {affected}'"
                 )
                 continue
-            issues.extend(
-                f"{label}{issue}".replace(str(stage), str(real)) for issue in found
-            )
+            found = [issue.replace(str(stage), str(real)) for issue in found]
+            issues.extend(f"{label}{issue}" for issue in found)
+            if affected == name:
+                own.extend(found)
+            else:
+                dependents[affected] = found
         if issues:
-            raise EditRejected(issues)
+            raise EditRejected(issues, scenario=name, own=own, dependents=dependents)
         _check_unchanged(real, baseline, [*changed, *removed])
         edit.written = _commit(real, stage, changed, removed)

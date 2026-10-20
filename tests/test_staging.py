@@ -150,7 +150,10 @@ def test_edit_that_breaks_an_inheriting_scenario_is_rejected(test_data_dir: Path
                   data_dir=test_data_dir, input="y\n")
 
     assert result.exit_code != 0
-    assert "scenario child:" in result.output
+    # The errors are child's, so say why child came into it (#233).
+    assert ("retire_alice loads with this change, but child, which builds on it, "
+            "would not load (a change is checked against every scenario built on "
+            "retire_alice):") in result.output
     assert "nothing was written" in result.output
     assert _snapshot(test_data_dir) == before
 
@@ -275,3 +278,15 @@ def test_delete_investment_account_drops_its_growth_rate_rows(
     calendar = pd.read_csv(test_data_dir / "scenarios" / "retire_alice" / "calendar.csv",
                            dtype=str, keep_default_na=False)
     assert "brokerage_growth" not in set(calendar["series"])
+
+
+def test_a_rejected_edit_separates_its_own_errors_from_a_dependents(
+    test_data_dir: Path,
+) -> None:
+    exc = staging.EditRejected(
+        ["own problem", "scenario child: child problem"], scenario="retire_alice",
+        own=["own problem"], dependents={"child": ["child problem"]},
+    )
+    assert (exc.own, exc.dependents) == (["own problem"], {"child": ["child problem"]})
+    # Raised the old way, every issue is the scenario's own.
+    assert staging.EditRejected(["a", "b"]).own == ["a", "b"]
