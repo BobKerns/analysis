@@ -337,6 +337,10 @@ class LoadingIndicator(widgets.HBox):
             self.label.value = f"{text}: member {done} of {count}"
         return step
 
+    def remaining(self, steps: int) -> None:
+        """Re-total the bar: ``steps`` more to go from where it stands."""
+        self.bar.max = max(self.bar.value + steps, 1)
+
     def note(self, text: str) -> None:
         """Say what's happening now, without moving the bar."""
         self.label.value = text
@@ -708,6 +712,9 @@ def ensemble_compare_widget(*_,
                     )
                 except EnsembleError:
                     pass
+            if needs_cpi:
+                # A side without the account skips the CPI pass too.
+                loading.remaining(sum(len(sides[name]) for name in frames))
             cpi_frames = {
                 name: (
                     frame if not needs_cpi
