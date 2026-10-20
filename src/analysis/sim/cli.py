@@ -361,9 +361,21 @@ def _resolve_scenario(
             click.echo(f"Using scenario {ref.name}", err=True)
             if ctx is not None:
                 ctx.meta[_SCENARIO_ANNOUNCED] = True
-    elif remember and read_current_scenario(data_dir) != ref.name:
-        write_current_scenario(data_dir, ref.name)
+    elif remember:
+        _make_current(data_dir, ref.name)
     return ref
+
+
+def _make_current(data_dir: Path, name: str) -> None:
+    """Record ``name`` as the current scenario, and say so on stderr when that
+    changes it (#233): later commands only say ``Using scenario X``, which is
+    easy to miss when X is not the one expected."""
+    previous = read_current_scenario(data_dir)
+    if previous == name:
+        return
+    write_current_scenario(data_dir, name)
+    was = f" (was {previous})" if previous else ""
+    click.secho(f"Current scenario is now {name}{was}", err=True, bold=True)
 
 
 def _resolve_data_dir(data_dir: Path | None) -> Path:
@@ -981,7 +993,7 @@ def ensemble_create(
     target = data_dir_p / "scenarios" / name
 
     inherits = [_resolve_scenario(data_dir_p, p, remember=False).name for p in (parent, *mixins)]
-    write_current_scenario(data_dir_p, name)
+    _make_current(data_dir_p, name)
     click.echo(f"created ensemble recipe {target}")
     click.echo(f"  inherits: {' + '.join(inherits)}")
     for label, own, inherited in (
@@ -991,7 +1003,6 @@ def ensemble_create(
             click.echo(f"  {label}: {own}")
         elif inherited is not None:
             click.echo(f"  {label}: {inherited.value} (inherited)")
-    click.echo(f"  current scenario: {name}")
     _suggest_readme(target)
     click.echo(
         "  next: sim calendar add <kind> ... --vary-distribution ... to mark rows as "
@@ -1898,10 +1909,12 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
     click.echo(f"Current scenario: {previous or '(none)'}")
     if scenario is None:
         return
-    ref = _resolve_scenario(data_dir_p, scenario)
+    # It says what changed itself, in place of the usual notice.
+    ref = _resolve_scenario(data_dir_p, scenario, remember=False)
     if ref.name == previous:
         click.echo(f"Unchanged: {ref.name}")
     else:
+        write_current_scenario(data_dir_p, ref.name)
         click.echo(f"Switched to: {ref.name}")
 
 
@@ -5043,6 +5056,18 @@ def scheduled_delete(name: str, yes: bool, scenario: str | None, data_dir: Path 
     click.echo(f"wrote an override ending scheduled rule '{rule}' in {end} to {path}")
 
 
+def _ask_growth_character(account: str, subkind: str) -> str:
+    """Ask how ``account``'s growth is taxed (#233): without a tax character
+    the loader refuses a lot that grows."""
+    choices = sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)
+    click.echo(f"{account!r} will grow, so its growth needs a tax character: {', '.join(choices)}")
+    while (answer := _prompt_with_completion(
+            "tax character", choices=choices, default=lot_guide.GROWTH_CHARACTER.get(subkind, "gains"),
+    ).strip()) not in choices:
+        click.echo(f"  not a tax character: {answer!r}")
+    return answer
+
+
 def _complete_kind(ctx, param, incomplete):  # noqa: ARG001
     return [k for k in sorted(registries.ACCOUNT_SUBKINDS) if k.startswith(incomplete)]
 
@@ -5070,8 +5095,8 @@ def account_group_command() -> None:
               help="Aux rate series; gives an asset account monthly growth.")
 @click.option("--tax-character", default="",
               type=click.Choice(["", *sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)]),
-              help="Character of the growth flow; required with --series, except "
-                   "for a retirement account, whose lot subkind decides.")
+              help="Character of the growth flow; asked if --series is given without "
+                   "it, except for a retirement account, whose lot subkind decides.")
 @click.option("--opened", "opened", default="",
               help="Open date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--closed", "closed", default="",
@@ -5187,14 +5212,11 @@ def add_account(
     if closed:
         closed = _validate_month_date(closed)
 
-    # A retirement lot's subkind picks its growth character (ADR-003 §2.2, #224).
-    if series and not tax_character and not retirement:
-        raise click.ClickException(
-            "--series requires --tax-character "
-            f"({', '.join(sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS))})"
-        )
     if series and kind != "asset":
         raise click.ClickException("--series is only supported for asset accounts")
+    # A retirement lot's subkind picks its growth character (ADR-003 §2.2, #224).
+    if series and not tax_character and not retirement:
+        tax_character = _ask_growth_character(name, subkind)
 
     row = {
         "name": name, "kind": kind, "subkind": subkind,
@@ -6504,6 +6526,10 @@ def _lot_guide_context(
                 "UNION SELECT series FROM account_lot"
             ) if r[0]
         })
+        growing = frozenset(r[0] for r in con.execute(
+            "SELECT symbol FROM security_allocation UNION SELECT series FROM aux_table WHERE kind = 'rate'"
+        ) if r[0])
+        overlaid = _overlay_rows(data_dir / "scenarios" / scenario, "accounts.csv")
         return calendar_guide.GuideContext(
             accounts=[name for name, _subkind, _tax in accounts],
             lots=_lot_info(con),
@@ -6516,7 +6542,39 @@ def _lot_guide_context(
             subkinds={name: subkind for name, subkind, _tax in accounts},
             tax_treatments={name: tax for name, _subkind, tax in accounts},
             securities=[r[0] for r in con.execute("SELECT symbol FROM security ORDER BY symbol")],
+            growing=growing,
+            growth_characters={name: one.row.get("tax_character", "") for name, one in overlaid.items()},
         )
+
+
+def _lot_growth_character(
+    context: calendar_guide.GuideContext, params: dict[str, object],
+) -> str | None:
+    """The tax character to give the lot's account, when the lot is the
+    account's first to grow (#233): the one given, or else the subkind's
+    usual one. None when the account needs none."""
+    answers = {key: str(value) for key, value in params.items()}
+    given = answers.get("tax_character", "").strip()
+    if not lot_guide.needs_growth_character(context, answers):
+        account = answers.get("account", "").strip()
+        if given and given != context.growth_characters.get(account):
+            raise click.ClickException(
+                "--tax-character only sets the character of an account's growth along with "
+                f"its first lot to grow; {account!r} "
+                + ("already has one" if context.growth_characters.get(account) else
+                   "doesn't grow with this lot")
+            )
+        return None
+    if given and given not in registries.GROWTH_COUNTERPARTY_ACCOUNTS:
+        raise click.ClickException(
+            f"unknown tax character {given!r}; allowed: {sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)}"
+        )
+    return given or lot_guide.GROWTH_CHARACTER.get(context.subkinds.get(answers["account"].strip(), ""), "gains")
+
+
+def _echo_growth_character(account: str, character: str | None) -> None:
+    if character is not None:
+        click.echo(f"set the tax_character of {account!r} to {character!r}, so the lot grows")
 
 
 def _check_lot_params(
@@ -6574,14 +6632,21 @@ def _lot_row(params: dict[str, object], original: dict[str, str] | None, *, inve
 def _write_lot(
     data_dir: Path, scenario_name: str, path: Path, row: dict[str, str] | None,
     *, replace: _Lot | None = None, rename: tuple[str, str] | None = None,
-    delete_references: tuple[str, str] | None = None,
+    delete_references: tuple[str, str] | None = None, growth_character: str | None = None,
 ) -> None:
     """Write ``row`` into the scenario's own account_lots.csv -- appended,
     or in place of ``replace``'s row; ``None`` removes that row instead --
     and rewrite the references ``rename`` (old, new lot) or
-    ``delete_references`` (account, lot) asks for, as one staged edit."""
+    ``delete_references`` (account, lot) asks for, as one staged edit.
+    ``growth_character`` sets the account's tax character with it."""
     with _scenario_edit(data_dir, scenario_name) as edit:
         staged = edit.path(path)
+        if growth_character is not None and row is not None:
+            # A whole-row override when the account is inherited (#202).
+            accounts = path.parent / "accounts.csv"
+            found = _overlay_rows(path.parent, "accounts.csv")[row["account_name"]]
+            _append_csv_row(edit.path(accounts), registries.ACCOUNTS_CSV_HEADER,
+                            {**found.row, "tax_character": growth_character}, replace=found.index)
         if replace is not None and replace.index is not None:
             # Read inside the staged edit: the prompts may have taken a while,
             # and the index is only good if the file still has the lot there.
@@ -6712,9 +6777,11 @@ def lot_add(
         key = (str(params["account"]).strip(), str(params["lot"]).strip())
         zeroed = next((one for one in lots if one.deleted and (one.account, one.lot) == key), None)
         row = _lot_row(params, None, investment=_is_investment(context, key[0]))
+        character = _lot_growth_character(context, params)
         # The scenario resolved above, by name: a defaulted scenario is not
         # resolved again, in case the default changed during the prompts.
-        _write_lot(data_dir_p, scenario_name, path, row, replace=zeroed)
+        _write_lot(data_dir_p, scenario_name, path, row, replace=zeroed, growth_character=character)
+        _echo_growth_character(key[0], character)
         click.echo(f"{'re-added' if zeroed else 'added'} lot {key[1]!r} of {key[0]!r} in {path}")
 
     answers = {param: value for param, value in values.items() if value is not None}
@@ -6781,13 +6848,15 @@ def lot_edit(
                 "and in every scenario built on it"
             )
         row = _lot_row(params, chosen.row, investment=_is_investment(context, chosen.account))
-        if row == chosen.row and chosen.index is not None:
+        character = _lot_growth_character(context, params)
+        if row == chosen.row and chosen.index is not None and character is None:
             click.echo("no change; nothing was written")
             return
         _write_lot(
             data_dir_p, scenario_name, path, row, replace=chosen,
-            rename=(chosen.lot, new) if renamed else None,
+            rename=(chosen.lot, new) if renamed else None, growth_character=character,
         )
+        _echo_growth_character(chosen.account, character)
         if chosen.implicit:
             click.echo(f"added lot {new!r} of {chosen.account!r} to {path}")
         elif chosen.index is None:
@@ -8688,7 +8757,7 @@ def scenario_create(
         target = data_dir_p / "scenarios" / name
 
         inherits = [_resolve_scenario(data_dir_p, p, remember=False).name for p in (parent, *mixins)]
-        write_current_scenario(data_dir_p, name)
+        _make_current(data_dir_p, name)
         click.echo(f"created {target}")
         click.echo(f"  inherits: {' + '.join(inherits)}")
         for filename in ("scenario.csv", *skeletons):
@@ -8699,7 +8768,6 @@ def scenario_create(
         click.echo("  series/")
         click.echo("  series/README.md")
         click.echo("  README.md")
-        click.echo(f"  current scenario: {name}")
         _suggest_readme(target)
     except Exception as exc:
         click.echo(f"error: {exc}", err=True)
@@ -10080,16 +10148,6 @@ def scenario_show(name: str | None, data_dir: Path | None, runs_dir: Path | None
 # ---------- sim invest (#217) ----------
 
 
-# The growth character a new account gets when its first lot grows (holds a
-# symbol with a rate series or weights): the built-in account its growth comes
-# from (ADR-003 §2.2). A retirement account's follows its first lot.
-_GROWTH_CHARACTER = {
-    "cash": "ordinary", registries.BUSINESS_SUBKIND: "ordinary", "brokerage_taxable": "gains",
-    "hsa": "deferred",
-    "real_estate": "gains", "vehicle": "depreciation", "other_asset": "gains",
-}
-
-
 def _ask(text: str, choices: list[str] | None = None, default: str | None = None) -> str:
     if choices:
         click.echo(f"  choices: {', '.join(choices)}")
@@ -10270,7 +10328,7 @@ def invest_command(
     if set_character:
         growth = (
             ("tax_free" if registries.RETIREMENT_LOT_SUBKINDS.get(lot_subkind or "") == "tax_free"
-             else "deferred") if retirement else _GROWTH_CHARACTER.get(str(account_subkind), "gains")
+             else "deferred") if retirement else lot_guide.GROWTH_CHARACTER.get(str(account_subkind), "gains")
         )
     with _scenario_edit(data, scenario_name) as edit:
         if set_character and found is not None:

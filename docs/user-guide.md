@@ -105,7 +105,9 @@ size means the scenario is not an ensemble.
 
 Your current scenario is the one `sim` commands work on when you don't name
 one. Naming a scenario on any command that lets you leave it out (as an
-argument or `--scenario`) makes it current. When you leave it out, the command
+argument or `--scenario`) makes it current, and the command says so
+(`Current scenario is now <name> (was <old>)`), as `sim scenario create` and
+`sim ensemble create` do for the new scenario. When you leave it out, the command
 first prints `Using scenario <name>`; with no current scenario (a fresh data
 repo, or after deleting it) the command asks you to name one.
 `sim switch` prints your current scenario, and `sim switch <name>` makes
@@ -328,7 +330,9 @@ sim account add "Asset_Savings_Emergency" asset cash --owner joint
 This adds a row to `accounts.csv`. If you add `--opening-balance`, it also
 adds a matching row to `account_lots.csv`. If you run the command with no
 arguments, it asks you questions and shows the valid choices for kind,
-subkind, and owner. Afterward, run `sim account check` — it tells you about
+subkind, and owner. With `--series` (a growth rate) but no `--tax-character`,
+it asks how the growth is taxed, offering the usual one for the subkind
+(`ordinary` interest for cash). Afterward, run `sim account check` — it tells you about
 anything that still needs your attention. Run `sim account sync` to add any
 missing `account_lots.csv` rows, with a balance of zero, ready for you to
 fill in with `sim account lot edit` (Part 4.2).
@@ -374,6 +378,11 @@ Asset_Brokerage_Joint,inherited_2029,,AAA,2029-03-15,500,,,50000.00
   them. `edit` lists the lots to pick from, then shows the lot's fields; name
   one to change it, and `write` when you are done. `add` prints the
   equivalent command, to reuse in a script.
+- A lot that grows (it has a `--series`, or its symbol has a rate series or
+  weights) in an account with no `tax_character` yet is the account's first
+  lot to grow, so it sets the account's tax character too: asked, with the
+  usual one for the account's subkind offered, or `--tax-character`. Given
+  options without it, the usual one is used, and the command says so.
 - Renaming a lot (`edit --new-lot`, or its `lot` field) also renames it
   everywhere the scenario, and any scenario built on it, names it. `edit`
   won't rename a lot the scenario inherits; `sim account lot rename`

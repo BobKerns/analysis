@@ -63,6 +63,11 @@ class GuideContext:
     tax_treatments: Mapping[str, str] = field(default_factory=dict)
     securities: Sequence[str] = ()
     persons: Sequence[str] = ()  # person ids, for a scheduled rule's person
+    # symbols and series that make a lot grow: a symbol with weights, or one
+    # whose name is a rate series
+    growing: frozenset[str] = frozenset()
+    # account -> the tax character of its growth, blank when it has none yet
+    growth_characters: Mapping[str, str] = field(default_factory=dict)
 
 
 def _always(ctx: GuideContext, answers: Answers) -> bool:  # noqa: ARG001
