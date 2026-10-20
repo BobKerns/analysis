@@ -198,6 +198,8 @@ The account choices are every account any compared recipe has. An account only o
 
 No confidence bands are drawn on any of these: they don't read well over a fan, and the remedy for a noisy difference is more members (see `docs/guides/ensembles.md` for sizing).
 
+**Charts in the terminal.** The fan chart and the comparison's panels are plain matplotlib figures in `sim/ensemble_plots.py`, free of the widget layer, so the notebook widgets and `sim ensemble summary|compare --graph` draw the same charts. `--graph` draws them after the tables, in the terminal through the kitty or iTerm2 image protocol as `sim chain show --graph` does, or into a temporary PNG when the terminal can't show images; `--graph-file X.png|.svg` writes the chart instead. `--account`, `--lot`, `--reserve` and `--dollars` shape the chart as they shape the tables. The summary is in nominal dollars, so its chart draws no reserve line (the reserve is CPI-constant, and the notebook draws it only on a CPI-constant chart).
+
 ### 9. Member 0: a deterministic base case
 
 Every ensemble's member 0 resolves each `vary_distribution` row to its distribution's **central value**, its median (`uniform`'s midpoint; `truncated_normal`'s authored `vary_median`, exact even with asymmetric bounds; `triangular`'s median — #31; a lifespan's authored age instead, §3a) instead of drawing from its RNG stream — members 1 through `member_count - 1` draw exactly as before, unaffected. This gives every ensemble one deterministic, always-in-bounds "base case" member, and lets anything that only knows how to open one run file per scenario (a notebook's scenario picker, any other single-scenario tool) treat an ensemble recipe's member 0 as that scenario's run the same way it would any ordinary scenario's — `resolve_scenario_name` falls back to member 0 of the latest batch when there's no flat run file to find.
@@ -243,3 +245,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#221](https://github.com/BobKerns/analysis/issues/221): a person's lifespan varies by age, `uniform` or `triangular`, with the authored age as its base case (§3a, §5, §9).
 - [#222](https://github.com/BobKerns/analysis/issues/222): a lifespan can be drawn from a period life table, around `age_at_death` as its median by a solved age set-forward, with no mortality multiplier (§3a).
 - [#235](https://github.com/BobKerns/analysis/issues/235): the notebook's ensemble widgets show a progress bar, member by member, while they load and analyze members (§8).
+- [#167](https://github.com/BobKerns/analysis/issues/167): `--graph` and `--graph-file` on `sim ensemble summary` and `compare`; the charts move to `sim/ensemble_plots.py` (§8).

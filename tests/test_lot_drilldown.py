@@ -18,6 +18,7 @@ from ipywidgets import widgets
 matplotlib.use("Agg")
 
 from analysis.cli import main
+from analysis.sim import ensemble_plots
 from analysis.sim.connection import RunConnection
 from analysis.sim.ensemble import EnsembleError, members_balance_by_month
 from analysis.sim.notebook_ui.pickers import (
@@ -239,14 +240,14 @@ def test_ensemble_widgets_share_controls_and_start_on_the_default(
 
     _copy_recipe(two_lot_ensemble_runs_dir, "base_ensemble")
     titles: list[Any] = []
-    real_fan_chart = ensemble_widgets.ensemble_fan_chart
+    real_fan_chart = ensemble_plots.ensemble_fan_chart
 
     def _spy_fan_chart(monthly_summary, ax=None):
         result = real_fan_chart(monthly_summary, ax=ax)
         titles.append(ax)
         return result
 
-    monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
+    monkeypatch.setattr(ensemble_plots, "ensemble_fan_chart", _spy_fan_chart)
     controls = ensemble_widgets.EnsembleControls(runs_dir=two_lot_ensemble_runs_dir)
     fan = ensemble_widgets.ensemble_widget(
         runs_dir=two_lot_ensemble_runs_dir, controls=controls, default="two_lot")

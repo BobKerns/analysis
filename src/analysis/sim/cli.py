@@ -18,7 +18,7 @@ import tempfile
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import click
 import pandas as pd
@@ -1108,6 +1108,21 @@ _ENSEMBLE_RESERVE_OPTION = click.option(
          "overriding the recipe's scenario.meta_json reserve (which applies to "
          "net worth only).",
 )
+_ENSEMBLE_GRAPH_OPTION = click.option(
+    "--graph", "as_graph", is_flag=True,
+    help="After the tables, draw them as the notebook's chart in the terminal (kitty or "
+         "iTerm2 image protocol), or write a PNG file when the terminal can't show images.",
+)
+_ENSEMBLE_GRAPH_FILE_OPTION = click.option(
+    "--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help="After the tables, write the chart to this .png or .svg file.",
+)
+
+
+def _check_graph_options(as_graph: bool, graph_file: Path | None) -> None:
+    if as_graph and graph_file is not None:
+        raise click.UsageError("use one of --graph and --graph-file")
+    _check_graph_file(graph_file)
 
 
 def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
@@ -1181,17 +1196,21 @@ def _subject(account: str | None, lot: str | None) -> str:
 @_ENSEMBLE_ACCOUNT_OPTION
 @_ENSEMBLE_LOT_OPTION
 @_ENSEMBLE_RESERVE_OPTION
+@_ENSEMBLE_GRAPH_OPTION
+@_ENSEMBLE_GRAPH_FILE_OPTION
 def ensemble_summary(
     scenario_name: str | None, runs_dir: Path | None, data_dir: Path | None, batch: str | None,
     account: str | None, lot: str | None, reserve: str | None,
+    as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Mean/median/SD, 5th/20th/.../95th percentiles and the mean of the
     worst 5% and 20% (CVaR) of year-end net worth (or --account's balance,
     or one --lot of it) across SCENARIO_NAME's members, and the share below
-    the reserve when one is set.
+    the reserve when one is set. --graph draws the members' fan chart.
 
     Without SCENARIO_NAME, an ensemble that has been run is asked for."""
     _check_lot_has_account(account, lot)
+    _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
         scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
@@ -1208,9 +1227,9 @@ def ensemble_summary(
             None if reserve_dollars is None
             else _member_frame(connections, account, DollarMode.CPI_CONSTANT, lot)
         )
+        monthly_summary = summary_with_percentiles(frame)
         table = year_end_values(pd.concat(
-            [summary_with_percentiles(frame), risk_summary(frame, reserve_dollars, cpi_frame)],
-            axis=1,
+            [monthly_summary, risk_summary(frame, reserve_dollars, cpi_frame)], axis=1,
         ))
         click.echo(
             f"ensemble {scenario_name} ({batch_dir.name}): {len(connections)} succeeded "
@@ -1224,6 +1243,14 @@ def ensemble_summary(
             click.echo(f"  {len(failed)} failed member(s), excluded above:")
             for stem in failed:
                 click.echo(f"    {stem}: {statuses[stem]}")
+        if as_graph or graph_file is not None:
+            from analysis.sim.ensemble_plots import ensemble_fan_figure
+
+            # Nominal, as the table is, so no reserve line: the reserve is
+            # in CPI-constant dollars, and the notebook draws it only there.
+            _draw_figure(ensemble_fan_figure(
+                monthly_summary, f"{_subject(account, lot)} fan chart (nominal) ({scenario_name})",
+            ), graph_file, "ensemble-")
     finally:
         _close_all(connections)
 
@@ -1241,9 +1268,12 @@ def ensemble_summary(
     default=DollarMode.CPI_CONSTANT.value, show_default=True,
     help="Dollars the percentiles and tail means are reported in.",
 )
+@_ENSEMBLE_GRAPH_OPTION
+@_ENSEMBLE_GRAPH_FILE_OPTION
 def ensemble_compare(
     baseline: str | None, variant: str | None, runs_dir: Path | None, data_dir: Path | None,
     account: str | None, lot: str | None, reserve: str | None, dollars: str,
+    as_graph: bool, graph_file: Path | None,
 ) -> None:
     """Compare VARIANT's ensemble with BASELINE's on risk (#163), each from
     its latest batch: by year end, each percentile breakpoint's delta, the
@@ -1252,8 +1282,14 @@ def ensemble_compare(
     comes out ahead. Then each recipe's tail means and, when a reserve is
     set, the share of members below it.
 
+    --graph draws the notebook's comparison panels: each percentile's delta,
+    the paired futures' deltas when the recipes pair, the CVaR deltas and,
+    with a reserve, the change in the shares below it. When only one recipe
+    has the account, it draws that recipe's fan chart instead.
+
     Either ensemble left out is asked for, from those that have been run."""
     _check_lot_has_account(account, lot)
+    _check_graph_options(as_graph, graph_file)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if baseline is None or variant is None:
         if baseline is None:
@@ -1292,6 +1328,7 @@ def ensemble_compare(
             f"{variant} vs {baseline}: {subject}, {mode_label} dollars; "
             f"{len(base_conns)} and {len(variant_conns)} member(s)"
         )
+        pairs: list[tuple[str, str]] = []
         if len(frames) == 2:
             pairs, unpaired = member_pairs(base_conns, variant_conns)
             click.echo(
@@ -1315,6 +1352,22 @@ def ensemble_compare(
             _echo_year_table(year_end_values(
                 risk_summary(frame, reserve_dollars, cpi_frames.get(name))
             ))
+        if as_graph or graph_file is not None:
+            from analysis.sim.ensemble_plots import ensemble_compare_figure, ensemble_fan_figure
+
+            if len(frames) == 2:
+                figure = ensemble_compare_figure(
+                    baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
+                    reserve_dollars,
+                    (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
+                )
+            else:
+                (name, frame), = frames.items()
+                figure = ensemble_fan_figure(
+                    summary_with_percentiles(frame), f"{subject} fan chart ({mode_label}) ({name})",
+                    reserve=reserve_dollars if mode == DollarMode.CPI_CONSTANT else None,
+                )
+            _draw_figure(figure, graph_file, "ensemble-")
     finally:
         for conns in sides.values():
             _close_all(conns)
@@ -7978,8 +8031,7 @@ def chain_show_command(
         raise click.UsageError("use one of --mermaid, --graph and --graph-file")
     if depth is not None and not (as_mermaid or as_graph or graph_file is not None):
         raise click.UsageError("--depth needs --mermaid, --graph or --graph-file")
-    if graph_file is not None and graph_file.suffix.lower() not in (".png", ".svg"):
-        raise click.UsageError(f"--graph-file {graph_file} must end in .png or .svg")
+    _check_graph_file(graph_file)
     data = _resolve_data_dir(data_dir)
     ref = _resolve_scenario(data, scenario)
     with open_scenario(data, ref.name, scenarios_dir=ref.scenarios_dir) as scn:
@@ -8032,15 +8084,66 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
     # Draw for the terminal's own cells, so the chart's text matches the
     # terminal's on a Retina screen and off it.
     cell = chain_graph.cell_size() if protocol else None
-    fmt = "svg" if graph_file is not None and graph_file.suffix.lower() == ".svg" else "png"
     # As wide as the terminal, short of its last column, which some
     # terminals wrap at.
     fit_width = (shutil.get_terminal_size().columns - 1) * cell[0] if cell else None
     try:
-        image = chain_graph.render(source, fmt, scale=chain_graph.terminal_scale(cell),
-                                   fit_width=fit_width)
+        image = chain_graph.render(source, _graph_format(graph_file),
+                                   scale=chain_graph.terminal_scale(cell), fit_width=fit_width)
     except chain_graph.GraphError as error:
         raise click.ClickException(str(error)) from error
+    _show_image(image, graph_file, protocol, cell, "chain-")
+
+
+def _draw_figure(fig: Any, graph_file: Path | None, prefix: str) -> None:
+    """Draw the matplotlib figure ``fig`` as ``_draw_chain_graph`` draws a
+    chart: into ``graph_file``, else in the terminal, else into a PNG file
+    named with ``prefix``. For the terminal, at the resolution that makes the
+    figure's text the size of the terminal's own."""
+    from analysis.sim import chain_graph
+    from analysis.sim.ensemble_plots import figure_bytes
+
+    protocol = chain_graph.terminal_protocol() if graph_file is None else None
+    cell = chain_graph.cell_size() if protocol else None
+    try:
+        image = figure_bytes(fig, _graph_format(graph_file), dpi=_figure_dpi(cell))
+    except (OSError, ValueError) as error:
+        raise click.ClickException(f"couldn't draw the chart: {error}") from error
+    _show_image(image, graph_file, protocol, cell, prefix)
+
+
+# Matplotlib's text is 10pt; a terminal cell is about 1.2 times its font's height.
+_FIGURE_FONT_PT = 10
+_LINE_HEIGHT = 1.2
+
+
+def _figure_dpi(cell: tuple[float, float] | None) -> float:
+    """The resolution that draws a figure's 10pt text as tall as the
+    terminal's text, ``cell`` being its cell size in the pixels it draws
+    images in; twice matplotlib's 100 dpi when the terminal doesn't say."""
+    if cell is None:
+        return 200.0
+    return min(400.0, max(72.0, cell[1] / _LINE_HEIGHT * 72 / _FIGURE_FONT_PT))
+
+
+def _graph_format(graph_file: Path | None) -> Literal["png", "svg"]:
+    return "svg" if graph_file is not None and graph_file.suffix.lower() == ".svg" else "png"
+
+
+def _check_graph_file(graph_file: Path | None) -> None:
+    if graph_file is not None and graph_file.suffix.lower() not in (".png", ".svg"):
+        raise click.UsageError(f"--graph-file {graph_file} must end in .png or .svg")
+
+
+def _show_image(
+    image: bytes, graph_file: Path | None, protocol: str | None,
+    cell: tuple[float, float] | None, prefix: str,
+) -> None:
+    """Write ``image`` to ``graph_file``; else show it in the terminal with
+    ``protocol``; else, when the terminal takes no image protocol, write it
+    to a temporary PNG named with ``prefix`` and say where."""
+    from analysis.sim import chain_graph
+
     if graph_file is not None:
         try:
             graph_file.write_bytes(image)
@@ -8051,7 +8154,7 @@ def _draw_chain_graph(source: str, graph_file: Path | None) -> None:
     if protocol is None:
         name = None
         try:
-            with tempfile.NamedTemporaryFile(prefix="chain-", suffix=".png", delete=False) as f:
+            with tempfile.NamedTemporaryFile(prefix=prefix, suffix=".png", delete=False) as f:
                 name = f.name
                 f.write(image)
         except OSError as error:
