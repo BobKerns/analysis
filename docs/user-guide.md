@@ -969,6 +969,15 @@ to check "did this do roughly what I expected" before opening a notebook.
 month) with inflation taken out, so decades compare at a glance;
 `--dollars nominal` shows the inflated figures instead.
 
+`sim compare BASELINE VARIANT` puts two or more scenarios' latest runs side
+by side, as `scenario_compare.ipynb` does: whether the runs came from the same
+code and data, the rules, calendar events, accounts and lots each defines
+differently, net worth at each year end with each variant's difference, and
+the month after which each variant stays ahead (break-even). `--account NAME`
+adds that account's balance, `--section` prints only the parts you name, and
+`--graph` draws net worth (or the account) over time in the terminal. Leave
+out BASELINE to start from the current scenario.
+
 ### The notebooks
 
 Each notebook opens with a scenario picker, then shows one topic at a time.

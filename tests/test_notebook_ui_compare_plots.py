@@ -235,6 +235,18 @@ def test_breakeven_widget_compares_against_an_empty_scenario(
             assert (nw["empty"] == 0).all()
 
 
+def test_breakeven_widget_compares_two_empty_scenarios(
+    empty_scenario_runs: tuple[RunConnection, RunConnection],
+) -> None:
+    """Two runs with no months draw an empty summary, with no final net worth."""
+    _, empty = empty_scenario_runs
+    container = MultiScenarioConnections(
+        connections={"empty": empty, "empty_too": empty}, baseline="empty",
+        variants=["empty_too"], colors={"empty": "C0", "empty_too": "C1"},
+    )
+    cp.breakeven_widget(container, baseline="empty")
+
+
 def test_account_balance_diffs_show_accounts_an_empty_scenario_lacks_as_zero(
     empty_scenario_runs: tuple[RunConnection, RunConnection],
 ) -> None:

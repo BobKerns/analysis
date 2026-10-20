@@ -193,6 +193,9 @@ def test_current_scenario_file_drives_default_resolution(tmp_path: Path) -> None
     assert read_current_scenario(repo) is None
     assert resolve_scenario_name(repo, None).name == DEFAULT_SCENARIO_NAME
     assert resolve_scenario_name(repo, "tight").name == "tight"
+    for path in ("../scenarios/tight", "tight/..", ".", ".."):
+        with pytest.raises(LoadError, match="scenario not found"):
+            resolve_scenario_name(repo, path)
 
     write_current_scenario(repo, "tight")
     assert read_current_scenario(repo) == "tight"
