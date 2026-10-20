@@ -97,6 +97,8 @@ before it (`--to-lot` from TO_ACCOUNT). The data repo is `--data-dir` or
 
 A command run without a name it needs asks for it, listing the choices,
 with the same completion at the prompt.
+At a terminal, a name the scenario doesn't have (a typo) is asked for again
+the same way; in a script or pipe the command fails with its usual error.
 
 ### Amazon Expense Categorizer
 

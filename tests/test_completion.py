@@ -134,7 +134,8 @@ def test_tags_complete(test_data_dir: Path) -> None:
         "--scenario", "retire_alice", "--data-dir", str(test_data_dir),
     ])
     assert result.exit_code == 0, result.output
-    assert _complete(test_data_dir, "tags items --scenario retire_alice b") == ["bucket:cash"]
+    # A filter takes a whole role too.
+    assert _complete(test_data_dir, "tags items --scenario retire_alice b") == ["bucket:cash", "bucket:*"]
 
 
 def test_no_data_repo_completes_nothing() -> None:
