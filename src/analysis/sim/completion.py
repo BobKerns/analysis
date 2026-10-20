@@ -29,9 +29,8 @@ from analysis.sim.loader import read_current_scenario
 __all__ = [
     "ACCOUNT", "ACCOUNT_OR_NEW", "ANY_TAG", "AUX_KIND", "CALENDAR_ROW", "CHAIN",
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
-    "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SYMBOL", "TAG", "TAG_FILTER",
-    "LotName",
-    "NameType", "SeriesName", "type_for",
+    "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES", "SYMBOL", "TAG",
+    "TAG_FILTER", "LotName", "NameType", "SeriesName", "type_for",
 ]
 
 # The params, nearest first, whose value is the scenario a name belongs to.
@@ -237,18 +236,17 @@ class LotName(NameType):
 
 class SeriesName(NameType):
     """A series of ``kind`` (``rate``, ``inflation``), or of the kind the
-    ``kind_param`` param names, or of any kind. A scheduled rule's series
-    may be ``fixed`` (no inflation), so a series of any kind or of
-    ``inflation`` takes that too."""
+    ``kind_param`` param names, or of any kind. ``fixed`` takes the word
+    ``fixed`` too, which a scheduled rule's series may be (no inflation)."""
 
-    def __init__(self, kind: str | None = None, *, kind_param: str | None = None) -> None:
+    def __init__(self, kind: str | None = None, *, kind_param: str | None = None,
+                 fixed: bool = False) -> None:
         def lister(ctx: click.Context, data_dir: Path) -> Sequence[str]:
             scenario = _scenario(ctx, data_dir)
             if not scenario:
                 return []
             wanted = _line_params(ctx).get(kind_param) if kind_param else kind
             return names.series_names(data_dir, scenario, wanted if isinstance(wanted, str) else None)
-        fixed = kind_param is None and kind in (None, "inflation")
         super().__init__(lister, "series", plural="series",
                          known=(lambda ctx, data_dir: ["fixed"]) if fixed else None)  # noqa: ARG005
 
@@ -272,7 +270,14 @@ _FIELD_TYPES: dict[str, NameType] = {
 }
 
 
-def type_for(param: str) -> NameType | None:
-    """The completing type of a field's option named ``param``, or None
-    (a plain string) for a field that names nothing."""
+# A scheduled rule's series, which may be ``fixed``.
+SCHEDULED_SERIES = SeriesName(fixed=True)
+
+
+def type_for(param: str, *, scheduled: bool = False) -> NameType | None:
+    """The completing type of a field's option named ``param`` (a scheduled
+    rule's field, when ``scheduled``), or None (a plain string) for a field
+    that names nothing."""
+    if scheduled and param == "series":
+        return SCHEDULED_SERIES
     return _FIELD_TYPES.get(param)

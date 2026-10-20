@@ -4567,7 +4567,7 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
         if field_.option is not None:
             f = click.option(
                 field_.option, field_.param, default=None, help=field_.help or field_.label,
-                type=completion.type_for(field_.param),
+                type=completion.type_for(field_.param, scheduled=True),
             )(f)
     return f
 
@@ -4602,7 +4602,7 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
 @click.option("--tax-character", default=None,
               help="Default: the kind's usual one (none; ss_benefit, tax_deferred_out for rmd, "
                    "tax_free for on_death).")
-@click.option("--series", type=completion.SeriesName(), default=None,
+@click.option("--series", type=completion.SCHEDULED_SERIES, default=None,
               help="fixed_amount: 'fixed' (the default) for no inflation, else an inflation "
                    "series (e.g. cpi). ss_benefit: the COLA series. percent_of_balance: the rate series.")
 @click.option("--base-date", default=None,
@@ -4780,7 +4780,7 @@ def scheduled_add(
               help="Lot of --from-account (required for investment accounts).")
 @click.option("--start", default=None,
               help="First scheduled month YYYY-MM or YYYY-MM-DD (default: scenario start).")
-@click.option("--series", type=completion.SeriesName(), default="cpi", show_default=True,
+@click.option("--series", type=completion.SCHEDULED_SERIES, default="cpi", show_default=True,
               help="Inflation series applied to generated rows ('fixed' for none).")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show generated rows without rewriting scheduled.csv.")

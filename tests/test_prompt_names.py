@@ -245,6 +245,13 @@ def test_fixed_is_a_scheduled_rules_series(sim: Callable[..., Result]) -> None:
 
 
 @pytest.mark.usefixtures("terminal")
+def test_fixed_is_no_chain_steps_series(sim: Callable[..., Result]) -> None:
+    result = sim("chain", "step", "add", "asset_checking_liquidity", "Asset_Savings", "--series", "fixed",
+                 "--scenario", "retire_alice", input="cpi\n")
+    assert "unknown series: 'fixed'" in result.output
+
+
+@pytest.mark.usefixtures("terminal")
 def test_a_run_files_names_are_not_checked_against_the_scenario(
     sim: Callable[..., Result], tmp_path: Path,
 ) -> None:
