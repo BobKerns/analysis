@@ -113,7 +113,7 @@ Every `sim` command that takes an optional scenario treats it the same way (`cli
 - **Omitted:** the name in `.current_scenario` is used (an error if it names a missing scenario), and the command says so with one `Using scenario <name>` line on stderr, once per command.
 - **Omitted, with no `.current_scenario`:** a usage error asking for a name and listing the scenarios. The CLI never guesses.
 
-The prompt (§4) shows the current scenario, so the default a command will take is always in view.
+The prompt (§4) shows the current scenario, so the default a command will take is always in view. `sim switch` prints it; `sim switch <name>` makes a scenario current with nothing else done, printing the old and new names.
 
 Notebooks resolve an omitted scenario via `analysis.sim.loader.resolve_scenario_name`, which keeps fallbacks for a fresh data repo:
 
@@ -232,3 +232,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#204](https://github.com/BobKerns/analysis/issues/204): only `sim check` prints defined-but-not-read warnings, and `sim check --all` only with `--verbose` (§6).
 - [#214](https://github.com/BobKerns/analysis/issues/214): every CLI command naming a scenario makes it current, a defaulted one is announced, the CLI no longer falls back past `.current_scenario`, and the prompt shows the current scenario (§4, §4a).
 - [#195](https://github.com/BobKerns/analysis/issues/195): `sim load` and `sim run` prune old runs and batches by the data repo's `.retention.yaml`, written with defaults when missing and kept out of git by `activate` (§10).
+- [#236](https://github.com/BobKerns/analysis/issues/236): `sim switch` shows the current scenario or makes a named one current (§4a).

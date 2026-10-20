@@ -1881,6 +1881,30 @@ def networth_command(
         click.echo(f"  {when}  {_fmt_cents(cents)}")
 
 
+@sim_group_command.command("switch")
+@click.argument("scenario", required=False)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def switch_command(scenario: str | None, data_dir: Path | None) -> None:
+    """Show the current scenario, or make SCENARIO current (#236).
+
+    With SCENARIO, prints the scenario that was current, then the new one.
+    Naming a scenario on any command makes it current too; this command does
+    only that, and says what changed.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    previous = read_current_scenario(data_dir_p)
+    click.echo(f"Current scenario: {previous or '(none)'}")
+    if scenario is None:
+        return
+    ref = _resolve_scenario(data_dir_p, scenario)
+    if ref.name == previous:
+        click.echo(f"Unchanged: {ref.name}")
+    else:
+        click.echo(f"Switched to: {ref.name}")
+
+
 @sim_group_command.command("items")
 @click.option("--account", required=True, help="Account name in the selected run.")
 @click.option("--lot", default=None,

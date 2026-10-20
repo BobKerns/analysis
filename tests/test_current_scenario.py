@@ -112,3 +112,48 @@ def test_a_current_scenario_that_is_gone_is_named_as_such(test_data_dir: Path) -
     assert result.exit_code != 0
     assert "names a missing scenario: 'gone'" in result.stderr
     assert "Using scenario" not in result.stderr
+
+
+def test_switch_with_no_scenario_prints_the_current_one(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "switch")
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "Current scenario: retire_alice\n"
+    assert read_current_scenario(test_data_dir) == "retire_alice"
+
+
+def test_switch_with_no_current_scenario_says_none(test_data_dir: Path) -> None:
+    current_scenario_path(test_data_dir).unlink()
+
+    result = _sim(test_data_dir, "switch")
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "Current scenario: (none)\n"
+
+
+@pytest.mark.uses_current_scenario_write
+def test_switch_prints_the_old_scenario_then_makes_the_new_one_current(
+    test_data_dir: Path,
+) -> None:
+    result = _sim(test_data_dir, "switch", "base")
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "Current scenario: retire_alice\nSwitched to: base\n"
+    assert read_current_scenario(test_data_dir) == "base"
+
+
+def test_switch_to_the_current_scenario_says_unchanged(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "switch", "retire_alice")
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "Current scenario: retire_alice\nUnchanged: retire_alice\n"
+
+
+@pytest.mark.uses_current_scenario_write
+def test_switch_to_a_missing_scenario_fails_and_keeps_the_current_one(
+    test_data_dir: Path,
+) -> None:
+    result = _sim(test_data_dir, "switch", "gone")
+
+    assert result.exit_code != 0
+    assert read_current_scenario(test_data_dir) == "retire_alice"
