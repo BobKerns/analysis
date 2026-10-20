@@ -10,7 +10,7 @@ import secrets
 import shlex
 import shutil
 import sys
-from collections.abc import Callable, Generator, Iterable, Mapping, Set
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Set
 from contextlib import ExitStack, contextmanager
 import os
 import sqlite3
@@ -97,6 +97,7 @@ from analysis.sim.loader import (
     find_state_dir,
     latest_run_path,
     read_current_scenario,
+    scenario_run_path,
     write_current_scenario,
 )
 from analysis.sim.quicken import (
@@ -1996,6 +1997,226 @@ def networth_command(
     for month, cents in rows:
         when = month if period == "monthly" else month[:4]
         click.echo(f"  {when}  {_fmt_cents(cents)}")
+
+
+COMPARE_SECTIONS = ("runs", "differences", "net-worth", "break-even", "account")
+"""``sim compare``'s sections, in the order it prints them (#188)."""
+
+_COMPARE_MAX_GRAPHED = 4
+"""The most variants ``sim compare --graph`` draws: more lines than that,
+and the chart can't be read (the notebook stops at four too)."""
+
+
+def _echo_table(columns: Sequence[str], rows: Iterable[Sequence[str]], *, left: int = 1) -> None:
+    """``rows`` under a header of ``columns``, two spaces in: the first
+    ``left`` columns (names) aligned left, the rest (values) right."""
+    rows = [list(row) for row in rows]
+    widths = [max(len(cell) for cell in column) for column in zip(columns, *rows, strict=True)]
+    for line in (list(columns), *rows):
+        click.echo("  " + "  ".join(
+            cell.ljust(width) if i < left else cell.rjust(width)
+            for i, (cell, width) in enumerate(zip(line, widths, strict=True))
+        ).rstrip())
+
+
+def _cell(value: Any) -> str:
+    """A table cell: missing as an em dash, a float as whole dollars."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return "—"
+    if isinstance(value, float):
+        return f"{value:,.0f}"
+    return str(value)
+
+
+def _echo_frame(frame: pd.DataFrame) -> None:
+    """``frame`` as a table, its index levels as the leading name columns."""
+    names = [str(name or "") for name in frame.index.names]
+    _echo_table(
+        [*names, *map(str, frame.columns)],
+        ([*map(str, key if isinstance(key, tuple) else (key,)), *map(str, row)]
+         for key, row in zip(frame.index, frame.itertuples(index=False), strict=True)),
+        left=len(names),
+    )
+
+
+def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
+    """A variant to compare ``baseline`` with, asked for from the scenarios
+    that have a run."""
+    choices = [name for name in list_scenario_names(data)
+               if name != baseline and scenario_run_path(runs_dir, name) is not None]
+    return [_ask_name("scenario", choices, prompt="variant", plural="scenarios with runs")]
+
+
+@sim_group_command.command("compare")
+@click.argument("baseline", type=completion.SCENARIO, required=False)
+@click.argument("variants", type=completion.SCENARIO, nargs=-1)
+@click.option("--section", "sections", type=click.Choice(COMPARE_SECTIONS), multiple=True,
+              help="Print only this section; repeat for more (default: all, the account "
+                   "section only with --account).")
+@click.option("--dollars", type=click.Choice([m.value for m in DollarMode]),
+              default=DollarMode.CPI_CONSTANT.value, show_default=True,
+              help="Dollars net worth and balances are reported in.")
+@click.option("--account", type=completion.ACCOUNT, default=None,
+              help="Also compare this account's balance (a section of its own).")
+@click.option("--lot", type=completion.LotName("account"), default=None,
+              help="With --account: one lot of the account instead of its total.")
+@click.option("--graph", "as_graph", is_flag=True,
+              help="After the tables, draw net worth (or --account's balance) and each "
+                   "variant's difference in the terminal (kitty or iTerm2 image protocol), "
+                   "or write a PNG file when the terminal can't show images.")
+@click.option("--graph-file", type=click.Path(dir_okay=False, path_type=Path), default=None,
+              help="After the tables, write that chart to this .png or .svg file.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+@click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path),
+              default=None, help="Directory to find each scenario's latest run in.")
+def compare_command(
+    baseline: str | None, variants: tuple[str, ...], sections: tuple[str, ...], dollars: str,
+    account: str | None, lot: str | None, as_graph: bool, graph_file: Path | None,
+    data_dir: Path | None, runs_dir: Path | None,
+) -> None:
+    """Compare VARIANTS with BASELINE (#188), each from its latest run (an
+    ensemble's from member 0 of its latest batch), as scenario_compare.ipynb
+    does: whether the runs are comparable, what the scenarios define
+    differently, net worth at each year end with each variant's difference,
+    where each variant breaks even, and with --account, that account's
+    balance.
+
+    BASELINE left out is the current scenario; with no VARIANTS, one is
+    asked for. A scenario with no accounts is a valid compare point."""
+    from analysis.sim import compare
+
+    if lot is not None and account is None:
+        raise click.UsageError("--lot needs --account")
+    if "account" in sections and account is None:
+        raise click.UsageError("--section account needs --account")
+    _check_graph_options(as_graph, graph_file)
+    data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, baseline, runs_dir=runs_dir)
+    baseline = ref.name
+    if not variants:
+        variants = tuple(_compare_variants(data, ref.runs_dir, baseline))
+    if baseline in variants or len(set(variants)) < len(variants):
+        raise click.UsageError("name each scenario once, the baseline only as BASELINE")
+    if (as_graph or graph_file is not None) and len(variants) > _COMPARE_MAX_GRAPHED:
+        raise click.UsageError(
+            f"--graph draws at most {_COMPARE_MAX_GRAPHED} variants; name fewer, "
+            "or leave --graph off for the tables")
+    shown = set(sections) or {*COMPARE_SECTIONS[:-1], *(["account"] if account else [])}
+    mode = DollarMode(dollars)
+    mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    scenarios = [baseline, *variants]
+    with ExitStack() as stack:
+        connections: dict[str, RunConnection] = {}
+        # Matched against the folder list, not joined onto a path, so a name
+        # like "../x" can't reach outside scenarios/ or the runs directory.
+        known = set(list_scenario_names(data, ref.scenarios_dir))
+        for name in scenarios:
+            if name not in known:
+                raise click.ClickException(f"no scenario {name!r} in {ref.scenarios_dir}")
+            run_path = scenario_run_path(ref.runs_dir, name)
+            if run_path is None:
+                raise click.ClickException(
+                    f"no runs for {name!r} in {ref.runs_dir}; run `sim run {name}` first")
+            connections[name] = stack.enter_context(
+                open_run(run_path, name, scenarios_dir=ref.scenarios_dir, data_dir=data))
+        click.echo(f"{', '.join(variants)} vs {baseline}, {mode_label} dollars")
+
+        if "runs" in shown:
+            meta, warnings = compare.comparability(connections, scenarios)
+            click.echo("\nRuns:")
+            _echo_table(
+                ["scenario", "status", "finished", "code", "data"],
+                ([row.scenario_name, row.status, row.finished_at or "—",
+                  row.code_version + ("+dirty" if row.code_dirty else ""),
+                  row.data_version + ("+dirty" if row.data_dirty else "")]
+                 for row in named_rows(meta)),
+                left=5,
+            )
+            for warning in warnings:
+                click.secho(f"  warning: {warning}", fg="yellow")
+            if not warnings:
+                click.echo("  Same code and data version; the differences are the scenarios.")
+
+        if "differences" in shown:
+            rules = compare.rule_differences(connections, scenarios, baseline)
+            click.echo("\nRules that differ, as each run ended:")
+            if rules.empty:
+                click.echo("  none")
+            else:
+                money = rules.index.get_level_values("field") == "amount_cents"
+                cells = rules.astype(object)
+                cells[money] = cells[money].map(
+                    lambda v: v if pd.isna(v) else f"${int(v) / 100:,.2f}")
+                cells = cells.rename(index={"amount_cents": "amount"}, level="field")
+                _echo_frame(cells.map(_cell))
+            events = compare.event_differences(connections, scenarios)
+            click.echo("\nCalendar events that differ:")
+            if events.empty:
+                click.echo("  none")
+            else:
+                _echo_frame(events.set_index(["scenario", "date"]).map(_cell))
+            accounts = compare.account_definition_differences(connections, scenarios, baseline)
+            click.echo("\nAccounts and lots defined differently:")
+            if accounts.empty:
+                click.echo("  none")
+            else:
+                _echo_frame(accounts.map(_cell))
+            ytd = compare.year_to_date_differences(connections, scenarios, baseline)
+            click.echo("\nYear-to-date rows that differ:")
+            if ytd.empty:
+                click.echo("  none")
+            else:
+                _echo_frame(ytd.map(_cell))
+
+        graphed = as_graph or graph_file is not None
+        nw = pd.DataFrame()
+        # Only the sections that use it read net worth, so --section runs, say,
+        # still works on a run with no CPI series.
+        if shown & {"net-worth", "break-even"} or (graphed and account is None):
+            nw = compare.net_worth_by_month(connections, scenarios, mode)
+            if no_cpi := compare.all_nan_columns(nw):
+                raise click.ClickException(
+                    f"no 'cpi' inflation index in the run of {', '.join(no_cpi)}, so no "
+                    "CPI-constant net worth; pass --dollars nominal")
+        if "net-worth" in shown:
+            click.echo(f"\nNet worth at year end ({mode_label}):")
+            _echo_frame(compare.year_end_comparison(nw, baseline, variants).map(_cell))
+
+        if "break-even" in shown:
+            delta = compare.variant_delta(nw, baseline, variants)
+            summary = compare.breakeven_summary(nw, delta, baseline, variants)
+            summary.index.name = "variant"
+            click.echo(f"\nBreak-even vs {baseline}: the month after which a variant stays ahead")
+            _echo_frame(summary.map(_cell))
+
+        balances = None
+        if account is not None and ("account" in shown or graphed):
+            balances = compare.balance_by_month(connections, scenarios, account, lot, mode)
+            subject = f"{account}" + (f", lot {lot}" if lot else "")
+            if balances.empty:  # a balance of zero throughout is still a balance
+                raise click.ClickException(
+                    f"no {'lot ' + lot + ' of ' if lot else ''}{account} with a balance "
+                    f"in {', '.join(scenarios)}")
+            if no_cpi := compare.all_nan_columns(balances):
+                raise click.ClickException(
+                    f"no 'cpi' inflation index in the run of {', '.join(no_cpi)}, so no "
+                    "CPI-constant balance; pass --dollars nominal")
+            if "account" in shown:
+                click.echo(f"\n{subject} at year end ({mode_label}):")
+                _echo_frame(compare.year_end_comparison(balances, baseline, variants).map(_cell))
+
+        if graphed:
+            from analysis.sim.compare_charts import comparison_figure
+
+            if balances is not None:
+                figure = comparison_figure(
+                    balances, baseline, list(variants), f"{subject}, {mode_label}",
+                    ylabel="balance (USD)")
+            else:
+                figure = comparison_figure(
+                    nw, baseline, list(variants), f"Net worth, {mode_label}")
+            _draw_figure(figure, graph_file, "compare-")
 
 
 @sim_group_command.command("switch")

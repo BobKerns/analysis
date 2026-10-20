@@ -59,7 +59,7 @@ __all__ = [
     "DEFAULT_SCENARIO_NAME",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
     "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
-    "read_current_scenario", "resolve_scenario_name", "find_state_dir",
+    "read_current_scenario", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
     "write_current_scenario",
 ]
@@ -187,12 +187,15 @@ def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path |
     """Most recent run file under ``runs_dir``, or ``None`` if there is none.
 
     Run filenames are ``<timestamp>_<scenario>_<data-version>.sqlite3``, so they
-    sort chronologically and can be filtered by scenario by name alone.
+    sort chronologically and can be filtered by scenario by name alone. Neither
+    the timestamp nor the data version has an underscore, so the scenario is
+    matched whole: ``base`` doesn't pick up ``higher_base``'s runs.
     """
     glob_pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
-    re_pattern = re.compile(f".*_{scenario}_[^_]*[.]sqlite3") if scenario else re.compile(f".*")
+    re_pattern = (re.compile(rf"[^_]+_{re.escape(scenario)}_[^_]*[.]sqlite3") if scenario
+                  else re.compile(".*"))
     runs = (r for r in Path(runs_dir).glob(glob_pattern)
-            if re_pattern.match(r.name))
+            if re_pattern.fullmatch(r.name))
     runs = sorted(runs)
     return runs[-1] if runs else None
 
@@ -271,6 +274,13 @@ def _latest_ensemble_member_zero(runs_dir: Path, name: str) -> Path | None:
         return None
     member = batch / "member_0000.sqlite3"
     return member if member.exists() else None
+
+
+def scenario_run_path(runs_dir: Path | str, name: str) -> Path | None:
+    """The run file that stands for scenario ``name`` under ``runs_dir``: its
+    latest run, else member 0 of its latest ensemble batch; ``None`` when it
+    has neither."""
+    return latest_run_path(runs_dir, name) or _latest_ensemble_member_zero(Path(runs_dir), name)
 
 
 @dataclass(frozen=True)
@@ -365,7 +375,10 @@ def resolve_scenario_name(
     state_dir = (Path(state_dir) if state_dir is not None
                  else find_state_dir(data_dir, data_dir.parent / "state"))
     if scenario:
-        if not (scenarios_dir / scenario).is_dir():
+        # A scenario is a folder directly under scenarios/: a path such as
+        # "../x" never names one, even when it reaches a folder.
+        if (scenario in (".", "..") or Path(scenario).name != scenario
+                or not (scenarios_dir / scenario).is_dir()):
             raise LoadError([f"scenario not found: {scenarios_dir / scenario}"])
         name = scenario
     else:
@@ -383,8 +396,7 @@ def resolve_scenario_name(
         )
     )
     run_path = (Path(run_path).resolve() if run_path is not None
-                else latest_run_path(resolved_runs_dir, name)
-                     or _latest_ensemble_member_zero(resolved_runs_dir, name)
+                else scenario_run_path(resolved_runs_dir, name)
     )
     return ScenarioRef(
         name=name,

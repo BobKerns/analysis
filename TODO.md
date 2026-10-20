@@ -15,9 +15,6 @@ walk the notebooks and `analysis.sim.notebook_ui`, check each view against `anal
 
 Known gaps (last reviewed 2026-10-17; each has an issue):
 
-- plain-run scenario comparison (account and lot definition differences, rule and event
-  differences, net worth differences, break-even): only `sim ensemble compare`, which is
-  ensembles' risk only (#188)
 - events (`notebooks/events.ipynb`): filtering the full `transfer_event` ledger by reason
   kind/tax character/account/date range; `sim items` covers one account and a date range
   only (#189)
