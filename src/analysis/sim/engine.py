@@ -2564,6 +2564,10 @@ def _apply_tax_accumulator(
     # does, so taxable Social Security can come out a little high in a year
     # that uses one.
     nol_limit_percent = int(params.get("nol_limit_percent", 80 if scope == "federal" else 100))
+    if not 0 <= nol_limit_percent <= 100:
+        raise EngineError(
+            f"tax_accumulator nol_limit_percent must be 0 to 100, got {nol_limit_percent}"
+        )
     nol_in = _summary_amount(con, tax_year - 1, f"{scope}_nol_carryover")
     nol_used = min(nol_in, max(0, income_before_nol) * nol_limit_percent // 100)
     taxable_income = max(0, income_before_nol - nol_used)

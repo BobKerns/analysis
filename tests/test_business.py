@@ -149,6 +149,10 @@ def test_a_loss_larger_than_the_years_income_carries_forward(
         "name": "Asset_Business_Alice", "kind": "asset", "subkind": "business", "owner": "alice",
         "tax_treatment": "taxable", "opened": "2028-07-31", "meta_json": '{"hobby": "yes"}',
     }], "meta_json hobby must be true or false"),
+    ("accounts.csv", [{
+        "name": "Asset_Business_Alice", "kind": "asset", "subkind": "business", "owner": "alice",
+        "tax_treatment": "taxable", "opened": "2028-07-31", "meta_json": "[]",
+    }], "(Asset_Business_Alice): meta_json must be a JSON object"),
 ])
 def test_the_loader_checks_business_rows(
     business_scenarios: Path, load_test_scenario: Callable[[str], Path],
@@ -171,6 +175,18 @@ def test_a_chain_step_takes_no_business_character(
     chain.write_text("account_name,tax_character\nAsset_Business_Alice,business_income\n")
     with pytest.raises(LoadError, match="isn't for a chain step"):
         load_test_scenario("alice_business")
+
+
+def test_the_nol_limit_must_be_a_percentage(
+    business_scenarios: Path, run_file: Callable[[str], Path],
+) -> None:
+    path = business_scenarios / "alice_business" / "scheduled.csv"
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame.loc[frame["name"] == "federal_tax", "params_json"] = (
+        '{"year": "previous", "nol_limit_percent": 150}')
+    frame.to_csv(path, index=False)
+    with pytest.raises(EngineError, match="nol_limit_percent must be 0 to 100, got 150"):
+        run_file("alice_business")
 
 
 def _account(con: sqlite3.Connection, account_id: int, subkind: str, meta: str = "{}") -> None:

@@ -2369,8 +2369,15 @@ def _validate_business(
         try:
             meta = json.loads(row.get("meta_json") or "{}")
         except json.JSONDecodeError:
-            continue  # reported with the account's other columns
-        if not isinstance(meta, dict) or "hobby" not in meta:
+            meta = None
+        if not isinstance(meta, dict):
+            # The tax accumulator reads a business account's hobby flag.
+            if row.get("name") in business:
+                issues.append(
+                    f"{where} ({row.get('name')}): meta_json must be a JSON object"
+                )
+            continue
+        if "hobby" not in meta:
             continue
         if row.get("name") not in business:
             issues.append(
