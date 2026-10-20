@@ -119,6 +119,7 @@ networth
 nextstrain
 NOCASE
 noconfirm
+nonbusiness
 nonflat
 noninteractive
 nonpositive

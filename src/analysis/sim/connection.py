@@ -53,12 +53,13 @@ EXPENSE_SUBKIND_TO_CATEGORY: dict[str, str] = {
     "taxes_state": "taxes",
     "living": "living",
     "food": "living",
+    "business": "business",
 }
-EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "other"]
+EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "business", "other"]
 # depreciation is a book entry, not spending -- see ADR-002 gains/losses.
 NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 
-LIQUID_SUBKINDS = {"cash"}
+LIQUID_SUBKINDS = registries.CASH_SUBKINDS
 # ss_benefit is handled separately
 TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "stcg", "tax_deferred_out", "roth_nonqualified"}
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}

@@ -23,6 +23,7 @@ from analysis.sim.holdings import (
     lots_frame,
     security_names,
 )
+from analysis.sim import registries
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 from analysis.sim.notebook_ui.pickers import AccountDropdown
 from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -91,7 +92,7 @@ def symbol_holders_view(
     everything = lots_frame(source, month)
     frame = everything[
         (everything["symbol"] == symbol)
-        & everything["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | {"cash"})
+        & everything["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | registries.CASH_SUBKINDS)
     ]
     shown = _with_total(
         frame[["account", "lot", "tax_treatment", "quantity", "price", "balance",
