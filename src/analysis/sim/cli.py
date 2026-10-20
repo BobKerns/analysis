@@ -2202,8 +2202,7 @@ def _scenario_edit(
             "Nothing was written."
         ) from None
     except EditRejected as exc:
-        for issue in exc.issues:
-            click.echo(f"  error: {issue}", err=True)
+        _echo_rejected(exc)
         raise click.ClickException(
             f"this change would leave {len(exc.issues)} issue(s); nothing was written"
         ) from None
@@ -2215,6 +2214,24 @@ def _scenario_edit(
         raise click.ClickException("; ".join(exc.issues)) from None
     for warning in edit.warnings:
         click.echo(f"WARN: {warning}", err=True)  # ADR-004 §6's format
+
+
+def _echo_rejected(exc: EditRejected) -> None:
+    """A rejected edit's issues, the edited scenario's first. A change is also
+    checked against every scenario built on the one changed, so each of those
+    that fails gets a line saying so, or its errors would read as if the
+    command had edited it (#233)."""
+    for issue in exc.own:
+        click.echo(f"  error: {issue}", err=True)
+    for dependent, issues in exc.dependents.items():
+        click.echo(
+            f"{exc.scenario} {'also fails, and' if exc.own else 'loads with this change, but'} "
+            f"{dependent}, which builds on it, would not load "
+            f"(a change is checked against every scenario built on {exc.scenario}):",
+            err=True,
+        )
+        for issue in issues:
+            click.echo(f"  error: {issue}", err=True)
 
 
 @contextmanager
@@ -6082,6 +6099,9 @@ class _Lot(NamedTuple):
     # The scenario, in the load order, whose zeroed override deletes the lot:
     # how ``lot delete`` stands in for removing a row it can't remove (#124).
     deleted_in: str | None = None
+    # The empty default lot an account with no lot rows loads with: no file
+    # has it, so editing it adds its row (#233).
+    implicit: bool = False
 
     @property
     def account(self) -> str:
@@ -6149,6 +6169,27 @@ def _scenario_lots(scenario_dir: Path, name: str) -> list[_Lot]:
     return list(lots.values())
 
 
+def _implicit_default_lot(
+    data_dir: Path, scenario: str, lots: list[_Lot], account: str,
+) -> list[_Lot]:
+    """The empty ``default`` lot of ``account``, when the account holds lots
+    but has no lot rows in the scenario's lineage: the loader gives such an
+    account that lot, so ``lot edit`` can change it like any other. An
+    investment account's lots need a symbol, so it gets none."""
+    if any(one.account == account for one in lots):
+        return []
+    with _intent_db(data_dir, scenario) as (con, _name):
+        found = con.execute(
+            "SELECT subkind FROM account WHERE name = ? AND kind IN ('asset', 'liability')",
+            (account,),
+        ).fetchone()
+    if found is None or found[0] in INVESTMENT_ASSET_SUBKINDS:
+        return []
+    row = dict.fromkeys(registries.ACCOUNT_LOTS_CSV_HEADER, "")
+    row |= {"account_name": account, "opening_balance": "0.00"}
+    return [_Lot(row, None, None, implicit=True)]
+
+
 def _lot_label(lot: _Lot) -> str:
     row = lot.row
     parts = [f"{lot.account} ({lot.lot})"]
@@ -6160,6 +6201,8 @@ def _lot_label(lot: _Lot) -> str:
         parts.append(row["opening_balance"])
     if lot.deleted:
         parts.append(f"[deleted: zeroed {lot.deleted_where}, inherited from {lot.inherited_from}]")
+    elif lot.implicit:
+        parts.append("[no row yet: the account's empty default lot]")
     elif lot.index is None:
         parts.append(f"[inherited from {lot.inherited_from}]")
     elif lot.inherited_from:
@@ -6698,6 +6741,8 @@ def lot_edit(
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "account_lots.csv"
     lots = _scenario_lots(scenario_dir, scenario_name)
+    if account is not None:
+        lots.extend(_implicit_default_lot(data_dir_p, scenario_name, lots, account.strip()))
     chosen = _select_lot(lots, account, lot)
     context = _lot_guide_context(data_dir_p, scenario_name, lots, editing=chosen)
 
@@ -6719,7 +6764,9 @@ def lot_edit(
             data_dir_p, scenario_name, path, row, replace=chosen,
             rename=(chosen.lot, new) if renamed else None,
         )
-        if chosen.index is None:
+        if chosen.implicit:
+            click.echo(f"added lot {new!r} of {chosen.account!r} to {path}")
+        elif chosen.index is None:
             click.echo(
                 f"wrote an override of lot {chosen.lot!r} of {chosen.account!r} "
                 f"(inherited from {chosen.inherited_from!r}) to {path}"
@@ -6739,7 +6786,9 @@ def lot_edit(
         return
     _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
     click.echo(f"Editing lot: {_lot_label(chosen)}")
-    if chosen.index is None:
+    if chosen.implicit:
+        click.echo("  The account has no lot rows, so writing adds this one to the scenario.")
+    elif chosen.index is None:
         click.echo(
             f"  It comes from scenario {chosen.inherited_from!r}: writing puts an override "
             "of the whole lot in this scenario."
