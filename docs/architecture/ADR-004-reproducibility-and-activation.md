@@ -109,7 +109,7 @@ The data repo records the scenario the user is currently working on in a `.curre
 
 Every `sim` command that takes an optional scenario treats it the same way (`cli._resolve_scenario`):
 
-- **Named:** the name is validated against `scenarios/` and becomes the current scenario. A name that is only a reference — a new scenario's parent or mix-ins — does not; `sim scenario create` and `sim ensemble create` make the new scenario current instead. Commands whose scenario argument is required (`rename`, `delete`, `compare`, the ensemble reports) leave the file alone, except that renaming or deleting the current scenario follows it.
+- **Named:** the name is validated against `scenarios/` and becomes the current scenario; when that changes it, the command says so on stderr, `Current scenario is now <name> (was <old>)`. A name that is only a reference — a new scenario's parent or mix-ins — does not; `sim scenario create` and `sim ensemble create` make the new scenario current instead, with the same notice. Commands whose scenario argument is required (`rename`, `delete`, `compare`, the ensemble reports) leave the file alone, except that renaming or deleting the current scenario follows it, with the same notice (`No scenario is current now (was <old>)` after a delete).
 - **Omitted:** the name in `.current_scenario` is used (an error if it names a missing scenario), and the command says so with one `Using scenario <name>` line on stderr, once per command.
 - **Omitted, with no `.current_scenario`:** a usage error asking for a name and listing the scenarios. The CLI never guesses.
 
@@ -233,3 +233,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#214](https://github.com/BobKerns/analysis/issues/214): every CLI command naming a scenario makes it current, a defaulted one is announced, the CLI no longer falls back past `.current_scenario`, and the prompt shows the current scenario (§4, §4a).
 - [#195](https://github.com/BobKerns/analysis/issues/195): `sim load` and `sim run` prune old runs and batches by the data repo's `.retention.yaml`, written with defaults when missing and kept out of git by `activate` (§10).
 - [#236](https://github.com/BobKerns/analysis/issues/236): `sim switch` shows the current scenario or makes a named one current (§4a).
+- [#233](https://github.com/BobKerns/analysis/issues/233): a command that changes the current scenario, including by renaming or deleting it, says so (§4a).

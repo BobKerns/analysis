@@ -267,7 +267,7 @@ def test_delete_removes_the_folder_and_clears_current(test_data_dir: Path, test_
     assert result.exit_code == 0, result.output
     assert not test_child_scenario.exists()
     assert not (test_data_dir / ".current_scenario").exists()
-    assert "none is current now" in result.output
+    assert "No scenario is current now (was child)" in result.stderr
 
 
 def test_delete_asks_first(test_data_dir: Path, test_child_scenario: Path) -> None:

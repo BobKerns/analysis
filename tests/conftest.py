@@ -147,6 +147,8 @@ def _no_current_scenario_writes(
     if request.node.get_closest_marker("uses_current_scenario_write"):
         return
     monkeypatch.setattr("analysis.sim.cli.write_current_scenario", lambda *args, **kwargs: None)
+    # And its notice, which would otherwise announce a switch that never happens.
+    monkeypatch.setattr("analysis.sim.cli._make_current", lambda *args, **kwargs: None)
 
 
 @pytest.fixture(autouse=True)

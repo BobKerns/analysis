@@ -697,6 +697,34 @@ def test_sim_add_account_appends_accounts_and_model(test_data_dir: Path) -> None
     assert check.exit_code == 0, check.output
 
 
+@pytest.mark.parametrize(("answer", "character"), [("", "ordinary"), ("gains", "gains")])
+def test_sim_add_account_with_a_series_asks_its_tax_character(
+    test_data_dir: Path, answer: str, character: str,
+) -> None:
+    """#233: a series without a tax character is asked for one, offering
+    cash's usual ordinary interest, where it used to be refused."""
+    data = test_data_dir
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "sim", "account", "add", "Asset_HighYield", "asset", "cash",
+            "--owner", "joint", "--series", "brokerage_growth", "--opening-balance", "500",
+            "--scenario", "retire_alice", "--data-dir", str(data),
+        ],
+        input=f"{answer}\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "tax character [ordinary]" in result.output
+
+    accounts = pd.read_csv(data / "scenarios" / "retire_alice" / "accounts.csv", dtype=str,
+                           keep_default_na=False)
+    [row] = accounts[accounts["name"] == "Asset_HighYield"].to_dict("records")
+    assert (row["series"], row["tax_character"]) == ("brokerage_growth", character)
+    check = runner.invoke(main, ["sim", "check", "retire_alice", "--data-dir", str(data)])
+    assert check.exit_code == 0, check.output
+
+
 def test_sim_add_account_rejects_duplicate(test_data_dir: Path) -> None:
     data = test_data_dir
     runner = CliRunner()

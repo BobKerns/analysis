@@ -1,6 +1,7 @@
 """The current scenario (#214): a command that takes an optional scenario
-records a named one as current, announces a defaulted one on stderr once,
-and with no current scenario asks for a name rather than guessing."""
+records a named one as current, announcing the switch when it changes (#233),
+announces a defaulted one on stderr once, and with no current scenario asks
+for a name rather than guessing."""
 
 from __future__ import annotations
 
@@ -51,6 +52,25 @@ def test_naming_a_scenario_makes_it_current(test_data_dir: Path) -> None:
 
 
 @pytest.mark.uses_current_scenario_write
+def test_naming_another_scenario_announces_the_switch(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "account", "list", "--scenario", "base")
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == "Current scenario is now base (was retire_alice)\n"
+    assert "Current scenario" not in result.stdout
+
+
+@pytest.mark.uses_current_scenario_write
+def test_a_switch_from_no_current_scenario_names_only_the_new_one(test_data_dir: Path) -> None:
+    current_scenario_path(test_data_dir).unlink()
+
+    result = _sim(test_data_dir, "account", "list", "--scenario", "base")
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == "Current scenario is now base\n"
+
+
+@pytest.mark.uses_current_scenario_write
 def test_a_new_scenarios_parent_does_not_become_current(test_data_dir: Path) -> None:
     current_scenario_path(test_data_dir).write_text("base\n")
 
@@ -59,6 +79,16 @@ def test_a_new_scenarios_parent_does_not_become_current(test_data_dir: Path) -> 
     assert result.exit_code == 0, result.output
     assert read_current_scenario(test_data_dir) == "late"
     assert "Using scenario" not in result.output
+    assert result.stderr == "Current scenario is now late (was base)\n"
+
+
+@pytest.mark.uses_current_scenario_write
+def test_a_new_ensemble_announces_that_it_is_current(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "ensemble", "create", "spread", "retire_alice")
+
+    assert result.exit_code == 0, result.output
+    assert read_current_scenario(test_data_dir) == "spread"
+    assert "Current scenario is now spread (was retire_alice)" in result.stderr
 
 
 @pytest.mark.uses_current_scenario_write
@@ -139,6 +169,7 @@ def test_switch_prints_the_old_scenario_then_makes_the_new_one_current(
 
     assert result.exit_code == 0, result.output
     assert result.stdout == "Current scenario: retire_alice\nSwitched to: base\n"
+    assert "Current scenario is now" not in result.stderr  # it says so itself
     assert read_current_scenario(test_data_dir) == "base"
 
 

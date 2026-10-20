@@ -50,6 +50,33 @@ def _rmd_lot(ctx: GuideContext, answers: Answers) -> bool:
     return _retirement(ctx, answers) and answers.get("subkind") in registries.RMD_LOT_SUBKINDS
 
 
+# The usual tax character of an account's growth, by subkind: the built-in
+# account the growth comes from (ADR-003 §2.2). A retirement account's follows
+# each lot's subkind instead.
+GROWTH_CHARACTER = {
+    "cash": "ordinary", registries.BUSINESS_SUBKIND: "ordinary", "brokerage_taxable": "gains",
+    "hsa": "deferred",
+    "real_estate": "gains", "vehicle": "depreciation", "other_asset": "gains",
+}
+
+
+def needs_growth_character(ctx: GuideContext, answers: Answers) -> bool:
+    """Whether this lot grows in an account with no tax character for its
+    growth yet, which the loader would refuse (#233): the lot is the first
+    of the account to grow, so the account's character must be set with it."""
+    account = answers.get("account", "")
+    subkind = ctx.subkinds.get(account, "")
+    if subkind not in registries.ACCOUNT_SUBKINDS["asset"] or subkind == registries.RETIREMENT_SUBKIND:
+        return False
+    if ctx.growth_characters.get(account):
+        return False
+    return bool(answers.get("series", "").strip()) or answers.get("symbol", "").strip().upper() in ctx.growing
+
+
+def _usual_growth_character(ctx: GuideContext, answers: Answers) -> str:
+    return GROWTH_CHARACTER.get(ctx.subkinds.get(answers.get("account", ""), ""), "gains")
+
+
 def _managed(ctx: GuideContext, answers: Answers) -> bool:  # noqa: ARG001
     return answers.get(MANAGE) == "y"
 
@@ -108,6 +135,12 @@ LOT = KindSpec(
             "series", "growth-rate series", option="--series", required=False,
             choices=lambda ctx, answers: list(ctx.series.get("rate", ())),  # noqa: ARG005
             help="Overrides the symbol's and the account's series.",
+        ),
+        Field(
+            "tax_character", "tax character of the account's growth", option="--tax-character",
+            applies=needs_growth_character, strict=True, suggest=_usual_growth_character,
+            choices=lambda ctx, answers: sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS),  # noqa: ARG005
+            help="The account's first lot to grow sets how its growth is taxed (accounts.csv).",
         ),
         Field(
             "opening_balance", "opening balance in dollars", type="money",
