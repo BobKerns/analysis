@@ -1022,6 +1022,36 @@ def retire_alice_test_run(test_data_dir: Path, intent_dir: Path, runs_dir: Path)
 
 
 @pytest.fixture(scope="function")
+def symbol_sources_data_dir(test_data_dir: Path) -> Path:
+    """The private data copy with a symbol named only in each of the places
+    other than securities.csv: ``ALLOC`` in allocations.csv, ``OVERRIDE`` in
+    retire_alice's own prices/, ``HELD`` in a retire_alice lot."""
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nALLOC,,stock_us,100%\n", encoding="utf-8")
+    scenario_dir = test_data_dir / "scenarios" / "retire_alice"
+    (scenario_dir / "prices").mkdir()
+    (scenario_dir / "prices" / "security_price__OVERRIDE.csv").write_text(
+        "effective_date,price\n", encoding="utf-8")
+    lots = scenario_dir / "account_lots.csv"
+    text = lots.read_text(encoding="utf-8")
+    row = {"account_name": "Asset_Brokerage_Joint", "lot": "held", "symbol": "HELD"}
+    lots.write_text(
+        text + ",".join(row.get(c, "") for c in text.splitlines()[0].split(",")) + "\n",
+        encoding="utf-8")
+    return test_data_dir
+
+
+@pytest.fixture(scope="function")
+def test_ensemble_scenario(test_data_dir: Path) -> str:
+    """``recipe_0``, a three-member ensemble over retire_alice in the private
+    data copy, created but not run. Returns its name."""
+    name = "recipe_0"
+    _sim("ensemble", "create", name, "retire_alice", "--size", "3",
+         "--data-dir", str(test_data_dir))
+    return name
+
+
+@pytest.fixture(scope="function")
 def ensemble_recipe(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> str:
     """``recipe_1``, a three-member ensemble recipe over retire_alice in the
     private data copy (one varied rate), run into the function's state dir.

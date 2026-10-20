@@ -27,9 +27,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from statistics import NormalDist
 
-from scipy.stats import chi2
-from scipy.stats import t as student_t
-
 __all__ = [
     "CorrelationError", "Link", "tree_members", "topological_order", "resolve_scores",
     "standard_normal", "probability", "expected_rank_correlation", "implied_correlation",
@@ -129,6 +126,7 @@ def probability(z: float, nu: float | None = None) -> float:
     or the t CDF with ``nu`` degrees of freedom in a t-copula tree."""
     if nu is None:
         return _STANDARD.cdf(z)
+    from scipy.stats import t as student_t  # scipy is slow to import; see cli's TAB completion
     return float(student_t.cdf(z, nu))
 
 
@@ -136,6 +134,7 @@ def score_at(q: float, nu: float | None = None) -> float:
     """The score at probability ``q`` in (0, 1): ``probability``'s inverse."""
     if nu is None:
         return _STANDARD.inv_cdf(q)
+    from scipy.stats import t as student_t
     return float(student_t.ppf(q, nu))
 
 
@@ -155,6 +154,7 @@ def tail_scale(nu: float, rng: random.Random) -> float:
     u = rng.random()
     while u == 0.0:  # W = 0 would make S infinite
         u = rng.random()
+    from scipy.stats import chi2
     return math.sqrt(nu / float(chi2.ppf(u, nu)))
 
 

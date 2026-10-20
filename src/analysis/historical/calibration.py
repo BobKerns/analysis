@@ -69,7 +69,6 @@ from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
-from scipy import stats
 
 from analysis.frames import datetime_index, index_months, index_years
 from analysis.tls import ssl_context, verify_reason
@@ -655,6 +654,7 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
         both = pd.concat([values, ref_values], axis=1, join="inner").dropna()
         if (len(both) >= MIN_YEARS_FOR_CORRELATION
                 and both.iloc[:, 0].std() > 0 and both.iloc[:, 1].std() > 0):
+            from scipy import stats  # slow to import; `analysis` TAB completion loads this module
             tau = stats.kendalltau(both.iloc[:, 0], both.iloc[:, 1]).statistic
             rho_tau = tau_rho(float(tau))
             pearson = float(both.iloc[:, 0].corr(both.iloc[:, 1]))

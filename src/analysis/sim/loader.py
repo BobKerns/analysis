@@ -38,7 +38,6 @@ from analysis.sim.distributions import (
     rewrite_outcomes,
 )
 from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents, read_parents
-from analysis.sim.notebook_ui.styled import StyledMarkdown
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -325,6 +324,8 @@ class ScenarioRef:
 
     def _repr_html_(self) -> str:
         # The styled rendering, so its paths' inline code reads in VS Code.
+        # Imported here: it brings in IPython, which the CLI has no use for.
+        from analysis.sim.notebook_ui.styled import StyledMarkdown
         return StyledMarkdown(self.describe())._repr_html_()
 
     def __str__(self) -> str:

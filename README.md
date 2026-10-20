@@ -87,6 +87,14 @@ Reload your shell after adding it:
 exec zsh   # or: exec bash
 ```
 
+In `sim`, TAB also completes the names a scenario defines: scenarios,
+ensembles, accounts, lots, chains, scheduled rules, calendar rows, persons,
+series, tags, symbols and itemizations. Names come from the scenario named on
+the line (`--scenario`, or the command's scenario argument), else the current
+scenario, and include what it inherits. A lot completes from the account
+before it (`--to-lot` from TO_ACCOUNT). The data repo is `--data-dir` or
+`$ANALYSIS_DATA_DIR`, which the data repo's `activate-analysis` sets.
+
 ### Amazon Expense Categorizer
 
 Run the interactive categorizer on one or more Amazon CSVs covering any date range:
