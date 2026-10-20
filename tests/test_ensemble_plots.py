@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import matplotlib
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -110,6 +111,28 @@ def test_ensemble_compare_figure_skips_the_paired_panel_when_unpaired() -> None:
     with_reserve = ensemble_compare_figure("a", "b", baseline, baseline + 1, [], "nominal", 2.5)
     assert len(with_reserve.axes) == 3
     assert "reserve" in with_reserve.axes[-1].get_title()
+
+
+def test_ensemble_compare_figure_clips_after_the_whole_run_deltas() -> None:
+    from analysis.sim.notebook_ui.pickers import TimeRangePicker
+
+    months = pd.date_range("2026-01-31", periods=24, freq="ME")
+    # The variant dips below the reserve once, in 2026, and the baseline never does.
+    baseline = pd.DataFrame({"member_0000": [10.0] * 24}, index=months)
+    variant = baseline.copy()
+    variant.iloc[3] = 0.0
+    time_range = TimeRangePicker()
+    time_range.cover([2026, 2027])
+    time_range.value = (2027, 2027)
+
+    fig = ensemble_compare_figure("a", "b", baseline, variant, [], "nominal", 5.0,
+                                  clip=time_range.clip)
+
+    below, ever_below = fig.axes[-1].lines[:2]
+    assert len(np.asarray(below.get_xdata())) == 12
+    assert np.asarray(below.get_ydata()).tolist() == [0.0] * 12
+    # Still counted in 2027: the share ever below looks back to the start.
+    assert np.asarray(ever_below.get_ydata()).tolist() == [1.0] * 12
 
 
 def test_ensemble_fan_figure_draws_a_reserve_line_and_a_log_scale_on_request() -> None:

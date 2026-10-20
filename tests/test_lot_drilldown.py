@@ -388,9 +388,10 @@ def test_each_widget_stacks_its_lot_picker_under_account(
                                                        controls=controls)
     for box, lot_picker in ((fan, controls.recipe_lot_picker),
                             (compare, controls.compare_lot_picker)):
-        _scale, _dollars, account_column, reserve = box.children[1].children
+        _scale, _dollars, account_column, reserve, years = box.children[1].children
         assert account_column.children == (controls.account_picker, lot_picker)
         assert reserve is controls.reserve_field
+        assert years is controls.time_range
 
 
 
