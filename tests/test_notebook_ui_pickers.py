@@ -379,3 +379,32 @@ def test_a_rebuilt_widget_stops_observing_shared_controls() -> None:
 
     assert builds == [0, 1, 2]
     assert redraws == [2]  # only the widget now shown redraws
+
+
+def test_a_rebuild_moving_a_shared_control_redraws_no_old_widget() -> None:
+    """The first widget rebuilt after a scenario change re-spans the Years
+    slider; the other output's widget, not yet rebuilt, must not redraw."""
+    time_range = TimeRangePicker()
+    time_range.cover(range(2026, 2031))
+    shown = _Shown()
+    spans = iter([range(2026, 2031), range(2030, 2041)])
+    stale: list[str] = []
+    current = {"scenario": "old"}
+
+    def respanning(*, time_range: TimeRangePicker, **_) -> None:
+        time_range.cover(next(spans))
+
+    def watching(*, time_range: TimeRangePicker, **_) -> None:
+        built_for = current["scenario"]
+        observe_while_shown(
+            time_range,
+            lambda *_: stale.append(built_for) if built_for != current["scenario"] else None,
+        )
+
+    shown.show(respanning, time_range=time_range)
+    shown.show(watching, time_range=time_range)
+    current["scenario"] = "new"
+    shown.notify_changed()
+
+    assert (time_range.min, time_range.max) == (2030, 2040)
+    assert stale == []

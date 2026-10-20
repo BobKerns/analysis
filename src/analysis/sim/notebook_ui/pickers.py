@@ -106,6 +106,12 @@ def observe_while_shown(control: traitlets.HasTraits, handler: Callable[..., Any
         detachers.append(lambda: control.unobserve(handler, names=names))
 
 
+def _detach(detachers: list[Callable[[], None]]) -> None:
+    """Run and forget ``detachers``, so running them again does nothing."""
+    while detachers:
+        detachers.pop()()
+
+
 def _trait(descriptor: traitlets.TraitType) -> Any:
     """``descriptor``, typed as the value it holds on an instance.
 
@@ -135,7 +141,19 @@ class Connections(traitlets.HasTraits):
 
     def notify_changed(self) -> None:
         """Redraw every show() output; call once a change has fully landed."""
+        # Every shown widget lets go of the shared controls before any is
+        # rebuilt: the first rebuild can move one (TimeRangePicker.cover),
+        # and a widget not yet rebuilt would redraw its closed run.
+        for detachers in self._shown_observers():
+            _detach(detachers)
         self.revision += 1
+
+    def _shown_observers(self) -> list[list[Callable[[], None]]]:
+        """Each show() output's detachers (see observe_while_shown)."""
+        # Not a trait, nor a dataclass field: set on first use.
+        if "_shown_detachers" not in self.__dict__:
+            self.__dict__["_shown_detachers"] = []
+        return self.__dict__["_shown_detachers"]
 
     @abstractmethod
     def _invoke(self, fn: Callable, *args, **kwargs):
@@ -163,13 +181,11 @@ class Connections(traitlets.HasTraits):
         out = widgets.Output()
         # What the shown widget observes on shared controls (observe_while_shown).
         detachers: list[Callable[[], None]] = []
+        self._shown_observers().append(detachers)
 
         def _draw():
-            # Detached before the new widget is built: building it can move a
-            # shared control (TimeRangePicker.cover), which must not redraw
-            # the widget it replaces.
-            while detachers:
-                detachers.pop()()
+            # Usually done already, by notify_changed for every output at once.
+            _detach(detachers)
             with out:
                 clear_output(wait=True)
                 token = _shown_observers.set(detachers)
