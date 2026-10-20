@@ -263,3 +263,15 @@ def test_an_ensemble_report_with_a_batch_offers_ensembles_that_have_it(
     ])
     assert result.exit_code != 0
     assert "there are no ensembles with a batch no_such_batch to choose from" in result.output
+
+
+def test_a_name_with_a_colon_is_not_taken_for_a_tag(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    renamed = sim("scheduled", "rename", "housing", "home:rent", "--scenario", "retire_alice")
+    assert renamed.exit_code == 0, renamed.output
+    result = sim("scheduled", "tag", "add", "home:rent", "bucket:fixed", "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    assert "scheduled rules: " not in result.output  # nothing was asked
+    assert "bucket:fixed" in names.tag_tokens(test_data_dir, "retire_alice")
+

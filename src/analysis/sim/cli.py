@@ -1110,9 +1110,9 @@ _ENSEMBLE_RESERVE_OPTION = click.option(
 
 
 def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
-                      batch: str | None = None) -> str:
+                      batch: str | None = None, exclude: str | None = None) -> str:
     """An ensemble with a run batch under ``runs_dir`` asked for: one named
-    ``batch`` when given, else one of ``mode``."""
+    ``batch`` when given, else one of ``mode``; never ``exclude``."""
     def has_runs(recipe: Path) -> bool:
         if batch:
             return (recipe / batch).is_dir()
@@ -1120,7 +1120,7 @@ def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble"
 
     recipes = sorted(
         p.name for p in (runs_dir.iterdir() if runs_dir.is_dir() else ())
-        if p.is_dir() and has_runs(p)
+        if p.is_dir() and p.name != exclude and has_runs(p)
     )
     plural = f"ensembles with a batch {batch}" if batch else "ensembles with runs"
     return _ask_name("ensemble", recipes, prompt=prompt, plural=plural)
@@ -1254,7 +1254,7 @@ def ensemble_compare(
     if baseline is None:
         baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline")
     if variant is None:
-        variant = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant")
+        variant = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant", exclude=baseline)
     mode = DollarMode(dollars)
     sides: dict[str, dict[str, RunConnection]] = {}
     try:
@@ -2188,11 +2188,15 @@ def _ask_new_name(prompt: str) -> str:
     return answer
 
 
-def _name_and_tags(name: str | None, tag_tokens: tuple[str, ...]) -> tuple[str | None, tuple[str, ...]]:
+def _name_and_tags(
+    name: str | None, tag_tokens: tuple[str, ...], existing: Callable[[], Iterable[str]],
+) -> tuple[str | None, tuple[str, ...]]:
     """A tag command's NAME and TAG_TOKENS, given that click hands the first
-    word to NAME: when that word is a tag, NAME was left out and is asked for.
-    No name a scenario defines is a ``role:name`` tag."""
-    if name is not None and registries.TAG_TOKEN_RE.match(name):
+    word to NAME: when that word looks like a ``role:name`` tag and isn't one
+    of the ``existing`` names (a rule or row may have a colon in its name),
+    NAME was left out and is asked for."""
+    if (name is not None and registries.TAG_TOKEN_RE.match(name)
+            and name not in set(existing())):
         return None, (name, *tag_tokens)
     return name, tag_tokens
 
@@ -3732,9 +3736,10 @@ def _calendar_tag(
     """``sim calendar tag add|rm``: change one row's tags. An inherited row
     gets an override carrying the new tags (#202). A row or tags left out
     are asked for."""
-    row, tag_tokens = _name_and_tags(row, tag_tokens)
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    row, tag_tokens = _name_and_tags(
+        row, tag_tokens, lambda: names.calendar_row_names(data_dir_p, scenario_name))
     path = scenario_dir / "calendar.csv"
     entries, notes = _calendar_entries(scenario_dir, scenario_name, "tag")
     rows = [entry.row for entry in entries]
@@ -7581,13 +7586,18 @@ def _scenario_write(
     tag_tokens: tuple[str, ...],
     op: str,  # 'add' | 'rm'
 ) -> None:
-    item_name, tag_tokens = _name_and_tags(item_name, tag_tokens)
+    read, what = ((names.account_names, "account") if item_type == "account"
+                  else (names.scheduled_names, "scheduled rule"))
+
+    def existing() -> list[str]:
+        data = _resolve_data_dir(data_dir)
+        return read(data, _resolve_scenario(data, scenario).name)
+
+    item_name, tag_tokens = _name_and_tags(item_name, tag_tokens, existing)
     if item_name is None or not tag_tokens:
         data = _resolve_data_dir(data_dir)
         scenario_name = _resolve_scenario(data, scenario).name
         if item_name is None:
-            read, what = ((names.account_names, "account") if item_type == "account"
-                          else (names.scheduled_names, "scheduled rule"))
             item_name = _ask_name(what, read(data, scenario_name))
         tag_tokens = _ask_tags(tag_tokens, names.tag_tokens(data, scenario_name))
     try:
