@@ -42,6 +42,8 @@ from analysis.sim.connection import (
 )
 from analysis.sim.holdings import (
     account_holdings,
+    holding_accounts,
+    holding_symbols,
     render_holders_table,
     render_holdings_table,
     symbol_holders,
@@ -1105,13 +1107,21 @@ _ENSEMBLE_RESERVE_OPTION = click.option(
 )
 
 
-def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble") -> str:
-    """An ensemble with a run batch (of ``mode``) under ``runs_dir``, asked for."""
+def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble",
+                      batch: str | None = None) -> str:
+    """An ensemble with a run batch under ``runs_dir`` asked for: one named
+    ``batch`` when given, else one of ``mode``."""
+    def has_runs(recipe: Path) -> bool:
+        if batch:
+            return (recipe / batch).is_dir()
+        return latest_ensemble_batch(recipe, mode=mode) is not None
+
     recipes = sorted(
         p.name for p in (runs_dir.iterdir() if runs_dir.is_dir() else ())
-        if p.is_dir() and latest_ensemble_batch(p, mode=mode) is not None
+        if p.is_dir() and has_runs(p)
     )
-    return _ask_name("ensemble", recipes, prompt=prompt, plural="ensembles with runs")
+    plural = f"ensembles with a batch {batch}" if batch else "ensembles with runs"
+    return _ask_name("ensemble", recipes, prompt=prompt, plural=plural)
 
 
 def _resolve_runs_dir(runs_dir: Path | None, data_dir: Path | None) -> Path:
@@ -1180,7 +1190,7 @@ def ensemble_summary(
     _check_lot_has_account(account, lot)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo")
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
@@ -1372,7 +1382,7 @@ def ensemble_sensitivity(
     resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     if scenario_name is None:
-        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode)
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
     recipe_runs_dir = resolved_runs_dir / scenario_name
     batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
     if batch_dir is None or not batch_dir.is_dir():
@@ -2174,6 +2184,15 @@ def _ask_new_name(prompt: str) -> str:
     while not (answer := _prompt_with_completion(prompt).strip()):
         pass
     return answer
+
+
+def _name_and_tags(name: str | None, tag_tokens: tuple[str, ...]) -> tuple[str | None, tuple[str, ...]]:
+    """A tag command's NAME and TAG_TOKENS, given that click hands the first
+    word to NAME: when that word is a tag, NAME was left out and is asked for.
+    No name a scenario defines is a ``role:name`` tag."""
+    if name is not None and registries.TAG_TOKEN_RE.match(name):
+        return None, (name, *tag_tokens)
+    return name, tag_tokens
 
 
 def _ask_tags(given: tuple[str, ...], choices: Iterable[str]) -> tuple[str, ...]:
@@ -3650,6 +3669,7 @@ def _calendar_tag(
     """``sim calendar tag add|rm``: change one row's tags. An inherited row
     gets an override carrying the new tags (#202). A row or tags left out
     are asked for."""
+    row, tag_tokens = _name_and_tags(row, tag_tokens)
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     path = scenario_dir / "calendar.csv"
@@ -5891,7 +5911,7 @@ def account_holdings_command(
 
     with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
         if account is None:
-            account = _ask_name("account", source.items("account")["name"])
+            account = _ask_name("account", holding_accounts(source))
         try:
             frame = account_holdings(source, account, month=month)
         except (KeyError, ValueError) as exc:
@@ -5909,14 +5929,13 @@ def account_holders_command(
 ) -> None:
     """Show every account holding SYMBOL, lot by lot, with totals.
 
-    Without SYMBOL, one the lots hold is asked for.
+    Without SYMBOL, it is asked for, from the symbols held.
     """
     from rich.console import Console
 
     with _holdings_source(scenario, data_dir, month, opening, runfile) as (source, described):
         if symbol is None:
-            held = source.items("account_lot")["symbol"]
-            symbol = _ask_name("symbol", sorted({s for s in held if isinstance(s, str) and s}))
+            symbol = _ask_name("symbol", holding_symbols(source))
         try:
             frame = symbol_holders(source, symbol, month=month)
         except ValueError as exc:
@@ -7499,6 +7518,7 @@ def _scenario_write(
     tag_tokens: tuple[str, ...],
     op: str,  # 'add' | 'rm'
 ) -> None:
+    item_name, tag_tokens = _name_and_tags(item_name, tag_tokens)
     if item_name is None or not tag_tokens:
         data = _resolve_data_dir(data_dir)
         scenario_name = _resolve_scenario(data, scenario).name
@@ -8950,7 +8970,10 @@ def tags_items(
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_name = _resolve_scenario(data_dir_p, scenario).name
     if tag_token is None:
-        tag_token = _ask_tags((), names.tag_tokens(data_dir_p, scenario_name))[0]
+        choices = names.tag_tokens(data_dir_p, scenario_name)
+        while len(answer := _ask_tags((), choices)) != 1:
+            click.echo("  one tag: role:name, or role:* for the whole role")
+        tag_token = answer[0]
     role, _, name = tag_token.partition(":")
     if name != "*":
         try:

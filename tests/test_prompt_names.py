@@ -149,3 +149,44 @@ def test_only_non_names_are_required() -> None:
         return found
 
     assert required(sim_group_command, "sim") == _STILL_REQUIRED
+
+
+def test_tags_given_without_the_name_ask_for_the_name(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    # click hands the first word to NAME; a tag there means NAME was left out.
+    result = sim("account", "tag", "add", "bucket:cash", "--scenario", "retire_alice", input="Asset_Checking\n")
+    assert result.exit_code == 0, result.output
+    assert "accounts: " in result.output
+    listed = sim("tags", "items", "bucket:cash", "--scenario", "retire_alice")
+    assert "Asset_Checking" in listed.output
+    result = sim("calendar", "tag", "add", "event:retire", "--scenario", "retire_alice", input="salary_alice\n")
+    assert result.exit_code == 0, result.output
+    assert "event:retire" in names.tag_tokens(test_data_dir, "retire_alice")
+
+
+def test_tags_items_asks_for_one_tag(sim: Callable[..., Result]) -> None:
+    assert sim("account", "tag", "add", "Asset_Checking", "bucket:cash", "--scenario", "retire_alice").exit_code == 0
+    result = sim("tags", "items", "--scenario", "retire_alice", input="bucket:cash use:spending\nbucket:cash\n")
+    assert result.exit_code == 0, result.output
+    assert "  one tag: " in result.output
+    assert "Asset_Checking" in result.output
+
+
+def test_holdings_offers_only_accounts_that_hold_lots(sim: Callable[..., Result]) -> None:
+    result = sim("account", "holdings", "--opening", "--scenario", "retire_alice", input="Asset_Checking\n")
+    assert result.exit_code == 0, result.output
+    offered = next(line for line in result.output.splitlines() if line.startswith("accounts: "))
+    assert "Asset_Checking" in offered
+    assert "Income_Salary_Alice" not in offered and "Expense" not in offered
+
+
+def test_an_ensemble_report_with_a_batch_offers_ensembles_that_have_it(
+    test_data_dir: Path, runs_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "summary", "--batch", "no_such_batch",
+        "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir),
+    ])
+    assert result.exit_code != 0
+    assert "there are no ensembles with a batch no_such_batch to choose from" in result.output
