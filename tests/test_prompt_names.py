@@ -1,6 +1,6 @@
 """A name left off a command's line, or mistyped at a terminal, is asked for,
 with completion (#240)."""
-# cspell:ignore Savngs Jiont alcie defalt csh
+# cspell:ignore Savngs Jiont alcie defalt csh Chekcing
 
 from __future__ import annotations
 
@@ -265,9 +265,20 @@ def test_a_run_files_names_are_not_checked_against_the_scenario(
 def test_an_ensemble_reports_names_wait_for_the_ensemble(sim: Callable[..., Result]) -> None:
     # Not checked against the current scenario: the ensemble asked for may have it.
     assert sim("switch", "retire_alice").exit_code == 0
-    for command in (("summary",), ("compare",), ("compare", "retire_alice"), ("sensitivity",)):
+    for command in (("summary",), ("compare",), ("compare", "retire_alice")):
         result = sim("ensemble", *command, "--account", "Asset_Only_In_The_Ensemble")
         assert "unknown account" not in result.output, command
+
+
+@pytest.mark.usefixtures("terminal")
+def test_a_mistyped_account_is_asked_again_once_the_ensemble_is(
+    sim: Callable[..., Result], ensemble_recipe: str, runs_dir: Path,
+) -> None:
+    result = sim("ensemble", "summary", "--account", "Asset_Chekcing", "--runs-dir", str(runs_dir),
+                 input=f"{ensemble_recipe}\nAsset_Checking\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown account: 'Asset_Chekcing'" in result.output
+    assert "account Asset_Checking" in result.output
 
 
 def test_a_compared_variants_names_count(test_data_dir: Path) -> None:

@@ -1195,6 +1195,8 @@ def ensemble_summary(
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
     if scenario_name is None:
         scenario_name = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", batch=batch)
+        known = _ask_again_once_known(scenario_name=scenario_name)
+        account, lot = known["account"], known["lot"]
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
@@ -1253,10 +1255,13 @@ def ensemble_compare(
     Either ensemble left out is asked for, from those that have been run."""
     _check_lot_has_account(account, lot)
     resolved_runs_dir = _resolve_runs_dir(runs_dir, data_dir)
-    if baseline is None:
-        baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline", exclude=variant)
-    if variant is None:
-        variant = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant", exclude=baseline)
+    if baseline is None or variant is None:
+        if baseline is None:
+            baseline = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "baseline", exclude=variant)
+        if variant is None:
+            variant = _ask_ensemble_run(resolved_runs_dir, "monte_carlo", "variant", exclude=baseline)
+        known = _ask_again_once_known(baseline=baseline, variant=variant)
+        account, lot = known["account"], known["lot"]
     mode = DollarMode(dollars)
     sides: dict[str, dict[str, RunConnection]] = {}
     try:
@@ -2266,6 +2271,23 @@ def _ask_again_for_mistyped(ctx: click.Context, params: dict[str, Any]) -> dict[
     return params
 
 
+def _names_typed(ctx: click.Context) -> bool:
+    """Whether ``ctx``'s command was typed at a terminal, where a mistyped
+    name is asked for again. A command a guide invokes with its answers
+    (`calendar edit` running `calendar add set-rate`) has its own review
+    for a rejected value."""
+    return ctx.parent is not None and ctx.parent.invoked_subcommand is not None and _interactive()
+
+
+def _ask_again_once_known(**asked: str) -> dict[str, Any]:
+    """The current command's params, with the ensembles just ``asked`` for,
+    and at a terminal its other names checked against them: they waited
+    for the ensembles (#240)."""
+    ctx = click.get_current_context()
+    params = {**ctx.params, **asked}
+    return _ask_again_for_mistyped(ctx, params) if _names_typed(ctx) else params
+
+
 def _wrap_to_ask_again(command: click.Command) -> None:
     """Make ``command`` re-ask, at a terminal, for a name it was given that
     isn't one (#240), by wrapping its callback."""
@@ -2278,13 +2300,8 @@ def _wrap_to_ask_again(command: click.Command) -> None:
     @functools.wraps(original)
     def callback(*args: Any, **kwargs: Any) -> Any:
         ctx = click.get_current_context()
-        # Only names typed on the line: a command a guide invokes with its
-        # answers (`calendar edit` running `calendar add set-rate`) has its
-        # own review for a rejected value.
-        typed = ctx.command is command and ctx.parent is not None and (
-            ctx.parent.invoked_subcommand is not None)
         # A run file holds its own names, whatever the current scenario has.
-        if typed and _interactive() and not kwargs.get("runfile"):
+        if ctx.command is command and _names_typed(ctx) and not kwargs.get("runfile"):
             kwargs = _ask_again_for_mistyped(ctx, kwargs)
         return original(*args, **kwargs)
 
