@@ -2171,7 +2171,7 @@ def _ask_name(what: str, choices: Iterable[str], *, prompt: str | None = None,
     """One of ``choices``, listed and then asked for with completion until
     the answer is one: how a command takes a name left off its line (#240)."""
     shown = list(dict.fromkeys(choices))
-    listed = plural or f"{what}s"
+    listed = plural or (what if what.endswith("series") else f"{what}s")
     if not shown:
         raise click.ClickException(f"there are no {listed} to choose from")
     click.echo(f"{listed}: {', '.join(shown)}")
@@ -3749,10 +3749,10 @@ def _calendar_tag(
     are asked for."""
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
-    row, tag_tokens = _name_and_tags(
-        row, tag_tokens, lambda: names.calendar_row_names(data_dir_p, scenario_name))
     path = scenario_dir / "calendar.csv"
     entries, notes = _calendar_entries(scenario_dir, scenario_name, "tag")
+    row, tag_tokens = _name_and_tags(
+        row, tag_tokens, lambda: [(e.row.get("name") or "").strip() for e in entries])
     rows = [entry.row for entry in entries]
     chosen = entries[_select_calendar_row(rows, row, notes)]
     tag_tokens = _ask_tags(tag_tokens, names.tag_tokens(data_dir_p, scenario_name))
@@ -9236,7 +9236,12 @@ def series_rename(old: str | None, new: str | None, scenario: str | None, data_d
     data = _resolve_data_dir(data_dir)
     if old is None or new is None:
         scenario_name = _resolve_scenario(data, scenario).name
-        old, new = _ask_rename("series", old, new, names.series_names(data, scenario_name))
+        can_rename = [
+            name for name in names.series_names(data, scenario_name)
+            if name not in registries.ASSET_CLASSES
+            and not rename.symbol_series(data, name) and not rename.shared_series_files(data, name)
+        ]
+        old, new = _ask_rename("series", old, new, can_rename)
     old, new = old.strip(), new.strip()
     if problem := rename.name_problem("series", new):
         raise click.ClickException(problem)
@@ -9282,7 +9287,8 @@ def lot_rename(
         if account is None:
             account = _ask_name("account", names.account_names(data, scenario_name))
         if lot is None:
-            lot = _ask_name("lot", names.lot_names(data, scenario_name, account), prompt=f"lot of {account}")
+            lot = _ask_name("lot", names.lot_names(data, scenario_name, account, implicit=False),
+                            prompt=f"lot of {account}")
         if new_lot is None:
             new_lot = _ask_new_name(f"new name for {account}'s lot {lot}")
     account, lot, new_lot = account.strip(), lot.strip(), _check_lot_label(new_lot)
