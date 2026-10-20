@@ -265,7 +265,7 @@ def test_a_run_files_names_are_not_checked_against_the_scenario(
 def test_an_ensemble_reports_names_wait_for_the_ensemble(sim: Callable[..., Result]) -> None:
     # Not checked against the current scenario: the ensemble asked for may have it.
     assert sim("switch", "retire_alice").exit_code == 0
-    for command in (("summary",), ("compare",), ("sensitivity",)):
+    for command in (("summary",), ("compare",), ("compare", "retire_alice"), ("sensitivity",)):
         result = sim("ensemble", *command, "--account", "Asset_Only_In_The_Ensemble")
         assert "unknown account" not in result.output, command
 
