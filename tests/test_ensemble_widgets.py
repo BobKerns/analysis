@@ -173,7 +173,7 @@ def test_ensemble_widget_returns_a_box_without_displaying_it(
 
 def test_ensemble_widget_dropdown_lists_the_recipe(small_ensemble_runs_dir: Path) -> None:
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
-    dropdown, _row, _out = box.children
+    dropdown, _row, _loading, _out = box.children
     assert dropdown.options == ("retire_alice",)
     assert dropdown.value == "retire_alice"
 
@@ -207,14 +207,14 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
     modes_seen: list[DollarMode] = []
     real = ensemble_widgets.members_balance_by_month
 
-    def _spy(connections, account=None, mode=DollarMode.NOMINAL, lot=None):
+    def _spy(connections, account=None, mode=DollarMode.NOMINAL, lot=None, on_member=None):
         modes_seen.append(mode)
-        return real(connections, account, mode, lot)
+        return real(connections, account, mode, lot, on_member)
 
     monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
     dollar_mode = DollarModePicker()
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir, dollar_mode=dollar_mode)
-    _dropdown, row, _out = box.children
+    _dropdown, row, _loading, _out = box.children
     assert dollar_mode in row.children
     assert modes_seen[-1] == DollarMode.NOMINAL
 
@@ -284,6 +284,34 @@ def test_ensemble_widget_accepts_extra_arguments(small_ensemble_runs_dir: Path) 
     assert box.children
 
 
+def test_ensemble_widget_shows_progress_per_member_then_hides_it(
+    small_ensemble_runs_dir: Path,
+) -> None:
+    """#235: a progress line counts members while they load, and goes away
+    once the chart is drawn."""
+    from analysis.sim.notebook_ui.ensemble_widgets import LoadingIndicator
+
+    labels: list[str] = []
+    real_counter = LoadingIndicator.counter
+
+    def _counter(self: LoadingIndicator, text: str, count: int):
+        step = real_counter(self, text, count)
+
+        def _step() -> None:
+            step()
+            labels.append(self.label.value)
+        return _step
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(LoadingIndicator, "counter", _counter)
+        box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
+    _dropdown, _row, loading, _out = box.children
+    assert isinstance(loading, LoadingIndicator)
+    assert labels == ["Loading retire_alice: member 1 of 2", "Loading retire_alice: member 2 of 2"]
+    assert loading.bar.value == loading.bar.max == 2
+    assert loading.layout.display == "none"
+
+
 def test_ensemble_widget_leaves_no_figure_open_in_pyplot(small_ensemble_runs_dir: Path) -> None:
     """The chart is never registered with pyplot, so matplotlib-inline's
     flush_figures, run by another widget message on a kernel subshell, can't
@@ -308,7 +336,7 @@ def test_ensemble_widget_account_picker_lists_net_worth_then_accounts(
 
     monkeypatch.setattr(ensemble_widgets, "ensemble_fan_chart", _spy_fan_chart)
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
-    _dropdown, row, _out = box.children
+    _dropdown, row, _loading, _out = box.children
     controls = row.controls
     account_picker = controls.account_picker.account_picker
     assert account_picker.label == ensemble_widgets.NET_WORTH
@@ -342,7 +370,7 @@ def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
 
     monkeypatch.setattr(ensemble_widgets, "ensemble_summary_view", _spy_view)
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
-    _dropdown, row, _out = box.children
+    _dropdown, row, _loading, _out = box.children
     controls = row.controls
     assert list(tables[-1].columns)[-2:] == ["cvar05", "cvar20"]
     controls.reserve_field.value = "1000000"
@@ -368,7 +396,7 @@ def test_ensemble_compare_widget_draws_one_section_per_variant(
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
-    recipe_pickers, _row, _out = box.children
+    recipe_pickers, _row, _loading, _out = box.children
     baseline_picker, variant_picker = recipe_pickers.children
     baseline_picker.value = "baseline"
     shown.clear()
@@ -416,7 +444,7 @@ def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_side
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
-    recipe_pickers, row, _out = box.children
+    recipe_pickers, row, _loading, _out = box.children
     controls = row.controls
     baseline_picker, variant_picker = recipe_pickers.children
     account_picker = controls.account_picker.account_picker
@@ -450,7 +478,7 @@ def test_ensemble_compare_widget_says_so_when_no_shown_recipe_has_the_account(
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
-    recipe_pickers, row, _out = box.children
+    recipe_pickers, row, _loading, _out = box.children
     baseline_picker, variant_picker = recipe_pickers.children
     baseline_picker.value = "baseline"
     variant_picker.value = ("other",)

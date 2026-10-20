@@ -132,8 +132,12 @@ def test_one_accounts_balance_matches_the_runs_own_balance_pivot(
             pd.testing.assert_series_equal(
                 balance, pivot["Asset_Checking"], check_names=False, check_freq=False,
             )
-        frame = members_balance_by_month(connections, "Asset_Checking")
+        reads: list[int] = []
+        frame = members_balance_by_month(
+            connections, "Asset_Checking", on_member=lambda: reads.append(len(reads)),
+        )
         assert list(frame.columns) == sorted(connections)
+        assert len(reads) == len(connections)  # one progress step per member (#235)
         assert con.account_balance("No_Such_Account").empty
         with pytest.raises(Exception, match="no account 'No_Such_Account'"):
             members_balance_by_month(connections, "No_Such_Account")
