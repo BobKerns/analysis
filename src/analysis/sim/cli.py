@@ -2225,18 +2225,14 @@ def _ask_again_for_mistyped(ctx: click.Context, params: dict[str, Any]) -> dict[
         p for p in ctx.command.params
         if p.name and isinstance(p.type, completion.NameType) and p.type.check
     ]
-    checked.sort(key=lambda p: p.name not in completion.SCENARIO_PARAMS)
-    if "tag_tokens" in params:  # a tag command's NAME may be its first tag
-        first = next(p.name for p in ctx.command.params if isinstance(p, click.Argument))
-        if first and first != "tag_tokens":
-            params[first], params["tag_tokens"] = _name_and_tags(params[first], params["tag_tokens"])
     ctx.params.update(params)  # what the completion listers read
-    for param in checked:
+
+    def fix(param: click.Parameter) -> None:
         name_type = param.type
         assert isinstance(name_type, completion.NameType) and param.name
         value = params.get(param.name)
         if value in (None, "", ()) or not (choices := name_type.choices(ctx)):
-            continue
+            return
         values = value if isinstance(value, tuple) else (value,)
         fixed = []
         for v in values:
@@ -2246,6 +2242,21 @@ def _ask_again_for_mistyped(ctx: click.Context, params: dict[str, Any]) -> dict[
             fixed.append(v)
         params[param.name] = ctx.params[param.name] = (
             tuple(fixed) if isinstance(value, tuple) else fixed[0])
+
+    for param in checked:
+        if param.name in completion.SCENARIO_PARAMS:
+            fix(param)
+    if "tag_tokens" in params:  # a tag command's NAME may be its first tag
+        first = next(p for p in ctx.command.params if isinstance(p, click.Argument))
+        if first.name and first.name != "tag_tokens":
+            first_type = first.type
+            params[first.name], params["tag_tokens"] = _name_and_tags(
+                params[first.name], params["tag_tokens"],
+                lambda: first_type.choices(ctx) if isinstance(first_type, completion.NameType) else [])
+            ctx.params.update(params)
+    for param in checked:
+        if param.name not in completion.SCENARIO_PARAMS:
+            fix(param)
     return params
 
 

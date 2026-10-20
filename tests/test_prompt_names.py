@@ -275,3 +275,14 @@ def test_a_name_with_a_colon_is_not_taken_for_a_tag(
     assert "scheduled rules: " not in result.output  # nothing was asked
     assert "bucket:fixed" in names.tag_tokens(test_data_dir, "retire_alice")
 
+
+
+@pytest.mark.usefixtures("terminal")
+def test_at_a_terminal_a_tag_first_asks_for_the_name_not_again(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    # The leading tag isn't reported as a mistyped account: it's moved to the tags.
+    result = sim("account", "tag", "add", "bucket:cash", "--scenario", "retire_alice", input="Asset_Checking\n")
+    assert result.exit_code == 0, result.output
+    assert "unknown" not in result.output
+    assert "bucket:cash" in names.tag_tokens(test_data_dir, "retire_alice")
