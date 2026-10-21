@@ -2464,9 +2464,10 @@ def _year_tax_estimate(
     taxpayers: Collection[str] = (),
 ) -> _TaxEstimate:
     """``tax_year``'s tax for a ``tax_accumulator`` rule's ``params`` (see
-    ``_apply_tax_accumulator``), from the transfers posted so far. A net
-    operating loss used stays fixed when ``tax_with``/``taxable_with`` add
-    income, as a what-if over the year's own figures."""
+    ``_apply_tax_accumulator``), from the transfers posted so far. When
+    ``tax_with``/``taxable_with`` add income, they work out again how much of
+    a carried-in net operating loss it can use under the rule's limit, and
+    how much more Social Security becomes taxable."""
     scope = str(params.get("scope", "federal"))
     filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
     standard_deduction_aux = str(params.get(

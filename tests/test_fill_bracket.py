@@ -195,6 +195,8 @@ def test_the_conversion_comes_after_the_years_rmd(fill_run: Rules) -> None:
     ({"tax_character": "none"}, "needs tax_character tax_deferred_out"),
     ({"rate": "23%"}, r"no federal bracket is taxed at 23%"),
     ({"series": "cpi"}, "series is only for amount"),
+    ({"tax_year": "2030"}, "takes no tax_year"),
+    ({"month_of_year": "6"}, r"before the RMD from the same lot \(month 12\)"),
     ({"rate": "", "amount": "150000.00", "series": "cpi"}, "series cpi needs a base_date"),
     ({"params_json": '{"tax_rule": "tax_federal", "scope": "state"}'},
      "tax_rule 'tax_federal' is a federal rule, not a state one"),
@@ -238,3 +240,9 @@ def test_scheduled_add_writes_a_fill_bracket_without_a_priority(test_data_dir: P
     row = scheduled[scheduled["name"] == "convert"].iloc[0]
     assert (row["rate"], row["priority"], row["cadence"], row["month_of_year"],
             row["tax_character"]) == ("22%", "", "annual", "12", "tax_deferred_out")
+
+
+def test_series_fixed_means_no_inflation_on_either_target(fill_run: Rules) -> None:
+    assert not _conversions(fill_run({"series": "fixed"})).empty
+    fixed = _conversions(fill_run({"rate": "", "amount": "250000.00", "series": "fixed"}))
+    assert {fill["target"] for fill in fixed["fill"]} == {250_000_00}

@@ -999,7 +999,7 @@ def load_scenario(
     )
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
     _validate_fill_bracket(
-        scheduled_rows, issues, roth_leaves=roth_leaves,
+        scheduled_rows, chains, issues, roth_leaves=roth_leaves,
         traditional_leaves=frozenset(
             leaves.leaf_of[(m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)]
             for m in value_rows
@@ -2460,7 +2460,8 @@ def _tax_rule_bracket_table(
 
 
 def _validate_fill_bracket(
-    rows: list[dict[str, str]], issues: list[str], *,
+    rows: list[dict[str, str]], chains: dict[str, tuple[str, list[dict[str, str]]]],
+    issues: list[str], *,
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
     bracket_rates: Mapping[tuple[str, str | None], set[int]],
 ) -> None:
@@ -2471,7 +2472,12 @@ def _validate_fill_bracket(
     of its month, since the year's RMD has to come out before any of the
     IRA can be converted. Run after the rows' references have been resolved."""
     tax_rules: list[tuple[str, str, dict[str, Any]]] = []
+    rmd_months: dict[str, list[int]] = {}  # traditional lot -> its RMD rules' months
     for _, row in _located(rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") == "rmd" and row.get("month_of_year", "").isdigit():
+            source = row.get("from_account", "")
+            for leaf in _chain_leaf_names(source, chains) if source in chains else {source}:
+                rmd_months.setdefault(leaf, []).append(int(row["month_of_year"]))
         if row.get("amount_rule_kind") == "tax_accumulator":
             params = _safe_json(row.get("params_json")) or {}
             tax_rules.append(
@@ -2498,10 +2504,21 @@ def _validate_fill_bracket(
             issues.append(f"{where}: fill_bracket needs cadence annual")
         if row.get("tax_character") != "tax_deferred_out":
             issues.append(f"{where}: fill_bracket needs tax_character tax_deferred_out")
-        if row.get("rate_micros") and row.get("series"):
+        if row.get("rate_micros") and row.get("series") not in ("", "fixed"):
             issues.append(f"{where}: a bracket target follows its brackets; series is only for amount")
         if row.get("series") not in ("", "fixed") and not row.get("base_date"):
             issues.append(f"{where}: series {row.get('series')} needs a base_date to grow from")
+        if row.get("tax_year"):
+            issues.append(
+                f"{where}: fill_bracket takes no tax_year; it converts for, and is taxed "
+                "in, the year it fires")
+        month = row.get("month_of_year", "")
+        late = [m for m in rmd_months.get(row.get("from_account", ""), [])
+                if month.isdigit() and m > int(month)]
+        if late:
+            issues.append(
+                f"{where}: fires in month {month}, before the RMD from the same lot "
+                f"(month {max(late)}); an RMD can't be converted, so it must come out first")
         raw = row.get("params_json") or "{}"
         params = _safe_json(raw)
         if params is None:
@@ -3399,7 +3416,7 @@ def _validate_series_references(
             continue
         if not series or kind not in registries.SERIES_RULE_KINDS:
             continue
-        if kind == "fixed_amount" and series == "fixed":
+        if kind in ("fixed_amount", "fill_bracket") and series == "fixed":
             continue  # the CLI's default sentinel for "no inflation"
         if kind == "percent_of_balance":
             params = _safe_json(row.get("amount_rule_params_json"))
