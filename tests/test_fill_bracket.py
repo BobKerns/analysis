@@ -203,6 +203,7 @@ def test_the_conversion_comes_after_the_years_rmd(fill_run: Rules) -> None:
     ({"params_json": '{"cap": 1}'}, "unknown params_json key"),
     ({"params_json": '{"max_amount": "-5.00"}'}, "max_amount"),
     ({"params_json": '{"max_marginal_rate": "30"}'}, "max_marginal_rate"),
+    ({"params_json": '{"max_marginal_rate": "-1%"}'}, "max_marginal_rate must be from 0%"),
     ({"params_json": '{"tax_rule": "nope"}'}, "tax_rule 'nope' is not"),
     ({"params_json": '{"scope": "state"}'}, "state tax_accumulator rule, and there is none"),
 ])

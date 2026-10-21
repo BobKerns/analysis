@@ -2542,7 +2542,8 @@ def _validate_fill_bracket(
                 issues.append(f"{where}: max_amount {e}")
         if "max_marginal_rate" in params:
             try:
-                units.percent_to_micros(str(params["max_marginal_rate"]))
+                if not 0 <= units.percent_to_micros(str(params["max_marginal_rate"])) <= 1_000_000:
+                    raise ValueError("must be from 0% to 100%")
             except ValueError as e:
                 issues.append(f"{where}: max_marginal_rate {e}")
         wanted = params.get("tax_rule")
