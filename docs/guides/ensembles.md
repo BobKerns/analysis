@@ -1024,3 +1024,35 @@ the intervals and statuses instead. It also shows:
 Rows correlated very strongly are hard to tell apart, so they often come
 out inconclusive. If that happens, pin them together, or sweep their factor
 one at a time (above) to see what the family does.
+
+## Checking the draws themselves
+
+Every batch keeps what it drew, and what each draw depends on, in one
+SQLite file beside its member run files:
+`state/runs/<ensemble>/<batch>/draws.sqlite3`. Use it to check the
+statistical setup before trusting a fan chart: do the members follow the
+distributions you wrote, and do correlated rows move together as much as
+you specified?
+
+```sh
+sim ensemble draws my_recipe                 # the check, per row and factor
+sim ensemble draws my_recipe --node growth   # one row's draw in each member
+sim ensemble draws my_recipe --csv draws.csv # member x row, for a spreadsheet
+```
+
+The check sets each row's median and SD beside the drawn members' (member
+0, the base case, is left out), with a **KS p(u)** column. Each draw records
+**u**, where its value sits in its distribution, from 0 to 1. Draws that
+follow the distribution spread **u** evenly, so a small p-value on a batch of
+a hundred or more members says something is off. On a few dozen members a
+p-value under 0.05 turns up now and then by chance, about one row in
+twenty. Correlated pairs follow, with the correlation each achieved, as in
+the Monte Carlo report above.
+
+The file holds more than the command prints: every row's parameters, each
+tree node's own random noise before its tree mixes it in, its score, each
+future's turbulence scale under a t copula, and each year's shock on a
+process path. Values are stored as the simulator stores them (cents,
+micros, day numbers); the views ending in `_display` show dollars, percent
+and dates. Any SQLite tool opens it, and `sensitivity.ipynb`'s Draws section
+charts one row's draws and one pair's scores.

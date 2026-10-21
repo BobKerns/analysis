@@ -200,6 +200,9 @@ RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
 CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
 CORRELATE_WITH = NameType(_in_scenario(_correlate_with), "calendar row or lifespan",
                           plural="calendar rows and lifespans")
+# `sim ensemble draws --node`: a batch draws whatever it drew when it ran,
+# which the command checks against its draws database, not the scenario now.
+DRAW_NODE = NameType(_in_scenario(_correlate_with), "draw node", check=False)
 
 
 def _tag_patterns(data_dir: Path, scenario: str) -> list[str]:

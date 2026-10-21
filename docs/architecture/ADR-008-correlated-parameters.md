@@ -151,7 +151,7 @@ The loader rejects:
 - `ensemble_draw` gains **`z REAL`**: each row's score (in a t-copula tree, the scaled score `S·z` that `t_ν` maps). It's NULL for a row outside every tree, Φ⁻¹(q) for an OAT override, the conditional score for a descendant of an overridden factor (§5), and 0 for member 0. Each **factor** also gets an `ensemble_draw` row (`vary_target = 'factor'`, `drawn_value` = its `z`), so achieved correlations can be checked after the fact.
 - Factor rows stay in member intent files as provenance. The engine treats `latent_factor` as inert: no effect, and not counted as an unsupported kind.
 - The **parameters table** (ADR-007 §9) shows each row's parent and ρ, a root's `ν`, and lists the factors.
-- `S` itself isn't recorded; [#72](https://github.com/BobKerns/analysis/issues/72) tracks recording it, as a draw kind or in an optional log, for inspection and debugging.
+- `ensemble_draw` also records each tree node's own **`noise`** (its independent standard normal, before `resolve_scores` mixes it in) and **`u`**, the probability `t_ν(z)` or Φ(z) that maps its value; a factor's `u` is its score's probability. Each random member's `S` per tree, and each process year's, goes in `ensemble_tail_scale` ([#72](https://github.com/BobKerns/analysis/issues/72), [#261](https://github.com/BobKerns/analysis/issues/261)), so a member's turbulence can be inspected without changing any value. A batch's `draws.sqlite3` gathers all of it, with every pair's implied and achieved ρ (ADR-006 §6).
 - The **Monte Carlo correlation report** (ADR-007 §6.2) ranks and pins a correlated batch's rows by SRRC rather than marginal ρ, since a row's ρ includes its correlates' effects. A batch is correlated when two of its rows have a nonzero implied ρ, or share a t-copula tree, where even a zero implied ρ leaves their extremes tied together. It shows, per correlated pair, the ρ the batch achieved against the specified or implied ρ. The achieved ρ is read from the recorded scores' (`z`) Kendall τ as `sin(π·τ/2)`, with a 95% Fisher-z interval on τ mapped the same way. The interval's standard error comes from the batch's own scores, the U-statistic variance `4·var(cᵢ)/n` of each member's concordance `cᵢ` with the others: a fixed Gaussian-copula variance (`0.437/(n−4)`) covers only about 90% at `ν = 3`, since turbulent members make τ noisier. That holds exactly under both copulas (§1), where a Pearson correlation of t scores would be dominated by a few turbulent members, and is undefined for `ν ≤ 2`. It's scores rather than values, since tied values (§1) don't follow these formulas. Factors stay out of its regression (their effect reaches the outcome only through their dependents) but each gets an informational line: its score's ρ with the outcome, its whole family's effect.
 
 **Follow-ups, as sub-issues of #30:**
@@ -167,7 +167,7 @@ Schema 30:
 
 Schema 32 (#68): `calendar_event` gains `vary_tail_dependence REAL`.
 
-Schema 33 (#115): `calendar_event` gains `vary_process TEXT`, `vary_persistence REAL` and `vary_innovation_sd INTEGER` (ADR-006 §4a). Yearly scores aren't recorded in `ensemble_draw`; the path they produce is, as the member's generated `set_rate` rows.
+Schema 33 (#115): `calendar_event` gains `vary_process TEXT`, `vary_persistence REAL` and `vary_innovation_sd INTEGER` (ADR-006 §4a). Yearly scores aren't recorded in `ensemble_draw`; `ensemble_path_shock` records each year's noise, score, scale and shock (schema 43, #261), and the path they produce is the member's generated `set_rate` rows.
 
 ## Consequences
 
@@ -203,3 +203,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#204](https://github.com/BobKerns/analysis/issues/204): only `sim check` prints the unused-factor and lone-`vary_tail_dependence` warnings (§4).
 - [#221](https://github.com/BobKerns/analysis/issues/221): a varying lifespan joins correlation trees as `lifespan:<person>` (§4).
 - [#222](https://github.com/BobKerns/analysis/issues/222): a `life_table` lifespan's score maps through its table's inverse distribution (§4).
+- [#261](https://github.com/BobKerns/analysis/issues/261): `ensemble_draw.noise` and `u`, `ensemble_tail_scale` (closing #72) and `ensemble_path_shock`; a batch's `draws.sqlite3` (§6, §7).

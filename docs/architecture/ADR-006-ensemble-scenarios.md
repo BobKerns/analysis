@@ -140,30 +140,27 @@ A new module resolves one recipe intent into `member_count` member intents:
 
 Clearing `vary_distribution` as each row resolves means a finished member intent has no unresolved rows left — by the time `_apply_calendar_event` ever sees these rows, they're indistinguishable from any other authored calendar event.
 
-### 6. Provenance per member
+### 6. Provenance per member, and per batch
 
-Two new tables, added to `SNAPSHOT_TABLES` like any other intent table, so they flow into the run file the same way everything else does — no special-casing anywhere in `open_run_file`:
+Each member's intent carries its own provenance in four tables, added to `SNAPSHOT_TABLES` like any other intent table, so they flow into the run file the same way everything else does, with no special-casing in `open_run_file` (their DDL is in [ADR-002](ADR-002-storage-schema.md)):
 
-```sql
-CREATE TABLE ensemble_manifest (
-    id              INTEGER PRIMARY KEY CHECK (id = 1),
-    ensemble_name   TEXT NOT NULL,      -- the recipe scenario's name
-    member_index    INTEGER NOT NULL,
-    member_count    INTEGER NOT NULL,
-    seed            INTEGER NOT NULL,   -- this member's derived seed
-    recipe_tree_id  TEXT NOT NULL,      -- the recipe's own scenario_tree_id at generation time
-    generated_at    TEXT NOT NULL
-);
+- `ensemble_manifest`, one row: the recipe's name, the member's index and the member count, its derived seed (for display; draws key off the master seed, §3), the recipe's `scenario_tree_id` at generation time, and its mode ([ADR-007](ADR-007-sensitivity-analysis.md)).
+- `ensemble_draw`, one row per resolved node (a varying row, a lifespan `lifespan:<person>`, or a latent factor): its target, the value drawn in the target column's own unit, its distribution, and how it was drawn. `quantile` is an OAT override ([ADR-007](ADR-007-sensitivity-analysis.md)), `z` its score in a correlation tree ([ADR-008](ADR-008-correlated-parameters.md)), `noise` the node's own standard normal before its tree mixes it in, and `u` the probability the value sits at in its distribution: the quantile for an override, Φ(z) (or the t CDF) for a scored node, 0.5 for a central value, and for an independent draw the uniform its stream gave, read off a fresh copy of the stream so no draw changes. A lifespan's authored base age has no `u`.
+- `ensemble_tail_scale`: each t-copula tree's scale `S` on a random member, its own and each process year's.
+- `ensemble_path_shock`: each year of a process path (§4a): its noise, score, scale, shock and the resulting rate.
 
-CREATE TABLE ensemble_draw (
-    calendar_event_name TEXT NOT NULL,
-    vary_target          TEXT NOT NULL,  -- 'amount' or 'date'
-    drawn_value           TEXT NOT NULL, -- in the target column's own unit
-    PRIMARY KEY (calendar_event_name)
-);
-```
+They are present (with real rows) only in a member's own intent and run files; absent (empty) in the recipe's own intent, and in every ordinary, non-ensemble scenario. This is what makes a member self-documenting without diffing databases.
 
-Present (with a real row / rows) only in a member's own intent and run files; absent (empty) in the recipe's own intent, and in every ordinary, non-ensemble scenario. This is what makes a member self-documenting without diffing databases, and the raw material for later "does a higher draw correlate with a lower terminal net worth" diagnostics.
+**One database per batch** (#261). Assessing a batch's statistical setup wants every member's draws side by side with the distributions and correlations behind them, so the end of `sim run` (Monte Carlo or sensitivity) gathers the member files into `draws.sqlite3`, beside the member run files, which retention prunes with the batch. Each member's run file is read, or its intent when the run file is missing; a member with neither is listed with no draws. The file is rebuilt whole, never updated (`sim ensemble draws --rebuild` re-gathers it, and gathers one for a batch run before it existed, whose newer columns stay NULL); a failure to write it is a warning, not a failed run. Its tables (`draws_db.DRAWS_DDL`):
+
+- `batch`: the ensemble, batch, mode, master seed (NULL for a sensitivity batch, which draws nothing), member count, versions.
+- `member`: every member, `is_base` marking member 0 (§9), its derived seed and run status.
+- `node`: each varying row, lifespan and factor, described from member 0's file: its distribution and parameters as resolved (a `truncated_normal`'s inferred bounds included), process and ramp settings, a life table's sex and set-forward, its base value, its correlation parent and ρ, tree root and ν, and the distribution's own moments.
+- `node_pair`: every pair sharing a tree, its implied ρ and expected Kendall τ, and for a Monte Carlo batch the ρ achieved from the drawn members' scores with its 95% interval ([ADR-008](ADR-008-correlated-parameters.md) §6).
+- `draw`, `tail_scale`, `path_shock`: every member's rows of the member tables above.
+- `draw_check` (Monte Carlo only): per node, over the drawn members, the mean, SD and 5th/25th/50th/75th/95th percentiles beside the distribution's own (a factor's standard normal, or t with its tree's ν), and the Kolmogorov-Smirnov distance of the members' `u` from uniform with its asymptotic p-value.
+
+Values are stored in the simulator's units (cents, micros, day ordinals, years), as everywhere else; the `node_display`, `draw_display`, `draw_check_display` and `path_shock_display` views translate to dollars, percent and ISO dates, and `draws_wide`/`draws_wide_display` are member × node matrices of the drawn members, member 0 left out. `sim ensemble draws [ENSEMBLE] [--batch] [--node NAME] [--csv FILE]` prints the database's path and the per-node check and correlated pairs, lists one node's draws, or exports the matrix; `sensitivity.ipynb` has a Draws section on the same file.
 
 **Member intent files are kept, not discarded**, specifically so a failed member's exact input is there to inspect — the recipe scenario plus the concrete draws that produced it, with nothing to reconstruct from a log.
 
@@ -246,3 +243,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#222](https://github.com/BobKerns/analysis/issues/222): a lifespan can be drawn from a period life table, around `age_at_death` as its median by a solved age set-forward, with no mortality multiplier (§3a).
 - [#235](https://github.com/BobKerns/analysis/issues/235): the notebook's ensemble widgets show a progress bar, member by member, while they load and analyze members (§8).
 - [#167](https://github.com/BobKerns/analysis/issues/167): `--graph` and `--graph-file` on `sim ensemble summary` and `compare`; the charts move to `sim/ensemble_plots.py` (§8).
+- [#261](https://github.com/BobKerns/analysis/issues/261): members record each draw's `noise` and `u`, t-copula scales and process shocks, and each batch gathers them into one `draws.sqlite3` (§6).

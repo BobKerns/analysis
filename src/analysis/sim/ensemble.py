@@ -898,11 +898,14 @@ def resolve_member(
         # checked after the fact; their value is just their score.
         # An OAT-perturbed factor records its quantile, so the report can tell
         # which node a member moved (ADR-007 §5).
+        # A factor's u is its score's probability, the copula's uniform for
+        # it (#261): what its descendants' values are read at, when rho = 1.
         for factor in factors:
             z = scores.get(factor)
             if z is not None:
                 quantile = overrides.get(factor) if overrides is not None else None
-                draws.append((factor, "factor", repr(z), quantile, None, z, noise.get(factor), None))
+                u = quantile if quantile is not None else probability(z, node_tails.get(factor))
+                draws.append((factor, "factor", repr(z), quantile, None, z, noise.get(factor), u))
 
         ensemble_name = con.execute("SELECT name FROM scenario").fetchone()[0]
         con.execute(

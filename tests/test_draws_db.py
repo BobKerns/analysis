@@ -9,7 +9,9 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from analysis.cli import main
 from analysis.sim.correlation import probability, tail_scale
 from analysis.sim.distributions import Uniform, tail_rng
 from analysis.sim.draws_db import build_draws_db, draws_db_path, draws_frames, ks_uniform
@@ -133,6 +135,7 @@ def test_a_t_tree_records_its_scale_noise_and_path_shocks(
         z, noise, u = _query(db, "SELECT z, noise, u FROM draw WHERE member_index = ? "
                                  "AND node = 'market'", i)[0]
         assert z == pytest.approx(noise * scale)
+        assert u == pytest.approx(probability(z, 4.0))
         z, u = _query(db, "SELECT z, u FROM draw WHERE member_index = ? AND node = 'early'", i)[0]
         assert u == pytest.approx(probability(z, 4.0))
         shocks = _query(db, "SELECT score, scale, shock FROM path_shock WHERE member_index = ? "
@@ -216,3 +219,62 @@ def test_ks_uniform_distance(us: list[float], distance: float) -> None:
 def test_ks_uniform_p_value_is_small_for_bunched_draws() -> None:
     assert ks_uniform([0.01 * i for i in range(1, 51)])[1] < 0.001
     assert ks_uniform([(i + 0.5) / 50 for i in range(50)])[1] > 0.99
+
+
+def _draws_cli(runs_dir: Path, intent_dir: Path, *args: str) -> str:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), *args,
+    ])
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_sim_ensemble_draws_summarizes_the_batch(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    output = _draws_cli(runs_dir, intent_dir)
+    assert f"retire_alice ({mc_batch.name}): monte_carlo, 8 member(s), 8 succeeded, seed 7" in output
+    assert str(draws_db_path(mc_batch)) in output
+    gift = next(line for line in output.splitlines() if line.strip().startswith("gift "))
+    assert "uniform" in gift and "$20,000" in gift
+    retire = next(line for line in output.splitlines() if line.strip().startswith("retire_bill_vary"))
+    assert "2030-12-29" in retire and "106 days" in retire  # a year's span: median, sd
+
+
+def test_sim_ensemble_draws_lists_a_node_and_writes_csv(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path, tmp_path: Path,
+) -> None:
+    csv = tmp_path / "draws.csv"
+    output = _draws_cli(runs_dir, intent_dir, "--node", "gift", "--csv", str(csv))
+    assert "0 (base)" in output and "$20,000" in output
+    assert "wrote 7 member(s)" in output
+    header = csv.read_text().splitlines()[0].split(",")
+    assert header[0] == "member_index" and "gift" in header
+
+
+def test_sim_ensemble_draws_rejects_an_unknown_node(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "ensemble", "draws", "retire_alice", "--runs-dir", str(runs_dir),
+        "--intent-dir", str(intent_dir), "--node", "nope",
+    ])
+    assert result.exit_code == 2
+    assert "'nope' isn't drawn in this batch" in result.output
+
+
+def test_sim_ensemble_draws_gathers_a_batch_that_has_none(
+    mc_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    draws_db_path(mc_batch).unlink()
+    _draws_cli(runs_dir, intent_dir)
+    assert draws_db_path(mc_batch).is_file()
+
+
+def test_sim_ensemble_draws_on_a_sensitivity_batch(
+    oat_batch: Path, runs_dir: Path, intent_dir: Path,
+) -> None:
+    output = _draws_cli(runs_dir, intent_dir, "--mode", "sensitivity")
+    assert "sensitivity" in output and "seed" not in output.splitlines()[0]
+    assert "KS p(u)" not in output

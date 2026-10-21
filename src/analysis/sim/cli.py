@@ -1512,6 +1512,177 @@ def ensemble_sensitivity(
         )
 
 
+
+@ensemble_group_command.command("draws")
+@click.argument("scenario_name", required=False, type=completion.ENSEMBLE)
+@_ENSEMBLE_RUNS_DIR_OPTION
+@click.option(
+    "--intent-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Default: data-repo state/intent when activated, else state/intent.",
+)
+@_ENSEMBLE_DATA_DIR_OPTION
+@click.option(
+    "--batch", default=None,
+    help="Which generated batch (a 'sim run' timestamp); default: the latest batch of --mode.",
+)
+@click.option(
+    "--mode", "mode", type=click.Choice(registries.ENSEMBLE_MODES), default=None,
+    help="Which kind of batch to pick when --batch isn't given; default: the latest of either.",
+)
+@click.option(
+    "--node", default=None, type=completion.DRAW_NODE,
+    help="List one node's draws (a varying row, lifespan:<person> or a latent factor).",
+)
+@click.option(
+    "--csv", "csv_file", type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help="Write the drawn members' values (member x node, display units) to this CSV.",
+)
+@click.option("--rebuild", is_flag=True, default=False,
+              help="Gather the batch's draws database again from its member files.")
+def ensemble_draws(
+    scenario_name: str | None, runs_dir: Path | None, intent_dir: Path | None,
+    data_dir: Path | None, batch: str | None, mode: str | None, node: str | None,
+    csv_file: Path | None, rebuild: bool,
+) -> None:
+    """Every draw of an ensemble batch, and what it depends on (#261).
+
+    Prints the path of the batch's draws database (draws.sqlite3, beside its
+    member run files) and, per node, the distribution's own median and SD
+    beside the drawn members' (member 0, the base, left out), with a
+    Kolmogorov-Smirnov p-value of the draws' probabilities against uniform;
+    then each correlated pair's implied and achieved rho. A batch run before
+    the database existed gets one gathered from what its member files hold.
+
+    Without SCENARIO_NAME, an ensemble that has been run is asked for."""
+    from analysis.sim.draws_db import build_draws_db, draws_db_path, open_draws_db
+
+    data_dir_available = data_dir is not None or bool(os.environ.get("ANALYSIS_DATA_DIR"))
+    resolved_data_dir = _resolve_data_dir(data_dir) if data_dir_available else None
+    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
+    if scenario_name is None:
+        scenario_name = _ask_ensemble_run(resolved_runs_dir, mode, batch=batch)
+    recipe_runs_dir = resolved_runs_dir / scenario_name
+    batch_dir = recipe_runs_dir / batch if batch else latest_ensemble_batch(recipe_runs_dir, mode=mode)
+    if batch_dir is None or not batch_dir.is_dir():
+        raise click.ClickException(f"no ensemble runs found under {recipe_runs_dir}")
+    path = draws_db_path(batch_dir)
+    if rebuild or not path.is_file():
+        resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
+        try:
+            build_draws_db(batch_dir, resolved_intent_dir / scenario_name / batch_dir.name)
+        except EnsembleError as exc:
+            raise click.ClickException(str(exc)) from None
+    with open_draws_db(batch_dir) as con:
+        con.row_factory = sqlite3.Row
+        if node is not None:
+            _echo_node_draws(con, node)
+        else:
+            _echo_draws_summary(con, path)
+        if csv_file is not None:
+            frame = pd.read_sql_query("SELECT * FROM draws_wide_display", con)
+            frame.to_csv(csv_file, index=False)
+            click.echo(f"wrote {len(frame)} member(s) x {len(frame.columns) - 1} node(s) to {csv_file}")
+
+
+def _draw_cell(unit: str, value: Any, *, spread: bool = False) -> str:
+    """A display-unit value (``node_display``, ``draw_display``) as text."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return "—"
+    if unit == "date":
+        return f"{value:,.0f} days" if spread else str(value)
+    if unit == "dollars":
+        return f"${value:,.0f}"
+    if unit == "percent":
+        return f"{value:.2f}%"
+    if unit == "years":
+        return f"{value:.1f}"
+    return f"{value:+.2f}" if not spread else f"{value:.2f}"
+
+
+def _echo_draws_summary(con: sqlite3.Connection, path: Path) -> None:
+    batch = con.execute("SELECT * FROM batch").fetchone()
+    members = con.execute(
+        "SELECT count(*), sum(status = 'succeeded') FROM member").fetchone()
+    seed = "" if batch["master_seed"] is None else f", seed {batch['master_seed']}"
+    click.echo(f"{batch['ensemble_name']} ({batch['batch']}): {batch['mode']}, "
+               f"{members[0]} member(s), {members[1] or 0} succeeded{seed}")
+    click.echo(f"  draws database: {path}")
+    checks = {r["node"]: r for r in con.execute("SELECT * FROM draw_check_display")}
+    nodes = con.execute("SELECT * FROM node_display ORDER BY node_kind = 'factor', name").fetchall()
+    if not nodes:
+        click.echo("  no varying rows")
+        return
+    click.echo("")
+    if checks:
+        rows = []
+        for n in nodes:
+            c = checks.get(n["name"])
+            unit = n["unit"]
+            rows.append([
+                n["name"], n["distribution"] or n["node_kind"], "—" if c is None else str(c["n"]),
+                _draw_cell(unit, None if c is None else c["expected_p50"]),
+                _draw_cell(unit, None if c is None else c["drawn_p50"]),
+                _draw_cell(unit, None if c is None else c["expected_sd"], spread=True),
+                _draw_cell(unit, None if c is None else c["drawn_sd"], spread=True),
+                "—" if c is None or c["ks_u_p"] is None else f"{c['ks_u_p']:.2f}",
+            ])
+        _echo_table(["node", "distribution", "n", "median", "drawn", "sd", "drawn",
+                     "KS p(u)"], rows, left=2)
+    else:
+        # A sensitivity batch draws nothing; its members sit at set quantiles.
+        _echo_table(["node", "distribution", "median"], [
+            [n["name"], n["distribution"] or n["node_kind"], _draw_cell(n["unit"], n["median"])]
+            for n in nodes
+        ], left=2)
+    # Every pair in a tree is in node_pair; a parent and child's own rho
+    # is what was authored, so those show, and any other pair whose
+    # implied rho falls outside what the batch achieved.
+    pairs = con.execute(
+        "SELECT * FROM node_pair WHERE kind = 'link' OR implied_rho < achieved_low "
+        "OR implied_rho > achieved_high ORDER BY kind = 'implied', a, b").fetchall()
+    implied = con.execute("SELECT count(*) FROM node_pair WHERE kind = 'implied'").fetchone()[0]
+    if pairs:
+        click.echo("\n  correlated pairs (rho; achieved from the scores' Kendall tau):")
+        _echo_table(["a", "b", "kind", "implied", "achieved", "95% interval"], [
+            [p["a"], p["b"], p["kind"], f"{p['implied_rho']:+.2f}",
+             "—" if p["achieved_rho"] is None else f"{p['achieved_rho']:+.2f}",
+             "—" if p["achieved_low"] is None
+             else f"{p['achieved_low']:+.2f} to {p['achieved_high']:+.2f}"]
+            for p in pairs
+        ], left=3)
+    if implied:
+        click.echo(f"  ({implied} implied pair(s) in all, in node_pair; shown only when outside "
+                   "their interval)")
+    scales = con.execute(
+        "SELECT tree_root, count(*), min(scale), avg(scale), max(scale) FROM tail_scale "
+        "WHERE year IS NULL GROUP BY tree_root ORDER BY tree_root").fetchall()
+    if scales:
+        click.echo("\n  t-copula scales S per member:")
+        _echo_table(["tree", "members", "min", "mean", "max"], [
+            [root, str(count), f"{low:.2f}", f"{mean:.2f}", f"{high:.2f}"]
+            for root, count, low, mean, high in scales
+        ])
+
+
+def _echo_node_draws(con: sqlite3.Connection, node: str) -> None:
+    found = con.execute("SELECT * FROM node_display WHERE name = ?", (node,)).fetchone()
+    if found is None:
+        known = [name for (name,) in con.execute("SELECT name FROM node ORDER BY name")]
+        raise click.UsageError(f"--node: {node!r} isn't drawn in this batch; it draws {', '.join(known)}")
+    unit = found["unit"]
+    click.echo(f"{node}: {found['distribution'] or found['node_kind']}"
+               + (f", correlated with {found['correlate_with']} at rho {found['rho']:+g}"
+                  if found["correlate_with"] else ""))
+    _echo_table(["member", "value", "u", "z", "noise", "quantile"], [
+        [f"{r['member_index']}{' (base)' if r['is_base'] else ''}", _draw_cell(unit, r["value"]),
+         *("—" if r[c] is None else f"{r[c]:.4f}" for c in ("u", "z", "noise", "quantile"))]
+        for r in con.execute(
+            "SELECT * FROM draw_display WHERE node = ? ORDER BY member_index", (node,))
+    ])
+
+
 def _report_years(batch_dir: Path, available: list[int], requested: list[int] | None) -> list[int]:
     """``--years`` checked against the batch's reporting years, or the
     default set (first full year, every fifth year, final year)."""

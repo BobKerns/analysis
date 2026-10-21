@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -41,8 +41,10 @@ from typing import Any
 
 import pandas as pd
 
+from analysis.frames import named_rows
+
 from analysis.sim.correlation import (
-    Link, expected_kendall_tau, implied_correlation, tree_members, tree_root,
+    Link, expected_kendall_tau, implied_correlation, score_at, tree_members, tree_root,
 )
 from analysis.sim.distributions import (
     Discrete, Distribution, Triangular, TruncatedNormal, Uniform, moments,
@@ -485,7 +487,7 @@ def _member_draws(con: sqlite3.Connection) -> list[sqlite3.Row]:
 
 def ks_uniform(us: list[float]) -> tuple[float, float]:
     """The Kolmogorov-Smirnov distance of ``us`` from Uniform(0, 1), and its
-    asymptotic p-value (Kolmogorov's series, with Stephens' small-sample
+    asymptotic p-value (the Kolmogorov series, with Stephens' small-sample
     correction), good to a few percent from about 5 members up."""
     n = len(us)
     xs = sorted(us)
@@ -500,7 +502,7 @@ def ks_uniform(us: list[float]) -> tuple[float, float]:
 
 def _check_rows(
     draws: pd.DataFrame, us: pd.DataFrame, dists: dict[str, Distribution | LifeTableAge],
-    targets: dict[str, str],
+    targets: dict[str, str], nus: dict[str, float],
 ) -> list[dict[str, Any]]:
     records = []
     for node in draws.columns:
@@ -522,9 +524,13 @@ def _check_rows(
             for q in CHECK_QUANTILES:
                 record[f"expected_p{round(q * 100):02d}"] = _expected_quantile(dist, target, q)
         elif targets[node] == FACTOR_TARGET:
-            # A factor is a standard normal score (ADR-008 §3); under a t
-            # copula it's a t score, whose spread this doesn't describe.
-            record.update(expected_mean=0.0, expected_sd=1.0)
+            # A factor is a standard normal score (ADR-008 §3), or a t
+            # score with its tree's nu under a t copula.
+            nu = nus.get(node)
+            record["expected_mean"] = 0.0
+            record["expected_sd"] = 1.0 if nu is None else math.sqrt(nu / (nu - 2)) if nu > 2 else None
+            for q in CHECK_QUANTILES:
+                record[f"expected_p{round(q * 100):02d}"] = score_at(q, nu)
         if node in us.columns:
             u = [float(x) for x in us[node].dropna()]
             if u:
@@ -541,7 +547,7 @@ def _pairs(
     achieved = {}
     if scores is not None and not scores.empty:
         table = score_correlations(scores, links, nodes)
-        achieved = {(r.a, r.b): r for r in table.itertuples()}
+        achieved = {(r.a, r.b): r for r in named_rows(table)}
     records = []
     for i, a in enumerate(nodes):
         for b in nodes[i + 1:]:
@@ -668,7 +674,8 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     if mc and not drawn.empty:
         values = drawn.pivot(index="member_index", columns="node", values="value")
         us = drawn.pivot(index="member_index", columns="node", values="u")
-        checks = _check_rows(values[[c for c in values.columns if c in targets]], us, dists, targets)
+        nus = {n["name"]: n["nu"] for n in nodes if n.get("nu") is not None}
+        checks = _check_rows(values[[c for c in values.columns if c in targets]], us, dists, targets, nus)
         scores = drawn.pivot(index="member_index", columns="node", values="z").astype(float)
     tree = sorted(tree_members(links) & set(targets))
     pairs = _pairs(links, tree, scores)
@@ -714,7 +721,7 @@ def _versions(con: sqlite3.Connection) -> dict[str, Any]:
 
 
 @contextmanager
-def open_draws_db(batch_dir: Path) -> Iterator[sqlite3.Connection]:
+def open_draws_db(batch_dir: Path) -> Generator[sqlite3.Connection]:
     """A read-only connection to a batch's draws database."""
     path = draws_db_path(batch_dir)
     if not path.is_file():
