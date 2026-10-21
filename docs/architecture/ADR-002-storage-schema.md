@@ -104,7 +104,7 @@ state/
 | `person_lifespan` | ✓ | ✓ (snapshot) |
 | `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | ✓ | ✓ (snapshot) |
 | `year_to_date` | ✓ | ✓ (snapshot) |
-| `ensemble_manifest`, `ensemble_draw` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
+| `ensemble_manifest`, `ensemble_draw`, `ensemble_tail_scale`, `ensemble_path_shock` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
 | `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state` | — | ✓ |
@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 42) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 43) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -512,9 +512,35 @@ CREATE TABLE ensemble_draw (
     quantile             REAL,           -- ADR-007 §5: OAT override quantile; NULL for a draw or central value
     distribution         TEXT,           -- ADR-007 §5: the row's vary_distribution, which resolving clears
     z                    REAL,           -- ADR-008 §6: the row's normal score in its correlation tree; NULL outside one
+    noise                REAL,           -- #261: a tree node's own N(0,1) noise before its tree mixes it in; random members only
+    u                    REAL,           -- #261: the probability the value sits at in its distribution
     PRIMARY KEY (calendar_event_name)
 );
+
+-- #261 (#72): a t-copula tree's scale S on a random member, by its root:
+-- the member's own (year NULL) and each process path year's.
+CREATE TABLE ensemble_tail_scale (
+    tree_root   TEXT NOT NULL,
+    year        INTEGER,
+    scale       REAL NOT NULL,
+    UNIQUE (tree_root, year)
+);
+
+-- #261: each year of a process path (ADR-006 §4a): noise, tree score, the
+-- tree's scale that year, the shock taken (score * scale) and the rate (micros).
+CREATE TABLE ensemble_path_shock (
+    node        TEXT NOT NULL,
+    year        INTEGER NOT NULL,
+    noise       REAL,
+    score       REAL,
+    scale       REAL,
+    shock       REAL NOT NULL,
+    rate        INTEGER NOT NULL,
+    PRIMARY KEY (node, year)
+);
 ```
+
+A batch also gathers its members' provenance into one file, `state/runs/<ensemble>/<batch>/draws.sqlite3` (#261), written at the end of `sim run` and rebuilt whole by `sim ensemble draws --rebuild`. It isn't an intent or run file and has its own DDL (`draws_db.DRAWS_DDL`): `batch`, `member` (`is_base` marks member 0), `node` (each varying row, lifespan and latent factor with its distribution, parameters, correlation parent, tree root and `nu`), `node_pair`, `draw`, `tail_scale`, `path_shock` and `draw_check`, in the simulator's stored units, with `*_display` views in dollars, percent and dates ([ADR-006](ADR-006-ensemble-scenarios.md) §6).
 
 ### Intent manifest (intent files only)
 
@@ -722,7 +748,9 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `inflation_index_state` | Cumulative inflation index per series at the end of each step; the `inflation_index` and constant-dollar views read it. |
 | `tag`, `account_tag`, `scheduled_transaction_tag`, `calendar_event_tag` | Role/name labels and their junctions to accounts, rules and calendar events. |
 | `ensemble_manifest` | One row: which ensemble member this file is, its derived seed, member count, and the recipe's `scenario_tree_id` at generation time ([ADR-006](ADR-006-ensemble-scenarios.md)), and whether it's a Monte Carlo or sensitivity member (`mode`, [ADR-007](ADR-007-sensitivity-analysis.md)). Present only in a resolved member's intent/run files. |
-| `ensemble_draw` | One row per resolved `vary_distribution` row: which `calendar_event` (`name`) or lifespan (`lifespan:<person>`), which target (`amount`/`date`/`age_at_death`), and the drawn value ([ADR-006](ADR-006-ensemble-scenarios.md)); `quantile` is the OAT override quantile for a sensitivity member's perturbed row ([ADR-007](ADR-007-sensitivity-analysis.md)). Present only in a resolved member's intent/run files. |
+| `ensemble_draw` | One row per resolved `vary_distribution` row: which `calendar_event` (`name`) or lifespan (`lifespan:<person>`), which target (`amount`/`date`/`age_at_death`), and the drawn value ([ADR-006](ADR-006-ensemble-scenarios.md)); `quantile` is the OAT override quantile for a sensitivity member's perturbed row ([ADR-007](ADR-007-sensitivity-analysis.md)); `z`, `noise` and `u` are its score, its own noise and its probability ([ADR-008](ADR-008-correlated-parameters.md) §6). Present only in a resolved member's intent/run files. |
+| `ensemble_tail_scale` | A random member's t-copula scale `S` per tree root, its own and each process year's ([ADR-008](ADR-008-correlated-parameters.md) §6). |
+| `ensemble_path_shock` | Each process path year's noise, score, scale, shock and rate ([ADR-006](ADR-006-ensemble-scenarios.md) §4a). |
 | `schema_overview` | This table; one short description per table, for human and LLM readers. |
 
 ### Views
@@ -897,3 +925,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#221](https://github.com/BobKerns/analysis/issues/221): `person_lifespan` gains `age_at_death` and the `vary_*` columns; `ensemble_draw` records a lifespan under `lifespan:<person>` with target `age_at_death` (Intent layer DDL, glossary; schema 40).
 - [#222](https://github.com/BobKerns/analysis/issues/222): `person.sex` and `person_lifespan.life_table_set_forward`, for a lifespan drawn from the new aux kind `life_table` (Intent layer DDL; schema 41).
 - [#231](https://github.com/BobKerns/analysis/issues/231): asset and expense subkinds `business` and tax characters `business_income` and `business_expense` (Intent and Run layer DDL; schema 42).
+- [#261](https://github.com/BobKerns/analysis/issues/261): `ensemble_draw` gains `noise` and `u`; new member tables `ensemble_tail_scale` and `ensemble_path_shock`; a batch's `draws.sqlite3` (Ensemble provenance, placement summary, `schema_overview`; schema 43).

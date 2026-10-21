@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -427,7 +427,40 @@ CREATE TABLE ensemble_draw (
     -- ADR-008 §6: the row's standard normal score in its correlation tree;
     -- NULL for a row outside every tree.
     z                   REAL,
+    -- #261: on a random member, a tree node's own independent normal noise,
+    -- before its tree mixes it in (NULL outside every tree, and on member 0
+    -- or an OAT member); and the probability the drawn value sits at in its
+    -- distribution (for a factor, its score's; NULL only for a lifespan's
+    -- authored base age).
+    noise               REAL,
+    u                   REAL,
     PRIMARY KEY (calendar_event_name)
+);
+
+-- #261 (#72): a t-copula tree's scale S on a random member, by its root:
+-- the member's own (year NULL), multiplying every score in the tree, and
+-- each process path year's.
+CREATE TABLE ensemble_tail_scale (
+    tree_root   TEXT NOT NULL,
+    year        INTEGER,
+    scale       REAL NOT NULL,
+    UNIQUE (tree_root, year)
+);
+
+-- #261: each year of a process path (ADR-006 §4a): the node's own noise,
+-- its score after its tree mixes it in, the tree's scale that year (NULL
+-- for a Gaussian tree or a lone row), the shock the path took (score *
+-- scale; 0 on member 0 and OAT members, whose noise and score are NULL),
+-- and the resulting rate in micros.
+CREATE TABLE ensemble_path_shock (
+    node        TEXT NOT NULL,
+    year        INTEGER NOT NULL,
+    noise       REAL,
+    score       REAL,
+    scale       REAL,
+    shock       REAL NOT NULL,
+    rate        INTEGER NOT NULL,
+    PRIMARY KEY (node, year)
 );
 """
 
@@ -713,6 +746,8 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "calendar_event_tag",
     "ensemble_manifest",
     "ensemble_draw",
+    "ensemble_tail_scale",
+    "ensemble_path_shock",
 )
 
 
