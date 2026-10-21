@@ -92,7 +92,7 @@ The `_other` catch-alls are deliberate escape hatches; the `--check` mode ([ADR-
 
 ### 2. `amount_rule_kind` registry
 
-Seven rule kinds. (Section numbers 2.4 and 2.8 are unused, so existing cross-references to the others stay valid.) Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate` (stored as `rate_micros`), `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
+Eight rule kinds. (Section numbers 2.4 and 2.8 are unused, so existing cross-references to the others stay valid.) Each rule's `compute(state, aux, date) → list[TransferEventSpec]` is a pure function. The columns `from_account`, `to_account`, `amount`, `base_date` on `scheduled_transaction` carry the common parameters; rule-specific parameters live in the named columns `interest_account`, `person`, `series`, `rate` (stored as `rate_micros`), `claim_age` (see §4.6). `amount` and `series` are each interpreted according to the row's `amount_rule_kind`. Rare or future extension parameters may go in the nullable `params_json` column.
 
 **Invariant (rule-as-sole-origin):** every `transfer_event` traces to **exactly one rule** via `(reason_kind='rule', reason_id = scheduled_transaction.id)`. A once-only movement is a rule whose `cadence='one_off'`. Calendar events never write to `transfer_event` directly; money-moving calendar kinds *synthesize* one or more `cadence='one_off'` scheduled_transactions at expansion time (see §3). The only exception is the synthetic per-account `opening_balance` rule materialized at run start from the account model, which uses `reason_kind='initial'` and is its own degenerate rule. [ADR-002](ADR-002-storage-schema.md)'s `transfer_event.reason_kind` CHECK and `scheduled_transaction.created_by_event_id` (tracing a synthesized rule back to its authoring calendar event) enforce this.
 
@@ -204,6 +204,20 @@ Fires once, automatically, the month a person dies -- for one-time death-trigger
 - **Compute:** at fire time (every month the rule's cadence allows it to be checked, recommend `cadence=monthly`), no-op unless `month_s` is exactly the month after `person`'s `final_month` (the same month other lifespan-gated rules stop -- see §4.9) and `person` has a declared lifespan at all. When it matches, transfers 100% of `from_account`'s current balance to `to_account`. A zero balance is a no-op, not an error; a `person` with no `lifespan.csv` row means the rule never fires.
 - **Emits:** one event when it fires, none otherwise.
 - **Use:** `from_account` = the vehicle/policy account being liquidated, `to_account` = wherever the proceeds land (e.g. the household cash account). Exempt from the general lifespan-gating in §4.9 (which would otherwise suppress the very rule that fires *because of* the lifespan ending).
+
+#### 2.10 `fill_bracket` (no priority: runs last in its month)
+
+A yearly Roth conversion sized to a tax target ([#252](https://github.com/BobKerns/analysis/issues/252)): the most that keeps the year's taxable income at or under the target.
+
+- **Params:** `from_account`/`from_lot` is a traditional lot (`traditional_ira`, `traditional_401k`, §1a) and `to_account`/`to_lot` a Roth lot, both named directly, not through a chain. The target is exactly one of:
+  - `rate`, a bracket's marginal rate (e.g. `22%`): the target is the top of that bracket in the year's table for the year's filing status, so it follows a new table and the switch to `Single` after a death. It is measured against **ordinary** taxable income (taxable income less the long-term gain stacked on it, §2.6), the part that sets the conversion's own rate. The bracket must have a top: the highest rate is rejected.
+  - `amount`, a taxable income in today's dollars, grown by `series` (an inflation series) from `base_date` at `inflation_cadence` as a `fixed_amount` grows. It is measured against all taxable income. A `set_amount` calendar row changes it, so an ensemble can vary it (`discrete`, ADR-006).
+
+  `params_json` takes, all optional: `scope` (`federal`, the default, or `state`), the bracket table and tax rule it measures with; `tax_rule`, the name of the `tax_accumulator` rule whose settings (brackets, deduction, filing status, Social Security taxation) it uses, needed only when the scope has more than one; `max_amount`, a cap on one year's conversion in dollars; and `max_marginal_rate` (e.g. `"30%"`), which stops where the next $100 converted would cost more than that rate in tax: its ordinary rate plus the long-term gain it pushes into a higher rate plus the Social Security it makes taxable. `cadence` is `annual`, `month_of_year` usually `12`, and `tax_character` `tax_deferred_out`. The loader rejects a `priority`, a `series` on a bracket target, an unknown `params_json` key, a rate no bracket table of the scope has, and a scope with no tax rule.
+- **When:** after every other rule of its month, whatever their priorities, and after the RMD rule in particular. This is a constraint, not a priority. In a year an RMD is due, the first money out of the IRA counts toward it, and an RMD can't be rolled over or converted (Treas. Reg. §1.408-8), so the year's RMD must come out first; the target also needs the year's income. A conversion lowers the next year's RMD through the Dec 31 balance it is figured from (§2.3). A `month_of_year` before December sees only the income posted so far.
+- **Compute:** builds the year's tax estimate from the tax rule's settings, the same estimate the accumulator settles with (`engine._year_tax_estimate`), over the transfers posted so far. Taxable income never falls as the conversion grows, but it can grow faster than the conversion, since added income makes more Social Security taxable; so the amount is found by bisection over cents, not by subtracting the year's income from the target. It is then capped by `max_amount` and the lot's balance, and stepped up from zero in $100 steps against `max_marginal_rate` when that is set (the marginal cost can rise and fall again, so it is not bisected). A year already at or past the target converts nothing.
+- **Emits:** one `tax_deferred_out` event from the traditional lot to the Roth lot, taxed as ordinary income and adding to the Roth lot's basis, as `sim invest` does. Its `meta_json` holds `{"fill_bracket": {"target", "measure", "reached"}}`: the target in cents, `ordinary` or `taxable`, and the measure after the conversion. The tax is paid by the `tax_accumulator` rule the next April.
+- **Use:** one row per traditional lot converted. Two rows fill the bracket together, the later (by `id`) seeing the earlier's conversion as income.
 
 ### 3. `calendar_event.kind` registry
 
@@ -636,17 +650,17 @@ A child row with a new key is appended; one whose key matches the parent replace
 | `amount_rule_kind` | enum | ✓ | one of §2 |
 | `interest_account` | text | | mortgage_payment only: interest-expense account for the second leg |
 | `person` | text | | person id; required for `ss_benefit` and `rmd` |
-| `series` | text | | interpreted per `amount_rule_kind`: inflation series for `fixed_amount` (or `fixed` for none), rate series for `percent_of_balance`, COLA series for `ss_benefit`; rejected for any other rule kind |
-| `rate` | percent | | annual rate; required for `mortgage_payment` (e.g. `6%`); loader converts to integer micros |
+| `series` | text | | interpreted per `amount_rule_kind`: inflation series for `fixed_amount` and an `amount` target of `fill_bracket` (or `fixed` for none), rate series for `percent_of_balance`, COLA series for `ss_benefit`; rejected for any other rule kind |
+| `rate` | percent | | annual rate; required for `mortgage_payment` (e.g. `6%`); for `fill_bracket`, the bracket whose top is the target (e.g. `22%`, §2.10); loader converts to integer micros |
 | `claim_age` | int | | required for `ss_benefit` |
-| `amount` | dollars | | interpreted per `amount_rule_kind`: base amount for `fixed_amount`, monthly P&I for `mortgage_payment`, or PIA at FRA for `ss_benefit`; decimal string e.g. `1234.56`; loader converts to integer cents |
+| `amount` | dollars | | interpreted per `amount_rule_kind`: base amount for `fixed_amount`, monthly P&I for `mortgage_payment`, PIA at FRA for `ss_benefit`, or the taxable-income target in today's dollars for `fill_bracket` (instead of `rate`); decimal string e.g. `1234.56`; loader converts to integer cents |
 | `base_date` | YYYY-MM | | required when `series` names an inflation series |
 | `inflation_cadence` | enum | | `monthly` (default) compounds every month; `annual` steps once per calendar year crossed (each January) instead of drifting smoothly — use for COLA-style adjustments (e.g. Social Security) that jump once a year rather than continuously; requires `series` to be set |
 | `tax_character` | enum | ✓ | per [ADR-002](ADR-002-storage-schema.md) (`ordinary`, `ltcg`, `stcg`, `gains`, `deferred`, `ss_benefit`, `tax_free`, `tax_deferred_in`, `tax_deferred_out`, `return_of_capital`, `property_tax`, `none`, `excluded_gain`, `home_sale`, `capital_improvement`, `roth_nonqualified`, `business_income`, `business_expense`); set per-row by the author. Account `kind`/`tax_treatment` does not constrain this field, except that `business_income` must be paid into, and `business_expense` out of, a `business` account named directly (not a chain), on a `scheduled.csv`, `year_to_date.csv` or `one_off_transfer` row; a chain step can't carry either (§2.6). |
 | `tax_year` | int | | optional designated tax year for the transfer; when present, tax aggregation uses this value instead of the transfer date's calendar year (for example, a 2026 IRA contribution made in early 2027) |
 | `start` | YYYY-MM | ✓ | first month rule may fire (a *lower bound* — rules with internal age gates like `ss_benefit` and `rmd` AND this with their own gate; see §2.3 and §2.5) |
 | `end` | YYYY-MM | | open-ended if blank |
-| `priority` | int | | defaults per §2's priority band |
+| `priority` | int | | defaults per §2's priority band; must be blank for `fill_bracket`, which runs last in its month (§2.10) |
 | `description` | text | | |
 | `meta_json` | json | | default `{}` |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
@@ -795,7 +809,7 @@ When `scheduled.csv` leaves `priority` blank, the loader fills it from the rule 
 | `rmd` | 500 |
 | `on_death` | 900 |
 
-A kind not listed falls back to 500. `fixed_amount` is a flat 200 whatever its
+A kind not listed falls back to 500. `fill_bracket` takes no priority: it always runs after every other rule of its month (§2.10). `fixed_amount` is a flat 200 whatever its
 direction; an author who wants an expense to settle after income sets `priority`
 explicitly.
 
@@ -1094,3 +1108,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#233](https://github.com/BobKerns/analysis/issues/233): a rejected edit says which errors belong to a scenario built on the edited one, and `lot edit` changes an account's implicit empty `default` lot by adding its row (§7).
 - [#248](https://github.com/BobKerns/analysis/issues/248): aux kind `state_standard_deduction`, keyed by state like `state_brackets`, read by a state `tax_accumulator` rule, falling back to `standard_deduction` with a load warning (§2.6, §4.4).
 - [#251](https://github.com/BobKerns/analysis/issues/251): the tax accumulator records each year's drawdown tax for after-tax net worth; `scenario.meta_json` takes `after_tax` (`drawdown_years`, `step_up`) (§2.6, §4.5).
+- [#252](https://github.com/BobKerns/analysis/issues/252): rule kind `fill_bracket`, a yearly Roth conversion up to a bracket's top or a taxable-income target, run last in its month with no priority (§2, §2.10, §4.6, §5).

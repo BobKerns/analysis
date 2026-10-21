@@ -998,6 +998,21 @@ def load_scenario(
         and (m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT) in leaves.leaf_of
     )
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
+    _validate_fill_bracket(
+        scheduled_rows, issues, roth_leaves=roth_leaves,
+        traditional_leaves=frozenset(
+            leaves.leaf_of[(m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)]
+            for m in value_rows
+            if registries.RETIREMENT_LOT_SUBKINDS.get(m.get("subkind") or "") == "tax_deferred"
+            and (m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)
+            in leaves.leaf_of
+        ),
+        bracket_rates={
+            kind: {int(payload["marginal_rate_micros"]) for k, _, payload, _ in aux_rows
+                   if k == kind and isinstance(payload.get("marginal_rate_micros"), int)}
+            for kind in ("federal_brackets", "state_brackets")
+        },
+    )
     _validate_retirement_owners(accounts, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
     _validate_business(
@@ -2414,6 +2429,98 @@ def _validate_rmd_rules(
                     f"{where}: chain '{source}' draws from {', '.join(outside)}, "
                     f"which are not lots of the subject account '{subject}'"
                 )
+
+
+FILL_BRACKET_PARAMS = frozenset({"scope", "max_amount", "max_marginal_rate", "tax_rule"})
+
+
+def _validate_fill_bracket(
+    rows: list[dict[str, str]], issues: list[str], *,
+    roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
+    bracket_rates: Mapping[str, set[int]],
+) -> None:
+    """A ``fill_bracket`` rule (#252) converts from one traditional lot to
+    one Roth lot, once a year, to a target that is either a bracket (``rate``)
+    or a taxable income (``amount``), measured with a ``tax_accumulator`` rule
+    of its scope. It has no priority: it always runs after every other rule
+    of its month, since the year's RMD has to come out before any of the
+    IRA can be converted. Run after the rows' references have been resolved."""
+    tax_rules: list[tuple[str, str]] = []
+    for _, row in _located(rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") == "tax_accumulator":
+            params = _safe_json(row.get("params_json")) or {}
+            tax_rules.append((row.get("name", ""), str(params.get("scope", "federal"))))
+    for where, row in _located(rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") != "fill_bracket":
+            continue
+        where = f"{where} ({row.get('name', '')})"
+        if row.get("from_account", "") not in traditional_leaves:
+            issues.append(f"{where}: fill_bracket converts from a traditional IRA or 401(k) lot")
+        if row.get("to_account", "") not in roth_leaves:
+            issues.append(f"{where}: fill_bracket converts to a Roth IRA or Roth 401(k) lot")
+        if bool(row.get("rate_micros")) == bool(row.get("amount")):
+            issues.append(
+                f"{where}: fill_bracket needs one of rate (the bracket to fill, e.g. 22%) "
+                "or amount (the taxable income to fill up to)"
+            )
+        if row.get("priority"):
+            issues.append(
+                f"{where}: fill_bracket takes no priority; it runs after every other "
+                "rule of its month, so the year's RMD comes out first"
+            )
+        if row.get("cadence") != "annual":
+            issues.append(f"{where}: fill_bracket needs cadence annual")
+        if row.get("tax_character") != "tax_deferred_out":
+            issues.append(f"{where}: fill_bracket needs tax_character tax_deferred_out")
+        if row.get("rate_micros") and row.get("series"):
+            issues.append(f"{where}: a bracket target follows its brackets; series is only for amount")
+        raw = row.get("params_json") or "{}"
+        params = _safe_json(raw)
+        if params is None:
+            issues.append(f"{where}: params_json is not a JSON object")
+            continue
+        unknown = sorted(set(params) - FILL_BRACKET_PARAMS)
+        if unknown:
+            issues.append(
+                f"{where}: unknown params_json key(s) {', '.join(unknown)} "
+                f"(known: {', '.join(sorted(FILL_BRACKET_PARAMS))})"
+            )
+        scope = params.get("scope", "federal")
+        if scope not in ("federal", "state"):
+            issues.append(f"{where}: scope must be federal or state")
+            continue
+        if "max_amount" in params:
+            try:
+                if units.json_dollars_to_cents(params["max_amount"]) < 0:
+                    raise ValueError("must not be negative")
+            except ValueError as e:
+                issues.append(f"{where}: max_amount {e}")
+        if "max_marginal_rate" in params:
+            try:
+                units.percent_to_micros(str(params["max_marginal_rate"]))
+            except ValueError as e:
+                issues.append(f"{where}: max_marginal_rate {e}")
+        wanted = params.get("tax_rule")
+        matches = [n for n, s in tax_rules if (n == wanted if wanted else s == scope)]
+        if wanted and not matches:
+            issues.append(f"{where}: tax_rule '{wanted}' is not a tax_accumulator rule")
+        elif not matches:
+            issues.append(
+                f"{where}: fill_bracket measures with a {scope} tax_accumulator rule, "
+                "and there is none"
+            )
+        elif len(matches) > 1:
+            issues.append(
+                f"{where}: there are {len(matches)} {scope} tax_accumulator rules "
+                f"({', '.join(matches)}); name one with tax_rule in params_json"
+            )
+        rates = bracket_rates.get("federal_brackets" if scope == "federal" else "state_brackets")
+        rate = row.get("rate_micros")
+        if rate and rates and int(rate) not in rates:
+            issues.append(
+                f"{where}: no {scope} bracket is taxed at {units.micros_to_percent(int(rate))} "
+                f"(rates: {', '.join(units.micros_to_percent(r) for r in sorted(rates))})"
+            )
 
 
 def _validate_business(
