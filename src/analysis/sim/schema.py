@@ -430,7 +430,8 @@ CREATE TABLE ensemble_draw (
     -- #261: on a random member, a tree node's own independent normal noise,
     -- before its tree mixes it in (NULL outside every tree, and on member 0
     -- or an OAT member); and the probability the drawn value sits at in its
-    -- distribution (NULL for a factor, and a lifespan's authored base age).
+    -- distribution (for a factor, its score's; NULL only for a lifespan's
+    -- authored base age).
     noise               REAL,
     u                   REAL,
     PRIMARY KEY (calendar_event_name)

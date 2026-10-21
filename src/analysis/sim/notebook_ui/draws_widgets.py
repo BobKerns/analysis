@@ -98,7 +98,8 @@ def draws_view(frames: dict[str, pd.DataFrame], node: str, axes: Any = None) -> 
 def pair_options(frames: dict[str, pd.DataFrame]) -> list[tuple[str, tuple[str, str]]]:
     """``(label, (a, b))`` for each correlated pair with a recorded achieved rho,
     parent-and-child links first."""
-    pairs = frames["node_pair"].sort_values(["kind", "a", "b"])
+    pairs = frames["node_pair"].sort_values(
+        ["kind", "a", "b"], key=lambda c: c.ne("link") if c.name == "kind" else c)
     return [
         (f"{r.a} ~ {r.b} ({r.kind}, rho {r.implied_rho:+.2f})", (str(r.a), str(r.b)))
         for r in named_rows(pairs)

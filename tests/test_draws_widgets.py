@@ -64,3 +64,8 @@ def test_draws_widget_on_a_sensitivity_batch(
     shown = _quiet(monkeypatch)
     dw.draws_widget(runs_dir=runs_dir)
     assert any("one-at-a-time" in str(getattr(s, "data", s)) for s in shown)
+
+
+def test_pair_options_put_links_first(mc_batch: Path) -> None:
+    kinds = [label.split("(")[1].split(",")[0] for label, _pair in dw.pair_options(draws_frames(mc_batch))]
+    assert "implied" in kinds and kinds == sorted(kinds, key=lambda k: k != "link")

@@ -589,8 +589,8 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     batch_dir = Path(batch_dir)
     manifest = read_batch_manifest(batch_dir) or {}
     members = _member_files(batch_dir, intent_batch_dir, manifest.get("member_count"))
-    if not any(m.path for m in members):
-        raise EnsembleError(f"{batch_dir}: no member files to gather draws from")
+    if not members:
+        raise EnsembleError(f"{batch_dir}: no members to gather draws from")
 
     member_rows: list[dict[str, Any]] = []
     draw_rows: list[dict[str, Any]] = []
@@ -599,10 +599,15 @@ def build_draws_db(batch_dir: Path, intent_batch_dir: Path | None = None) -> Pat
     nodes: list[dict[str, Any]] = []
     dists: dict[str, Distribution | LifeTableAge] = {}
     links: dict[str, Link] = {}
-    batch: dict[str, Any] = {}
+    # A batch whose every member failed to resolve has only its manifest:
+    # it still lists them, with no nodes or draws.
+    batch: dict[str, Any] = {
+        "ensemble_name": batch_dir.parent.name, "batch": batch_dir.name,
+        "mode": manifest.get("mode", "monte_carlo"), "member_count": manifest.get("member_count", len(members)),
+    }
     # Nodes are described from member 0 where it exists, else the first file.
     describe_from = next((m for m in members if m.index == 0 and m.path), None) or next(
-        m for m in members if m.path)
+        (m for m in members if m.path), None)
     for m in members:
         record: dict[str, Any] = {"member_index": m.index, "is_base": int(m.index == 0),
                                   "status": m.status,

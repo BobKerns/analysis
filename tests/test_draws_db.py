@@ -278,3 +278,16 @@ def test_sim_ensemble_draws_on_a_sensitivity_batch(
     output = _draws_cli(runs_dir, intent_dir, "--mode", "sensitivity")
     assert "sensitivity" in output and "seed" not in output.splitlines()[0]
     assert "KS p(u)" not in output
+
+
+def test_a_batch_whose_every_member_failed_still_lists_them(tmp_path: Path) -> None:
+    batch = tmp_path / "runs" / "retire_alice" / "b"
+    batch.mkdir(parents=True)
+    write_batch_manifest(batch, member_count=2,
+                         failures=[(0, batch / "x", "boom"), (1, batch / "y", "boom")])
+    db = build_draws_db(batch)
+    assert _query(db, "SELECT ensemble_name, mode, member_count, master_seed FROM batch") == [
+        ("retire_alice", "monte_carlo", 2, None)]
+    assert _query(db, "SELECT member_index, status FROM member ORDER BY member_index") == [
+        (0, "failed_to_resolve"), (1, "failed_to_resolve")]
+    assert _query(db, "SELECT count(*) FROM node") == [(0,)]
