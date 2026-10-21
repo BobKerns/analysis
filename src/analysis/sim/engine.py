@@ -26,6 +26,7 @@ import calendar
 import functools
 import json
 import warnings
+from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -2739,7 +2740,15 @@ def _drawdown_tax(
         gains = 0
     if deferred + gains == 0:
         return 0, 0
-    extra = years * (tax_with(deferred // years, gains // years) - tax_with(0, 0))
+    # Each year's share carries its cent of any remainder, so the shares sum
+    # to the whole base; only a few distinct shares need a tax computed.
+    (deferred_share, deferred_extra), (gains_share, gains_extra) = (
+        divmod(deferred, years), divmod(gains, years))
+    shares = Counter(
+        (deferred_share + (i < deferred_extra), gains_share + (i < gains_extra))
+        for i in range(years))
+    base_tax = tax_with(0, 0)
+    extra = sum(count * (tax_with(d, g) - base_tax) for (d, g), count in shares.items())
     return deferred + gains, extra
 
 

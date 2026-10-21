@@ -5,6 +5,7 @@ the ``--after-tax`` options."""
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
@@ -15,7 +16,8 @@ from click.testing import CliRunner
 from analysis.cli import main
 from analysis.sim import compare
 from analysis.sim.connection import RunConnection
-from analysis.sim.engine import run_scenario
+from analysis.sim.engine import _drawdown_tax, run_scenario
+from analysis.sim.registries import SCHEDULED_CSV_HEADER
 from analysis.sim.loader import LoadError, LoadResult
 from analysis.sim.types import DollarMode
 
@@ -69,6 +71,50 @@ def test_unpaid_tax_is_owed_from_year_end_until_its_april_payment(
     for month in ("2027-12", "2028-01", "2028-03"):
         assert unpaid[month].iloc[0] == pytest.approx(due)
     assert unpaid["2028-04"].iloc[0] == 0  # the April payment posts that month
+
+
+def test_the_drawdown_taxes_every_cent_of_its_base(report_run_file: Path) -> None:
+    """The yearly shares carry the remainder, so a tax of 100% on every
+    share is the whole base, to the cent."""
+    with sqlite3.connect(report_run_file) as con:
+        base, extra = _drawdown_tax(con, 2030, lambda ordinary, gains: ordinary + gains)
+    assert base and base % 10  # a remainder to carry
+    assert extra == base
+
+
+def test_a_year_without_a_rate_takes_no_drawdown_tax_off(
+    report_run: RunConnection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rates = report_run._drawdown_rate_by_year().drop(2030)
+    monkeypatch.setattr(report_run, "_drawdown_rate_by_year", lambda: rates)
+    deferred = report_run.after_tax_net_worth_frame()["deferred_tax"]
+    assert (deferred["2030"] == 0).all()
+    assert (deferred["2029"] > 0).all() and (deferred["2031"] > 0).all()
+
+
+def test_only_the_tax_payment_settles_a_years_unpaid_tax(
+    report_run: RunConnection, retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """A transfer carrying the prior tax year (a next-spring IRA
+    contribution) before the April payment doesn't end the unpaid window."""
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
+        "name": "prior_year_deposit", "from_account": "Asset_Checking",
+        "to_account": "Asset_Savings", "cadence": "annual", "month_of_year": "2",
+        "amount_rule_kind": "fixed_amount", "amount": "100.00", "tax_character": "none",
+        "tax_year": "2027", "start": "2028-02-29", "end": "2028-02-29", "priority": "500",
+        "meta_json": "{}", "params_json": "{}",
+    }
+    scheduled.to_csv(path, index=False)
+    with _rerun(load_test_copy, runs_dir, "prior_year") as rc:
+        unpaid = rc.after_tax_net_worth_frame()["unpaid_tax"]
+        due = rc.outstanding_tax_by_year()[2027]
+    assert unpaid["2028-03"].iloc[0] == pytest.approx(due)
+    assert unpaid["2028-04"].iloc[0] == 0
 
 
 def test_a_run_without_tax_rules_has_no_after_tax_deduction(

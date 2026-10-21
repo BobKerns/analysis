@@ -647,8 +647,9 @@ class RunConnection(Connection):
             base = self._drawdown_base_by_month().reindex(months, fill_value=0)
             rates = self._drawdown_rate_by_year()
             years = pd.Index(index_years(nw))
-            rate = (rates.reindex(sorted(set(rates.index) | set(years))).ffill()
-                    .reindex(years).fillna(0.0).to_numpy()) if len(rates) else 0.0
+            # A year with no rate computed (no tax rule in force) takes off
+            # nothing, rather than an earlier year's rate.
+            rate = rates.reindex(years).fillna(0.0).to_numpy() if len(rates) else 0.0
             frame = pd.DataFrame(index=months)
             frame["deferred_tax"] = base * rate
             frame["unpaid_tax"] = self._unpaid_tax_by_month(months)
@@ -707,9 +708,13 @@ class RunConnection(Connection):
         unpaid = pd.Series(0.0, index=months)
         if due.empty:
             return unpaid
+        # Only a tax rule's payment settles the year: other rows can carry an
+        # earlier tax_year too (a next-spring IRA contribution, say).
         paid = self._read_sql(
             "SELECT tax_year, MIN(date) AS date FROM transfer_event "
             "WHERE tax_year IS NOT NULL AND CAST(substr(date, 1, 4) AS INTEGER) > tax_year "
+            "  AND reason_kind = 'rule' AND reason_id IN ("
+            "    SELECT id FROM scheduled_transaction WHERE amount_rule_kind = 'tax_accumulator') "
             "GROUP BY tax_year"
         )
         settled = dict(zip(paid["tax_year"].astype(int),
