@@ -2630,18 +2630,19 @@ def _year_tax_estimate(
     nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
     tax_liability = tax_on(taxable_income, ltcg_income)
 
+    def taxable_with(extra_ordinary: int, extra_ltcg: int) -> tuple[int, int]:
+        """This year's taxable income, and its ordinary part, with more
+        ordinary income and long-term gain on top. More income can use more
+        of a carried-in NOL under its limit, so that is worked out again."""
+        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
+        before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
+        used = min(nol_in, max(0, before_nol) * nol_limit_percent // 100)
+        taxable = max(0, before_nol - used)
+        return taxable, taxable - min(ltcg, taxable)
+
     def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
         """This year's tax with more ordinary income and long-term gain on top."""
-        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
-        before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
-        return tax_on(max(0, before_nol - nol_used), ltcg)
-
-
-    def taxable_with(extra_ordinary: int, extra_ltcg: int) -> tuple[int, int]:
-        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
-        before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
-        taxable = max(0, before_nol - nol_used)
-        return taxable, taxable - min(ltcg, taxable)
+        return tax_on(taxable_with(extra_ordinary, extra_ltcg)[0], ltcg_income + extra_ltcg)
 
     return _TaxEstimate(
         scope=scope, filing_status=filing_status, brackets=brackets,
@@ -2820,8 +2821,8 @@ def _fill_bracket_tax_rule(
     with: ``tax_rule`` by name, or the one rule of its scope."""
     scope = str(params.get("scope", "federal"))
     wanted = params.get("tax_rule")
-    matches = [rule for rule_name, rule in tax_rules if (
-        rule_name == wanted if wanted else str(rule.get("scope", "federal")) == scope)]
+    matches = [rule for rule_name, rule in tax_rules
+               if str(rule.get("scope", "federal")) == scope and (rule_name == wanted or not wanted)]
     if len(matches) != 1:
         raise EngineError(
             f"fill_bracket id={tid} ({name!r}): needs one {scope} tax_accumulator rule "

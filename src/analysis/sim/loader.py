@@ -1007,11 +1007,7 @@ def load_scenario(
             and (m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)
             in leaves.leaf_of
         ),
-        bracket_rates={
-            kind: {int(payload["marginal_rate_micros"]) for k, _, payload, _ in aux_rows
-                   if k == kind and isinstance(payload.get("marginal_rate_micros"), int)}
-            for kind in ("federal_brackets", "state_brackets")
-        },
+        bracket_rates=_bracket_rates(aux_rows),
     )
     _validate_retirement_owners(accounts, persons, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
@@ -2434,10 +2430,39 @@ def _validate_rmd_rules(
 FILL_BRACKET_PARAMS = frozenset({"scope", "max_amount", "max_marginal_rate", "tax_rule"})
 
 
+def _bracket_rates(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+) -> dict[tuple[str, str | None], set[int]]:
+    """Every marginal rate in each (aux kind, series) table of the scenario."""
+    rates: dict[tuple[str, str | None], set[int]] = {}
+    for kind, series, payload, _ in aux_rows:
+        rate = payload.get("marginal_rate_micros")
+        if isinstance(rate, int):
+            rates.setdefault((kind, series), set()).add(rate)
+    return rates
+
+
+def _tax_rule_bracket_table(
+    params: Mapping[str, Any], scope: str, rates: Mapping[tuple[str, str | None], set[int]],
+) -> tuple[str, str | None] | None:
+    """The (aux kind, series) a tax rule reads its brackets from, as
+    ``engine._year_tax_estimate`` picks it, or None when that is decided only
+    at run time (a state rule with several bracket series and none named)."""
+    kind = str(params.get("bracket_aux") or (
+        "federal_brackets" if scope == "federal" else "state_brackets"))
+    series = params.get("bracket_series")
+    if series is None and kind == "state_brackets":
+        named = [s for k, s in rates if k == kind and s is not None]
+        if len(named) != 1:
+            return None
+        series = named[0]
+    return kind, series
+
+
 def _validate_fill_bracket(
     rows: list[dict[str, str]], issues: list[str], *,
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
-    bracket_rates: Mapping[str, set[int]],
+    bracket_rates: Mapping[tuple[str, str | None], set[int]],
 ) -> None:
     """A ``fill_bracket`` rule (#252) converts from one traditional lot to
     one Roth lot, once a year, to a target that is either a bracket (``rate``)
@@ -2445,11 +2470,12 @@ def _validate_fill_bracket(
     of its scope. It has no priority: it always runs after every other rule
     of its month, since the year's RMD has to come out before any of the
     IRA can be converted. Run after the rows' references have been resolved."""
-    tax_rules: list[tuple[str, str]] = []
+    tax_rules: list[tuple[str, str, dict[str, Any]]] = []
     for _, row in _located(rows, "scheduled.csv"):
         if row.get("amount_rule_kind") == "tax_accumulator":
             params = _safe_json(row.get("params_json")) or {}
-            tax_rules.append((row.get("name", ""), str(params.get("scope", "federal"))))
+            tax_rules.append(
+                (row.get("name", ""), str(params.get("scope", "federal")), params))
     for where, row in _located(rows, "scheduled.csv"):
         if row.get("amount_rule_kind") != "fill_bracket":
             continue
@@ -2474,6 +2500,8 @@ def _validate_fill_bracket(
             issues.append(f"{where}: fill_bracket needs tax_character tax_deferred_out")
         if row.get("rate_micros") and row.get("series"):
             issues.append(f"{where}: a bracket target follows its brackets; series is only for amount")
+        if row.get("series") not in ("", "fixed") and not row.get("base_date"):
+            issues.append(f"{where}: series {row.get('series')} needs a base_date to grow from")
         raw = row.get("params_json") or "{}"
         params = _safe_json(raw)
         if params is None:
@@ -2501,9 +2529,13 @@ def _validate_fill_bracket(
             except ValueError as e:
                 issues.append(f"{where}: max_marginal_rate {e}")
         wanted = params.get("tax_rule")
-        matches = [n for n, s in tax_rules if (n == wanted if wanted else s == scope)]
-        if wanted and not matches:
+        named = [s for n, s, _ in tax_rules if n == wanted]
+        matches = [(n, p) for n, s, p in tax_rules if s == scope and (n == wanted or not wanted)]
+        if wanted and not named:
             issues.append(f"{where}: tax_rule '{wanted}' is not a tax_accumulator rule")
+        elif wanted and not matches:
+            issues.append(
+                f"{where}: tax_rule '{wanted}' is a {named[0]} rule, not a {scope} one")
         elif not matches:
             issues.append(
                 f"{where}: fill_bracket measures with a {scope} tax_accumulator rule, "
@@ -2512,9 +2544,11 @@ def _validate_fill_bracket(
         elif len(matches) > 1:
             issues.append(
                 f"{where}: there are {len(matches)} {scope} tax_accumulator rules "
-                f"({', '.join(matches)}); name one with tax_rule in params_json"
+                f"({', '.join(n for n, _ in matches)}); name one with tax_rule in params_json"
             )
-        rates = bracket_rates.get("federal_brackets" if scope == "federal" else "state_brackets")
+        table = _tax_rule_bracket_table(matches[0][1], scope, bracket_rates) if len(
+            matches) == 1 else None
+        rates = bracket_rates.get(table) if table else None
         rate = row.get("rate_micros")
         if rate and rates and int(rate) not in rates:
             issues.append(
