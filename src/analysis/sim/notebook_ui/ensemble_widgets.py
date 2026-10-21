@@ -38,6 +38,7 @@ from analysis.sim.ensemble_plots import (
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.notebook_ui.pickers import (
     AccountDropdown,
+    AfterTaxPicker,
     DollarModePicker,
     LotPicker,
     LogLinearModePicker,
@@ -170,7 +171,8 @@ class EnsembleControls:
                  log_linear_mode: LogLinearMode = LogLinearMode.LINEAR,
                  log_linear_picker: LogLinearModePicker | None = None,
                  dollar_picker: DollarModePicker | None = None,
-                 time_range: TimeRangePicker | None = None):
+                 time_range: TimeRangePicker | None = None,
+                 after_tax_picker: AfterTaxPicker | None = None):
         resolved = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
         accounts, self._recipe_lots, years = recipe_accounts(
             resolved, list_ensemble_recipes(resolved),
@@ -181,6 +183,7 @@ class EnsembleControls:
         self.time_range.cover(years)
         self.log_linear_picker = log_linear_picker or LogLinearModePicker(log_linear_mode)
         self.dollar_picker = dollar_picker or DollarModePicker(dollar_mode)
+        self.after_tax_picker = after_tax_picker or AfterTaxPicker()
         self.account_picker = AccountDropdown(
             [(NET_WORTH, _NET_WORTH_CHOICE), *((a, a) for a in accounts)],
         )
@@ -192,6 +195,11 @@ class EnsembleControls:
     def account(self) -> str | None:
         """The picked account, or None for net worth."""
         return _account(self.account_picker.account)
+
+    @property
+    def after_tax(self) -> bool:
+        """After-tax net worth picked (#251); an account is always pre-tax."""
+        return self.after_tax_picker.value and self.account is None
 
     def _lot_picker(self) -> LotPicker:
         picker = LotPicker(multiple=False)
@@ -218,8 +226,8 @@ class EnsembleControls:
 
     def observe_all(self, redraw: Callable[..., None]) -> None:
         """Call ``redraw`` whenever any control changes."""
-        for picker in (self.log_linear_picker, self.dollar_picker, self.reserve_field,
-                       self.time_range):
+        for picker in (self.log_linear_picker, self.dollar_picker, self.after_tax_picker,
+                       self.reserve_field, self.time_range):
             picker.observe(redraw, names="value")
         self.account_picker.observe(redraw, names="selection")
 
@@ -233,7 +241,7 @@ class ControlsRow(widgets.HBox):
         self.controls = controls
         self.lot_picker = lot_picker
         super().__init__([
-            controls.log_linear_picker, controls.dollar_picker,
+            controls.log_linear_picker, controls.dollar_picker, controls.after_tax_picker,
             widgets.VBox([controls.account_picker, lot_picker]),
             controls.reserve_field, controls.time_range,
         ], layout=widgets.Layout(flex_flow="row wrap", align_items="center"))
@@ -295,22 +303,26 @@ class _MemberFrames:
     def read(
         self, batch_dir: Path, connections: dict[str, RunConnection],
         account: str | None, mode: DollarMode, lot: str | None,
-        on_member: Callable[[], None] | None = None,
+        on_member: Callable[[], None] | None = None, *, after_tax: bool = False,
     ) -> pd.DataFrame:
         """``members_balance_by_month``, read once per batch and choice."""
-        key = (batch_dir, account, mode, lot)
+        key = (batch_dir, account, mode, lot, after_tax)
         if key not in self._frames:
-            frame = members_balance_by_month(connections, account, mode, lot, on_member)
+            frame = members_balance_by_month(
+                connections, account, mode, lot, on_member, after_tax=after_tax)
             if len(self._frames) >= self._size:
                 del self._frames[next(iter(self._frames))]
             self._frames[key] = frame
         return self._frames[key]
 
 
-def _subject(account: str | None, lot: str | None) -> str:
-    """What's shown: net worth, an account, or one lot of it."""
+AFTER_TAX_NET_WORTH = "After-tax net worth"
+
+
+def _subject(account: str | None, lot: str | None, after_tax: bool = False) -> str:
+    """What's shown: net worth (after tax, #251), an account, or one lot of it."""
     if account is None:
-        return NET_WORTH
+        return AFTER_TAX_NET_WORTH if after_tax else NET_WORTH
     return account + (f" lot {lot}" if lot is not None else "")
 
 
@@ -333,7 +345,9 @@ def _reserve(
 
 def _described(subject: str) -> str:
     """``subject`` in a sentence: "net worth", or "account <name>"."""
-    return "net worth" if subject == NET_WORTH else f"account {subject}"
+    if subject in (NET_WORTH, AFTER_TAX_NET_WORTH):
+        return subject.lower()
+    return f"account {subject}"
 
 
 def _default(recipes: list[str], default: str | None) -> str | None:
@@ -417,7 +431,8 @@ def ensemble_widget(*_,
         connections = load_ensemble(batch_dir)
         try:
             account, lot = controls.account, _lot(lot_picker)
-            subject = _subject(account, lot)
+            after_tax = controls.after_tax
+            subject = _subject(account, lot, after_tax)
             mode = dollar_picker.value
             mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
             reserve = _reserve(reserve_field, connections, account)
@@ -431,7 +446,7 @@ def ensemble_widget(*_,
             try:
                 frame = member_frames.read(
                     batch_dir, connections, account, mode, lot,
-                    loading.counter(f"Loading {recipe}", count),
+                    loading.counter(f"Loading {recipe}", count), after_tax=after_tax,
                 )
             except EnsembleError:
                 # The account list spans every recipe; this one lacks it.
@@ -442,6 +457,7 @@ def ensemble_widget(*_,
                 member_frames.read(
                     batch_dir, connections, account, DollarMode.CPI_CONSTANT, lot,
                     loading.counter(f"{recipe} in CPI-constant dollars", count),
+                    after_tax=after_tax,
                 )
                 if needs_cpi else None
             )
@@ -570,7 +586,8 @@ def ensemble_compare_widget(*_,
                 batches[name] = batch_dir
                 sides[name] = load_ensemble(batch_dir)
             account, lot = controls.account, _lot(lot_picker)
-            subject = _subject(account, lot)
+            after_tax = controls.after_tax
+            subject = _subject(account, lot, after_tax)
             log_scale = controls.log_linear_picker.value == LogLinearMode.LOG
             mode = dollar_picker.value
             mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
@@ -587,7 +604,7 @@ def ensemble_compare_widget(*_,
                 try:
                     frames[name] = member_frames.read(
                         batches[name], conns, account, mode, lot,
-                        loading.counter(f"Loading {name}", len(conns)),
+                        loading.counter(f"Loading {name}", len(conns)), after_tax=after_tax,
                     )
                 except EnsembleError:
                     pass
@@ -600,6 +617,7 @@ def ensemble_compare_widget(*_,
                     else member_frames.read(
                         batches[name], sides[name], account, DollarMode.CPI_CONSTANT, lot,
                         loading.counter(f"{name} in CPI-constant dollars", len(sides[name])),
+                        after_tax=after_tax,
                     )
                 )
                 for name, frame in frames.items()

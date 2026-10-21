@@ -970,6 +970,23 @@ to check "did this do roughly what I expected" before opening a notebook.
 month) with inflation taken out, so decades compare at a glance;
 `--dollars nominal` shows the inflated figures instead.
 
+Net worth is shown after the tax still owed on it. Traditional IRA and
+401(k) balances, and unrealized gains in a brokerage account, owe tax when
+they're spent. The run prices that tax as if the money were drawn down
+evenly over ten years, on top of that year's other income, at that year's
+brackets. Tax due for a finished year but not yet paid comes off too, until
+the April payment. The table shows both deductions; `--pre-tax` shows the
+plain balance total instead. To change the ten years, or to leave gains out
+(a basis step-up at death would erase them), set `after_tax` in the
+scenario's `meta_json`, for example
+`{"after_tax": {"drawdown_years": 15, "step_up": true}}`. `sim compare`,
+`sim ensemble summary` and `sim ensemble compare` report after-tax net
+worth too, with the same `--pre-tax`, and the notebooks' net worth widgets
+have a Pre-tax/After-tax toggle. An account's balance is always before tax.
+After tax is what shows a Roth conversion's or a taxable sale's real effect.
+Before tax, tax paid now looks like a loss, while the tax a traditional
+balance still owes doesn't show at all.
+
 `sim compare BASELINE VARIANT` puts two or more scenarios' latest runs side
 by side, as `scenario_compare.ipynb` does: whether the runs came from the same
 code and data, the rules, calendar events, accounts and lots each defines
@@ -1017,7 +1034,7 @@ machine too small for a notebook comfortably.
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
-| net worth by year or month, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal]` |
+| net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax]` |
 | one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly]` |
 | income or expenses by year, by category, account or tag (income adds cash income and cash flow) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
 | realized vs. unrealized gains by year | `sim report gains` |

@@ -139,9 +139,10 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
     modes_seen: list[DollarMode] = []
     real = ensemble_widgets.members_balance_by_month
 
-    def _spy(connections, account=None, mode=DollarMode.NOMINAL, lot=None, on_member=None):
+    def _spy(connections, account=None, mode=DollarMode.NOMINAL, lot=None, on_member=None,
+             *, after_tax=False):
         modes_seen.append(mode)
-        return real(connections, account, mode, lot, on_member)
+        return real(connections, account, mode, lot, on_member, after_tax=after_tax)
 
     monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
     dollar_mode = DollarModePicker()

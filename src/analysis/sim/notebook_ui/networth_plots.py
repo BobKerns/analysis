@@ -20,7 +20,7 @@ from analysis.sim.connection import (
     yearly_totals,
 )
 from analysis.sim.notebook_ui.pickers import (
-    DollarModePicker, TimeRangePicker, controls_row, observe_while_shown, run_years,
+    AfterTaxPicker, DollarModePicker, TimeRangePicker, controls_row, observe_while_shown, run_years,
 )
 from analysis.sim.types import INCOME_CATEGORIES, DollarMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -29,17 +29,24 @@ from analysis.sim.notebook_ui.styled import StyledMarkdown
 def net_worth_widget(rc: RunConnection,
                     *, member: int = 0,
                     time_range: TimeRangePicker | None = None,
+                    after_tax: AfterTaxPicker | None = None,
                     **_) -> widgets.VBox:
-    """Year-end table + monthly chart of net worth (nominal and CPI-constant)."""
+    """Year-end table + monthly chart of net worth (nominal and CPI-constant),
+    pre-tax or after tax (#251); after tax, the table also shows the
+    deferred and unpaid tax taken off."""
     time_range = time_range or TimeRangePicker()
+    after_tax = after_tax or AfterTaxPicker()
     time_range.cover(run_years(rc))
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
 
     def _redraw(*_):
-        nw = time_range.clip(rc.net_worth_frame())
-        year_end = year_end_values(nw[["nominal", "cpi_constant"]])
+        taxed = after_tax.value
+        nw = time_range.clip(
+            rc.after_tax_net_worth_frame() if taxed else rc.net_worth_frame())
+        columns = ["nominal", "cpi_constant", *(["deferred_tax", "unpaid_tax"] if taxed else [])]
+        year_end = year_end_values(nw[columns])
         year_end.index.name = "year"
         with chart_out:
             clear_output(wait=True)
@@ -49,7 +56,7 @@ def net_worth_widget(rc: RunConnection,
                 ax.plot(nw.index, nw["cpi_constant"], label="CPI-constant", linestyle="--")
             ax.set_ylim(bottom=0)
             suffix = "" if member == 0 else f"#{member}"
-            ax.set_title(f"Net worth ({rc.label}{suffix})")
+            ax.set_title(f"{'After-tax net' if taxed else 'Net'} worth ({rc.label}{suffix})")
             ax.set_xlabel("month")
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
@@ -59,12 +66,13 @@ def net_worth_widget(rc: RunConnection,
             plt.show()
         with table_out:
             clear_output(wait=True)
-            display(year_end.style.format({"nominal": "${:,.0f}", "cpi_constant": "${:,.0f}"}))
+            display(year_end.style.format("${:,.0f}"))
 
     observe_while_shown(time_range, _redraw)
+    observe_while_shown(after_tax, _redraw)
     _redraw()
 
-    return widgets.VBox([time_range, chart_out, table_out])
+    return widgets.VBox([controls_row(after_tax, time_range), chart_out, table_out])
 
 
 def income_widget(rc: RunConnection,

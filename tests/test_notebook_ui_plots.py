@@ -37,7 +37,7 @@ def test_net_worth_widgets_share_a_time_range_spanning_the_run(
     net_worth = net_worth_widget(retire_alice_run, time_range=time_range)
     income = income_widget(retire_alice_run, time_range=time_range)
 
-    assert net_worth.children[0] is time_range
+    assert net_worth.children[0].children[1] is time_range
     assert income.children[0].children[1] is time_range
     assert (time_range.min, time_range.max) == (years[0], years[-1])
     assert time_range.is_full

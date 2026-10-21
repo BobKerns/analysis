@@ -265,3 +265,16 @@ def test_a_move_to_a_state_without_a_standard_deduction_falls_back_to_federal(
             "SELECT year, amount FROM tax_year_summary WHERE bucket = 'state_standard_deduction'"
         ).fetchall())
     assert deduction[2028] == 32_200_00  # the federal figure, not California's
+
+
+def test_a_move_without_a_state_tax_rule_says_nothing_of_the_deduction(
+    write_aux: Callable[[str, str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """With no state tax rule, nothing reads either state table, so a move
+    to a state without its own standard deduction isn't worth a warning."""
+    write_aux("state_brackets__WA.csv",
+              "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
+              "2026-01-31,MFJ,0,0.00,0%\n")
+    _swap(append_calendar_row, "2028-03", "state_brackets", "CA", "WA")
+    assert not any("standard deduction" in w for w in load_test_copy().warnings)

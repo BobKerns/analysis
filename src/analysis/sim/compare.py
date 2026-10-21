@@ -279,15 +279,16 @@ def year_to_date_differences(
 
 def net_worth_by_month(
     connections: Mapping[str, RunConnection], scenarios: Sequence[str],
-    mode: DollarMode = DollarMode.NOMINAL,
+    mode: DollarMode = DollarMode.NOMINAL, *, after_tax: bool = False,
 ) -> pd.DataFrame:
-    """Net worth (USD) by month, one column per scenario.
+    """Net worth (USD) by month, one column per scenario, after tax with
+    ``after_tax`` (#251).
 
     A run with no accounts has no net-worth rows; it counts as zero net worth
     over the others' months (#174), not as missing data.
     """
-    value_column = "cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-    columns = {name: connections[name].net_worth_frame()[value_column] for name in scenarios}
+    columns = {name: connections[name].net_worth_series(mode, after_tax=after_tax)
+               for name in scenarios}
     nw = pd.DataFrame(columns)
     for name, column in columns.items():
         if column.empty:

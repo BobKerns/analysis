@@ -36,10 +36,13 @@ class _FakeRun:
     def net_worth_frame(self) -> pd.DataFrame:
         return self._nw
 
+    def net_worth_series(self, mode=None, *, after_tax: bool = False) -> pd.Series:
+        return self._nw["nominal"]
+
 
 def _fake_container(baseline_values, variant_values) -> MultiScenarioConnections:
     return MultiScenarioConnections(
-        connections={  # ty: ignore[invalid-argument-type]  # net_worth_frame() is all they use
+        connections={  # ty: ignore[invalid-argument-type]  # net_worth_series() is all they use
             "base": _FakeRun(baseline_values), "variant": _FakeRun(variant_values),
         },
         baseline="base", variants=["variant"], colors={"base": "C0", "variant": "C1"},

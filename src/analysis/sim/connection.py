@@ -632,6 +632,100 @@ class RunConnection(Connection):
 
         return self._cached("net_worth_frame", _build)
 
+    def after_tax_net_worth_frame(self) -> pd.DataFrame:
+        """Month-indexed after-tax net worth (#251), ``nominal`` and
+        ``cpi_constant``, in dollars, with the two deductions from net worth:
+        ``deferred_tax``, the tax still owed on traditional balances and (unless
+        the scenario's ``after_tax`` says ``step_up``) on taxable lots'
+        unrealized gains, at each year's drawdown rate from the engine; and
+        ``unpaid_tax``, a finished year's balance due until its April payment.
+        """
+
+        def _build() -> pd.DataFrame:
+            nw = self.net_worth_frame()
+            months = nw.index
+            base = self._drawdown_base_by_month().reindex(months, fill_value=0)
+            rates = self._drawdown_rate_by_year()
+            years = pd.Index(index_years(nw))
+            # A year with no rate computed (no tax rule in force) takes off
+            # nothing, rather than an earlier year's rate.
+            rate = rates.reindex(years).fillna(0.0).to_numpy() if len(rates) else 0.0
+            frame = pd.DataFrame(index=months)
+            frame["deferred_tax"] = base * rate
+            frame["unpaid_tax"] = self._unpaid_tax_by_month(months)
+            frame["nominal"] = nw["nominal"] - frame["deferred_tax"] - frame["unpaid_tax"]
+            frame["cpi_constant"] = self.to_cpi_constant(frame["nominal"]).where(
+                nw["cpi_constant"].notna())
+            return frame
+
+        return self._cached("after_tax_net_worth_frame", _build)
+
+    def net_worth_series(self, mode: DollarMode = DollarMode.NOMINAL, *,
+                         after_tax: bool = False) -> pd.Series:
+        """Month-indexed net worth in ``mode`` dollars, after tax with
+        ``after_tax`` (#251)."""
+        column = "cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        frame = self.after_tax_net_worth_frame() if after_tax else self.net_worth_frame()
+        return frame[column]
+
+    def _drawdown_base_by_month(self) -> pd.Series:
+        """Each month's money an after-tax drawdown taxes, as the engine's
+        ``_drawdown_tax`` counts it at a year-end, in dollars."""
+        step_up = bool((self.scenario_meta().get("after_tax") or {}).get("step_up"))
+        df = self._read_sql(
+            "SELECT s.month, m.tax_treatment, a.subkind, ls.balance, ls.cost_basis "
+            "FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
+            "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
+            "WHERE a.kind = 'asset' AND (m.tax_treatment = 'tax_deferred' "
+            "  OR (m.tax_treatment = 'taxable' AND ls.cost_basis IS NOT NULL))"
+        )
+        deferred = df["tax_treatment"] == "tax_deferred"
+        gain = ~deferred & ~df["subkind"].isin(registries.CASH_SUBKINDS)
+        if step_up:
+            gain = gain & False
+        df["base"] = (df["balance"].clip(lower=0).where(deferred, 0)
+                      + (df["balance"] - df["cost_basis"]).clip(lower=0).where(gain, 0))
+        base = df.groupby("month")["base"].sum() / 100
+        base.index = pd.to_datetime(base.index)
+        return base
+
+    def _drawdown_rate_by_year(self) -> pd.Series:
+        """Each computed year's extra drawdown tax (federal plus state) over
+        the money it taxes."""
+        summary = self.items("tax_year_summary").pivot_table(
+            index="year", columns="bucket", values="amount", aggfunc="sum")
+        tax_columns = [c for c in summary.columns if str(c).endswith("_drawdown_tax")]
+        base_columns = [c for c in summary.columns if str(c).endswith("_drawdown_base")]
+        if not tax_columns:
+            return pd.Series(dtype=float)
+        base = summary[base_columns].max(axis=1)
+        return (summary[tax_columns].sum(axis=1) / base.where(base > 0)).fillna(0.0)
+
+    def _unpaid_tax_by_month(self, months: pd.Index) -> pd.Series:
+        """A finished tax year's balance due, from its year-end until the
+        month its payment posts (the April after), in dollars."""
+        due = self.outstanding_tax_by_year()
+        unpaid = pd.Series(0.0, index=months)
+        if due.empty:
+            return unpaid
+        # Only a tax rule's payment settles the year: other rows can carry an
+        # earlier tax_year too (a next-spring IRA contribution, say).
+        paid = self._read_sql(
+            "SELECT tax_year, MIN(date) AS date FROM transfer_event "
+            "WHERE tax_year IS NOT NULL AND CAST(substr(date, 1, 4) AS INTEGER) > tax_year "
+            "  AND reason_kind = 'rule' AND reason_id IN ("
+            "    SELECT id FROM scheduled_transaction WHERE amount_rule_kind = 'tax_accumulator') "
+            "GROUP BY tax_year"
+        )
+        settled = dict(zip(paid["tax_year"].astype(int),
+                           pd.to_datetime(paid["date"]) + pd.offsets.MonthEnd(0), strict=True))
+        for year, amount in due[due > 0].items():
+            start = pd.Timestamp(f"{int(year)}-12-31")
+            end = settled.get(int(year))
+            owed = (months >= start) & ((months < end) if end is not None else True)
+            unpaid[owed] += amount
+        return unpaid
+
     def cpi_index(self) -> pd.Series:
         """Month-indexed cumulative CPI index (micros), for CPI-constant conversion."""
         return self._cached(

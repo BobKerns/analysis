@@ -816,12 +816,31 @@ def _read_scenario_inputs(
             meta["ensemble_size"] = units.json_ensemble_size(meta["ensemble_size"])
         except ValueError as exc:
             issues.append(f"{scenario_name}: scenario.csv meta_json {exc}")
+    if "after_tax" in meta:
+        _check_after_tax(meta["after_tax"], scenario_name, issues)
     scenario_row["name"] = scenario_name
     scenario_row["meta_json"] = json.dumps(meta, separators=(",", ":"))
     return (
         scenario_row, accounts, value_rows, scheduled_rows,
         calendar_rows, lifespan_rows, ytd_rows,
     )
+
+
+def _check_after_tax(settings: object, scenario_name: str, issues: list[str]) -> None:
+    """#251: the after-tax net worth's settings, ``{"drawdown_years": N,
+    "step_up": bool}``, both optional; the engine reads them each year-end."""
+    where = f"{scenario_name}: scenario.csv meta_json after_tax"
+    if not isinstance(settings, dict):
+        issues.append(f"{where} must be a JSON object (got {settings!r})")
+        return
+    for key in sorted(set(settings) - {"drawdown_years", "step_up"}):
+        issues.append(f"{where}: unknown key {key!r} (expected drawdown_years, step_up)")
+    years = settings.get("drawdown_years", 1)
+    if isinstance(years, bool) or not isinstance(years, int) or years < 1:
+        issues.append(f"{where} drawdown_years must be a whole number of years, at least 1 "
+                      f"(got {years!r})")
+    if not isinstance(settings.get("step_up", False), bool):
+        issues.append(f"{where} step_up must be true or false (got {settings['step_up']!r})")
 
 
 @contextmanager
@@ -2649,15 +2668,20 @@ def _warn_state_standard_deduction(
     its brackets' state uses the federal standard deduction (#248), which
     overstates most states' (California's is about a third of it), so its
     tax comes out low. A move to a state (a swap_aux_table of its
-    state_brackets) with no such table falls back the same way."""
+    state_brackets) with no such table falls back the same way; without a
+    state tax rule, nothing reads either table, so a move says nothing."""
     supplied = {(kind, series) for kind, series, *_ in aux_rows}
+    state_rule = False
     states = sorted(series for kind, series in supplied
                     if kind == "state_brackets" and series is not None)
     for where, row in _located(scheduled_rows, "scheduled.csv"):
         if row.get("amount_rule_kind") != "tax_accumulator":
             continue
         params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
-        if params.get("scope") != "state" or "standard_deduction_aux" in params:
+        if params.get("scope") != "state":
+            continue
+        state_rule = True
+        if "standard_deduction_aux" in params:
             continue
         state = params.get("bracket_series") or (states[0] if len(states) == 1 else None)
         if state is None or (registries.STATE_STANDARD_DEDUCTION, state) in supplied:
@@ -2667,7 +2691,7 @@ def _warn_state_standard_deduction(
             f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv "
             "(effective_date, filing_status, amount) with the state's own"
         )
-    for where, row in _located(calendar_rows, "calendar.csv"):
+    for where, row in _located(calendar_rows, "calendar.csv") if state_rule else ():
         params = _safe_json(row.get("params_json")) or {}
         state = params.get("source_series")
         if (row.get("kind") == "swap_aux_table" and params.get("aux_kind") == "state_brackets"
