@@ -23,6 +23,7 @@ from calendar import monthrange
 from datetime import UTC, date, datetime
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -348,16 +349,24 @@ def _yearly_shocks(
     links: dict[str, Link], factors: list[str], node_tails: dict[str, float],
     process_years: dict[str, list[int]], *, seed: int | None, member_index: int,
     flat: bool,
-) -> dict[str, dict[int, float]]:
+) -> tuple[dict[str, dict[int, float]], dict[str, dict[int, PathShock]], dict[tuple[str, int], float]]:
     """Each process row's shock for each calendar year of its path (ADR-006
     §4a, ADR-008 §5). A row in a tree takes that year's score, computed
     through the tree from every node's year noise (``path_rng``) and, in a
     t-copula tree, scaled by that year's ``S`` (``path_tail_rng``); keying by
     calendar year makes two paths' shocks in one year correlate wherever each
     starts. A row in no tree draws its own. ``flat`` (member 0, or an OAT
-    member) sets every shock to 0, so every path sits at its level."""
+    member) sets every shock to 0, so every path sits at its level.
+
+    Also returns, for inspection (#261), each shock's parts (``PathShock``)
+    and each t-copula tree's yearly scale by ``(root, year)``."""
     if flat:
-        return {name: dict.fromkeys(years, 0.0) for name, years in process_years.items()}
+        return (
+            {name: dict.fromkeys(years, 0.0) for name, years in process_years.items()},
+            {name: {y: PathShock(None, None, None, 0.0) for y in years}
+             for name, years in process_years.items()},
+            {},
+        )
     if seed is None:
         raise EnsembleError("a process path needs the ensemble's seed")
     members = tree_members(links) | set(factors)
@@ -365,12 +374,18 @@ def _yearly_shocks(
         name: {y: standard_normal(path_rng(seed, member_index, name, y)) for y in years}
         for name, years in process_years.items() if name not in members
     }
+    parts: dict[str, dict[int, PathShock]] = {
+        name: {y: PathShock(z, z, None, z) for y, z in by_year.items()}
+        for name, by_year in shocks.items()
+    }
+    year_scales: dict[tuple[str, int], float] = {}
     roots = {name: tree_root(links, name) for name in members}
     by_root: dict[str, set[int]] = {}
     for name, years in process_years.items():
         if name in members:
             by_root.setdefault(roots[name], set()).update(years)
             shocks[name] = {}
+            parts[name] = {}
     for root, years in sorted(by_root.items()):
         nodes = sorted(n for n, r in roots.items() if r == root)
         tree_links = {n: links[n] for n in nodes if n in links}
@@ -383,10 +398,30 @@ def _yearly_shocks(
             scores.update({n: noise[n] for n in nodes if n not in scores})
             nu = node_tails.get(root)
             scale = 1.0 if nu is None else tail_scale(nu, path_tail_rng(seed, member_index, root, year))
+            if nu is not None:
+                year_scales[(root, year)] = scale
             for name in nodes:
                 if name in process_years and year in process_years[name]:
                     shocks[name][year] = scores[name] * scale
-    return shocks
+                    parts[name][year] = PathShock(
+                        noise[name], scores[name], None if nu is None else scale, scores[name] * scale,
+                    )
+    return shocks, parts, year_scales
+
+
+@dataclass(frozen=True)
+class PathShock:
+    """One year of a process path's shock (ADR-006 §4a), as recorded in
+    ``ensemble_path_shock`` (#261): the node's own noise that year, its
+    score after its tree mixes it in, the tree's t-copula scale that year
+    (``None`` for a Gaussian tree or a lone row), and the shock the path
+    took, ``score * scale``. Member 0 and OAT members record only the zero
+    shock."""
+
+    noise: float | None
+    score: float | None
+    scale: float | None
+    shock: float
 
 
 def _discrete(
@@ -404,9 +439,10 @@ def _resolve_value(
     row: sqlite3.Row, dist: Distribution | LifeTableAge, *, as_int: bool,
     overrides: dict[str, float] | None, seed: int | None, member_index: int,
     score: float | None = None, conditional: bool = False, nu: float | None = None,
-) -> tuple[float, float | None]:
-    """One varying row's value on one member, and the OAT quantile it was
-    resolved at (``None`` unless ``overrides`` names this row):
+) -> tuple[float, float | None, float | None]:
+    """One varying row's value on one member, the OAT quantile it was
+    resolved at (``None`` unless ``overrides`` names this row), and the
+    probability ``u`` its value sits at in ``dist`` (#261):
 
     - named in ``overrides``: that quantile of ``dist`` (ADR-007 §2);
     - ``conditional``: an OAT member perturbing a latent factor above this
@@ -421,45 +457,67 @@ def _resolve_value(
     ``as_int`` selects the discrete (day-ordinal) form, for a date target.
     In a t-copula tree, ``nu`` is its degrees of freedom and the t CDF
     stands in for ``Phi`` throughout.
+
+    ``u`` is the quantile for an override, ``Phi(score)`` for a scored row,
+    0.5 for a central value (every family's center is its median), and for
+    an independent random draw the uniform its stream gave (``_random_u``).
     """
     if overrides is not None and row["name"] in overrides:
         q = overrides[row["name"]]
         try:
-            return (_discrete(dist, row).quantile_int(q) if as_int else dist.quantile(q)), q
+            return (_discrete(dist, row).quantile_int(q) if as_int else dist.quantile(q)), q, q
         except DistributionError as e:
             raise EnsembleError(f"row {row['name']!r}: {e}") from e
     if conditional and score is not None:
         u = probability(score, nu)
-        return (_discrete(dist, row).value_at_int(u) if as_int else dist.value_at(u)), None
+        return (_discrete(dist, row).value_at_int(u) if as_int else dist.value_at(u)), None, u
     if overrides is not None or member_index == 0:
-        return (_discrete(dist, row).central_int() if as_int else dist.central()), None
+        return (_discrete(dist, row).central_int() if as_int else dist.central()), None, 0.5
     if score is not None:
         u = probability(score, nu)
-        return (_discrete(dist, row).value_at_int(u) if as_int else dist.value_at(u)), None
+        return (_discrete(dist, row).value_at_int(u) if as_int else dist.value_at(u)), None, u
     if seed is None:
         raise EnsembleError(f"row {row['name']!r}: a random draw needs the ensemble's seed")
     rng = member_rng(seed, member_index, row["name"])
-    return (_discrete(dist, row).draw_int(rng) if as_int else dist.draw(rng)), None
+    value = _discrete(dist, row).draw_int(rng) if as_int else dist.draw(rng)
+    return value, None, _random_u(dist, as_int, value, seed, member_index, row["name"])
+
+
+def _random_u(
+    dist: Distribution | LifeTableAge, as_int: bool, value: float, seed: int, member_index: int,
+    name: str,
+) -> float:
+    """The uniform an independent draw of ``value`` came from (#261), read
+    off a fresh copy of its stream rather than by changing how ``draw``
+    works, so no draw moves: every family's ``draw`` (and ``draw_int``, but
+    a uniform date's) is its quantile at the stream's first ``random()``.
+    A uniform date is ``randint`` over its days, so its ``u`` is the middle
+    of the drawn day's share of the span."""
+    if as_int and isinstance(dist, Uniform):
+        low, high = round(dist.low), round(dist.high)
+        return (value - low + 0.5) / (high - low + 1)
+    return member_rng(seed, member_index, name).random()
 
 
 def _resolve_lifespan(
     row: sqlite3.Row, con: sqlite3.Connection, *, overrides: dict[str, float] | None, seed: int | None,
     member_index: int, score: float | None, conditional: bool, nu: float | None,
-) -> tuple[float, float | None]:
-    """A varying lifespan's age on one member (#221), and the OAT quantile it
-    was resolved at, by ``_resolve_value``'s rules, with one difference: its
+) -> tuple[float, float | None, float | None]:
+    """A varying lifespan's age on one member (#221), the OAT quantile it
+    was resolved at and its ``u``, by ``_resolve_value``'s rules, with one difference: its
     base case (member 0, and an OAT member that doesn't move it) is the
     authored ``age_at_death``, not the distribution's median, so a run dies at
-    the age written down. The age is whole months, as its final month is."""
+    the age written down, and has no ``u``. The age is whole months, as its
+    final month is."""
     dist = lifespan_distribution(row, con)
     if overrides is None and member_index != 0 or row["name"] in (overrides or {}) or conditional:
-        value, quantile = _resolve_value(
+        value, quantile, u = _resolve_value(
             row, dist, as_int=False, overrides=overrides, seed=seed,
             member_index=member_index, score=score, conditional=conditional, nu=nu,
         )
     else:
-        value, quantile = row["age_at_death"], None
-    return round(value * 12) / 12, quantile
+        value, quantile, u = row["age_at_death"], None, None
+    return round(value * 12) / 12, quantile, u
 
 
 def _has_columns(con: sqlite3.Connection, table: str, *columns: str) -> bool:
@@ -606,9 +664,11 @@ def _score_at(name: str, q: float, nu: float | None = None) -> float:
 def _member_scores(
     links: dict[str, Link], factors: list[str], *, overrides: dict[str, float] | None,
     seed: int | None, member_index: int, node_tails: dict[str, float] | None = None,
-) -> tuple[dict[str, float], set[str]]:
+) -> tuple[dict[str, float], set[str], dict[str, float], dict[str, float]]:
     """Every tree member's score on this member (ADR-008 §5),
-    and the rows an OAT member moves to a conditional median:
+    the rows an OAT member moves to a conditional median, and, for a random
+    member, each node's own noise and each t-copula tree's scale ``S`` by
+    its root, recorded for inspection (#261):
 
     - a random member: each node's noise from its own keyed stream
       (``member_rng(seed, member, name)``), combined down the tree;
@@ -633,7 +693,7 @@ def _member_scores(
     node_tails = node_tails or {}
     members = tree_members(links) | set(factors)
     if not members:
-        return {}, set()
+        return {}, set(), {}, {}
     if overrides is not None or member_index == 0:
         scores = dict.fromkeys(members, 0.0)
         moved: set[str] = set()
@@ -647,7 +707,7 @@ def _member_scores(
                     # stays at central(), exactly the base, not value_at(0.5),
                     # which can differ by a day for a uniform date.
                     moved |= {n for n, z in family.items() if z != 0.0}
-        return scores, moved
+        return scores, moved, {}, {}
     if seed is None:
         raise EnsembleError("a correlated draw needs the ensemble's seed")
     noise = {name: standard_normal(member_rng(seed, member_index, name)) for name in members}
@@ -657,6 +717,7 @@ def _member_scores(
         scores.update({name: noise[name] for name in members if name not in scores})
     except CorrelationError as e:  # the loader rejects these first
         raise EnsembleError(str(e)) from e
+    scale: dict[str, float] = {}
     if node_tails:
         roots = {tree_root(links, name) for name in node_tails}
         scale = {
@@ -665,7 +726,7 @@ def _member_scores(
         }
         for name in node_tails:
             scores[name] *= scale[tree_root(links, name)]
-    return scores, set()
+    return scores, set(), noise, scale
 
 
 def resolve_member(
@@ -722,12 +783,15 @@ def resolve_member(
                 raise EnsembleError(
                     f"overrides name no unresolved vary_* row or latent factor: {sorted(unknown)}"
                 )
-        scores, moved = _member_scores(
+        scores, moved, noise, level_scales = _member_scores(
             links, factors, overrides=overrides, seed=seed, member_index=member_index,
             node_tails=node_tails,
         )
 
-        draws: list[tuple[str, str, str, float | None, str | None, float | None]] = []
+        # (name, target, drawn_value, quantile, distribution, z, noise, u)
+        draws: list[tuple[
+            str, str, str, float | None, str | None, float | None, float | None, float | None,
+        ]] = []
 
         for row in [r for r in rows if r["vary_target"] == "date"]:
             dist = build_distribution(row, "date")
@@ -739,7 +803,7 @@ def resolve_member(
                     f"row {row['name']!r}: {row['vary_distribution']!r} has no "
                     "discrete date draw"
                 )
-            drawn_ordinal, quantile = _resolve_value(
+            drawn_ordinal, quantile, u = _resolve_value(
                 row, dist, as_int=True, overrides=overrides, seed=seed, member_index=member_index,
                 score=scores.get(row["name"]), conditional=row["name"] in moved,
                 nu=node_tails.get(row["name"]),
@@ -750,10 +814,11 @@ def resolve_member(
                 (drawn.isoformat(), row["id"]),
             )
             draws.append((row["name"], "date", drawn.isoformat(), quantile,
-                          row["vary_distribution"], scores.get(row["name"])))
+                          row["vary_distribution"], scores.get(row["name"]),
+                          noise.get(row["name"]), u))
 
         for row in lifespans:
-            age, quantile = _resolve_lifespan(
+            age, quantile, u = _resolve_lifespan(
                 row, con, overrides=overrides, seed=seed, member_index=member_index,
                 score=scores.get(row["name"]), conditional=row["name"] in moved,
                 nu=node_tails.get(row["name"]),
@@ -765,7 +830,8 @@ def resolve_member(
                  row["person"]),
             )
             draws.append((row["name"], LIFESPAN_TARGET, f"{age:.4f}", quantile,
-                          row["vary_distribution"], scores.get(row["name"])))
+                          row["vary_distribution"], scores.get(row["name"]),
+                          noise.get(row["name"]), u))
 
         # Process paths (ADR-006 §4a) need the drawn dates (a path stops at the
         # next set_rate for its series), and every yearly shock before the
@@ -776,16 +842,17 @@ def resolve_member(
             for r in rows if r["vary_target"] == "amount"
             and (params := _process_params(r)) is not None
         }
-        shocks = _yearly_shocks(
+        shocks, shock_parts, year_scales = _yearly_shocks(
             links, factors, node_tails,
             {name: [s.year for s in steps] for name, (_, steps) in process_rows.items()},
             seed=seed, member_index=member_index,
             flat=overrides is not None or member_index == 0,
         )
 
+        path_shocks: list[tuple[str, int, float | None, float | None, float | None, float, int]] = []
         for row in [r for r in rows if r["vary_target"] == "amount"]:
             dist = build_distribution(row, "amount")
-            value, quantile = _resolve_value(
+            value, quantile, u = _resolve_value(
                 row, dist, as_int=False, overrides=overrides, seed=seed, member_index=member_index,
                 score=scores.get(row["name"]), conditional=row["name"] in moved,
                 nu=node_tails.get(row["name"]),
@@ -810,9 +877,14 @@ def resolve_member(
             elif row["name"] in process_rows:
                 (phi, sd), steps = process_rows[row["name"]]
                 yearly = shocks[row["name"]]
-                _apply_process(con, row, process_path(
-                    target, phi, sd, [yearly[s.year] for s in steps],
-                ), steps)
+                rates = process_path(target, phi, sd, [yearly[s.year] for s in steps])
+                _apply_process(con, row, rates, steps)
+                parts = shock_parts[row["name"]]
+                path_shocks.extend(
+                    (row["name"], step.year, parts[step.year].noise, parts[step.year].score,
+                     parts[step.year].scale, parts[step.year].shock, rate)
+                    for step, rate in zip(steps, rates, strict=True)
+                )
             else:
                 con.execute(
                     "UPDATE calendar_event SET amount = ?, vary_distribution = NULL "
@@ -820,7 +892,8 @@ def resolve_member(
                     (target, row["id"]),
                 )
             draws.append((row["name"], "amount", str(target), quantile,
-                          row["vary_distribution"], scores.get(row["name"])))
+                          row["vary_distribution"], scores.get(row["name"]),
+                          noise.get(row["name"]), u))
         # Factors are drawn too (ADR-008 §6), so achieved correlations can be
         # checked after the fact; their value is just their score.
         # An OAT-perturbed factor records its quantile, so the report can tell
@@ -829,7 +902,7 @@ def resolve_member(
             z = scores.get(factor)
             if z is not None:
                 quantile = overrides.get(factor) if overrides is not None else None
-                draws.append((factor, "factor", repr(z), quantile, None, z))
+                draws.append((factor, "factor", repr(z), quantile, None, z, noise.get(factor), None))
 
         ensemble_name = con.execute("SELECT name FROM scenario").fetchone()[0]
         con.execute(
@@ -844,8 +917,20 @@ def resolve_member(
         )
         con.executemany(
             "INSERT INTO ensemble_draw(calendar_event_name, vary_target, drawn_value, "
-            "quantile, distribution, z) VALUES (?, ?, ?, ?, ?, ?)",
+            "quantile, distribution, z, noise, u) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             draws,
+        )
+        # #261 (#72): each t-copula tree's scale, the member's (year NULL)
+        # and each process year's, and every process path's yearly shocks.
+        con.executemany(
+            "INSERT INTO ensemble_tail_scale(tree_root, year, scale) VALUES (?, ?, ?)",
+            [(root, None, s) for root, s in sorted(level_scales.items())]
+            + [(root, year, s) for (root, year), s in sorted(year_scales.items())],
+        )
+        con.executemany(
+            "INSERT INTO ensemble_path_shock(node, year, noise, score, scale, shock, rate) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            path_shocks,
         )
         con.commit()
     finally:

@@ -16,18 +16,6 @@ from analysis.sim.sensitivity import parameters
 
 # Alice was born 1965-03-15 and Bill 1967-08-20 (prototype persons.csv);
 # retire_alice runs 2026-05 through 2040-12.
-_HEADER = (
-    "person,age_at_death,vary_distribution,vary_low,vary_high,vary_mode,"
-    "vary_correlate_with,vary_correlation\n"
-)
-
-
-@pytest.fixture
-def write_lifespans(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
-    """Write retire_alice's lifespan.csv from rows of its cells, after the header."""
-    def _write(*rows: str) -> None:
-        retire_alice_csv("lifespan.csv").write_text(_HEADER + "".join(f"{r}\n" for r in rows))
-    return _write
 
 
 def _lifespans(path: Path) -> dict[str, tuple]:

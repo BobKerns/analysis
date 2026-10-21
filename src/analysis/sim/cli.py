@@ -720,6 +720,7 @@ def _run_ensemble(
     # member failing, leaving no member_*.sqlite3 at all) is still visible
     # to a later `sim ensemble summary`/notebook widget.
     write_batch_manifest(member_runs_dir, member_count=member_count, failures=failures)
+    _build_draws_db(member_runs_dir, member_intent_dir)
     _report_batch(f"ensemble {scenario_name} ({batch})", member_count, failures)
 
 
@@ -765,7 +766,21 @@ def _run_sensitivity(
         member_runs_dir, member_count=len(plan), failures=failures,
         mode="sensitivity", quantiles=quantiles, rows=perturbed,
     )
+    _build_draws_db(member_runs_dir, member_intent_dir)
     _report_batch(f"sensitivity {scenario_name} ({batch})", len(plan), failures)
+
+
+def _build_draws_db(member_runs_dir: Path, member_intent_dir: Path) -> None:
+    """#261: gather the batch's draws into its draws.sqlite3. A batch whose
+    members ran is worth keeping even if this fails, so a failure is a
+    warning naming the command that retries it, not an error."""
+    from analysis.sim.draws_db import build_draws_db
+
+    try:
+        build_draws_db(member_runs_dir, member_intent_dir)
+    except (EnsembleError, sqlite3.Error, OSError) as exc:
+        click.echo(f"warning: draws database not written ({exc}); "
+                   "'sim ensemble draws --rebuild' retries it", err=True)
 
 
 def _recipe_identity(recipe_intent_path: Path) -> tuple[int | None, str | None, str]:
