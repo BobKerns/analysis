@@ -22,18 +22,7 @@ from analysis.sim.sensitivity import parameters
 # Alice (f) was born 1965-03-15 and Bill (m) 1967-08-20 (prototype persons.csv);
 # retire_alice starts 2026-05, when Alice is 61 years 2 months old. The
 # prototype's aux/life_table.csv is SSA's 2023 period table.
-_HEADER = (
-    "person,age_at_death,vary_distribution,vary_low,vary_high,vary_mode,"
-    "vary_correlate_with,vary_correlation\n"
-)
 _ALICE_START = months_since_birth("1965-03-15", "2026-05-31")
-
-
-@pytest.fixture
-def write_lifespans(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
-    def _write(*rows: str) -> None:
-        retire_alice_csv("lifespan.csv").write_text(_HEADER + "".join(f"{r}\n" for r in rows))
-    return _write
 
 
 def _lifespan(path: Path, person: str) -> tuple:

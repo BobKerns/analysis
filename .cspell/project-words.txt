@@ -68,6 +68,7 @@ fontsize
 footgun
 framealpha
 gethostname
+getpid
 Ghostty
 gmtoffset
 Gompertz
@@ -87,7 +88,9 @@ jupyterhub
 keepends
 kendalltau
 kernelspec
+Kolmogorov
 kstest
+labelcolor
 labelrotation
 LABSTAT
 lastrowid
@@ -182,6 +185,7 @@ SHASUMS
 shellcheck
 Shiller
 sidefx
+Smirnov
 Sobol
 sourceable
 sqls

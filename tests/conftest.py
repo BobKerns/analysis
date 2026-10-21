@@ -582,6 +582,21 @@ def retire_alice_csv(test_scenarios_dir: Path) -> Callable[[str], Path]:
     return lambda name: test_scenarios_dir / "retire_alice" / name
 
 
+_LIFESPAN_HEADER = (
+    "person,age_at_death,vary_distribution,vary_low,vary_high,vary_mode,"
+    "vary_correlate_with,vary_correlation\n"
+)
+
+
+@pytest.fixture(scope="function")
+def write_lifespans(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Write the private retire_alice copy's lifespan.csv (#221) from rows of
+    its cells, after the header: ``write_lifespans("alice,80,life_table,,,,,")``."""
+    def _write(*rows: str) -> None:
+        retire_alice_csv("lifespan.csv").write_text(_LIFESPAN_HEADER + "".join(f"{r}\n" for r in rows))
+    return _write
+
+
 @pytest.fixture(scope="function")
 def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
     """Add headroom to the private retire_alice copy's Asset_Savings opening
