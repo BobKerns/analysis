@@ -575,7 +575,7 @@ def run_scenario(
                     params, from_id=None, to_id=tail_to, aux=aux,
                     tax_char=tax_char, tid=tid, post_transfer=False,
                     tax_year=_tax_year,
-                    person_lifespan=person_lifespan,
+                    person_lifespan=person_lifespan, taxpayers=taxpayers,
                 )
 
         if skipped_counts:
@@ -3058,7 +3058,7 @@ def _apply_fill_bracket(
         cliff = None
         if magi_est is not None and irmaa is not None:
             def cliff(x: int, e: _TaxEstimate = magi_est) -> int:
-                return irmaa.annual_cost(tax_year, e.agi_with(x, 0), e.filing_status, month_s, tid)
+                return irmaa.annual_cost(tax_year, e.agi_with(x, 0), month_s, tid)
         amount = _within_marginal_rate(est.tax_with, cliff, amount, limit)
     event_id = _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_lot, to_lot, amount,
@@ -3182,14 +3182,17 @@ class IrmaaContext:
 
     def filing_status(self, year: int, aux_kind: str, tid: int) -> str:
         """The filing status on tax ``year``'s return, as the tax rule finds
-        it; a year before the filing_status table starts takes its first row."""
+        it; a year before the filing_status table starts takes its first row,
+        though a death before ``year`` is still judged against ``year``."""
+        table_year = year
         if not _active_aux_rows(self.aux, aux_kind, None, f"{year}-12-31"):
             rows = self.aux.get((aux_kind, None)) or []
             if rows:
-                year = int(rows[0][0][:4])
+                table_year = int(rows[0][0][:4])
         return _active_filing_status(
             self.aux, aux_kind, year, tid,
             person_lifespan=self.person_lifespan, taxpayers=self.taxpayers,
+            table_year=table_year,
         )
 
     def tier(self, con, year: int, aux_kind: str, tid: int) -> IrmaaTier | None:
@@ -3215,34 +3218,45 @@ class IrmaaContext:
                 )
         return self._charged[key]
 
-    def enrolled(self, premium_year: int, month_s: str) -> list[tuple[str, ...]]:
-        """The add-ons (``parts``) of each irmaa rule that will charge in
-        ``premium_year``, as a planner sees it in ``month_s``: its months
-        reach that year and its person is still alive."""
+    def enrolled(
+        self, premium_year: int, month_s: str,
+    ) -> list[tuple[tuple[str, ...], str, int]]:
+        """The add-ons (``parts``), filing-status table and months charged in
+        ``premium_year`` of each irmaa rule that will charge then, as a
+        planner sees it in ``month_s``: the months its start and end allow,
+        if its person is still alive. A death not yet happened isn't
+        foreseen, as a planner can't foresee it."""
         enrolled = []
         for row in self.rules:
             person, start, end, ext = row[8], row[16], row[17], row[13]
-            if start[:4] > str(premium_year) or (end is not None and end[:4] < str(premium_year)):
-                continue
             if person in self.person_lifespan and self.person_lifespan[person] < month_s:
                 continue
-            parts = str((json.loads(ext) if ext else {}).get("parts", "B+D"))
-            enrolled.append(IRMAA_PARTS[parts])
+            months = sum(
+                1 for m in range(1, 13)
+                if start <= (month_end := date(
+                    premium_year, m, calendar.monthrange(premium_year, m)[1]).isoformat())
+                and (end is None or month_end <= end)
+            )
+            if not months:
+                continue
+            params = json.loads(ext) if ext else {}
+            enrolled.append((IRMAA_PARTS[str(params.get("parts", "B+D"))],
+                             str(params.get("filing_status_aux", "filing_status")), months))
         return enrolled
 
-    def annual_cost(
-        self, year: int, magi: int, filing_status: str, month_s: str, tid: int,
-    ) -> int:
+    def annual_cost(self, year: int, magi: int, month_s: str, tid: int) -> int:
         """What ``magi`` on ``year``'s return costs in surcharges two years
         later, for everyone who will be enrolled then, priced with the table
-        in force in ``year`` (what a planner knows when it decides)."""
-        enrolled = self.enrolled(year + IRMAA_YEARS_BACK, month_s)
-        if not enrolled:
-            return 0
-        charged = [t for t in self.tiers(year, filing_status, tid) if magi > t.floor]
-        if not charged:
-            return 0
-        return 12 * sum(getattr(charged[-1], part) for parts in enrolled for part in parts)
+        in force in ``year`` (what a planner knows when it decides). Each
+        rule's tier follows its own filing-status table, as its charge will,
+        for the months it will charge."""
+        cost = 0
+        for parts, status_aux, months in self.enrolled(year + IRMAA_YEARS_BACK, month_s):
+            tiers = self.tiers(year, self.filing_status(year, status_aux, tid), tid)
+            charged = [t for t in tiers if magi > t.floor]
+            if charged:
+                cost += months * sum(getattr(charged[-1], part) for part in parts)
+        return cost
 
     def charge(self, con, year: int, params: Mapping[str, Any], tid: int) -> int:
         """One month's surcharge for one enrollee in premium ``year``: the
@@ -3442,24 +3456,28 @@ def _active_filing_status(
     tid: int,
     *, person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
+    table_year: int | None = None,
 ) -> str:
     """Filing status for ``tax_year``: the filing_status aux table's latest row on
     or before the year's end, except that a joint or separate filer becomes Single
     the year after a taxpayer's ``lifespan.csv`` ``final_month`` (the survivor may
     still file jointly for the year of death). The lifespan alone is enough; the
-    aux table needs no row for it.
+    aux table needs no row for it. ``table_year`` reads the table as of another
+    year (an IRMAA return from before the table starts) without moving the
+    death test.
     """
+    table_year = tax_year if table_year is None else table_year
     died = any(
         int(final_month[:4]) < tax_year
         for person, final_month in (person_lifespan or {}).items()
         if person in taxpayers
     )
-    rows = _active_aux_rows(aux, filing_status_aux, None, f"{tax_year}-12-31")
+    rows = _active_aux_rows(aux, filing_status_aux, None, f"{table_year}-12-31")
     if not rows:
         if died:
             return "Single"
         raise EngineError(
-            f"tax_accumulator id={tid}: no filing_status row effective <= {tax_year}-12-31"
+            f"tax_accumulator id={tid}: no filing_status row effective <= {table_year}-12-31"
         )
     status = rows[0].get("filing_status")
     if not status:

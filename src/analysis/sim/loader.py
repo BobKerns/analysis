@@ -1032,8 +1032,10 @@ def load_scenario(
             in leaves.leaf_of
         ),
         bracket_rates=_bracket_rates(aux_rows),
-        irmaa_tiers=any(kind == registries.IRMAA_TIERS and table is None
-                        for kind, table, *_ in aux_rows),
+        irmaa_tiers=frozenset(
+            payload["tier"] for kind, table, payload, _effective in aux_rows
+            if kind == registries.IRMAA_TIERS and table is None
+            and isinstance(payload.get("tier"), int)),
     )
     _validate_retirement_owners(accounts, persons, issues)
     _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
@@ -2265,7 +2267,7 @@ def _validate_irmaa(
         return
     people = {p.get("id", "") for p in persons
               if (p.get("role") or "").strip() in registries.PERSON_ROLES}
-    federal = any(
+    federal = sum(
         row.get("amount_rule_kind") == "tax_accumulator"
         and (_safe_json(row.get("params_json")) or {}).get("scope", "federal") == "federal"
         for row in rows
@@ -2282,6 +2284,11 @@ def _validate_irmaa(
             issues.append(
                 f"{where}: irmaa reads the MAGI a federal tax_accumulator rule computes, "
                 "and there is none")
+        elif federal > 1:
+            # Each would record its own federal_magi over the other's.
+            issues.append(
+                f"{where}: irmaa reads the MAGI a federal tax_accumulator rule computes, "
+                f"and there are {federal}; it needs exactly one")
         params = _safe_json(row.get("params_json") or "{}")
         if params is None:
             issues.append(f"{where}: params_json is not a JSON object")
@@ -2293,6 +2300,9 @@ def _validate_irmaa(
                 f"(known: {', '.join(sorted(IRMAA_PARAMS))})")
         if params.get("parts", "B+D") not in IRMAA_PARTS:
             issues.append(f"{where}: parts must be one of {', '.join(IRMAA_PARTS)}")
+        status_aux = params.get("filing_status_aux", "filing_status")
+        if not any(kind == status_aux for kind, _table, _payload, _effective in aux_rows):
+            issues.append(f"{where}: filing_status_aux {status_aux!r} has no aux table")
     tiers = [(table, payload, effective) for kind, table, payload, effective in aux_rows
              if kind == registries.IRMAA_TIERS]
     if not any(table is None for table, _, _ in tiers):
@@ -2306,7 +2316,10 @@ def _validate_irmaa(
         return
     first = int(start[:4])
     meta = json.loads(scenario_row.get("meta_json") or "{}")
-    known = set((meta.get("irmaa") or {}).get("magi") or {})
+    # A malformed irmaa setting is already an issue (_check_irmaa_meta).
+    settings = meta.get("irmaa") if isinstance(meta, dict) else None
+    magi = settings.get("magi") if isinstance(settings, dict) else None
+    known = set(magi) if isinstance(magi, dict) else set()
     for premium_year in (first, first + 1):
         charged = any(
             row.get("start", "")[:4] <= str(premium_year)
@@ -2601,7 +2614,7 @@ def _validate_fill_bracket(
     issues: list[str], *,
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
     bracket_rates: Mapping[tuple[str, str | None], set[int]],
-    irmaa_tiers: bool = False,
+    irmaa_tiers: frozenset[int] = frozenset(),
 ) -> None:
     """A ``fill_bracket`` rule (#252) converts from one traditional lot to
     one Roth lot, once a year, to a target that is either a bracket (``rate``)
@@ -2685,10 +2698,26 @@ def _validate_fill_bracket(
             if not irmaa_tiers:
                 issues.append(
                     f"{where}: irmaa_tier needs aux/{registries.IRMAA_TIERS}.csv, the tiers to stay within")
+            elif isinstance(tier, int) and not any(t > tier for t in irmaa_tiers):
+                # Staying within the top tier caps nothing; say so rather
+                # than run as if the cap were in force.
+                issues.append(
+                    f"{where}: irmaa_tier {tier} is the top tier or above "
+                    f"(aux/{registries.IRMAA_TIERS}.csv tops out at {max(irmaa_tiers)}), "
+                    "so it caps nothing")
             if not any(s == "federal" for _, s, _ in tax_rules):
                 issues.append(
                     f"{where}: irmaa_tier measures MAGI with a federal tax_accumulator rule, "
                     "and there is none")
+        irmaa_rules = any(r.get("amount_rule_kind") == "irmaa" for r in rows)
+        if (params.get("scope", "federal") != "federal"
+                and ("irmaa_tier" in params or ("max_marginal_rate" in params and irmaa_rules))
+                and sum(s == "federal" for _, s, _ in tax_rules) > 1):
+            # MAGI is federal whatever the scope; with a state target there
+            # is no tax_rule naming which federal rule measures it.
+            issues.append(
+                f"{where}: a state fill_bracket that watches IRMAA measures MAGI with the "
+                "federal tax_accumulator rule, and there is more than one")
         if "max_marginal_rate" in params:
             try:
                 if not 0 <= units.percent_to_micros(str(params["max_marginal_rate"])) <= 1_000_000:

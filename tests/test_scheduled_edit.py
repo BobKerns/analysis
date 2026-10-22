@@ -433,6 +433,31 @@ def test_add_an_annual_kind_defaults_to_annual_in_december(
     assert (row["cadence"], row["month_of_year"]) == ("annual", "12")
 
 
+@pytest.mark.parametrize(("from_account", "character"), [
+    ("Income_SS_Alice", "ss_benefit"),  # withheld from the benefit, counted in it
+    ("Asset_Checking", "none"),  # billed: no income
+    ("Income_Salary_Alice", "none"),  # income, but not the benefit
+])
+def test_add_irmaa_takes_its_tax_character_from_where_it_is_paid(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame], from_account: str,
+    character: str,
+) -> None:
+    taxes = _sim(
+        test_data_dir, "retire_alice", "add", "2027-01", "Asset_Checking", "Expense_Living",
+        "--kind", "tax_accumulator", "--params-json", '{"year":"previous","scope":"federal"}',
+        "--name", "tax_test",
+    )
+    assert taxes.exit_code == 0, taxes.output
+
+    result = _sim(
+        test_data_dir, "retire_alice", "add", "2030-03", from_account, "Expense_Healthcare",
+        "--kind", "irmaa", "--person", "alice", "--name", "irmaa_test",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _rule(scheduled(), "irmaa_test")["tax_character"] == character
+
+
 def test_an_annual_kind_refuses_another_cadence(test_data_dir: Path) -> None:
     result = _sim(
         test_data_dir, "retire_alice", "add", "2027-01", "Asset_TraditionalIRA_Alice",

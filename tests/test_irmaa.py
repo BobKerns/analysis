@@ -251,6 +251,15 @@ def test_a_year_before_the_filing_status_table_takes_its_first_row() -> None:
     assert _context(aux).filing_status(2024, "filing_status", 1) == "MFJ"
 
 
+def test_a_death_after_a_return_before_the_table_leaves_that_return_joint() -> None:
+    # The 2024 return is joint though the table starts in 2026 and bill died
+    # in 2025: the death is judged against 2024, not the table's first year.
+    aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 1, None))}
+    context = _context(aux, person_lifespan={"bill": "2025-06-30"}, taxpayers=("alice", "bill"))
+    assert context.filing_status(2024, "filing_status", 1) == "MFJ"
+    assert context.filing_status(2026, "filing_status", 1) == "Single"
+
+
 def test_a_missing_federal_magi_is_an_error() -> None:
     from analysis.sim.engine import EngineError
 
@@ -307,6 +316,7 @@ def load_with(
     ({"cadence": "annual", "month_of_year": "1"}, True, "irmaa needs cadence monthly"),
     ({"amount": "10.00"}, True, "irmaa takes no amount"),
     ({"params_json": '{"parts": "A"}'}, True, "parts must be one of"),
+    ({"params_json": '{"filing_status_aux": "nope"}'}, True, "filing_status_aux 'nope' has no aux table"),
     ({"params_json": '{"tiers": 1}'}, True, "unknown params_json key"),
     ({}, False, "there is none"),
 ])
@@ -315,6 +325,23 @@ def test_the_loader_checks_an_irmaa_rule(
 ) -> None:
     with pytest.raises(LoadError, match=message):
         load_with(tax=tax, **cells)
+
+
+def test_an_irmaa_rule_needs_exactly_one_federal_tax_rule(
+    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "name": "tax_federal_too",
+        "from_account": "Asset_Checking", "to_account": "Expense_Taxes_Federal",
+        "cadence": "annual", "month_of_year": "12", "amount_rule_kind": "tax_accumulator",
+        "tax_character": "none", "start": "2027-12-31", "meta_json": "{}",
+        "params_json": '{"year":"current"}'}
+    scheduled.to_csv(path, index=False)
+    with pytest.raises(LoadError, match="and there are 2; it needs exactly one"):
+        load_with()
 
 
 def test_a_rule_starting_after_the_first_two_years_needs_no_prior_magi(
@@ -334,6 +361,8 @@ def test_a_missing_prior_magi_year_is_a_warning(load_with: Callable[..., LoadRes
     ({"magi": {"24": "1.00"}}, "is not a four-digit year"),
     ({"magi": {"2024": 1.5}}, "invalid dollar value"),
     ({"prior": {}}, "unknown key 'prior'"),
+    ([2024], "must be a JSON object"),
+    ({"magi": []}, "magi must map years to dollars"),
 ])
 def test_the_loader_checks_irmaa_meta(
     load_with: Callable[..., LoadResult], meta: object, message: str,
@@ -421,6 +450,43 @@ def test_irmaa_tier_needs_a_tier_table_and_a_whole_number(
     assert "irmaa_tier needs aux/irmaa_tiers.csv" in issues
 
 
+def test_irmaa_tier_at_the_top_tier_caps_nothing_and_is_refused(
+    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}",
+        **_conversion(2031, irmaa_tier=5)}
+    scheduled.to_csv(path, index=False)
+    with pytest.raises(LoadError) as error:
+        load_with()
+    assert "irmaa_tier 5 is the top tier or above" in "\n".join(error.value.issues)
+
+
+def test_a_state_fill_bracket_watching_irmaa_needs_one_federal_rule(
+    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    blank = {**dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}"}
+    for name in ("federal_a", "federal_b"):
+        scheduled.loc[len(scheduled)] = {
+            **blank, "name": name, "from_account": "Asset_Checking",
+            "to_account": "Expense_Living", "cadence": "annual", "month_of_year": "12",
+            "amount_rule_kind": "tax_accumulator", "tax_character": "none",
+            "start": "2027-01-31", "params_json": '{"year":"current","scope":"federal"}'}
+    scheduled.loc[len(scheduled)] = {
+        **blank, **_conversion(2031, scope="state", irmaa_tier=0)}
+    scheduled.to_csv(path, index=False)
+    with pytest.raises(LoadError) as error:
+        load_with()
+    assert "measures MAGI with the federal tax_accumulator rule, and there is more than one" in (
+        "\n".join(error.value.issues))
+
+
 def _flat_tax(rate: float) -> Callable[[int, int], int]:
     return lambda extra, _ltcg: int(extra * rate)
 
@@ -468,5 +534,30 @@ def test_a_cliff_costs_a_years_surcharge_for_each_person_enrolled_two_years_on()
     gone[8] = "carol"  # dies before the conversion is decided
     context = _context(aux, rules=[both, part_b, late, gone],
                        person_lifespan={"carol": "2030-06-30"})
-    assert context.annual_cost(2031, 200_000_00, "MFJ", "2031-12-31", 1) == 0
-    assert context.annual_cost(2031, 200_000_01, "MFJ", "2031-12-31", 1) == 12 * (110_00 + 100_00)
+    assert context.annual_cost(2031, 200_000_00, "2031-12-31", 1) == 0
+    assert context.annual_cost(2031, 200_000_01, "2031-12-31", 1) == 12 * (110_00 + 100_00)
+
+
+def test_annual_cost_prices_each_rule_with_its_own_filing_status_table() -> None:
+    aux = {
+        (registries.IRMAA_TIERS, None): _tiers(
+            ("MFJ", 1, 200_000_00, None), ("Single", 1, 100_000_00, None)),
+        ("single_status", None): [("2026-01-31", {"filing_status": "Single"})],
+    }
+    rule = [None] * 23
+    joint, single = list(rule), list(rule)
+    for row, ext in ((joint, None), (single, '{"filing_status_aux": "single_status"}')):
+        row[8], row[13], row[16], row[17] = "alice", ext, "2030-01-31", None
+    context = _context(aux, rules=[joint, single])
+    # Over the single floor only: just the rule reading the Single table pays.
+    assert context.annual_cost(2031, 150_000_00, "2031-12-31", 1) == 12 * 110_00
+
+
+def test_annual_cost_counts_only_the_months_a_rule_charges() -> None:
+    aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 200_000_00, None))}
+    rule = [None] * 23
+    late, early = list(rule), list(rule)
+    late[8], late[16], late[17] = "alice", "2033-12-31", None  # enrolls in December
+    early[8], early[16], early[17] = "bill", "2030-01-31", "2033-06-30"  # ends in June
+    context = _context(aux, rules=[late, early])
+    assert context.annual_cost(2031, 200_000_01, "2031-12-31", 1) == (1 + 6) * 110_00
