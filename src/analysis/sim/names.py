@@ -30,6 +30,7 @@ __all__ = [
     "series_names",
     "symbols",
     "tag_tokens",
+    "ytd_names",
 ]
 
 
@@ -104,6 +105,11 @@ def chain_names(data_dir: Path, scenario: str, *, accounts: bool = False) -> lis
 def scheduled_names(data_dir: Path, scenario: str) -> list[str]:
     """The scenario's scheduled rules, its own and inherited."""
     return _column((d / "scheduled.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
+
+
+def ytd_names(data_dir: Path, scenario: str) -> list[str]:
+    """The names of the scenario's year_to_date.csv rows, its own and inherited."""
+    return _column((d / "year_to_date.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
 
 
 def calendar_row_names(data_dir: Path, scenario: str) -> list[str]:

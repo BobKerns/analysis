@@ -57,6 +57,7 @@ def test_rules_rows_and_persons(data_dir: Path) -> None:
     assert "salary_alice" in names.scheduled_names(data_dir, "retire_alice")
     # base's latent factors, inherited.
     assert "core_inflation" in names.calendar_row_names(data_dir, "retire_alice")
+    assert "prior_ordinary_wages" in names.ytd_names(data_dir, "retire_alice")
     assert {"alice", "bill"} <= set(names.person_ids(data_dir))
 
 
@@ -93,6 +94,13 @@ def test_account_completes_in_the_named_scenario(data_dir: Path) -> None:
     ]
     # Matching ignores case.
     assert _complete(data_dir, "account edit --scenario retire_alice asset_ch") == ["Asset_Checking"]
+
+
+def test_a_year_to_date_row_completes(data_dir: Path) -> None:
+    assert _complete(data_dir, "ytd edit --scenario retire_alice prior_f") == ["prior_federal_withholding"]
+    assert _complete(data_dir, "ytd add --scenario retire_alice x Income_Salary_Alice Asset_Ch") == [
+        "Asset_Checking",
+    ]
 
 
 def test_account_completes_in_the_current_scenario(test_data_dir: Path) -> None:

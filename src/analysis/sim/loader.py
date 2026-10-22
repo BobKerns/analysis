@@ -818,6 +818,8 @@ def _read_scenario_inputs(
             issues.append(f"{scenario_name}: scenario.csv meta_json {exc}")
     if "after_tax" in meta:
         _check_after_tax(meta["after_tax"], scenario_name, issues)
+    if "irmaa" in meta:
+        _check_irmaa_meta(meta["irmaa"], scenario_name, issues)
     scenario_row["name"] = scenario_name
     scenario_row["meta_json"] = json.dumps(meta, separators=(",", ":"))
     return (
@@ -841,6 +843,28 @@ def _check_after_tax(settings: object, scenario_name: str, issues: list[str]) ->
                       f"(got {years!r})")
     if not isinstance(settings.get("step_up", False), bool):
         issues.append(f"{where} step_up must be true or false (got {settings['step_up']!r})")
+
+
+def _check_irmaa_meta(settings: object, scenario_name: str, issues: list[str]) -> None:
+    """#253: ``{"magi": {"<year>": <dollars>, ...}}``, the household's MAGI
+    for tax years before the run, which the first two premium years read."""
+    where = f"{scenario_name}: scenario.csv meta_json irmaa"
+    if not isinstance(settings, dict):
+        issues.append(f"{where} must be a JSON object (got {settings!r})")
+        return
+    for key in sorted(set(settings) - {"magi"}):
+        issues.append(f"{where}: unknown key {key!r} (expected magi)")
+    magi = settings.get("magi", {})
+    if not isinstance(magi, dict):
+        issues.append(f"{where} magi must map years to dollars (got {magi!r})")
+        return
+    for year, amount in magi.items():
+        if not (isinstance(year, str) and len(year) == 4 and year.isdigit()):
+            issues.append(f"{where} magi: {year!r} is not a four-digit year")
+        try:
+            units.json_dollars_to_cents(amount)
+        except ValueError as exc:
+            issues.append(f"{where} magi {year}: {exc}")
 
 
 @contextmanager
@@ -1008,8 +1032,11 @@ def load_scenario(
             in leaves.leaf_of
         ),
         bracket_rates=_bracket_rates(aux_rows),
+        irmaa_tiers=any(kind == registries.IRMAA_TIERS and table is None
+                        for kind, table, *_ in aux_rows),
     )
     _validate_retirement_owners(accounts, persons, issues)
+    _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
@@ -2216,6 +2243,115 @@ def _validate_retirement_owners(
             )
 
 
+IRMAA_PARAMS = frozenset({"parts", "filing_status_aux"})
+IRMAA_PARTS = ("B+D", "B", "D")
+
+
+def _validate_irmaa(
+    rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    persons: list[dict[str, str]], scenario_row: dict[str, str],
+    issues: list[str], warnings: list[str],
+) -> None:
+    """An ``irmaa`` rule (#253) charges one enrolled person the Medicare
+    surcharge, each month, for the tier the household's MAGI two years
+    earlier lands in: so it needs a person, a federal tax rule to compute
+    MAGI, and an ``irmaa_tiers`` table. The first two premium years read
+    MAGI from before the run, in ``meta_json`` ``irmaa.magi``; a year left
+    out charges nothing, which is worth a warning."""
+    rules = [(where, row) for where, row in _located(rows, "scheduled.csv")
+             if row.get("amount_rule_kind") == "irmaa"]
+    if not rules:
+        return
+    people = {p.get("id", "") for p in persons
+              if (p.get("role") or "").strip() in registries.PERSON_ROLES}
+    federal = any(
+        row.get("amount_rule_kind") == "tax_accumulator"
+        and (_safe_json(row.get("params_json")) or {}).get("scope", "federal") == "federal"
+        for row in rows
+    )
+    for where, row in rules:
+        where = f"{where} ({row.get('name', '')})"
+        if row.get("person", "") not in people:
+            issues.append(f"{where}: irmaa needs person, the one enrolled in Medicare")
+        if row.get("cadence") != "monthly":
+            issues.append(f"{where}: irmaa needs cadence monthly")
+        if row.get("amount"):
+            issues.append(f"{where}: irmaa takes no amount; its tier table sets it")
+        if not federal:
+            issues.append(
+                f"{where}: irmaa reads the MAGI a federal tax_accumulator rule computes, "
+                "and there is none")
+        params = _safe_json(row.get("params_json") or "{}")
+        if params is None:
+            issues.append(f"{where}: params_json is not a JSON object")
+            continue
+        unknown = sorted(set(params) - IRMAA_PARAMS)
+        if unknown:
+            issues.append(
+                f"{where}: unknown params_json key(s) {', '.join(unknown)} "
+                f"(known: {', '.join(sorted(IRMAA_PARAMS))})")
+        if params.get("parts", "B+D") not in IRMAA_PARTS:
+            issues.append(f"{where}: parts must be one of {', '.join(IRMAA_PARTS)}")
+    tiers = [(table, payload, effective) for kind, table, payload, effective in aux_rows
+             if kind == registries.IRMAA_TIERS]
+    if not any(table is None for table, _, _ in tiers):
+        issues.append(
+            f"scheduled.csv: an irmaa rule needs aux/{registries.IRMAA_TIERS}.csv, "
+            "the Medicare surcharge tiers")
+    _validate_irmaa_tiers(tiers, issues)
+
+    start = scenario_row.get("start", "")
+    if len(start) < 4 or not start[:4].isdigit():
+        return
+    first = int(start[:4])
+    meta = json.loads(scenario_row.get("meta_json") or "{}")
+    known = set((meta.get("irmaa") or {}).get("magi") or {})
+    for premium_year in (first, first + 1):
+        charged = any(
+            row.get("start", "")[:4] <= str(premium_year)
+            and (not row.get("end") or row["end"][:4] >= str(premium_year))
+            for _, row in rules
+        )
+        magi_year = str(premium_year - 2)
+        if charged and magi_year not in known:
+            warnings.append(
+                f"scenario.csv meta_json has no irmaa.magi for {magi_year}, before the run "
+                f"starts, so {premium_year} charges no IRMAA surcharge")
+
+
+def _validate_irmaa_tiers(
+    tiers: list[tuple[str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """Each tier table's rows: whole tiers from 1, money present and not
+    negative, and within one date and filing status, floors rising with
+    the tier."""
+    groups: dict[tuple[str | None, str, str], list[tuple[int, int]]] = {}
+    for table, payload, effective in tiers:
+        file = f"aux/{registries.IRMAA_TIERS}{'__' + table if table else ''}.csv"
+        where = f"{file} ({effective}, {payload.get('filing_status')} tier {payload.get('tier')})"
+        tier = payload.get("tier")
+        if not isinstance(tier, int) or tier < 1:
+            issues.append(f"{where}: tier must be a whole number from 1")
+            continue
+        money = [m for c in ("magi_floor", "part_b", "part_d")
+                 if isinstance(m := payload.get(c), int) and m >= 0]
+        if len(money) < 3:
+            issues.append(f"{where}: magi_floor, part_b and part_d are dollars, 0 or more")
+            continue
+        groups.setdefault(
+            (table, effective, str(payload.get("filing_status"))), []).append((tier, money[0]))
+    for (table, effective, status), rows in groups.items():
+        file = f"aux/{registries.IRMAA_TIERS}{'__' + table if table else ''}.csv"
+        rows.sort()
+        numbers = [tier for tier, _ in rows]
+        if len(set(numbers)) != len(numbers):
+            issues.append(f"{file} ({effective}, {status}): a tier appears twice")
+        floors = [floor for _, floor in rows]
+        if any(b <= a for a, b in zip(floors, floors[1:], strict=False)):
+            issues.append(f"{file} ({effective}, {status}): magi_floor must rise with tier")
+
+
 def _validate_lot_subkind(subkind: str, retirement: bool, where: str, issues: list[str]) -> None:
     """A retirement account's lot must say what it is (#217), and only such a
     lot may: its subkind is what sets its tax treatment."""
@@ -2427,7 +2563,8 @@ def _validate_rmd_rules(
                 )
 
 
-FILL_BRACKET_PARAMS = frozenset({"scope", "max_amount", "max_marginal_rate", "tax_rule"})
+FILL_BRACKET_PARAMS = frozenset(
+    {"scope", "max_amount", "max_marginal_rate", "tax_rule", "irmaa_tier"})
 
 
 def _bracket_rates(
@@ -2464,6 +2601,7 @@ def _validate_fill_bracket(
     issues: list[str], *,
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
     bracket_rates: Mapping[tuple[str, str | None], set[int]],
+    irmaa_tiers: bool = False,
 ) -> None:
     """A ``fill_bracket`` rule (#252) converts from one traditional lot to
     one Roth lot, once a year, to a target that is either a bracket (``rate``)
@@ -2540,6 +2678,17 @@ def _validate_fill_bracket(
                     raise ValueError("must not be negative")
             except ValueError as e:
                 issues.append(f"{where}: max_amount {e}")
+        if "irmaa_tier" in params:
+            tier = params["irmaa_tier"]
+            if isinstance(tier, bool) or not isinstance(tier, int) or tier < 0:
+                issues.append(f"{where}: irmaa_tier must be a whole number, 0 or more (got {tier!r})")
+            if not irmaa_tiers:
+                issues.append(
+                    f"{where}: irmaa_tier needs aux/{registries.IRMAA_TIERS}.csv, the tiers to stay within")
+            if not any(s == "federal" for _, s, _ in tax_rules):
+                issues.append(
+                    f"{where}: irmaa_tier measures MAGI with a federal tax_accumulator rule, "
+                    "and there is none")
         if "max_marginal_rate" in params:
             try:
                 if not 0 <= units.percent_to_micros(str(params["max_marginal_rate"])) <= 1_000_000:
@@ -3436,6 +3585,29 @@ def _validate_series_references(
                 "(aux_kind, series) pair; this would fail at run time with "
                 "'no aux row' once reached"
             )
+
+    if any(row.get("amount_rule_kind") == "irmaa" or (
+            row.get("amount_rule_kind") == "fill_bracket"
+            and "irmaa_tier" in (_safe_json(row.get("params_json")) or {}))
+           for row in scheduled_rows):
+        # An irmaa rule, or a fill_bracket keeping within a tier (#253),
+        # reads the inflation series its tier table names for each floor and
+        # add-on, swapped-in tables included.
+        for kind, table, payload, effective in aux_rows:
+            if kind != registries.IRMAA_TIERS:
+                continue
+            for column in registries.IRMAA_SERIES_COLUMNS:
+                series = payload.get(column)
+                if not series:
+                    continue
+                demanded.add(("inflation", str(series)))
+                if ("inflation", str(series)) not in supplied:
+                    file = f"{kind}__{table}.csv" if table else f"{kind}.csv"
+                    issues.append(
+                        f"aux/{file} ({effective}, {payload.get('filing_status')} tier "
+                        f"{payload.get('tier')}): {column} '{series}' doesn't exist -- "
+                        f"no series/inflation__{series}.csv in this scenario or a parent"
+                    )
 
     for where, row in _located(calendar_rows, "calendar.csv"):
         if row.get("kind") != "set_rate":
