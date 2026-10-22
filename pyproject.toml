@@ -32,7 +32,7 @@ sim = "analysis.sim.cli:sim_group_command"
 [dependency-groups]
 dependabot = [
     "bleach>=6.4.0",
-    "pillow>=12.3.0",
+    "pillow>=13.0.0",
 ]
 dev = [
   "nbstripout>=0.9.1",
