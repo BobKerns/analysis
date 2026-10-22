@@ -31,6 +31,11 @@ KIND_COLUMNS: dict[str, dict[str, bool]] = {
     "tax_accumulator": {"params_json": True},
     "mortgage_payment": {"amount": True, "rate": True, "interest_account": True},
     "on_death": {"person": True},
+    # One of rate (a bracket) or amount (a taxable-income target) is required.
+    "fill_bracket": {
+        "rate": False, "amount": False, "series": False, "base_date": False,
+        "inflation_cadence": False,
+    },
 }
 assert set(KIND_COLUMNS) == registries.AMOUNT_RULE_KINDS
 
@@ -49,11 +54,12 @@ KIND_TAX_CHARACTER: dict[str, str] = {
     "tax_accumulator": "none",
     "mortgage_payment": "none",
     "on_death": "tax_free",
+    "fill_bracket": "tax_deferred_out",
 }
 
 # Kinds the engine runs only once a year (ADR-003 §2.3, §2.6), and the month
 # each usually fires.
-ANNUAL_KINDS: dict[str, str] = {"rmd": "12", "tax_accumulator": "12"}
+ANNUAL_KINDS: dict[str, str] = {"rmd": "12", "tax_accumulator": "12", "fill_bracket": "12"}
 
 # Kinds whose source must be an account, not an interior chain; every kind
 # but fixed_amount needs an account as its destination (the engine's rules).
@@ -65,6 +71,7 @@ AMOUNT_LABEL: dict[str, str] = {
     "fixed_amount": "amount in dollars",
     "ss_benefit": "benefit at full retirement age (PIA) in dollars",
     "mortgage_payment": "monthly payment (principal and interest) in dollars",
+    "fill_bracket": "taxable income to fill up to, in today's dollars",
 }
 
 
@@ -81,6 +88,11 @@ def needs(column: str) -> Callable[[Answers], bool]:
     def required(answers: Answers) -> bool:
         return KIND_COLUMNS.get(answers.get("amount_rule_kind", ""), {}).get(column, False)
     return required
+
+
+def _prioritized(ctx: GuideContext, answers: Answers) -> bool:  # noqa: ARG001
+    """A fill_bracket has no priority: it runs last in its month (#252)."""
+    return answers.get("amount_rule_kind", "") in registries.DEFAULT_PRIORITIES
 
 
 def _inflated(ctx: GuideContext, answers: Answers) -> bool:
@@ -161,7 +173,7 @@ RULE = KindSpec(
         Field(
             "series", "series", option="--series", required=needs("series"),
             applies=reads("series"), choices=_series_choices,
-            help="fixed_amount: an inflation series, or blank or 'fixed' for none. "
+            help="fixed_amount, fill_bracket: an inflation series, or blank or 'fixed' for none. "
                  "ss_benefit: the COLA series. percent_of_balance: the rate series.",
         ),
         Field(
@@ -177,8 +189,10 @@ RULE = KindSpec(
             help="annual steps once each January, as a COLA does; blank compounds monthly.",
         ),
         Field(
-            "rate", "annual interest rate in percent (e.g. 6)", type="percent", option="--rate",
+            "rate", "rate in percent", type="percent", option="--rate",
             required=needs("rate"), applies=reads("rate"),
+            help="mortgage_payment: the annual interest rate (e.g. 6%). fill_bracket: "
+                 "the bracket to fill to its top (e.g. 22%), instead of an amount.",
         ),
         Field(
             "interest_account", "interest expense account", option="--interest-account",
@@ -201,6 +215,7 @@ RULE = KindSpec(
               help="The last month it may fire; blank for none."),
         Field(
             "priority", "priority", type="integer", option="--priority", required=False,
+            applies=_prioritized,
             suggest=lambda ctx, answers: str(registries.DEFAULT_PRIORITIES.get(  # noqa: ARG005
                 answers.get("amount_rule_kind", ""), 200)),
             help="Lower fires first within a month (ADR-003 §5).",

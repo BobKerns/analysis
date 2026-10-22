@@ -5146,7 +5146,8 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
 @click.option("--person", type=completion.PERSON, default=None,
               help="Person id: required for rmd, ss_benefit and on_death.")
 @click.option("--claim-age", type=int, default=None, help="Required for ss_benefit.")
-@click.option("--rate", default=None, help="Annual rate, e.g. 6%: required for mortgage_payment.")
+@click.option("--rate", default=None,
+              help="mortgage_payment: annual rate, e.g. 6%. fill_bracket: the bracket to fill, e.g. 22%.")
 @click.option("--interest-account", type=completion.ACCOUNT, default=None,
               help="Interest expense account: required for mortgage_payment.")
 @click.option("--tax-year", default=None,
@@ -5223,7 +5224,15 @@ def scheduled_add(
         endpoints, from_account or None, from_lot, to_account or None, to_lot,
     )
 
-    if amount is None and "amount" in own_columns:
+    if rule_kind == "fill_bracket":
+        if priority is not None:
+            raise click.ClickException(
+                "a fill_bracket rule takes no --priority: it runs last in its month")
+        if (rate is None) == (amount is None):
+            raise click.ClickException(
+                "a fill_bracket rule takes one of --rate (the bracket to fill, e.g. 22%) "
+                "or --amount (the taxable income to fill up to, in today's dollars)")
+    if amount is None and own_columns.get("amount"):
         amount = _prompt_with_completion(f"{scheduled_guide.AMOUNT_LABEL[rule_kind]} (e.g. 1234.56)")
     if amount is not None and _parse_amount_cents(amount) <= 0:
         raise click.ClickException("amount must be positive")
@@ -5244,11 +5253,12 @@ def scheduled_add(
         "rate": rate or "", "interest_account": interest_account or "",
         "tax_character": tax_character or scheduled_guide.KIND_TAX_CHARACTER[rule_kind],
         "tax_year": tax_year or "", "end": end_date,
-        "priority": str(priority if priority is not None else registries.DEFAULT_PRIORITIES[rule_kind]),
+        "priority": str(priority) if priority is not None else str(
+            registries.DEFAULT_PRIORITIES.get(rule_kind, "")),
         "ytd_amount": ytd_amount or "", "ytd_preroll": ytd_preroll or "",
         "description": description, "params_json": params_json or "", "tags": tags,
     }
-    if rule_kind == "fixed_amount" and not answers["base_date"]:
+    if rule_kind in ("fixed_amount", "fill_bracket") and not answers["base_date"]:
         answers["base_date"] = date
     # Ask for what this kind requires and wasn't given, as the guide would.
     guide = _scheduled_guide()
