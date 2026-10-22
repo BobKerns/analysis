@@ -25,8 +25,13 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd",
-    "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death", "irmaa",
+    "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death", "fill_bracket", "irmaa",
 }
+
+# Rule kinds whose catch-up for the months before scenario.start can be
+# replayed from the rule itself (`ytd_preroll`, ADR-003 §4.10); any kind
+# takes an observed `ytd_amount`.
+YTD_PREROLL_KINDS: frozenset[str] = frozenset({"fixed_amount", "mortgage_payment"})
 
 # Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
 # each interpreted per amount_rule_kind; see SERIES_RULE_KINDS below.
@@ -43,6 +48,7 @@ SERIES_RULE_KINDS: dict[str, str] = {
     "fixed_amount": "inflation series",
     "percent_of_balance": "rate series",
     "ss_benefit": "COLA series",
+    "fill_bracket": "inflation series",
 }
 
 # tax_treatment -> withdrawal tax_character, for chain legs (ADR-003 §4.7): the
@@ -284,6 +290,8 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     # month doesn't matter; the band of the premium legs it sits beside.
     "irmaa": 200,
 }
+"""Kinds with no entry here have no priority: a ``fill_bracket`` always runs
+after every other rule of its month (#252)."""
 
 # Aux file kind -> required columns (ADR-003 §4.4).
 # CSV money columns are written in decimal dollars (e.g. ``1234.56``); the loader

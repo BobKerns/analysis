@@ -929,6 +929,44 @@ sim invest Asset_TraditionalIRA_Alice Asset_Roth_Alice conv_2027 \
     --subkind roth_ira --amount 20000 --date 2027-01
 ```
 
+#### Converting up to a bracket, every year
+
+A fixed amount is rarely the conversion you want. The usual plan is "convert
+each year up to the top of the 22% bracket": fill the low brackets in the
+years between retiring and the RMDs, before Social Security and the RMDs push
+income up for good. A `fill_bracket` rule works that amount out each December
+from the year's own income:
+
+```sh
+sim scheduled add 2029-01 Asset_TraditionalIRA_Alice Asset_Roth_Alice \
+    --from-lot default --to-lot default --kind fill_bracket --rate 22% --end 2037-12
+```
+
+The scenario needs a `tax_accumulator` rule, since the conversion is measured
+with that rule's brackets, deduction and filing status. The engine finds the
+amount that brings the year's ordinary taxable income to the top of the
+bracket. It counts every effect the extra income has: more of a Social
+Security benefit becomes taxable as income rises, so a $10,000 conversion can
+add more than $10,000 of taxable income. After a death, the survivor files
+Single from the next year, and the bracket top drops to the Single one.
+
+Instead of `--rate`, `--amount 150000` aims at a taxable income of $150,000 in
+today's dollars; add `--series cpi` to keep it at that real value. In
+`params_json`, `max_amount` caps a year's conversion, `max_marginal_rate`
+(say `"25%"`) stops before the next $100 would be taxed at more than that,
+counting the Social Security it makes taxable, and `scope` `state` measures
+with the state's brackets instead.
+
+The rule has no `priority`. It runs after everything else in its month, so
+the year's RMD comes out first: an RMD can't be converted, and the first
+money out of the IRA in an RMD year counts toward it. Converting this year
+lowers next year's RMD, which is figured from this year's December 31
+balance. Its tax is paid the next April by the `tax_accumulator` rule, from
+wherever that rule draws; paying it from a taxable account rather than the
+IRA is what makes a conversion pay off. Over 59½, converting year after year
+into one Roth lot is fine; younger than that, give each year its own lot, as
+the five-year rule (Part 2) counts from each conversion.
+
 ### 4.13 Medicare's income surcharge (IRMAA)
 
 Medicare charges more for Part B and Part D when your income is high. The
@@ -1085,7 +1123,7 @@ machine too small for a notebook comfortably.
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
 | net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax]` |
 | one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly]` |
-| income or expenses by year, by category, account or tag (income adds cash income and cash flow) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
+| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged]` |
 | realized vs. unrealized gains by year | `sim report gains` |
 | federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation]` |
 

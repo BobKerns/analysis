@@ -61,7 +61,7 @@ same change — the ADRs are load-bearing, not historical.
 Key modules:
 
 - `src/analysis/sim/registries.py` — the locked vocabularies (account kinds and
-  subkinds, the eight `AMOUNT_RULE_KINDS`, tax characters, `CHAIN_KINDS`,
+  subkinds, the nine `AMOUNT_RULE_KINDS`, tax characters, `CHAIN_KINDS`,
   `DEFAULT_PRIORITIES`, CSV headers). [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) defines these; keep them paired.
 - `src/analysis/sim/schema.py` — all SQLite DDL, `SCHEMA_VERSION`. Mirrors [ADR-002](../docs/architecture/ADR-002-storage-schema.md).
 - `src/analysis/sim/loader.py` — data repo CSVs to `state/intent/<scenario>.sqlite3`.

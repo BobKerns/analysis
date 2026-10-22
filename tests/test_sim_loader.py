@@ -943,7 +943,7 @@ def test_year_to_date_unknown_account_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_scheduled_ytd_preroll_rejected_for_non_fixed_amount(tmp_path: Path) -> None:
+def test_scheduled_ytd_preroll_rejected_for_a_kind_it_cannot_replay(tmp_path: Path) -> None:
     import pandas as pd
 
     repo = tmp_path / "data"
@@ -951,8 +951,7 @@ def test_scheduled_ytd_preroll_rejected_for_non_fixed_amount(tmp_path: Path) -> 
 
     sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
     df = pd.read_csv(sched, dtype=str, keep_default_na=False)
-    # mortgage_pmt is amount_rule_kind='mortgage_payment', not fixed_amount+monthly.
-    df.loc[df["name"] == "mortgage_pmt", "ytd_preroll"] = "1"
+    df.loc[df["name"] == "ss_alice", "ytd_preroll"] = "1"
     df.to_csv(sched, index=False)
 
     with pytest.raises(LoadError, match="ytd_preroll only valid"):
@@ -988,6 +987,32 @@ def test_scheduled_ytd_preroll_allowed_for_annual_fixed_amount(tmp_path: Path) -
             "FROM scheduled_transaction WHERE name='living'"
         ).fetchone()
         assert row == ("annual", 4, 1)
+    finally:
+        con.close()
+
+
+def test_scheduled_ytd_preroll_allowed_for_mortgage_payment(tmp_path: Path) -> None:
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "mortgage_pmt", "ytd_preroll"] = "1"
+    df.to_csv(sched, index=False)
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out",
+        allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(result.intent_path)
+    try:
+        row = con.execute(
+            "SELECT ytd_preroll FROM scheduled_transaction WHERE name='mortgage_pmt'"
+        ).fetchone()
+        assert row == (1,)
     finally:
         con.close()
 
