@@ -3058,7 +3058,7 @@ def _apply_fill_bracket(
         cliff = None
         if magi_est is not None and irmaa is not None:
             def cliff(x: int, e: _TaxEstimate = magi_est) -> int:
-                return irmaa.annual_cost(tax_year, e.agi_with(x, 0), e.filing_status, month_s, tid)
+                return irmaa.annual_cost(tax_year, e.agi_with(x, 0), month_s, tid)
         amount = _within_marginal_rate(est.tax_with, cliff, amount, limit)
     event_id = _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_lot, to_lot, amount,
@@ -3218,10 +3218,10 @@ class IrmaaContext:
                 )
         return self._charged[key]
 
-    def enrolled(self, premium_year: int, month_s: str) -> list[tuple[str, ...]]:
-        """The add-ons (``parts``) of each irmaa rule that will charge in
-        ``premium_year``, as a planner sees it in ``month_s``: its months
-        reach that year and its person is still alive."""
+    def enrolled(self, premium_year: int, month_s: str) -> list[tuple[tuple[str, ...], str]]:
+        """The add-ons (``parts``) and filing-status table of each irmaa rule
+        that will charge in ``premium_year``, as a planner sees it in
+        ``month_s``: its months reach that year and its person is still alive."""
         enrolled = []
         for row in self.rules:
             person, start, end, ext = row[8], row[16], row[17], row[13]
@@ -3229,23 +3229,23 @@ class IrmaaContext:
                 continue
             if person in self.person_lifespan and self.person_lifespan[person] < month_s:
                 continue
-            parts = str((json.loads(ext) if ext else {}).get("parts", "B+D"))
-            enrolled.append(IRMAA_PARTS[parts])
+            params = json.loads(ext) if ext else {}
+            enrolled.append((IRMAA_PARTS[str(params.get("parts", "B+D"))],
+                             str(params.get("filing_status_aux", "filing_status"))))
         return enrolled
 
-    def annual_cost(
-        self, year: int, magi: int, filing_status: str, month_s: str, tid: int,
-    ) -> int:
+    def annual_cost(self, year: int, magi: int, month_s: str, tid: int) -> int:
         """What ``magi`` on ``year``'s return costs in surcharges two years
         later, for everyone who will be enrolled then, priced with the table
-        in force in ``year`` (what a planner knows when it decides)."""
-        enrolled = self.enrolled(year + IRMAA_YEARS_BACK, month_s)
-        if not enrolled:
-            return 0
-        charged = [t for t in self.tiers(year, filing_status, tid) if magi > t.floor]
-        if not charged:
-            return 0
-        return 12 * sum(getattr(charged[-1], part) for parts in enrolled for part in parts)
+        in force in ``year`` (what a planner knows when it decides). Each
+        rule's tier follows its own filing-status table, as its charge will."""
+        cost = 0
+        for parts, status_aux in self.enrolled(year + IRMAA_YEARS_BACK, month_s):
+            tiers = self.tiers(year, self.filing_status(year, status_aux, tid), tid)
+            charged = [t for t in tiers if magi > t.floor]
+            if charged:
+                cost += sum(getattr(charged[-1], part) for part in parts)
+        return 12 * cost
 
     def charge(self, con, year: int, params: Mapping[str, Any], tid: int) -> int:
         """One month's surcharge for one enrollee in premium ``year``: the

@@ -431,6 +431,21 @@ def test_irmaa_tier_needs_a_tier_table_and_a_whole_number(
     assert "irmaa_tier needs aux/irmaa_tiers.csv" in issues
 
 
+def test_irmaa_tier_at_the_top_tier_caps_nothing_and_is_refused(
+    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}",
+        **_conversion(2031, irmaa_tier=5)}
+    scheduled.to_csv(path, index=False)
+    with pytest.raises(LoadError) as error:
+        load_with()
+    assert "irmaa_tier 5 is the top tier or above" in "\n".join(error.value.issues)
+
+
 def _flat_tax(rate: float) -> Callable[[int, int], int]:
     return lambda extra, _ltcg: int(extra * rate)
 
@@ -478,5 +493,20 @@ def test_a_cliff_costs_a_years_surcharge_for_each_person_enrolled_two_years_on()
     gone[8] = "carol"  # dies before the conversion is decided
     context = _context(aux, rules=[both, part_b, late, gone],
                        person_lifespan={"carol": "2030-06-30"})
-    assert context.annual_cost(2031, 200_000_00, "MFJ", "2031-12-31", 1) == 0
-    assert context.annual_cost(2031, 200_000_01, "MFJ", "2031-12-31", 1) == 12 * (110_00 + 100_00)
+    assert context.annual_cost(2031, 200_000_00, "2031-12-31", 1) == 0
+    assert context.annual_cost(2031, 200_000_01, "2031-12-31", 1) == 12 * (110_00 + 100_00)
+
+
+def test_annual_cost_prices_each_rule_with_its_own_filing_status_table() -> None:
+    aux = {
+        (registries.IRMAA_TIERS, None): _tiers(
+            ("MFJ", 1, 200_000_00, None), ("Single", 1, 100_000_00, None)),
+        ("single_status", None): [("2026-01-31", {"filing_status": "Single"})],
+    }
+    rule = [None] * 23
+    joint, single = list(rule), list(rule)
+    for row, ext in ((joint, None), (single, '{"filing_status_aux": "single_status"}')):
+        row[8], row[13], row[16], row[17] = "alice", ext, "2030-01-31", None
+    context = _context(aux, rules=[joint, single])
+    # Over the single floor only: just the rule reading the Single table pays.
+    assert context.annual_cost(2031, 150_000_00, "2031-12-31", 1) == 12 * 110_00

@@ -1032,8 +1032,10 @@ def load_scenario(
             in leaves.leaf_of
         ),
         bracket_rates=_bracket_rates(aux_rows),
-        irmaa_tiers=any(kind == registries.IRMAA_TIERS and table is None
-                        for kind, table, *_ in aux_rows),
+        irmaa_tiers=frozenset(
+            payload["tier"] for kind, table, payload, _effective in aux_rows
+            if kind == registries.IRMAA_TIERS and table is None
+            and isinstance(payload.get("tier"), int)),
     )
     _validate_retirement_owners(accounts, persons, issues)
     _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
@@ -2604,7 +2606,7 @@ def _validate_fill_bracket(
     issues: list[str], *,
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
     bracket_rates: Mapping[tuple[str, str | None], set[int]],
-    irmaa_tiers: bool = False,
+    irmaa_tiers: frozenset[int] = frozenset(),
 ) -> None:
     """A ``fill_bracket`` rule (#252) converts from one traditional lot to
     one Roth lot, once a year, to a target that is either a bracket (``rate``)
@@ -2688,6 +2690,13 @@ def _validate_fill_bracket(
             if not irmaa_tiers:
                 issues.append(
                     f"{where}: irmaa_tier needs aux/{registries.IRMAA_TIERS}.csv, the tiers to stay within")
+            elif isinstance(tier, int) and not any(t > tier for t in irmaa_tiers):
+                # Staying within the top tier caps nothing; say so rather
+                # than run as if the cap were in force.
+                issues.append(
+                    f"{where}: irmaa_tier {tier} is the top tier or above "
+                    f"(aux/{registries.IRMAA_TIERS}.csv tops out at {max(irmaa_tiers)}), "
+                    "so it caps nothing")
             if not any(s == "federal" for _, s, _ in tax_rules):
                 issues.append(
                     f"{where}: irmaa_tier measures MAGI with a federal tax_accumulator rule, "
