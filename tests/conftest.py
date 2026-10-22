@@ -987,11 +987,13 @@ def report_run_file(retire_alice_csv: Callable[[str], Path],
     rule paying the previous year's tax each April) and tags its spending in
     role ``budget``: Expense_Living and Expense_Healthcare are ``budget:core``,
     Expense_Housing is ``budget:home``, and the ``living`` rule's own
-    ``budget:fun`` overrides its account's tag. For the result reports (#187)."""
+    ``budget:fun`` overrides its account's tag. Income_Salary_Alice is
+    ``source:work``, the only income tagged. For the result reports (#187)."""
     fund_asset_savings()
     accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
     for name, tag in [("Expense_Living", "budget:core"), ("Expense_Healthcare", "budget:core"),
-                      ("Expense_Housing", "budget:home")]:
+                      ("Expense_Housing", "budget:home"),
+                      ("Income_Salary_Alice", "source:work")]:
         accounts.loc[accounts["name"] == name, "tags"] = tag
     accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
 
