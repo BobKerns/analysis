@@ -10,7 +10,7 @@ rule's answers and its row convert column for column.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from analysis.sim import registries
 from analysis.sim.calendar_guide import (
@@ -60,9 +60,22 @@ KIND_TAX_CHARACTER: dict[str, str] = {
     "mortgage_payment": "none",
     "on_death": "tax_free",
     "fill_bracket": "tax_deferred_out",
-    # Withheld from Social Security, like the premium legs (ADR-003 §2.5.1).
-    "irmaa": "ss_benefit",
+    # Billed (from checking); withheld is ss_benefit, see tax_character_for.
+    "irmaa": "none",
 }
+
+
+def tax_character_for(ctx: GuideContext, answers: Mapping[str, object]) -> str:
+    """The usual tax character of the rule ``answers`` describe.
+
+    An ``irmaa`` surcharge withheld from Social Security comes out of the
+    benefit's income account and counts in gross benefits, as the premium
+    legs do (ADR-003 §2.5.1); billed, from checking, it is no income at all.
+    """
+    kind = str(answers.get("amount_rule_kind", ""))
+    if kind == "irmaa" and answers.get("from_account") in ctx.income_accounts:
+        return "ss_benefit"
+    return KIND_TAX_CHARACTER.get(kind, "")
 
 # Kinds the engine runs only once a year (ADR-003 §2.3, §2.6), and the month
 # each usually fires.
@@ -210,8 +223,7 @@ RULE = KindSpec(
             "tax_character", "tax character", option="--tax-character", default="none",
             choices=lambda ctx, answers: sorted(registries.TAX_CHARACTERS),  # noqa: ARG005
             strict=True,
-            suggest=lambda ctx, answers: KIND_TAX_CHARACTER.get(  # noqa: ARG005
-                answers.get("amount_rule_kind", "")),
+            suggest=tax_character_for,
         ),
         Field(
             "tax_year", "tax year", type="year", option="--tax-year", required=False,

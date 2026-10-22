@@ -251,6 +251,15 @@ def test_a_year_before_the_filing_status_table_takes_its_first_row() -> None:
     assert _context(aux).filing_status(2024, "filing_status", 1) == "MFJ"
 
 
+def test_a_death_after_a_return_before_the_table_leaves_that_return_joint() -> None:
+    # The 2024 return is joint though the table starts in 2026 and bill died
+    # in 2025: the death is judged against 2024, not the table's first year.
+    aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 1, None))}
+    context = _context(aux, person_lifespan={"bill": "2025-06-30"}, taxpayers=("alice", "bill"))
+    assert context.filing_status(2024, "filing_status", 1) == "MFJ"
+    assert context.filing_status(2026, "filing_status", 1) == "Single"
+
+
 def test_a_missing_federal_magi_is_an_error() -> None:
     from analysis.sim.engine import EngineError
 
@@ -307,6 +316,7 @@ def load_with(
     ({"cadence": "annual", "month_of_year": "1"}, True, "irmaa needs cadence monthly"),
     ({"amount": "10.00"}, True, "irmaa takes no amount"),
     ({"params_json": '{"parts": "A"}'}, True, "parts must be one of"),
+    ({"params_json": '{"filing_status_aux": "nope"}'}, True, "filing_status_aux 'nope' has no aux table"),
     ({"params_json": '{"tiers": 1}'}, True, "unknown params_json key"),
     ({}, False, "there is none"),
 ])

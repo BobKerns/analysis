@@ -2293,6 +2293,9 @@ def _validate_irmaa(
                 f"(known: {', '.join(sorted(IRMAA_PARAMS))})")
         if params.get("parts", "B+D") not in IRMAA_PARTS:
             issues.append(f"{where}: parts must be one of {', '.join(IRMAA_PARTS)}")
+        status_aux = params.get("filing_status_aux", "filing_status")
+        if not any(kind == status_aux for kind, _table, _payload, _effective in aux_rows):
+            issues.append(f"{where}: filing_status_aux {status_aux!r} has no aux table")
     tiers = [(table, payload, effective) for kind, table, payload, effective in aux_rows
              if kind == registries.IRMAA_TIERS]
     if not any(table is None for table, _, _ in tiers):

@@ -3182,14 +3182,17 @@ class IrmaaContext:
 
     def filing_status(self, year: int, aux_kind: str, tid: int) -> str:
         """The filing status on tax ``year``'s return, as the tax rule finds
-        it; a year before the filing_status table starts takes its first row."""
+        it; a year before the filing_status table starts takes its first row,
+        though a death before ``year`` is still judged against ``year``."""
+        table_year = year
         if not _active_aux_rows(self.aux, aux_kind, None, f"{year}-12-31"):
             rows = self.aux.get((aux_kind, None)) or []
             if rows:
-                year = int(rows[0][0][:4])
+                table_year = int(rows[0][0][:4])
         return _active_filing_status(
             self.aux, aux_kind, year, tid,
             person_lifespan=self.person_lifespan, taxpayers=self.taxpayers,
+            table_year=table_year,
         )
 
     def tier(self, con, year: int, aux_kind: str, tid: int) -> IrmaaTier | None:
@@ -3442,24 +3445,28 @@ def _active_filing_status(
     tid: int,
     *, person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
+    table_year: int | None = None,
 ) -> str:
     """Filing status for ``tax_year``: the filing_status aux table's latest row on
     or before the year's end, except that a joint or separate filer becomes Single
     the year after a taxpayer's ``lifespan.csv`` ``final_month`` (the survivor may
     still file jointly for the year of death). The lifespan alone is enough; the
-    aux table needs no row for it.
+    aux table needs no row for it. ``table_year`` reads the table as of another
+    year (an IRMAA return from before the table starts) without moving the
+    death test.
     """
+    table_year = tax_year if table_year is None else table_year
     died = any(
         int(final_month[:4]) < tax_year
         for person, final_month in (person_lifespan or {}).items()
         if person in taxpayers
     )
-    rows = _active_aux_rows(aux, filing_status_aux, None, f"{tax_year}-12-31")
+    rows = _active_aux_rows(aux, filing_status_aux, None, f"{table_year}-12-31")
     if not rows:
         if died:
             return "Single"
         raise EngineError(
-            f"tax_accumulator id={tid}: no filing_status row effective <= {tax_year}-12-31"
+            f"tax_accumulator id={tid}: no filing_status row effective <= {table_year}-12-31"
         )
     status = rows[0].get("filing_status")
     if not status:

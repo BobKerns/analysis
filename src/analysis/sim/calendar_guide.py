@@ -42,6 +42,7 @@ class GuideContext:
     accounts: Sequence[str] = ()
     # the asset accounts among them, the only ones a balance can move out of
     asset_accounts: Sequence[str] = ()
+    income_accounts: Sequence[str] = ()
     # account -> (is an investment account, its lot labels)
     lots: Mapping[str, tuple[bool, Sequence[str]]] = field(default_factory=dict)
     # interior chains, which a transfer may name in place of an account
