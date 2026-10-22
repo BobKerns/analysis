@@ -27,12 +27,13 @@ import functools
 import json
 import warnings
 from collections import Counter
+from dataclasses import dataclass
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import registries
+from analysis.sim import registries, units
 from analysis.sim.runs import finalize_run, open_run_file
 from analysis.sim.schema import inserted_id
 
@@ -45,7 +46,7 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance",
-    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death"}
+    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death", "fill_bracket"}
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
@@ -162,9 +163,17 @@ def run_scenario(
                 'ORDER BY priority, id'
             ).fetchall()
         ]
+        # A fill_bracket conversion runs after everything else in its month
+        # (#252): the year's RMD has to come out first (an RMD can't be
+        # converted), and its target needs the year's whole income.
+        txns.sort(key=lambda r: r[6] == "fill_bracket")
         txn_by_name: dict[str, list[Any]] = {
             r[1]: r for r in txns
         }
+        tax_rules: list[tuple[str, dict[str, Any]]] = [
+            (r[1], json.loads(r[13]) if r[13] else {}) for r in txns
+            if r[6] == "tax_accumulator"
+        ]
 
         year_to_date_rows = con.execute(
             "SELECT id, from_lot_id, to_lot_id, amount, tax_character, year "
@@ -463,6 +472,24 @@ def run_scenario(
                             account_tax_treatment=account_tax_treatment,
                             account_subkind=account_subkind, account_name=account_name,
                             tax_year=tax_year,
+                            person_lifespan=person_lifespan, taxpayers=taxpayers,
+                            refill_ctx=refill_ctx,
+                        )
+                    case "fill_bracket":
+                        if from_account is None or to is None:
+                            raise EngineError(
+                                f"fill_bracket id={tid} ({_name!r}): converts from one lot "
+                                "to another, not through a chain"
+                            )
+                        _apply_fill_bracket(
+                            con, balances, account_kinds, step_id, month_s, month,
+                            params, from_account, to, tax_char, tid, _name,
+                            aux=aux, tax_rules=tax_rules,
+                            inflation=(
+                                (p_series, _parse_date(t_base_date), t_inflation_cadence or "monthly")
+                                if p_series and p_series != "fixed" and t_base_date else None
+                            ),
+                            inflation_factor_cache=inflation_factor_cache,
                             person_lifespan=person_lifespan, taxpayers=taxpayers,
                             refill_ctx=refill_ctx,
                         )
@@ -2400,72 +2427,48 @@ def _settle_accounts(
                 )
 
 
-def _apply_tax_accumulator(
-    con,
-    balances: dict[int, int],
-    account_kinds: dict[int, str],
-    step_id: int | None,
-    month_s: str,
-    month: date,
-    params: dict[str, Any],
-    *,
-    from_id: int | None,
-    to_id: int,
+@dataclass(frozen=True)
+class _TaxEstimate:
+    """One tax year's income tax as ``tax_accumulator`` computes it, from
+    the transfers posted so far, with ways to ask what more income would do
+    (#251's after-tax drawdown, #252's fill_bracket)."""
+    scope: str
+    filing_status: str
+    brackets: list[tuple[int, int]]
+    ordinary_income: int
+    ltcg_income: int
+    ss_income: int
+    taxable_ss: int
+    business: Any
+    capital: Any
+    standard_deduction: int
+    itemized_deduction: int
+    deduction: int
+    nol_in: int
+    nol_used: int
+    nol_new: int
+    taxable_income: int
+    tax_liability: int
+    tax_with: Callable[[int, int], int]
+    """The year's tax with more ordinary income and long-term gain on top."""
+    taxable_with: Callable[[int, int], tuple[int, int]]
+    """The year's taxable income, and the ordinary part of it, with more
+    ordinary income and long-term gain on top."""
+
+
+def _year_tax_estimate(
+    con, params: dict[str, Any], *,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    tax_char: str,
-    tid: int,
-    post_transfer: bool = True,
-    graph=None, source_chain_id=None, account_tax_treatment=None,
-    account_subkind=None, account_name=None, tax_year=None,
+    tax_year: int, tid: int,
     person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
-    refill_ctx: RefillContext | None = None,
-) -> None:
-    """Compute and optionally pay forecasted income tax for a target year.
-
-    Supported params:
-    - year: "previous" (default), "current", or explicit year integer
-    - scope: "federal" (default) or "state"
-    - filing_status_aux: defaults to "filing_status"
-    - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
-    - bracket_series: optional, required when state_brackets has multiple series
-    - standard_deduction_aux: defaults to "standard_deduction" (federal) or
-      "state_standard_deduction" (state), whose series is bracket_series's
-      (state_standard_deduction__CA.csv); with no such file the state falls
-      back to "standard_deduction"
-    - itemized_deduction_aux: defaults to "federal_deductions" (federal) or
-      "state_deductions" (state); the greater of it and the standard deduction
-      is used. "state_deductions" falls back to "federal_deductions" when the
-      scenario has no "state_deductions" rows at all.
-    - ss_threshold_aux: defaults to "ss_taxation_thresholds" (federal only)
-    - nol_limit_percent: how much of a year's taxable income a carried net
-      operating loss may offset (#231); defaults to 80 (federal, IRC §172) or
-      100 (state; California, for one, has no 80% limit)
-
-    ``post_transfer=False`` (used for the trailing-year tax tail; see
-    ``run_scenario``) computes and writes ``tax_year_summary`` as normal but
-    skips actually moving money -- the tail exists only to let the final
-    scenario year's reconciliation compute, not to simulate a real month.
-    """
-    year_mode = str(params.get("year", "previous"))
+) -> _TaxEstimate:
+    """``tax_year``'s tax for a ``tax_accumulator`` rule's ``params`` (see
+    ``_apply_tax_accumulator``), from the transfers posted so far. When
+    ``tax_with``/``taxable_with`` add income, they work out again how much of
+    a carried-in net operating loss it can use under the rule's limit, and
+    how much more Social Security becomes taxable."""
     scope = str(params.get("scope", "federal"))
-    if scope not in {"federal", "state"}:
-        raise EngineError(
-            f"tax_accumulator id={tid}: scope must be 'federal' or 'state' (got {scope!r})"
-        )
-
-    if year_mode == "previous":
-        tax_year = month.year - 1
-    elif year_mode == "current":
-        tax_year = month.year
-    else:
-        try:
-            tax_year = int(year_mode)
-        except ValueError as e:
-            raise EngineError(
-                f"tax_accumulator id={tid}: invalid year={year_mode!r}"
-            ) from e
-
     filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
     standard_deduction_aux = str(params.get(
         "standard_deduction_aux",
@@ -2628,11 +2631,116 @@ def _apply_tax_accumulator(
     nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
     tax_liability = tax_on(taxable_income, ltcg_income)
 
-    def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
-        """This year's tax with more ordinary income and long-term gain on top."""
+    def taxable_with(extra_ordinary: int, extra_ltcg: int) -> tuple[int, int]:
+        """This year's taxable income, and its ordinary part, with more
+        ordinary income and long-term gain on top. More income can use more
+        of a carried-in NOL under its limit, so that is worked out again."""
         ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
         before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
-        return tax_on(max(0, before_nol - nol_used), ltcg)
+        used = min(nol_in, max(0, before_nol) * nol_limit_percent // 100)
+        taxable = max(0, before_nol - used)
+        return taxable, taxable - min(ltcg, taxable)
+
+    def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
+        """This year's tax with more ordinary income and long-term gain on top."""
+        return tax_on(taxable_with(extra_ordinary, extra_ltcg)[0], ltcg_income + extra_ltcg)
+
+    return _TaxEstimate(
+        scope=scope, filing_status=filing_status, brackets=brackets,
+        ordinary_income=ordinary_income, ltcg_income=ltcg_income, ss_income=ss_income,
+        taxable_ss=taxable_ss, business=business, capital=capital,
+        standard_deduction=standard_deduction, itemized_deduction=itemized_deduction,
+        deduction=deduction, nol_in=nol_in, nol_used=nol_used, nol_new=nol_new,
+        taxable_income=taxable_income, tax_liability=tax_liability,
+        tax_with=tax_with, taxable_with=taxable_with,
+    )
+
+
+def _apply_tax_accumulator(
+    con,
+    balances: dict[int, int],
+    account_kinds: dict[int, str],
+    step_id: int | None,
+    month_s: str,
+    month: date,
+    params: dict[str, Any],
+    *,
+    from_id: int | None,
+    to_id: int,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    tax_char: str,
+    tid: int,
+    post_transfer: bool = True,
+    graph=None, source_chain_id=None, account_tax_treatment=None,
+    account_subkind=None, account_name=None, tax_year=None,
+    person_lifespan: dict[str, str] | None = None,
+    taxpayers: Collection[str] = (),
+    refill_ctx: RefillContext | None = None,
+) -> None:
+    """Compute and optionally pay forecasted income tax for a target year.
+
+    Supported params:
+    - year: "previous" (default), "current", or explicit year integer
+    - scope: "federal" (default) or "state"
+    - filing_status_aux: defaults to "filing_status"
+    - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
+    - bracket_series: optional, required when state_brackets has multiple series
+    - standard_deduction_aux: defaults to "standard_deduction" (federal) or
+      "state_standard_deduction" (state), whose series is bracket_series's
+      (state_standard_deduction__CA.csv); with no such file the state falls
+      back to "standard_deduction"
+    - itemized_deduction_aux: defaults to "federal_deductions" (federal) or
+      "state_deductions" (state); the greater of it and the standard deduction
+      is used. "state_deductions" falls back to "federal_deductions" when the
+      scenario has no "state_deductions" rows at all.
+    - ss_threshold_aux: defaults to "ss_taxation_thresholds" (federal only)
+    - nol_limit_percent: how much of a year's taxable income a carried net
+      operating loss may offset (#231); defaults to 80 (federal, IRC §172) or
+      100 (state; California, for one, has no 80% limit)
+
+    ``post_transfer=False`` (used for the trailing-year tax tail; see
+    ``run_scenario``) computes and writes ``tax_year_summary`` as normal but
+    skips actually moving money -- the tail exists only to let the final
+    scenario year's reconciliation compute, not to simulate a real month.
+    """
+    year_mode = str(params.get("year", "previous"))
+    scope = str(params.get("scope", "federal"))
+    if scope not in {"federal", "state"}:
+        raise EngineError(
+            f"tax_accumulator id={tid}: scope must be 'federal' or 'state' (got {scope!r})"
+        )
+
+    if year_mode == "previous":
+        tax_year = month.year - 1
+    elif year_mode == "current":
+        tax_year = month.year
+    else:
+        try:
+            tax_year = int(year_mode)
+        except ValueError as e:
+            raise EngineError(
+                f"tax_accumulator id={tid}: invalid year={year_mode!r}"
+            ) from e
+
+    est = _year_tax_estimate(
+        con, params, aux=aux, tax_year=tax_year, tid=tid,
+        person_lifespan=person_lifespan, taxpayers=taxpayers,
+    )
+    ordinary_income = est.ordinary_income
+    ltcg_income = est.ltcg_income
+    ss_income = est.ss_income
+    taxable_ss = est.taxable_ss
+    business = est.business
+    capital = est.capital
+    standard_deduction = est.standard_deduction
+    itemized_deduction = est.itemized_deduction
+    deduction = est.deduction
+    nol_in = est.nol_in
+    nol_used = est.nol_used
+    nol_new = est.nol_new
+    taxable_income = est.taxable_income
+    tax_liability = est.tax_liability
+    tax_with = est.tax_with
 
     drawdown_base, drawdown_tax = _drawdown_tax(con, tax_year, tax_with)
 
@@ -2697,6 +2805,119 @@ def _apply_tax_accumulator(
             "INSERT OR REPLACE INTO tax_year_summary(year, bucket, amount, computed_at) "
             "VALUES (?, ?, ?, ?)",
             (tax_year, bucket, int(amount), computed_at),
+        )
+
+
+FILL_BRACKET_STEP = 100_00
+"""How far ``max_marginal_rate`` looks ahead (#252): the tax on the next
+$100 converted. Small enough to stop near a bracket edge, large enough that
+a whole IRA takes a few thousand steps at most."""
+
+
+def _fill_bracket_tax_rule(
+    tax_rules: Sequence[tuple[str, dict[str, Any]]], params: Mapping[str, Any],
+    tid: int, name: str,
+) -> dict[str, Any]:
+    """The ``tax_accumulator`` rule whose settings a fill_bracket measures
+    with: ``tax_rule`` by name, or the one rule of its scope."""
+    scope = str(params.get("scope", "federal"))
+    wanted = params.get("tax_rule")
+    matches = [rule for rule_name, rule in tax_rules
+               if str(rule.get("scope", "federal")) == scope and (rule_name == wanted or not wanted)]
+    if len(matches) != 1:
+        raise EngineError(
+            f"fill_bracket id={tid} ({name!r}): needs one {scope} tax_accumulator rule "
+            f"to measure with (found {len(matches)}); name it with tax_rule in params_json"
+        )
+    return {**matches[0], "scope": scope}
+
+
+def _apply_fill_bracket(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str, month: date, params: dict[str, Any],
+    from_lot: int, to_lot: int, tax_char: str, tid: int, name: str, *,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    tax_rules: Sequence[tuple[str, dict[str, Any]]],
+    inflation: tuple[str, date, str] | None,
+    inflation_factor_cache: dict[tuple[str, date, date, str], int],
+    person_lifespan: dict[str, str], taxpayers: Collection[str],
+    refill_ctx: RefillContext,
+) -> None:
+    """Convert the most from ``from_lot`` (traditional) to ``to_lot`` (Roth)
+    that keeps this year's taxable income at or under the rule's target
+    (#252): the top of the bracket taxed at ``rate_micros``, measured against
+    ordinary taxable income, or ``amount_cents`` grown by its series,
+    measured against all taxable income. Taxable income never falls as the
+    conversion grows (more of it can make more Social Security taxable), so
+    the largest amount under the target is found by bisection. Then
+    ``max_amount`` and the lot's balance cap it, and ``max_marginal_rate``
+    stops it where the next $100's tax would cost more than that rate."""
+    tax_year = month.year
+    est = _year_tax_estimate(
+        con, _fill_bracket_tax_rule(tax_rules, params, tid, name), aux=aux,
+        tax_year=tax_year, tid=tid, person_lifespan=person_lifespan, taxpayers=taxpayers,
+    )
+    rate = params.get("rate_micros")
+    if rate is not None:
+        floors = [floor for floor, bracket_rate in est.brackets if bracket_rate == rate]
+        above = [floor for floor, _ in est.brackets if floors and floor > floors[0]]
+        if not above:
+            rates = ", ".join(units.micros_to_percent(r) for _, r in est.brackets[:-1])
+            raise EngineError(
+                f"fill_bracket id={tid} ({name!r}): no {est.scope} {tax_year} bracket for "
+                f"{est.filing_status} is taxed at {units.micros_to_percent(rate)} below the "
+                f"top one (brackets with a top: {rates})"
+            )
+        target, ordinary_only = min(above), True
+    else:
+        target, ordinary_only = int(params["amount_cents"]), False
+        if inflation is not None:
+            series, base_date, cadence = inflation
+            target = target * _cumulative_inflation_factor(
+                aux, series, base_date, month, inflation_factor_cache, cadence=cadence,
+            ) // 1_000_000
+
+    def measured(amount: int) -> int:
+        taxable, ordinary = est.taxable_with(amount, 0)
+        return ordinary if ordinary_only else taxable
+
+    cap = max(0, balances.get(from_lot, 0))
+    if (max_amount := params.get("max_amount")) is not None:
+        cap = min(cap, units.json_dollars_to_cents(max_amount))
+    if measured(0) >= target or cap == 0:
+        return
+    low, high = 0, cap  # measured(low) <= target; find the largest such amount
+    if measured(high) <= target:
+        low = high
+    while high - low > 1:
+        middle = (low + high) // 2
+        if measured(middle) <= target:
+            low = middle
+        else:
+            high = middle
+    amount = low
+    if (max_rate := params.get("max_marginal_rate")) is not None:
+        limit = units.percent_to_micros(str(max_rate))
+        taken = 0
+        while taken < amount:
+            step = min(FILL_BRACKET_STEP, amount - taken)
+            cost = est.tax_with(taken + step, 0) - est.tax_with(taken, 0)
+            if cost * 1_000_000 > limit * step:
+                break
+            taken += step
+        amount = taken
+    event_id = _post_transfer(
+        con, balances, account_kinds, step_id, month_s, from_lot, to_lot, amount,
+        tax_char, tid, tax_year=tax_year, refill_ctx=refill_ctx,
+    )
+    if event_id is not None:
+        # What the conversion aimed at and reached, so a report or a reader
+        # of the run can see why it is the size it is.
+        con.execute(
+            "UPDATE transfer_event SET meta_json = ? WHERE id = ?",
+            (json.dumps({"fill_bracket": {
+                "target": target, "measure": "ordinary" if ordinary_only else "taxable",
+                "reached": measured(amount)}}), event_id),
         )
 
 

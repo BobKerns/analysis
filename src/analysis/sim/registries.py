@@ -25,7 +25,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd",
-    "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death",
+    "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death", "fill_bracket",
 }
 
 # Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
@@ -49,6 +49,7 @@ SERIES_RULE_KINDS: dict[str, str] = {
     "fixed_amount": "inflation series",
     "percent_of_balance": "rate series",
     "ss_benefit": "COLA series",
+    "fill_bracket": "inflation series",
 }
 
 # tax_treatment -> withdrawal tax_character, for chain legs (ADR-003 §4.7): the
@@ -287,6 +288,8 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     "rmd": 500,
     "on_death": 900,
 }
+"""Kinds with no entry here have no priority: a ``fill_bracket`` always runs
+after every other rule of its month (#252)."""
 
 # Aux file kind -> required columns (ADR-003 §4.4).
 # CSV money columns are written in decimal dollars (e.g. ``1234.56``); the loader
