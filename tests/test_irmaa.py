@@ -327,6 +327,23 @@ def test_the_loader_checks_an_irmaa_rule(
         load_with(tax=tax, **cells)
 
 
+def test_an_irmaa_rule_needs_exactly_one_federal_tax_rule(
+    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "name": "tax_federal_too",
+        "from_account": "Asset_Checking", "to_account": "Expense_Taxes_Federal",
+        "cadence": "annual", "month_of_year": "12", "amount_rule_kind": "tax_accumulator",
+        "tax_character": "none", "start": "2027-12-31", "meta_json": "{}",
+        "params_json": '{"year":"current"}'}
+    scheduled.to_csv(path, index=False)
+    with pytest.raises(LoadError, match="and there are 2; it needs exactly one"):
+        load_with()
+
+
 def test_a_rule_starting_after_the_first_two_years_needs_no_prior_magi(
     load_with: Callable[..., LoadResult],
 ) -> None:

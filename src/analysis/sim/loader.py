@@ -2267,7 +2267,7 @@ def _validate_irmaa(
         return
     people = {p.get("id", "") for p in persons
               if (p.get("role") or "").strip() in registries.PERSON_ROLES}
-    federal = any(
+    federal = sum(
         row.get("amount_rule_kind") == "tax_accumulator"
         and (_safe_json(row.get("params_json")) or {}).get("scope", "federal") == "federal"
         for row in rows
@@ -2284,6 +2284,11 @@ def _validate_irmaa(
             issues.append(
                 f"{where}: irmaa reads the MAGI a federal tax_accumulator rule computes, "
                 "and there is none")
+        elif federal > 1:
+            # Each would record its own federal_magi over the other's.
+            issues.append(
+                f"{where}: irmaa reads the MAGI a federal tax_accumulator rule computes, "
+                f"and there are {federal}; it needs exactly one")
         params = _safe_json(row.get("params_json") or "{}")
         if params is None:
             issues.append(f"{where}: params_json is not a JSON object")
