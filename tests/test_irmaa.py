@@ -344,6 +344,8 @@ def test_a_missing_prior_magi_year_is_a_warning(load_with: Callable[..., LoadRes
     ({"magi": {"24": "1.00"}}, "is not a four-digit year"),
     ({"magi": {"2024": 1.5}}, "invalid dollar value"),
     ({"prior": {}}, "unknown key 'prior'"),
+    ([2024], "must be a JSON object"),
+    ({"magi": []}, "magi must map years to dollars"),
 ])
 def test_the_loader_checks_irmaa_meta(
     load_with: Callable[..., LoadResult], meta: object, message: str,

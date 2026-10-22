@@ -575,7 +575,7 @@ def run_scenario(
                     params, from_id=None, to_id=tail_to, aux=aux,
                     tax_char=tax_char, tid=tid, post_transfer=False,
                     tax_year=_tax_year,
-                    person_lifespan=person_lifespan,
+                    person_lifespan=person_lifespan, taxpayers=taxpayers,
                 )
 
         if skipped_counts:

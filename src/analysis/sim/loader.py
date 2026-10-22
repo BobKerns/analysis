@@ -2311,7 +2311,10 @@ def _validate_irmaa(
         return
     first = int(start[:4])
     meta = json.loads(scenario_row.get("meta_json") or "{}")
-    known = set((meta.get("irmaa") or {}).get("magi") or {})
+    # A malformed irmaa setting is already an issue (_check_irmaa_meta).
+    settings = meta.get("irmaa") if isinstance(meta, dict) else None
+    magi = settings.get("magi") if isinstance(settings, dict) else None
+    known = set(magi) if isinstance(magi, dict) else set()
     for premium_year in (first, first + 1):
         charged = any(
             row.get("start", "")[:4] <= str(premium_year)
