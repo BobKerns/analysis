@@ -1099,7 +1099,7 @@ machine too small for a notebook comfortably.
 | a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
 | net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax]` |
 | one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly]` |
-| income or expenses by year, by category, account or tag (income adds cash income and cash flow) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
+| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged]` |
 | realized vs. unrealized gains by year | `sim report gains` |
 | federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation]` |
 

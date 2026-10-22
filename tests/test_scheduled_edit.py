@@ -139,7 +139,58 @@ def test_add_takes_a_base_date_and_ytd_columns(
         "2026-05", "annual", "2026", "200.00")
 
 
+def test_add_a_mortgage_takes_ytd_preroll(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
+) -> None:
+    result = _sim(
+        test_data_dir, "retire_alice", "add", "2027-01", "Asset_Checking", "Liability_Mortgage",
+        "900", "--kind", "mortgage_payment", "--rate", "4.25",
+        "--interest-account", "Expense_Interest_Mortgage", "--ytd-preroll", "1",
+        "--name", "heloc",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _rule(scheduled(), "heloc")["ytd_preroll"] == "1"
+
+
+def test_add_refuses_an_option_its_kind_does_not_read(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
+) -> None:
+    before = scheduled()
+
+    result = _sim(
+        test_data_dir, "retire_alice", "add", "2027-01", "Asset_Checking", "Asset_Savings",
+        "1000", "--kind", "ss_benefit", "--person", "alice", "--claim-age", "67",
+        "--series", "cpi", "--ytd-preroll", "1", "--base-date", "2026-05",
+    )
+
+    assert result.exit_code != 0
+    assert "a ss_benefit rule doesn't read --base-date, --ytd-preroll" in result.output
+    pd.testing.assert_frame_equal(scheduled(), before)
+
+
 # ---------- edit ----------
+
+
+def test_edit_options_refuse_a_field_the_rules_kind_does_not_read(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
+) -> None:
+    before = scheduled()
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "ss_alice", "--ytd-preroll", "1")
+
+    assert result.exit_code != 0
+    assert "a ss_benefit rule doesn't read --ytd-preroll" in result.output
+    pd.testing.assert_frame_equal(scheduled(), before)
+
+
+def test_edit_options_turn_on_a_mortgages_ytd_preroll(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
+) -> None:
+    result = _sim(test_data_dir, "retire_alice", "edit", "mortgage_pmt", "--ytd-preroll", "1")
+
+    assert result.exit_code == 0, result.output
+    assert _rule(scheduled(), "mortgage_pmt")["ytd_preroll"] == "1"
 
 
 def test_edit_options_change_those_fields_and_keep_the_rest_as_authored(

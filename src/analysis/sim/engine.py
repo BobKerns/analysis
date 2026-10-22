@@ -1138,30 +1138,52 @@ def _first_chain_leaf_lot(graph: ChainGraph, chain_id: int) -> int | None:
     return None
 
 
-def _mortgage_ytd_split(
-    ytd_total: int,
-    monthly_payment: int | None,
-    annual_micros: int | None,
-    starting_balance: int,
-    tid: int,
-) -> tuple[int, int]:
-    if monthly_payment is None or annual_micros is None:
-        raise EngineError(
-            f"mortgage_payment id={tid}: YTD split requires amount and rate"
-        )
-    remaining_ytd = ytd_total
+def _mortgage_interest(outstanding: int, annual_micros: int) -> int:
+    """One month's interest on ``outstanding``, as ``_apply_mortgage_payment``
+    charges it."""
+    return (outstanding * annual_micros) // (12 * 1_000_000)
+
+
+def _mortgage_payments_split(
+    payments: Sequence[int], annual_micros: int, starting_balance: int,
+) -> list[tuple[int, int]]:
+    """Each payment's (interest, principal), month by month from
+    ``starting_balance``, as ``_apply_mortgage_payment`` would have split it."""
     outstanding = max(0, starting_balance)
-    interest_total = 0
-    principal_total = 0
-    while remaining_ytd > 0 and outstanding > 0:
-        payment = min(int(monthly_payment), remaining_ytd)
-        interest = min(payment, (outstanding * int(annual_micros)) // (12 * 1_000_000))
+    split: list[tuple[int, int]] = []
+    for payment in payments:
+        if outstanding <= 0:
+            break
+        interest = min(payment, _mortgage_interest(outstanding, annual_micros))
         principal = min(payment - interest, outstanding)
-        interest_total += interest
-        principal_total += principal
+        split.append((interest, principal))
         outstanding -= principal
-        remaining_ytd -= payment
-    return interest_total, principal_total
+    return split
+
+
+def _mortgage_balance_before(
+    balance_after: int, payments: Sequence[int], annual_micros: int,
+) -> int:
+    """The loan balance before ``payments`` (oldest first) that leaves
+    ``balance_after`` once they are paid: amortization run backward, so that
+    ``_mortgage_payments_split`` from it lands on ``balance_after`` again.
+    A partial-first-year scenario knows the balance at its start, not the
+    one on Jan 1 that the year's interest accrued on (#267).
+
+    Interest rounds down to the cent, so a few balances have no exact
+    predecessor; each step then takes the smallest one that replays a cent
+    high, and the split's principal is off by that cent per such month."""
+    balance = max(0, balance_after)
+    for payment in reversed(payments):
+        # balance = before - (payment - interest(before)); interest rounds
+        # down, so step the estimate to the smallest that doesn't replay low.
+        before = round((balance + payment) * 12_000_000 / (12_000_000 + annual_micros))
+        while before - payment + _mortgage_interest(before, annual_micros) > balance:
+            before -= 1
+        while before - payment + _mortgage_interest(before, annual_micros) < balance:
+            before += 1
+        balance = before
+    return balance
 
 
 def _ytd_preroll_posts(
@@ -1216,31 +1238,11 @@ def _apply_ytd_catchups(
             raise EngineError(f"scheduled_transaction id={tid}: YTD source chain has no leaf account")
         to_account = graph.leaf_lot.get(to_chain)
         if to_account is not None:
-            if rule_kind == "mortgage_payment" and ytd_amount is not None:
-                if account_id_by_name is None or balances is None:
-                    raise EngineError(
-                        f"scheduled_transaction id={tid}: mortgage YTD requires account context"
-                    )
-                interest_id = account_id_by_name.get(interest_acct or "")
-                if interest_id is None:
-                    raise EngineError(
-                        f"scheduled_transaction id={tid}: unknown interest_account {interest_acct!r}"
-                    )
-                starting_balance = (
-                    (prior_year_end_balances or {}).get(to_account)
-                    or balances.get(to_account, 0)
-                )
-                interest, principal = _mortgage_ytd_split(
-                    posts[0][1], amount_cents, rate_micros, starting_balance, tid,
-                )
-                parent_event_id = _post_ytd_transfer(
-                    con, step_id, date_s, from_account, interest_id, interest,
-                    tax_char, "ytd_rule", tid,
-                )
-                _post_ytd_transfer(
-                    con, step_id, date_s, from_account, to_account, principal,
-                    tax_char, "ytd_rule", tid,
-                    parent_event_id=parent_event_id,
+            if rule_kind == "mortgage_payment":
+                _post_mortgage_ytd(
+                    con, step_id, posts, from_account, to_account, txn,
+                    account_id_by_name=account_id_by_name, balances=balances,
+                    prior_year_end_balances=prior_year_end_balances,
                 )
                 continue
             for post_date_s, amount in posts:
@@ -1258,6 +1260,65 @@ def _apply_ytd_catchups(
         row_date_s = _year_to_date_row_date(start, y_year).isoformat()
         _post_ytd_transfer(
             con, step_id, row_date_s, y_from, y_to, y_amount, y_tax_char, "ytd", yid,
+        )
+
+
+def _post_mortgage_ytd(
+    con, step_id: int, posts: list[tuple[str, int]],
+    from_account: int, to_account: int, txn: list[Any], *,
+    account_id_by_name: dict[str, int] | None,
+    balances: dict[int, int] | None,
+    prior_year_end_balances: dict[int, int] | None,
+) -> None:
+    """A mortgage rule's catch-up, split into an interest leg and a principal
+    leg as each payment would have been (ADR-003 §4.10). The split runs from
+    the loan's balance on Jan 1: ``prior_year_end_balance`` when the lot
+    gives one, else the opening balance with this year's payments backed out.
+    ``ytd_amount`` posts the year's split once; ``ytd_preroll`` posts each
+    month's at its month end."""
+    (tid, _name, _frm, _to, _cadence, _moy, _kind,
+     interest_acct, _p_person, _p_series, rate_micros,
+     _p_claim_age, amount_cents, _ext_json,
+     tax_char, *_rest, ytd_amount, _ytd_preroll, _inflation_cadence) = txn
+    if account_id_by_name is None or balances is None:
+        raise EngineError(
+            f"scheduled_transaction id={tid}: mortgage YTD requires account context"
+        )
+    if amount_cents is None or rate_micros is None:
+        raise EngineError(
+            f"mortgage_payment id={tid}: YTD split requires amount and rate"
+        )
+    interest_id = account_id_by_name.get(interest_acct or "")
+    if interest_id is None:
+        raise EngineError(
+            f"scheduled_transaction id={tid}: unknown interest_account {interest_acct!r}"
+        )
+    payment, rate = int(amount_cents), int(rate_micros)
+    if payment <= 0:
+        raise EngineError(f"mortgage_payment id={tid}: payment must be positive")
+    if ytd_amount is not None:
+        if ytd_amount <= 0:
+            return  # nothing paid yet, as a zero catch-up posts nothing
+        # Whole payments, then whatever is left over.
+        whole, rest = divmod(int(ytd_amount), payment)
+        payments = [payment] * whole + ([rest] if rest else [])
+    else:
+        payments = [amount for _date, amount in posts]
+    jan_1 = (prior_year_end_balances or {}).get(to_account)
+    if jan_1 is None:
+        jan_1 = _mortgage_balance_before(balances.get(to_account, 0), payments, rate)
+    split = _mortgage_payments_split(payments, rate, jan_1)
+    if ytd_amount is not None:
+        split = [(sum(i for i, _p in split), sum(p for _i, p in split))]
+    for (date_s, _amount), (interest, principal) in zip(posts, split, strict=False):
+        parent_event_id = _post_ytd_transfer(
+            con, step_id, date_s, from_account, interest_id, interest,
+            tax_char, "ytd_rule", tid,
+        )
+        _post_ytd_transfer(
+            con, step_id, date_s, from_account, to_account, principal,
+            tax_char, "ytd_rule", tid,
+            parent_event_id=parent_event_id,
         )
 
 

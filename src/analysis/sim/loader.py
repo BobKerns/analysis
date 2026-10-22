@@ -2040,10 +2040,10 @@ def _validate_scheduled(
         ytd_amount = row.get("ytd_amount", "")
         ytd_preroll = row.get("ytd_preroll", "")
         if ytd_preroll not in ("", "0"):
-            if kind != "fixed_amount":
+            if kind not in registries.YTD_PREROLL_KINDS:
                 issues.append(
-                    f"{where} ({name}): ytd_preroll only "
-                    "valid for amount_rule_kind='fixed_amount'"
+                    f"{where} ({name}): ytd_preroll only valid for "
+                    "amount_rule_kind 'fixed_amount' or 'mortgage_payment'"
                 )
         if ytd_amount != "" and ytd_preroll not in ("", "0"):
             issues.append(

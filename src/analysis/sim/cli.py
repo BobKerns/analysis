@@ -5004,6 +5004,19 @@ def _scheduled_row(
     return row
 
 
+def _refuse_unread_options(kind: str, given: Mapping[str, object]) -> None:
+    """Refuse an option the rule's kind doesn't read, rather than drop it
+    without a word (#267: ``--ytd-preroll 1`` on a mortgage rule vanished)."""
+    own = scheduled_guide.KIND_COLUMNS.get(kind, {})
+    unread = [
+        field_.option or field_.param for field_ in scheduled_guide.RULE.fields
+        if field_.param in scheduled_guide.KIND_ONLY_COLUMNS
+        and field_.param not in own and str(given.get(field_.param) or "").strip()
+    ]
+    if unread:
+        raise click.ClickException(f"a {kind} rule doesn't read {', '.join(unread)}")
+
+
 def _check_scheduled_row(row: dict[str, str], context: calendar_guide.GuideContext) -> None:
     """What the guide checks as each answer is typed, for a row built from
     arguments and options instead. The loader judges the rest when the edit
@@ -5155,7 +5168,8 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
 @click.option("--ytd-amount", default=None,
               help="Amount already paid this year before the scenario starts (ADR-003 §4.10).")
 @click.option("--ytd-preroll", type=click.Choice(["0", "1"]), default=None,
-              help="1 posts each month before the start as already paid (fixed_amount only).")
+              help="1 posts each month before the start as already paid "
+                   "(fixed_amount and mortgage_payment only).")
 @click.option("--priority", type=int, default=None,
               help="Default: the kind's band (ADR-003 §5): 200 for fixed_amount.")
 @click.option("--description", default="")
@@ -5258,6 +5272,7 @@ def scheduled_add(
         "ytd_amount": ytd_amount or "", "ytd_preroll": ytd_preroll or "",
         "description": description, "params_json": params_json or "", "tags": tags,
     }
+    _refuse_unread_options(rule_kind, answers)
     if rule_kind in ("fixed_amount", "fill_bracket") and not answers["base_date"]:
         answers["base_date"] = date
     # Ask for what this kind requires and wasn't given, as the guide would.
@@ -5659,6 +5674,9 @@ def scheduled_edit(
     answers = scheduled_guide.answers_of(current)
     given = {param: value.strip() for param, value in values.items() if value is not None}
     if given:
+        _refuse_unread_options(
+            given.get("amount_rule_kind") or current["amount_rule_kind"].strip(), given,
+        )
         submit({**answers, **given})
         return
     _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
@@ -6726,32 +6744,47 @@ def report_group_command() -> None:
     """Income, expenses, gains and tax by year, from a run."""
 
 
-def _flow_report(side: reports.FlowSide, year: int | None, by: str, dollars: str,
-                 runfile: Path | None, scenario: str | None, data_dir: Path | None) -> None:
+def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bool,
+                 dollars: str, runfile: Path | None, scenario: str | None,
+                 data_dir: Path | None) -> None:
     if by not in ("category", "account") and not (by.startswith("tag:") and by != "tag:"):
         raise click.ClickException("--by must be category, account or tag:ROLE")
+    if untagged and not by.startswith("tag:"):
+        raise click.ClickException("--untagged needs --by tag:ROLE")
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         try:
-            frame = (reports.flows_by_year(rc, side, by=by, mode=mode) if year is None
-                     else reports.flows_for_year(rc, side, year, by=by, mode=mode))
+            frame = (reports.flows_by_year(rc, side, by=by, mode=mode, untagged=untagged)
+                     if year is None
+                     else reports.flows_for_year(rc, side, year, by=by, mode=mode,
+                                                 untagged=untagged))
         except KeyError as exc:
             raise click.ClickException(exc.args[0]) from None
     period = "" if year is None else f" in {year}"
+    shown = (frame.index if year is not None
+             else frame.columns).difference(["total", reports.CASH_INCOME, reports.CASH_FLOW])
+    if by.startswith("tag:") and shown.empty:
+        role = by.removeprefix("tag:")
+        click.echo(f"no {side}{period} is tagged in role {role} ({described});"
+                   " --untagged shows it all")
+        return
     _print_report(frame, f"{side}{period} by {by.removeprefix('tag:')}", described, mode,
                   total_row=year is not None)
 
 
 _BY_HELP = ("Group by category (default), account, or tag:ROLE: each flow's tag in ROLE,"
             " from its scheduled rule or else its account.")
+_UNTAGGED_HELP = ("With --by tag:ROLE, also show flows with no tag in ROLE as (untagged),"
+                  " counted in the total. Left out by default.")
 
 
 @report_group_command.command("income")
 @click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
 @click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
+@click.option("--untagged", is_flag=True, help=_UNTAGGED_HELP)
 @_report_options
 def report_income_command(
-    year: int | None, by: str, dollars: str,
+    year: int | None, by: str, untagged: bool, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show income by year: what each income account paid out.
@@ -6761,24 +6794,31 @@ def report_income_command(
     and other. Each year also shows cash_income, the income paid into a cash
     account (no paper growth), and cash_flow, that plus what was withdrawn
     into cash from investments and retirement accounts.
+
+    By tag, flows with no tag in the role are left out (and cash_flow with
+    them, since withdrawals carry no tag) unless --untagged is given.
     """
-    _flow_report("income", year, by, dollars, runfile, scenario, data_dir)
+    _flow_report("income", year, by, untagged, dollars, runfile, scenario, data_dir)
 
 
 @report_group_command.command("expenses")
 @click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
 @click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
+@click.option("--untagged", is_flag=True, help=_UNTAGGED_HELP)
 @_report_options
 def report_expenses_command(
-    year: int | None, by: str, dollars: str,
+    year: int | None, by: str, untagged: bool, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Show expenses by year: what was paid into each expense account.
 
     Categories are housing, healthcare, taxes, living and other. Depreciation
     is left out: it records value a vehicle loses, not money spent.
+
+    By tag, expenses with no tag in the role are left out unless --untagged
+    is given.
     """
-    _flow_report("expenses", year, by, dollars, runfile, scenario, data_dir)
+    _flow_report("expenses", year, by, untagged, dollars, runfile, scenario, data_dir)
 
 
 @report_group_command.command("gains")
