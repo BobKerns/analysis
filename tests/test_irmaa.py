@@ -448,6 +448,28 @@ def test_irmaa_tier_at_the_top_tier_caps_nothing_and_is_refused(
     assert "irmaa_tier 5 is the top tier or above" in "\n".join(error.value.issues)
 
 
+def test_a_state_fill_bracket_watching_irmaa_needs_one_federal_rule(
+    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    blank = {**dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}"}
+    for name in ("federal_a", "federal_b"):
+        scheduled.loc[len(scheduled)] = {
+            **blank, "name": name, "from_account": "Asset_Checking",
+            "to_account": "Expense_Living", "cadence": "annual", "month_of_year": "12",
+            "amount_rule_kind": "tax_accumulator", "tax_character": "none",
+            "start": "2027-01-31", "params_json": '{"year":"current","scope":"federal"}'}
+    scheduled.loc[len(scheduled)] = {
+        **blank, **_conversion(2031, scope="state", irmaa_tier=0)}
+    scheduled.to_csv(path, index=False)
+    with pytest.raises(LoadError) as error:
+        load_with()
+    assert "measures MAGI with the federal tax_accumulator rule, and there is more than one" in (
+        "\n".join(error.value.issues))
+
+
 def _flat_tax(rate: float) -> Callable[[int, int], int]:
     return lambda extra, _ltcg: int(extra * rate)
 

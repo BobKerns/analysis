@@ -2704,6 +2704,15 @@ def _validate_fill_bracket(
                 issues.append(
                     f"{where}: irmaa_tier measures MAGI with a federal tax_accumulator rule, "
                     "and there is none")
+        irmaa_rules = any(r.get("amount_rule_kind") == "irmaa" for r in rows)
+        if (params.get("scope", "federal") != "federal"
+                and ("irmaa_tier" in params or ("max_marginal_rate" in params and irmaa_rules))
+                and sum(s == "federal" for _, s, _ in tax_rules) > 1):
+            # MAGI is federal whatever the scope; with a state target there
+            # is no tax_rule naming which federal rule measures it.
+            issues.append(
+                f"{where}: a state fill_bracket that watches IRMAA measures MAGI with the "
+                "federal tax_accumulator rule, and there is more than one")
         if "max_marginal_rate" in params:
             try:
                 if not 0 <= units.percent_to_micros(str(params["max_marginal_rate"])) <= 1_000_000:
