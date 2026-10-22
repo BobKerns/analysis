@@ -45,7 +45,7 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance",
-    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death"}
+    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death", "irmaa"}
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
@@ -211,6 +211,12 @@ def run_scenario(
         for lot_id in refill_ctx.roth:
             if cost_bases.get(lot_id) is None:
                 cost_bases[lot_id] = balances.get(lot_id, 0)
+
+        irmaa = IrmaaContext(
+            aux, inflation_factor_cache, start_year=_parse_date(start_s).year,
+            prior_magi=_prior_magi(con), person_lifespan=person_lifespan,
+            taxpayers=taxpayers,
+        )
 
         skipped_counts: dict[str, int] = {}
         applied_event_ids: set[int] = set()
@@ -443,6 +449,15 @@ def run_scenario(
                             },
                             refill_ctx=refill_ctx,
                         )
+                    case "irmaa":
+                        charge = irmaa.charge(con, month.year, params, tid)
+                        if charge > 0:
+                            _post_fixed_amount(
+                                con, balances, account_kinds, step_id, month_s, refill_ctx,
+                                frm, to_chain, charge * fire_count, tax_char, tid,
+                                tax_year=tax_year,
+                                what=f"scheduled_transaction id={tid} ({_name!r})",
+                            )
                     case "on_death":
                         _apply_on_death(
                             con, balances, account_kinds, step_id, month_s,
@@ -2688,6 +2703,10 @@ def _apply_tax_accumulator(
         f"{scope}_tax_due": tax_due,
         f"{scope}_tax_overpaid": tax_overpaid,
     }
+    if scope == "federal":
+        # IRMAA's MAGI (#253): AGI plus tax-exempt interest, which the model
+        # has no character for yet (#265), so it is AGI.
+        summary_rows["federal_magi"] = summary_rows["federal_adjusted_gross_income"]
     if drawdown_base is not None:
         summary_rows[f"{scope}_drawdown_base"] = drawdown_base
         summary_rows[f"{scope}_drawdown_tax"] = drawdown_tax
@@ -2698,6 +2717,152 @@ def _apply_tax_accumulator(
             "VALUES (?, ?, ?, ?)",
             (tax_year, bucket, int(amount), computed_at),
         )
+
+
+class IrmaaTier(NamedTuple):
+    """One ``irmaa_tiers`` row for a premium year, grown by its series: the
+    tier number, the MAGI it is charged above, and its monthly add-ons."""
+    tier: int
+    floor: int
+    part_b: int
+    part_d: int
+
+
+IRMAA_YEARS_BACK = 2
+"""A premium year's IRMAA reads the MAGI on the return from two years
+before it (42 USC 1395r(i)(4)(B))."""
+
+IRMAA_PARTS = {"B+D": ("part_b", "part_d"), "B": ("part_b",), "D": ("part_d",)}
+"""``params_json`` ``parts`` of an ``irmaa`` rule: the add-ons it charges."""
+
+
+def _prior_magi(con) -> dict[int, int]:
+    """``scenario.meta_json`` ``irmaa.magi`` (#253): the household's MAGI for
+    years before the run, in cents, keyed by year."""
+    from analysis.sim.units import json_dollars_to_cents
+    meta = json.loads(con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}")
+    magi = (meta.get("irmaa") or {}).get("magi") or {}
+    return {int(year): json_dollars_to_cents(amount) for year, amount in magi.items()}
+
+
+class IrmaaContext:
+    """What an ``irmaa`` rule (#253) needs to price a premium year: the aux
+    tables, the household's MAGI before the run, and the people whose deaths
+    change the filing status. A premium year's tier is the same for every
+    rule and month, so it is worked out once."""
+
+    def __init__(
+        self, aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+        inflation_factor_cache: dict[tuple[str, date, date, str], int], *,
+        start_year: int, prior_magi: Mapping[int, int],
+        person_lifespan: Mapping[str, str], taxpayers: Collection[str],
+    ) -> None:
+        self.aux = aux
+        self.inflation_factor_cache = inflation_factor_cache
+        self.start_year = start_year
+        self.prior_magi = prior_magi
+        self.person_lifespan = dict(person_lifespan)
+        self.taxpayers = taxpayers
+        self._charged: dict[tuple[int, str], IrmaaTier | None] = {}
+
+    def tiers(self, year: int, filing_status: str, tid: int) -> list[IrmaaTier]:
+        """``filing_status``'s tiers for premium ``year``, lowest first: the
+        table in force that January, each figure grown from the row's
+        effective date by its own series, a grown floor rounded to $1,000
+        as the law rounds it. A blank series holds the figure flat."""
+        january = date(year, 1, 31)
+        rows = [
+            r for r in _active_aux_rows(self.aux, registries.IRMAA_TIERS, None, january.isoformat())
+            if r.get("filing_status") == filing_status
+        ]
+        effective = _parse_date(max(
+            (e for e, _ in self.aux.get((registries.IRMAA_TIERS, None), [])
+             if e <= january.isoformat()), default=january.isoformat()))
+
+        def grown(amount: int, series: object) -> tuple[int, bool]:
+            if not series:
+                return amount, False
+            factor = _cumulative_inflation_factor(
+                self.aux, str(series), effective, january, self.inflation_factor_cache)
+            return amount * factor // 1_000_000, True
+
+        tiers = []
+        for row in rows:
+            floor, indexed = grown(int(row["magi_floor"]), row.get("floor_series"))
+            if indexed:
+                floor = (floor + 50_000) // 100_000 * 100_000
+            tiers.append(IrmaaTier(
+                int(row["tier"]), floor,
+                grown(int(row["part_b"]), row.get("part_b_series"))[0],
+                grown(int(row["part_d"]), row.get("part_d_series"))[0],
+            ))
+        if not tiers:
+            raise EngineError(
+                f"irmaa id={tid}: no {registries.IRMAA_TIERS} rows for "
+                f"filing_status={filing_status!r} effective on or before {january}"
+            )
+        return sorted(tiers)
+
+    def magi(self, con, year: int, tid: int) -> int:
+        """The household's MAGI for tax ``year``: from ``meta_json`` before
+        the run (none given is no surcharge, as the loader warned), then the
+        federal tax rule's summary."""
+        if year < self.start_year:
+            return self.prior_magi.get(year, 0)
+        row = con.execute(
+            "SELECT amount FROM tax_year_summary WHERE year = ? AND bucket = 'federal_magi'",
+            (year,),
+        ).fetchone()
+        if row is None:
+            raise EngineError(
+                f"irmaa id={tid}: no federal MAGI for {year}; a federal tax_accumulator "
+                f"rule must compute {year} before January {year + IRMAA_YEARS_BACK}"
+            )
+        return int(row[0])
+
+    def filing_status(self, year: int, aux_kind: str, tid: int) -> str:
+        """The filing status on tax ``year``'s return, as the tax rule finds
+        it; a year before the filing_status table starts takes its first row."""
+        if not _active_aux_rows(self.aux, aux_kind, None, f"{year}-12-31"):
+            rows = self.aux.get((aux_kind, None)) or []
+            if rows:
+                year = int(rows[0][0][:4])
+        return _active_filing_status(
+            self.aux, aux_kind, year, tid,
+            person_lifespan=self.person_lifespan, taxpayers=self.taxpayers,
+        )
+
+    def tier(self, con, year: int, aux_kind: str, tid: int) -> IrmaaTier | None:
+        """The tier premium ``year`` is charged at, None below the first.
+        Records it in ``tax_year_summary`` under the MAGI's year, for a year
+        the run computed, as ``federal_irmaa_tier``."""
+        key = (year, aux_kind)
+        if key not in self._charged:
+            magi_year = year - IRMAA_YEARS_BACK
+            magi = self.magi(con, magi_year, tid)
+            tiers = self.tiers(year, self.filing_status(magi_year, aux_kind, tid), tid)
+            charged = None
+            for tier in tiers:
+                if magi > tier.floor:
+                    charged = tier
+            self._charged[key] = charged
+            if magi_year >= self.start_year:
+                con.execute(
+                    "INSERT OR REPLACE INTO tax_year_summary(year, bucket, amount, computed_at) "
+                    "VALUES (?, 'federal_irmaa_tier', ?, ?)",
+                    (magi_year, charged.tier if charged else 0,
+                     datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")),
+                )
+        return self._charged[key]
+
+    def charge(self, con, year: int, params: Mapping[str, Any], tid: int) -> int:
+        """One month's surcharge for one enrollee in premium ``year``: the
+        add-ons ``params`` ``parts`` names, at the tier MAGI two years back
+        set."""
+        tier = self.tier(con, year, str(params.get("filing_status_aux", "filing_status")), tid)
+        if tier is None:
+            return 0
+        return sum(getattr(tier, part) for part in IRMAA_PARTS[str(params.get("parts", "B+D"))])
 
 
 DEFAULT_DRAWDOWN_YEARS = 10

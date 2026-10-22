@@ -31,6 +31,7 @@ KIND_COLUMNS: dict[str, dict[str, bool]] = {
     "tax_accumulator": {"params_json": True},
     "mortgage_payment": {"amount": True, "rate": True, "interest_account": True},
     "on_death": {"person": True},
+    "irmaa": {"person": True},  # the enrollee; params_json "parts" narrows it
 }
 assert set(KIND_COLUMNS) == registries.AMOUNT_RULE_KINDS
 
@@ -49,6 +50,8 @@ KIND_TAX_CHARACTER: dict[str, str] = {
     "tax_accumulator": "none",
     "mortgage_payment": "none",
     "on_death": "tax_free",
+    # Withheld from Social Security, like the premium legs (ADR-003 §2.5.1).
+    "irmaa": "ss_benefit",
 }
 
 # Kinds the engine runs only once a year (ADR-003 §2.3, §2.6), and the month

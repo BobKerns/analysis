@@ -308,6 +308,8 @@ tax year, by looking back over everything that happened that year (the
   since most states' deduction is much smaller. State taxable income
   leaves out Social Security, and long-term gains are taxed as ordinary
   income.
+- **MAGI**, for Medicare's income surcharge (Part 4.13), is the federal AGI
+  each year.
 - **RMDs** are calculated from the account's lot balances on the previous
   December 31, divided by the IRS factor for that age. The factor comes from
   `rmd_factors.csv` and `rmd_start_age.csv`.
@@ -926,6 +928,53 @@ income, and the new lot's basis is the amount converted:
 sim invest Asset_TraditionalIRA_Alice Asset_Roth_Alice conv_2027 \
     --subkind roth_ira --amount 20000 --date 2027-01
 ```
+
+### 4.13 Medicare's income surcharge (IRMAA)
+
+Medicare charges more for Part B and Part D when your income is high. The
+surcharge, the income-related monthly adjustment amount (IRMAA), is set by
+your modified adjusted gross income (MAGI) on the tax return from **two
+years earlier**: 2026 premiums use the 2024 return. The tiers are cliffs.
+One dollar over a tier's floor costs that tier's whole surcharge for the
+whole year, for each person on the return who is on Medicare. A Roth
+conversion or a big sale can push you over one, and the bill arrives two
+years later.
+
+Add one `irmaa` rule per person on Medicare, beside that person's premium
+rows, from the same account:
+
+```text
+name,from_account,to_account,cadence,amount_rule_kind,person,tax_character,start
+irmaa_alice,Income_SS_Alice,Expense_Healthcare,monthly,irmaa,alice,ss_benefit,2030-03
+```
+
+Each month it charges the surcharge for that year: Part B and Part D both,
+unless `params_json` says `{"parts": "B"}` (no drug coverage). The
+scenario also needs a federal `tax_accumulator` rule, which works out MAGI.
+For the first two years of a scenario, MAGI comes from years before the
+scenario starts. Give those in `scenario.csv`'s `meta_json`:
+
+```json
+{"irmaa": {"magi": {"2024": "212000.00", "2025": "198000.00"}}}
+```
+
+Without them those two years charge no surcharge, and loading warns.
+
+The tiers are in `aux/irmaa_tiers.csv`, with CMS's figures for the year
+(CMS publishes the next year's each November). Each row names three
+optional growth series, one each for its income floor and its Part B and
+Part D surcharges. Each series is an `inflation__<name>.csv` file in your
+scenario's `series/` folder, so a `set_rate` calendar row can change one of
+them, or let it vary in an ensemble. A blank series holds that figure flat.
+The prototype's series grow the floors with inflation, keep the top tier's
+floor flat until 2028 as the law does, and grow the surcharges with the
+premiums.
+
+When a spouse dies, the survivor still files jointly for that year, so two
+years later the survivor alone pays the surcharge on the couple's income,
+with the joint floors. After that the single floors apply. `sim report tax`
+shows each year's `fed_magi` and the `irmaa_tier` it sets, 0 below the first
+tier.
 
 ## 5. Looking at your results
 

@@ -75,6 +75,7 @@ every other scenario.
 | `rmd_factors.csv` | IRS Uniform Lifetime Table divisors used to compute Required Minimum Distributions. One row per (effective_date, age). |
 | `rmd_start_age.csv` | First age at which an RMD is required (currently 73; rises to 75 in 2033 under SECURE 2.0). |
 | `capital_loss_limit.csv` | How much of a year's net capital loss offsets ordinary income, by filing status (IRC §1211(b)): $3,000, or $1,500 married filing separately, unchanged since 1978 and not inflation-indexed. The rest carries forward to later years. Read by the `tax_accumulator` rule only in a year with a net capital loss. The home-sale exclusion is no longer an aux table: it is the `maximum` of a home-sale chain's `excluded_gain` step. |
+| `irmaa_tiers.csv` | Medicare's income-related surcharges (IRMAA): for each filing status, the MAGI floor of each tier (the tier applies above it) and its monthly Part B and Part D add-ons, from CMS's fact sheet for the year. Read by an `irmaa` rule, which charges the tier set by MAGI from two years earlier. Each row names optional growth series for its floor and each add-on (`series/inflation__<name>.csv`); blank holds the figure flat. Add the next year's rows each November, when CMS publishes them. |
 | `energy_credits.csv` | Federal energy-efficiency credit/rebate rate and cap, by category (`heat_pump`, `induction_range`, `ev_charger`, ...) and effective date. **Expiring credits need an explicit zero-rate row on their expiration date** -- the lookup takes the latest `effective_date <= month`, so an omitted row means "still in effect," not "expired." OBBBA (2025) ended 25C/25D for property placed in service after 2025-12-31 and 30C after 2026-06-30; the shipped rows reflect that. Not yet wired to a call site -- see `engine._lookup_energy_credit`. |
 | `ltcg_brackets.csv` | Federal long-term capital gain brackets — see "Long-term capital gain rates" below. |
 | `life_table.csv` | SSA's period life table: `q_female` and `q_male`, the chance of dying before the next birthday at each age 0–119. Read only by a lifespan with `vary_distribution` `life_table`, which draws the age at death from it around the median you give. Refresh it from a newer Trustees Report with `scripts/extract_ssa_life_table.py`, keeping the old rows: each vintage is dated December of its year. |
@@ -162,7 +163,8 @@ Worked example, very rough, using the 2026-effective figures in
 Things the simulator should help you check before actually doing this:
 
 - Does the conversion push you over an **IRMAA** Medicare-premium cliff two
-  years later? (Medicare looks back at MAGI from two years prior.)
+  years later? (Medicare looks back at MAGI from two years prior; an `irmaa`
+  rule and `irmaa_tiers.csv` model it.)
 - Does it cost you ACA premium subsidies in any pre-Medicare year?
 - Is there enough cash *outside* the IRA to pay the conversion tax? Paying
   the tax from the IRA itself wipes out most of the benefit.
