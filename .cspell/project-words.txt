@@ -185,6 +185,7 @@ SHASUMS
 shellcheck
 Shiller
 sidefx
+Simons
 Smirnov
 Sobol
 sourceable

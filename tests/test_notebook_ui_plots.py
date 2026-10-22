@@ -15,7 +15,7 @@ from analysis.sim.connection import RunConnection, open_run
 from analysis.sim.notebook_ui.accounts_plots import account_history_widget
 from analysis.sim.notebook_ui.pickers import AccountPicker, TimeRangePicker, run_years
 from analysis.sim.notebook_ui.networth_plots import (
-    after_tax_widget,
+    economic_income_widget,
     expenses_widget,
     gains_widget,
     income_widget,
@@ -80,16 +80,17 @@ def test_gains_widget_builds_without_error(retire_alice_run_file: Path,
         dollar_mode.value = DollarMode.CPI_CONSTANT
 
 
-def test_after_tax_widget_builds_without_error(retire_alice_run_file: Path,
-                                               data_dir: Path,
-                                               scenarios_dir: Path) -> None:
+def test_economic_income_widget_builds_without_error(retire_alice_run_file: Path,
+                                                     data_dir: Path,
+                                                     scenarios_dir: Path) -> None:
     with open_run(retire_alice_run_file, "retire_alice",
                   data_dir=data_dir,
                   scenarios_dir=scenarios_dir) as rc:
-        widget = after_tax_widget(rc)
+        widget = economic_income_widget(rc)
         controls, chart_out, table_out = widget.children
-        dollar_mode, _time_range = controls.children
+        dollar_mode, after_tax, _time_range = controls.children
         dollar_mode.value = DollarMode.CPI_CONSTANT
+        after_tax.value = not after_tax.value
 
 
 def test_account_history_widget_defaults_to_kind(retire_alice_run_file: Path,
