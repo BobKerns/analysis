@@ -43,6 +43,12 @@ SCHEDULED_CSV_HEADER: tuple[str, ...] = (
     "description", "meta_json", "params_json", "tags",
 )
 
+# Canonical year_to_date.csv column order (ADR-003 §4.10).
+YEAR_TO_DATE_CSV_HEADER: tuple[str, ...] = (
+    "name", "from_account", "from_lot", "to_account", "to_lot", "amount",
+    "tax_character", "year", "description",
+)
+
 # Rules that read the `series` column, and what it names for each.
 SERIES_RULE_KINDS: dict[str, str] = {
     "fixed_amount": "inflation series",
