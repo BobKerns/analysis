@@ -127,10 +127,10 @@ def test_add_writes_nothing_when_the_scenario_would_not_load(
     pd.testing.assert_frame_equal(ytd(), before)
 
 
-def test_add_takes_an_itemization(test_data_dir: Path, ytd: Callable[[], pd.DataFrame]) -> None:
-    items = test_data_dir / "scenarios" / "retire_alice" / "itemizations"
-    items.mkdir(exist_ok=True)
-    (items / "withheld.csv").write_text("Item,Value\njan,100.00\nfeb,150.00\n")
+def test_add_takes_an_itemization(
+    test_data_dir: Path, ytd: Callable[[], pd.DataFrame], write_itemization: Callable[..., None],
+) -> None:
+    write_itemization("withheld", "100.00", "150.00")
 
     result = _sim(
         test_data_dir, "retire_alice", "add", "withheld", "Asset_Checking",
@@ -139,6 +139,35 @@ def test_add_takes_an_itemization(test_data_dir: Path, ytd: Callable[[], pd.Data
 
     assert result.exit_code == 0, result.output
     assert _row(ytd(), "withheld")["amount"] == "@withheld"
+
+
+def test_add_trims_the_name_before_checking_it_is_new(
+    test_data_dir: Path, ytd: Callable[[], pd.DataFrame],
+) -> None:
+    before = ytd()
+    result = _sim(
+        test_data_dir, "retire_alice", "add", " prior_ordinary_wages ", "Income_Salary_Alice",
+        "Asset_Checking", "1", "--tax-character", "ordinary",
+    )
+
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+    pd.testing.assert_frame_equal(ytd(), before)
+
+
+def test_add_fills_in_columns_the_files_header_left_out(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], ytd: Callable[[], pd.DataFrame],
+) -> None:
+    path = retire_alice_csv("year_to_date.csv")
+    pd.read_csv(path, dtype=str, keep_default_na=False).drop(
+        columns=["from_lot", "to_lot", "year"]).to_csv(path, index=False)
+
+    result = _sim(test_data_dir, "retire_alice", "add", "prior_interest", "Income_Salary_Alice",
+                  "Asset_Checking", "120", "--tax-character", "ordinary", "--year", "2025")
+
+    assert result.exit_code == 0, result.output
+    assert _row(ytd(), "prior_interest")["year"] == "2025"
+    assert _row(ytd(), "prior_ordinary_wages")["amount"] == "62000.00"
 
 
 # ---------- edit ----------
@@ -204,6 +233,39 @@ def test_edit_moving_a_side_to_another_account_drops_its_lot(
     assert result.exit_code == 0, result.output
     row = _row(ytd(), "divs")
     assert (row["to_account"], row["to_lot"]) == ("Asset_Checking", "")
+
+
+def test_edit_moving_a_side_between_investment_accounts_needs_the_new_lot(
+    test_data_dir: Path, ytd: Callable[[], pd.DataFrame],
+) -> None:
+    added = _sim(test_data_dir, "retire_alice", "add", "divs", "Income_Salary_Alice",
+                 "Asset_Brokerage_Joint", "50", "--to-lot", "default", "--tax-character", "ordinary")
+    assert added.exit_code == 0, added.output
+
+    # Both have a lot named default, but it is another holding.
+    refused = _sim(test_data_dir, "retire_alice", "edit", "divs", "--to-account", "Asset_Roth_Alice")
+    assert refused.exit_code != 0
+    assert "--to-lot is needed for Asset_Roth_Alice" in refused.output
+    assert _row(ytd(), "divs")["to_account"] == "Asset_Brokerage_Joint"
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "divs",
+                  "--to-account", "Asset_Roth_Alice", "--to-lot", "default")
+    assert result.exit_code == 0, result.output
+    assert (_row(ytd(), "divs")["to_account"], _row(ytd(), "divs")["to_lot"]) == (
+        "Asset_Roth_Alice", "default")
+
+
+def test_edit_works_in_a_file_whose_header_left_columns_out(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], ytd: Callable[[], pd.DataFrame],
+) -> None:
+    path = retire_alice_csv("year_to_date.csv")
+    pd.read_csv(path, dtype=str, keep_default_na=False).drop(
+        columns=["from_lot", "to_lot"]).to_csv(path, index=False)
+
+    result = _sim(test_data_dir, "retire_alice", "edit", "prior_ordinary_wages", "--amount", "1")
+
+    assert result.exit_code == 0, result.output
+    assert _row(ytd(), "prior_ordinary_wages")["amount"] == "1.00"
 
 
 def test_edit_of_an_unknown_row_says_so(test_data_dir: Path) -> None:

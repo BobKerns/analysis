@@ -838,6 +838,19 @@ def _append_calendar_row_to(path: Path, **fields: str) -> None:
 
 
 @pytest.fixture(scope="function")
+def write_itemization(test_data_dir: Path) -> Callable[..., None]:
+    """Write ``itemizations/<name>.csv`` in the private data copy, shared by
+    every scenario, with one row per value: ``write_itemization("fees", "100.00")``
+    is what ``@fees`` sums (ADR-003 §4.1c)."""
+    def _write(name: str, *values: str) -> None:
+        folder = test_data_dir / "itemizations"
+        folder.mkdir(exist_ok=True)
+        rows = "".join(f"item{n},{value}\n" for n, value in enumerate(values, 1))
+        (folder / f"{name}.csv").write_text(f"Item,Value\n{rows}")
+    return _write
+
+
+@pytest.fixture(scope="function")
 def add_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Append a row to the private copy's account_lots.csv, by column name.
     A new lot of an account whose lots have a subkind (a retirement account)

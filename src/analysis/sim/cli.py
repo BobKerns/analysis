@@ -11007,6 +11007,18 @@ def _read_ytd_rows(path: Path) -> list[dict[str, str]]:
     ]
 
 
+def _widen_ytd_header(path: Path) -> None:
+    """Give a staged year_to_date.csv every column, blank where its header
+    left an optional one out (the loader takes such a file), so a row can be
+    written by name."""
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    missing = [c for c in registries.YEAR_TO_DATE_CSV_HEADER if c not in frame.columns]
+    if missing:
+        frame.reindex(columns=[*frame.columns, *missing], fill_value="").to_csv(path, index=False)
+
+
 class _PickedYtd(NamedTuple):
     found: _Overlaid  # the row as the load order leaves it
     own: dict[str, str] | None  # its row in this scenario's own file, as read then
@@ -11034,6 +11046,7 @@ def _write_ytd(
     index = picked.found.index
     with _scenario_edit(data_dir, scenario_name) as edit:
         staged = edit.path(path)
+        _widen_ytd_header(staged)
         if index is None:
             if row is not None:
                 _append_csv_row(staged, registries.YEAR_TO_DATE_CSV_HEADER, row)
@@ -11099,7 +11112,9 @@ def ytd_add(
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     context = _ytd_context(data_dir_p, scenario_name)
     taken = set(names.ytd_names(data_dir_p, scenario_name))
-    if name is None:
+    if name is not None:
+        name = name.strip()  # the loader strips every cell
+    if not name:
         while (name := _ask_new_name("name of the new row")) in taken:
             click.echo(f"  another row is already named {name!r}")
     if name in taken:
@@ -11123,8 +11138,10 @@ def ytd_add(
     row = _ytd_row(dict(answers), {"name": name, **ytd_guide.answers_of(answers)}, context)
     _check_ytd_row(row)
     path = scenario_dir / "year_to_date.csv"
-    _append_and_validate(path, registries.YEAR_TO_DATE_CSV_HEADER, row,
-                         data_dir=data_dir_p, scenario_name=scenario_name)
+    with _scenario_edit(data_dir_p, scenario_name) as edit:
+        staged = edit.path(path)
+        _widen_ytd_header(staged)
+        _append_csv_row(staged, registries.YEAR_TO_DATE_CSV_HEADER, row)
     click.echo(f"appended year-to-date row '{name}' {_ytd_summary(row)} to {path}")
 
 
@@ -11199,6 +11216,17 @@ def ytd_edit(
         for column, checker in (("amount", _check_money), ("year", _check_tax_year)):
             if given.get(column):
                 checker(given[column])
+        for side in ("from", "to"):
+            account, lot = f"{side}_account", f"{side}_lot"
+            if account in given and given[account] != current[account] and lot not in given:
+                # The old lot is another account's; one of the same name
+                # here would be a different holding.
+                given[lot] = ""
+                if calendar_guide.lot_needed(context.lots.get(given[account])):
+                    raise click.ClickException(
+                        f"--{side}-lot is needed for {given[account]}: one of "
+                        f"{', '.join(context.lots[given[account]][1])}"
+                    )
         submit({**answers, **given})
         return
     _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
