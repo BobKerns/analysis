@@ -363,3 +363,110 @@ def test_floors_must_rise_with_tier(
         "2026-01-31,MFJ,2,200000.00,202.90,37.50,,,\n"))
     with pytest.raises(LoadError, match="magi_floor must rise with tier"):
         load_with()
+
+
+# fill_bracket (#252) with IRMAA: a tier to stay within, and the cliff priced
+# into max_marginal_rate.
+
+def _conversion(year: int, **params: Any) -> dict[str, str]:
+    """A fill_bracket from Alice's traditional IRA to her Roth, to the top of
+    the 32% bracket (high enough that IRMAA is what stops it)."""
+    return {
+        "name": "convert", "from_account": "Asset_TraditionalIRA_Alice", "from_lot": "default",
+        "to_account": "Asset_Roth_Alice", "to_lot": "default", "cadence": "annual",
+        "month_of_year": "12", "amount_rule_kind": "fill_bracket", "rate": "32%",
+        "tax_character": "tax_deferred_out", "start": f"{year}-01-31", "end": f"{year}-12-31",
+        "params_json": json.dumps(params),
+    }
+
+
+def _converted(run: Path) -> int:
+    with sqlite3.connect(run) as con:
+        return con.execute(
+            "SELECT COALESCE(SUM(te.amount), 0) FROM transfer_event te "
+            "JOIN scheduled_transaction st ON st.id = te.reason_id "
+            "WHERE te.reason_kind = 'rule' AND st.amount_rule_kind = 'fill_bracket'",
+        ).fetchone()[0]
+
+
+def test_irmaa_tier_keeps_a_conversions_magi_within_the_tier(irmaa_run: Run) -> None:
+    unlimited = _summary(irmaa_run(_conversion(2031)))
+    floor = _floor(MFJ_FLOORS[1], 2031)
+    assert unlimited.loc[2031, "federal_magi"] > floor
+    run = irmaa_run(_conversion(2031, irmaa_tier=0))
+    magi = _summary(run).loc[2031, "federal_magi"]
+    # As close under the next tier's floor as a cent allows (more Social
+    # Security turns taxable with each dollar, so the last cent may overshoot).
+    assert floor - 100 <= magi <= floor
+    assert _converted(run) > 0
+    assert _summary(run).loc[2031, "federal_irmaa_tier"] == 0
+
+
+def test_irmaa_tier_needs_a_tier_table_and_a_whole_number(
+    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+    test_data_dir: Path,
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}",
+        **_conversion(2031, irmaa_tier=-1)}
+    scheduled.to_csv(path, index=False)
+    (test_data_dir / "aux" / f"{registries.IRMAA_TIERS}.csv").unlink()
+    with pytest.raises(LoadError) as error:
+        load_with()
+    issues = "\n".join(error.value.issues)
+    assert "irmaa_tier must be a whole number, 0 or more" in issues
+    assert "irmaa_tier needs aux/irmaa_tiers.csv" in issues
+
+
+def _flat_tax(rate: float) -> Callable[[int, int], int]:
+    return lambda extra, _ltcg: int(extra * rate)
+
+
+def _cliff_at(floor: int, jump: int) -> Callable[[int], int]:
+    return lambda x: jump if x > floor else 0
+
+
+@pytest.mark.parametrize(("amount", "expected"), [
+    # 5,000 past the floor: (1,000 tax + 2,000 surcharge) / 5,000 is 60%.
+    (15_000_00, 10_000_00),
+    # 50,000 past it: (10,000 + 2,000) / 50,000 is 24%, within 30%.
+    (60_000_00, 60_000_00),
+])
+def test_a_cliff_is_crossed_only_when_the_span_past_it_pays_for_it(
+    amount: int, expected: int,
+) -> None:
+    from analysis.sim.engine import _within_marginal_rate
+
+    tax, cliff = _flat_tax(0.2), _cliff_at(10_000_00, 2_000_00)
+    assert _within_marginal_rate(tax, cliff, amount, 300_000) == expected
+    assert _within_marginal_rate(tax, None, amount, 300_000) == amount
+
+
+def test_the_tax_rate_alone_still_stops_a_crossing_span() -> None:
+    from analysis.sim.engine import _within_marginal_rate
+
+    # 20% up to 30,000, then 40%: past the floor at 10,000 stepping stops at
+    # 30,000, and that span, (4,000 + 1,000) / 20,000 = 25%, pays.
+    def tax(extra: int, _ltcg: int) -> int:
+        return int(min(extra, 30_000_00) * 0.2 + max(0, extra - 30_000_00) * 0.4)
+    assert _within_marginal_rate(tax, _cliff_at(10_000_00, 1_000_00), 60_000_00, 300_000) \
+        == 30_000_00
+
+
+def test_a_cliff_costs_a_years_surcharge_for_each_person_enrolled_two_years_on() -> None:
+    aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 200_000_00, None))}
+    rule = [None] * 23
+    both, part_b = list(rule), list(rule)
+    for row, ext in ((both, None), (part_b, '{"parts": "B"}')):
+        row[8], row[13], row[16], row[17] = "alice", ext, "2030-01-31", None
+    late = list(both)
+    late[8], late[16] = "bill", "2034-01-31"  # not enrolled until after 2033
+    gone = list(both)
+    gone[8] = "carol"  # dies before the conversion is decided
+    context = _context(aux, rules=[both, part_b, late, gone],
+                       person_lifespan={"carol": "2030-06-30"})
+    assert context.annual_cost(2031, 200_000_00, "MFJ", "2031-12-31", 1) == 0
+    assert context.annual_cost(2031, 200_000_01, "MFJ", "2031-12-31", 1) == 12 * (110_00 + 100_00)

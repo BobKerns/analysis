@@ -1014,6 +1014,16 @@ with the joint floors. After that the single floors apply. `sim report tax`
 shows each year's `fed_magi` and the `irmaa_tier` it sets, 0 below the first
 tier.
 
+A `fill_bracket` conversion (Part 4.12) can watch the tiers too. In its
+`params_json`, `"irmaa_tier": 0` keeps the year's MAGI at or under the first
+tier's floor (`1` under the second's, and so on), so the conversion stops
+short of a cliff. With `max_marginal_rate`, a cliff counts as a cost: a
+year's surcharge for everyone on Medicare two years later. The rule crosses a
+floor only when the money converted past it, up to the next floor, costs no
+more than that rate on average, surcharge included; otherwise it stops at the
+floor. Both use this year's tiers, which is all you know in December; the
+floors usually rise, so this errs safe.
+
 ## 5. Looking at your results
 
 A **run** is what happens when the simulator plays a scenario forward, month

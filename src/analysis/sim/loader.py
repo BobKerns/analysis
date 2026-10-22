@@ -1032,6 +1032,8 @@ def load_scenario(
             in leaves.leaf_of
         ),
         bracket_rates=_bracket_rates(aux_rows),
+        irmaa_tiers=any(kind == registries.IRMAA_TIERS and table is None
+                        for kind, table, *_ in aux_rows),
     )
     _validate_retirement_owners(accounts, persons, issues)
     _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
@@ -2561,7 +2563,8 @@ def _validate_rmd_rules(
                 )
 
 
-FILL_BRACKET_PARAMS = frozenset({"scope", "max_amount", "max_marginal_rate", "tax_rule"})
+FILL_BRACKET_PARAMS = frozenset(
+    {"scope", "max_amount", "max_marginal_rate", "tax_rule", "irmaa_tier"})
 
 
 def _bracket_rates(
@@ -2598,6 +2601,7 @@ def _validate_fill_bracket(
     issues: list[str], *,
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
     bracket_rates: Mapping[tuple[str, str | None], set[int]],
+    irmaa_tiers: bool = False,
 ) -> None:
     """A ``fill_bracket`` rule (#252) converts from one traditional lot to
     one Roth lot, once a year, to a target that is either a bracket (``rate``)
@@ -2674,6 +2678,17 @@ def _validate_fill_bracket(
                     raise ValueError("must not be negative")
             except ValueError as e:
                 issues.append(f"{where}: max_amount {e}")
+        if "irmaa_tier" in params:
+            tier = params["irmaa_tier"]
+            if isinstance(tier, bool) or not isinstance(tier, int) or tier < 0:
+                issues.append(f"{where}: irmaa_tier must be a whole number, 0 or more (got {tier!r})")
+            if not irmaa_tiers:
+                issues.append(
+                    f"{where}: irmaa_tier needs aux/{registries.IRMAA_TIERS}.csv, the tiers to stay within")
+            if not any(s == "federal" for _, s, _ in tax_rules):
+                issues.append(
+                    f"{where}: irmaa_tier measures MAGI with a federal tax_accumulator rule, "
+                    "and there is none")
         if "max_marginal_rate" in params:
             try:
                 if not 0 <= units.percent_to_micros(str(params["max_marginal_rate"])) <= 1_000_000:
@@ -3571,9 +3586,13 @@ def _validate_series_references(
                 "'no aux row' once reached"
             )
 
-    if any(row.get("amount_rule_kind") == "irmaa" for row in scheduled_rows):
-        # An irmaa rule (#253) reads the inflation series its tier table
-        # names for each floor and add-on, swapped-in tables included.
+    if any(row.get("amount_rule_kind") == "irmaa" or (
+            row.get("amount_rule_kind") == "fill_bracket"
+            and "irmaa_tier" in (_safe_json(row.get("params_json")) or {}))
+           for row in scheduled_rows):
+        # An irmaa rule, or a fill_bracket keeping within a tier (#253),
+        # reads the inflation series its tier table names for each floor and
+        # add-on, swapped-in tables included.
         for kind, table, payload, effective in aux_rows:
             if kind != registries.IRMAA_TIERS:
                 continue
