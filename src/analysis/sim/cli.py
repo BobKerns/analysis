@@ -11007,16 +11007,26 @@ def _read_ytd_rows(path: Path) -> list[dict[str, str]]:
     ]
 
 
-def _widen_ytd_header(path: Path) -> None:
-    """Give a staged year_to_date.csv every column, blank where its header
-    left an optional one out (the loader takes such a file), so a row can be
-    written by name."""
-    if not path.exists() or path.stat().st_size == 0:
+def _widen_ytd_header(staged: Path, scenario_dir: Path) -> None:
+    """Give a staged year_to_date.csv every column, so a row can be written
+    by name: the loader takes a header that leaves optional columns out.
+
+    A column a scenario's file leaves out is inherited, row by row, so each
+    existing row gets the value it inherits there (from the real
+    ``scenario_dir``'s lineage), blank when nothing above has one."""
+    if not staged.exists() or staged.stat().st_size == 0:
         return
-    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
     missing = [c for c in registries.YEAR_TO_DATE_CSV_HEADER if c not in frame.columns]
-    if missing:
-        frame.reindex(columns=[*frame.columns, *missing], fill_value="").to_csv(path, index=False)
+    if not missing:
+        return
+    merged = _overlay_rows(scenario_dir, "year_to_date.csv")
+    for column in missing:
+        frame[column] = [
+            found.row.get(column, "") if (found := merged.get(str(name).strip())) else ""
+            for name in frame["name"]
+        ]
+    frame.to_csv(staged, index=False)
 
 
 class _PickedYtd(NamedTuple):
@@ -11046,7 +11056,7 @@ def _write_ytd(
     index = picked.found.index
     with _scenario_edit(data_dir, scenario_name) as edit:
         staged = edit.path(path)
-        _widen_ytd_header(staged)
+        _widen_ytd_header(staged, path.parent)
         if index is None:
             if row is not None:
                 _append_csv_row(staged, registries.YEAR_TO_DATE_CSV_HEADER, row)
@@ -11140,7 +11150,7 @@ def ytd_add(
     path = scenario_dir / "year_to_date.csv"
     with _scenario_edit(data_dir_p, scenario_name) as edit:
         staged = edit.path(path)
-        _widen_ytd_header(staged)
+        _widen_ytd_header(staged, scenario_dir)
         _append_csv_row(staged, registries.YEAR_TO_DATE_CSV_HEADER, row)
     click.echo(f"appended year-to-date row '{name}' {_ytd_summary(row)} to {path}")
 

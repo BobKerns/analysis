@@ -268,6 +268,22 @@ def test_edit_works_in_a_file_whose_header_left_columns_out(
     assert _row(ytd(), "prior_ordinary_wages")["amount"] == "1.00"
 
 
+def test_widening_a_childs_header_keeps_what_its_rows_inherit(
+    test_data_dir: Path, test_child_scenario: Path,
+) -> None:
+    # The child's override leaves `year` out of its header, so it inherits 2025.
+    child = test_child_scenario / "year_to_date.csv"
+    child.write_text("name,amount\nprior_ltcg_loss_carryforward,-1000.00\n")
+
+    result = _sim(test_data_dir, "child", "edit", "prior_ordinary_wages", "--amount", "1")
+
+    assert result.exit_code == 0, result.output
+    frame = _read(child)
+    assert _row(frame, "prior_ltcg_loss_carryforward")["year"] == "2025"
+    assert _row(frame, "prior_ltcg_loss_carryforward")["amount"] == "-1000.00"
+    assert _row(frame, "prior_ordinary_wages")["amount"] == "1.00"
+
+
 def test_edit_of_an_unknown_row_says_so(test_data_dir: Path) -> None:
     result = _sim(test_data_dir, "retire_alice", "edit", "no_such_row", "--amount", "1")
 
