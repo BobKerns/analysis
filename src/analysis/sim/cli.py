@@ -36,7 +36,7 @@ from analysis.expenses.baseline import (
 from analysis.sim import (
     allocation, calendar_guide, chain_edit, chain_map, completion, lot_guide, names, prices, readme,
     registries, rename, reports, scenario_guide, scheduled_guide, sensitivity, setup_listings, symbols,
-    units,
+    units, ytd_guide,
 )
 from analysis.sim.accounts import load_accounts_view, render_accounts_table
 from analysis.sim.connection import (
@@ -10891,7 +10891,7 @@ def lifespan_clear(person: str | None, scenario: str | None, data_dir: Path | No
 
 @sim_group_command.group(name="ytd")
 def ytd_group_command() -> None:
-    """See the scenario's year-to-date catch-up rows (ADR-003 §4.10)."""
+    """See and change the scenario's year-to-date catch-up rows (ADR-003 §4.10)."""
 
 
 @ytd_group_command.command("list")
@@ -10924,6 +10924,359 @@ def ytd_list(scenario: str | None, data_dir: Path | None) -> None:
             row.tax_character, row.year, row.description, row.defined_in,
         )))
     _print_wide(table)
+
+
+# ---------- ytd add|edit|delete: one year_to_date.csv row (#193) ----------
+
+_YTD_CHECKERS: dict[str, Callable[[str], object]] = {
+    "money": _check_money,
+    "year": _check_tax_year,
+}
+
+# The completing type of each option of ``ytd_guide.ROW``: a row's sides are
+# accounts, never chains (ADR-003 §4.10).
+_YTD_OPTION_TYPES: dict[str, click.ParamType] = {
+    "from_account": completion.ACCOUNT,
+    "to_account": completion.ACCOUNT,
+    "from_lot": completion.LotName("from_account"),
+    "to_lot": completion.LotName("to_account"),
+    "tax_character": click.Choice(sorted(registries.TAX_CHARACTERS)),
+}
+
+
+def _ytd_guide() -> calendar_guide.Guide:
+    return calendar_guide.Guide(
+        ask=lambda text, choices, default: _prompt_with_completion(
+            text, choices=choices, default=default,
+        ),
+        checkers=_YTD_CHECKERS,
+    )
+
+
+def _ytd_context(data_dir: Path, scenario: str) -> calendar_guide.GuideContext:
+    """The scenario's accounts and their lots, as completions for a
+    year-to-date row's prompts."""
+    with _intent_db(data_dir, scenario) as (con, _name):
+        return calendar_guide.GuideContext(
+            accounts=sorted(r[0] for r in con.execute("SELECT name FROM account")),
+            lots=_lot_info(con),
+        )
+
+
+def _ytd_row(
+    params: dict[str, object], current: dict[str, str], context: calendar_guide.GuideContext,
+) -> dict[str, str]:
+    """``current`` with ``params``' answers: a field the answers leave out is
+    blank, except a lot the guide didn't ask about, which keeps its cell
+    while its account does (a spelled-out ``default``) and is blank once the
+    account changes."""
+    answers = {column: str(params.get(column, "") or "").strip() for column in ytd_guide.ROW_COLUMNS}
+    row = dict(current)
+    for field_ in ytd_guide.ROW.fields:
+        column = field_.param
+        if field_.applies(context, answers) or column not in ("from_lot", "to_lot"):
+            row[column] = answers[column]
+        else:
+            account = column.replace("_lot", "_account")
+            if answers[account] != current[account]:
+                row[column] = ""
+    row["amount"] = _money_cell(row["amount"]) if row["amount"] else ""
+    return row
+
+
+def _check_ytd_row(row: dict[str, str]) -> None:
+    """What the loader would refuse of one row on its own, said before
+    anything is staged."""
+    for field_ in ytd_guide.ROW.fields:
+        if field_.is_required(row) and field_.param not in ("from_lot", "to_lot") and not row[field_.param]:
+            raise click.ClickException(f"{field_.name} is required")
+    if row["tax_character"] not in registries.TAX_CHARACTERS:
+        raise click.ClickException(f"unknown tax character: {row['tax_character']!r}")
+    if row["year"]:
+        _check_tax_year(row["year"])
+
+
+def _read_ytd_rows(path: Path) -> list[dict[str, str]]:
+    """A scenario's own year_to_date.csv rows, every column present."""
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    return [
+        {column: str(row.get(column, "")) for column in registries.YEAR_TO_DATE_CSV_HEADER}
+        for row in frame.to_dict("records")
+    ]
+
+
+class _PickedYtd(NamedTuple):
+    found: _Overlaid  # the row as the load order leaves it
+    own: dict[str, str] | None  # its row in this scenario's own file, as read then
+
+
+def _pick_ytd(scenario_dir: Path, scenario_name: str, name: str) -> _PickedYtd:
+    found = _overlay_rows(scenario_dir, "year_to_date.csv").get(name.strip())
+    if found is None:
+        raise click.ClickException(
+            f"no year-to-date row {name!r} in scenario {scenario_name!r} "
+            "(a scheduled rule's ytd_amount or ytd_preroll is changed with `sim scheduled edit`)"
+        )
+    own = None
+    if found.index is not None:
+        own = _read_ytd_rows(scenario_dir / "year_to_date.csv")[found.index]
+    return _PickedYtd(found, own)
+
+
+def _write_ytd(
+    data_dir: Path, scenario_name: str, path: Path, picked: _PickedYtd, row: dict[str, str] | None,
+) -> None:
+    """Write ``row`` over the scenario's own row -- or append it as an
+    override when the row is inherited; ``None`` removes the own row -- as
+    one staged edit."""
+    index = picked.found.index
+    with _scenario_edit(data_dir, scenario_name) as edit:
+        staged = edit.path(path)
+        if index is None:
+            if row is not None:
+                _append_csv_row(staged, registries.YEAR_TO_DATE_CSV_HEADER, row)
+            return
+        # Read inside the staged edit: the prompts may have taken a while,
+        # and the index is only good if the file still has the row there.
+        existing = _read_ytd_rows(staged)
+        if index >= len(existing) or existing[index] != picked.own:
+            raise click.ClickException(
+                f"{path} changed while this row was being edited. Nothing was written; start again."
+            )
+        if row is None:
+            frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
+            frame.drop(index=frame.index[index]).to_csv(staged, index=False)
+        else:
+            _append_csv_row(staged, registries.YEAR_TO_DATE_CSV_HEADER, row, replace=index)
+
+
+def _ytd_summary(row: dict[str, str]) -> str:
+    sides = [
+        "/".join(filter(None, (row[f"{side}_account"], row[f"{side}_lot"])))
+        for side in ("from", "to")
+    ]
+    year = f", {row['year']}" if row["year"] else ""
+    return f"{sides[0]} -> {sides[1]} {row['amount']} ({row['tax_character']}{year})"
+
+
+@ytd_group_command.command("add")
+@click.argument("name", required=False)
+@click.argument("from_account", required=False, type=completion.ACCOUNT)
+@click.argument("to_account", required=False, type=completion.ACCOUNT)
+@click.argument("amount", required=False)
+@click.option("--from-lot", type=completion.LotName("from_account"), default=None,
+              help="Lot of the from account; asked for when a blank one would not say which.")
+@click.option("--to-lot", type=completion.LotName("to_account"), default=None,
+              help="Lot of the to account; asked for when a blank one would not say which.")
+@click.option("--tax-character", type=click.Choice(sorted(registries.TAX_CHARACTERS)),
+              default=None, help="How the amount is taxed; asked for when left out.")
+@click.option("--year", default=None,
+              help="The tax year of a fact from a whole prior year (default: the "
+                   "scenario's first year).")
+@click.option("--description", default="")
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def ytd_add(
+    name: str | None, from_account: str | None, to_account: str | None, amount: str | None,
+    from_lot: str | None, to_lot: str | None, tax_character: str | None, year: str | None,
+    description: str, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Append a row to <scenario>/year_to_date.csv: money that moved, or a
+    tax amount, from before the scenario starts (ADR-003 §4.10).
+
+    AMOUNT is dollars or an @itemization. A negative one (a loss carried
+    forward) goes after `--`, so it isn't read as an option:
+    `sim ytd add loss_2025 Income_CapitalGain Income_CapitalGain --tax-character ltcg --year 2025 -- -1500`.
+    Whatever is left out and needed is asked for. `sim ytd edit` changes a
+    row later.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    context = _ytd_context(data_dir_p, scenario_name)
+    taken = set(names.ytd_names(data_dir_p, scenario_name))
+    if name is None:
+        while (name := _ask_new_name("name of the new row")) in taken:
+            click.echo(f"  another row is already named {name!r}")
+    if name in taken:
+        raise click.ClickException(
+            f"year-to-date row {name!r} already exists; `sim ytd edit {name}` changes it"
+        )
+    answers: calendar_guide.Answers = {
+        "from_account": from_account or "", "from_lot": from_lot or "",
+        "to_account": to_account or "", "to_lot": to_lot or "",
+        "amount": amount or "", "tax_character": tax_character or "",
+        "year": year or "", "description": description,
+    }
+    for column, checker in (("amount", _check_money), ("year", _check_tax_year)):
+        if answers[column]:
+            checker(answers[column])
+    guide = _ytd_guide()
+    for field_ in ytd_guide.ROW.fields:
+        if (field_.applies(context, answers) and field_.is_required(answers)
+                and not answers[field_.param]):
+            answers[field_.param] = guide.ask_field(ytd_guide.ROW, field_, context, answers)
+    row = _ytd_row(dict(answers), {"name": name, **ytd_guide.answers_of(answers)}, context)
+    _check_ytd_row(row)
+    path = scenario_dir / "year_to_date.csv"
+    _append_and_validate(path, registries.YEAR_TO_DATE_CSV_HEADER, row,
+                         data_dir=data_dir_p, scenario_name=scenario_name)
+    click.echo(f"appended year-to-date row '{name}' {_ytd_summary(row)} to {path}")
+
+
+def _ytd_options[F: Callable[..., object]](f: F) -> F:
+    """One option per field of ``ytd_guide.ROW``. Each defaults to ``None``
+    (not given); ``""`` clears a field."""
+    for field_ in reversed(ytd_guide.ROW.fields):
+        if field_.option is not None:
+            f = click.option(
+                field_.option, field_.param, default=None, help=field_.help or field_.label,
+                type=_YTD_OPTION_TYPES.get(field_.param),
+            )(f)
+    return f
+
+
+@ytd_group_command.command("edit")
+@click.argument("name", required=False, type=completion.YTD_ROW)
+@_ytd_options
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.pass_context
+def ytd_edit(
+    ctx: click.Context, name: str | None, scenario: str | None, data_dir: Path | None,
+    **values: str | None,
+) -> None:
+    """Change a year-to-date row.
+
+    Options set those fields and write at once ("" clears one). With none,
+    the row's fields are shown; name one to change it, as often as needed,
+    and write when done.
+
+    A row the scenario inherits is changed by an override: the whole row,
+    edited, appended to this scenario's year_to_date.csv; the parent keeps
+    its own.
+
+    Without NAME, it is asked for.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "year_to_date.csv"
+    if name is None:
+        name = _ask_name("year-to-date row", names.ytd_names(data_dir_p, scenario_name),
+                         prompt="row to edit")
+    picked = _pick_ytd(scenario_dir, scenario_name, name)
+    chosen = picked.found
+    current = {column: chosen.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
+    context = _ytd_context(data_dir_p, scenario_name)
+    row_name = current["name"]
+
+    def submit(params: dict[str, object]) -> None:
+        row = _ytd_row(params, current, context)
+        _check_ytd_row(row)
+        if all(row[column].strip() == current[column].strip()
+               for column in registries.YEAR_TO_DATE_CSV_HEADER):
+            click.echo("no change; nothing was written")
+            return
+        _write_ytd(data_dir_p, scenario_name, path, picked, row)
+        if chosen.index is None:
+            click.echo(
+                f"wrote an override of year-to-date row '{row_name}' "
+                f"(inherited from {chosen.inherited_from!r}) to {path}"
+            )
+        else:
+            click.echo(f"updated year-to-date row '{row_name}' in {path}")
+
+    answers = ytd_guide.answers_of(current)
+    given = {param: value.strip() for param, value in values.items() if value is not None}
+    if given:
+        for column, checker in (("amount", _check_money), ("year", _check_tax_year)):
+            if given.get(column):
+                checker(given[column])
+        submit({**answers, **given})
+        return
+    _echo_guided_scenario(scenario_name, path, defaulted=scenario is None)
+    click.echo(f"Editing year-to-date row '{row_name}'")
+    if chosen.index is None:
+        click.echo(
+            f"  It comes from scenario {chosen.inherited_from!r}: writing puts an override "
+            "of the whole row in this scenario."
+        )
+    guide = _ytd_guide()
+    guide.complete(ytd_guide.ROW, context, answers)
+    if not guide.review(ytd_guide.ROW, context, answers, submit, show_command=False):
+        ctx.exit(1)
+
+
+@ytd_group_command.command("delete")
+@click.argument("name", required=False, type=completion.YTD_ROW)
+@click.option("--yes", is_flag=True, help="Don't ask first.")
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+def ytd_delete(name: str | None, yes: bool, scenario: str | None, data_dir: Path | None) -> None:
+    """Delete a year-to-date row.
+
+    A row of this scenario's own is removed. Deleting this scenario's
+    override of an inherited row brings back the inherited row.
+
+    A row the scenario inherits can't be removed from here, since an
+    overlay can't remove a row (ADR-003 §4.5). Instead its amount is set to
+    zero by an override, so it posts nothing in this scenario.
+
+    Without NAME, it is asked for.
+    """
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    path = scenario_dir / "year_to_date.csv"
+    if name is None:
+        name = _ask_name("year-to-date row", names.ytd_names(data_dir_p, scenario_name),
+                         prompt="row to delete")
+    picked = _pick_ytd(scenario_dir, scenario_name, name)
+    chosen = picked.found
+    row_name = chosen.row["name"]
+
+    if chosen.index is not None:
+        if chosen.inherited_from is not None:
+            prompt = (f"delete this scenario's override of '{row_name}', so the row from "
+                      f"{chosen.inherited_from!r} applies again?")
+        else:
+            prompt = f"delete year-to-date row '{row_name}'?"
+        if not yes and not click.confirm(prompt, default=False):
+            click.echo("aborted")
+            return
+        _write_ytd(data_dir_p, scenario_name, path, picked, None)
+        if chosen.inherited_from is not None:
+            click.echo(
+                f"deleted this scenario's override of year-to-date row '{row_name}' from {path}; "
+                f"it is inherited from {chosen.inherited_from!r} again"
+            )
+        else:
+            click.echo(f"deleted year-to-date row '{row_name}' from {path}")
+        return
+
+    current = {column: chosen.row.get(column, "") for column in registries.YEAR_TO_DATE_CSV_HEADER}
+    if not current["amount"].startswith("@") and _parse_amount_cents(current["amount"]) == 0:
+        click.echo(f"year-to-date row '{row_name}' is already zero; nothing was written")
+        return
+    click.echo(
+        f"year-to-date row '{row_name}' comes from scenario {chosen.inherited_from!r}, and "
+        f"{scenario_name!r} can't remove what it inherits. It can zero it instead: an "
+        "override with amount 0, so it posts nothing here."
+    )
+    if not yes and not click.confirm("write that override?", default=False):
+        click.echo("aborted")
+        return
+    _write_ytd(data_dir_p, scenario_name, path, picked, {**current, "amount": "0.00"})
+    click.echo(f"wrote an override zeroing year-to-date row '{row_name}' to {path}")
 
 
 @sim_group_command.group(name="itemization")

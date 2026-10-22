@@ -69,14 +69,15 @@ scenario. You then add only the rows that need to be different — the rest of
 this guide shows what to put in them.
 
 You can also start from what the scenario inherits: `sim account edit`,
-`sim account lot edit`, `sim scheduled edit` and `sim calendar edit` (and
-`sim calendar tag add|rm`) on an inherited item write the edited row into
+`sim account lot edit`, `sim scheduled edit`, `sim calendar edit` and
+`sim ytd edit` (and `sim calendar tag add|rm`) on an inherited item write the edited row into
 the derived scenario as an override, and leave the parent alone. A derived
 scenario can't remove what it inherits, so `sim account delete`,
 `sim calendar delete` and `sim person lifespan clear` refuse an inherited
 account, row or lifespan (delete it in the scenario that defines it). `sim scheduled delete` on an inherited rule ends
 it instead, with an override whose end is the month before the scenario
-starts. Deleting the derived scenario's override brings back the inherited
+starts, and `sim ytd delete` on an inherited row sets its amount to zero
+with an override. Deleting the derived scenario's override brings back the inherited
 row. Renames always reach every scenario sharing the name.
 
 A scenario made this way is never an ensemble, even when its parent is
@@ -926,6 +927,30 @@ income, and the new lot's basis is the amount converted:
 sim invest Asset_TraditionalIRA_Alice Asset_Roth_Alice conv_2027 \
     --subkind roth_ira --amount 20000 --date 2027-01
 ```
+
+### 4.13 Record what already happened this year
+
+A scenario rarely starts in January, but the tax for its first year depends
+on the whole year. `year_to_date.csv` records what happened before the
+scenario's first month: wages already paid, tax already withheld, a loss
+carried in from last year. These rows show up in income, expense and tax
+reports, but they don't change any balance, since the opening balances
+already include them.
+
+```sh
+sim ytd add prior_wages Income_Salary_Alice Asset_Checking 62000 --tax-character ordinary
+sim ytd add loss_2025 Income_CapitalGain Income_CapitalGain \
+    --tax-character ltcg --year 2025 -- -1500
+```
+
+Leave out anything and you are asked for it. A negative amount goes after
+`--`, so it isn't read as an option. Using the same account on both sides
+changes only a tax total, as a loss carried forward does. `--year` is for a
+fact from a whole earlier tax year; leave it out for the scenario's first
+year. `sim ytd edit` changes a row and `sim ytd delete` removes one, and
+`sim ytd list` shows them all. A payment that one scheduled rule already
+describes is better given as that rule's `ytd_amount` or `ytd_preroll`
+(`sim scheduled edit`).
 
 ## 5. Looking at your results
 
