@@ -4930,7 +4930,7 @@ def _scheduled_context(data_dir: Path, scenario: str) -> calendar_guide.GuideCon
     with _intent_db(data_dir, scenario) as (con, _name):
         return calendar_guide.GuideContext(
             accounts=column(con, "SELECT name FROM account"),
-            income_accounts=column(con, "SELECT name FROM account WHERE kind = 'income'"),
+            subkinds=dict(con.execute("SELECT name, subkind FROM account")),
             lots=_lot_info(con),
             chains=_interior_chains(con), chain_roles=_chain_roles(con),
             persons=column(con, "SELECT id FROM person"),

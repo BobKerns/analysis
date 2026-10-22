@@ -69,11 +69,12 @@ def tax_character_for(ctx: GuideContext, answers: Mapping[str, object]) -> str:
     """The usual tax character of the rule ``answers`` describe.
 
     An ``irmaa`` surcharge withheld from Social Security comes out of the
-    benefit's income account and counts in gross benefits, as the premium
-    legs do (ADR-003 §2.5.1); billed, from checking, it is no income at all.
+    benefit's income account (subkind ``ss_benefit``) and counts in gross
+    benefits, as the premium legs do (ADR-003 §2.5.1); billed, from checking
+    or anywhere else, it is no income at all.
     """
     kind = str(answers.get("amount_rule_kind", ""))
-    if kind == "irmaa" and answers.get("from_account") in ctx.income_accounts:
+    if kind == "irmaa" and ctx.subkinds.get(str(answers.get("from_account"))) == "ss_benefit":
         return "ss_benefit"
     return KIND_TAX_CHARACTER.get(kind, "")
 

@@ -510,3 +510,13 @@ def test_annual_cost_prices_each_rule_with_its_own_filing_status_table() -> None
     context = _context(aux, rules=[joint, single])
     # Over the single floor only: just the rule reading the Single table pays.
     assert context.annual_cost(2031, 150_000_00, "2031-12-31", 1) == 12 * 110_00
+
+
+def test_annual_cost_counts_only_the_months_a_rule_charges() -> None:
+    aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 200_000_00, None))}
+    rule = [None] * 23
+    late, early = list(rule), list(rule)
+    late[8], late[16], late[17] = "alice", "2033-12-31", None  # enrolls in December
+    early[8], early[16], early[17] = "bill", "2030-01-31", "2033-06-30"  # ends in June
+    context = _context(aux, rules=[late, early])
+    assert context.annual_cost(2031, 200_000_01, "2031-12-31", 1) == (1 + 6) * 110_00

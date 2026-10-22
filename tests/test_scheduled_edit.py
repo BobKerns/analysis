@@ -436,6 +436,7 @@ def test_add_an_annual_kind_defaults_to_annual_in_december(
 @pytest.mark.parametrize(("from_account", "character"), [
     ("Income_SS_Alice", "ss_benefit"),  # withheld from the benefit, counted in it
     ("Asset_Checking", "none"),  # billed: no income
+    ("Income_Salary_Alice", "none"),  # income, but not the benefit
 ])
 def test_add_irmaa_takes_its_tax_character_from_where_it_is_paid(
     test_data_dir: Path, scheduled: Callable[[], pd.DataFrame], from_account: str,
