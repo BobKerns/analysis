@@ -453,6 +453,62 @@ def test_a_survivors_earnings_come_out_tax_free_on_the_decedents_clock(
     assert [character for d, character in legs if d == "2027-09-30"] == ["tax_free"]
 
 
+@pytest.fixture
+def roth_401k(
+    retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None],
+) -> Callable[[str, str], str]:
+    """Give ``owner`` a Roth 401(k) opened ``opened`` (its plan clock's start),
+    $10,000 of it earnings, and return the account's name."""
+    def _add(owner: str, opened: str) -> str:
+        name = f"Asset_Roth401k_{owner.title()}"
+        path = retire_alice_csv("accounts.csv")
+        accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
+        accounts.loc[len(accounts)] = {
+            **dict.fromkeys(accounts.columns, ""), "name": name, "kind": "asset",
+            "subkind": "retirement", "owner": owner, "opened": opened, "meta_json": "{}",
+        }
+        accounts.to_csv(path, index=False)
+        add_account_value(name, lot="default", subkind="roth_401k",
+                          opening_balance="10000.00", opening_cost_basis="0.00")
+        return name
+    return _add
+
+
+def test_a_roth_401k_keeps_its_plan_clock_after_a_death(
+    roth_401k: Callable[[str, str], str], write_lifespans: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Even under the default `own` election, a Roth 401(k) takes the
+    beneficiary rule: Alice's plan clock from 2024, and no age test, so
+    under-59½ Bill doesn't hold it back, and Bill's older Roth IRA clock
+    doesn't move it."""
+    plan = roth_401k("alice", "2024-01-31")
+    write_lifespans("alice,61.5,,,,,,")
+    assert not _qualified(load_test_copy, plan, "2028-12-31")
+    assert _qualified(load_test_copy, plan, "2029-01-01")
+
+
+def test_a_roth_401k_owner_dying_under_59_and_a_half_leaves_it_qualified(
+    roth_401k: Callable[[str, str], str], write_lifespans: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """The run itself: Bill's plan clock (2015) has run, so his earnings are
+    taxed only while he is alive and under 59½."""
+    plan = roth_401k("bill", "2015-01-31")
+    write_lifespans("bill,59,,,,,,")
+    path = retire_alice_csv("scenario.csv")
+    scenario = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scenario["end"] = "2027-12-31"
+    scenario.to_csv(path, index=False)
+    for when in ("2026-08-31", "2026-09-30"):
+        append_calendar_row(date=when, kind="one_off_transfer", account_1=plan, lot_1="default",
+                            account_2="Asset_Checking", amount="1000.00")
+    assert [(d, character) for d, _to, _amount, character in _legs(_run(load_test_copy, runs_dir), plan)] == [
+        ("2026-08-31", "roth_nonqualified"), ("2026-09-30", "tax_free"),
+    ]
+
+
 def test_roth_survivor_must_be_an_election(
     roth_survivor: Callable[[str], None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
