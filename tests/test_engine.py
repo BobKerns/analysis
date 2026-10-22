@@ -1185,6 +1185,36 @@ def test_ytd_preroll_splits_each_mortgage_payment_from_the_jan_1_balance(
     assert all(rows[k + 1][4] == rows[k][0] for k in range(0, len(rows), 2))
 
 
+def test_mortgage_ytd_amount_of_zero_or_less_posts_nothing(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+
+    graph = ChainGraph(
+        members={}, leaf_lot=_MORTGAGE_GRAPH_LEAVES,
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    _apply_ytd_catchups(
+        ledger_con, 1, date(2026, 5, 31), [_mortgage_preroll_txn(-1, 0)], [], graph,
+        account_id_by_name={"Mortgage Interest": 5}, balances={4: 25_000_000},
+    )
+    assert ledger_con.execute("SELECT COUNT(*) FROM transfer_event").fetchone() == (0,)
+
+
+def test_mortgage_balance_before_with_no_exact_fit_replays_a_cent_high() -> None:
+    from analysis.sim.engine import _mortgage_balance_before, _mortgage_payments_split
+
+    # Interest rounds down, so no Jan 1 balance pays down to exactly this one.
+    jan_1 = _mortgage_balance_before(25_000_098, [185_000], 60_000)
+    ((_interest, principal),) = _mortgage_payments_split([185_000], 60_000, jan_1)
+    assert jan_1 - principal == 25_000_099
+    exact = _mortgage_balance_before(25_000_000, [185_000] * 4, 60_000)
+    split = _mortgage_payments_split([185_000] * 4, 60_000, exact)
+    assert exact - sum(p for _i, p in split) == 25_000_000
+
+
 def test_mortgage_ytd_prefers_a_stated_prior_year_end_balance(
     ledger_con: sqlite3.Connection,
 ) -> None:

@@ -1168,11 +1168,15 @@ def _mortgage_balance_before(
     ``balance_after`` once they are paid: amortization run backward, so that
     ``_mortgage_payments_split`` from it lands on ``balance_after`` again.
     A partial-first-year scenario knows the balance at its start, not the
-    one on Jan 1 that the year's interest accrued on (#267)."""
+    one on Jan 1 that the year's interest accrued on (#267).
+
+    Interest rounds down to the cent, so a few balances have no exact
+    predecessor; each step then takes the smallest one that replays a cent
+    high, and the split's principal is off by that cent per such month."""
     balance = max(0, balance_after)
     for payment in reversed(payments):
         # balance = before - (payment - interest(before)); interest rounds
-        # down, so step the estimate to the smallest exact fit.
+        # down, so step the estimate to the smallest that doesn't replay low.
         before = round((balance + payment) * 12_000_000 / (12_000_000 + annual_micros))
         while before - payment + _mortgage_interest(before, annual_micros) > balance:
             before -= 1
@@ -1290,7 +1294,11 @@ def _post_mortgage_ytd(
             f"scheduled_transaction id={tid}: unknown interest_account {interest_acct!r}"
         )
     payment, rate = int(amount_cents), int(rate_micros)
+    if payment <= 0:
+        raise EngineError(f"mortgage_payment id={tid}: payment must be positive")
     if ytd_amount is not None:
+        if ytd_amount <= 0:
+            return  # nothing paid yet, as a zero catch-up posts nothing
         # Whole payments, then whatever is left over.
         whole, rest = divmod(int(ytd_amount), payment)
         payments = [payment] * whole + ([rest] if rest else [])

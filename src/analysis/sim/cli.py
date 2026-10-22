@@ -5168,7 +5168,8 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
 @click.option("--ytd-amount", default=None,
               help="Amount already paid this year before the scenario starts (ADR-003 §4.10).")
 @click.option("--ytd-preroll", type=click.Choice(["0", "1"]), default=None,
-              help="1 posts each month before the start as already paid (fixed_amount only).")
+              help="1 posts each month before the start as already paid "
+                   "(fixed_amount and mortgage_payment only).")
 @click.option("--priority", type=int, default=None,
               help="Default: the kind's band (ADR-003 §5): 200 for fixed_amount.")
 @click.option("--description", default="")
