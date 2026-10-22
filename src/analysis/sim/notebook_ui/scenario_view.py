@@ -11,8 +11,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import json
+
 import pandas as pd
 
+from analysis.sim import chain_map, registries
 from analysis.sim.connection import ScenarioConnection
 
 
@@ -37,18 +40,45 @@ def manifest_view(sc: ScenarioConnection) -> pd.DataFrame:
     return pd.DataFrame(rows.items(), columns=["field", "value"]).set_index("field")
 
 
-def persons_view(sc: ScenarioConnection) -> pd.DataFrame:
-    """Every person, one row each, with their date of death if the scenario sets one.
+def persons_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
+    """Every person, one row each, with their lifespan if the scenario sets one.
 
-    ``date_of_death`` comes from ``person_lifespan.final_month`` (ADR-003
-    §4.9) -- the last month a person's rules still fire; blank if the
-    scenario has no lifespan override for them.
+    ``age_at_death`` and ``date_of_death`` come from ``person_lifespan``
+    (ADR-003 §4.9): the authored age, or a member's drawn one (#221), and the
+    final month it reaches -- the last month a person's rules still fire;
+    ``-`` if the scenario has no lifespan for them. ``varies`` is how an
+    unresolved recipe's age varies across members.
     """
-    persons = sc.items("person")[["id", "display", "birthdate", "role"]].fillna('')
-    lifespan = sc.items("person_lifespan").set_index("person")["final_month"]
+    items = sc.items("person")
+    columns = ["id", "display", "birthdate", *(["sex"] if "sex" in items.columns else []), "role"]
+    persons = items[columns].fillna('')
+    lifespans = sc.items("person_lifespan").set_index("person")
     persons = persons.set_index("id")
-    persons["date_of_death"] = lifespan.reindex(persons.index).fillna('-')
+    persons["age_at_death"] = lifespans["age_at_death"].reindex(persons.index).map(
+        lambda age: '-' if pd.isna(age) else f"{age:g}"
+    )
+    persons["date_of_death"] = lifespans["final_month"].reindex(persons.index).fillna('-')
+    if "vary_distribution" in lifespans.columns:
+        persons["varies"] = [
+            _lifespan_varies(lifespans.loc[p]) if p in lifespans.index else ''
+            for p in persons.index
+        ]
     return persons
+
+
+def _lifespan_varies(row: pd.Series) -> str:
+    """``triangular 75..95, mode 84``, ``life_table, set-forward +6.4``, or
+    '' for a fixed age."""
+    if pd.isna(row["vary_distribution"]):
+        return ''
+    if row["vary_distribution"] == "life_table":
+        # Drawn around age_at_death as its median (#222): no bounds.
+        set_forward = row.get("life_table_set_forward")
+        return "life_table" + ('' if pd.isna(set_forward) else f", set-forward {set_forward:+.1f}")
+    text = f"{row['vary_distribution']} {row['vary_low']:g}..{row['vary_high']:g}"
+    if not pd.isna(row["vary_mode"]):
+        text += f", mode {row['vary_mode']:g}"
+    return text
 
 
 def _chain_targets(sc: ScenarioConnection) -> Callable[[object], tuple[str, str]]:
@@ -59,7 +89,7 @@ def _chain_targets(sc: ScenarioConnection) -> Callable[[object], tuple[str, str]
     rather than 'default' avoids confusion when one of several is named default.
     """
     by_name = sc.items("chain").set_index("name")
-    lot_counts = sc.items("account_model_member").groupby("account").size()
+    lot_counts = sc.items("account_lot").groupby("account").size()
 
     def resolve(chain_name: object) -> tuple[str, str]:
         if pd.isna(chain_name) or chain_name not in by_name.index:
@@ -67,7 +97,7 @@ def _chain_targets(sc: ScenarioConnection) -> Callable[[object], tuple[str, str]
         row = by_name.loc[chain_name]
         account = row["account_name"]
         if pd.isna(account):
-            return chain_name, "-"
+            return str(chain_name), "-"
         return account, row["lot"] if lot_counts.get(account, 0) > 1 else "-"
 
     return resolve
@@ -113,6 +143,32 @@ def chains_view(sc: ScenarioConnection) -> pd.DataFrame:
     )
 
 
+UNUSED = "nothing"
+"""The ``used_by`` of a chain that no rule, lot or other chain uses."""
+
+
+def chain_table(sc: ScenarioConnection) -> pd.DataFrame:
+    """The named chains, one row per step, with each chain's ``role`` and
+    what it is ``used_by`` (one use per line) on its first step only, so the
+    rows of one chain read as a block; the later steps leave ``chain``,
+    ``role`` and ``used_by`` empty. ``used_by`` is :data:`UNUSED` for a chain
+    nothing uses. The same facts ``sim chain list`` shows, with the steps'
+    numbers kept in columns of their own (issue #141)."""
+    cmap = chain_map.chain_map(sc)
+    steps = chains_view(sc)
+    steps = steps[steps["step"].notna()].reset_index(drop=True)
+    # threshold=0 means "no minimum" -- not meaningfully different from n/a.
+    steps["maximum"] = steps["maximum"].mask(steps["maximum"] == 0)
+    first = ~steps["chain"].duplicated()
+    steps.insert(1, "role", steps["chain"].map(cmap.roles))
+    steps["used_by"] = steps["chain"].map(
+        lambda name: "\n".join(chain_map.use_text(cmap, u) for u in cmap.uses.get(name, ())) or UNUSED
+    )
+    for column in ("chain", "role", "used_by"):
+        steps[column] = steps[column].where(first, "")
+    return steps
+
+
 _SCHEDULED_COLS = [
     "id", "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
     "amount_rule_kind", "amount", "tax_character", "priority", "start", "end",
@@ -147,26 +203,53 @@ def scheduled_view(sc: ScenarioConnection) -> pd.DataFrame:
 
 
 _CALENDAR_COLS = [
-    "date", "kind", "scheduled_name", "account_1", "lot_1", "account_2", "lot_2",
+    "date", "kind", "target", "account_1", "lot_1", "account_2", "lot_2",
     "amount", "description",
 ]
 
 
-def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
-    """Calendar events, human-readable (dollars), by date.
+def _calendar_target(kind: str, scheduled_name: str | None, series: str | None,
+                     payload_json: str | None) -> str | None:
+    """What one calendar row acts on: a ``set_rate``'s series (plus its aux
+    kind, when that isn't ``rate``), else its scheduled row."""
+    if kind == "set_rate" and isinstance(series, str):
+        payload = json.loads(payload_json) if isinstance(payload_json, str) and payload_json else {}
+        aux_kind = payload.get("aux_kind", "rate")
+        return series if aux_kind == "rate" else f"{series} ({aux_kind})"
+    return scheduled_name if isinstance(scheduled_name, str) else None
 
-    ``amount`` is left as a float (NaN where the event carries none) so
-    numeric formatting still works -- display it with
-    ``.style.format({"amount": ...}, na_rep="-")`` rather than filling it here.
+
+def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
+    """Calendar events, human-readable, by date.
+
+    ``amount`` is display text in the unit its ``kind`` gives it (issue #24):
+    a ``set_rate`` as a percent, a ``set_amount``/``one_off_transfer`` as
+    dollars, ``-`` where the event carries none. One column for both,
+    rather than separate rate and dollar columns, because a calendar row
+    sets exactly one of them.
+
+    ``target`` is what the row acts on, by kind (issue #27): the rate
+    series for a ``set_rate`` (with its aux kind when it isn't an ordinary
+    rate, e.g. ``cpi (inflation)``), otherwise the scheduled row it changes
+    or retires. Again one column, since each kind acts on exactly one.
     """
     events = sc.items("calendar_event").copy()
+    events["target"] = [
+        _calendar_target(kind, scheduled, series, payload)
+        for kind, scheduled, series, payload in zip(
+            events["kind"], events["scheduled_name"], events["series"],
+            events["payload_json"], strict=True,
+        )
+    ]
     resolve = _chain_targets(sc)
     for column, lot_column in (("account_1", "lot_1"), ("account_2", "lot_2")):
         targets = [resolve(name) for name in events[column]]
         events[column] = [account for account, _lot in targets]
         events[lot_column] = [lot for _account, lot in targets]
-    events["amount"] = events["amount"].apply(lambda c: None if pd.isna(c) else c / 100)
+    events["amount"] = [
+        registries.format_calendar_amount(kind, amount)
+        for kind, amount in zip(events["kind"], events["amount"], strict=True)
+    ]
     events = events[_CALENDAR_COLS].sort_values("date").reset_index(drop=True)
-    text_cols = [c for c in _CALENDAR_COLS if c != "amount"]
-    events[text_cols] = events[text_cols].fillna("-")
+    events[_CALENDAR_COLS] = events[_CALENDAR_COLS].fillna("-")
     return events

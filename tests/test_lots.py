@@ -1,4 +1,7 @@
-"""Lot-keyed state (ADR-005): one account_model_member row per lot."""
+"""Lot-keyed state (ADR-005): one account_lot row per lot."""
+
+# Abbreviated growth-series names, asserted verbatim below.
+# cspell:ignore asse brok chec rollov settl
 
 from __future__ import annotations
 
@@ -9,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from analysis.sim import units
 from analysis.sim.engine import _post_transfer
 from analysis.sim.loader import LoadError, LoadResult, growth_rule_name
 
@@ -20,12 +24,12 @@ def test_every_account_has_a_default_lot_and_leaf_chain(retire_alice_intent_file
     try:
         accounts = con.execute("SELECT COUNT(*) FROM account").fetchone()[0]
         lots = con.execute(
-            "SELECT lot, COUNT(*) FROM account_model_member GROUP BY lot"
+            "SELECT lot, COUNT(*) FROM account_lot GROUP BY lot"
         ).fetchall()
         assert lots == [("default", accounts)]
         unlinked = con.execute(
             "SELECT COUNT(*) FROM chain c "
-            "LEFT JOIN account_model_member m ON m.id = c.lot_id AND m.account_id = c.account_id "
+            "LEFT JOIN account_lot m ON m.id = c.lot_id AND m.account_id = c.account_id "
             "WHERE c.account_id IS NOT NULL AND m.id IS NULL"
         ).fetchone()[0]
         assert unlinked == 0
@@ -35,8 +39,8 @@ def test_every_account_has_a_default_lot_and_leaf_chain(retire_alice_intent_file
 
 def test_account_state_view_sums_lots_and_nulls_partial_basis(ledger_con: sqlite3.Connection) -> None:
     ledger_con.execute(
-        "INSERT INTO account_model_member(id, model_id, account_id, lot, opening_balance) "
-        "VALUES (200, 1, 5, 'second', 0)"
+        "INSERT INTO account_lot(id, account_id, lot, opening_balance) "
+        "VALUES (200, 5, 'second', 0)"
     )
     ledger_con.execute(
         "INSERT INTO simulation_step(id, step_index, month) VALUES (1, 0, '2026-05-31')"
@@ -57,8 +61,8 @@ def test_account_state_view_sums_lots_and_nulls_partial_basis(ledger_con: sqlite
 
 def test_post_transfer_records_lot_and_owning_account(ledger_con: sqlite3.Connection) -> None:
     ledger_con.execute(
-        "INSERT INTO account_model_member(id, model_id, account_id, lot, opening_balance) "
-        "VALUES (200, 1, 5, 'second', 0)"
+        "INSERT INTO account_lot(id, account_id, lot, opening_balance) "
+        "VALUES (200, 5, 'second', 0)"
     )
     balances = {200: 1_000, 2: 0}
     _post_transfer(
@@ -88,7 +92,7 @@ def test_duplicate_account_and_lot_rejected(
 def test_lot_label_may_not_contain_colon(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
-    _edit(retire_alice_csv("account_values.csv"), "Asset_Roth_Bob,default,", "Asset_Roth_Bob,a:b,")
+    _edit(retire_alice_csv("account_lots.csv"), "Asset_Roth_Bill,default,", "Asset_Roth_Bill,a:b,")
     with pytest.raises(LoadError, match="may not contain ':'"):
         load_test_copy()
 
@@ -96,8 +100,8 @@ def test_lot_label_may_not_contain_colon(
 def test_investment_account_row_requires_explicit_lot(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
 ) -> None:
-    _edit(retire_alice_csv("account_values.csv"), "Asset_Roth_Bob,default,", "Asset_Roth_Bob,,")
-    with pytest.raises(LoadError, match=r"Asset_Roth_Bob\): investment account requires an explicit lot"):
+    _edit(retire_alice_csv("account_lots.csv"), "Asset_Roth_Bill,default,", "Asset_Roth_Bill,,")
+    with pytest.raises(LoadError, match=r"Asset_Roth_Bill\): investment account requires an explicit lot"):
         load_test_copy()
 
 
@@ -132,8 +136,8 @@ def test_prior_year_end_balance_is_all_or_none_per_account(
     add_account_value: Callable[..., None], update_account_value: Callable[..., None],
     load_test_copy: Callable[[], LoadResult],
 ) -> None:
-    add_account_value("Asset_Roth_Alice", lot="b", opening_balance="10000.00")
-    update_account_value("Asset_Roth_Alice", "default", prior_year_end_balance="90000.00")
+    add_account_value("Asset_TraditionalIRA_Alice", lot="b", opening_balance="10000.00")
+    update_account_value("Asset_TraditionalIRA_Alice", "default", prior_year_end_balance="90000.00")
     with pytest.raises(LoadError, match="prior_year_end_balance must be set on every lot"):
         load_test_copy()
 
@@ -142,7 +146,7 @@ def test_two_lot_account_has_a_lot_state_row_per_lot(two_lot_run_file: Path) -> 
     con = sqlite3.connect(two_lot_run_file)
     try:
         lots = dict(con.execute(
-            "SELECT m.lot, m.id FROM account_model_member m "
+            "SELECT m.lot, m.id FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Brokerage_Joint'"
         ).fetchall())
         assert set(lots) == {"a", "b"}
@@ -183,7 +187,7 @@ def test_sale_from_one_lot_leaves_the_other_lots_basis_alone(two_lot_run_file: P
     con = sqlite3.connect(two_lot_run_file)
     try:
         lots = dict(con.execute(
-            "SELECT m.lot, m.id FROM account_model_member m "
+            "SELECT m.lot, m.id FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Brokerage_Joint'"
         ).fetchall())
         def basis(lot: str) -> list[int]:
@@ -224,7 +228,7 @@ def test_sale_reduces_only_that_lots_quantity(two_lot_run_file: Path) -> None:
         def quantities(lot: str) -> list[int]:
             return [r[0] for r in con.execute(
                 "SELECT ls.quantity_micros FROM lot_state ls "
-                "JOIN account_model_member m ON m.id = ls.lot_id "
+                "JOIN account_lot m ON m.id = ls.lot_id "
                 "JOIN account a ON a.id = m.account_id "
                 "WHERE a.name = 'Asset_Brokerage_Joint' AND m.lot = ? "
                 "ORDER BY ls.step_id", (lot,))]
@@ -258,7 +262,7 @@ def test_post_transfer_reduces_quantity_pro_rata_and_zeroes_on_full_drain(
 
 
 def _liquidity_chain(retire_alice_csv: Callable[[str], Path]) -> Path:
-    return retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv"
+    return retire_alice_csv("chains/source") / "asset_checking_liquidity.csv"
 
 
 def test_chain_file_lot_column_matches_account_lot_spelling(
@@ -378,16 +382,16 @@ def test_scheduled_list_and_accounts_view_handle_multi_lot_accounts(
     assert brokerage.rate_series is not None
 
 
-def test_shipped_account_values_files_carry_every_lot_column(
+def test_shipped_account_lots_files_carry_every_lot_column(
     repo_root: Path, prototype_data: Path
 ) -> None:
-    from analysis.sim.registries import ACCOUNT_VALUES_CSV_HEADER
+    from analysis.sim.registries import ACCOUNT_LOTS_CSV_HEADER
 
     for path in (
-        prototype_data / "scenarios" / "retire_alice" / "account_values.csv",
-        repo_root / "templates" / "scenarios" / "template" / "account_values.csv",
+        prototype_data / "scenarios" / "retire_alice" / "account_lots.csv",
+        repo_root / "templates" / "scenarios" / "base" / "account_lots.csv",
     ):
-        assert tuple(path.read_text().splitlines()[0].split(",")) == ACCOUNT_VALUES_CSV_HEADER, path
+        assert tuple(path.read_text().splitlines()[0].split(",")) == ACCOUNT_LOTS_CSV_HEADER, path
 
 
 def test_explain_lists_each_lot_with_its_symbol_and_quantity(two_lot_run_file: Path) -> None:
@@ -434,7 +438,7 @@ def test_lot_balance_item_and_member_columns(two_lot_run_file: Path, test_data_d
             assert set(held["lot"]) == {"a", "b"}
             last = held[held["month"] == held["month"].max()].set_index("lot")
             assert last.loc["a", "symbol"] == "AAA" and last.loc["a", "quantity_micros"] > 1_000_000_000
-            members = run.items("account_model_member", symbol="BBB")
+            members = run.items("account_lot", symbol="BBB")
             assert list(members["account"]) == ["Asset_Brokerage_Joint"]
             assert members.iloc[0]["quantity_micros"] == 2_000_500_000
 
@@ -497,7 +501,7 @@ def test_a_lot_declared_for_a_future_purchase_accumulates_basis(
         rows = con.execute(
             "SELECT s.month, ls.balance, ls.cost_basis FROM lot_state ls "
             "JOIN simulation_step s ON s.id = ls.step_id "
-            "JOIN account_model_member m ON m.id = ls.lot_id "
+            "JOIN account_lot m ON m.id = ls.lot_id "
             "JOIN account a ON a.id = m.account_id "
             "WHERE a.name = 'Asset_Brokerage_Joint' AND m.lot = 'new' ORDER BY s.step_index"
         ).fetchall()
@@ -561,7 +565,11 @@ def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(ledger_con: s
             "VALUES (1, '2026-06-30', 1, 2, 1, 2, ?, ?, 0, ?, 'rule')",
             (amount, amount, character),
         )
-    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (150, 30, 7)
+    from analysis.sim.engine import _capital_gains
+
+    assert _tax_year_income_buckets(ledger_con, tax_year=2026) == (100, 7)
+    gains = _capital_gains(ledger_con, tax_year=2026, loss_limit=lambda _year: 0)
+    assert (gains.stcg, gains.ltcg) == (50, 30)
 
 
 def test_short_term_sales_then_long_term_sales_from_the_same_lot(two_lot_run_file: Path) -> None:
@@ -569,7 +577,7 @@ def test_short_term_sales_then_long_term_sales_from_the_same_lot(two_lot_run_fil
     try:
         legs = con.execute(
             "SELECT date, tax_character FROM transfer_event te "
-            "JOIN account_model_member m ON m.id = te.from_lot_id "
+            "JOIN account_lot m ON m.id = te.from_lot_id "
             "WHERE m.lot = 'b' AND te.tax_character IN ('stcg', 'ltcg')"
         ).fetchall()
     finally:
@@ -596,7 +604,8 @@ def _bracket_rows(path: Path, status: str) -> list[tuple[int, int]]:
     with path.open() as f:
         rows = [r for r in csv.DictReader(f)
                 if r["filing_status"] == status and r["effective_date"] == "2026-01-31"]
-    return sorted((round(float(r["floor"]) * 100), int(r["marginal_rate_micros"])) for r in rows)
+    return sorted((units.dollars_to_cents(r["floor"]), units.percent_to_micros(r["marginal_rate"]))
+                  for r in rows)
 
 
 def test_long_term_gains_are_taxed_at_the_preferential_rates(
@@ -700,7 +709,7 @@ def test_state_tax_still_treats_gains_as_ordinary(
 
 
 @pytest.mark.parametrize(("account", "lot", "expected"), [
-    ("Bob Vanguard Rollover", "settlement", "growth_bob_vang_roll_sett"),
+    ("Bill Brokerage Rollover", "settlement", "growth_bill_brok_roll_sett"),
     ("Asset_Checking", "default", "growth_asse_chec"),      # the default lot adds nothing
     ("Asset_Brokerage_Joint", "2024-03", "growth_asse_brok_join_2024_03"),
     ("IRA", "a", "growth_ira_a"),                           # short words are kept whole
@@ -713,12 +722,12 @@ def test_a_taken_growth_rule_name_widens_until_it_is_free() -> None:
     taken: set[str] = set()
     names = []
     for _ in range(7):
-        names.append(growth_rule_name("Vanguard Rollover", "settlement", taken))
+        names.append(growth_rule_name("Brokerage Rollover", "settlement", taken))
         taken.add(names[-1])
     assert names[:3] == [
-        "growth_vang_roll_sett", "growth_vangu_rollo_settl", "growth_vangua_rollov_settle",
+        "growth_brok_roll_sett", "growth_broke_rollo_settl", "growth_broker_rollov_settle",
     ]
-    assert names[-1] == "growth_vanguard_rollover_settlement"   # the untrimmed names, at the widest
+    assert names[-1] == "growth_brokerage_rollover_settlement"   # the untrimmed names, at the widest
     assert len(set(names)) == len(names)
 
 

@@ -39,20 +39,34 @@ class LogLinearMode(StrEnum):
     LOG = "log"
     LINEAR = "linear"
 
+class DeltaScale(StrEnum):
+    """Sensitivity delta scale (ADR-007 §4): dollars, or % of the base."""
+    ABSOLUTE = "absolute"
+    RELATIVE = "relative"
+
+class HeatmapValue(StrEnum):
+    """What a sensitivity heatmap cell shows (ADR-007 §9)."""
+    SHARE = "share"
+    SWING = "swing"
+
+class AttributionAxis(StrEnum):
+    """How a sensitivity delta is decomposed (ADR-007 §6.1)."""
+    CATEGORY = "category"
+    FLOW_ACCOUNT = "flow_account"
+    HOLDING_ACCOUNT = "holding_account"
+
 class InvestmentAssetSubkind(StrEnum):
     """
     Investment asset subkind type.
 
-    These subkinds represent different types of investment accounts.
-    The categories represent the tax treatment of the investment accounts.
+    These subkinds represent different types of investment accounts. A
+    ``retirement`` account's lots each say whether they are Roth or
+    traditional, IRA or 401k (``registries.RETIREMENT_LOT_SUBKINDS``, #217).
     """
     BROKERAGE_TAXABLE = "brokerage_taxable"
-    TRADITIONAL_IRA = "traditional_ira"
-    ROTH_IRA = "roth_ira"
-    TRADITIONAL_401K = "traditional_401k"
-    ROTH_401K = "roth_401k"
+    RETIREMENT = "retirement"
     HSA = "hsa"
-    
+
 INVESTMENT_ASSET_SUBKINDS = frozenset(item.value for item in InvestmentAssetSubkind)
 """
 Subkinds eligible for prior_year_end_balance (the RMD-relevant investment
@@ -70,10 +84,11 @@ type ItemType = Literal[
     "net_worth_constant_cpi",
     "account_balance",
     "lot_balance",
-    "account_model_member",
+    "account_lot",
     "aux_table",
     "scenario",
     "tax_year_summary",
+    "capital_loss",
     "year_to_date",
     "person",
     "security",

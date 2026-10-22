@@ -12,10 +12,14 @@ matplotlib.use("Agg")
 from click.testing import CliRunner
 
 from analysis.cli import main
+from analysis.sim.connection import RunConnection
+from analysis.sim.types import DollarMode
 from analysis.sim.notebook_ui import compare_plots as cp
 from analysis.sim.notebook_ui.pickers import (
     DollarModePicker,
     MultiScenarioConnections,
+    TimeRangePicker,
+    run_years,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -24,17 +28,23 @@ PROTOTYPE = REPO_ROOT / "prototype_data"
 
 class _FakeRun:
     def __init__(self, values: list[float]) -> None:
-        idx = pd.to_datetime(["2026-01-31", "2026-02-28"])
+        # An empty list is a run with no accounts: no net-worth rows at all.
+        idx = pd.to_datetime(["2026-01-31", "2026-02-28"])[:len(values)]
         self._nw = pd.DataFrame({"nominal": values}, index=idx)
         self._nw.index.name = "month"
 
     def net_worth_frame(self) -> pd.DataFrame:
         return self._nw
 
+    def net_worth_series(self, mode=None, *, after_tax: bool = False) -> pd.Series:
+        return self._nw["nominal"]
+
 
 def _fake_container(baseline_values, variant_values) -> MultiScenarioConnections:
     return MultiScenarioConnections(
-        connections={"base": _FakeRun(baseline_values), "variant": _FakeRun(variant_values)},
+        connections={  # ty: ignore[invalid-argument-type]  # net_worth_series() is all they use
+            "base": _FakeRun(baseline_values), "variant": _FakeRun(variant_values),
+        },
         baseline="base", variants=["variant"], colors={"base": "C0", "variant": "C1"},
     )
 
@@ -47,6 +57,17 @@ def test_net_worth_by_month_and_variant_delta() -> None:
 
     assert list(nw["base"]) == [10.0, 20.0]
     assert list(delta["variant"]) == [2.0, -2.0]
+
+
+def test_net_worth_by_month_treats_a_scenario_without_rows_as_zero() -> None:
+    container = _fake_container([10.0, 20.0], [])
+
+    nw = cp.net_worth_by_month(container)
+    summary = cp.breakeven_summary(nw, cp.variant_delta(nw, container), container)
+
+    assert list(nw["variant"]) == [0.0, 0.0]
+    assert summary.loc["variant", "deepest deficit"] == -20.0
+    assert summary.loc["variant", "break-even"] == "never"
 
 
 def test_breakeven_month_never_ahead_returns_none() -> None:
@@ -157,13 +178,93 @@ def test_year_end_widget_includes_delta_column(multi_connections: MultiScenarioC
     assert widget is not None
 
 
-def test_compare_widgets_share_dollar_mode_observers(multi_connections: MultiScenarioConnections) -> None:
+def _two_runs(retire_alice_run: RunConnection, variant_a_run: RunConnection,
+              ) -> MultiScenarioConnections:
+    # Built directly: the multi_connections fixture's picker finds no runs.
+    return MultiScenarioConnections(
+        connections={"retire_alice": retire_alice_run, "variant_a": variant_a_run},
+        baseline="retire_alice", variants=["variant_a"],
+        colors={"retire_alice": "C0", "variant_a": "C1"},
+    )
+
+
+def test_compare_widgets_redraw_on_a_shared_dollar_toggle(
+    retire_alice_run: RunConnection, variant_a_run: RunConnection,
+) -> None:
+    multi_connections = _two_runs(retire_alice_run, variant_a_run)
     dollar_mode = DollarModePicker()
 
     cp.net_worth_compare_widget(multi_connections, dollar_mode=dollar_mode)
     cp.breakeven_widget(multi_connections, dollar_mode=dollar_mode, baseline="retire_alice")
     cp.year_end_widget(multi_connections, dollar_mode=dollar_mode, baseline="retire_alice")
 
-    assert set(dollar_mode._compare_plot_redraws) == {
-        "net_worth", "breakeven", "year_end",
-    }
+    dollar_mode.value = DollarMode.CPI_CONSTANT  # redraws all three; must not raise
+
+
+def test_compare_widgets_share_one_time_range_over_every_run(
+    retire_alice_run: RunConnection, variant_a_run: RunConnection,
+) -> None:
+    multi_connections = _two_runs(retire_alice_run, variant_a_run)
+    time_range = TimeRangePicker()
+
+    cp.net_worth_compare_widget(multi_connections, time_range=time_range)
+    cp.year_end_widget(multi_connections, time_range=time_range, baseline="retire_alice")
+
+    years = run_years(*multi_connections.connections.values())
+    assert (time_range.min, time_range.max) == (years[0], years[-1])
+    time_range.value = (years[0], years[0])  # redraws both; must not raise
+
+
+def _empty_compare(
+    runs: tuple[RunConnection, RunConnection], baseline: str,
+) -> MultiScenarioConnections:
+    full, empty = runs
+    connections = {"retire_alice": full, "empty": empty}
+    return MultiScenarioConnections(
+        connections=connections, baseline=baseline,
+        variants=[name for name in connections if name != baseline],
+        colors={"retire_alice": "C0", "empty": "C1"},
+    )
+
+
+def test_breakeven_widget_compares_against_an_empty_scenario(
+    empty_scenario_runs: tuple[RunConnection, RunConnection],
+) -> None:
+    for baseline in ("retire_alice", "empty"):
+        container = _empty_compare(empty_scenario_runs, baseline)
+        cp.breakeven_widget(container, baseline=baseline)
+        for mode in DollarMode:
+            nw = cp.net_worth_by_month(container, mode)
+            assert (nw["empty"] == 0).all()
+
+
+def test_breakeven_widget_compares_two_empty_scenarios(
+    empty_scenario_runs: tuple[RunConnection, RunConnection],
+) -> None:
+    """Two runs with no months draw an empty summary, with no final net worth."""
+    _, empty = empty_scenario_runs
+    container = MultiScenarioConnections(
+        connections={"empty": empty, "empty_too": empty}, baseline="empty",
+        variants=["empty_too"], colors={"empty": "C0", "empty_too": "C1"},
+    )
+    cp.breakeven_widget(container, baseline="empty")
+
+
+def test_account_balance_diffs_show_accounts_an_empty_scenario_lacks_as_zero(
+    empty_scenario_runs: tuple[RunConnection, RunConnection],
+) -> None:
+    full, empty = empty_scenario_runs
+    for baseline_rc, variant, variant_rc in ((full, "empty", empty), (empty, "retire_alice", full)):
+        _, _, diffs = cp.account_balance_diffs(
+            baseline="", baseline_rc=baseline_rc, variant_rcs={variant: variant_rc},
+        )
+        assert "Asset_Checking" in diffs
+        frame = diffs["Asset_Checking"]
+        zero_side = variant if variant_rc is empty else "baseline"
+        assert (frame[zero_side] == 0).all()
+        dollar_mode = DollarModePicker()
+        cp.show_account_balance_diffs(
+            None, baseline="", baseline_rc=baseline_rc, variant_rcs={variant: variant_rc},
+            dollar_mode=dollar_mode,
+        )
+        dollar_mode.value = DollarMode.CPI_CONSTANT  # redraws; the empty run has no CPI rows

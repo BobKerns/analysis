@@ -17,12 +17,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
 
 # Net cents into Asset_Checking per month from fixed_amount rules, before CPI
-# growth (salary_alice + salary_bob) - (living + housing + healthcare). All
+# growth (salary_alice + salary_bill) - (living + housing + healthcare). All
 # five rows share base_date = scenario start and series = cpi
 # (prototype_data/aux/inflation__cpi.csv: flat 2.5% APR), so each grows by the
 # same monthly-compounded factor. The mortgage payment isn't inflated.
 SALARY_ALICE_MONTHLY = 800000
-SALARY_BOB_MONTHLY = 750000
+SALARY_BILL_MONTHLY = 750000
 LIVING_MONTHLY = 450000
 HOUSING_MONTHLY = 80000
 HEALTHCARE_MONTHLY = 60000
@@ -57,7 +57,7 @@ def _project(steps: int) -> tuple[list[int], list[int]]:
         factor = _cpi_factor(i)
         net_checking = (
             SALARY_ALICE_MONTHLY * factor // 1_000_000
-            + SALARY_BOB_MONTHLY * factor // 1_000_000
+            + SALARY_BILL_MONTHLY * factor // 1_000_000
             - LIVING_MONTHLY * factor // 1_000_000
             - HOUSING_MONTHLY * factor // 1_000_000
             - HEALTHCARE_MONTHLY * factor // 1_000_000
@@ -105,10 +105,14 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
             assert steps[i]["previous_step_id"] == steps[i - 1]["id"]
 
         # Inflation indexes are persisted monthly for each inflation series.
-        n_inflation = con.execute(
-            "SELECT COUNT(*) FROM inflation_index_state"
+        n_inflation, n_series = con.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT series) FROM inflation_index_state"
+        ).fetchone()
+        n_supplied = con.execute(
+            "SELECT COUNT(DISTINCT series) FROM aux_table WHERE kind = 'inflation'"
         ).fetchone()[0]
-        assert n_inflation == len(steps)
+        assert n_series == n_supplied
+        assert n_inflation == n_series * len(steps)
         first_cpi = con.execute(
             "SELECT cumulative_index_micros FROM inflation_index "
             "WHERE month = ? AND series = 'cpi'",
@@ -195,8 +199,6 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         assert "mortgage_payment" not in skipped
         assert "ss_benefit" not in skipped
         assert "rmd" not in skipped
-        skipped_cal = json.loads(run["run_args_json"]).get("skipped_calendar_kinds", {})
-        assert skipped_cal == {}
 
         # ADR-003 §3: all 5 calendar events in retire_alice are supported.
         assert con.execute(
@@ -208,8 +210,8 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
         ss_alice_id = con.execute(
             "SELECT id FROM scheduled_transaction WHERE name='ss_alice'"
         ).fetchone()[0]
-        ss_bob_id = con.execute(
-            "SELECT id FROM scheduled_transaction WHERE name='ss_bob'"
+        ss_bill_id = con.execute(
+            "SELECT id FROM scheduled_transaction WHERE name='ss_bill'"
         ).fetchone()[0]
         # step 69 = 2032-02-29: alice has not yet reached 67.
         n_pre = con.execute(
@@ -228,13 +230,13 @@ def test_run_scenario_emits_step_chain_and_applies_rules(tmp_path: Path) -> None
             (steps[80]["id"], ss_alice_id),
         ).fetchone()[0]
         assert alice_80 == 307_500
-        # bob (b. 1967-08-20, claim_age=70) first fires at 2037-08-31 (step 135).
+        # bill (b. 1967-08-20, claim_age=70) first fires at 2037-08-31 (step 135).
         # mult = 1.24, factor = 1.0 → 350000 * 1.24 = 434000.
-        bob_135 = con.execute(
+        bill_135 = con.execute(
             "SELECT amount FROM transfer_event WHERE step_id=? AND reason_id=?",
-            (steps[135]["id"], ss_bob_id),
+            (steps[135]["id"], ss_bill_id),
         ).fetchone()[0]
-        assert bob_135 == 434_000
+        assert bill_135 == 434_000
 
         # ADR-003 §2.3: alice reaches 73 in 2038 (b. 1965). RMD fires Dec
         # 2038 (step 151), Dec 2039 (163), Dec 2040 (175). IRA opening
@@ -291,7 +293,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
     try:
         # Per-rule firing counts after calendar events expand:
         #   salary_alice retires 2028-06-30 (step 25, fires 0..25 = 26)
-        #   salary_bob   retires 2030-12-31 (step 55, fires 0..55 = 56)
+        #   salary_bill   retires 2030-12-31 (step 55, fires 0..55 = 56)
         #   one_off_transfer 2029-03-31 synthesizes 1 fixed_amount rule.
         # The asset_checking_liquidity settle pass (ADR-003 §4.7) posts its own
         # 'refill' legs outside reason_kind='rule', so it's checked separately.
@@ -302,7 +304,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
             "GROUP BY st.name"
         ).fetchall())
         assert per_rule["salary_alice"] == 26
-        assert per_rule["salary_bob"] == 56
+        assert per_rule["salary_bill"] == 56
         assert per_rule["mortgage_pmt"] == 2 * 176  # 2 legs
         assert per_rule["living"] == 176
         assert per_rule["housing"] == 176
@@ -310,7 +312,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
         assert per_rule[growth_rule_name("Asset_Checking", "default")] == 176
         assert per_rule[growth_rule_name("Asset_Brokerage_Joint", "default")] == 176
         assert per_rule["ss_alice"] == 176 - 70
-        assert per_rule["ss_bob"] == 176 - 135
+        assert per_rule["ss_bill"] == 176 - 135
         assert per_rule["rmd_alice"] == 3
         oneoff_count = sum(
             v for k, v in per_rule.items() if k.startswith("oneoff_evt_")
@@ -471,7 +473,7 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character(l
     balances = {1: 0, 2: 200_000, 3: 1_000_000}
     account_kinds = {1: "asset", 2: "asset", 3: "asset"}
     account_tax_treatment = {1: "taxable", 2: "taxable", 3: "tax_deferred"}
-    account_subkind = {1: "cash", 2: "cash", 3: "traditional_ira"}
+    account_subkind = {1: "cash", 2: "cash", 3: "retirement"}
     account_name = {1: "Checking", 2: "Savings", 3: "IRA"}
     # chain 100 = interior chain listing leaf chains 2 (savings) then 3 (IRA);
     # leaf chains share ids with their account for simplicity in this test.
@@ -508,8 +510,8 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     ) -> None:
     """Step 2 requests 1% of what's still outstanding, step 3 the default
     100% of whatever's left -- absent a shortfall this is a cascading
-    near-even split, but step 2 (Hiromi Vanguard) is nearly empty here, so
-    its unfulfilled share falls through and step 3 (Bob Vanguard) picks up
+    near-even split, but step 2 (Alice Brokerage) is nearly empty here, so
+    its unfulfilled share falls through and step 3 (Bill Brokerage) picks up
     the rest, exactly the parallel-draw-until-exhausted behavior ADR-003
     §4.7 describes rather than the old 'drain each step to zero in turn'
     bug."""
@@ -519,7 +521,7 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     account_kinds = dict.fromkeys(balances, "asset")
     account_tax_treatment = dict.fromkeys(balances, "taxable")
     account_subkind = dict.fromkeys(balances, "cash")
-    account_name = {1: "Target", 2: "Hiromi Vanguard", 3: "Bob Vanguard"}
+    account_name = {1: "Target", 2: "Alice Brokerage", 3: "Bill Brokerage"}
     graph = ChainGraph(
         members={100: [(2, None, 10_000), (3,)]},  # 2: percent=1%, 3: default 100%
         leaf_lot={2: 2, 3: 3},
@@ -600,6 +602,216 @@ def test_chain_draw_refills_source_before_checking_availability(ledger_con: sqli
     assert balances[1] == 50_000
     assert balances[2] == 0
     assert balances[3] == 1_000_000 - 49_500  # refilled just enough to cover the draw
+    refill_parent, draw_id = ledger_con.execute(
+        "SELECT r.parent_event_id, d.id FROM transfer_event r, transfer_event d "
+        "WHERE r.from_account = 3 AND d.from_account = 2"
+    ).fetchone()
+    assert refill_parent == draw_id  # the refill is linked to the chain leg it fed
+
+
+def test_refill_legs_point_at_the_debit_that_triggered_them(ledger_con: sqlite3.Connection) -> None:
+    """A refill posts before its debit, then is linked to it through
+    parent_event_id (#104). A nested refill (the refill source needing its
+    own refill) points at the refill leg that set it off, so the legs form a
+    cause tree rooted at the debit."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _post_transfer
+
+    # 1=payee, 2=checking (refills from 3), 3=savings (refills from 4), 4=brokerage.
+    balances = {1: 0, 2: 10_000, 3: 1_000, 4: 1_000_000}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = dict.fromkeys(balances, "cash")
+    account_name = {1: "Payee", 2: "Checking", 3: "Savings", 4: "Brokerage"}
+    graph = ChainGraph(
+        members={},
+        leaf_lot={30: 3, 40: 4},
+        minimum_of={2: 5_000, 3: 0}, refill_chain_of={2: 30, 3: 40},
+        refill_target_of={2: None, 3: None}, refill_amount_of={2: None, 3: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
+        account_subkind=account_subkind, account_name=account_name, cost_bases={},
+    )
+    debit = _post_transfer(
+        ledger_con, balances, account_kinds, step_id=1, month_s="2026-05-31",
+        from_id=2, to_id=1, amount=20_000, tax_char="none", reason_id=99,
+        refill_ctx=refill_ctx,
+    )
+    legs = {
+        (src, dst): (event_id, parent)
+        for event_id, src, dst, parent in ledger_con.execute(
+            "SELECT id, from_account, to_account, parent_event_id FROM transfer_event"
+        )
+    }
+    savings_leg, savings_parent = legs[(3, 2)]
+    _, brokerage_parent = legs[(4, 3)]
+    assert legs[(2, 1)] == (debit, None)
+    assert savings_parent == debit
+    assert brokerage_parent == savings_leg
+
+
+@pytest.mark.allow_negative_balance
+@pytest.mark.parametrize(
+    ("refill_chain", "minimum", "refilling", "status", "message", "needed", "drawn"),
+    [
+        # #101's shape: the chain points at an account with nothing to give.
+        (30, 5_000, False, "drawn", r"refill chain 'Wrong_Chain' supplied \$0\.00 of \$250\.00$",
+         25_000, 0),
+        (None, 0, False, "none_configured", r"no refill chain configured$", None, None),
+        (30, 5_000, True, "cycle", r"refill chain 'Wrong_Chain' was skipped: .*refill cycle", None, None),
+        (30, -30_000, False, "not_triggered",
+         r"refill chain 'Wrong_Chain' was not drawn: .*minimum_balance$", None, None),
+    ],
+)
+def test_negative_balance_warning_says_what_the_refill_did(
+    ledger_con: sqlite3.Connection, refill_chain: int | None, minimum: int, refilling: bool,
+    status: str, message: str, needed: int | None, drawn: int | None,
+) -> None:
+    """#105: the warning, and its negative_balance_warnings record, name the
+    refill chain tried and how much of what was needed it supplied, so a
+    misdirected refill_chain is visible rather than a bare shortfall."""
+    from analysis.sim.engine import REFILL_STATUSES, ChainGraph, RefillContext, _post_transfer
+
+    # 1=payee, 2=checking (refills from chain 30), 3=an empty account.
+    balances = {1: 0, 2: 0, 3: 0}
+    account_kinds = dict.fromkeys(balances, "asset")
+    graph = ChainGraph(
+        members={}, leaf_lot={30: 3},
+        minimum_of={2: minimum}, refill_chain_of={2: refill_chain},
+        refill_target_of={2: None}, refill_amount_of={2: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31), inflation_factor_cache={},
+        account_tax_treatment=dict.fromkeys(balances, "taxable"),
+        account_subkind=dict.fromkeys(balances, "cash"),
+        account_name={1: "Payee", 2: "Checking", 3: "Empty"}, cost_bases={},
+        chain_name={30: "Wrong_Chain"},
+    )
+    if refilling:
+        refill_ctx.refilling.add(2)
+    with pytest.warns(RuntimeWarning, match=r"2026-05-31: account 'Checking' went negative "
+                      r"\(balance=-200\.00\); " + message):
+        _post_transfer(
+            ledger_con, balances, account_kinds, step_id=1, month_s="2026-05-31",
+            from_id=2, to_id=1, amount=20_000, tax_char="none", reason_id=99,
+            refill_ctx=refill_ctx,
+        )
+    assert status in REFILL_STATUSES
+    assert refill_ctx.negative_events == [{
+        "month": "2026-05-31", "account": "Checking", "balance_cents": -20_000,
+        "refill_status": status, "refill_chain": None if refill_chain is None else "Wrong_Chain",
+        "refill_needed_cents": needed, "refill_drawn_cents": drawn,
+    }]
+
+
+@pytest.mark.allow_negative_balance
+def test_chain_draw_warning_reports_the_refill_it_drew(ledger_con: sqlite3.Connection) -> None:
+    """#105: a chain step that refills, then gives what it can down to a
+    negative minimum_balance, warns with that refill -- not with the empty
+    re-check a second look-ahead on the same debit used to record."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _chain_draw
+
+    # 1=target, 2=step account (minimum -$300, refills from 3), 3=$50 refill source.
+    balances = {1: 0, 2: 0, 3: 5_000}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = dict.fromkeys(balances, "cash")
+    account_name = {1: "Target", 2: "Source", 3: "Refill"}
+    graph = ChainGraph(
+        members={}, leaf_lot={10: 2, 20: 3},
+        minimum_of={2: -30_000}, refill_chain_of={2: 20},
+        refill_target_of={2: None}, refill_amount_of={2: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
+        account_subkind=account_subkind, account_name=account_name, cost_bases={},
+        chain_name={20: "Refill"},
+    )
+    with pytest.warns(RuntimeWarning, match=r"'Source' went negative \(balance=-300\.00\); "
+                      r"refill chain 'Refill' supplied \$50\.00 of \$700\.00$"):
+        taken = _chain_draw(
+            ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+            account_name, step_id=1, month_s="2026-05-31", graph=graph,
+            chain_id=10, amount_needed=100_000, target_account_id=1,
+            refill_ctx=refill_ctx,
+        )
+    assert taken == 35_000
+    assert refill_ctx.negative_events[0]["refill_status"] == "drawn"
+
+
+@pytest.mark.allow_negative_balance
+def test_negative_balance_warnings_record_the_refill_in_run_args(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """#105: run_args_json's negative_balance_warnings carry the refill chain
+    and what it supplied, for a notebook to show. A debit far beyond what
+    checking's liquidity chain holds drains the chain and still goes negative."""
+    append_calendar_row(
+        date="2027-03-31", kind="one_off_transfer", name="huge_bill",
+        account_1="Asset_Checking", account_2="Expense_Living",
+        amount="10000000.00", tax_character="none",
+    )
+    intent_path = load_scenario(
+        test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    with pytest.warns(RuntimeWarning, match="'Asset_Checking' went negative"):
+        run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+    con = sqlite3.connect(run_path)
+    try:
+        run_args = json.loads(con.execute("SELECT run_args_json FROM simulation_run").fetchone()[0])
+    finally:
+        con.close()
+    first = run_args["negative_balance_warnings"][0]
+    assert first["month"] == "2027-03-31"
+    assert first["account"] == "Asset_Checking"
+    assert first["refill_status"] == "drawn"
+    assert first["refill_chain"] == "asset_checking_liquidity"
+    assert 0 < first["refill_drawn_cents"] < first["refill_needed_cents"]
+    assert first["balance_cents"] < 0
+
+
+def test_refill_before_a_split_withdrawal_points_at_its_basis_leg(ledger_con: sqlite3.Connection) -> None:
+    """A basis-tracked withdrawal refills once on its net amount; the refill
+    is linked to the first leg posted, the return_of_capital leg."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _post_withdrawal
+
+    # 1=payee, 2=brokerage (refills from 3), 3=cash.
+    balances = {1: 0, 2: 10_000, 3: 1_000_000}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = {1: "cash", 2: "brokerage_taxable", 3: "cash"}
+    account_name = {1: "Payee", 2: "Brokerage", 3: "Cash"}
+    cost_bases: dict[int, int | None] = {2: 4_000}
+    graph = ChainGraph(
+        members={}, leaf_lot={30: 3},
+        minimum_of={2: 5_000}, refill_chain_of={2: 30},
+        refill_target_of={2: None}, refill_amount_of={2: None},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
+        account_subkind=account_subkind, account_name=account_name, cost_bases=cost_bases,
+    )
+    _post_withdrawal(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, cost_bases, step_id=1, month_s="2026-05-31", from_id=2, to_id=1,
+        amount=8_000, reason_id=99, refill_ctx=refill_ctx,
+    )
+    rows = ledger_con.execute(
+        "SELECT id, from_account, tax_character, parent_event_id FROM transfer_event ORDER BY id"
+    ).fetchall()
+    refill = [r for r in rows if r[1] == 3]
+    basis_leg = [r for r in rows if r[2] == "return_of_capital"]
+    assert len(refill) == 1 and len(basis_leg) == 1
+    assert refill[0][3] == basis_leg[0][0]
 
 
 def test_post_withdrawal_rejects_untracked_taxable_non_cash_account(ledger_con: sqlite3.Connection) -> None:
@@ -627,7 +839,7 @@ def test_post_withdrawal_splits_return_of_capital_and_ltcg_pro_rata(ledger_con: 
     from analysis.sim.engine import _post_withdrawal
 
     balances = {3: 10_000_00, 4: 0}
-    cost_bases = {3: 4_000_00}
+    cost_bases: dict[int, int | None] = {3: 4_000_00}
     _post_withdrawal(
         ledger_con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
         {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
@@ -654,7 +866,7 @@ def test_post_withdrawal_realizes_loss_as_negative_ltcg_leg(ledger_con: sqlite3.
     from analysis.sim.engine import _post_withdrawal
 
     balances = {3: 9_000_00, 4: 0}
-    cost_bases = {3: 20_000_00}  # bought high, now worth less than basis
+    cost_bases: dict[int, int | None] = {3: 20_000_00}  # bought high, now worth less than basis
     _post_withdrawal(
         ledger_con, balances, {3: "asset", 4: "asset"}, {3: "taxable"},
         {3: "brokerage_taxable"}, {3: "Brokerage"}, cost_bases,
@@ -669,105 +881,142 @@ def test_post_withdrawal_realizes_loss_as_negative_ltcg_leg(ledger_con: sqlite3.
     assert balances[4] == 3_000_00  # to_id still nets the full amount requested
 
 
-def test_apply_home_sale_splits_basis_excluded_and_taxable_gain(ledger_con: sqlite3.Connection) -> None:
-    """Sale price above basis + exclusion cap produces all three legs:
-    return_of_capital (the basis), excluded_gain (gain up to the §121 cap,
-    untaxed), and ltcg (gain above the cap, taxed)."""
-    from analysis.sim.engine import _apply_home_sale
+@pytest.mark.parametrize("refill_funds", [0, 50_000_00], ids=["refill-empty", "refill-funded"])
+def test_chain_draw_at_a_loss_checks_the_net_amount_not_each_leg(
+    ledger_con: sqlite3.Connection, refill_funds: int,
+) -> None:
+    """Issue #101: drawing a lot underwater vs. its basis posts a
+    return_of_capital leg larger than the draw plus a negative ltcg leg.
+    Refill, share tracking and the negative-balance warning see the net
+    draw, so the lot neither pulls a phantom refill for the overshoot nor
+    warns (an error under this suite) about a negative it never reaches."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _chain_draw
 
-    balances = {5: 900_000_00, 6: 0}
-    cost_bases = {5: 200_000_00}
-    _apply_home_sale(
-        ledger_con, balances, {5: "asset", 6: "asset"}, cost_bases,
-        step_id=1, month_s="2026-06-30",
-        params={"exclusion_cap_cents": 500_000_00},
-        amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux={},
+    # 1=target, 2=brokerage worth $10k on a $20k basis, 3=its refill source.
+    balances = {1: 0, 2: 10_000_00, 3: refill_funds}
+    account_kinds = dict.fromkeys(balances, "asset")
+    account_tax_treatment = dict.fromkeys(balances, "taxable")
+    account_subkind = {1: "cash", 2: "brokerage_taxable", 3: "cash"}
+    account_name = {1: "Target", 2: "Brokerage", 3: "Refill"}
+    graph = ChainGraph(
+        members={},
+        leaf_lot={10: 2, 20: 3},
+        minimum_of={2: 0}, refill_chain_of={2: 20},
+        refill_target_of={2: None}, refill_amount_of={2: None},
+        maximum_of={}, overflow_chain_of={},
     )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment=account_tax_treatment,
+        account_subkind=account_subkind, account_name=account_name,
+        cost_bases={2: 20_000_00}, quantities={2: 1_000},
+    )
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, account_tax_treatment, account_subkind,
+        account_name, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=10, amount_needed=6_000_00, target_account_id=1,
+        refill_ctx=refill_ctx,
+    )
+    assert taken == 6_000_00
+    assert balances == {1: 6_000_00, 2: 4_000_00, 3: refill_funds}  # no refill at all
+    assert refill_ctx.negative_events == []
+    assert refill_ctx.quantities[2] == 400  # 60% of the value, 60% of the shares
     legs = ledger_con.execute(
-        "SELECT amount, tax_character, parent_event_id FROM transfer_event "
-        "ORDER BY id"
+        "SELECT amount, tax_character FROM transfer_event ORDER BY id"
     ).fetchall()
-    # gain = 900k - 200k = 700k; excluded = min(700k, 500k) = 500k;
-    # taxable = 200k.
-    assert legs == [
-        (200_000_00, "return_of_capital", None),
-        (500_000_00, "excluded_gain", 1),
-        (200_000_00, "ltcg", 2),
-    ]
-    assert balances[6] == 900_000_00
-    assert cost_bases[5] == 0
+    assert legs == [(12_000_00, "return_of_capital"), (-6_000_00, "ltcg")]
 
 
-def test_apply_home_sale_excludes_entire_gain_when_under_cap(ledger_con: sqlite3.Connection) -> None:
-    """Gain fully covered by the exclusion posts no ltcg leg at all -- not
-    a zero-amount leg, no leg."""
-    from analysis.sim.engine import _apply_home_sale
+def test_loss_withdrawal_into_a_liability_is_capped_before_the_split(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    """A loss-position withdrawal paying down a liability with less owed than
+    the draw: the net amount is capped to what's owed first, then split, so
+    the legs, the shares and the basis all follow what the liability took."""
+    from analysis.sim.engine import ChainGraph, RefillContext, _post_withdrawal
 
-    balances = {5: 600_000_00, 6: 0}
-    cost_bases = {5: 200_000_00}
-    _apply_home_sale(
-        ledger_con, balances, {5: "asset", 6: "asset"}, cost_bases,
-        step_id=1, month_s="2026-06-30",
-        params={"exclusion_cap_cents": 500_000_00},
-        amount_cents=600_000_00, from_id=5, to_id=6, tid=42, aux={},
+    # 1=mortgage with $1k owed, 2=brokerage worth $10k on a $20k basis.
+    balances = {1: 1_000_00, 2: 10_000_00}
+    account_kinds = {1: "liability", 2: "asset"}
+    cost_bases: dict[int, int | None] = {2: 20_000_00}
+    graph = ChainGraph(
+        members={}, leaf_lot={}, minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    refill_ctx = RefillContext(
+        graph, aux=None, chain_base_date=date(2026, 5, 31),
+        inflation_factor_cache={}, account_tax_treatment={2: "taxable"},
+        account_subkind={2: "brokerage_taxable"}, account_name={1: "Mortgage", 2: "Brokerage"},
+        cost_bases=cost_bases, quantities={2: 1_000},
+    )
+    _post_withdrawal(
+        ledger_con, balances, account_kinds, {2: "taxable"},
+        {2: "brokerage_taxable"}, {1: "Mortgage", 2: "Brokerage"}, cost_bases,
+        step_id=1, month_s="2026-05-31", from_id=2, to_id=1, amount=6_000_00,
+        reason_id=99, refill_ctx=refill_ctx,
     )
     legs = ledger_con.execute(
         "SELECT amount, tax_character FROM transfer_event ORDER BY id"
     ).fetchall()
-    # gain = 400k, fully under the 500k cap -- no ltcg leg at all.
-    assert legs == [
-        (200_000_00, "return_of_capital"),
-        (400_000_00, "excluded_gain"),
-    ]
+    assert legs == [(2_000_00, "return_of_capital"), (-1_000_00, "ltcg")]
+    assert balances == {1: 0, 2: 9_000_00}
+    assert cost_bases[2] == 18_000_00
+    assert refill_ctx.quantities[2] == 900
 
 
-def test_apply_home_sale_looks_up_exclusion_from_aux_table_by_filing_status(ledger_con: sqlite3.Connection) -> None:
-    """With no explicit override, the exclusion cap comes from the
-    home_sale_exclusion aux table, keyed by filing_status, using the same
-    latest-effective-date-on-or-before convention as every other aux
-    lookup."""
-    from analysis.sim.engine import _apply_home_sale
+def test_chain_draw_into_a_liability_counts_only_what_it_owed(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    """A chain paying a liability that owes less than the ask reports, and
+    records as fulfilled, only what was owed: the rest stays outstanding in
+    remainder_cents instead of being counted as paid."""
+    from analysis.sim.engine import ChainGraph, _chain_draw
 
-    balances = {5: 900_000_00, 6: 0}
-    cost_bases = {5: 200_000_00}
-    aux = {
-        ("home_sale_exclusion", None): [
-            ("1997-05-07", {"filing_status": "Single", "amount": 250_000_00}),
-            ("1997-05-07", {"filing_status": "MFJ", "amount": 500_000_00}),
-        ],
-    }
-    _apply_home_sale(
-        ledger_con, balances, {5: "asset", 6: "asset"}, cost_bases,
-        step_id=1, month_s="2026-06-30",
-        params={"filing_status": "MFJ"},
-        amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux=aux,
+    # 1=loan with $1k owed, 2=checking with $5k.
+    balances = {1: 1_000_00, 2: 5_000_00}
+    account_kinds = {1: "liability", 2: "asset"}
+    graph = ChainGraph(
+        members={}, leaf_lot={10: 2}, minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
     )
-    legs = ledger_con.execute(
-        "SELECT amount, tax_character FROM transfer_event ORDER BY id"
-    ).fetchall()
-    assert legs == [
-        (200_000_00, "return_of_capital"),
-        (500_000_00, "excluded_gain"),
-        (200_000_00, "ltcg"),
-    ]
+    taken = _chain_draw(
+        ledger_con, balances, account_kinds, {2: "taxable"}, {2: "cash"},
+        {1: "Loan", 2: "Checking"}, step_id=1, month_s="2026-05-31", graph=graph,
+        chain_id=10, amount_needed=3_000_00, target_account_id=1,
+    )
+    assert taken == 1_000_00
+    assert balances == {1: 0, 2: 4_000_00}
+    assert ledger_con.execute(
+        "SELECT amount, requested_cents, remainder_cents FROM transfer_event"
+    ).fetchall() == [(1_000_00, 3_000_00, 2_000_00)]
 
 
-def test_apply_home_sale_requires_cost_basis_tracking(ledger_con: sqlite3.Connection) -> None:
-    """Selling an account with no opening_cost_basis set errors the same
-    way an untracked brokerage withdrawal does, rather than silently
-    treating the whole sale as tax-free."""
-    from analysis.sim.engine import EngineError, _apply_home_sale
+def test_chain_sweep_into_a_liability_spills_past_what_it_owed(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    """A sweep whose first destination is a liability owing less than the
+    excess pays it off and passes the rest to the next destination, rather
+    than counting the whole excess as swept."""
+    from analysis.sim.engine import ChainGraph, _chain_sweep
 
-    try:
-        _apply_home_sale(
-            ledger_con, {5: 900_000_00, 6: 0}, {5: "asset", 6: "asset"}, {5: None},
-            step_id=1, month_s="2026-06-30", params={},
-            amount_cents=900_000_00, from_id=5, to_id=6, tid=42, aux={},
-        )
-    except EngineError as e:
-        assert "cost-basis tracking" in str(e)
-    else:
-        raise AssertionError("expected EngineError: opening_cost_basis never set")
+    # 1=checking sweeping $3k, 2=loan with $1k owed, 3=savings.
+    balances = {1: 5_000_00, 2: 1_000_00, 3: 0}
+    account_kinds = {1: "asset", 2: "liability", 3: "asset"}
+    graph = ChainGraph(
+        members={30: [(20, None, 1_000_000, None, None), (21, None, 1_000_000, None, None)]},
+        leaf_lot={20: 2, 21: 3}, minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    swept = _chain_sweep(
+        ledger_con, balances, account_kinds, {1: "taxable"}, {1: "cash"},
+        {1: "Checking", 2: "Loan", 3: "Savings"}, step_id=1, month_s="2026-05-31",
+        graph=graph, chain_id=30, amount_available=3_000_00, source_account_id=1,
+    )
+    assert swept == 3_000_00
+    assert balances == {1: 2_000_00, 2: 0, 3: 2_000_00}
 
 
 def test_chain_sweep_allocates_fixed_then_percent_of_remainder(ledger_con: sqlite3.Connection) -> None:
@@ -879,10 +1128,113 @@ def test_ytd_amount_from_interior_source_chain_records_first_leaf_account(ledger
         "SELECT from_account, to_account, amount, parent_event_id "
         "FROM transfer_event ORDER BY id"
     ).fetchall()
+    # Split from the Jan 1 balance: the opening 250,000 with the two
+    # payments backed out (#267), so the principal lands on it again.
     assert rows == [
-        (2, 5, 249_700, None),
-        (2, 4, 120_300, 1),
+        (2, 5, 250_893, None),
+        (2, 4, 119_107, 1),
     ]
+
+
+def _mortgage_preroll_txn(ytd_amount: int | None, ytd_preroll: int) -> list[object]:
+    return [
+        9, "mortgage", 1, 4, "monthly", None, "mortgage_payment",
+        "Mortgage Interest", None, None, 60_000, None, 185_000, None, "none",
+        None, "2026-05-31", None, 300, None, ytd_amount, ytd_preroll, None,
+    ]
+
+
+_MORTGAGE_GRAPH_LEAVES = {1: 1, 4: 4, 5: 5}
+
+
+def test_ytd_preroll_splits_each_mortgage_payment_from_the_jan_1_balance(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+
+    graph = ChainGraph(
+        members={}, leaf_lot=_MORTGAGE_GRAPH_LEAVES,
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    _apply_ytd_catchups(
+        ledger_con, 1, date(2026, 5, 31), [_mortgage_preroll_txn(None, 1)], [], graph,
+        account_id_by_name={"Mortgage Interest": 5}, balances={4: 25_000_000},
+    )
+    rows = ledger_con.execute(
+        "SELECT id, date, to_account, amount, parent_event_id FROM transfer_event ORDER BY id"
+    ).fetchall()
+
+    months = ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"]
+    assert [(r[1], r[2]) for r in rows] == [(m, a) for m in months for a in (5, 4)]
+    interest = [r[3] for r in rows if r[2] == 5]
+    principal = [r[3] for r in rows if r[2] == 4]
+    assert [i + p for i, p in zip(interest, principal, strict=True)] == [185_000] * 4
+    # Interest falls and principal grows, as the loan amortizes...
+    assert interest == sorted(interest, reverse=True)
+    assert principal == sorted(principal)
+    # ...each month's interest charged on what was left after the last one,
+    # from a Jan 1 balance that the four payments bring down to the opening one.
+    outstanding = 25_000_000 + sum(principal)
+    for i, p in zip(interest, principal, strict=True):
+        assert i == outstanding * 60_000 // 12_000_000
+        outstanding -= p
+    assert outstanding == 25_000_000
+    # The principal leg hangs off its month's interest leg.
+    assert all(rows[k + 1][4] == rows[k][0] for k in range(0, len(rows), 2))
+
+
+def test_mortgage_ytd_amount_of_zero_or_less_posts_nothing(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+
+    graph = ChainGraph(
+        members={}, leaf_lot=_MORTGAGE_GRAPH_LEAVES,
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    _apply_ytd_catchups(
+        ledger_con, 1, date(2026, 5, 31), [_mortgage_preroll_txn(-1, 0)], [], graph,
+        account_id_by_name={"Mortgage Interest": 5}, balances={4: 25_000_000},
+    )
+    assert ledger_con.execute("SELECT COUNT(*) FROM transfer_event").fetchone() == (0,)
+
+
+def test_mortgage_balance_before_with_no_exact_fit_replays_a_cent_high() -> None:
+    from analysis.sim.engine import _mortgage_balance_before, _mortgage_payments_split
+
+    # Interest rounds down, so no Jan 1 balance pays down to exactly this one.
+    jan_1 = _mortgage_balance_before(25_000_098, [185_000], 60_000)
+    ((_interest, principal),) = _mortgage_payments_split([185_000], 60_000, jan_1)
+    assert jan_1 - principal == 25_000_099
+    exact = _mortgage_balance_before(25_000_000, [185_000] * 4, 60_000)
+    split = _mortgage_payments_split([185_000] * 4, 60_000, exact)
+    assert exact - sum(p for _i, p in split) == 25_000_000
+
+
+def test_mortgage_ytd_prefers_a_stated_prior_year_end_balance(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+
+    graph = ChainGraph(
+        members={}, leaf_lot=_MORTGAGE_GRAPH_LEAVES,
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    _apply_ytd_catchups(
+        ledger_con, 1, date(2026, 2, 28), [_mortgage_preroll_txn(None, 1)], [], graph,
+        account_id_by_name={"Mortgage Interest": 5}, balances={4: 25_000_000},
+        prior_year_end_balances={4: 30_000_000},
+    )
+    rows = ledger_con.execute(
+        "SELECT to_account, amount FROM transfer_event ORDER BY id"
+    ).fetchall()
+    assert rows == [(5, 150_000), (4, 35_000)]
 
 
 def test_settle_order_settles_dependency_before_dependent() -> None:
@@ -914,7 +1266,7 @@ def test_negative_rate_depreciates_asset_into_expense(test_data_dir: Path, tmp_p
 
     repo = test_data_dir
     (repo / "aux" / "rate__jalopy.csv").write_text(
-        "effective_date,annual_rate_micros\n2020-01-31,-120000\n", encoding="utf-8"
+        "effective_date,annual_rate\n2020-01-31,-12%\n", encoding="utf-8"
     )
     accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
     df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
@@ -927,7 +1279,7 @@ def test_negative_rate_depreciates_asset_into_expense(test_data_dir: Path, tmp_p
     df = pd.concat([df, pd.DataFrame([row], columns=df.columns)], ignore_index=True)
     df.to_csv(accounts_path, index=False)
 
-    values_path = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    values_path = repo / "scenarios" / "retire_alice" / "account_lots.csv"
     vdf = pd.read_csv(values_path, dtype=str, keep_default_na=False)
     vrow = dict.fromkeys(vdf.columns, "")
     vrow.update(account_name="Asset_Car", opening_balance="30000.00")
@@ -1161,50 +1513,65 @@ def test_itemized_deduction_amount_can_reference_an_itemization(
         con.close()
 
 
-def test_state_itemized_deduction_falls_back_to_federal_when_absent(test_data_dir: Path, tmp_path: Path) -> None:
+def _run_state_tax(
+    repo: Path, tmp_path: Path, add_state_tax: Callable[[], None],
+) -> tuple[sqlite3.Connection, list[str]]:
+    """Run retire_alice with ``add_state_tax``'s state tax rule, and return
+    the run's connection and the load's warnings."""
+    add_state_tax()
+    result = load_scenario(
+        repo, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test",
+        allow_dirty_data=True,
+    )
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(result.intent_path, run_path, run_by="test", allow_dirty_data=True)
+    con = sqlite3.connect(run_path)
+    con.row_factory = sqlite3.Row
+    return con, result.warnings
+
+
+def test_state_itemized_deduction_falls_back_to_federal_when_absent(
+    test_data_dir: Path, tmp_path: Path, add_state_tax: Callable[[], None],
+) -> None:
     """A scenario with no state_deductions rows at all uses federal_deductions'
     figure for the state scope too, so a state-specific file isn't needed just
     to reuse the same itemized total."""
-    import pandas as pd
-
     repo = test_data_dir
     (repo / "aux" / "federal_deductions.csv").write_text(
         "effective_date,amount\n2026-01-31,40000.00\n", encoding="utf-8",
     )
-    accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
-    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
-    row = dict.fromkeys(df.columns, "")
-    row.update(name="Expense_Taxes_State", kind="expense", subkind="taxes_state",
-              owner="joint", tax_treatment="none", opened="2020-01-31", meta_json="{}")
-    df.loc[len(df)] = row
-    df.to_csv(accounts_path, index=False)
-
-    sched_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
-    _append_scheduled(
-        sched_csv,
-        name="tax_state_prev_year",
-        from_account="Asset_Checking",
-        to_account="Expense_Taxes_State",
-        cadence="annual",
-        month_of_year="4",
-        amount_rule_kind="tax_accumulator",
-        tax_character="none",
-        start="2027-04-30",
-        priority="400",
-        meta_json="{}",
-        params_json='{"year":"previous","scope":"state"}',
-    )
-    intent_path = load_scenario(
-        repo, "retire_alice",
-        intent_dir=tmp_path / "intent", loaded_by="test",
-        allow_dirty_data=True,
-    ).intent_path
-    run_path = tmp_path / "r.sqlite3"
-    run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
-    con = sqlite3.connect(run_path)
-    con.row_factory = sqlite3.Row
+    con, _ = _run_state_tax(repo, tmp_path, add_state_tax)
     try:
         assert _summary(con, 2026, "state_itemized_deduction") == 40_000_00
+    finally:
+        con.close()
+
+
+def test_state_tax_reads_its_own_standard_deduction(
+    test_data_dir: Path, tmp_path: Path, add_state_tax: Callable[[], None],
+) -> None:
+    """state_standard_deduction is the state's figure (#248); without one the
+    federal table stands in, and the load warns."""
+    repo = test_data_dir
+    con, warnings = _run_state_tax(repo, tmp_path, add_state_tax)
+    try:
+        # The prototype's California figure, not the federal $31,500.
+        assert _summary(con, 2026, "state_standard_deduction") == 11_080_00
+    finally:
+        con.close()
+    assert not any("standard deduction" in w for w in warnings)
+
+    (repo / "aux" / "state_standard_deduction__CA.csv").unlink()
+    load = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "intent2",
+                         loaded_by="test", allow_dirty_data=True)
+    assert any("state tax uses the federal standard deduction" in w
+               and "state_standard_deduction__CA.csv" in w for w in load.warnings)
+    run_path = tmp_path / "r2.sqlite3"
+    run_scenario(load.intent_path, run_path, run_by="test", allow_dirty_data=True)
+    con = sqlite3.connect(run_path)
+    try:
+        assert _summary(con, 2026, "state_standard_deduction") == 31_500_00
     finally:
         con.close()
 
@@ -1218,7 +1585,7 @@ def test_person_lifespan_stops_associated_transfers(
     repo = test_data_dir
     _shorten_scenario_end(repo, "2028-12-31")  # only 2026-2027 events are asserted on
     lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
+    lifespan_csv.write_text("person,age_at_death\nalice,61.8333\n")
 
     intent_path = load_scenario(
         repo, "retire_alice",
@@ -1289,7 +1656,7 @@ def test_person_lifespan_does_not_stop_solely_owned_asset_growth(
     df.to_csv(accounts_csv, index=False)
 
     lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
+    lifespan_csv.write_text("person,age_at_death\nalice,61.8333\n")
 
     intent_path = load_scenario(
         repo, "retire_alice",
@@ -1326,7 +1693,7 @@ def test_on_death_sweeps_full_balance_once(
     repo = test_data_dir
     _shorten_scenario_end(repo, "2028-12-31")  # only 2027-02 events are asserted on
     lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan_csv.write_text("person,final_month\nalice,2027-01-31\n")
+    lifespan_csv.write_text("person,age_at_death\nalice,61.8333\n")
 
     scheduled_csv = repo / "scenarios" / "retire_alice" / "scheduled.csv"
     _append_scheduled(
@@ -1522,6 +1889,44 @@ def test_ytd_preroll_posts_balance_neutral_catchup(test_data_dir: Path, tmp_path
         con.close()
 
 
+def test_mortgage_ytd_preroll_posts_interest_for_each_month_before_start(
+    test_data_dir: Path, tmp_path: Path,
+) -> None:
+    """#267: ytd_preroll on a mortgage_payment row posts each elapsed month's
+    interest to its interest account, balance-neutral like any catch-up."""
+    import pandas as pd
+
+    sched_csv = test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched_csv, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "mortgage_pmt", "ytd_preroll"] = "1"
+    df.to_csv(sched_csv, index=False)
+
+    intent_path = load_scenario(
+        test_data_dir, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test", allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+
+    con = sqlite3.connect(run_path)
+    try:
+        rows = con.execute(
+            "SELECT e.date, a.name, e.amount FROM transfer_event e "
+            "JOIN account a ON a.id = e.to_account "
+            "WHERE e.reason_kind = 'ytd_rule' ORDER BY e.id"
+        ).fetchall()
+    finally:
+        con.close()
+    assert [(d, name) for d, name, _amount in rows] == [
+        (month, name)
+        for month in ("2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30")
+        for name in ("Expense_Interest_Mortgage", "Liability_Mortgage")
+    ]
+    assert sum(amount for _d, _name, amount in rows) == 4 * 185_000
+    assert all(amount > 120_000 for _d, name, amount in rows
+               if name == "Expense_Interest_Mortgage")
+
+
 def test_year_to_date_csv_posts_balance_neutral_catchup(test_data_dir: Path, tmp_path: Path) -> None:
     """ADR-003 §4.11: year_to_date.csv rows post balance-neutral transfer_event
     rows at step 0, queryable by tax_character/account like any other flow."""
@@ -1658,9 +2063,9 @@ def test_running_unresolved_vary_row_raises(
     loudly instead of firing the placeholder amount/date."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        vary_low="4%", vary_high="5%",
     )
     intent_path = load_scenario(
         test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,
@@ -1679,34 +2084,9 @@ def test_running_unresolved_vary_row_outside_scenario_range_still_raises(
     monthly loop, so it must be rejected before that loop starts."""
     append_calendar_row(
         date="2050-01-31", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
-    )
-    intent_path = load_scenario(
-        test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,
-    ).intent_path
-    run_path = tmp_path / "r.sqlite3"
-    with pytest.raises(EngineError, match="vary_distribution"):
-        run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
-
-
-def test_running_unresolved_vary_row_of_unsupported_kind_still_raises(
-    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
-    tmp_path: Path,
-) -> None:
-    """ADR-006: the guard must not depend on the row's kind being one the
-    engine actually applies -- an unsupported kind is skipped before ever
-    reaching ``_apply_calendar_event``, so it must be rejected up front.
-
-    ``vary_target='date'`` (not 'amount') because the loader restricts an
-    amount target to the kinds that have a real amount column to vary, which
-    excludes every kind the engine doesn't support in the first place.
-    """
-    append_calendar_row(
-        date="2027-02-28", kind="swap_aux_table", name="unsupported_kind_vary",
-        vary_target="date", vary_distribution="uniform",
-        vary_low="2027-01-01", vary_high="2027-12-31",
+        vary_low="4%", vary_high="5%",
     )
     intent_path = load_scenario(
         test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True,

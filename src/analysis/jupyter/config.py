@@ -47,6 +47,8 @@ def find_repo_root(start: Path | None = None) -> Path:
         repo = Repo(search_from, search_parent_directories=True)
     except (InvalidGitRepositoryError, NoSuchPathError):
         return search_from.resolve()
+    if repo.working_tree_dir is None:  # a bare repository has no checkout
+        return search_from.resolve()
     return Path(repo.working_tree_dir)
 
 

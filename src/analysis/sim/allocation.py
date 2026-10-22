@@ -16,7 +16,8 @@ from typing import Literal
 import pandas as pd
 
 from analysis.sim import registries
-from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.connection import Connection
+from analysis.frames import named_rows
 from analysis.sim.holdings import lots_frame
 
 __all__ = [
@@ -34,16 +35,16 @@ _NO_SPLIT = "(none)"
 GroupingOrNone = Literal["account", "owner", "subkind", "tax_treatment", "security", "(none)"]
 
 
-def _weight_sets(source: RunConnection | ScenarioConnection) -> dict[str, list[tuple[str, dict[str, float]]]]:
+def _weight_sets(source: Connection) -> dict[str, list[tuple[str, dict[str, float]]]]:
     """Symbol to its weight sets, oldest first: ``(as_of, {asset_class: weight})``."""
     frame = source.items("security_allocation")
     sets: dict[str, dict[str, dict[str, float]]] = {}
-    for row in frame.itertuples():
+    for row in named_rows(frame):
         sets.setdefault(row.symbol, {}).setdefault(row.as_of, {})[row.asset_class] = row.weight_micros / 1_000_000
     return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
 
 
-def _reference_date(source: RunConnection | ScenarioConnection, as_of: str) -> str:
+def _reference_date(source: Connection, as_of: str) -> str:
     if as_of != "opening":
         return as_of
     return str(source.items("scenario")["start"].iloc[0])
@@ -58,12 +59,12 @@ def _weights_at(sets: list[tuple[str, dict[str, float]]], date: str) -> dict[str
 
 
 def _default_class(symbol: object, subkind: str) -> str:
-    if symbol in registries.SYMBOL_ASSET_CLASS:
+    if isinstance(symbol, str) and symbol in registries.SYMBOL_ASSET_CLASS:
         return registries.SYMBOL_ASSET_CLASS[symbol]
     return registries.SUBKIND_ASSET_CLASS.get(subkind, UNCLASSIFIED)
 
 
-def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = None) -> pd.DataFrame:
+def lot_classes(source: Connection, month: str | None = None) -> pd.DataFrame:
     """One row per asset lot and asset class: account, lot, symbol, security (the symbol,
     or "(no symbol)"), owner, subkind,
     tax_treatment, asset_class, weight and balance (dollars, the lot's balance times
@@ -74,7 +75,7 @@ def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = 
     lots = lots.assign(owner=lots["account"].map(owners).fillna(_JOINT))
     sets = _weight_sets(source)
     rows = []
-    for lot in lots.itertuples():
+    for lot in named_rows(lots):
         symbol = lot.symbol if isinstance(lot.symbol, str) and lot.symbol else None
         described = sets.get(symbol) if symbol else None
         if described:
@@ -94,19 +95,19 @@ def lot_classes(source: RunConnection | ScenarioConnection, month: str | None = 
     return pd.DataFrame(rows, columns=columns)
 
 
-def asset_classes_present(source: RunConnection | ScenarioConnection,
+def asset_classes_present(source: Connection,
                           month: str | None = None,
-                          ) -> list[registries.AssetClass]:
+                          ) -> list[str]:
     """The asset classes some lot has a balance in, in display order (``unclassified`` last)."""
     present = set(lot_classes(source, month)["asset_class"])
     return [c for c in [*registries.ASSET_CLASSES, UNCLASSIFIED] if c in present]
 
 
 def portfolio_allocation(
-    source: RunConnection | ScenarioConnection,
+    source: Connection,
     month: str | None = None,
     by: str | None = None,
-    exclude: Iterable[registries.AssetClass] = (),
+    exclude: Iterable[str] = (),
 ) -> pd.DataFrame:
     """Balance per asset class (rows, in registry order, ``unclassified`` last, then a
     ``Total`` row). Without ``by`` the columns are ``balance`` and ``percent``; with it

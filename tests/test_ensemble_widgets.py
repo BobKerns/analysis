@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 import pandas as pd
@@ -19,11 +20,11 @@ from analysis.sim.ensemble import (
     load_ensemble,
     members_net_worth_by_month,
     resolve_member,
+    summary_with_percentiles,
 )
-from analysis.sim.ensemble import summary as ensemble_summary
 from analysis.sim.loader import LoadResult
+from analysis.sim import ensemble_plots
 from analysis.sim.notebook_ui.ensemble_widgets import (
-    ensemble_fan_chart,
     ensemble_summary_view,
     ensemble_widget,
     list_ensemble_recipes,
@@ -50,57 +51,6 @@ def test_ensemble_summary_view_returns_year_end_rows_and_member_count() -> None:
     assert yearly.loc[2026, "mean"] == 150.0  # last month of the year
 
 
-def test_ensemble_fan_chart_builds_without_error() -> None:
-    ax = ensemble_fan_chart(_monthly_summary())
-    assert len(ax.lines) == 3  # mean, median, zero rule
-    assert len(ax.collections) == 1  # fill_between range band
-
-
-def test_ensemble_fan_chart_zero_rule_does_not_distort_a_far_off_range() -> None:
-    """The zero rule is drawn with axhline, which (left alone) would feed
-    into autoscale and pull the whole chart down to include 0 even when the
-    data never gets near it -- the exact distortion a fan chart is trying to
-    avoid. The axis limits must come out identical to a chart with no rule
-    at all when 0 is nowhere close."""
-    far_from_zero = pd.DataFrame({
-        "mean": [950_000.0, 1_020_000], "median": [945_000.0, 1_015_000],
-        "std": [5_000.0, 5_000], "min": [900_000.0, 950_000], "max": [1_000_000.0, 1_100_000],
-    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
-
-    fig1, ax1 = plt.subplots()
-    ax1.fill_between(far_from_zero.index, far_from_zero["min"], far_from_zero["max"])
-    ax1.plot(far_from_zero.index, far_from_zero["mean"])
-    ax1.plot(far_from_zero.index, far_from_zero["median"])
-    expected_ylim = ax1.get_ylim()
-
-    ax2 = ensemble_fan_chart(far_from_zero)
-    assert ax2.get_ylim() == expected_ylim
-    assert expected_ylim[0] > 0  # 0 genuinely isn't in (or near) this range
-
-
-def test_ensemble_fan_chart_zero_rule_shows_when_range_crosses_zero() -> None:
-    crosses_zero = pd.DataFrame({
-        "mean": [50.0, -10], "median": [45.0, -15],
-        "std": [5.0, 5], "min": [10.0, -80], "max": [100.0, 50],
-    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
-    ax = ensemble_fan_chart(crosses_zero)
-    ylim = ax.get_ylim()
-    assert ylim[0] < 0 < ylim[1]
-    zero_rules = [line for line in ax.lines if list(line.get_ydata()) == [0, 0]]
-    assert len(zero_rules) == 1
-
-
-def test_ensemble_fan_chart_zero_rule_skipped_on_log_scale() -> None:
-    far_from_zero = pd.DataFrame({
-        "mean": [950_000.0, 1_020_000], "median": [945_000.0, 1_015_000],
-        "std": [5_000.0, 5_000], "min": [900_000.0, 950_000], "max": [1_000_000.0, 1_100_000],
-    }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
-    fig, ax = plt.subplots()
-    ax.set_yscale("log")
-    ensemble_fan_chart(far_from_zero, ax=ax)
-    assert len(ax.lines) == 2  # mean, median -- no zero rule added at all
-
-
 def test_list_ensemble_recipes_finds_only_directories_with_members(tmp_path: Path) -> None:
     assert list_ensemble_recipes(tmp_path / "nope") == []
 
@@ -121,9 +71,9 @@ def small_ensemble_runs_dir(
     """Two already-resolved-and-run members of a tiny vary_distribution recipe."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
     batch_dir = runs_dir / "retire_alice" / "2026-01-01T000000Z"
@@ -155,18 +105,25 @@ def test_ensemble_widget_returns_a_box_without_displaying_it(
 
 def test_ensemble_widget_dropdown_lists_the_recipe(small_ensemble_runs_dir: Path) -> None:
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
-    dropdown, _pickers, _out = box.children
+    dropdown, _row, _loading, _out = box.children
     assert dropdown.options == ("retire_alice",)
     assert dropdown.value == "retire_alice"
 
 
 def test_ensemble_widget_matches_cli_summary_numbers(small_ensemble_runs_dir: Path) -> None:
-    connections = load_ensemble(latest_ensemble_batch(small_ensemble_runs_dir / "retire_alice"))
+    batch = latest_ensemble_batch(small_ensemble_runs_dir / "retire_alice")
+    assert batch is not None
+    connections = load_ensemble(batch)
     try:
-        monthly_summary = ensemble_summary(members_net_worth_by_month(connections))
+        monthly_summary = summary_with_percentiles(members_net_worth_by_month(connections))
         _heading, yearly = ensemble_summary_view(monthly_summary, len(connections))
         assert len(yearly) > 0
-        assert (yearly["min"] <= yearly["max"] + 1e-6).all()
+        assert list(yearly.columns) == [
+            "mean", "median", "std", "p05", "p20", "p40", "p60", "p80", "p95",
+        ]
+        # Each breakpoint sits between its neighbors, low to high.
+        ordered = yearly[["p05", "p20", "p40", "p60", "p80", "p95"]]
+        assert (ordered.diff(axis=1).iloc[:, 1:] >= -1e-6).all().all()
     finally:
         for con in connections.values():
             con.close()
@@ -180,39 +137,69 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
     from analysis.sim.types import DollarMode
 
     modes_seen: list[DollarMode] = []
-    real = ensemble_widgets.members_net_worth_by_month
+    real = ensemble_widgets.members_balance_by_month
 
-    def _spy(connections, mode=DollarMode.NOMINAL):
+    def _spy(connections, account=None, mode=DollarMode.NOMINAL, lot=None, on_member=None,
+             *, after_tax=False):
         modes_seen.append(mode)
-        return real(connections, mode=mode)
+        return real(connections, account, mode, lot, on_member, after_tax=after_tax)
 
-    monkeypatch.setattr(ensemble_widgets, "members_net_worth_by_month", _spy)
+    monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
     dollar_mode = DollarModePicker()
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir, dollar_mode=dollar_mode)
-    _dropdown, pickers, _out = box.children
-    assert dollar_mode in pickers.children
+    _dropdown, row, _loading, _out = box.children
+    assert dollar_mode in row.children
     assert modes_seen[-1] == DollarMode.NOMINAL
 
     dollar_mode.value = DollarMode.CPI_CONSTANT
     assert modes_seen[-1] == DollarMode.CPI_CONSTANT
 
 
-def test_ensemble_widget_log_linear_mode_sets_the_yscale(
+def test_ensemble_widget_years_redraw_without_reading_members_again(
     small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.pickers import TimeRangePicker
+
+    reads: list[object] = []
+    real = ensemble_widgets.members_balance_by_month
+
+    def _spy(*args, **kwargs):
+        reads.append(args)
+        return real(*args, **kwargs)
+
+    shown: list[Any] = []
+    monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    time_range = TimeRangePicker()
+    controls = ensemble_widgets.EnsembleControls(runs_dir=small_ensemble_runs_dir,
+                                                 time_range=time_range)
+    ensemble_widget(runs_dir=small_ensemble_runs_dir, controls=controls)
+    years = time_range.min, time_range.max
+    assert years[0] < years[1]  # spans the recipe's run
+    read_before = len(reads)
+
+    time_range.value = (years[0], years[0])
+
+    assert len(reads) == read_before
+    table = shown[-1].data
+    assert list(table.index) == [years[0]]
+
+
+def test_ensemble_widget_log_linear_mode_sets_the_yscale(
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from analysis.sim.notebook_ui.pickers import LogLinearModePicker
     from analysis.sim.types import LogLinearMode
 
     axes: list = []
-    real_subplots = ensemble_widgets.plt.subplots
+    real_fan_chart = ensemble_plots.ensemble_fan_chart
 
-    def _spy_subplots(*args, **kwargs):
-        fig, ax = real_subplots(*args, **kwargs)
+    def _spy_fan_chart(monthly_summary, ax=None):
         axes.append(ax)
-        return fig, ax
+        return real_fan_chart(monthly_summary, ax=ax)
 
-    monkeypatch.setattr(ensemble_widgets.plt, "subplots", _spy_subplots)
+    monkeypatch.setattr(ensemble_plots, "ensemble_fan_chart", _spy_fan_chart)
     log_linear_mode = LogLinearModePicker()
     ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
     assert axes[-1].get_yscale() == "linear"
@@ -232,20 +219,218 @@ def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_wort
     from analysis.sim.types import LogLinearMode
 
     axes: list = []
-    real_subplots = ensemble_widgets.plt.subplots
+    real_fan_chart = ensemble_plots.ensemble_fan_chart
 
-    def _spy_subplots(*args, **kwargs):
-        fig, ax = real_subplots(*args, **kwargs)
+    def _spy_fan_chart(monthly_summary, ax=None):
         axes.append(ax)
-        return fig, ax
+        return real_fan_chart(monthly_summary, ax=ax)
 
-    monkeypatch.setattr(ensemble_widgets.plt, "subplots", _spy_subplots)
+    monkeypatch.setattr(ensemble_plots, "ensemble_fan_chart", _spy_fan_chart)
+    # The reported frame's shape, with only the lowest band (p05) reaching
+    # zero: mean and median stay positive, so only the p05 check can trip.
     negative_summary = pd.DataFrame({
-        "mean": [100.0, -10.0], "median": [95.0, -15.0],
-        "std": [5.0, 5.0], "min": [50.0, -80.0], "max": [150.0, 50.0],
+        "mean": [100.0, 90.0], "median": [95.0, 85.0], "std": [5.0, 5.0],
+        "p05": [50.0, -20.0], "p20": [70.0, 40.0], "p40": [90.0, 80.0],
+        "p60": [100.0, 95.0], "p80": [120.0, 110.0], "p95": [150.0, 140.0],
     }, index=pd.date_range("2026-01-31", periods=2, freq="ME"))
-    monkeypatch.setattr(ensemble_widgets, "ensemble_summary", lambda *a, **k: negative_summary)
+    monkeypatch.setattr(ensemble_widgets, "summary_with_percentiles", lambda *a, **k: negative_summary)
 
     log_linear_mode = LogLinearModePicker(log_linear_mode=LogLinearMode.LOG)
     ensemble_widget(runs_dir=small_ensemble_runs_dir, log_linear_mode=log_linear_mode)
     assert axes[-1].get_yscale() == "linear"
+
+
+def test_ensemble_widget_accepts_extra_arguments(small_ensemble_runs_dir: Path) -> None:
+    """Like every widget `Connections.show()` may be handed, it tolerates
+    positional and keyword arguments it doesn't use."""
+    box = ensemble_widget("ignored", runs_dir=small_ensemble_runs_dir, member=3)
+    assert box.children
+
+
+def test_ensemble_widget_shows_progress_per_member_then_hides_it(
+    small_ensemble_runs_dir: Path,
+) -> None:
+    """#235: a progress line counts members while they load, and goes away
+    once the chart is drawn."""
+    from analysis.sim.notebook_ui.ensemble_widgets import LoadingIndicator
+
+    labels: list[str] = []
+    real_counter = LoadingIndicator.counter
+
+    def _counter(self: LoadingIndicator, text: str, count: int):
+        step = real_counter(self, text, count)
+
+        def _step() -> None:
+            step()
+            labels.append(self.label.value)
+        return _step
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(LoadingIndicator, "counter", _counter)
+        box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
+    _dropdown, _row, loading, _out = box.children
+    assert isinstance(loading, LoadingIndicator)
+    assert labels == ["Loading retire_alice: member 1 of 2", "Loading retire_alice: member 2 of 2"]
+    assert loading.bar.value == loading.bar.max == 2
+    assert loading.layout.display == "none"
+
+
+def test_ensemble_widget_leaves_no_figure_open_in_pyplot(small_ensemble_runs_dir: Path) -> None:
+    """The chart is never registered with pyplot, so matplotlib-inline's
+    flush_figures, run by another widget message on a kernel subshell, can't
+    render it while it's still being drawn (#119)."""
+    plt.close("all")
+    ensemble_widget(runs_dir=small_ensemble_runs_dir)
+    assert plt.get_fignums() == []
+
+
+def test_ensemble_widget_account_picker_lists_net_worth_then_accounts(
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#163: any one account's spread, not just net worth's."""
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    axes: list = []
+    real_fan_chart = ensemble_plots.ensemble_fan_chart
+
+    def _spy_fan_chart(monthly_summary, ax=None):
+        axes.append(ax)
+        return real_fan_chart(monthly_summary, ax=ax)
+
+    monkeypatch.setattr(ensemble_plots, "ensemble_fan_chart", _spy_fan_chart)
+    box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
+    _dropdown, row, _loading, _out = box.children
+    controls = row.controls
+    account_picker = controls.account_picker.account_picker
+    assert account_picker.label == ensemble_widgets.NET_WORTH
+    assert ("Asset_Checking", "Asset_Checking") in account_picker.options
+    account_picker.value = "Asset_Checking"
+    assert axes[-1].get_title().startswith("Asset_Checking fan chart")
+
+
+def test_account_named_net_worth_is_not_mistaken_for_net_worth() -> None:
+    """The picker's net-worth value is a sentinel, not its label, so an
+    account that happens to be named "Net worth" can still be picked."""
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    assert ensemble_widgets._account(ensemble_widgets._NET_WORTH_CHOICE) is None
+    assert ensemble_widgets._account(ensemble_widgets.NET_WORTH) == ensemble_widgets.NET_WORTH
+
+
+@pytest.mark.slow
+def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
+    small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    tables: list[pd.DataFrame] = []
+    real_view = ensemble_widgets.ensemble_summary_view
+
+    def _spy_view(monthly_summary, member_count, failed_count=0):
+        heading, yearly = real_view(monthly_summary, member_count, failed_count)
+        tables.append(yearly)
+        return heading, yearly
+
+    monkeypatch.setattr(ensemble_widgets, "ensemble_summary_view", _spy_view)
+    box = ensemble_widget(runs_dir=small_ensemble_runs_dir)
+    _dropdown, row, _loading, _out = box.children
+    controls = row.controls
+    assert list(tables[-1].columns)[-2:] == ["cvar05", "cvar20"]
+    controls.reserve_field.value = "1000000"
+    assert list(tables[-1].columns)[-2:] == ["below_reserve", "ever_below_reserve"]
+
+
+@pytest.mark.slow
+def test_ensemble_compare_widget_draws_one_section_per_variant(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two recipes from one seed pair member by member, so the paired-fan
+    panel is drawn too; one from another seed is said not to pair."""
+    from IPython.display import Image
+
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.styled import StyledMarkdown
+
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("child", 1)
+    seeded_ensemble_batch("other", 2)
+    plt.close("all")  # figures an earlier test in this worker left open
+    shown: list[object] = []
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
+    recipe_pickers, _row, _loading, _out = box.children
+    baseline_picker, variant_picker = recipe_pickers.children
+    baseline_picker.value = "baseline"
+    shown.clear()
+    variant_picker.value = ("child", "other")
+    headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
+    assert any("### child vs baseline" in h and "paired over 3 futures" in h for h in headings)
+    assert any("### other vs baseline" in h and "not paired" in h for h in headings)
+    assert sum(isinstance(item, Image) for item in shown) == 2
+    assert plt.get_fignums() == []
+
+
+@pytest.mark.slow
+def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_sided_deltas(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An account only the variant has is offered, and drawn as the
+    variant's own fan with a note rather than as a delta (#163)."""
+    import sqlite3
+
+    from IPython.display import Image
+
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.styled import StyledMarkdown
+
+    seeded_ensemble_batch("baseline", 1)
+    for member in seeded_ensemble_batch("child", 1).glob("member_*.sqlite3"):
+        with sqlite3.connect(member) as con:
+            con.execute("UPDATE account SET name = 'Asset_Renamed' WHERE name = 'Asset_Checking'")
+    shown: list[object] = []
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
+    recipe_pickers, row, _loading, _out = box.children
+    controls = row.controls
+    baseline_picker, variant_picker = recipe_pickers.children
+    account_picker = controls.account_picker.account_picker
+    baseline_picker.value = "baseline"
+    variant_picker.value = ("child",)
+    assert {"Asset_Checking", "Asset_Renamed"} <= {label for label, _ in account_picker.options}
+    shown.clear()
+    account_picker.value = "Asset_Renamed"
+    headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
+    assert any("`baseline` has no account Asset_Renamed" in h for h in headings)
+    assert sum(isinstance(item, Image) for item in shown) == 1  # the child's own fan
+
+
+@pytest.mark.slow
+def test_ensemble_compare_widget_says_so_when_no_shown_recipe_has_the_account(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared account list spans every recipe, so the pick can be in
+    none of the compared ones: a note, not an error from an empty tail table."""
+    import sqlite3
+
+    from analysis.sim.notebook_ui import ensemble_widgets
+    from analysis.sim.notebook_ui.styled import StyledMarkdown
+
+    seeded_ensemble_batch("baseline", 1)
+    seeded_ensemble_batch("other", 1)
+    for member in seeded_ensemble_batch("child", 1).glob("member_*.sqlite3"):
+        with sqlite3.connect(member) as con:
+            con.execute("UPDATE account SET name = 'Asset_Renamed' WHERE name = 'Asset_Checking'")
+    shown: list[object] = []
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir)
+    recipe_pickers, row, _loading, _out = box.children
+    baseline_picker, variant_picker = recipe_pickers.children
+    baseline_picker.value = "baseline"
+    variant_picker.value = ("other",)
+    shown.clear()
+    row.controls.account_picker.account_picker.value = "Asset_Renamed"
+    headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
+    assert any("None of these recipes has account Asset_Renamed" in h for h in headings)

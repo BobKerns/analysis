@@ -4,3 +4,6 @@ if git diff --cached --name-only | grep -E '^(data|out|state)/'; then
   printf '%s\n' 'ERROR: Attempt to commit files in data/, out/, or state/. These directories are reserved for runtime data.'
   exit 1
 fi
+
+# Block commits whose staged files name real accounts, people or payees.
+"$(git rev-parse --show-toplevel)/scripts/check-blocked-keywords.sh" --staged || exit 1

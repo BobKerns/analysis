@@ -11,20 +11,24 @@ notebook cell that captured it once keeps seeing the current selection.
 from __future__ import annotations
 
 from abc import abstractmethod
+from contextvars import ContextVar
 import html as html_lib
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from collections.abc import Collection, Mapping
+from typing import Any, cast
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 import calendar
 import datetime
 from dateutil import relativedelta
 
 import ipywidgets as widgets
+import pandas as pd
 import traitlets
-from IPython.display import Markdown, clear_output, display
+from IPython.display import clear_output, display
 
+from analysis.frames import index_years
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
 from analysis.sim.connection import RunConnection, ScenarioConnection
@@ -33,11 +37,11 @@ from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.readme import description_view
-from analysis.sim.registries import AssetClass
 from analysis.sim.types import (
     AccountKind, AccountKindAny, DollarMode, LogLinearMode, ValuePlotMode,
-    AccountName, ScenarioName,
+    AccountName, ScenarioName, AttributionAxis, DeltaScale, HeatmapValue,
 )
+from analysis.sim.notebook_ui.styled import StyledMarkdown, styled_html
 
 
 def to_month(year: int, month: int) -> datetime.date:
@@ -56,14 +60,15 @@ def warning_html(message: str) -> str:
 
     Markdown blockquotes (`> ⚠️ ...`) pick up the ambient text color in some
     notebook themes, which can render as black-on-black. This builds plain
-    HTML instead, with an explicit light-yellow background and dark text.
+    HTML instead, with an explicit light-yellow background and dark text;
+    ``notebook.css`` styles its inline code like the rest of our output.
     """
     # Escape first so literal "<...>" in messages (e.g. "sim load <name>")
     # isn't swallowed as an HTML tag; **bold**/`code` add real tags after.
     text = html_lib.escape(message)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
-    return (
+    return styled_html(
         '<div style="background-color:#fff8c5; color:#111; padding:6px 10px; '
         'border-left:4px solid #e6b800; border-radius:3px; margin:4px 0;">'
         f"⚠️ {text}</div>"
@@ -77,6 +82,44 @@ def display_warning(message: str) -> None:
     display(HTML(warning_html(message)))
 
 
+# The detachers of the observers the widget now being drawn by
+# Connections.show() puts on shared controls; None outside such a draw.
+_shown_observers: ContextVar[list[Callable[[], None]] | None] = ContextVar(
+    "_shown_observers", default=None,
+)
+
+
+def observe_while_shown(control: traitlets.HasTraits, handler: Callable[..., Any],
+                        names: str = "value") -> None:
+    """``control.observe(handler, names=names)``, for as long as the widget
+    being drawn is shown.
+
+    A shared control (the dollar toggle, the Years slider) outlives the
+    widgets that observe it: ``Connections.show`` rebuilds its widget on a
+    scenario change and closes the old run. Observed this way, the old
+    widget's handler is detached before the rebuild, rather than going on
+    redrawing a closed run, or raising and so stopping the handlers after
+    it. Outside a ``show()`` draw it is a plain ``observe``."""
+    control.observe(handler, names=names)
+    detachers = _shown_observers.get()
+    if detachers is not None:
+        detachers.append(lambda: control.unobserve(handler, names=names))
+
+
+def _detach(detachers: list[Callable[[], None]]) -> None:
+    """Run and forget ``detachers``, so running them again does nothing."""
+    while detachers:
+        detachers.pop()()
+
+
+def _trait(descriptor: traitlets.TraitType) -> Any:
+    """``descriptor``, typed as the value it holds on an instance.
+
+    A trait's class attribute is annotated with that value's type, but a type
+    checker sees the descriptor object assigned to it and rejects the pair."""
+    return descriptor
+
+
 class Connections(traitlets.HasTraits):
     """
     Holds the currently open scenario and run connections.
@@ -86,15 +129,46 @@ class Connections(traitlets.HasTraits):
     This is the base class for SingleScenarioConnections and MultiScenarioConnections.
     """
 
+    # What show() redraws on, rather than the selection itself: a change can
+    # keep the scenario and swap only the run (another ensemble member,
+    # #111), and a scenario change must redraw once, after every connection
+    # has been swapped, not once per attribute.
+    revision: int = _trait(traitlets.Int(0))
+
+    # The currently selected ensemble member within the scenario.
+    # 0 if not selecting any but the default member.
+    member: int = _trait(traitlets.Int(0))
+
+    def notify_changed(self) -> None:
+        """Redraw every show() output; call once a change has fully landed."""
+        # Every shown widget lets go of the shared controls before any is
+        # rebuilt: the first rebuild can move one (TimeRangePicker.cover),
+        # and a widget not yet rebuilt would redraw its closed run.
+        for detachers in self._shown_observers():
+            _detach(detachers)
+        self.revision += 1
+
+    def _shown_observers(self) -> list[list[Callable[[], None]]]:
+        """Each show() output's detachers (see observe_while_shown)."""
+        # Not a trait, nor a dataclass field: set on first use.
+        if "_shown_detachers" not in self.__dict__:
+            self.__dict__["_shown_detachers"] = []
+        return self.__dict__["_shown_detachers"]
+
     @abstractmethod
-    def _invoke(self, fn: callable, *args, **kwargs):
+    def _invoke(self, fn: Callable, *args, **kwargs):
         """Invoke the given function with the current connections context."""
         raise NotImplementedError()
 
-    def show(self, fn: callable, *args, **kwargs) -> widgets.Output:
+    def show(self, fn: Callable, *args, **kwargs) -> widgets.Output:
         """
         Return an output widget that displays the result of calling `fn`
         with the current run connection.
+
+        `fn` must accept arbitrary keyword arguments (end its signature
+        with ``**_``): besides ``**kwargs``, ``show()`` passes context such as
+        ``member``, the selected ensemble member, and may add more. A widget
+        uses what it needs and ignores the rest.
 
         Parameters
         ----------
@@ -105,10 +179,20 @@ class Connections(traitlets.HasTraits):
         
         """
         out = widgets.Output()
+        # What the shown widget observes on shared controls (observe_while_shown).
+        detachers: list[Callable[[], None]] = []
+        self._shown_observers().append(detachers)
+
         def _draw():
+            # Usually done already, by notify_changed for every output at once.
+            _detach(detachers)
             with out:
                 clear_output(wait=True)
-                result = self._invoke(fn, *args, **kwargs)
+                token = _shown_observers.set(detachers)
+                try:
+                    result = self._invoke(fn, *args, member=self.member, **kwargs)
+                finally:
+                    _shown_observers.reset(token)
                 if result is not None:
                     display(result)
 
@@ -116,24 +200,9 @@ class Connections(traitlets.HasTraits):
             # The first draw waits for the end of the cell that called show(), so it
             # happens like any later redraw (see notebook_ui.first_draw).
             when_cell_is_done(_draw)
-        self.observe(_redraw, names="value")
+        self.observe(_redraw, names="revision")
         _redraw()
         return out
-
-    def show_scenario(self, fn: callable, *args, **kwargs) -> widgets.Output:
-        """
-        Return an output widget that displays the result of calling `fn`
-        with the current scenario connection.
-
-        Parameters
-        ----------
-        fn : callable
-            The function to call with the current scenario connection.
-        **kwargs
-            Additional keyword arguments to pass to `fn`.
-        
-        """
-        return self.show(lambda _, *args, **kwargs: fn(self.scenario, *args, **kwargs), *args, **kwargs)
 
 # ---------- single-scenario picker ----------
 
@@ -146,17 +215,38 @@ class SingleScenarioConnections(Connections):
     ``require_run=False`` and the scenario has no run yet.
     """
 
-    value: ScenarioName = traitlets.Any()
-    scenario_ref: ScenarioRef = traitlets.Any()
-    scenario: ScenarioConnection = traitlets.Any()
-    run: RunConnection | None = traitlets.Any()
+    value: ScenarioName = _trait(traitlets.Any())
+    scenario_ref: ScenarioRef = _trait(traitlets.Any())
+    scenario: ScenarioConnection = _trait(traitlets.Any())
+    run: RunConnection | None = _trait(traitlets.Any())
 
     def close(self) -> None:
         self.scenario.close()
         if self.run is not None:
             self.run.close()
 
-    def _invoke(self, fn: callable, *args, **kwargs):
+    def show_scenario(self, fn: Callable, *args, **kwargs) -> widgets.Output:
+        """
+        Return an output widget that displays the result of calling `fn`
+        with the current scenario connection.
+
+        As with :meth:`show`, `fn` must accept arbitrary keyword arguments
+        (end its signature with ``**_``): it receives the same context
+        keywords, such as ``member``, and ``run``.
+
+        Parameters
+        ----------
+        fn : callable
+            The function to call with the current scenario connection.
+        **kwargs
+            Additional keyword arguments to pass to `fn`.
+        
+        """
+        def _invoke_with_scenario(run: RunConnection, *args, **kwargs):
+            return fn(self.scenario, *args, run=run, **kwargs)
+        return self.show(_invoke_with_scenario, *args, **kwargs)
+
+    def _invoke(self, fn: Callable, *args, **kwargs):
         """Invoke the given function with the current connections context."""
         if self.run is None:
             raise RuntimeError("No run connection available")
@@ -248,7 +338,7 @@ def find_state_dir(*,
 
 def find_runs_dir(data_dir: Path | str | None = None,
                   state_dir: Path | None = None,
-                  runs_dir: Path | None = None) -> Path:
+                  runs_dir: Path | str | None = None) -> Path:
     """
     Find the runs directory for the analysis repository. Works from notebook files
     and scripts within the repository.
@@ -260,7 +350,7 @@ def find_runs_dir(data_dir: Path | str | None = None,
         the current repo's data/shared/sim or the value of the
         $ANALYSIS_DATA_DIR environment variable.
     state_dir : Path | None, optional
-    runs_dir : Path | None, optional
+    runs_dir : Path | str | None, optional
         The default runs directory to use if the environment variable is not set.
 
     Returns
@@ -362,14 +452,24 @@ def scenario_picker(
             # _sync_member_dropdown clearing member_dropdown.options (no
             # longer an ensemble, or no members at all) propagates to
             # .value here too -- nothing to switch to.
+            container.member = 0
             return
         ref = container.scenario_ref
         batch = latest_ensemble_batch(ref.runs_dir / ref.name)
+        assert batch is not None  # the member dropdown lists only an existing batch's members
         old_run = container.run
-        container.run = RunConnection(batch / f"{change['new']}.sqlite3", container.scenario)
+        run_path = batch / f"{change['new']}.sqlite3"
+        container.run = RunConnection(run_path, container.scenario)
+        member_name = change['new']
+        container.member = int(member_name.split("_", maxsplit=1)[1])
+        # The panel and metadata describe the member actually shown, not
+        # the member 0 that resolve_scenario_name picked.
+        container.scenario_ref = replace(ref, run_path=run_path)
         if old_run is not None:
             old_run.close()
         _redraw()
+        if not changing_scenario:
+            container.notify_changed()
 
     def _sync_member_dropdown() -> None:
         """Show a member picker when the current scenario is an ensemble
@@ -401,7 +501,12 @@ def scenario_picker(
         )
         member_dropdown.layout.display = None
 
+    # _on_change notifies once at its end, so a member switch it causes
+    # (via _sync_member_dropdown) doesn't redraw a half-swapped container.
+    changing_scenario = False
+
     def _on_change(change) -> None:
+        nonlocal changing_scenario
         old_scenario, old_run = container.scenario, container.run
         new = _open_single(data_dir, change["new"],
                            runs_dir=runs_dir,
@@ -413,8 +518,13 @@ def scenario_picker(
         old_scenario.close()
         if old_run is not None:
             old_run.close()
-        _sync_member_dropdown()
+        changing_scenario = True
+        try:
+            _sync_member_dropdown()
+        finally:
+            changing_scenario = False
         _redraw()
+        container.notify_changed()
 
     dropdown.observe(_on_change, names="value")
     member_dropdown.observe(_on_member_change, names="value")
@@ -442,7 +552,6 @@ class MultiScenarioConnections(Connections):
     variants: list[ScenarioName]
     colors: dict[str, str]
     warnings: list[str] = field(default_factory=list)
-    value: object = traitlets.Any()
 
     @property
     def scenarios(self) -> list[ScenarioName]:
@@ -452,7 +561,7 @@ class MultiScenarioConnections(Connections):
     def ok(self) -> bool:
         return bool(self.baseline)
 
-    def _invoke(self, fn: callable, **kwargs) -> widgets.Widget:
+    def _invoke(self, fn: Callable, **kwargs) -> widgets.Widget:
         baseline_rc = self.connections[self.baseline] if self.baseline in self.connections else None
         variant_rcs = {
             variant: self.connections[variant]
@@ -572,10 +681,10 @@ def multi_scenario_picker(
     )
     variant_picker = widgets.SelectMultiple(
         options=[name for name in available if name != default_baseline],
-        value=tuple(default_variants
-                    or (*[name
-                          for name in available
-                          if name != default_baseline][:max_variants],)),
+        # Only None picks defaults: an explicit [] means no variants yet.
+        value=tuple(default_variants if default_variants is not None
+                    else [name for name in available
+                          if name != default_baseline][:max_variants]),
         description="Variants:",
         rows=min(len(available), 8),
     )
@@ -618,7 +727,7 @@ def multi_scenario_picker(
             if new.connections.get(name) is not rc:
                 rc.close()
         _redraw()
-        container.value = object()
+        container.notify_changed()
 
     baseline_picker.observe(_on_change, names="value")
     variant_picker.observe(_on_change, names="value")
@@ -632,8 +741,8 @@ def multi_scenario_picker(
 
 class DollarModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting nominal vs. CPI-constant dollars."""
-    value: DollarMode = traitlets.UseEnum(DollarMode)
-    label: str = traitlets.Unicode("Nominal")
+    value: DollarMode = _trait(traitlets.UseEnum(DollarMode))
+    label: str = _trait(traitlets.Unicode("Nominal"))
     def __init__(self, dollar_mode: DollarMode = DollarMode.NOMINAL):
         """
         Initialize the dollar mode picker.
@@ -657,10 +766,27 @@ class DollarModePicker(widgets.ToggleButtons):
         self.label = "CPI-constant" if self.value == DollarMode.CPI_CONSTANT else "Nominal"
 
 
+class AfterTaxPicker(widgets.ToggleButtons):
+    """Pre-tax or after-tax net worth (#251): ``value`` is True for after
+    tax (the default), which subtracts the tax a drawdown would owe and tax
+    due unpaid."""
+    value: bool = _trait(traitlets.Bool(True))
+
+    def __init__(self, after_tax: bool = True):
+        super().__init__(
+            options=[("Pre-tax", False), ("After-tax", True)],
+            description="Net worth:",
+            layout=widgets.Layout(
+                border="1px solid #888", padding="4px 6px", margin="0 20px 0 0",
+            ),
+        )
+        self.value = after_tax
+
+
 class ValuePlotModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting total vs. monthly values."""
-    value: ValuePlotMode = traitlets.UseEnum(ValuePlotMode)
-    label: str = traitlets.Unicode("Total")
+    value: ValuePlotMode = _trait(traitlets.UseEnum(ValuePlotMode))
+    label: str = _trait(traitlets.Unicode("Total"))
     def __init__(self, value_mode: ValuePlotMode = ValuePlotMode.TOTAL):
         """
         Initialize the value plot mode picker.
@@ -685,8 +811,8 @@ class ValuePlotModePicker(widgets.ToggleButtons):
 
 class YAxisPlotModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting zero-anchored vs. auto-scaled Y-axis."""
-    value: bool = traitlets.Bool(True)
-    label: str = traitlets.Unicode("Zero-anchored")
+    value: bool = _trait(traitlets.Bool(True))
+    label: str = _trait(traitlets.Unicode("Zero-anchored"))
     def __init__(self, y_axis_mode: bool = True):
         """
         Initialize the Y-axis plot mode picker.
@@ -709,8 +835,8 @@ class YAxisPlotModePicker(widgets.ToggleButtons):
 
 class LogLinearModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting log vs. linear scale."""
-    value: LogLinearMode = traitlets.UseEnum(LogLinearMode)
-    label: str = traitlets.Unicode("Linear")
+    value: LogLinearMode = _trait(traitlets.UseEnum(LogLinearMode))
+    label: str = _trait(traitlets.Unicode("Linear"))
     def __init__(self, log_linear_mode: LogLinearMode = LogLinearMode.LINEAR):
         """
         Initialize the log-linear mode picker.
@@ -734,9 +860,98 @@ class LogLinearModePicker(widgets.ToggleButtons):
         self.label = "Log" if self.value == LogLinearMode.LOG else "Linear"
 
 
+_TOGGLE_LAYOUT = dict(border="1px solid #888", padding="4px 6px", margin="0 20px 0 0")
+
+
+class DeltaScalePicker(widgets.ToggleButtons):
+    """Sensitivity deltas in dollars or as % of the base (ADR-007 §4).
+    Composes with ``DollarModePicker``: the two together give all four of
+    nominal/CPI-constant x absolute/relative."""
+    value: DeltaScale = _trait(traitlets.UseEnum(DeltaScale))
+
+    def __init__(self, delta_scale: DeltaScale = DeltaScale.ABSOLUTE):
+        super().__init__(
+            options=[("$ delta", DeltaScale.ABSOLUTE), ("% of base", DeltaScale.RELATIVE)],
+            description="Delta:",
+            layout=widgets.Layout(**_TOGGLE_LAYOUT),
+        )
+        self.value = delta_scale
+
+
+class HeatmapValuePicker(widgets.ToggleButtons):
+    """Sensitivity heatmap cells: each row's share of the year's total
+    impact (the importance measure, which counts the base, so a row moving
+    the outcome the same way at both ends still registers), or its signed
+    swing, for direction (ADR-007 §6.1, §9)."""
+    value: HeatmapValue = _trait(traitlets.UseEnum(HeatmapValue))
+
+    def __init__(self, heatmap_value: HeatmapValue = HeatmapValue.SHARE):
+        super().__init__(
+            options=[("Share", HeatmapValue.SHARE), ("Signed swing", HeatmapValue.SWING)],
+            description="Cells:",
+            layout=widgets.Layout(**_TOGGLE_LAYOUT),
+        )
+        self.value = heatmap_value
+
+
+class AttributionPicker(widgets.ToggleButtons):
+    """How a sensitivity delta is decomposed (ADR-007 §6.1): by income/
+    expense category, by income/expense account, or by holding account."""
+    value: AttributionAxis = _trait(traitlets.UseEnum(AttributionAxis))
+
+    def __init__(self, axis: AttributionAxis = AttributionAxis.CATEGORY):
+        super().__init__(
+            options=[("Category", AttributionAxis.CATEGORY),
+                     ("Flow account", AttributionAxis.FLOW_ACCOUNT),
+                     ("Holding account", AttributionAxis.HOLDING_ACCOUNT)],
+            description="Attribute by:",
+            layout=widgets.Layout(**_TOGGLE_LAYOUT),
+        )
+        self.value = axis
+
+
+class ParameterPicker(widgets.Dropdown):
+    """One of a sensitivity batch's varying rows, labeled with its target
+    and perturbed range ("gift -- amount, $12,000 to $28,000")."""
+
+    def __init__(self, parameters: dict[str, str] | None = None):
+        """``parameters`` maps row name to its label suffix; see ``set_parameters``."""
+        super().__init__(options=[], description="Parameter:",
+                         layout=widgets.Layout(width="max-content"))
+        self.set_parameters(parameters or {})
+
+    def set_parameters(self, parameters: dict[str, str]) -> None:
+        """Replace the options, keeping the selection when it's still offered
+        and otherwise selecting the first -- never leaving the views that
+        depend on it blank."""
+        previous = self.value
+        self.options = [(f"{name} — {label}" if label else name, name)
+                        for name, label in parameters.items()]
+        if previous in parameters:
+            self.value = previous
+        elif parameters:
+            self.value = next(iter(parameters))
+
+
+class ReportYearPicker(widgets.SelectionSlider):
+    """One of a batch's annual reporting years (ADR-007 §4)."""
+
+    def __init__(self, years: list[int] | None = None, value: int | None = None):
+        years = years or [0]
+        super().__init__(options=years, value=value if value in years else years[-1],
+                         description="Year:", continuous_update=False,
+                         layout=widgets.Layout(width="60%"))
+
+    def set_years(self, years: list[int]) -> None:
+        """Replace the options, keeping the selected year when it's still offered."""
+        previous = self.value
+        self.options = years
+        self.value = previous if previous in years else years[-1]
+
+
 class AccountKindPicker(widgets.Dropdown):
     """A dropdown widget for selecting account kind."""
-    value: AccountKindAny = traitlets.Unicode("asset")
+    value: AccountKindAny = _trait(traitlets.Unicode("asset"))
     def __init__(self, kind: AccountKindAny = "asset", *,
                  allow_kind: Collection[AccountKind] | None = None,
                  allow_any: bool = False):
@@ -756,7 +971,7 @@ class AccountKindPicker(widgets.Dropdown):
             allow_any = True
         if allow_kind is not None and kind not in allow_kind:
             kind = next(iter(allow_kind))
-        options = [
+        options: list[tuple[str, AccountKindAny]] = [
             (label, k)
             for k, label in KIND_LABELS.items()
             if allow_kind is None or k in allow_kind
@@ -770,104 +985,298 @@ class AccountKindPicker(widgets.Dropdown):
         )
 
 
+def merged_lots_by_account(
+    *connections: RunConnection,
+) -> dict[str, list[str]]:
+    """``lots_by_account()`` across several runs (scenarios being compared,
+    say): each account's lots from every run that has them, in first-seen
+    order, for the accounts with more than one lot among them all -- so
+    a run's only lot of an account another run splits is offered too."""
+    merged: dict[str, list[str]] = {}
+    for connection in connections:
+        for account, lots in connection.lots_by_account(single=True).items():
+            seen = merged.setdefault(account, [])
+            seen.extend(lot for lot in lots if lot not in seen)
+    return {account: lots for account, lots in merged.items() if len(lots) > 1}
+
+
 def to_markdown(*lines: str) -> widgets.Output:
     out = widgets.Output()
     with out:
         display(
-            Markdown("\n".join(lines))
+            StyledMarkdown("\n".join(lines))
         )
     return out
 
 
+ALL_LOTS = "All lots"
+
+
+class LotPicker(widgets.HBox):
+    """Drill one account down to its lots (#170).
+
+    Shown only while it follows a single account with more than one lot (a
+    lone ``default`` lot has nothing to drill into); hidden otherwise.
+    ``lots`` is the picked lots, empty for the whole account. ``multiple``
+    picks any number of lots, for views that draw several series; without
+    it, a dropdown picks one lot or "All lots", for views that draw one.
+    """
+    lots: tuple[str, ...] = _trait(traitlets.Tuple())
+
+    def __init__(self, lots_by_account: Mapping[str, Sequence[str]] | None = None, *,
+                 multiple: bool = True):
+        self.lots_by_account = dict(lots_by_account or {})
+        self.account: str | None = None
+        self._requested: str | None = None
+        self._offered: list[str] = []
+        self.picker: widgets.SelectMultiple | widgets.Dropdown = (
+            widgets.SelectMultiple(description="Lots:", options=[], rows=4)
+            if multiple else
+            widgets.Dropdown(description="Lot:", options=[(ALL_LOTS, ())], value=())
+        )
+        super().__init__((self.picker,))
+        self.layout.display = "none"
+        self.picker.observe(self._on_pick, names="value")
+
+    def follow(self, account: str | None) -> None:
+        """Offer ``account``'s lots, or hide when it has fewer than two
+        (``None`` for no single account). Picked lots stay picked while the
+        account is unchanged and still has them."""
+        self._requested = account
+        lots = list(self.lots_by_account.get(account, ())) if account is not None else []
+        if len(lots) < 2:
+            account, lots = None, []
+        if account == self.account and lots == self._offered:
+            return
+        keep = tuple(lot for lot in self.lots if lot in lots) if account == self.account else ()
+        self.account, self._offered = account, lots
+        self.layout.display = None if account is not None else "none"
+        if isinstance(self.picker, widgets.SelectMultiple):
+            self.picker.options = lots
+            self.picker.value = keep
+        else:
+            self.picker.options = [(ALL_LOTS, ()), *((lot, (lot,)) for lot in lots)]
+            self.picker.value = keep[:1]
+        self.lots = tuple(self.picker.value)
+
+    def set_lots(self, lots_by_account: Mapping[str, Sequence[str]]) -> None:
+        """Offer a different set of lots (another recipe's, say), keeping
+        the followed account and whatever picked lots it still has."""
+        self.lots_by_account = dict(lots_by_account)
+        self.follow(self._requested)
+
+    def _on_pick(self, change: dict[str, Any]) -> None:
+        self.lots = tuple(change["new"])
+
+
 class AccountPicker(widgets.HBox):
     """
-    A widget for selecting account kind and specific accounts.
+    A widget for selecting account kind and specific accounts, and -- given
+    ``lots_by_account`` -- the lots of a single selected account (#170).
+
+    ``selection`` is ``(accounts, lots)``, set once per change however many
+    of the parts moved: observe it rather than the parts to redraw once.
     """
-    rc: RunConnection = traitlets.Instance(RunConnection)
-    kind: AccountKind = traitlets.Any("asset")
-    accounts: list[AccountName] = traitlets.List()
+    rc: RunConnection | None = _trait(traitlets.Instance(RunConnection, allow_none=True))
+    kind: AccountKindAny = _trait(traitlets.Any("asset"))
+    accounts: list[AccountName] = _trait(traitlets.List())
+    lots: tuple[str, ...] = _trait(traitlets.Tuple())
+    selection: tuple[tuple[AccountName, ...], tuple[str, ...]] = _trait(traitlets.Tuple())
     kind_picker: AccountKindPicker
-    def __init__(self, rc: RunConnection,
-                 accounts: list[AccountName] | None = None,
-                 kind: str = "asset",
+    lot_picker: LotPicker | None
+
+    def __init__(self, rc: RunConnection | None = None,
+                 accounts: Collection[AccountName] | None = None,
+                 kind: AccountKindAny = "asset",
                  allow_kind: Collection[AccountKind] | None = None,
                  allow_any: bool = False,
-                 accounts_by_kind: Mapping[AccountKind, Collection[AccountName]] | None = None,
-                 max_accounts: int | None = None):
+                 # Keyed by Any: Mapping's key is invariant, so a mapping keyed
+                 # by AccountKind (no "any") wouldn't match AccountKindAny.
+                 accounts_by_kind: (Mapping[Any, Collection[AccountName]]
+                                    | Callable[[AccountKindAny], Collection[AccountName]]
+                                    | None) = None,
+                 max_accounts: int | None = None,
+                 initial_count: int | None = None,
+                 lots_by_account: Mapping[str, Sequence[str]] | None = None,
+                 lot_multiple: bool = True,
+                 show_kind: bool = True):
         """
         Parameters
         ----------
-        rc : RunConnection
-            The run connection to fetch account data from.
-        accounts : list[AccountName] | None, optional
-            The initially selected accounts. If None, no accounts are selected initially.
+        rc : RunConnection | None
+            The run connection to fetch account data from, when
+            ``accounts_by_kind`` doesn't say.
+        accounts : Collection[AccountName] | None, optional
+            The initially offered accounts when ``accounts_by_kind`` is None.
         kind : str, default "asset"
             The initially selected account kind.
         allow_kind : Collection[AccountKind] | None, optional
             A collection of allowed account kinds. If None, all kinds are allowed.
         allow_any : bool, default False
             Whether to include an "Any" option in the kind picker.
-        accounts_by_kind : Mapping[AccountKind, Collection[AccountName]] | None, optional
-            Precomputed mapping of account kinds to account names.
-            If None, accounts are fetched from the run connection.
+        accounts_by_kind : mapping or callable, optional
+            The accounts each kind offers, as a mapping or a function of the
+            kind. If None, plottable accounts are fetched from ``rc``.
         max_accounts : int | None, optional
             The maximum number of accounts that can be selected. If None, no limit is enforced.
+        initial_count : int | None, optional
+            How many of a kind's accounts start selected, initially and
+            whenever the kind changes; default ``max_accounts`` or 1.
+        lots_by_account : Mapping[str, Sequence[str]] | None, optional
+            Each account's lots; given, a lot picker follows a single
+            selected account that has more than one.
+        lot_multiple : bool, default True
+            Whether the lot picker picks any number of lots, or one lot or
+            all of them.
+        show_kind : bool, default True
+            Whether to show the kind picker; hidden, ``kind`` stays fixed.
         """
         self.rc = rc
         self._accounts_by_kind = accounts_by_kind
         self._max_accounts = max_accounts
+        self._initial_count = initial_count if initial_count is not None else (max_accounts or 1)
+        self._settling = False
         self.kind_picker = AccountKindPicker(
             kind=kind,
             allow_kind=allow_kind,
             allow_any=allow_any,
         )
-        initial_accounts = (
-            list(accounts_by_kind.get(kind, ()))
-            if accounts_by_kind is not None
-            else list(accounts or ())
+        # One account at a time is a dropdown, like the other single-account
+        # pickers; its option values are 1-tuples, so ``value`` reads the same
+        # as the multi-select's either way.
+        self._single = max_accounts == 1
+        self.account_picker: widgets.SelectMultiple | widgets.Dropdown = (
+            widgets.Dropdown(description="Account:", layout=widgets.Layout(width="100%"))
+            if self._single else
+            widgets.SelectMultiple(description="Accounts:", layout=widgets.Layout(width="100%"))
         )
-        self.account_picker = widgets.SelectMultiple(
-            description="Accounts:",
-            layout=widgets.Layout(width="50%"),
-            value=tuple(initial_accounts[:max_accounts]) if max_accounts else tuple(initial_accounts[:1]),
-            options=initial_accounts,
+        self.lot_picker = (
+            LotPicker(lots_by_account, multiple=lot_multiple)
+            if lots_by_account is not None else None
         )
-        super().__init__((self.kind_picker, self.account_picker))
+        # The lot picker sits under the accounts it drills into: narrower,
+        # and it reads as belonging to them.
+        self.account_column = widgets.VBox(
+            [self.account_picker,
+             *((self.lot_picker,) if self.lot_picker is not None else ())],
+            # Boxes scroll on overflow, and a full-width dropdown's margins
+            # overflow by a few pixels: let them, rather than show a scrollbar.
+            layout=widgets.Layout(width="50%", overflow="visible"),
+        )
+        parts: list[widgets.Widget] = [self.kind_picker] if show_kind else []
+        parts.append(self.account_column)
+        super().__init__(parts)
+        self._fill(cast(AccountKindAny, self.kind_picker.value), accounts)
         traitlets.link((self.kind_picker, "value"), (self, "kind"))
-        traitlets.link((self.account_picker, "value"), (self, "accounts"))
         self.kind_picker.observe(self._on_kind_change, names="value")
         self.account_picker.observe(self._on_accounts_change, names="value")
+        if self.lot_picker is not None:
+            self.lot_picker.observe(self._publish, names="lots")
 
-    def _on_kind_change(self, change):
-        self.kind = change["new"]
+    def _offered(self, kind: AccountKindAny,
+                 accounts: Collection[AccountName] | None = None) -> list[AccountName]:
+        if isinstance(self._accounts_by_kind, Mapping):
+            return list(self._accounts_by_kind.get(kind, ()))
         if self._accounts_by_kind is not None:
-            plottable = list(self._accounts_by_kind.get(change["new"], ()))
-        else:
-            plottable = plottable_accounts(
-                self.rc.balance_pivot(change["new"]), self.rc.account_kinds(), change["new"],
-            )
-        self.account_picker.rows = min(15, max(5, len(plottable)))
-        self.account_picker.options = plottable
-        count = self._max_accounts or len(plottable)
-        self.account_picker.value = tuple(plottable[:count])
+            return list(self._accounts_by_kind(kind))
+        if accounts is not None:
+            return list(accounts)
+        if self.rc is None:
+            return []
+        return plottable_accounts(self.rc.balance_pivot(kind), self.rc.account_kinds(), kind)
 
-    def _on_accounts_change(self, change):
+    def _fill(self, kind: AccountKindAny,
+              accounts: Collection[AccountName] | None = None) -> None:
+        """Offer ``kind``'s accounts with the first ``initial_count`` selected,
+        then publish the whole selection once."""
+        offered = self._offered(kind, accounts)
+        self._settling = True
+        try:
+            if isinstance(self.account_picker, widgets.Dropdown):
+                self.account_picker.options = [(name, (name,)) for name in offered]
+                self.account_picker.value = (offered[0],) if offered else None
+            else:
+                self.account_picker.rows = min(15, max(5, len(offered)))
+                self.account_picker.options = offered
+                self.account_picker.value = tuple(offered[:self._initial_count])
+        finally:
+            self._settling = False
+        self._publish()
+
+    def _on_kind_change(self, change: dict[str, Any]) -> None:
+        self.kind = change["new"]
+        self._fill(change["new"])
+
+    def _on_accounts_change(self, change: dict[str, Any]) -> None:
         if self._max_accounts is not None and len(change["new"]) > self._max_accounts:
+            # Re-enters this handler with the trimmed value, which publishes.
             self.account_picker.value = tuple(change["new"][:self._max_accounts])
+            return
+        self._publish()
+
+    def _publish(self, *_: object) -> None:
+        if self._settling:
+            return
+        accounts = tuple(self.account_picker.value or ())
+        self.accounts = list(accounts)
+        if self.lot_picker is not None:
+            self.lot_picker.follow(accounts[0] if len(accounts) == 1 else None)
+        self.lots = self.lot_picker.lots if self.lot_picker is not None else ()
+        self.selection = (accounts, self.lots)
+
+
+class AccountDropdown(widgets.VBox):
+    """One account from a dropdown, and -- given ``lots_by_account`` -- one of
+    its lots or all of them (#170), under it.
+
+    ``options`` are account names or ``(label, value)`` pairs, so a choice
+    that isn't an account (net worth, say) can lead the list. ``selection``
+    is ``(account, lots)``, set once per change: observe it to redraw once.
+    """
+    account: Any = _trait(traitlets.Any(None))
+    lots: tuple[str, ...] = _trait(traitlets.Tuple())
+    selection: tuple[Any, tuple[str, ...]] = _trait(traitlets.Tuple())
+    lot_picker: LotPicker | None
+
+    def __init__(self, options: Sequence[Any], value: Any = None, *,
+                 lots_by_account: Mapping[str, Sequence[str]] | None = None,
+                 description: str = "Account:"):
+        self.account_picker = widgets.Dropdown(options=options, description=description)
+        if value is not None and value in [
+            o[1] if isinstance(o, tuple) else o for o in options
+        ]:
+            self.account_picker.value = value
+        self.lot_picker = (
+            LotPicker(lots_by_account, multiple=False) if lots_by_account is not None else None
+        )
+        super().__init__([self.account_picker,
+                          *((self.lot_picker,) if self.lot_picker is not None else ())])
+        self.account_picker.observe(self._publish, names="value")
+        if self.lot_picker is not None:
+            self.lot_picker.observe(self._publish, names="lots")
+        self._publish()
+
+    def _publish(self, *_: object) -> None:
+        account = self.account_picker.value
+        if self.lot_picker is not None:
+            self.lot_picker.follow(account if isinstance(account, str) else None)
+        self.account = account
+        self.lots = self.lot_picker.lots if self.lot_picker is not None else ()
+        self.selection = (account, self.lots)
 
 
 class AssetClassPicker(widgets.HBox):
     """Widget to pick asset classes, with checkboxes for each class."""
-    value: dict[AssetClass, bool] = traitlets.Dict()
+    value: dict[str, bool] = _trait(traitlets.Dict())
     def __init__(self,
-                 asset_classes: list[AssetClass],
-                 exclude: tuple[AssetClass, ...] = ()):
+                 asset_classes: list[str],
+                 exclude: tuple[str, ...] = ()):
         """
         Parameters
         ----------
-        asset_classes : list[AssetClass]
+        asset_classes : list[str]
             The list of all available asset classes.
-        exclude : tuple[AssetClass, ...], optional
+        exclude : tuple[str, ...], optional
             Asset classes to exclude from the initial selection, by default ().
         """
         include = {
@@ -887,7 +1296,7 @@ class AssetClassPicker(widgets.HBox):
 
 class GroupingPicker(widgets.Dropdown):
     """Dropdown to pick a grouping for portfolio allocation."""
-    value: Grouping | None = traitlets.Enum(values=GROUPINGS + (_NO_SPLIT,))
+    value: Grouping | None = _trait(traitlets.Enum(values=GROUPINGS + (_NO_SPLIT,)))
 
     def __init__(self, value: Grouping | None = None):
         """
@@ -954,3 +1363,87 @@ class DateRangeSlider(widgets.SelectionRangeSlider):
                          )
 
     
+
+def run_years(*runs: RunConnection | None) -> list[int]:
+    """The calendar years the given runs' months fall in, in order."""
+    years: set[int] = set()
+    for run in runs:
+        if run is not None:
+            years.update(int(year) for year in index_years(run.net_worth_frame()))
+    return sorted(years)
+
+
+class TimeRangePicker(widgets.IntRangeSlider):
+    """The calendar years the graphs and tables show (#245).
+
+    Build one per notebook and hand it to each widget as ``time_range=``, as
+    with :class:`DollarModePicker`: every widget shows the same slider, and a
+    change anywhere redraws them all. Each widget calls :meth:`cover` with
+    the years of the run(s) it shows, which sets the slider's ends; a widget
+    cuts what it draws with :meth:`clip`.
+
+    It starts at the whole run. Left there, it follows a scenario change to
+    the new run's whole span, and :meth:`clip` cuts nothing -- not even rows
+    dated outside the run, such as a year-to-date catch-up's prior year.
+    """
+
+    def __init__(self, first: int | None = None, last: int | None = None):
+        first = datetime.date.today().year if first is None else first
+        last = first if last is None else last
+        super().__init__(
+            min=first, max=last, value=(first, last), step=1,
+            description="Years:", continuous_update=False,
+            layout=widgets.Layout(width="60%"),
+        )
+        # Until the first cover() the ends are a placeholder, so it takes
+        # whatever span it's given, rather than clamping to the placeholder.
+        self._covered = first != last
+
+    @property
+    def is_full(self) -> bool:
+        """Whether every year is selected."""
+        return tuple(self.value) == (self.min, self.max)
+
+    def cover(self, years: Iterable[int]) -> None:
+        """Make the ends ``years``' first and last.
+
+        A full selection stays full; a narrowed one keeps its years, clamped
+        to the new span, unless none of them is left in it."""
+        years = list(years)
+        if not years:
+            return
+        first, last = min(years), max(years)
+        if self._covered and (first, last) == (self.min, self.max):
+            return
+        low, high = self.value
+        full = self.is_full or not self._covered
+        self._covered = True
+        # Widen first: the slider refuses a min above its max (and the reverse).
+        self.max = max(self.max, last)
+        self.min = min(self.min, first)
+        if full or high < first or low > last:
+            low, high = first, last
+        self.value = (max(low, first), min(high, last))
+        self.min, self.max = first, last
+
+    def clip(self, data: pd.DataFrame | pd.Series) -> Any:
+        """The rows of ``data`` in the selected years.
+
+        ``data`` is indexed by month (a ``DatetimeIndex`` or ``PeriodIndex``)
+        or by year (integers, or their strings). A full selection returns
+        ``data`` itself."""
+        if self.is_full:
+            return data
+        index = data.index
+        if isinstance(index, (pd.DatetimeIndex, pd.PeriodIndex)):
+            years = pd.Index([moment.year for moment in index])
+        else:
+            years = pd.Index([int(year) for year in index])
+        low, high = self.value
+        return data[(years >= low) & (years <= high)]
+
+
+def controls_row(*controls: widgets.Widget) -> widgets.HBox:
+    """Shared controls laid out side by side, wrapping when the cell is narrow."""
+    return widgets.HBox(list(controls), layout=widgets.Layout(flex_flow="row wrap",
+                                                              align_items="center"))

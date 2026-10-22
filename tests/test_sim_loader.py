@@ -16,6 +16,7 @@ from analysis.sim.loader import (
     DEFAULT_SCENARIO_NAME,
     DataDirtyRefused,
     LoadError,
+    LoadResult,
     growth_rule_name,
     load_scenario,
     read_current_scenario,
@@ -40,7 +41,7 @@ def test_load_retire_alice(tmp_path: Path) -> None:
     con.row_factory = sqlite3.Row
     try:
         person_ids = {r["id"] for r in con.execute("SELECT id FROM person")}
-        assert {"alice", "bob"} <= person_ids
+        assert {"alice", "bill"} <= person_ids
 
         account_names = {r["name"] for r in con.execute("SELECT name FROM account")}
         assert "Asset_Checking" in account_names
@@ -85,10 +86,10 @@ def test_load_retire_alice(tmp_path: Path) -> None:
             "prior_ltcg_loss_carryforward", -150000, "ltcg", 2025
         ) in [tuple(r) for r in tax_priors]
 
-        # Partial-first-year RMD seed lives on account_model_member now.
+        # Partial-first-year RMD seed lives on account_lot now.
         ira_seed = con.execute("""
             SELECT m.prior_year_end_balance
-            FROM account_model_member m
+            FROM account_lot m
             JOIN account a ON a.id = m.account_id
             WHERE a.name = 'Asset_TraditionalIRA_Alice'
         """).fetchone()[0]
@@ -105,13 +106,13 @@ def test_readme_overrides_scenario_csv_description(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
 ) -> None:
     (retire_alice_csv("README.md")).write_text(
-        "# Retirement baseline\n\nAlice and Bob's main plan.\n"
+        "# Retirement baseline\n\nAlice and Bill's main plan.\n"
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     con = sqlite3.connect(result.intent_path)
     try:
         description = con.execute("SELECT description FROM scenario").fetchone()[0]
-        assert description == "# Retirement baseline\n\nAlice and Bob's main plan."
+        assert description == "# Retirement baseline\n\nAlice and Bill's main plan."
     finally:
         con.close()
 
@@ -130,6 +131,24 @@ def test_no_readme_keeps_scenario_csv_description(
     assert description == (df.loc[0, "description"] or None)
 
 
+def test_scenario_csv_with_the_retired_account_model_column_still_loads(
+    test_data_dir: Path, intent_dir: Path,
+) -> None:
+    # #160 dropped the column; data repos written before it still carry one.
+    path = test_data_dir / "scenarios" / "retire_alice" / "scenario.csv"
+    header, row = path.read_text(encoding="utf-8").splitlines()
+    path.write_text(
+        header.replace("description,", "description,account_model,") + "\n"
+        + row.replace(",2026-05-31,", ",standard,2026-05-31,", 1) + "\n",
+        encoding="utf-8",
+    )
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    with sqlite3.connect(result.intent_path) as con:
+        assert con.execute('SELECT start, "end" FROM scenario').fetchone() == (
+            "2026-05-31", "2040-12-31",
+        )
+
+
 def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
@@ -137,12 +156,12 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
     child = repo / "scenarios" / "tight"
     child.mkdir()
     (child / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
-        "tight,,,,,,retire_alice,,\n",
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        "tight,,,,,retire_alice,,\n",
         encoding="utf-8",
     )
     for filename in (
-        "accounts.csv", "account_values.csv", "scheduled.csv",
+        "accounts.csv", "account_lots.csv", "scheduled.csv",
         "calendar.csv", "year_to_date.csv",
     ):
         header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
@@ -155,7 +174,7 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
         repo, "tight", intent_dir=tmp_path / "tight", allow_dirty_data=True,
     )
     tables = (
-        "account", "account_model_member", "scheduled_transaction",
+        "account", "account_lot", "scheduled_transaction",
         "calendar_event", "year_to_date",
     )
     with sqlite3.connect(current.intent_path) as current_con, \
@@ -174,6 +193,9 @@ def test_current_scenario_file_drives_default_resolution(tmp_path: Path) -> None
     assert read_current_scenario(repo) is None
     assert resolve_scenario_name(repo, None).name == DEFAULT_SCENARIO_NAME
     assert resolve_scenario_name(repo, "tight").name == "tight"
+    for path in ("../scenarios/tight", "tight/..", ".", ".."):
+        with pytest.raises(LoadError, match="scenario not found"):
+            resolve_scenario_name(repo, path)
 
     write_current_scenario(repo, "tight")
     assert read_current_scenario(repo) == "tight"
@@ -268,7 +290,7 @@ def test_account_series_synthesizes_growth_rule_and_income_account(
     # case-insensitive filesystem would otherwise collide with it on a name
     # differing only in case.
     (repo / "scenarios" / "retire_alice" / "series" / "rate__IRA_Growth.csv").write_text(
-        "effective_date,annual_rate_micros\n2026-01-31,60000\n"
+        "effective_date,annual_rate\n2026-01-31,6%\n"
     )
 
     result = load_scenario(
@@ -301,7 +323,7 @@ def test_account_series_synthesizes_growth_rule_and_income_account(
             "income", "capital_gain", "tax_deferred",
         )
         opening = con.execute(
-            "SELECT m.opening_balance FROM account_model_member m "
+            "SELECT m.opening_balance FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'deferred_gains'"
         ).fetchone()[0]
         assert opening == 0
@@ -334,7 +356,7 @@ def test_calendar_series_with_a_space_rejected(
 ) -> None:
     append_calendar_row(
         date="2027-01-31", kind="set_rate", name="typo_series",
-        series="some new series", amount="45000",
+        series="some new series", amount="4.5%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -347,7 +369,7 @@ def test_calendar_series_with_a_space_rejected(
 def test_chain_name_with_a_space_rejected(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
 ) -> None:
-    (retire_alice_csv("chains") / "asset__roth first.csv").write_text(
+    (retire_alice_csv("chains/source") / "roth first.csv").write_text(
         "account_name,lot,maximum,percent,series,cadence\nAsset_Roth_Alice,,,,,\n"
     )
     with pytest.raises(LoadError) as ei:
@@ -356,6 +378,136 @@ def test_chain_name_with_a_space_rejected(
         "chain name 'roth first' may not contain a space" in issue
         for issue in ei.value.issues
     )
+
+
+def test_a_chain_file_outside_a_role_folder_is_rejected(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Issue #143: a chain's role is the folder it is in, so a file left
+    directly under chains/ (as before) says where it belongs."""
+    (retire_alice_csv("chains") / "asset__old.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any(
+        "chains/asset__old.csv: a chain file belongs in chains/source/ (drawn from) "
+        "or chains/destination/ (paid into), named <name>.csv" in issue
+        for issue in ei.value.issues
+    ), ei.value.issues
+
+
+def test_one_chain_in_both_role_folders_is_rejected(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    (retire_alice_csv("chains/destination") / "asset_checking_liquidity.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any("chain 'asset_checking_liquidity' is in both source/ and destination/" in issue
+               for issue in ei.value.issues), ei.value.issues
+
+
+def test_a_chain_file_in_a_misspelled_role_folder_is_rejected(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Issue #143: a folder that names no role is not silently skipped."""
+    # cspell:ignore sorce
+    (folder := retire_alice_csv("chains/sorce")).mkdir()
+    (folder / "stray.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n")
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any("chains/sorce: not a chain role" in issue for issue in ei.value.issues), ei.value.issues
+
+
+def _move_chain(retire_alice_csv: Callable[[str], Path], name: str, role: str) -> None:
+    """Move a guide_chains chain into the other role folder."""
+    other = "destination" if role == "source" else "source"
+    (retire_alice_csv(f"chains/{other}") / f"{name}.csv").rename(retire_alice_csv(f"chains/{role}") / f"{name}.csv")
+
+
+@pytest.mark.parametrize(("chain", "role", "expected"), [
+    ("ss_split", "source",
+     "(ss_alice): to_account 'ss_split' is a source chain; to_account takes a destination chain"),
+    ("retirement_draw", "destination",
+     "(monthly_draw): from_account 'retirement_draw' is a destination chain; "
+     "from_account takes a source chain"),
+    ("retirement_draw", "destination",
+     "chains/destination/retirement_draw.csv line 2: account_name 'bridge' is a source chain"),
+    ("asset_checking_liquidity", "destination",
+     "(Asset_Checking): refill_chain 'asset_checking_liquidity' is a destination chain"),
+])
+def test_a_chain_is_used_the_way_its_role_says(
+    guide_chains: Path, retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult], chain: str, role: str, expected: str,
+) -> None:
+    """Issue #143: a source chain is only drawn from, a destination chain
+    only paid into, and a chain's steps share its role."""
+    _move_chain(retire_alice_csv, chain, role)
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any(expected in issue for issue in ei.value.issues), ei.value.issues
+
+
+def test_an_overflow_chain_must_be_a_destination(
+    guide_chains: Path, update_account_value, load_test_copy: Callable[[], LoadResult],
+) -> None:
+    update_account_value("Asset_Checking", "", overflow_chain="bridge")
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any("(Asset_Checking): overflow_chain 'bridge' is a source chain; overflow_chain takes "
+               "a destination chain (chains/destination/)" in issue for issue in ei.value.issues), ei.value.issues
+
+
+@pytest.mark.parametrize("account_character", ["", "deferred", "tax_free"])
+def test_each_retirement_lot_grows_from_its_own_shelter(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+    account_character: str,
+) -> None:
+    """#224: Roth and traditional lots in one account each grow from the
+    built-in account their own subkind names, whatever the account's
+    tax_character says."""
+    accounts_path = retire_alice_csv("accounts.csv")
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    account = df["name"] == "Asset_Roth_Alice"
+    df.loc[account, "series"] = "brokerage_growth"
+    df.loc[account, "tax_character"] = account_character
+    df.to_csv(accounts_path, index=False)
+    lots_path = retire_alice_csv("account_lots.csv")
+    lots = pd.read_csv(lots_path, dtype=str, keep_default_na=False)
+    lot = {column: "" for column in lots.columns}
+    lot.update(account_name="Asset_Roth_Alice", lot="rollover", subkind="traditional_ira",
+                opening_balance="0.00")
+    pd.concat([lots, pd.DataFrame([lot])]).to_csv(lots_path, index=False)
+
+    with sqlite3.connect(load_test_copy().intent_path) as con:
+        rules = dict(con.execute(
+            "SELECT s.name, c.name || ':' || s.tax_character FROM scheduled_transaction s "
+            "JOIN chain c ON c.id = s.from_account WHERE s.name IN (?, ?)",
+            (growth_rule_name("Asset_Roth_Alice", "default"),
+             growth_rule_name("Asset_Roth_Alice", "rollover")),
+        ).fetchall())
+    assert rules == {
+        growth_rule_name("Asset_Roth_Alice", "default"): "tax_free_gains:tax_free",
+        growth_rule_name("Asset_Roth_Alice", "rollover"): "deferred_gains:deferred",
+    }
+
+
+def test_a_retirement_accounts_own_growth_character_is_still_checked(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Its lots' subkinds decide their growth, but a character set on the
+    account must still be one the growth registry knows."""
+    accounts_path = retire_alice_csv("accounts.csv")
+    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
+    account = df["name"] == "Asset_Roth_Alice"
+    df.loc[account, "series"] = "brokerage_growth"
+    df.loc[account, "tax_character"] = "ltcg"
+    df.to_csv(accounts_path, index=False)
+
+    with pytest.raises(LoadError) as ei:
+        load_test_copy()
+    assert any("requires tax_character in" in issue for issue in ei.value.issues)
 
 
 @pytest.mark.parametrize(
@@ -423,8 +575,8 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (scenario_dir / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
-        "x,,m,2026-01-31,2026-12-31,,,test,{}\n",
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        "x,,2026-01-31,2026-12-31,,,test,{}\n",
         encoding="utf-8",
     )
     (scenario_dir / "accounts.csv").write_text(
@@ -434,13 +586,13 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     for filename, header in {
-        "account_values.csv": (
+        "account_lots.csv": (
             "account_name,opening_balance,opening_cost_basis,prior_year_end_balance,"
             "refill_chain\nAsset_Checking,100.00,,,missing"
         ),
         "scheduled.csv": (
             "name,from_account,to_account,cadence,month_of_year,amount_rule_kind,interest_account"
-            ",person,series,rate_micros,claim_age,amount,base_date,inflation_cadence,tax_character"
+            ",person,series,rate,claim_age,amount,base_date,inflation_cadence,tax_character"
             ",start,end,priority,ytd_amount,ytd_preroll,description,meta_json,params_json,tags"
         ),
         "calendar.csv": (
@@ -454,6 +606,82 @@ def test_unresolvable_refill_chain_rejected(tmp_path: Path) -> None:
     with pytest.raises(LoadError) as ei:
         load_scenario(repo, "x", intent_dir=tmp_path / "out")
     assert any("refill_chain 'missing'" in issue for issue in ei.value.issues)
+
+
+@pytest.mark.parametrize(
+    ("chain_files", "column", "chain", "path"),
+    [
+        ({}, "refill_chain", "Asset_Checking", "Asset_Checking"),
+        (
+            {"source/asset_checking_liquidity.csv": "Asset_Savings,,,,,\nAsset_Checking,,,,,\n"},
+            "refill_chain", "asset_checking_liquidity",
+            "asset_checking_liquidity -> Asset_Checking",
+        ),
+        (
+            {
+                "source/asset_checking_liquidity.csv": "Asset_Savings,,,,,\ninner,,,,,\n",
+                "source/inner.csv": "Asset_Checking,,,,,\n",
+            },
+            "refill_chain", "asset_checking_liquidity",
+            "asset_checking_liquidity -> inner -> Asset_Checking",
+        ),
+        (
+            {"destination/spill.csv": "Asset_Savings,,,,,\nAsset_Checking,,,,,\n"},
+            "overflow_chain", "spill", "spill -> Asset_Checking",
+        ),
+    ],
+    ids=["names-itself", "step", "nested-step", "overflow"],
+)
+def test_policy_chain_leading_back_to_its_own_lot_rejected(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+    chain_files: dict[str, str], column: str, chain: str, path: str,
+) -> None:
+    """Issue #101: the engine skips a chain step naming the lot being refilled
+    (or swept), so a refill chain reaching its own lot silently supplied
+    nothing. The leaf step adds no edge for the cycle check, so it needs
+    its own check, at any depth."""
+    import pandas as pd
+
+    for filename, rows in chain_files.items():
+        (retire_alice_csv("chains") / filename).write_text(
+            "account_name,lot,maximum,percent,series,cadence\n" + rows
+        )
+    values_path = retire_alice_csv("account_lots.csv")
+    df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+    checking = df["account_name"] == "Asset_Checking"
+    if column == "overflow_chain":
+        df.loc[checking, "maximum_balance"] = "10000.00"
+    df.loc[checking, column] = chain
+    df.to_csv(values_path, index=False)
+
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        f"(Asset_Checking): {column} leads back to the lot itself: {path}" in issue
+        for issue in ei.value.issues
+    ), ei.value.issues
+
+
+def test_policy_loop_through_another_lot_loads(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """Only a chain leading back to its own lot is rejected: checking that
+    refills from (and overflows into) savings, while savings refills from
+    checking, is a legitimate loop through another lot's policy."""
+    import pandas as pd
+
+    (retire_alice_csv("chains/destination") / "spill.csv").write_text(
+        "account_name,lot,maximum,percent,series,cadence\nAsset_Savings,,,,,\n"
+    )
+    values_path = retire_alice_csv("account_lots.csv")
+    df = pd.read_csv(values_path, dtype=str, keep_default_na=False)
+    checking = df["account_name"] == "Asset_Checking"
+    df.loc[checking, "maximum_balance"] = "10000.00"
+    df.loc[checking, "overflow_chain"] = "spill"
+    df.loc[df["account_name"] == "Asset_Savings", "refill_chain"] = "Asset_Checking"
+    df.to_csv(values_path, index=False)
+
+    load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
 
 
 # ---- ADR-004 git provenance ----
@@ -525,12 +753,12 @@ def _derive_empty_child(repo: Path, parent_name: str, child_name: str) -> Path:
     child = repo / "scenarios" / child_name
     child.mkdir()
     (child / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
-        f"{child_name},,,,,,{parent_name},,\n",
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        f"{child_name},,,,,{parent_name},,\n",
         encoding="utf-8",
     )
     for filename in (
-        "accounts.csv", "account_values.csv", "scheduled.csv",
+        "accounts.csv", "account_lots.csv", "scheduled.csv",
         "calendar.csv", "year_to_date.csv",
     ):
         header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
@@ -630,7 +858,8 @@ def test_lifespan_csv_round_trip(tmp_path: Path) -> None:
     shutil.copytree(PROTOTYPE, repo)
 
     lifespan = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan.write_text("person,final_month\nalice,2033-06-30\n")
+    # Alice was born 1965-03: 68.25 years on is 2033-06.
+    lifespan.write_text("person,age_at_death\nalice,68.25\n")
 
     result = load_scenario(
         repo, "retire_alice", intent_dir=tmp_path / "out",
@@ -640,10 +869,12 @@ def test_lifespan_csv_round_trip(tmp_path: Path) -> None:
     con.row_factory = sqlite3.Row
     try:
         row = con.execute(
-            "SELECT person, final_month FROM person_lifespan"
+            "SELECT person, age_at_death, final_month, vary_distribution FROM person_lifespan"
         ).fetchone()
         assert row["person"] == "alice"
+        assert row["age_at_death"] == 68.25
         assert row["final_month"] == "2033-06-30"
+        assert row["vary_distribution"] is None
     finally:
         con.close()
 
@@ -653,7 +884,7 @@ def test_lifespan_unknown_person_rejected(tmp_path: Path) -> None:
     shutil.copytree(PROTOTYPE, repo)
 
     lifespan = repo / "scenarios" / "retire_alice" / "lifespan.csv"
-    lifespan.write_text("person,final_month\ncarol,2033-06-30\n")
+    lifespan.write_text("person,age_at_death\ncarol,70\n")
 
     with pytest.raises(LoadError, match="not in persons.csv"):
         load_scenario(
@@ -712,7 +943,7 @@ def test_year_to_date_unknown_account_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_scheduled_ytd_preroll_rejected_for_non_fixed_amount(tmp_path: Path) -> None:
+def test_scheduled_ytd_preroll_rejected_for_a_kind_it_cannot_replay(tmp_path: Path) -> None:
     import pandas as pd
 
     repo = tmp_path / "data"
@@ -720,8 +951,7 @@ def test_scheduled_ytd_preroll_rejected_for_non_fixed_amount(tmp_path: Path) -> 
 
     sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
     df = pd.read_csv(sched, dtype=str, keep_default_na=False)
-    # mortgage_pmt is amount_rule_kind='mortgage_payment', not fixed_amount+monthly.
-    df.loc[df["name"] == "mortgage_pmt", "ytd_preroll"] = "1"
+    df.loc[df["name"] == "ss_alice", "ytd_preroll"] = "1"
     df.to_csv(sched, index=False)
 
     with pytest.raises(LoadError, match="ytd_preroll only valid"):
@@ -757,6 +987,32 @@ def test_scheduled_ytd_preroll_allowed_for_annual_fixed_amount(tmp_path: Path) -
             "FROM scheduled_transaction WHERE name='living'"
         ).fetchone()
         assert row == ("annual", 4, 1)
+    finally:
+        con.close()
+
+
+def test_scheduled_ytd_preroll_allowed_for_mortgage_payment(tmp_path: Path) -> None:
+    import pandas as pd
+
+    repo = tmp_path / "data"
+    shutil.copytree(PROTOTYPE, repo)
+
+    sched = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "mortgage_pmt", "ytd_preroll"] = "1"
+    df.to_csv(sched, index=False)
+
+    result = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "out",
+        allow_dirty_data=True,
+    )
+
+    con = sqlite3.connect(result.intent_path)
+    try:
+        row = con.execute(
+            "SELECT ytd_preroll FROM scheduled_transaction WHERE name='mortgage_pmt'"
+        ).fetchone()
+        assert row == (1,)
     finally:
         con.close()
 
@@ -852,11 +1108,11 @@ def test_invalid_tag_rejected(tmp_path: Path) -> None:
     assert any("no_colon_here" in issue for issue in ei.value.issues)
 
 
-def test_account_values_unknown_account_rejected(tmp_path: Path) -> None:
+def test_account_lots_unknown_account_rejected(tmp_path: Path) -> None:
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
 
-    av = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    av = repo / "scenarios" / "retire_alice" / "account_lots.csv"
     with av.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
         fields = list(rows[0].keys())
@@ -881,7 +1137,7 @@ def test_account_values_unknown_account_rejected(tmp_path: Path) -> None:
     assert any("account_name not in accounts.csv" in issue for issue in ei.value.issues)
 
 
-def test_money_reference_in_account_values_resolves_itemization_sum(
+def test_money_reference_in_account_lots_resolves_itemization_sum(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "data"
@@ -895,7 +1151,7 @@ def test_money_reference_in_account_values_resolves_itemization_sum(
         w.writerow({"Item": "purchase", "Value": "300000.00", "Note": ""})
         w.writerow({"Item": "improvements", "Value": "100000.00", "Note": ""})
 
-    av = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    av = repo / "scenarios" / "retire_alice" / "account_lots.csv"
     with av.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
         fields = list(rows[0].keys())
@@ -915,7 +1171,7 @@ def test_money_reference_in_account_values_resolves_itemization_sum(
     try:
         got = con.execute(
             "SELECT m.opening_cost_basis "
-            "FROM account_model_member m "
+            "FROM account_lot m "
             "JOIN account a ON a.id = m.account_id "
             "WHERE a.name = 'Asset_Home'"
         ).fetchone()[0]
@@ -937,7 +1193,7 @@ def test_money_reference_rejects_itemization_missing_value_column(
         w.writeheader()
         w.writerow({"Item": "purchase", "Amount": "300000.00"})
 
-    av = repo / "scenarios" / "retire_alice" / "account_values.csv"
+    av = repo / "scenarios" / "retire_alice" / "account_lots.csv"
     with av.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
         fields = list(rows[0].keys())
@@ -957,13 +1213,32 @@ def test_money_reference_rejects_itemization_missing_value_column(
     assert any("expected a 'Value' column" in issue for issue in ei.value.issues)
 
 
+def test_itemization_error_names_its_file_and_line(
+    test_data_dir: Path, update_account_value: Callable[..., None], intent_dir: Path,
+) -> None:
+    """#136: an itemization's missing Value is reported at its physical
+    line (a blank line before it counted), by its path in the data repo."""
+    itemizations = test_data_dir / "itemizations"
+    itemizations.mkdir(exist_ok=True)
+    (itemizations / "home_basis.csv").write_text(
+        "Item,Value\npurchase,300000.00\n\nimprovements,\n", encoding="utf-8",
+    )
+    update_account_value("Asset_Home", "", opening_cost_basis="@home_basis")
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        "itemizations/home_basis.csv line 4: missing Value for '@home_basis'" in issue
+        for issue in ei.value.issues
+    )
+
+
 def test_vary_target_required_with_distribution(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
-        vary_distribution="uniform", vary_low="40000", vary_high="50000",
+        series="Asset_Checking", amount="4.5%",
+        vary_distribution="uniform", vary_low="4%", vary_high="5%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -975,9 +1250,9 @@ def test_vary_distribution_unknown_rejected(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="lognormal",
-        vary_low="40000", vary_high="50000",
+        vary_low="4%", vary_high="5%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -989,8 +1264,8 @@ def test_vary_uniform_requires_bounds(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
-        vary_target="amount", vary_distribution="uniform", vary_low="40000",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform", vary_low="4%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1002,9 +1277,9 @@ def test_vary_name_required_with_distribution(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        vary_low="4%", vary_high="5%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1017,9 +1292,9 @@ def test_vary_name_duplicate_rejected(
     for month_end in ("2027-02-28", "2027-03-31"):
         append_calendar_row(
             date=month_end, kind="set_rate", name="checking_rate_vary",
-            series="Asset_Checking", amount="45000",
+            series="Asset_Checking", amount="4.5%",
             vary_target="amount", vary_distribution="uniform",
-            vary_low="40000", vary_high="50000",
+            vary_low="4%", vary_high="5%",
         )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1039,9 +1314,9 @@ def test_vary_rows_sharing_every_merge_key_field_but_name_is_ambiguous(
     for name in ("rate_vary_a", "rate_vary_b"):
         append_calendar_row(
             date="2027-02-28", kind="set_rate", name=name,
-            series="Asset_Checking", amount="45000",
+            series="Asset_Checking", amount="4.5%",
             vary_target="amount", vary_distribution="uniform",
-            vary_low="40000", vary_high="50000",
+            vary_low="4%", vary_high="5%",
         )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1068,7 +1343,7 @@ def test_vary_row_overrides_inherited_unnamed_calendar_row(
         "series": inherited["series"], "amount": inherited["amount"],
         "tax_character": inherited["tax_character"], "name": "inheritance_vary",
         "vary_target": "amount", "vary_distribution": "uniform",
-        "vary_low": inherited["amount"], "vary_high": str(int(inherited["amount"]) * 2),
+        "vary_low": inherited["amount"], "vary_high": f"{float(inherited['amount']) * 2:.2f}",
     }])
     pd.concat([df, child], ignore_index=True).fillna("").to_csv(calendar_path, index=False)
 
@@ -1086,6 +1361,144 @@ def test_vary_row_overrides_inherited_unnamed_calendar_row(
         con.close()
 
 
+_CHILD_CALENDAR_HEADER = (
+    "date,kind,name,series,amount,vary_target,vary_distribution,vary_low,vary_high\n"
+)
+
+
+def test_child_overrides_named_calendar_row_with_a_new_amount(
+    append_calendar_row: Callable[..., None], derive_scenario: Callable[..., Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """#136: a child row naming an inherited named row overrides it even when
+    its amount (a merge-key field) differs -- not a second row with the same
+    name beside it."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
+    )
+    derive_scenario("child", "retire_alice", files={"calendar.csv": (
+        _CHILD_CALENDAR_HEADER
+        + "2027-02-28,set_rate,checking_rate_vary,Asset_Checking,-5%,amount,uniform,-20%,5%\n"
+    )})
+    con = sqlite3.connect(load_test_scenario("child"))
+    try:
+        rows = con.execute(
+            "SELECT amount, vary_low, vary_high FROM calendar_event WHERE name = ?",
+            ("checking_rate_vary",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [(-50_000, "-200000", "50000")]
+
+
+def test_partial_header_override_reads_amount_in_the_inherited_kinds_unit(
+    append_calendar_row: Callable[..., None], derive_scenario: Callable[..., Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """#136: a ``name,amount`` override inherits its row's kind, so its
+    amount is a percent for an inherited set_rate -- converted, not left as
+    text for the intent write to choke on."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%",
+    )
+    derive_scenario("child", "retire_alice", files={
+        "calendar.csv": "name,amount,vary_low\nchecking_rate_vary,4.75%,4.5%\n",
+    })
+    con = sqlite3.connect(load_test_scenario("child"))
+    try:
+        rows = con.execute(
+            "SELECT kind, amount, vary_low, vary_high FROM calendar_event WHERE name = ?",
+            ("checking_rate_vary",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("set_rate", 47_500, "45000", "50000")]
+
+
+def test_partial_header_override_of_retire_scheduled_keeps_its_day(
+    append_calendar_row: Callable[..., None], derive_scenario: Callable[..., Path],
+    load_test_scenario: Callable[[str], Path],
+) -> None:
+    """A ``name,date`` override inherits retire_scheduled, whose date keeps
+    its day -- so it must have the kind before its date is normalized."""
+    append_calendar_row(
+        date="2027-02-28", kind="retire_scheduled", name="bill_retires",
+        scheduled_name="salary_bill",
+    )
+    derive_scenario("child", "retire_alice", files={
+        "calendar.csv": "name,date\nbill_retires,2028-03-15\n",
+    })
+    con = sqlite3.connect(load_test_scenario("child"))
+    try:
+        rows = con.execute(
+            "SELECT date FROM calendar_event WHERE name = ?", ("bill_retires",),
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("2028-03-15",)]
+
+
+def test_unknown_correlation_parent_names_the_rows_file_and_line(
+    derive_scenario: Callable[..., Path], test_data_dir: Path, intent_dir: Path,
+) -> None:
+    derive_scenario("child", "retire_alice", files={"calendar.csv": (
+        "date,kind,name,series,amount,vary_target,vary_distribution,vary_low,"
+        "vary_high,vary_correlate_with,vary_correlation\n"
+        "\n"
+        "2027-02-28,set_rate,lonely,Asset_Checking,4%,amount,uniform,3%,5%,nobody,0.5\n"
+    )})
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "child", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(
+        issue.startswith("scenarios/child/calendar.csv line 3 (lonely): vary_correlate_with")
+        for issue in ei.value.issues
+    )
+
+
+def test_override_missing_its_key_names_its_file_and_line(
+    derive_scenario: Callable[..., Path], test_data_dir: Path, intent_dir: Path,
+) -> None:
+    """#136: the row in the message is the authored cells only -- no internal
+    location key -- and its location leads, as for every other row error."""
+    derive_scenario("child", "retire_alice", files={"accounts.csv": "name,kind\n,asset\n"})
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "child", intent_dir=intent_dir, allow_dirty_data=True)
+    assert ei.value.issues == [
+        "scenarios/child/accounts.csv line 2: derived scenario override missing "
+        "key ('name',): {'name': '', 'kind': 'asset'}"
+    ]
+
+
+def test_calendar_errors_name_the_scenario_file_and_line(
+    test_data_dir: Path, append_calendar_row: Callable[..., None],
+    derive_scenario: Callable[..., Path], intent_dir: Path,
+) -> None:
+    """#136: a message about a merged calendar row names the file it was
+    authored in and its physical line -- blank lines counted -- not its
+    position in the parent-plus-child calendar."""
+    append_calendar_row(date="2027-03-31", kind="no_such_kind")
+    derive_scenario("child", "retire_alice", files={"calendar.csv": (
+        _CHILD_CALENDAR_HEADER
+        + "2027-02-28,set_rate,twice,Asset_Checking,4%,,,,\n"
+        + "\n"
+        + "2027-04-30,set_rate,twice,Asset_Checking,5%,,,,\n"
+    )})
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "child", intent_dir=intent_dir, allow_dirty_data=True)
+    issues = ei.value.issues
+    assert (
+        "scenarios/child/calendar.csv line 4: duplicate name 'twice' "
+        "(first seen on scenarios/child/calendar.csv line 2)"
+    ) in issues
+    assert "scenarios/retire_alice/calendar.csv line 7: unknown event kind 'no_such_kind'" in issues
+
+
 def test_vary_rows_identical_including_name_rejected_as_duplicate(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
@@ -1095,9 +1508,9 @@ def test_vary_rows_identical_including_name_rejected_as_duplicate(
     for _ in range(2):
         append_calendar_row(
             date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-            series="Asset_Checking", amount="45000",
+            series="Asset_Checking", amount="4.5%",
             vary_target="amount", vary_distribution="uniform",
-            vary_low="40000", vary_high="50000",
+            vary_low="4%", vary_high="5%",
         )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1109,9 +1522,9 @@ def test_vary_ramp_months_requires_amount_target_on_set_rate(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_amount", name="healthcare_vary",
-        scheduled_name="healthcare", amount="120000",
+        scheduled_name="healthcare", amount="1200.00",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="100000", vary_high="140000", vary_ramp_months="12",
+        vary_low="1000.00", vary_high="1400.00", vary_ramp_months="12",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1122,8 +1535,8 @@ def test_vary_amount_target_rejected_on_kind_without_amount_column(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="amount", vary_distribution="uniform",
         vary_low="1", vary_high="2",
     )
@@ -1138,10 +1551,10 @@ def test_vary_truncated_normal_rejected_with_date_target(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="truncated_normal",
-        vary_mean="2029-06-30", vary_sd="30",
+        vary_median="2029-06-30", vary_sd="30",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1156,14 +1569,14 @@ def test_vary_uniform_rejects_columns_it_does_not_use(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000", vary_mean="45000",
+        vary_low="4%", vary_high="5%", vary_median="4.5%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any(
-        "vary_mean is not used by uniform" in issue for issue in ei.value.issues
+        "vary_median is not used by uniform" in issue for issue in ei.value.issues
     )
 
 
@@ -1172,9 +1585,9 @@ def test_vary_uniform_rejects_high_below_low(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="50000", vary_high="40000",
+        vary_low="5%", vary_high="4%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1185,8 +1598,8 @@ def test_vary_uniform_rejects_reversed_date_bounds(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2029-12-31", vary_high="2029-01-01",
     )
@@ -1200,45 +1613,60 @@ def test_vary_truncated_normal_rejects_nonpositive_sd(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_sd="0",
+        vary_median="4.5%", vary_sd="0%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any("vary_sd must be positive" in issue for issue in ei.value.issues)
 
 
-def test_vary_truncated_normal_low_equal_to_mean_without_sd_is_degenerate(
+def test_vary_truncated_normal_low_equal_to_median_without_sd_is_degenerate(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
-    """Setting vary_low to vary_mean is how to get a single-tailed draw (the
-    still-blank vary_high ramps out to +3sd) -- but only when vary_sd is
-    given directly. Leaving vary_sd blank too has nothing left to infer a
-    nonzero spread from (vary_mean - vary_low = 0), so this must still be
-    rejected rather than silently drawing a single point."""
+    """With vary_sd blank, vary_low = vary_median leaves nothing to infer a
+    nonzero spread from (median - low = 0), so it's rejected rather than
+    silently drawing a single point (and a median on a bound is invalid
+    anyway, #31)."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_low="45000",
+        vary_median="4.5%", vary_low="4.5%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert any("vary_sd must be positive" in issue for issue in ei.value.issues)
 
 
-def test_vary_truncated_normal_single_tailed_with_explicit_sd_loads(
+def test_vary_truncated_normal_median_on_a_bound_is_rejected(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
-    """The working version of the case above: vary_sd given directly, so
-    vary_low=vary_mean is a real (zero-width-avoiding) one-sided bound and
-    vary_high infers to mean + 3*sd."""
+    """#31: "vary_low = the center" used to give a one-sided draw. With the
+    center now the truncated median, a median can't sit on a bound (half
+    the mass would have to be on it) -- the error points at vary_skew."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_sd="5000", vary_low="45000",
+        vary_median="4.5%", vary_sd="0.5%", vary_low="4.5%",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("strictly between" in issue and "vary_skew" in issue for issue in ei.value.issues)
+
+
+def test_vary_truncated_normal_skewed_one_sided_spread_loads(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """The replacement for the one-sided trick: a right skew, with the low
+    bound just under the median."""
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="4.5%", vary_sd="0.5%", vary_low="4.4%", vary_skew="1.0",
     )
     load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
 
@@ -1248,14 +1676,14 @@ def test_vary_truncated_normal_rejects_reversed_low_high(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="45000", vary_sd="5000",
-        vary_low="50000", vary_high="40000",
+        vary_median="4.5%", vary_sd="0.5%",
+        vary_low="5%", vary_high="4%",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
-    assert any("vary_low must be <= vary_high" in issue for issue in ei.value.issues)
+    assert any("vary_low must be below vary_high" in issue for issue in ei.value.issues)
 
 
 def test_vary_one_off_transfer_uniform_requires_positive_low(
@@ -1264,9 +1692,9 @@ def test_vary_one_off_transfer_uniform_requires_positive_low(
     append_calendar_row(
         date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
-        amount="100000", tax_character="none",
+        amount="1000.00", tax_character="none",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="-50000", vary_high="50000",
+        vary_low="-500.00", vary_high="500.00",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1281,9 +1709,9 @@ def test_vary_one_off_transfer_uniform_rejects_zero_low(
     append_calendar_row(
         date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
-        amount="100000", tax_character="none",
+        amount="1000.00", tax_character="none",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="0", vary_high="50000",
+        vary_low="0.00", vary_high="500.00",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1301,9 +1729,9 @@ def test_vary_one_off_transfer_truncated_normal_requires_positive_effective_low(
     append_calendar_row(
         date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
-        amount="100000", tax_character="none",
+        amount="1000.00", tax_character="none",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="50000", vary_sd="20000",
+        vary_median="500.00", vary_sd="200.00",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
@@ -1318,9 +1746,9 @@ def test_vary_one_off_transfer_truncated_normal_with_positive_low_loads(
     append_calendar_row(
         date="2030-06-30", kind="one_off_transfer", name="transfer_vary",
         account_1="Asset_Checking", account_2="Asset_Brokerage_Joint", lot_2="default",
-        amount="100000", tax_character="none",
+        amount="1000.00", tax_character="none",
         vary_target="amount", vary_distribution="truncated_normal",
-        vary_mean="100000", vary_sd="20000", vary_low="1",
+        vary_median="1000.00", vary_sd="200.00", vary_low="0.01",
     )
     load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
 
@@ -1329,14 +1757,14 @@ def test_vary_date_target_bounds_must_be_iso_dates(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     append_calendar_row(
-        date="2027-02-28", kind="retire_scheduled", name="retire_bob_vary",
-        scheduled_name="salary_bob",
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
         vary_target="date", vary_distribution="uniform",
         vary_low="2029-01-01", vary_high="not-a-date",
     )
     with pytest.raises(LoadError) as ei:
         load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
-    assert any("not a valid ISO date" in issue for issue in ei.value.issues)
+    assert any("not a valid YYYY-MM or YYYY-MM-DD" in issue for issue in ei.value.issues)
 
 
 def test_vary_columns_present_without_distribution_rejected(
@@ -1344,7 +1772,7 @@ def test_vary_columns_present_without_distribution_rejected(
 ) -> None:
     append_calendar_row(
         date="2027-02-28", kind="set_rate",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount",
     )
     with pytest.raises(LoadError) as ei:
@@ -1380,9 +1808,9 @@ def test_valid_vary_row_loads_cleanly(
     concrete value is Phase 2's job, not the loader's."""
     append_calendar_row(
         date="2027-02-28", kind="set_rate", name="checking_rate_vary",
-        series="Asset_Checking", amount="45000",
+        series="Asset_Checking", amount="4.5%",
         vary_target="amount", vary_distribution="uniform",
-        vary_low="40000", vary_high="50000",
+        vary_low="4%", vary_high="5%",
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     con = sqlite3.connect(result.intent_path)
@@ -1396,24 +1824,50 @@ def test_valid_vary_row_loads_cleanly(
         con.close()
 
 
-def test_calendar_set_rate_series_nothing_reads_rejected(
+def test_calendar_set_rate_series_nothing_reads_warns(
     test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
     """A set_rate row's (series, aux_kind) pair that no scheduled.csv rule
     (or account growth series) ever reads is a silent no-op at run time --
-    its drawn/literal value lands in aux_table but nothing looks it up."""
+    its drawn/literal value lands in aux_table but nothing looks it up. When
+    the series has a file, it's an unused warning, not an error (#92): a
+    mix-in may set a series only the scenarios inheriting from it read."""
     append_calendar_row(
-        date="2027-01-31", kind="set_rate", name="typo_series",
-        series="mutual_fund", amount="30000",
+        date="2027-01-31", kind="set_rate", name="apparel_2027",
+        series="apparel", amount="3%",
         params_json='{"aux_kind": "inflation"}',
     )
-    with pytest.raises(LoadError) as ei:
-        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
     assert any(
-        "set_rate series 'mutual_fund' under aux_kind 'inflation' is never read"
-        in issue
-        for issue in ei.value.issues
+        "set_rate series 'apparel' under aux_kind 'inflation' is never read"
+        in warning
+        for warning in result.unused
     )
+
+
+def test_calendar_set_rate_series_with_no_file_rejected(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """set_rate adjusts an existing series; it doesn't create one. A pair
+    with no series/aux/prices file is an unresolved reference (#204): here a
+    typo, and the wrong aux_kind for a series that does exist."""
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="typo_series",
+        series="mutual_fund", amount="3%",
+        params_json='{"aux_kind": "inflation"}',
+    )
+    append_calendar_row(
+        date="2027-01-31", kind="set_rate", name="wrong_kind",
+        series="Asset_Checking", amount="3%",
+        params_json='{"aux_kind": "inflation"}',
+    )
+    with pytest.raises(LoadError) as raised:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                      allow_dirty_data=True)
+    issues = raised.value.issues
+    assert any("'mutual_fund' under aux_kind 'inflation' doesn't exist" in i for i in issues)
+    assert any("'Asset_Checking' under aux_kind 'inflation' doesn't exist" in i for i in issues)
 
 
 def test_scheduled_percent_of_balance_series_with_no_supplier_rejected(
@@ -1444,7 +1898,7 @@ def test_chain_step_series_with_no_supplier_rejected(
     (engine._chain_step_allocation) -- always aux_kind='inflation', and
     only actually read when maximum is also set. Nothing supplying it would
     otherwise only fail once run, with an opaque 'no aux row' EngineError."""
-    chain_path = retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv"
+    chain_path = retire_alice_csv("chains/source") / "asset_checking_liquidity.csv"
     df = pd.read_csv(chain_path, dtype=str, keep_default_na=False)
     df.loc[0, "maximum"] = "1000.00"
     df.loc[0, "series"] = "no_such_inflation_series"
@@ -1462,14 +1916,312 @@ def test_chain_step_series_with_a_calendar_supplier_loads_cleanly(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
     append_calendar_row: Callable[..., None], intent_dir: Path,
 ) -> None:
-    chain_path = retire_alice_csv("chains") / "asset__asset_checking_liquidity.csv"
+    chain_path = retire_alice_csv("chains/source") / "asset_checking_liquidity.csv"
     df = pd.read_csv(chain_path, dtype=str, keep_default_na=False)
     df.loc[0, "maximum"] = "1000.00"
     df.loc[0, "series"] = "cpi"
     df.to_csv(chain_path, index=False)
     append_calendar_row(
         date="2026-01-31", kind="set_rate", name="cpi_for_chain",
-        series="cpi", amount="30000", params_json='{"aux_kind": "inflation"}',
+        series="cpi", amount="3%", params_json='{"aux_kind": "inflation"}',
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
     assert result.intent_path.exists()
+
+
+# --- #31: vary_median rename, shape, triangular ------------------------------------
+
+
+def test_vary_mean_column_is_rejected_as_renamed(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A calendar.csv still carrying vary_mean must fail loudly: its meaning
+    changed (it's now the truncated median), and the CSV reader would
+    otherwise ignore the unknown column silently."""
+    path = retire_alice_csv("calendar.csv")
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    for col in ("name", "vary_target", "vary_distribution", "vary_mean", "vary_sd"):
+        if col not in df.columns:
+            df[col] = ""
+    df.loc[len(df)] = dict.fromkeys(df.columns, "") | {
+        "date": "2027-02-28", "kind": "set_rate", "series": "Asset_Checking", "amount": "4.5%",
+        "name": "checking_rate_vary", "vary_target": "amount",
+        "vary_distribution": "truncated_normal", "vary_mean": "45000", "vary_sd": "0.5%",
+    }
+    df.to_csv(path, index=False)
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_mean was renamed to vary_median" in issue for issue in ei.value.issues)
+
+
+def test_vary_truncated_normal_shape_loads_and_is_stored(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="4.5%", vary_sd="0.5%", vary_skew="0.5", vary_tailweight="0.8",
+    )
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    try:
+        stored = con.execute(
+            "SELECT vary_median, vary_skew, vary_tailweight FROM calendar_event "
+            "WHERE name = 'checking_rate_vary'"
+        ).fetchone()
+    finally:
+        con.close()
+    assert stored == ("45000", 0.5, 0.8)
+
+
+@pytest.mark.parametrize(("extra", "message"), [
+    ({"vary_skew": "0.5"}, "vary_sd is required"),               # shape needs an explicit sd
+    ({"vary_sd": "0.5%", "vary_tailweight": "0"}, "tailweight must be positive"),
+    ({"vary_sd": "0.5%", "vary_skew": "lots"}, "is not a number"),
+])
+def test_vary_truncated_normal_rejects_bad_shape(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+    extra: dict[str, str], message: str,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="truncated_normal",
+        vary_median="4.5%", vary_low="3%", vary_high="6%", **extra,
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(message in issue for issue in ei.value.issues), ei.value.issues
+
+
+def test_vary_shape_rejected_on_uniform(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="4%", vary_high="5%", vary_skew="0.5",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_skew is not used by uniform" in issue for issue in ei.value.issues)
+
+
+def test_vary_triangular_date_target_loads(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """The three-point estimate for a date: most likely 2030-12-31, no
+    earlier than mid-2030, could slip to the end of 2031."""
+    append_calendar_row(
+        date="2030-12-31", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
+        vary_target="date", vary_distribution="triangular",
+        vary_low="2030-06-30", vary_mode="2030-12-31", vary_high="2031-12-31",
+    )
+    load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+
+
+@pytest.mark.parametrize(("extra", "message"), [
+    ({"vary_low": "4%", "vary_high": "5%", "vary_mode": "6%"}, "vary_mode must lie within"),
+    ({"vary_low": "4%"}, "triangular requires vary_high"),
+    ({"vary_low": "4%", "vary_high": "5%", "vary_sd": "1%"}, "vary_sd is not used by triangular"),
+])
+def test_vary_triangular_rejects_bad_parameters(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+    extra: dict[str, str], message: str,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="set_rate", name="checking_rate_vary",
+        series="Asset_Checking", amount="4.5%",
+        vary_target="amount", vary_distribution="triangular", **extra,
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(message in issue for issue in ei.value.issues), ei.value.issues
+
+
+def test_month_columns_accept_year_month_and_land_on_month_end(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+    append_calendar_row: Callable[..., None], write_aux, intent_dir: Path,
+) -> None:
+    """#34: YYYY-MM works wherever a date names a month, and a full date
+    there is snapped to its month's end."""
+    def edit(name: str, **cells: str) -> None:
+        path = retire_alice_csv(name)
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        for col, value in cells.items():
+            df.loc[0, col] = value
+        df.to_csv(path, index=False)
+
+    edit("scenario.csv", start="2026-05", end="2040-12")
+    edit("scheduled.csv", start="2026-05", base_date="2026-05-15")
+    append_calendar_row(date="2029-03", kind="retire_scheduled", scheduled_name="salary_bill")
+    write_aux("inflation__cpi.csv", "effective_date,annual_rate\n2021-01,1.4%\n")
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    assert con.execute('SELECT start, "end" FROM scenario').fetchone() == ("2026-05-31", "2040-12-31")
+    assert con.execute(
+        "SELECT start, base_date FROM scheduled_transaction WHERE name = 'salary_alice'"
+    ).fetchone() == ("2026-05-31", "2026-05-31")
+    assert ("2029-03-31",) in con.execute(
+        "SELECT date FROM calendar_event WHERE scheduled_name = 'salary_bill'"
+    ).fetchall()
+    assert con.execute(
+        "SELECT effective_date FROM aux_table WHERE kind = 'inflation' AND series = 'cpi'"
+    ).fetchall() == [("2021-01-31",)]
+
+
+def test_month_column_that_is_not_a_month_is_reported(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(date="2029-3", kind="retire_scheduled", scheduled_name="salary_bill")
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("date '2029-3' is not YYYY-MM or YYYY-MM-DD" in issue for issue in ei.value.issues)
+
+
+def test_vary_date_bounds_bare_month_spans_the_month_full_date_is_exact(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """#34: a bare month as a lower bound is its first day, as an upper
+    bound its last, as a mode mid-month; a full date stays exact."""
+    append_calendar_row(
+        date="2029-06", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
+        vary_target="date", vary_distribution="triangular",
+        vary_low="2029-01", vary_mode="2029-06", vary_high="2029-12-10",
+    )
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    assert con.execute(
+        "SELECT date, vary_low, vary_mode, vary_high FROM calendar_event "
+        "WHERE name = 'retire_bill_vary'"
+    ).fetchone() == ("2029-06-30", "2029-01-01", "2029-06-15", "2029-12-10")
+
+
+def test_malformed_month_is_a_load_error_not_a_crash(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A reported bad month value must not reach later loader stages (e.g.
+    the opening-balance derivation's ``int(start[:4])``) as a raw string."""
+    path = retire_alice_csv("scenario.csv")
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df.loc[0, "start"] = "soon"
+    df.to_csv(path, index=False)
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("start 'soon' is not YYYY-MM or YYYY-MM-DD" in issue for issue in ei.value.issues)
+
+
+def _set_scheduled(retire_alice_csv: Callable[[str], Path], name: str, **cells: str) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    for col, value in cells.items():
+        df.loc[df["name"] == name, col] = value
+    df.to_csv(path, index=False)
+
+
+def test_biweekly_dates_keep_their_day(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """A biweekly rule's start is its 14-day anchor and its end clips it, so
+    a full date keeps its day; a bare-month end is still the month's end."""
+    _set_scheduled(retire_alice_csv, "salary_alice",
+                   cadence="biweekly", start="2026-05-15", end="2030-06")
+    _set_scheduled(retire_alice_csv, "salary_bill",
+                   cadence="biweekly", start="2026-05-08", end="2030-06-12")
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    assert dict(
+        (name, (start, end)) for name, start, end in con.execute(
+            'SELECT name, start, "end" FROM scheduled_transaction '
+            "WHERE name IN ('salary_alice', 'salary_bill')"
+        )
+    ) == {
+        "salary_alice": ("2026-05-15", "2030-06-30"),
+        "salary_bill": ("2026-05-08", "2030-06-12"),
+    }
+
+
+def test_biweekly_start_needs_a_full_date(
+    test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    _set_scheduled(retire_alice_csv, "salary_alice", cadence="biweekly", start="2026-05")
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("start '2026-05' needs a full YYYY-MM-DD" in issue for issue in ei.value.issues)
+
+
+def test_retire_scheduled_date_keeps_its_day(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    """It becomes the rule's end, where the day matters (ADR-006 §2)."""
+    append_calendar_row(date="2029-03-12", kind="retire_scheduled", scheduled_name="salary_bill")
+    result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
+                           allow_dirty_data=True)
+    con = sqlite3.connect(result.intent_path)
+    assert ("2029-03-12",) in con.execute(
+        "SELECT date FROM calendar_event WHERE kind = 'retire_scheduled'"
+    ).fetchall()
+
+
+def test_vary_date_bound_rejects_iso_week_date(
+    test_data_dir: Path, append_calendar_row: Callable[..., None], intent_dir: Path,
+) -> None:
+    append_calendar_row(
+        date="2027-02-28", kind="retire_scheduled", name="retire_bill_vary",
+        scheduled_name="salary_bill",
+        vary_target="date", vary_distribution="uniform",
+        vary_low="2029-W01-1", vary_high="2029-12-31",
+    )
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any("vary_low '2029-W01-1' is not a valid" in issue for issue in ei.value.issues)
+
+
+@pytest.mark.parametrize("bad", ["2021-W01-1", "20210104", "1960-03"])
+def test_day_precise_dates_are_strict(
+    bad: str, test_data_dir: Path, retire_alice_csv: Callable[[str], Path], intent_dir: Path,
+) -> None:
+    """birthdate and a lot's acquired keep their day, so they must be a
+    strict YYYY-MM-DD (not a week date, basic format, or bare month)."""
+    persons = pd.read_csv(test_data_dir / "persons.csv", dtype=str, keep_default_na=False)
+    persons.loc[0, "birthdate"] = bad
+    persons.to_csv(test_data_dir / "persons.csv", index=False)
+    values = pd.read_csv(retire_alice_csv("account_lots.csv"), dtype=str, keep_default_na=False)
+    values.loc[0, "acquired"] = bad
+    values.to_csv(retire_alice_csv("account_lots.csv"), index=False)
+    with pytest.raises(LoadError) as ei:
+        load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
+    assert any(f"birthdate '{bad}' is not YYYY-MM-DD" in issue for issue in ei.value.issues)
+    assert any(f"acquired '{bad}' is not YYYY-MM-DD" in issue for issue in ei.value.issues)
+
+
+def test_an_account_defined_by_unrelated_scenarios_gets_a_hint(
+    derive_scenario: Callable[..., Path], load_test_scenario: Callable[[str], Path],
+    prototype_data: Path,
+) -> None:
+    """A mix-in that defines an account its parent scenario also defines
+    replaces the parent's row but adds its lots to the parent's (#233). The
+    error then names each lot's scenario and says why both apply."""
+    accounts = pd.read_csv(prototype_data / "scenarios" / "retire_alice" / "accounts.csv",
+                           dtype=str, keep_default_na=False)
+    lots_header = (prototype_data / "scenarios" / "base" / "account_lots.csv").read_text()
+    derive_scenario("side", "base", files={
+        "accounts.csv": accounts[accounts["name"] == "Asset_Brokerage_Joint"].to_csv(index=False),
+        "account_lots.csv": lots_header + "Asset_Brokerage_Joint,side_lot,,,,,,100.00,100.00,"
+                                          "100.00,,,,,,,,\n",
+    })
+    derive_scenario("both", "retire_alice:side")
+    with pytest.raises(LoadError) as raised:
+        load_test_scenario("both")
+    issues = raised.value.issues
+    assert any("set on side_lot (scenarios/side/account_lots.csv line 2), but not on "
+               "default (scenarios/retire_alice/account_lots.csv line 4)" in i for i in issues)
+    assert ("(Asset_Brokerage_Joint): the account is defined in both retire_alice and side, "
+            "which doesn't build on retire_alice") in "\n".join(issues)

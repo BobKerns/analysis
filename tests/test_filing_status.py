@@ -11,7 +11,7 @@ import pytest
 from analysis.sim.engine import EngineError, _active_filing_status, run_scenario
 from analysis.sim.loader import LoadResult
 
-TAXPAYERS = {"alice", "bob"}
+TAXPAYERS = {"alice", "bill"}
 
 
 def _aux(status: str = "MFJ") -> dict:
@@ -41,7 +41,7 @@ def test_only_taxpayers_count_and_only_joint_or_separate_filers_change() -> None
     for base, expected in (("MFJ", "Single"), ("MFS", "Single"), ("Single", "Single")):
         assert _active_filing_status(
             _aux(base), "filing_status", 2035, 1,
-            person_lifespan={"bob": "2030-01-01"}, taxpayers=TAXPAYERS,
+            person_lifespan={"bill": "2030-01-01"}, taxpayers=TAXPAYERS,
         ) == expected
 
 
@@ -49,7 +49,7 @@ def test_no_filing_status_row_is_an_error_unless_a_taxpayer_died() -> None:
     with pytest.raises(EngineError, match="no filing_status row"):
         _active_filing_status({}, "filing_status", 2030, 1, taxpayers=TAXPAYERS)
     assert _active_filing_status(
-        {}, "filing_status", 2035, 1, person_lifespan={"bob": "2030-01-01"}, taxpayers=TAXPAYERS,
+        {}, "filing_status", 2035, 1, person_lifespan={"bill": "2030-01-01"}, taxpayers=TAXPAYERS,
     ) == "Single"
 
 
@@ -67,7 +67,7 @@ def test_the_standard_deduction_switches_after_the_year_of_death(
     scenario_df.loc[0, "end"] = "2031-12-31"
     scenario_df.to_csv(scenario_csv, index=False)
 
-    retire_alice_csv("lifespan.csv").write_text("person,final_month\nalice,2028-06-01\n")
+    retire_alice_csv("lifespan.csv").write_text("person,age_at_death\nalice,63.25\n")
     scheduled = retire_alice_csv("scheduled.csv")
 
     df = pd.read_csv(scheduled, dtype=str, keep_default_na=False)

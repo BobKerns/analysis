@@ -10,7 +10,10 @@ default (a scenario testing a different assumption can override one file — see
 Security prices live in `prices/` next door instead (shared, like this folder);
 see `prices/README.md`. Growth-rate and inflation series are different: they are
 per-scenario projections, so each scenario has its own `series/` folder (no
-shared default here) — see "Per-scenario overrides" below.
+shared default here) — see "Per-scenario overrides" below. The prototype's root
+scenario, `base`, ships a default for each inflation series and fund
+asset class in its own `series/`, which every scenario derived from it inherits
+(CPI stays here, in `aux/inflation__cpi.csv`); see "The prototype's defaults" in `docs/guides/historical-calibration.md`.
 
 ## How a row is used
 
@@ -26,11 +29,12 @@ values; future months pick up the new ones.
 ## Units (same as everywhere else in the data repo)
 
 - **Money** is decimal **dollars**: `$31,500.00` → `31500.00`.
-- **Rates** are integer **micros** (millionths): `10%` → `100000`,
-  `9.3%` → `93000`, `3.0%` → `30000`.
+- **Rates** are **percents**, with the `%` sign required: `10%`, `9.3%`.
+- **Factors** (`rmd_factors.csv`) are plain numbers: `26.5`.
 - **Dates** are `YYYY-MM-DD`, conventionally month-end (`2026-01-31`).
 
-The column-name suffix (`_micros`) marks rate/factor columns; money columns are plain (decimal dollars).
+The loader converts these to integer cents and micros; nothing past it sees
+dollars or percents.
 
 ## Filename pattern
 
@@ -60,6 +64,7 @@ shared default ([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-sch
 | `federal_brackets.csv` | US federal ordinary-income tax brackets. One row per (effective_date, filing_status, bracket_index). |
 | `state_brackets__<state>.csv` | State ordinary-income tax brackets. Same columns as federal. |
 | `standard_deduction.csv` | Federal standard deduction by filing status. |
+| `state_standard_deduction__<state>.csv` | The state's own standard deduction by filing status, for a state `tax_accumulator` rule, keyed by state like `state_brackets__<state>.csv`. `__CA` holds California's figures, from the same year as its brackets. Without one for the brackets' state, a state rule uses `standard_deduction.csv`'s federal figure, which for most states is far too high, and loading warns. |
 | `federal_deductions.csv` / `state_deductions.csv` | Optional, dated itemized-deduction totals (no filing-status split). If present, the `tax_accumulator` rule uses whichever is greater, this or the standard deduction. `amount` can be `@name` (an itemizations/ rollup); a big one-off medical year is the motivating case. `state_deductions.csv` falls back to `federal_deductions.csv`'s figure if the scenario has no `state_deductions.csv` at all -- most states never need their own file. |
 | `filing_status.csv` | The set of filing-status codes valid on each effective date (acts as an enum table). |
 | `ss_taxation_thresholds.csv` | Provisional-income thresholds for Social Security benefit taxation (50% tier and 85% tier). These are **not** indexed for inflation — they have stayed at the 1984/1993 amounts. Leave alone unless Congress changes them. |
@@ -67,6 +72,8 @@ shared default ([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-sch
 | `rmd_factors.csv` | IRS Uniform Lifetime Table divisors used to compute Required Minimum Distributions. One row per (effective_date, age). |
 | `rmd_start_age.csv` | First age at which an RMD is required (currently 73; rises to 75 in 2033 under SECURE 2.0). |
 | `ltcg_brackets.csv` | Federal long-term capital gain brackets — see "Long-term capital gain rates" below. |
+| `life_table.csv` | SSA's period life table: `q_female` and `q_male`, the chance of dying before the next birthday at each age 0–119. Read only by a lifespan with `vary_distribution` `life_table`, which draws the age at death from it around the median you give. Refresh it from a newer Trustees Report with `scripts/extract_ssa_life_table.py`, keeping the old rows: each vintage is dated December of its year. |
+| `capital_loss_limit.csv` | How much of a year's net capital loss offsets ordinary income, by filing status (IRC §1211(b)): $3,000, or $1,500 married filing separately, not inflation-indexed. The rest carries forward to later years. |
 
 ### Filing status codes
 

@@ -14,6 +14,7 @@ on as notebook/CLI needs grow.
 from __future__ import annotations
 
 from abc import abstractmethod
+import json
 import sqlite3
 import tempfile
 import threading
@@ -21,16 +22,18 @@ import warnings
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, overload
 
 import pandas as pd
 import traitlets
 
+from analysis.frames import index_years
 from analysis.sim import accounts
-from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, ItemType
+from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, DollarMode, ItemType
 
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
+from .schema import connect_sim_file
 
 # Category-bucketing defaults for RunConnection's derived-data methods below.
 # Notebooks may pass their own mapping/set to override any of these.
@@ -50,13 +53,15 @@ EXPENSE_SUBKIND_TO_CATEGORY: dict[str, str] = {
     "taxes_state": "taxes",
     "living": "living",
     "food": "living",
+    "business": "business",
 }
-EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "other"]
+EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "business", "other"]
 # depreciation is a book entry, not spending -- see ADR-002 gains/losses.
 NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 
-LIQUID_SUBKINDS = {"cash"}
-TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "stcg", "tax_deferred_out"}  # ss_benefit handled separately
+LIQUID_SUBKINDS = registries.CASH_SUBKINDS
+# ss_benefit is handled separately
+TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "stcg", "tax_deferred_out", "roth_nonqualified"}
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
@@ -85,19 +90,41 @@ _TAX_RECONCILIATION_RENAME = {
 }
 
 
+@overload
+def year_end_values(frame: pd.DataFrame) -> pd.DataFrame: ...
+@overload
+def year_end_values(frame: pd.Series) -> pd.Series: ...
 def year_end_values(frame: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
     """Last row of each calendar year from a month-indexed frame/series.
 
     Re-indexed by year (int).
     """
-    year_end = frame.groupby(frame.index.year).tail(1)
-    year_end.index = year_end.index.year
+    year_end = frame.groupby(index_years(frame)).tail(1)
+    year_end.index = index_years(year_end)
     return year_end
+
+
+def event_month(events: pd.DataFrame) -> pd.Series:
+    """The month end of each transfer event's own date. Not its step's month:
+    a year-to-date catch-up posts in the first step but is dated before the
+    scenario starts, a prior year's one at that year's Dec 31."""
+    return pd.to_datetime(events["date"]) + pd.offsets.MonthEnd(0)
+
+
+def _cpi_factor(index: pd.Series, at: pd.Index):
+    """``1e6 / index`` at each of ``at``, clamped to ``index``'s first and last
+    entries: CPI-constant dollars for a period outside the run use its
+    nearest one."""
+    index = index.dropna()
+    if index.empty:
+        return pd.Series(float("nan"), index=at)
+    lookup = pd.Series(at).clip(index.index.min(), index.index.max())
+    return pd.Series(1_000_000 / index.reindex(lookup).to_numpy(), index=at)
 
 
 def yearly_totals(monthly: pd.DataFrame) -> pd.DataFrame:
     """Sum a month-indexed frame (e.g. from ``income_by_category``) by calendar year."""
-    yearly = monthly.groupby(monthly.index.year).sum()
+    yearly = monthly.groupby(index_years(monthly)).sum()
     yearly.index.name = "year"
     return yearly
 
@@ -180,7 +207,7 @@ _ITEM_SQL: dict[str, str] = {
         "SELECT c.*, a.name AS account_name, a.kind AS account_kind, m.lot AS lot "
         "FROM chain c "
         "LEFT JOIN account a ON a.id = c.account_id "
-        "LEFT JOIN account_model_member m ON m.id = c.lot_id "
+        "LEFT JOIN account_lot m ON m.id = c.lot_id "
         "ORDER BY c.id"
     ),
     "chain_steps": (
@@ -214,8 +241,8 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN simulation_step s ON s.id = te.step_id "
         "JOIN account fa ON fa.id = te.from_account "
         "JOIN account ta ON ta.id = te.to_account "
-        "JOIN account_model_member fm ON fm.id = te.from_lot_id "
-        "JOIN account_model_member tm ON tm.id = te.to_lot_id "
+        "JOIN account_lot fm ON fm.id = te.from_lot_id "
+        "JOIN account_lot tm ON tm.id = te.to_lot_id "
         "LEFT JOIN scheduled_transaction rule "
         "  ON te.reason_kind = 'rule' AND rule.id = te.reason_id "
         "ORDER BY te.id"
@@ -230,11 +257,19 @@ _ITEM_SQL: dict[str, str] = {
         "       ta.name AS to_name, tm.lot AS to_lot "
         "FROM year_to_date y "
         "JOIN account fa ON fa.id = y.from_account "
-        "JOIN account_model_member fm ON fm.id = y.from_lot_id "
+        "JOIN account_lot fm ON fm.id = y.from_lot_id "
         "JOIN account ta ON ta.id = y.to_account "
-        "JOIN account_model_member tm ON tm.id = y.to_lot_id"
+        "JOIN account_lot tm ON tm.id = y.to_lot_id"
     ),
     "tax_year_summary": "SELECT * FROM tax_year_summary ORDER BY year, bucket",
+    "capital_loss": (
+        "SELECT cl.*, s.month, a.name AS account, m.lot "
+        "FROM capital_loss cl "
+        "JOIN simulation_step s ON s.id = cl.step_id "
+        "JOIN account_lot m ON m.id = cl.lot_id "
+        "JOIN account a ON a.id = m.account_id "
+        "ORDER BY cl.id"
+    ),
     "account_balance": (
         "SELECT s.month, a.id AS account_id, a.name AS account, "
         "       a.kind, a.subkind, ast.balance "
@@ -244,9 +279,9 @@ _ITEM_SQL: dict[str, str] = {
         "ORDER BY s.month, a.name"
     ),
     "lot_balance": "SELECT * FROM balance_by_lot ORDER BY month, account, lot_id",
-    "account_model_member": (
+    "account_lot": (
         "SELECT a.name AS account, m.lot, m.symbol, m.acquired, m.quantity_micros, "
-        "       m.series, a.kind, a.subkind, a.tax_treatment, "
+        "       m.series, a.kind, a.subkind, m.subkind AS lot_subkind, m.tax_treatment, "
         "       m.opening_balance, m.opening_cost_basis, "
         "       m.prior_year_end_balance, "
         "       m.minimum_balance_cents, m.maximum_balance_cents, "
@@ -255,14 +290,14 @@ _ITEM_SQL: dict[str, str] = {
         "         AS refill_chain, rm.lot AS refill_lot, "
         "       CASE WHEN oc.account_id IS NULL THEN oc.name ELSE oa.name END "
         "         AS overflow_chain, om.lot AS overflow_lot "
-        "FROM account_model_member m "
+        "FROM account_lot m "
         "JOIN account a ON a.id = m.account_id "
         "LEFT JOIN chain rc ON rc.id = m.refill_chain_id "
         "LEFT JOIN account ra ON ra.id = rc.account_id "
-        "LEFT JOIN account_model_member rm ON rm.id = rc.lot_id "
+        "LEFT JOIN account_lot rm ON rm.id = rc.lot_id "
         "LEFT JOIN chain oc ON oc.id = m.overflow_chain_id "
         "LEFT JOIN account oa ON oa.id = oc.account_id "
-        "LEFT JOIN account_model_member om ON om.id = oc.lot_id "
+        "LEFT JOIN account_lot om ON om.id = oc.lot_id "
         "ORDER BY a.name, m.id"
     ),
     "aux_table": "SELECT * FROM aux_table ORDER BY kind, series, effective_date",
@@ -304,7 +339,7 @@ class _TagReader:
         """``pd.read_sql_query`` against ``self._con``, falling back to a
         temporary same-file connection if called from a different thread."""
         try:
-            return pd.read_sql_query(sql, self._con, params=params)
+            return pd.read_sql_query(sql, self._con, params=list(params))
         except sqlite3.ProgrammingError as exc:
             if "same thread" not in str(exc):
                 raise
@@ -317,9 +352,9 @@ class _TagReader:
                 "the connection; using a temporary read-only connection",
                 RuntimeWarning, stacklevel=2,
             )
-            temp = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+            temp = connect_sim_file(f"file:{self._db_path}?mode=ro", uri=True)
             try:
-                return pd.read_sql_query(sql, temp, params=params)
+                return pd.read_sql_query(sql, temp, params=list(params))
             finally:
                 temp.close()
 
@@ -474,7 +509,7 @@ class Connection(_TagReader):
     @property
     def name(self) -> str:
         """The name of the connection."""
-        pass
+        raise NotImplementedError
 
     @property
     @abstractmethod
@@ -530,14 +565,16 @@ class RunConnection(Connection):
     def label(self) -> str:
         return f"{self.name}@{self.date.strftime('%Y-%m-%d %H:%M')}"
 
-    _scenario_owned: bool = False
-    """Whether this run connection owns the scenario connection, and should close it."""
-    _scenario: ScenarioConnection
+    _scenario: ScenarioConnection | None
     @property
     def scenario(self) -> ScenarioConnection:
         if self._scenario is None:
-            self._scenario = next(open_scenario(self._data_dir, self._scenario_name))
-            self._scenario_owned = True
+            # A run file doesn't record its data repo, so there is no
+            # scenario to open here; open_run() supplies one.
+            raise RuntimeError(
+                f"run {self.run_path} was opened without its scenario; use open_run() "
+                "or pass a ScenarioConnection"
+            )
         return self._scenario
 
     _scenario_name: str | None
@@ -561,7 +598,7 @@ class RunConnection(Connection):
             self._scenario = scenario
 
         self.run_path = Path(run_path)
-        self._con = sqlite3.connect(self.run_path)
+        self._con = connect_sim_file(self.run_path)
         self._con.row_factory = sqlite3.Row
 
     @property
@@ -570,8 +607,6 @@ class RunConnection(Connection):
 
     def close(self) -> None:
         self._con.close()
-        if self._scenario_owned and self._scenario is not None:
-            self._scenario.close()
 
     def __enter__(self) -> RunConnection:
         return self
@@ -597,6 +632,100 @@ class RunConnection(Connection):
 
         return self._cached("net_worth_frame", _build)
 
+    def after_tax_net_worth_frame(self) -> pd.DataFrame:
+        """Month-indexed after-tax net worth (#251), ``nominal`` and
+        ``cpi_constant``, in dollars, with the two deductions from net worth:
+        ``deferred_tax``, the tax still owed on traditional balances and (unless
+        the scenario's ``after_tax`` says ``step_up``) on taxable lots'
+        unrealized gains, at each year's drawdown rate from the engine; and
+        ``unpaid_tax``, a finished year's balance due until its April payment.
+        """
+
+        def _build() -> pd.DataFrame:
+            nw = self.net_worth_frame()
+            months = nw.index
+            base = self._drawdown_base_by_month().reindex(months, fill_value=0)
+            rates = self._drawdown_rate_by_year()
+            years = pd.Index(index_years(nw))
+            # A year with no rate computed (no tax rule in force) takes off
+            # nothing, rather than an earlier year's rate.
+            rate = rates.reindex(years).fillna(0.0).to_numpy() if len(rates) else 0.0
+            frame = pd.DataFrame(index=months)
+            frame["deferred_tax"] = base * rate
+            frame["unpaid_tax"] = self._unpaid_tax_by_month(months)
+            frame["nominal"] = nw["nominal"] - frame["deferred_tax"] - frame["unpaid_tax"]
+            frame["cpi_constant"] = self.to_cpi_constant(frame["nominal"]).where(
+                nw["cpi_constant"].notna())
+            return frame
+
+        return self._cached("after_tax_net_worth_frame", _build)
+
+    def net_worth_series(self, mode: DollarMode = DollarMode.NOMINAL, *,
+                         after_tax: bool = False) -> pd.Series:
+        """Month-indexed net worth in ``mode`` dollars, after tax with
+        ``after_tax`` (#251)."""
+        column = "cpi_constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        frame = self.after_tax_net_worth_frame() if after_tax else self.net_worth_frame()
+        return frame[column]
+
+    def _drawdown_base_by_month(self) -> pd.Series:
+        """Each month's money an after-tax drawdown taxes, as the engine's
+        ``_drawdown_tax`` counts it at a year-end, in dollars."""
+        step_up = bool((self.scenario_meta().get("after_tax") or {}).get("step_up"))
+        df = self._read_sql(
+            "SELECT s.month, m.tax_treatment, a.subkind, ls.balance, ls.cost_basis "
+            "FROM lot_state ls JOIN simulation_step s ON s.id = ls.step_id "
+            "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
+            "WHERE a.kind = 'asset' AND (m.tax_treatment = 'tax_deferred' "
+            "  OR (m.tax_treatment = 'taxable' AND ls.cost_basis IS NOT NULL))"
+        )
+        deferred = df["tax_treatment"] == "tax_deferred"
+        gain = ~deferred & ~df["subkind"].isin(registries.CASH_SUBKINDS)
+        if step_up:
+            gain = gain & False
+        df["base"] = (df["balance"].clip(lower=0).where(deferred, 0)
+                      + (df["balance"] - df["cost_basis"]).clip(lower=0).where(gain, 0))
+        base = df.groupby("month")["base"].sum() / 100
+        base.index = pd.to_datetime(base.index)
+        return base
+
+    def _drawdown_rate_by_year(self) -> pd.Series:
+        """Each computed year's extra drawdown tax (federal plus state) over
+        the money it taxes."""
+        summary = self.items("tax_year_summary").pivot_table(
+            index="year", columns="bucket", values="amount", aggfunc="sum")
+        tax_columns = [c for c in summary.columns if str(c).endswith("_drawdown_tax")]
+        base_columns = [c for c in summary.columns if str(c).endswith("_drawdown_base")]
+        if not tax_columns:
+            return pd.Series(dtype=float)
+        base = summary[base_columns].max(axis=1)
+        return (summary[tax_columns].sum(axis=1) / base.where(base > 0)).fillna(0.0)
+
+    def _unpaid_tax_by_month(self, months: pd.Index) -> pd.Series:
+        """A finished tax year's balance due, from its year-end until the
+        month its payment posts (the April after), in dollars."""
+        due = self.outstanding_tax_by_year()
+        unpaid = pd.Series(0.0, index=months)
+        if due.empty:
+            return unpaid
+        # Only a tax rule's payment settles the year: other rows can carry an
+        # earlier tax_year too (a next-spring IRA contribution, say).
+        paid = self._read_sql(
+            "SELECT tax_year, MIN(date) AS date FROM transfer_event "
+            "WHERE tax_year IS NOT NULL AND CAST(substr(date, 1, 4) AS INTEGER) > tax_year "
+            "  AND reason_kind = 'rule' AND reason_id IN ("
+            "    SELECT id FROM scheduled_transaction WHERE amount_rule_kind = 'tax_accumulator') "
+            "GROUP BY tax_year"
+        )
+        settled = dict(zip(paid["tax_year"].astype(int),
+                           pd.to_datetime(paid["date"]) + pd.offsets.MonthEnd(0), strict=True))
+        for year, amount in due[due > 0].items():
+            start = pd.Timestamp(f"{int(year)}-12-31")
+            end = settled.get(int(year))
+            owed = (months >= start) & ((months < end) if end is not None else True)
+            unpaid[owed] += amount
+        return unpaid
+
     def cpi_index(self) -> pd.Series:
         """Month-indexed cumulative CPI index (micros), for CPI-constant conversion."""
         return self._cached(
@@ -604,15 +733,20 @@ class RunConnection(Connection):
         )
 
     def to_cpi_constant(self, monthly: pd.DataFrame | pd.Series):
-        """Convert a month-indexed dollar series/frame to this run's CPI-constant dollars."""
-        factor = 1_000_000 / self.cpi_index().reindex(monthly.index)
-        return monthly.mul(factor, axis=0)
+        """Convert a month-indexed dollar series/frame to this run's CPI-constant dollars.
+
+        A month before the run's first (a year-to-date catch-up dated before
+        the scenario starts) takes the first month's CPI, and one after its
+        last the last's: the run has no index for them.
+        """
+        return monthly.mul(_cpi_factor(self.cpi_index(), monthly.index), axis=0)
 
     def to_cpi_constant_annual(self, yearly: pd.DataFrame | pd.Series):
-        """Convert a year-indexed dollar series/frame using each year's year-end CPI."""
+        """Convert a year-indexed dollar series/frame using each year's year-end CPI,
+        the first or last year's for a year outside the run."""
         cpi = self.cpi_index()
-        year_end_index = cpi.groupby(cpi.index.year).last()
-        return yearly.mul(1_000_000 / year_end_index.reindex(yearly.index), axis=0)
+        year_end_index = cpi.groupby(index_years(cpi)).last()
+        return yearly.mul(_cpi_factor(year_end_index, yearly.index), axis=0)
 
     def account_kinds(self) -> pd.Series:
         """Account name -> kind, from this run's account-balance history."""
@@ -667,6 +801,88 @@ class RunConnection(Connection):
         monthly_flows = balances.diff().fillna(balances)
         return self.to_cpi_constant(monthly_flows).cumsum()
 
+    def account_balance(self, account: str, mode: DollarMode = DollarMode.NOMINAL) -> pd.Series:
+        """One account's month-indexed balance in dollars, signed and
+        converted as ``balance_pivot``/``cpi_balance_pivot`` would show it,
+        read with its own query rather than the whole ``account_balance``
+        table: an ensemble reads one account from hundreds of member files
+        (#163). Empty when this run has no such account."""
+        df = self._read_sql(
+            "SELECT s.month, a.kind, ast.balance "
+            "FROM account_state ast "
+            "JOIN simulation_step s ON s.id = ast.step_id "
+            "JOIN account a         ON a.id = ast.account_id "
+            "WHERE a.name = ? ORDER BY s.month",
+            (account,),
+        )
+        balance = pd.Series(
+            df["balance"].to_numpy() / 100, index=pd.to_datetime(df["month"]), name=account,
+        )
+        kind = df["kind"].iloc[0] if len(df) else None
+        if kind == "income":
+            balance = -balance
+        if mode != DollarMode.CPI_CONSTANT or balance.empty:
+            return balance
+        if kind not in accounts.CASHFLOW_KINDS:
+            return self.to_cpi_constant(balance)
+        return self.to_cpi_constant(balance.diff().fillna(balance)).cumsum()
+
+    def lot_balance(
+        self, account: str, lot: str, mode: DollarMode = DollarMode.NOMINAL,
+    ) -> pd.Series:
+        """One lot's month-indexed balance in dollars, like ``account_balance``
+        for one of the account's lots (#170): its own query, so an ensemble
+        reads one lot cheaply from every member. Empty when this run has no
+        such lot."""
+        df = self._read_sql(
+            "SELECT month, balance FROM balance_by_lot "
+            "WHERE account = ? AND lot = ? ORDER BY month",
+            (account, lot),
+        )
+        balance = pd.Series(
+            df["balance"].to_numpy() / 100, index=pd.to_datetime(df["month"]),
+            name=f"{account}/{lot}",
+        )
+        if mode != DollarMode.CPI_CONSTANT or balance.empty:
+            return balance
+        return self.to_cpi_constant(balance)
+
+    def lots_by_account(self, *, single: bool = False) -> dict[str, list[str]]:
+        """Account name -> its lot labels in definition order, for the asset
+        and liability accounts that have more than one lot: the ones a lot
+        picker can drill into (#170). Income and expense accounts are flows,
+        tracked as a single lot. ``single`` keeps single-lot accounts too,
+        for a union across runs: an account split into lots in one run may
+        have one lot of its own in another."""
+
+        def _build() -> dict[str, list[str]]:
+            df = self._read_sql(
+                "SELECT a.name AS account, m.lot FROM account_lot m "
+                "JOIN account a ON a.id = m.account_id "
+                "WHERE a.kind IN ('asset', 'liability') ORDER BY a.name, m.id"
+            )
+            lots = df.groupby("account", sort=True)["lot"].agg(list)
+            return {account: names for account, names in lots.items()
+                    if single or len(names) > 1}
+
+        return self._cached(f"lots_by_account_{single}", _build)
+
+    def ensemble_member(self) -> tuple[int, int | None] | None:
+        """``(member_index, seed)`` from this run's ``ensemble_manifest``, or
+        None for a run that isn't an ensemble member."""
+        row = self._read_sql("SELECT member_index, seed FROM ensemble_manifest")
+        if row.empty:
+            return None
+        seed = row["seed"].iloc[0]
+        return int(row["member_index"].iloc[0]), None if pd.isna(seed) else int(seed)
+
+    def scenario_meta(self) -> dict[str, Any]:
+        """The run's merged ``scenario.meta_json`` (ADR-003 §4.5)."""
+        row = self._read_sql("SELECT meta_json FROM scenario")
+        if row.empty or not row["meta_json"].iloc[0]:
+            return {}
+        return json.loads(row["meta_json"].iloc[0])
+
     LOT_MEASURES = ("balance", "cost_basis", "quantity")
 
     def lot_balance_pivot(self, measure: str = "balance") -> pd.DataFrame:
@@ -708,7 +924,7 @@ class RunConnection(Connection):
 
         def _build() -> pd.DataFrame:
             xfer = self.items("transfer_event", from_kind="income").copy()
-            xfer["month"] = pd.to_datetime(xfer["month"])
+            xfer["month"] = event_month(xfer)
             xfer["category"] = xfer["from_subkind"].map(subkind_to_category).fillna("other")
             income = (
                 xfer.groupby(["month", "category"])["amount"].sum()
@@ -731,7 +947,7 @@ class RunConnection(Connection):
         def _build() -> pd.DataFrame:
             xfer_exp = self.items("transfer_event", to_kind="expense").copy()
             xfer_exp = xfer_exp[~xfer_exp["to_name"].isin(non_cash_accounts)]
-            xfer_exp["month"] = pd.to_datetime(xfer_exp["month"])
+            xfer_exp["month"] = event_month(xfer_exp)
             xfer_exp["category"] = (
                 xfer_exp["to_subkind"].map(subkind_to_category).fillna("other")
             )
@@ -759,7 +975,9 @@ class RunConnection(Connection):
             gains = self.items("transfer_event")
             gains = gains[gains["reason_kind"] != "initial"].copy()
             gains["month"] = pd.to_datetime(gains["month"])
-            gains["year"] = gains["month"].dt.year
+            # The event's own date, not its step: a prior year's year-to-date
+            # row posts in the first step but belongs to that year.
+            gains["year"] = pd.to_datetime(gains["date"]).dt.year
 
             reaches_cash = gains["to_subkind"].isin(LIQUID_SUBKINDS)
             is_unrealized = (gains["from_kind"] == "income") & ~reaches_cash
@@ -902,9 +1120,9 @@ class RunConnection(Connection):
 
         return self._cached("ss_gross_by_month", _build)
 
-    def metadata(self) -> pd.Series:
+    def metadata(self) -> pd.DataFrame:
         """Return basic metadata about the run, including its name and path."""
-        def _build() -> pd.Series:
+        def _build() -> pd.DataFrame:
             meta = self.items("simulation_run")
             return meta
         return self._cached("metadata", _build)
@@ -913,8 +1131,8 @@ class RunConnection(Connection):
 @contextmanager
 def open_run(run_path: Path | str,
              scenario: ScenarioConnection | str | None = None,
-             scenarios_dir: Path | str = None,
-             data_dir: Path | str = None) -> Generator[RunConnection]:
+             scenarios_dir: Path | str | None = None,
+             data_dir: Path | str | None = None) -> Generator[RunConnection]:
     data_dir = Path(data_dir or Path(run_path).parent).resolve()
     if scenarios_dir is None:
         scenarios_dir = data_dir / "scenarios"
@@ -1018,8 +1236,7 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
                  runs_dir: Path | str | None = None,
                  run_path: Path | str | None = None) -> None:
         self._data_dir = Path(data_dir).resolve()
-        scenarios_dir = scenarios_dir or (self.data_dir / "scenarios")  # type: ignore[assignment]
-        self.scenarios_dir = Path(scenarios_dir).resolve()
+        self.scenarios_dir = Path(scenarios_dir or (self.data_dir / "scenarios")).resolve()
         self.ref = resolve_scenario_name(self.data_dir, scenario,
                                          scenarios_dir=self.scenarios_dir,
                                          intent_dir=intent_dir,
@@ -1031,22 +1248,23 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         if intent_dir is None:
             intent_dir = Path(self._tmp.name)
         self._intent_dir = Path(intent_dir).resolve()
-        self._con: sqlite3.Connection | None = None  # type: ignore[assignment]
         self._dirty = False
         self._reload()
 
     # -- lifecycle --
 
     def _reload(self) -> None:
-        if self._con is not None:
-            self._con.close()
+        # Unset until the first load, and again once closed.
+        old = getattr(self, "_con", None)
+        if old is not None:
+            old.close()
         load_scenario(
             self.data_dir, self._scenario_name,
             intent_dir=self._intent_dir,
             scenarios_dir=self.scenarios_dir,
             compute_stamps=False, allow_dirty_data=True,
         )
-        con = sqlite3.connect(self._intent_dir / f"{self._scenario_name}.sqlite3")
+        con = connect_sim_file(self._intent_dir / f"{self._scenario_name}.sqlite3")
         con.row_factory = sqlite3.Row
         self._con = con
         self._invalidate_items_cache()
@@ -1061,9 +1279,10 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         return self._intent_dir / f"{self._scenario_name}.sqlite3"
 
     def close(self) -> None:
-        if self._con is not None:
-            self._con.close()
-            self._con = None  # type: ignore[assignment]
+        con = getattr(self, "_con", None)
+        if con is not None:
+            con.close()
+            del self._con  # closed: any later use is an AttributeError
         self._tmp.cleanup()
 
     def __enter__(self) -> ScenarioConnection:
@@ -1162,6 +1381,7 @@ __all__ = [
     "ItemType",
     "RunConnection",
     "ScenarioConnection",
+    "Connection",
     "open_run",
     "open_scenario",
 ]

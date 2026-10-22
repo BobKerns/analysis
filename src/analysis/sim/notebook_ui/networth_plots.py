@@ -9,7 +9,7 @@ from __future__ import annotations
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
 import pandas as pd
-from IPython.display import Markdown, clear_output, display
+from IPython.display import clear_output, display
 
 from analysis.sim.plotting import FRAME_ALPHA
 from analysis.sim.connection import (
@@ -19,47 +19,70 @@ from analysis.sim.connection import (
     year_end_values,
     yearly_totals,
 )
-from analysis.sim.notebook_ui.pickers import DollarModePicker
+from analysis.sim.notebook_ui.pickers import (
+    AfterTaxPicker, DollarModePicker, TimeRangePicker, controls_row, observe_while_shown, run_years,
+)
 from analysis.sim.types import INCOME_CATEGORIES, DollarMode
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 
-def net_worth_widget(rc: RunConnection, **_) -> widgets.VBox:
-    """Year-end table + monthly chart of net worth (nominal and CPI-constant)."""
-
-    nw = rc.net_worth_frame()
-    year_end = year_end_values(nw[["nominal", "cpi_constant"]])
-    year_end.index.name = "year"
+def net_worth_widget(rc: RunConnection,
+                    *, member: int = 0,
+                    time_range: TimeRangePicker | None = None,
+                    after_tax: AfterTaxPicker | None = None,
+                    **_) -> widgets.VBox:
+    """Year-end table + monthly chart of net worth (nominal and CPI-constant),
+    pre-tax or after tax (#251); after tax, the table also shows the
+    deferred and unpaid tax taken off."""
+    time_range = time_range or TimeRangePicker()
+    after_tax = after_tax or AfterTaxPicker()
+    time_range.cover(run_years(rc))
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
 
-    with chart_out:
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(nw.index, nw["nominal"], label="nominal")
-        if nw["cpi_constant"].notna().any():
-            ax.plot(nw.index, nw["cpi_constant"], label="CPI-constant", linestyle="--")
-        ax.set_ylim(bottom=0)
-        ax.set_title(f"Net worth ({rc.label})")
-        ax.set_xlabel("month")
-        ax.set_ylabel("USD")
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-        ax.grid(True, axis="y", alpha=0.3)
-        ax.legend(framealpha=FRAME_ALPHA)
-        plt.xticks(rotation=90)
-        plt.show()
-
+    def _redraw(*_):
+        taxed = after_tax.value
+        nw = time_range.clip(
+            rc.after_tax_net_worth_frame() if taxed else rc.net_worth_frame())
+        columns = ["nominal", "cpi_constant", *(["deferred_tax", "unpaid_tax"] if taxed else [])]
+        year_end = year_end_values(nw[columns])
+        year_end.index.name = "year"
+        with chart_out:
+            clear_output(wait=True)
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.plot(nw.index, nw["nominal"], label="nominal")
+            if nw["cpi_constant"].notna().any():
+                ax.plot(nw.index, nw["cpi_constant"], label="CPI-constant", linestyle="--")
+            ax.set_ylim(bottom=0)
+            suffix = "" if member == 0 else f"#{member}"
+            ax.set_title(f"{'After-tax net' if taxed else 'Net'} worth ({rc.label}{suffix})")
+            ax.set_xlabel("month")
+            ax.set_ylabel("USD")
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
+            ax.grid(True, axis="y", alpha=0.3)
+            ax.legend(framealpha=FRAME_ALPHA)
+            plt.xticks(rotation=90)
+            plt.show()
         with table_out:
             clear_output(wait=True)
-            display(year_end.style.format({"nominal": "${:,.0f}", "cpi_constant": "${:,.0f}"}))
+            display(year_end.style.format("${:,.0f}"))
 
-    return widgets.VBox([chart_out, table_out])
+    observe_while_shown(time_range, _redraw)
+    observe_while_shown(after_tax, _redraw)
+    _redraw()
+
+    return widgets.VBox([controls_row(after_tax, time_range), chart_out, table_out])
 
 
 def income_widget(rc: RunConnection,
                   dollar_mode: DollarModePicker | None = None,
+                  time_range: TimeRangePicker | None = None, **_,
                   ) -> widgets.VBox:
     """Yearly income table + a nominal/CPI-constant stacked bar chart, by category."""
     dollar_mode = dollar_mode or DollarModePicker()
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
@@ -73,7 +96,7 @@ def income_widget(rc: RunConnection,
             rc.to_cpi_constant(income) if mode == DollarMode.CPI_CONSTANT
             else income
         )
-        income_yearly = yearly_totals(income_based)
+        income_yearly = time_range.clip(yearly_totals(income_based))
 
         chart = income_yearly
         with chart_out:
@@ -94,10 +117,11 @@ def income_widget(rc: RunConnection,
             clear_output(wait=True)
             display(income_yearly.style.format("${:,.0f}"))
 
-    dollar_mode.observe(_redraw, names="value")
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     _redraw()
 
-    return widgets.VBox([dollar_mode, chart_out, table_out])
+    return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])
 
 
 _EXPENSES_CAVEAT = (
@@ -110,15 +134,20 @@ _EXPENSES_CAVEAT = (
 )
 
 
-def expenses_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None) -> widgets.VBox:
+def expenses_widget(rc: RunConnection,
+                    dollar_mode: DollarModePicker | None = None,
+                    time_range: TimeRangePicker | None = None,
+                    **_) -> widgets.VBox:
     """Yearly expenses table + a nominal/CPI-constant stacked bar chart, by category."""
     dollar_mode = dollar_mode or DollarModePicker()
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
     caveat_out = widgets.Output()
     with caveat_out:
-        display(Markdown(_EXPENSES_CAVEAT))
+        display(StyledMarkdown(_EXPENSES_CAVEAT))
 
     def _redraw(*_):
         mode = dollar_mode.value
@@ -129,7 +158,7 @@ def expenses_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = No
             rc.to_cpi_constant(expenses) if mode == DollarMode.CPI_CONSTANT
             else expenses
         )
-        expenses_yearly = yearly_totals(expenses_based)
+        expenses_yearly = time_range.clip(yearly_totals(expenses_based))
 
         chart = expenses_yearly
         with chart_out:
@@ -150,15 +179,21 @@ def expenses_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = No
             clear_output(wait=True)
             display(expenses_yearly.style.format("${:,.0f}"))
 
-    dollar_mode.observe(_redraw, names="value")
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     _redraw()
 
-    return widgets.VBox([dollar_mode, chart_out, caveat_out, table_out])
+    return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, caveat_out, table_out])
 
 
-def gains_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None) -> widgets.VBox:
+def gains_widget(rc: RunConnection,
+                 dollar_mode: DollarModePicker | None = None,
+                 time_range: TimeRangePicker | None = None,
+                 **_) -> widgets.VBox:
     """Yearly realized-vs-unrealized gains table + chart, with an expenses overlay."""
     dollar_mode = dollar_mode or DollarModePicker()
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
@@ -168,7 +203,7 @@ def gains_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None)
         mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
 
         gains_nominal = rc.gains_by_category()
-        gains_yearly = (
+        gains_yearly = time_range.clip(
             rc.to_cpi_constant_annual(gains_nominal) if mode == DollarMode.CPI_CONSTANT
             else gains_nominal
         )
@@ -198,15 +233,21 @@ def gains_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None)
             clear_output(wait=True)
             display(gains_yearly.style.format("${:,.0f}"))
 
-    dollar_mode.observe(_redraw, names="value")
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     _redraw()
 
-    return widgets.VBox([dollar_mode, chart_out, table_out])
+    return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])
 
 
-def after_tax_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = None) -> widgets.VBox:
+def after_tax_widget(rc: RunConnection,
+                     dollar_mode: DollarModePicker | None = None,
+                     time_range: TimeRangePicker | None = None,
+                     **_) -> widgets.VBox:
     """Tax reconciliation table + after-tax income vs. non-tax-expense chart."""
     dollar_mode = dollar_mode or DollarModePicker()
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
 
     table_out = widgets.Output()
     chart_out = widgets.Output()
@@ -220,9 +261,10 @@ def after_tax_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = N
         expenses_yearly_nominal = yearly_totals(rc.expenses_by_category())
 
         money_columns = [c for c in reconciliation_nominal.columns if c != "reconciliation_year"]
-        reconciliation = (rc.to_cpi_constant_annual(reconciliation_nominal)
-                          if mode == DollarMode.CPI_CONSTANT
-                          else reconciliation_nominal
+        reconciliation = time_range.clip(
+            rc.to_cpi_constant_annual(reconciliation_nominal)
+            if mode == DollarMode.CPI_CONSTANT
+            else reconciliation_nominal
         )
         income_yearly = (rc.to_cpi_constant_annual(income_yearly_nominal)
                          if mode == DollarMode.CPI_CONSTANT
@@ -245,6 +287,7 @@ def after_tax_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = N
         net["after_tax_income"] = net["gross_income"] - net["tax_liability"]
         net["non_tax_expenses"] = net["expenses"] - net["tax_expenses"]
         net["after_tax_surplus"] = net["after_tax_income"] - net["non_tax_expenses"]
+        net = time_range.clip(net)
         chart = rc.to_cpi_constant_annual(net) if mode == DollarMode.CPI_CONSTANT else net
         with chart_out:
             clear_output(wait=True)
@@ -281,7 +324,8 @@ def after_tax_widget(rc: RunConnection, dollar_mode: DollarModePicker | None = N
             display(reconciliation.style.format({c: "${:,.0f}" for c in money_columns}))
             display(net.style.format("${:,.0f}"))
 
-    dollar_mode.observe(_redraw, names="value")
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
     _redraw()
 
-    return widgets.VBox([dollar_mode, chart_out, table_out])
+    return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])

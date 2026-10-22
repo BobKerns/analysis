@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-17
-- **Amended by:** [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots and per-lot state): accounts are split into lots, and the engine's state is per lot.
+- **Amended:** see [Amendments](#amendments) at the end.
 - **Scope:** New top-level subsystem `src/analysis/sim/`, sibling to the existing `amazon/` subsystem. Shares utility code (logging, sqlite helpers) but not data.
 
 ## Context
@@ -25,7 +25,7 @@ The architecture has exactly two layers, and the separation is load-bearing:
 1. **Intent layer** — what was *decided*. Authored content: `AccountModel`, `ScheduledTransaction`, `Calendar`, `CalendarEvent`, `AuxiliaryTable`, `Scenario`, `YearToDate`.
 2. **Ledger layer** — what *happened*. Run output: `SimulationRun`, `SimulationStep`, `LotState` (with `AccountState` as a view over it), `TransferEvent`, `TaxYearSummary`.
 
-Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to-account, amount, tax character, reason). Bundled high-level decisions (`sell_asset`, `life_transition`) live in the intent layer and **expand at run-time** into multiple primitive `TransferEvent`s, all linked via `reason_id` so reports can group at either level. Nothing in the ledger is "virtual" or "derived on the fly" — what's in the table is the truth.
+Every dollar movement in the ledger is a `TransferEvent` (date, from-account, to-account, amount, tax character, reason). Rules and calendar events live in the intent layer and **expand at run-time** into primitive `TransferEvent`s (a withdrawal from a basis-tracked lot into its return-of-capital and gain legs, a refill into the legs its chain draws), all linked via `reason_id` and `parent_event_id` so reports can group at either level. Nothing in the ledger is "virtual" or "derived on the fly" — what's in the table is the truth.
 
 ### Domain objects
 
@@ -84,9 +84,9 @@ These are project-wide rules that all subsequent ADRs and code reference:
 2. **Month-granularity authoring; month-end dates internally.** CSVs use `YYYY-MM`. Loader pins to last day of month. No within-month sequencing semantics.
 3. **Intent vs. ledger separation.** If a real-world decision has multiple legs and any leg depends on run-time state, it earns a `CalendarEvent` kind. Otherwise it's a primitive `one_off_transfer`. The set of kinds is bounded and reviewed (see [ADR-003](ADR-003-registries-and-csv-schemas.md)).
 4. **Visible approximation beats invisible omission.** Zero-valued accounts for assets we choose not to model (ISOs, potential JPY inheritance); basis-with-sources lists for the home; `data/known_exclusions.md` for things deliberately out of scope.
-5. **The scenario is a checklist.** Every `ScheduledTransaction` should be referenceable by `life_transition` events; a `--check life_transitions` mode flags omissions without erroring.
+5. **The scenario is a checklist.** Life events are dated rows a reader can scan: a rule's `start`/`end`, `calendar.csv` events (`retire_scheduled`, `set_amount`, `swap_aux_table` for a move), and `lifespan.csv`. A bundled event per transition (retire, predecease, relocate) was planned and dropped: each would be as specific as the rules it stood for.
 6. **Schema is documentation.** Long-narrow tables, descriptive names, a `schema_overview` row per table for LLM priming. See [ADR-002](ADR-002-storage-schema.md).
-7. **Hard errors on impossible states.** Unresolvable references, unknown user, dirty data without override → halt before the run starts, report enough context to fix the scenario. *Amended:* running an account negative is **not** in this category. The draft had insufficient funds halt the run; in practice that made a scenario un-runnable at the first shortfall, which is exactly when you most want to see the projection. A debit that a chain cannot cover posts anyway, drives the balance negative, raises a `RuntimeWarning` once per negative transition, and is recorded under `simulation_run.run_args_json.$.negative_balance_warnings` — visible and queryable, per principle 4, rather than fatal.
+7. **Hard errors on impossible states.** Unresolvable references, unknown user, dirty data without override → halt before the run starts, report enough context to fix the scenario. *Amended:* running an account negative is **not** in this category. The draft had insufficient funds halt the run; in practice that made a scenario un-runnable at the first shortfall, which is exactly when you most want to see the projection. A debit that a chain cannot cover posts anyway, drives the balance negative, raises a `RuntimeWarning` once per negative transition, and is recorded under `simulation_run.run_args_json.$.negative_balance_warnings`, with the refill chain it tried and what that chain supplied — visible and queryable, per principle 4, rather than fatal.
 
 ### Reproducibility and gating contract
 
@@ -106,7 +106,7 @@ The data repo provides a sourceable `activate` script (venv-style) that sets:
 - `ANALYSIS_USER` — short identifier (`rwk`, `mwk`, …) matching a row `id` in `persons.csv` in the data repo. Refuses to run if unset or unknown. (Persons and operator identities are the same set: every operator is a person, though not every person needs to be an operator.)
 - `ANALYSIS_DATA_REPO_NAME` — display label, defaults to basename of `ANALYSIS_DATA_DIR`.
 
-`PS1` is prefixed `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER]` so the active context is visible in a shared shell. `deactivate` reverses all of it.
+`PS1` is prefixed `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER:<current scenario>]` (the scenario left out when none is current) so the active context is visible in a shared shell. `deactivate` reverses all of it.
 
 ### Prototype data
 
@@ -121,7 +121,7 @@ src/analysis/sim/
     calendar.py       # Calendar, CalendarEvent
     aux.py            # tax brackets, RMD factors, SS thresholds, inflation series helpers
     rules.py          # amount_rule registry; see [ADR-003](ADR-003-registries-and-csv-schemas.md)
-    expansions.py     # high-level CalendarEvent expanders (sell_asset, life_transition, …)
+    expansions.py     # CalendarEvent expanders (one_off_transfer, transfer_balance, …)
     state.py          # in-memory lot state; invariants
     engine.py         # run(scenario) -> SimulationRun
     storage.py        # per-scenario intent DB + per-run ledger DB, schema, DAOs
@@ -139,7 +139,8 @@ The existing `analysis.storage` module contains item-import schemas specific to 
 - `analysis sim load <scenario>` — build/refresh `state/intent/<scenario>.sqlite3` from the data repo. Silently rebuilds when the source CSV hash or `data_version` no longer matches; `--force` always rebuilds. Intent files are a derived cache and may be deleted at any time.
 - `analysis sim run <scenario>` — execute against the (auto-loaded) intent file, write a new run file at `state/runs/<isoZ>_<scenario>_<dataSHA>.sqlite3`.
 - `analysis sim list` — list run files with status, versions, who, when.
-- `analysis sim explain <runfile>` — scenario name, versions, year-end net worth, total taxes per year, life-transitions applied. Sanity dump.
+- `analysis sim explain [<scenario> | <runfile>]` — scenario name, versions, year-end net worth (nominal and CPI-constant), lots at the final step, and the recorded negative-balance warnings, for the scenario's latest run (the current scenario's by default) or a named run file. Sanity dump.
+- `analysis sim networth [<scenario>] [--monthly | --yearly] [--dollars cpi_constant|nominal]` — net worth by year (or month) from the scenario's latest run, or `--runfile`, in CPI-constant dollars unless `--dollars nominal`.
 - `analysis sim compare <runfile_a> <runfile_b> [--by subkind|account|owner]` — `ATTACH`es both files, prints net-worth table + matplotlib chart; flags version skew in the report header.
 - `analysis sim query "<sql>" <runfile>` — read-only SQL passthrough, pretty-printed. Entry point for AI-assisted exploration.
 - `analysis sim check <scenario> [--life-transitions|--contribution-limits|...]` — soft validators against the intent file, exit non-zero on findings.
@@ -171,3 +172,13 @@ These mutating commands are convenience wrappers around the same CSV edits an AI
 - [ADR-002](ADR-002-storage-schema.md): Storage schema (full DDL, views, indexes).
 - [ADR-003](ADR-003-registries-and-csv-schemas.md): Amount-rule registry and Calendar-event-kind registry.
 - [ADR-004](ADR-004-reproducibility-and-activation.md): Reproducibility contract and dual-repo gating.
+
+## Amendments
+
+Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
+
+- [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots and per-lot state): accounts are split into lots, and the engine's state is per lot.
+- [#105](https://github.com/BobKerns/analysis/issues/105): a negative-balance warning records the refill chain it tried and what that chain supplied (principle 7).
+- [#197](https://github.com/BobKerns/analysis/issues/197): principle 5 no longer relies on `life_transition` events, which are dropped.
+- [#186](https://github.com/BobKerns/analysis/issues/186): `sim explain` takes a scenario and lists negative-balance warnings; `sim networth` added (CLI surface).
+- [#214](https://github.com/BobKerns/analysis/issues/214): the prompt shows the current scenario (Activation).

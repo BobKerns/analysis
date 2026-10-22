@@ -1,0 +1,4 @@
+name,from_account,from_lot,to_account,to_lot,cadence,month_of_year,amount_rule_kind,interest_account,person,series,rate,claim_age,amount,base_date,inflation_cadence,tax_character,tax_year,start,end,priority,ytd_amount,ytd_preroll,description,meta_json,params_json,tags
+business_expenses,Asset_Business_Alice,,Expense_Business_Alice,,monthly,,fixed_amount,,,cpi,,,800.00,2028-07-31,,business_expense,,2028-07-31,,200,,,"hosting, tools and contractors for Alice's software product",{},,
+business_sales,Income_Business_Alice,,Asset_Business_Alice,,monthly,,fixed_amount,,,cpi,,,300.00,2030-01-31,,business_income,,2030-01-31,,200,,,product sales,{},,
+federal_tax,Asset_Checking,,Expense_Taxes_Federal,,annual,4,tax_accumulator,,,,,,,,,none,,2027-04-30,,400,,,federal income tax for the year before,{},"{""year"": ""previous""}",

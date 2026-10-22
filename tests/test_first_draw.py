@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-import traitlets
 
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.notebook_ui.pickers import Connections
@@ -87,8 +86,6 @@ def test_a_failing_callback_still_removes_its_hook_and_resets(executing_cell: Fa
 
 
 class _Connections(Connections):
-    value = traitlets.Any()
-
     def _invoke(self, fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
@@ -98,10 +95,10 @@ def test_connections_show_draws_after_the_cell_and_redraws_at_once_on_a_change(
 ) -> None:
     drawn: list[str] = []
     connections = _Connections()
-    out = connections.show(lambda: drawn.append("draw"))
+    out = connections.show(lambda **_: drawn.append("draw"))
     assert drawn == [] and out is not None  # deferred: the cell is running
     executing_cell.events.fire()
     assert drawn == ["draw"]
     executing_cell.msg_type = "comm_msg"  # the kernel is now handling a picker change
-    connections.value = "another scenario"
+    connections.notify_changed()
     assert drawn == ["draw", "draw"]

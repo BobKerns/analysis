@@ -1,28 +1,44 @@
 """ADR-006: ensemble variation distributions -- pure functions, no I/O.
 
-Two families to start (`registries.ENSEMBLE_DISTRIBUTIONS`); a third
-(triangular, lognormal, ...) is a one-line addition, not a redesign.
+Four families (`registries.ENSEMBLE_DISTRIBUTIONS`): `uniform`,
+`truncated_normal` (optionally skewed / heavy-tailed, #31), `triangular`, and
+`discrete` (weighted outcomes, each a value or a range, #165).
+Every family exposes ``quantile(q)``, which sensitivity analysis (ADR-007)
+and correlated draws (#30) are built on.
 """
 
 from __future__ import annotations
 
 import hashlib
+import math
 import random
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from statistics import NormalDist
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from analysis.sim.life_table import LifeTableAge
 
 __all__ = [
-    "DistributionError", "Uniform", "TruncatedNormal", "member_rng",
+    "DistributionError", "Uniform", "TruncatedNormal", "Triangular", "Discrete", "Outcome",
+    "OutcomeRole", "Distribution", "parse_outcomes", "rewrite_outcomes",
+    "Moments", "moments", "member_rng", "tail_rng", "path_rng", "path_tail_rng",
     "DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD", "resolve_truncated_normal_bounds",
+    "parse_quantiles",
 ]
 
 DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD = 3.0
-"""Standard deviations used to fill in a `truncated_normal` bound nobody
-specified (ADR-006) -- the classic three-sigma range, ~99.7% coverage on the
-unclipped side, so rejection sampling rarely has to retry."""
+"""How far (in standard normal scores) a `truncated_normal` bound nobody
+specified is placed (ADR-006) -- the classic three-sigma range, ~99.7%
+coverage, so the clip only trims the extreme tails."""
 
 
 class DistributionError(RuntimeError):
     """A distribution's parameters make no valid draw possible."""
+
+
+_STANDARD = NormalDist()
 
 
 @dataclass(frozen=True)
@@ -54,81 +70,664 @@ class Uniform:
     def central_int(self) -> int:
         return round(self.central())
 
+    def quantile(self, q: float) -> float:
+        """The ``q``-quantile of ``[low, high]`` (ADR-007 §3) -- the value an
+        OAT sensitivity member perturbs this row to."""
+        _check_quantile(q)
+        return self.low + q * (self.high - self.low)
+
+    def quantile_int(self, q: float) -> int:
+        """``quantile`` rounded to a day ordinal, for a date target."""
+        return round(self.quantile(q))
+
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
+    def value_at_int(self, u: float) -> int:
+        """A date as a correlated draw resolves it: each whole day in
+        ``[round(low), round(high)]`` equally likely, matching ``draw_int``
+        (not ``quantile_int``'s rounding, which gives the end days half
+        weight)."""
+        low, high = round(self.low), round(self.high)
+        return min(high, low + int(_clamp_unit(u) * (high - low + 1)))
+
+
+def _shape(z: float, skew: float, tailweight: float) -> float:
+    """Sinh-arcsinh transform of a standard normal score (Jones & Pewsey
+    2009): identity at ``skew=0, tailweight=1``. An extreme shape that
+    overflows is a ``DistributionError``, not a crash."""
+    try:
+        return math.sinh((math.asinh(z) + skew) / tailweight)
+    except OverflowError:
+        raise DistributionError(_EXTREME_SHAPE) from None
+
+
+def _unshape(x: float, skew: float, tailweight: float) -> float:
+    """Inverse of ``_shape``: the standard normal score of a standardized value."""
+    try:
+        return math.sinh(tailweight * math.asinh(x) - skew)
+    except OverflowError:
+        raise DistributionError(_EXTREME_SHAPE) from None
+
+
+_EXTREME_SHAPE = (
+    "truncated_normal: vary_skew/vary_tailweight are too extreme to compute "
+    "(keep skew within about ±5 and tail weight within about 0.2 to 5)"
+)
+
+
+def _check_finite(**values: float | None) -> None:
+    """Reject inf/NaN parameters (a CSV ``inf`` parses as a float) up front."""
+    for name, value in values.items():
+        if value is not None and not math.isfinite(value):
+            raise DistributionError(f"truncated_normal: {name} must be a finite number (got {value})")
+
 
 @dataclass(frozen=True)
 class TruncatedNormal:
-    """A normal draw, rejected and redrawn outside [clip_low, clip_high]
-    (either bound may be omitted for one-sided or unbounded)."""
+    """A normal -- or, with ``skew``/``tailweight``, a sinh-arcsinh normal
+    (Jones & Pewsey 2009) -- restricted to ``[clip_low, clip_high]`` (#31).
 
-    mean: float
+    Specified by its **median**: the median of the *truncated* distribution,
+    so the base case (``central()``, ADR-006 §9) is exactly the authored
+    value even when the bounds are asymmetric. ``sd`` is the scale of the
+    underlying distribution before clipping. ``skew`` (0 = symmetric, > 0
+    longer right tail) and ``tailweight`` (1 = normal, < 1 heavier tails,
+    > 1 lighter) shape it; at their defaults this is exactly a normal.
+
+    The underlying variable is ``location + sd * sinh((asinh(Z) + skew) /
+    tailweight)`` with ``Z ~ N(0, 1)``; ``location`` is solved so that the
+    truncated median lands on ``median``. CDF and quantile are closed-form,
+    so draws use inverse-CDF sampling: exact for any shape, never a retry.
+    """
+
+    median: float
     sd: float
     clip_low: float | None = None
     clip_high: float | None = None
-    max_attempts: int = 10_000
+    skew: float = 0.0
+    tailweight: float = 1.0
+    location: float = field(init=False, repr=False)
 
-    def draw(self, rng: random.Random) -> float:
-        for _ in range(self.max_attempts):
-            value = rng.gauss(self.mean, self.sd)
-            if self.clip_low is not None and value < self.clip_low:
-                continue
-            if self.clip_high is not None and value > self.clip_high:
-                continue
-            return value
-        raise DistributionError(
-            f"truncated_normal(mean={self.mean}, sd={self.sd}, "
-            f"clip_low={self.clip_low}, clip_high={self.clip_high}): no draw "
-            f"landed inside the clip bounds in {self.max_attempts} attempts"
-        )
+    def __post_init__(self) -> None:
+        _check_finite(vary_median=self.median, vary_sd=self.sd, vary_low=self.clip_low,
+                      vary_high=self.clip_high, vary_skew=self.skew,
+                      vary_tailweight=self.tailweight)
+        if not self.sd > 0:
+            raise DistributionError(f"truncated_normal: vary_sd must be positive (got {self.sd})")
+        if not self.tailweight > 0:
+            raise DistributionError(
+                f"truncated_normal: vary_tailweight must be positive (got {self.tailweight})"
+            )
+        if self.clip_low is not None and self.clip_high is not None and self.clip_low >= self.clip_high:
+            raise DistributionError("truncated_normal: vary_low must be below vary_high")
+        if (self.clip_low is not None and self.median <= self.clip_low) or (
+            self.clip_high is not None and self.median >= self.clip_high
+        ):
+            raise DistributionError(
+                "truncated_normal: vary_median must lie strictly between vary_low and "
+                "vary_high (a median can't sit on a bound; use vary_skew for a "
+                "one-sided spread)"
+            )
+        object.__setattr__(self, "location", self._solve_location())
 
-    def central(self) -> float:
-        """``mean``, clamped into ``[clip_low, clip_high]`` (ADR-006 §8: the
-        recipe's deterministic member 0). The clamp guards the one case
-        where this could land outside the bounds: ``resolve_truncated_normal_bounds``
-        only checks mean/low/high for mutual consistency when inferring one
-        from the others, not when an author gives all three explicitly.
-        """
-        value = self.mean
+    # -- the underlying (untruncated) distribution at a given location --------
+
+    def _z(self, x: float | None, location: float, default: float) -> float:
+        """The standard normal score of ``x`` (``default`` for a missing bound)."""
+        if x is None:
+            return default
+        return _unshape((x - location) / self.sd, self.skew, self.tailweight)
+
+    def _truncated_z(self, q: float, location: float) -> float | None:
+        """The standard normal score of the truncated ``q``-quantile, or
+        ``None`` when the window holds no representable probability (it sits
+        so far into a tail that the CDF has saturated). Works from whichever
+        tail the window is in -- survival probabilities for a window above
+        the center -- so a far-out window keeps its precision."""
+        za = self._z(self.clip_low, location, -math.inf)
+        zb = self._z(self.clip_high, location, math.inf)
+        if za >= 0:  # wholly above the center: use the upper tail
+            sa, sb = _STANDARD.cdf(-za), (0.0 if zb == math.inf else _STANDARD.cdf(-zb))
+            mass = sa - sb
+            if mass <= 0:
+                return None
+            s_q = sa - q * mass
+            if s_q <= 0:
+                return zb
+            return za if s_q >= 1 else -_STANDARD.inv_cdf(s_q)
+        pa = 0.0 if za == -math.inf else _STANDARD.cdf(za)
+        pb = 1.0 if zb == math.inf else _STANDARD.cdf(zb)
+        mass = pb - pa
+        if mass <= 0:
+            return None
+        p = pa + q * mass
+        if p <= 0:
+            return za
+        return zb if p >= 1 else _STANDARD.inv_cdf(p)
+
+    def _truncated_quantile(self, q: float, location: float) -> float | None:
+        z = self._truncated_z(q, location)
+        if z is None:
+            return None
+        if z == -math.inf or z == math.inf:
+            raise DistributionError(f"truncated_normal: quantile({q}) is unbounded")
+        value = location + self.sd * _shape(z, self.skew, self.tailweight)
+        # Guard float round-off at the edges.
         if self.clip_low is not None:
             value = max(value, self.clip_low)
         if self.clip_high is not None:
             value = min(value, self.clip_high)
         return value
 
+    def _solve_location(self) -> float:
+        """The location whose *truncated* median is ``median``.
+
+        For the normal and lighter tails (``tailweight >= 1``) the truncated
+        median rises steadily with the location, from ``clip_low`` to
+        ``clip_high``. With heavy tails it needn't: far out, the window sits
+        in a tail whose shape no longer changes much, so some medians are
+        unreachable and the relationship can even turn back. So: scan a wide
+        range of locations for the real crossings, take the one nearest the
+        untruncated location (the least-distorted fit), and bisect it; if
+        there is none, say which medians this shape can reach.
+        """
+        untruncated = self.median - self.sd * _shape(0.0, self.skew, self.tailweight)
+        if self.clip_low is None and self.clip_high is None:
+            return untruncated
+
+        def gap(location: float) -> float | None:
+            value = self._truncated_quantile(0.5, location)
+            return None if value is None else value - self.median
+
+        width = 0.0
+        if self.clip_low is not None and self.clip_high is not None:
+            width = self.clip_high - self.clip_low
+        span = max(50 * self.sd, 10 * width)
+        steps = 400
+        brackets: list[tuple[float, float]] = []
+        gaps: list[float | None] = []
+        for _ in range(8):  # widen the scan (x4 each time) before giving up
+            grid = [untruncated + span * (2 * i / steps - 1) for i in range(steps + 1)]
+            gaps = [gap(x) for x in grid]
+            brackets = [
+                (grid[i], grid[i + 1]) for i in range(steps)
+                if (g0 := gaps[i]) is not None and (g1 := gaps[i + 1]) is not None
+                and (g0 == 0 or g0 * g1 < 0)
+            ]
+            if brackets or gaps[0] is None or gaps[-1] is None:
+                break  # found, or the scan already runs past what floats can represent
+            span *= 4
+        if not brackets:
+            reached = [g + self.median for g in gaps if g is not None]
+            if not reached:
+                # Every sampled location left the window with no representable
+                # probability (#35): nothing was reachable at all, so there's
+                # no range to report -- still a clean validation error.
+                raise DistributionError(
+                    f"truncated_normal: vary_median {self.median:g} can't be placed: at every "
+                    "location tried, the bounds hold no representable probability for this "
+                    "vary_sd and shape; widen the bounds, change vary_sd, or bring vary_skew "
+                    "toward 0 and vary_tailweight toward 1"
+                )
+            if self.tailweight >= 1:
+                # Normal or lighter tails reach every interior median in
+                # principle, so this is numeric: the fit would need the
+                # distribution centered so far from the window (dozens of
+                # standard scores) that its probability there underflows --
+                # a median hugging a bound relative to sd.
+                raise DistributionError(
+                    f"truncated_normal: vary_median {self.median:g} is too close to a bound "
+                    f"for this vary_sd (it can be placed between {min(reached):g} and "
+                    f"{max(reached):g}); reduce vary_sd or move the median inward"
+                )
+            raise DistributionError(
+                f"truncated_normal: vary_median {self.median:g} isn't reachable with this "
+                f"vary_skew/vary_tailweight inside vary_low..vary_high (its truncated "
+                f"median only reaches {min(reached):g} to {max(reached):g}); move the "
+                "median, widen the bounds, or bring vary_skew toward 0 or vary_tailweight "
+                "toward 1 (lower tail weight means heavier tails, which make this worse)"
+            )
+        lo, hi = min(brackets, key=lambda b: abs((b[0] + b[1]) / 2 - untruncated))
+        g_lo = gap(lo)
+        assert g_lo is not None  # lo is a bracket end, where the gap was defined
+        if g_lo == 0:
+            return lo
+        for _ in range(200):
+            mid = (lo + hi) / 2
+            if mid in (lo, hi):
+                break
+            g_mid = gap(mid)
+            if g_mid is None or g_mid == 0:
+                return mid
+            if (g_mid < 0) == (g_lo < 0):
+                lo, g_lo = mid, g_mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
+    # -- the truncated distribution ------------------------------------------
+
+    def draw(self, rng: random.Random) -> float:
+        """An inverse-CDF draw: exact for any shape, no rejection loop."""
+        u = rng.random()
+        while u == 0.0:  # quantile(0) is a bound; keep draws in the open interval
+            u = rng.random()
+        return self.quantile(u)
+
+    def central(self) -> float:
+        """The authored median -- exactly the truncated distribution's median
+        (ADR-006 §9: the recipe's deterministic member 0)."""
+        return self.median
+
+    def quantile(self, q: float) -> float:
+        """The ``q``-quantile of the *truncated* distribution (ADR-007 §3):
+        always inside the clip bounds, and honoring a one-sided clip."""
+        _check_quantile(q)
+        value = self._truncated_quantile(q, self.location)
+        if value is None:  # pragma: no cover - the solved location always holds mass
+            raise DistributionError("truncated_normal: the bounds hold no probability")
+        return value
+
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
+
+@dataclass(frozen=True)
+class Triangular:
+    """Linearly rising from ``low`` to a peak at ``mode``, then falling to
+    ``high`` (#31): bounded, skewed whenever the mode is off-center, and
+    easy to state ("probably around X, could be as high as Y"). Valid for a
+    date target, like ``Uniform``. Its center is its median."""
+
+    low: float
+    mode: float
+    high: float
+
+    def __post_init__(self) -> None:
+        if not self.low < self.high:
+            raise DistributionError("triangular: vary_low must be below vary_high")
+        if not self.low <= self.mode <= self.high:
+            raise DistributionError("triangular: vary_mode must lie within vary_low..vary_high")
+
+    def quantile(self, q: float) -> float:
+        _check_quantile(q)
+        width = self.high - self.low
+        at_mode = (self.mode - self.low) / width
+        if q <= at_mode:
+            return self.low + math.sqrt(q * width * (self.mode - self.low))
+        return self.high - math.sqrt((1 - q) * width * (self.high - self.mode))
+
+    def quantile_int(self, q: float) -> int:
+        """``quantile`` rounded to a day ordinal, for a date target."""
+        return round(self.quantile(q))
+
+    def draw(self, rng: random.Random) -> float:
+        return self.quantile(rng.random())
+
+    def draw_int(self, rng: random.Random) -> int:
+        return round(self.draw(rng))
+
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
+    def value_at_int(self, u: float) -> int:
+        """A date as a correlated draw resolves it, rounded like ``draw_int``."""
+        return round(self.value_at(u))
+
+    def central(self) -> float:
+        """The median (ADR-006 §9's base case), not the mode."""
+        return self.quantile(0.5)
+
+    def central_int(self) -> int:
+        return round(self.central())
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """One of a ``Discrete`` distribution's outcomes: probability ``weight``
+    (a fraction) on the single value ``low`` when ``low == high``, otherwise
+    spread evenly over ``[low, high]``."""
+
+    weight: float
+    low: float
+    high: float
+
+
+@dataclass(frozen=True)
+class Discrete:
+    """A few distinct outcomes with weights (#165), each a single value or a
+    range spread evenly -- "30% nothing, 25% a little, ..." -- for a bet whose
+    outcomes are separate cases rather than one continuum: an exact zero
+    can carry real probability, which no continuous family can give.
+
+    The outcomes are kept in value order, so ``quantile`` is monotone: a step
+    at a single value, linear across a range. That makes sensitivity
+    (ADR-007) and correlated draws (ADR-008) work as for any family. Its
+    center is its median."""
+
+    outcomes: tuple[Outcome, ...]
+
+    def __post_init__(self) -> None:
+        if not self.outcomes:
+            raise DistributionError("discrete: vary_outcomes needs at least one outcome")
+        for o in self.outcomes:
+            if not all(math.isfinite(v) for v in (o.weight, o.low, o.high)):
+                raise DistributionError("discrete: weights and values must be finite numbers")
+            if not o.weight > 0:
+                raise DistributionError("discrete: every outcome's weight must be above 0%")
+            if o.low > o.high:
+                raise DistributionError("discrete: a range's low end must come first (low..high)")
+        if abs(math.fsum(o.weight for o in self.outcomes) - 1.0) > _WEIGHT_TOLERANCE:
+            total = math.fsum(o.weight for o in self.outcomes) * 100
+            raise DistributionError(f"discrete: outcome weights must add up to 100% (got {total:g}%)")
+        ordered = tuple(sorted(self.outcomes, key=lambda o: (o.low, o.high)))
+        for a, b in zip(ordered, ordered[1:], strict=False):
+            # Ranges may share an end; anything else overlapping would make
+            # the order (and so the quantile function) ambiguous.
+            if b.low < a.high or (a.low == a.high == b.low == b.high):
+                raise DistributionError("discrete: outcomes overlap; give each its own value or range")
+        object.__setattr__(self, "outcomes", ordered)
+
+    def _locate(self, q: float) -> tuple[Outcome, float]:
+        """The outcome probability ``q`` falls in, and how far through its
+        weight it falls (0 to 1)."""
+        below = 0.0
+        for o in self.outcomes:
+            if q <= below + o.weight or o is self.outcomes[-1]:
+                share = (q - below) / o.weight
+                # The top end exactly, despite round-off in the running total.
+                return o, 1.0 if share >= 1.0 - _WEIGHT_TOLERANCE else max(0.0, share)
+            below += o.weight
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def quantile(self, q: float) -> float:
+        _check_quantile(q)
+        o, share = self._locate(q)
+        return o.low + share * (o.high - o.low)
+
+    def quantile_int(self, q: float) -> int:
+        """``quantile`` rounded to a day ordinal, for a date target."""
+        return round(self.quantile(q))
+
+    def draw(self, rng: random.Random) -> float:
+        return self.quantile(rng.random())
+
+    def draw_int(self, rng: random.Random) -> int:
+        return self.value_at_int(rng.random())
+
+    def value_at(self, u: float) -> float:
+        """The value a correlated draw's probability ``u`` maps to (ADR-008)."""
+        return self.quantile(_clamp_unit(u))
+
+    def value_at_int(self, u: float) -> int:
+        """A date as drawn: a range gives each of its whole days equal weight,
+        as ``Uniform.value_at_int`` does (rounding a continuous draw would
+        give its end days half weight)."""
+        o, share = self._locate(_clamp_unit(u))
+        low, high = round(o.low), round(o.high)
+        return min(high, low + int(share * (high - low + 1)))
+
+    def _days(self) -> list[tuple[float, int]]:
+        """``(weight, day)`` for every whole day a date draw can land on."""
+        result = []
+        for o in self.outcomes:
+            low, high = round(o.low), round(o.high)
+            result += [(o.weight / (high - low + 1), day) for day in range(low, high + 1)]
+        return result
+
+    def central(self) -> float:
+        """The median (ADR-006 §9's base case)."""
+        return self.quantile(0.5)
+
+    def central_int(self) -> int:
+        return round(self.central())
+
+
+_WEIGHT_TOLERANCE = 1e-9
+
+OutcomeRole = Literal["low", "high", "point"]
+"""Where an outcome's value sits: a single value, or a range's low or high
+end. A bare month needs it (#34); ``dates.VaryBoundRole`` is the same."""
+
+_RANGE = ".."
+
+
+def _split_outcomes(text: str) -> list[tuple[str, str, str | None]]:
+    """``vary_outcomes`` text as ``(weight, low, high or None)`` strings."""
+    parts = [p.strip() for p in text.split(";")]
+    if not any(parts):
+        raise DistributionError("discrete: vary_outcomes is empty")
+    result = []
+    for part in parts:
+        if not part:
+            continue  # a trailing ';' is harmless
+        weight, sep, value = part.partition(":")
+        if not sep or not value.strip():
+            raise DistributionError(
+                f"discrete: outcome '{part}' isn't 'weight%: value' or 'weight%: low..high'"
+            )
+        low, dots, high = value.partition(_RANGE)
+        result.append((weight.strip(), low.strip(), high.strip() if dots else None))
+    return result
+
+
+def _parse_weight(text: str) -> float:
+    if not text.endswith("%"):
+        raise DistributionError(f"discrete: weight '{text}' needs a '%' (e.g. 25%)")
+    try:
+        return float(text[:-1]) / 100
+    except ValueError:
+        raise DistributionError(f"discrete: weight '{text}' is not a percent") from None
+
+
+def parse_outcomes(text: str, value: Callable[[str, OutcomeRole], float]) -> tuple[Outcome, ...]:
+    """``vary_outcomes`` (``"30%: 0; 25%: 1000..6000"``) as ``Outcome``s.
+    ``value(text, role)`` reads one value in the target's unit; ``role`` is
+    ``"point"``, ``"low"`` or ``"high"``, which a bare month needs (#34).
+    Raises ``DistributionError``, including for a value ``value`` rejects
+    with ``ValueError``."""
+    outcomes = []
+    for weight, low, high in _split_outcomes(text):
+        try:
+            if high is None:
+                v = value(low, "point")
+                outcomes.append(Outcome(_parse_weight(weight), v, v))
+            else:
+                lo, hi = value(low, "low"), value(high, "high")
+                if not lo < hi:
+                    raise DistributionError(
+                        f"discrete: range '{low}..{high}' needs its low end below its high end "
+                        "(write a single value without '..')"
+                    )
+                outcomes.append(Outcome(_parse_weight(weight), lo, hi))
+        except ValueError as e:
+            raise DistributionError(f"discrete: {e}") from None
+    return tuple(outcomes)
+
+
+def rewrite_outcomes(text: str, convert: Callable[[str, OutcomeRole], str]) -> str:
+    """``vary_outcomes`` with every value rewritten by ``convert(text, role)``
+    -- from authored text (dollars, a percent, a bare month) to the stored
+    form -- and the weights kept as written. Raises ``DistributionError``
+    for a malformed outcome; ``convert``'s ``ValueError`` propagates."""
+    parts = []
+    for weight, low, high in _split_outcomes(text):
+        if high is None:
+            parts.append(f"{weight}: {convert(low, 'point')}")
+        else:
+            parts.append(f"{weight}: {convert(low, 'low')}{_RANGE}{convert(high, 'high')}")
+    return "; ".join(parts)
+
+
+Distribution = Uniform | TruncatedNormal | Triangular | Discrete
+
+
+@dataclass(frozen=True)
+class Moments:
+    """A distribution's implied summary, for showing authors what their
+    parameters mean (#31)."""
+
+    mean: float
+    sd: float
+    skewness: float
+    excess_kurtosis: float
+
+
+def moments(
+    dist: Distribution | LifeTableAge, points: int = 4_000, *, whole_days: bool = False, rounded: bool = False,
+) -> Moments:
+    """Mean, SD, skewness and excess kurtosis, integrated numerically over
+    the quantile function (midpoint rule) -- one method for every family,
+    including truncated and shaped ones with no tidy closed form.
+
+    ``whole_days`` describes a date target as it is actually drawn, in whole
+    days rather than a continuum: a ``Uniform`` date gives each day in
+    ``[round(low), round(high)]`` equal weight (``draw_int``), any other
+    family rounds a continuous draw (``draw_int``/``quantile_int``). It
+    matters for a short span -- two days drawn equally have SD 0.5 day,
+    not a continuous uniform's 0.29.
+
+    ``rounded`` describes an amount target as stored: resolved amounts are
+    rounded to whole cents or micros (``resolve_member``), whatever the
+    family. Negligible for any realistic spread, but exact."""
+    if isinstance(dist, Discrete):
+        return _weighted_moments(_discrete_points(dist, points, whole_days=whole_days, rounded=rounded))
+    if whole_days and isinstance(dist, Uniform):
+        values = [float(day) for day in range(round(dist.low), round(dist.high) + 1)]
+    else:
+        values = [dist.quantile((i + 0.5) / points) for i in range(points)]
+        if whole_days or rounded:
+            values = [float(round(v)) for v in values]
+    count = len(values)
+    mean = math.fsum(values) / count
+    centered = [v - mean for v in values]
+    variance = math.fsum(c * c for c in centered) / count
+    sd = math.sqrt(variance)
+    if sd == 0:
+        return Moments(mean, 0.0, 0.0, 0.0)
+    skewness = math.fsum(c**3 for c in centered) / count / sd**3
+    kurtosis = math.fsum(c**4 for c in centered) / count / variance**2 - 3.0
+    return Moments(mean, sd, skewness, kurtosis)
+
+
+def _discrete_points(
+    dist: Discrete, points: int, *, whole_days: bool, rounded: bool,
+) -> list[tuple[float, float]]:
+    """``(weight, value)`` pairs for a ``Discrete``'s moments: each single
+    value at its own weight, so even a tiny one counts (a fixed quadrature
+    grid could step over it), and each range by midpoints within it -- or,
+    for a date, every whole day."""
+    if whole_days:
+        return [(w, float(day)) for w, day in dist._days()]
+    pairs: list[tuple[float, float]] = []
+    for o in dist.outcomes:
+        if o.low == o.high:
+            pairs.append((o.weight, float(round(o.low)) if rounded else o.low))
+            continue
+        n = max(1, round(points * o.weight))
+        for i in range(n):
+            v = o.low + (i + 0.5) / n * (o.high - o.low)
+            pairs.append((o.weight / n, float(round(v)) if rounded else v))
+    return pairs
+
+
+def _weighted_moments(pairs: list[tuple[float, float]]) -> Moments:
+    total = math.fsum(w for w, _ in pairs)
+    mean = math.fsum(w * v for w, v in pairs) / total
+    variance = math.fsum(w * (v - mean) ** 2 for w, v in pairs) / total
+    sd = math.sqrt(variance)
+    if sd == 0:
+        return Moments(mean, 0.0, 0.0, 0.0)
+    skewness = math.fsum(w * (v - mean) ** 3 for w, v in pairs) / total / sd**3
+    kurtosis = math.fsum(w * (v - mean) ** 4 for w, v in pairs) / total / variance**2 - 3.0
+    return Moments(mean, sd, skewness, kurtosis)
+
+
+def _clamp_unit(u: float) -> float:
+    """A copula probability, kept inside [0, 1] against float round-off."""
+    return min(1.0, max(0.0, u))
+
+
+def _check_quantile(q: float) -> None:
+    if not 0.0 <= q <= 1.0:
+        raise DistributionError(f"quantile must be in [0, 1] (got {q})")
+
+
+def parse_quantiles(text: str) -> tuple[float, ...]:
+    """Parse ``--quantiles`` (ADR-007 §3): at least two comma-separated
+    values in ``[0, 1]``, strictly increasing, excluding ``0.5`` -- the base
+    member already covers the center. One quantile alone gives no low/high
+    pair to compare."""
+    try:
+        values = tuple(float(part) for part in text.split(","))
+    except ValueError as exc:
+        raise DistributionError(f"quantiles: not a comma-separated list of numbers: {text!r}") from exc
+    if len(values) < 2:
+        raise DistributionError(f"quantiles: at least two values are required (got {text!r})")
+    for q in values:
+        _check_quantile(q)
+        if q == 0.5:
+            raise DistributionError(
+                "quantiles: 0.5 is the base member's own center; omit it"
+            )
+    if any(b <= a for a, b in zip(values, values[1:], strict=False)):
+        raise DistributionError(f"quantiles must be strictly increasing (got {text!r})")
+    return values
+
 
 def resolve_truncated_normal_bounds(
-    mean: float | None, sd: float | None, low: float | None, high: float | None,
-    *, cutoff: float = DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD,
+    median: float | None, sd: float | None, low: float | None, high: float | None,
+    *, skew: float = 0.0, tailweight: float = 1.0,
+    cutoff: float = DEFAULT_TRUNCATED_NORMAL_CUTOFF_SD,
 ) -> tuple[float, float, float, float]:
-    """Fill in whichever of (mean, sd, low, high) an author left blank, so a
+    """Fill in whichever of (median, sd, low, high) an author left blank, so a
     `truncated_normal` row is never actually unbounded on a side nobody
-    specified (ADR-006) -- unlike `uniform`, mean/sd alone already fully
-    describe a distribution, so any of the four may be inferred from the
-    others rather than required outright:
+    specified (ADR-006, #31):
 
-    - ``mean`` missing: the midpoint of ``low`` and ``high`` (both required
+    - ``median`` missing: the midpoint of ``low`` and ``high`` (both required
       in that case).
-    - ``sd`` missing: the distance from ``mean`` to whichever of
+    - ``sd`` missing: the distance from ``median`` to whichever of
       ``low``/``high`` is given, divided by ``cutoff`` (if both are given
-      with an explicit ``mean``, they must imply the same ``sd``).
-    - ``low``/``high`` still missing after the above: ``mean -/+ cutoff * sd``.
+      with an explicit ``median``, they must imply the same ``sd``). Only
+      for the default shape: with ``skew`` or ``tailweight`` set, the
+      distance to a bound no longer says what the scale is, so ``sd`` must
+      be given.
+    - ``low``/``high`` still missing after the above: the untruncated
+      distribution's ``-/+ cutoff`` standard-normal-score points around the
+      median -- ``median -/+ cutoff * sd`` for the default shape.
 
     Raises ``DistributionError`` if that still isn't enough to resolve every
     value, or if ``low``/``high`` disagree about the implied ``sd``.
     """
-    if mean is None:
+    _check_finite(vary_median=median, vary_sd=sd, vary_low=low, vary_high=high,
+                  vary_skew=skew, vary_tailweight=tailweight)
+    if not tailweight > 0:
+        raise DistributionError(
+            f"truncated_normal: vary_tailweight must be positive (got {tailweight})"
+        )
+    if median is None:
         if low is None or high is None:
             raise DistributionError(
-                "truncated_normal: vary_mean requires both vary_low and "
+                "truncated_normal: vary_median requires both vary_low and "
                 "vary_high when omitted"
             )
-        mean = (low + high) / 2
+        median = (low + high) / 2
 
     if sd is None:
+        if skew != 0.0 or tailweight != 1.0:
+            raise DistributionError(
+                "truncated_normal: vary_sd is required with vary_skew or "
+                "vary_tailweight (a bound no longer implies the scale)"
+            )
         candidates = []
         if low is not None:
-            candidates.append((mean - low) / cutoff)
+            candidates.append((median - low) / cutoff)
         if high is not None:
-            candidates.append((high - mean) / cutoff)
+            candidates.append((high - median) / cutoff)
         if not candidates:
             raise DistributionError(
                 "truncated_normal: vary_sd requires vary_low or vary_high "
@@ -137,16 +736,17 @@ def resolve_truncated_normal_bounds(
         if len(candidates) == 2 and abs(candidates[0] - candidates[1]) > 1e-9:
             raise DistributionError(
                 "truncated_normal: vary_low and vary_high aren't symmetric "
-                "around vary_mean, so vary_sd can't be inferred from them -- "
+                "around vary_median, so vary_sd can't be inferred from them -- "
                 "specify vary_sd explicitly"
             )
         sd = candidates[0]
 
+    center = median - sd * _shape(0.0, skew, tailweight)  # untruncated location
     if low is None:
-        low = mean - cutoff * sd
+        low = center + sd * _shape(-cutoff, skew, tailweight)
     if high is None:
-        high = mean + cutoff * sd
-    return mean, sd, low, high
+        high = center + sd * _shape(cutoff, skew, tailweight)
+    return median, sd, low, high
 
 
 def member_rng(seed: int, member_index: int, row_name: str) -> random.Random:
@@ -157,4 +757,31 @@ def member_rng(seed: int, member_index: int, row_name: str) -> random.Random:
     draws for any member (ADR-006 §3).
     """
     digest = hashlib.sha256(f"{seed}:{member_index}:{row_name}".encode()).digest()
+    return random.Random(int.from_bytes(digest, "big"))
+
+
+def tail_rng(seed: int, member_index: int, root: str) -> random.Random:
+    """The stream for a t-copula tree's shared scale (ADR-008 §5), keyed by
+    the tree's root. The root's own name already keys its noise, so this
+    hashes a different string: one starting ``tail:``, which no
+    ``member_rng`` key can equal, since those start with the integer seed."""
+    digest = hashlib.sha256(f"tail:{seed}:{member_index}:{root}".encode()).digest()
+    return random.Random(int.from_bytes(digest, "big"))
+
+
+def path_rng(seed: int, member_index: int, name: str, year: int) -> random.Random:
+    """The stream for one tree node's (or lone process row's) noise in
+    calendar year ``year`` of a process path (ADR-006 §4a, ADR-008 §5). The
+    ``path:`` prefix keeps it apart from every level stream, and the year
+    comes before the name so no name, colons and all, can alias another
+    year's key."""
+    digest = hashlib.sha256(f"path:{seed}:{member_index}:{year}:{name}".encode()).digest()
+    return random.Random(int.from_bytes(digest, "big"))
+
+
+def path_tail_rng(seed: int, member_index: int, root: str, year: int) -> random.Random:
+    """The stream for a t-copula tree's turbulence scale in calendar year
+    ``year`` of its process paths (ADR-008 §5): like ``path_rng``, apart
+    from the tree's per-member scale (``tail_rng``) and every noise stream."""
+    digest = hashlib.sha256(f"path-tail:{seed}:{member_index}:{year}:{root}".encode()).digest()
     return random.Random(int.from_bytes(digest, "big"))

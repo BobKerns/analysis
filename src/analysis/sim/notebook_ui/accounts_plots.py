@@ -6,11 +6,11 @@ instead of pre-built pandas structures.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from typing import cast
 
-from IPython.display import Markdown, clear_output, display
+from IPython.display import clear_output, display
 from ipywidgets import widgets
-from analysis.sim.notebook_ui.pickers import AccountKindPicker
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -18,10 +18,12 @@ from analysis.sim.accounts import CASHFLOW_KINDS, KIND_LABELS, account_summary_b
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.plotting import include_zero
-from analysis.sim.types import AccountKind, DollarMode, ValuePlotMode
+from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.pickers import (
-    DollarModePicker, ValuePlotModePicker, YAxisPlotModePicker,
+    AccountPicker, DollarModePicker, TimeRangePicker, ValuePlotModePicker,
+    YAxisPlotModePicker, controls_row, observe_while_shown, run_years,
 )
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 
 # Income/expense balances are cumulative totals, unlike asset/liability's
@@ -31,16 +33,19 @@ _CUMULATIVE_CAVEAT = "_Note that expense and income flows are cumulative totals.
 
 
 def account_balance_history_widget(
-    balance_pivot_by_kind: Callable[[str], pd.DataFrame],
+    balance_pivot_by_kind: Callable[[AccountKind], pd.DataFrame],
     account_kinds: pd.Series,
     title: str,
     kind: AccountKind,
     initial_count: int = 1,
-    cpi_balance_pivot_by_kind: Callable[[str], pd.DataFrame] | None = None,
+    cpi_balance_pivot_by_kind: Callable[[AccountKind], pd.DataFrame] | None = None,
     scenario_picker: widgets.Dropdown | None = None,
     dollar_mode: DollarModePicker | None = None,
     value_mode: ValuePlotModePicker | None = None,
     y_axis_mode: YAxisPlotModePicker | None = None,
+    lots_by_account: Mapping[str, Sequence[str]] | None = None,
+    lot_balance: Callable[[str, str, DollarMode], pd.Series] | None = None,
+    time_range: TimeRangePicker | None = None,
 ) -> widgets.VBox:
     """Build a Kind + Accounts + Output widget set that plots on selection change.
 
@@ -49,52 +54,66 @@ def account_balance_history_widget(
     widget covers asset/liability/income/expense instead of one apiece
     (unlike kinds stay off the same axis this way). Income/expense get an
     automatic cumulative-totals note; other kinds don't need one.
+    Given ``lots_by_account`` and ``lot_balance``, a single account with
+    several lots can be drilled into: picked lots plot one line apiece in
+    place of the account's (#170). ``time_range`` picks the years shown; the
+    caller has already set its ends (``TimeRangePicker.cover``).
     Returns the combined ``ipywidgets.VBox``; it is not displayed here, because
     ``Connections.show`` displays what a widget function returns.
     """
 
-    kind_picker = AccountKindPicker(kind)
-    picker = widgets.SelectMultiple(
-        description="Accounts:", layout=widgets.Layout(width="50%"),
+    def _plottable(kind: AccountKindAny) -> list[str]:
+        return plottable_accounts(balance_pivot_by_kind(cast(AccountKind, kind)), account_kinds, kind)
+
+    picker = AccountPicker(
+        kind=kind, accounts_by_kind=_plottable, initial_count=initial_count,
+        lots_by_account=lots_by_account if lot_balance is not None else None,
     )
+
+    def _kind() -> AccountKind:
+        # No "Any" option here, so the picker always holds a single kind.
+        return cast(AccountKind, picker.kind)
     value_mode = value_mode or ValuePlotModePicker()
     dollar_mode = dollar_mode or DollarModePicker()
     y_axis_mode = y_axis_mode or YAxisPlotModePicker()
+    time_range = time_range or TimeRangePicker()
     caveat_out = widgets.Output()
     out = widgets.Output()
-
-    def _sync_accounts_options(*_):
-        plottable = plottable_accounts(
-            balance_pivot_by_kind(kind_picker.value), account_kinds, kind_picker.value,
-        )
-        picker.rows = min(15, max(5, len(plottable)))
-        picker.options = plottable
-        picker.value = tuple(plottable[:initial_count])
 
     def _redraw_caveat(*_):
         with caveat_out:
             clear_output(wait=True)
-            if kind_picker.value in _CUMULATIVE_KINDS:
-                display(Markdown(_CUMULATIVE_CAVEAT))
+            if _kind() in _CUMULATIVE_KINDS:
+                display(StyledMarkdown(_CUMULATIVE_CAVEAT))
+
+    def _pivot(mode: DollarMode) -> tuple[pd.DataFrame, list[str]]:
+        """The balances to plot and the columns selected in them: the
+        picked lots' own series when there are any, else the accounts'."""
+        accounts, lots = picker.selection
+        if lots and lot_balance is not None:
+            (account,) = accounts
+            series = [lot_balance(account, lot, mode) for lot in lots]
+            return pd.concat(series, axis=1), [str(s.name) for s in series]
+        pivot = (
+            cpi_balance_pivot_by_kind(_kind())
+            if mode == DollarMode.CPI_CONSTANT and cpi_balance_pivot_by_kind is not None
+            else balance_pivot_by_kind(_kind())
+        )
+        return pivot, list(accounts)
 
     def _redraw(*_):
-        selected = list(picker.value)
         mode = dollar_mode.value
         zero_anchor = y_axis_mode.value
         values = value_mode.value
-        pivot = (
-            cpi_balance_pivot_by_kind(kind_picker.value)
-            if mode == DollarMode.CPI_CONSTANT and cpi_balance_pivot_by_kind is not None
-            else balance_pivot_by_kind(kind_picker.value)
-        )
+        pivot, selected = _pivot(mode)
         with out:
             clear_output(wait=True)
             mode_title = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
             values_title = "monthly change" if values == ValuePlotMode.MONTHLY else "total"
-            kind_title = KIND_LABELS[kind_picker.value]
+            kind_title = KIND_LABELS[_kind()]
             fig = render_balance_history_figure(
                 pivot, selected, f"{title} ({kind_title}) [{mode_title}, {values_title}]",
-                zero_anchor=zero_anchor, value_mode=values,
+                zero_anchor=zero_anchor, value_mode=values, clip=time_range.clip,
             )
             if fig is None:
                 print("(pick one or more accounts)")
@@ -104,43 +123,40 @@ def account_balance_history_widget(
             display(fig)
             plt.close(fig)
 
-    def _on_kind_change(*_):
-        _redraw_caveat()
-        _sync_accounts_options()
-
-    # Fill the picker before observing it, so setting its options does not draw.
-    _sync_accounts_options()
-    kind_picker.observe(_on_kind_change, names="value")
-    picker.observe(_redraw, names="value")
-    dollar_mode.observe(_redraw, names="value")
-    y_axis_mode.observe(_redraw, names="value")
-    value_mode.observe(_redraw, names="value")
+    picker.observe(_redraw_caveat, names="kind")
+    picker.observe(_redraw, names="selection")
+    for control in (dollar_mode, y_axis_mode, value_mode, time_range):
+        observe_while_shown(control, _redraw)
 
     _redraw_caveat()
     _redraw()
 
     box = widgets.VBox([
         *( [scenario_picker] if scenario_picker is not None else () ),
-        widgets.HBox([value_mode, dollar_mode, y_axis_mode]),
-        kind_picker, picker, out, caveat_out,
+        controls_row(value_mode, dollar_mode, y_axis_mode, time_range),
+        picker, out, caveat_out,
     ])
     return box
 
 
 def account_history_widget(
-    rc: RunConnection, kind: str, title: str, initial_count: int = 1,
+    rc: RunConnection, kind: AccountKind, title: str, initial_count: int = 1,
     scenario_picker: widgets.Dropdown | None = None,
     dollar_mode: DollarModePicker | None = None,
     value_mode: ValuePlotModePicker | None = None,
     y_axis_mode: YAxisPlotModePicker | None = None,
+    time_range: TimeRangePicker | None = None, **_,
 ):
     """Balance-history widget covering every account kind.
 
     ``kind`` only sets the Kind dropdown's initial selection
     (asset/liability/income/expense); switching it repopulates the Accounts
-    picker instead of needing a separate widget per kind.
+    picker instead of needing a separate widget per kind. A single account
+    with several lots can be drilled into, lot by lot (#170).
     """
     title = f"{title} - {rc.label}"
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
     return account_balance_history_widget(
         rc.balance_pivot, rc.account_kinds(), title, kind,
         initial_count=initial_count, cpi_balance_pivot_by_kind=rc.cpi_balance_pivot,
@@ -148,6 +164,9 @@ def account_history_widget(
         dollar_mode=dollar_mode,
         value_mode=value_mode,
         y_axis_mode=y_axis_mode,
+        lots_by_account=rc.lots_by_account(),
+        lot_balance=rc.lot_balance,
+        time_range=time_range,
     )
 
 
@@ -175,6 +194,7 @@ def render_balance_history_figure(
     *,
     zero_anchor: bool = True,
     value_mode: ValuePlotMode = ValuePlotMode.TOTAL,
+    clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> None | plt.Figure:
     """Build the matplotlib Figure for selected account balance histories, or
     None if empty.
@@ -188,6 +208,9 @@ def render_balance_history_figure(
     ``ValuePlotMode.MONTHLY`` plots the change from the previous month -- the
     first month has no prior value to diff against, so the visible line
     effectively starts one month later.
+
+    ``clip`` cuts the rows to plot (``TimeRangePicker.clip``), after the
+    monthly change is taken, so a window's first month keeps its change.
     """
     if not selected:
         return None
@@ -199,6 +222,8 @@ def render_balance_history_figure(
     if value_mode == ValuePlotMode.MONTHLY:
         balance_pivot = balance_pivot.diff()
         ylabel = "USD / month"
+    if clip is not None:
+        balance_pivot = clip(balance_pivot)
     fig, ax = plt.subplots(figsize=(10, 5))
     for name in balance_pivot.columns:
         ax.plot(balance_pivot.index, balance_pivot[name], label=name)
@@ -220,7 +245,7 @@ def to_month(date: str) -> str:
         return "-"
     return ts.strftime("%Y-%m")
 
-def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None):
+def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, **_):
     """
     Show the account setup for the given scenario as of the specified date.
 

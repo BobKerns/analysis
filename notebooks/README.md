@@ -1,5 +1,9 @@
 # Notebooks
 
+> To read a formatted `.md` file:
+> - In Jupyter: right-click on it and select `Open With / Markdown Preview`
+> - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
+
 Exploratory notebooks live here.
 
 Notes:
@@ -7,7 +11,7 @@ Notes:
 - Read inputs from `../data/` and write generated artifacts to `../out/`.
 - Treat `../state/` as persistent runtime state used by CLI and notebooks.
 
-## A table is clipped, or a notebook is slow
+## A table is clipped or a notebook is slow
 
 VS Code's notebook renderer clips a table that is wider than the window instead of
 scrolling it, and VS Code plus a Python kernel needs a fair amount of memory. If a
@@ -23,11 +27,25 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | the lots in an account | `analysis sim account holdings <account>` |
 | the portfolio by asset class | `analysis sim allocation` |
 | the accounts holding a symbol | `analysis sim account holders <symbol>` |
+| chains, as a table and one chain at a time as a flowchart | `analysis sim chain list`, `analysis sim chain show CHAIN [--graph \| --mermaid]` |
 | scheduled transactions | `analysis sim scheduled list` |
 | one-time transfers | `analysis sim transfer list` |
-| a run's year-end net worth, and lots | `analysis sim explain <runfile>` |
+| the scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `analysis sim scenario show [SCENARIO]` |
+| persons and their lifespans | `analysis sim person list` |
+| calendar events of every kind, with their variation | `analysis sim calendar list [--kind KIND] [--tag TAG]` |
+| year-to-date rows | `analysis sim ytd list` |
+| itemizations, their totals and what references them | `analysis sim itemization list`, `analysis sim itemization show NAME` |
+| a run's summary: provenance, lots, year-end net worth, negative-balance warnings | `analysis sim explain [SCENARIO \| RUNFILE]` |
+| net worth by year or month, CPI-constant (default) or nominal | `analysis sim networth [SCENARIO] [--monthly] [--dollars cpi_constant\|nominal]` |
+| balance history of an account or lot (`accounts.ipynb`) | `analysis sim account history ACCOUNT [--lot LOT] [--yearly]` |
+| income and expenses by category (`net_worth.ipynb`) | `analysis sim report income`, `analysis sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
+| realized vs. unrealized gains (`net_worth.ipynb`) | `analysis sim report gains` |
+| federal and state tax with their AGI, deduction and taxable income, and tax reconciliation (`net_worth.ipynb`) | `analysis sim report tax [--reconciliation]` |
 | every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
-| an ensemble's mean/median/SD/range by year | `analysis sim ensemble summary <recipe>` |
+| an ensemble's mean/median/SD, 5th–95th percentiles and tail means by year, for net worth, one account, or one lot | `analysis sim ensemble summary <recipe> [--account NAME [--lot LOT]]` |
+| two or more scenarios side by side: run versions, what differs, year-end net worth, break-even, one account or lot (`scenario_compare.ipynb`) | `analysis sim compare [BASELINE] [VARIANT ...] [--account NAME [--lot LOT]] [--graph]` |
+| two ensembles compared on risk: percentile, paired and tail-mean deltas | `analysis sim ensemble compare <baseline> <variant> [--account NAME [--lot LOT]]` |
+| which varying rows matter, and when (`sensitivity.ipynb`) | `analysis sim ensemble sensitivity <recipe>` |
 
 Views with no terminal equivalent yet are listed in [TODO.md](../TODO.md), which also asks for a periodic review of what is missing.
 
@@ -67,3 +85,14 @@ function should not.
   (`portfolio_allocation_widget`'s pie is the example) — sharing the `Output` with other
   content caused the two calls to reserve then misplace space.
 - Fill a picker's options before you observe it, so setting them does not trigger a draw.
+- Observe a shared control (one passed in, like `dollar_mode` or `time_range`) with
+  `observe_while_shown(control, redraw)` (`pickers.py`), not `control.observe`: `show`
+  rebuilds the widget on a scenario change and closes the old run, and this detaches the
+  old widget's handler first, so it doesn't redraw a closed run.
+- A widget with a time axis takes `time_range: TimeRangePicker | None = None`, the
+  notebook's shared **Years** slider. Call `time_range.cover(run_years(rc))` when building
+  the widget, cut what you draw with `time_range.clip(frame)`, and observe it with
+  `observe_while_shown(time_range, redraw)`.
+  Clip only what is drawn: results such as a break-even month stay whole-run.
+  The ensemble widgets take it from `EnsembleControls.time_range`, spanned when the
+  controls are built.

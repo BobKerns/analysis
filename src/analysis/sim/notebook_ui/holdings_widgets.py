@@ -5,13 +5,17 @@ and only offer investment accounts.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import pandas as pd
-from IPython.display import Markdown, display
+from IPython.display import display
 from ipywidgets import widgets
 
-from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.connection import RunConnection, Connection
 from analysis.sim.holdings import (
     account_holdings,
+    current_month,
     holding_accounts,
     holding_months,
     holding_symbols,
@@ -19,7 +23,10 @@ from analysis.sim.holdings import (
     lots_frame,
     security_names,
 )
+from analysis.sim import registries
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
+from analysis.sim.notebook_ui.pickers import AccountDropdown
+from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = [
     "account_holdings_view", "account_holdings_widget",
@@ -31,7 +38,7 @@ def _shares(value: float) -> str:
     return "-" if pd.isna(value) else (f"{value:,.6f}".rstrip("0").rstrip(".") or "0")
 
 
-_FORMATS = {
+_FORMATS: dict[str, str | Callable[..., Any] | None] = {
     "quantity": _shares,
     "price": "${:,.4f}",
     "balance": "${:,.2f}",
@@ -54,19 +61,19 @@ def _with_total(frame: pd.DataFrame, label_column: str, *, quantity: bool) -> pd
     return pd.concat([frame, pd.DataFrame([total])], ignore_index=True)
 
 
-def _month_dropdown(source: RunConnection | ScenarioConnection) -> widgets.Dropdown | None:
+def _month_dropdown(source: Connection) -> widgets.Dropdown | None:
     months = holding_months(source)
     if not months:
         return None
-    return widgets.Dropdown(options=months, value=months[-1], description="Month:")
+    return widgets.Dropdown(options=months, value=current_month(months), description="Month:")
 
 
-def _label(source: RunConnection | ScenarioConnection) -> str:
+def _label(source: Connection) -> str:
     return source.label if isinstance(source, RunConnection) else f"{source.name} (opening values)"
 
 
 def account_holdings_view(
-    source: RunConnection | ScenarioConnection, account: str, month: str | None = None,
+    source: Connection, account: str, month: str | None = None,
 ) -> tuple[str, pd.DataFrame]:
     """Heading and table (lots by row, with a Total row) the account widget shows."""
     frame = account_holdings(source, account, month=month)
@@ -79,13 +86,13 @@ def account_holdings_view(
 
 
 def symbol_holders_view(
-    source: RunConnection | ScenarioConnection, symbol: str, month: str | None = None,
+    source: Connection, symbol: str, month: str | None = None,
 ) -> tuple[str, pd.DataFrame]:
     """Heading and table (lots by account, with a Total row) the symbol widget shows."""
     everything = lots_frame(source, month)
     frame = everything[
         (everything["symbol"] == symbol)
-        & everything["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | {"cash"})
+        & everything["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | registries.CASH_SUBKINDS)
     ]
     shown = _with_total(
         frame[["account", "lot", "tax_treatment", "quantity", "price", "balance",
@@ -99,30 +106,28 @@ def symbol_holders_view(
 
 
 def account_holdings_widget(
-    source: RunConnection | ScenarioConnection, account: str | None = None,
+    source: Connection, account: str | None = None, **_,
 ) -> widgets.VBox:
     """The lots in one account (lot, symbol, acquired, quantity, price, balance,
     basis, unrealized gain), with an account dropdown and, for a run, a month."""
     accounts = holding_accounts(source)
     if not accounts:
         return _empty("no account has any lots")
-    account_picker = widgets.Dropdown(
-        options=accounts, value=account if account in accounts else accounts[0],
-        description="Account:",
-    )
+    # Each lot is already a row here, so no lot picker.
+    account_picker = AccountDropdown(accounts, account)
     month_picker = _month_dropdown(source)
     out = widgets.Output()
 
     def _redraw(*_):
         month = month_picker.value if month_picker is not None else None
-        heading, shown = account_holdings_view(source, account_picker.value, month)
+        heading, shown = account_holdings_view(source, account_picker.account, month)
         with out:
-            display(Markdown(heading), clear=True)
+            display(StyledMarkdown(heading), clear=True)
             display(_styled(shown))
 
-    for picker in (account_picker, month_picker):
-        if picker is not None:
-            picker.observe(_redraw, names="value")
+    account_picker.observe(_redraw, names="selection")
+    if month_picker is not None:
+        month_picker.observe(_redraw, names="value")
     _redraw()
     box = widgets.VBox([
         widgets.HBox([p for p in (account_picker, month_picker) if p is not None]), out,
@@ -131,7 +136,7 @@ def account_holdings_widget(
 
 
 def symbol_holders_widget(
-    source: RunConnection | ScenarioConnection, symbol: str | None = None,
+    source: Connection, symbol: str | None = None, **_,
 ) -> widgets.VBox:
     """Every lot holding one symbol, across accounts, with a symbol dropdown and,
     for a run, a month."""
@@ -152,7 +157,7 @@ def symbol_holders_widget(
         month = month_picker.value if month_picker is not None else None
         heading, shown = symbol_holders_view(source, symbol_picker.value, month)
         with out:
-            display(Markdown(heading), clear=True)
+            display(StyledMarkdown(heading), clear=True)
             display(_styled(shown))
 
     for picker in (symbol_picker, month_picker):
@@ -168,5 +173,5 @@ def symbol_holders_widget(
 def _empty(message: str) -> widgets.VBox:
     out = widgets.Output()
     with out:
-        display(Markdown(f"_{message}_"))
+        display(StyledMarkdown(f"_{message}_"))
     return widgets.VBox([out])

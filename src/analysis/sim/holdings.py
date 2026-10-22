@@ -1,19 +1,27 @@
 """Holdings: the lots inside accounts, and which accounts hold a symbol (ADR-005).
 
 Works on either kind of connection. Given a :class:`RunConnection` the values
-are the run's month-end balances (the final month unless one is chosen); given
+are the run's month-end balances (the current month, or the run's nearest, unless one is chosen); given
 a :class:`ScenarioConnection` they are the opening values.
 """
 
 from __future__ import annotations
 
+from datetime import date
+from typing import TYPE_CHECKING
+
 import pandas as pd
 
-from analysis.sim.connection import RunConnection, ScenarioConnection
+from analysis.sim.connection import RunConnection, Connection
+from analysis.frames import named_rows
+from analysis.sim import registries
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
+if TYPE_CHECKING:
+    from rich.text import JustifyMethod
+
 __all__ = [
-    "account_holdings", "holding_accounts", "holding_months", "holding_symbols",
+    "account_holdings", "current_month", "holding_accounts", "holding_months", "holding_symbols",
     "holdings_totals", "lots_frame", "render_holders_table", "render_holdings_table",
     "security_names", "symbol_holders",
 ]
@@ -22,18 +30,29 @@ _BALANCE_SHEET_KINDS = ("asset", "liability")
 _OPENING = "opening"
 
 
-def holding_months(source: RunConnection | ScenarioConnection) -> list[str]:
+def holding_months(source: Connection) -> list[str]:
     """Month-end dates a run has lot balances for (empty for a scenario)."""
     if not isinstance(source, RunConnection):
         return []
     return sorted(source.items("lot_balance")["month"].unique())
 
 
+def current_month(months: list[str], today: date | None = None) -> str:
+    """The month-end in ``months`` (sorted ISO dates) for today's month, or the
+    nearest end when the run doesn't cover it. Holdings default to it (#125):
+    a run's last month is decades out, and its opening values go stale."""
+    this_month = (today or date.today()).isoformat()[:7]
+    for m in months:
+        if m[:7] >= this_month:
+            return m
+    return months[-1]
+
+
 def _pick_month(months: list[str], month: str | None) -> str:
     if not months:
         raise ValueError("the run has no lot balances")
     if month is None:
-        return months[-1]
+        return current_month(months)
     matches = [m for m in months if m.startswith(month)]
     if len(matches) != 1:
         raise ValueError(
@@ -43,14 +62,14 @@ def _pick_month(months: list[str], month: str | None) -> str:
 
 
 def lots_frame(
-    source: RunConnection | ScenarioConnection, month: str | None = None,
+    source: Connection, month: str | None = None,
 ) -> pd.DataFrame:
     """One row per balance-sheet lot: account, lot, symbol, name (of the
     security, if securities.csv lists it), acquired, kind, subkind, tax_treatment,
     quantity (shares), price (implied by balance and quantity), balance,
     cost_basis and unrealized_gain (dollars), and ``as_of``.
     """
-    members = source.items("account_model_member")
+    members = source.items("account_lot")
     members = members[members["kind"].isin(_BALANCE_SHEET_KINDS)]
     if isinstance(source, RunConnection):
         balances = source.items("lot_balance")
@@ -85,14 +104,14 @@ def lots_frame(
     ]].reset_index(drop=True)
 
 
-def security_names(source: RunConnection | ScenarioConnection) -> dict[str, str]:
+def security_names(source: Connection) -> dict[str, str]:
     """Symbol to security name, from the data repo's securities.csv."""
     securities = source.items("security")
     return dict(zip(securities["symbol"], securities["name"], strict=True))
 
 
 def account_holdings(
-    source: RunConnection | ScenarioConnection, account: str, month: str | None = None,
+    source: Connection, account: str, month: str | None = None,
 ) -> pd.DataFrame:
     """The lots of one account. Raises ``KeyError`` for an unknown account."""
     frame = lots_frame(source, month)
@@ -106,7 +125,7 @@ def account_holdings(
 
 
 def symbol_holders(
-    source: RunConnection | ScenarioConnection, symbol: str, month: str | None = None,
+    source: Connection, symbol: str, month: str | None = None,
 ) -> pd.DataFrame:
     """Every lot holding ``symbol``, across accounts (empty if none does)."""
     frame = lots_frame(source, month)
@@ -116,16 +135,16 @@ def symbol_holders(
 def _symbol_holders(frame: pd.DataFrame) -> pd.DataFrame:
     """Lots whose symbol the symbol views list: those in investment accounts and
     cash lots (by convention, symbol ``CASH``)."""
-    return frame[frame["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | {"cash"})]
+    return frame[frame["subkind"].isin(INVESTMENT_ASSET_SUBKINDS | registries.CASH_SUBKINDS)]
 
 
-def holding_accounts(source: RunConnection | ScenarioConnection) -> list[str]:
+def holding_accounts(source: Connection) -> list[str]:
     """Names of the asset and liability accounts, sorted: what the account
     holdings widget offers. Any account can have several lots."""
     return sorted(set(lots_frame(source)["account"]))
 
 
-def holding_symbols(source: RunConnection | ScenarioConnection) -> list[str]:
+def holding_symbols(source: Connection) -> list[str]:
     """Symbols held in investment accounts or cash lots, sorted: what the holders
     widget offers."""
     symbols = _symbol_holders(lots_frame(source))["symbol"]
@@ -156,7 +175,7 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _table(title: str, columns: list[tuple[str, str]]):
+def _table(title: str | None, columns: list[tuple[str, JustifyMethod]]):
     from rich.table import Table
 
     table = Table(title=title, header_style="bold", show_lines=False)
@@ -172,7 +191,7 @@ def render_holdings_table(frame: pd.DataFrame, title: str | None = None):
         ("Quantity", "right"), ("Price", "right"), ("Balance", "right"),
         ("Basis", "right"), ("Unrealized", "right"),
     ])
-    for row in frame.itertuples():
+    for row in named_rows(frame):
         table.add_row(
             row.lot, _text(row.symbol), _text(row.name), _text(row.acquired),
             _shares(row.quantity),
@@ -193,7 +212,7 @@ def render_holders_table(frame: pd.DataFrame, title: str | None = None):
         ("Account", "left"), ("Lot", "left"), ("Tax", "left"), ("Quantity", "right"),
         ("Price", "right"), ("Balance", "right"), ("Basis", "right"), ("Unrealized", "right"),
     ])
-    for row in frame.itertuples():
+    for row in named_rows(frame):
         table.add_row(
             row.account, row.lot, _text(row.tax_treatment), _shares(row.quantity),
             _money(row.price, 4), _money(row.balance), _money(row.cost_basis),

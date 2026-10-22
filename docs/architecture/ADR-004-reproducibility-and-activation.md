@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Supersedes:** —
-- **Amended by:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism.
+- **Amended:** see [Amendments](#amendments) at the end.
 - **Related:** [ADR-001](ADR-001-overall-architecture.md) (overall architecture — summarizes reproducibility & activation), [ADR-002](ADR-002-storage-schema.md) (storage schema — `intent_manifest`, `simulation_run` stamps), [ADR-003](ADR-003-registries-and-csv-schemas.md) (registries used by `--check`).
 
 ## Context
@@ -56,7 +56,7 @@ The single-row `simulation_run` manifest ([ADR-002](ADR-002-storage-schema.md) �
 
 **Data version.** Always the HEAD SHA of the data repo at `$ANALYSIS_DATA_DIR`. If the data dir is not a git repo at all (rare; only legitimate inside the prototype tree before it's been initialized), `data_version` is set to the literal string `"unversioned"` and the run is treated as dirty for gating purposes (§3).
 
-**Scenario tree id.** Per [ADR-002](ADR-002-storage-schema.md), this is a content-addressed git tree SHA covering exactly the files the scenario load actually read: `scenarios/<name>/`, the folder of every scenario reached through `parent_scenario`, `persons.csv`, `aux/`, and `itemizations/`. Clean repo → use `git ls-tree HEAD -- <paths>` and `git mktree` to assemble the synthetic tree object. Dirty repo → use a sidecar index (`GIT_INDEX_FILE=<tmp> git add -- <paths>; git write-tree`) and optionally pin it under `refs/analysis-dirty/<tree-id>` so the object stays reachable through GC.
+**Scenario tree id.** Per [ADR-002](ADR-002-storage-schema.md), this is a content-addressed git tree SHA covering the data repo paths the scenario load can read: `scenarios/<name>/`, the folder of every scenario reached through `parent_scenario` (mix-ins included), `persons.csv`, `securities.csv`, `allocations.csv`, `aux/`, `prices/`, and `itemizations/`. Clean repo → use `git ls-tree HEAD -- <paths>` and `git mktree` to assemble the synthetic tree object. Dirty repo → use a sidecar index (`GIT_INDEX_FILE=<tmp> git add -- <paths>; git write-tree`) and optionally pin it under `refs/analysis-dirty/<tree-id>` so the object stays reachable through GC.
 
 This means: edit one comment in an unrelated CSV, `scenario_tree_id` doesn't change. Edit a referenced file, it does. The key tracks what the scenario actually depends on, not the whole repo's state.
 
@@ -69,7 +69,7 @@ The engine performs these checks in order, before any simulation work:
 3. **Data repo discovery.** Compute `data_version`, `data_dirty` scoped to the **scenario's input paths only** (the same path set used for `scenario_tree_id`). Changes elsewhere in the data repo are not considered for gating. A single `git status --porcelain -- <paths>` over the scoped set is the test.
 4. **Dirty-data gate.** If `data_dirty = 1` and `--allow-dirty-data` was **not** passed: exit with `DataDirtyRefused: <list of dirty paths>`. No partial run is created. Suggested remediation message: "commit/stash the changes, or re-run with `--allow-dirty-data` to record an unreproducible run."
 5. **Dirty-data accepted path.** If `data_dirty = 1` and `--allow-dirty-data` *was* passed: compute `scenario_tree_id` via the sidecar-index mechanism, set `allow_dirty_data = 1`, print stderr banner `WARNING: data dirty; run is not reproducible from <data_version> alone`. The run proceeds.
-6. **User validation.** `$ANALYSIS_USER` is checked against the `id` column of `$ANALYSIS_DATA_DIR/persons.csv`. Unknown → exit `UnknownUser: <name>`. Persons and operator identities live in the same file (see [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.1); a row's `role` column is informational in v1 and is not gated on. Example rows:
+6. **User validation.** `$ANALYSIS_USER` is checked against the `id` column of `$ANALYSIS_DATA_DIR/persons.csv`. Unknown → exit `UnknownUser: <name>`. Persons and operator identities live in the same file (see [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.1); a row's `role` column is informational in v1 and is not gated on: any `id` validates, though the prompt in §4 offers only the `primary` persons to choose from. Example rows:
 
    ```csv
    id,display,birthdate,role,meta_json
@@ -93,11 +93,13 @@ Required behavior:
 - Resolve its own location via `BASH_SOURCE`/`(%):-%x` so it works regardless of caller `cwd`.
 - Set `ANALYSIS_DATA_DIR` to that absolute path.
 - Set `ANALYSIS_DATA_REPO_NAME` to the basename, unless already set by the user.
-- Prompt for `ANALYSIS_USER` if unset: read one line from `/dev/tty`, validate against `persons.csv` (column 1), re-prompt on miss, abort on EOF.
-- Define `analysis_prompt_info`, which prints `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER] `, and prefix `PS1` with a literal `$(analysis_prompt_info)` only if it is not already present (so re-sourcing is idempotent; zsh gets `setopt prompt_subst`). `deactivate-analysis` strips it again.
+- Take `ANALYSIS_USER` from the environment, else from the remembered `.analysis_user`. If it is unset, or `persons.csv` (column 1) has no such id, list the `primary` persons (id and display), read an id or display name, re-prompt on miss, abort on EOF, and remember the choice in `.analysis_user`. The list and prompt are `python -m analysis.sim.choose_user`, shared with `scripts/link-data.sh`.
+- Define `analysis_prompt_info`, which prints `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER:<scenario>]` and a trailing space, reading `<scenario>` from `.current_scenario` (§4a) at each prompt and leaving it and its colon out when there is none, and prefix `PS1` with a literal `$(analysis_prompt_info)` only if it is not already present (so re-sourcing is idempotent; zsh gets `setopt prompt_subst`). `deactivate-analysis` strips it again.
 - Define a `deactivate` function that restores all saved values and unsets itself.
 
 The script is shell-agnostic at the user-visible level (works in bash and zsh); fish gets a separate `activate.fish` if/when needed.
+
+`scripts/link-data.sh` (run last by `scripts/setup.sh`, and by CI) links the two repositories: it symlinks the code repo's `data/shared` to the data repo, writes the code repo's path to `sim/.analysis` and asks which primary person the user is, as above. Given no path (a blank answer, `--template`, or no terminal), it instead builds `data/shared` from the code repo's `templates/` (whose `persons.csv` and `.analysis_user` supply a `test` person and whose one scenario is `base`), so tooling and tests always find the same layout.
 
 A Python equivalent `src/analysis/activate.py` is **not** sourceable but performs the same validations when called from `analysis sim`'s entry — so direct CLI use with manually-set env vars works without sourcing.
 
@@ -105,7 +107,15 @@ A Python equivalent `src/analysis/activate.py` is **not** sourceable but perform
 
 The data repo records the scenario the user is currently working on in a `.current_scenario` file at its root (one line, the scenario folder name). It is per-user working state, not data: `activate` adds it to the data repo's `.gitignore`, and it is outside the scenario's scoped paths, so it never affects `data_version`/`scenario_tree_id` or dirty gating.
 
-`analysis sim load <scenario>` writes the file; any command (or notebook) that takes an optional scenario resolves an omitted one via `analysis.sim.loader.resolve_scenario_name`, in this order:
+Every `sim` command that takes an optional scenario treats it the same way (`cli._resolve_scenario`):
+
+- **Named:** the name is validated against `scenarios/` and becomes the current scenario; when that changes it, the command says so on stderr, `Current scenario is now <name> (was <old>)`. A name that is only a reference — a new scenario's parent or mix-ins — does not; `sim scenario create` and `sim ensemble create` make the new scenario current instead, with the same notice. Commands whose scenario argument is required (`rename`, `delete`, `compare`, the ensemble reports) leave the file alone, except that renaming or deleting the current scenario follows it, with the same notice (`No scenario is current now (was <old>)` after a delete).
+- **Omitted:** the name in `.current_scenario` is used (an error if it names a missing scenario), and the command says so with one `Using scenario <name>` line on stderr, once per command.
+- **Omitted, with no `.current_scenario`:** a usage error asking for a name and listing the scenarios. The CLI never guesses.
+
+The prompt (§4) shows the current scenario, so the default a command will take is always in view. `sim switch` prints it; `sim switch <name>` makes a scenario current with nothing else done, printing the old and new names.
+
+Notebooks resolve an omitted scenario via `analysis.sim.loader.resolve_scenario_name`, which keeps fallbacks for a fresh data repo:
 
 1. the explicitly supplied name (validated against `scenarios/`),
 2. the name recorded in `.current_scenario` (error if it names a missing scenario),
@@ -137,7 +147,9 @@ This is the operational definition of "reproducible from stamps."
 - [ADR-003](ADR-003-registries-and-csv-schemas.md) §3: every `calendar_event.kind` is registered; every payload validates; rule-synthesizing events reference accounts that exist.
 - ADR-004 §1: a `--check stamps` mode dry-runs the stamp computation and reports what `scenario_tree_id` would be, so authors can confirm scope before committing.
 
-Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only warnings.
+Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only warnings. Warnings about something defined but not read yet (an unused latent factor, a `set_rate` row nothing reads) are printed only by `sim check`; the other commands that load leave them out.
+
+`analysis sim check --all` checks every scenario in the data repo in turn, each under a `Checking <scenario>` line. A failing scenario doesn't stop the rest; the command ends with a summary and exits `1` if any scenario failed. Giving both a scenario name and `--all` is a usage error. `--all` leaves out the defined-but-not-read warnings, which base and mix-in scenarios have many of by design, unless `--verbose` is given.
 
 ### 7. Comparison across runs
 
@@ -151,10 +163,31 @@ Exit `0` if all checks pass; `1` if any error; `0` with `WARN:` lines if only wa
 
 Run filenames embed `<timestamp>_<scenario>_<shortTreeId>` ([ADR-002](ADR-002-storage-schema.md) §File layout). If two runs collide on filename (sub-second invocations against an identical scenario), append `_<n>` starting at 2. The `simulation_run` row is the source of truth; the filename is for human convenience.
 
-### 9. Migration / install behavior
+### 9. Install and upgrade behavior
 
 - First-time install: `analysis sim load <scenario>` builds the intent file. If `state/` doesn't exist, it's created. If the data repo has no `persons.csv`, the engine refuses with a one-line how-to.
-- Code upgrade with breaking schema change: the intent file is silently rebuilt (it's a cache; [ADR-002](ADR-002-storage-schema.md) makes this explicit). Run files are read-mostly with lazy additive migration on open; an ADR-bump that introduces a non-additive change requires a new run-file major version, which `verify` and `compare` refuse to cross. This is captured in `intent_manifest.schema_version` and `simulation_run.schema_version` (additive columns to add when the first such migration is needed).
+- Code upgrade with a schema change: the intent file is silently rebuilt (it's a cache; [ADR-002](ADR-002-storage-schema.md) §Schema changes). Run files are never migrated: re-run a scenario to compare it with runs made under the current schema. Each file records the `SCHEMA_VERSION` it was written under (`intent_manifest.schema_version`, `simulation_run.schema_version`).
+
+### 10. Pruning `state/` (`.retention.yaml`)
+
+Run files and ensemble batches accumulate under `state/runs/`, quickly with ensembles, and each batch leaves its member intents under `state/intent/<scenario>/<batch>/`. There is no prune command: `sim load` and `sim run` (and so `sim all`) prune after their own work, by rules in `.retention.yaml` at the root of the data dir (`$ANALYSIS_DATA_DIR`). When the file is missing, they first write it with the default rules below (`retention.DEFAULT_RETENTION`) and say so. The file is per-user housekeeping, not data: `activate` adds it to the data repo's `.gitignore`, like `.current_scenario` (§4a), so it never affects `data_version` or dirty gating. `templates/` and `prototype_data/` ship the same defaults, with no pins.
+
+```yaml
+intents:          # member-intent batches, state/intent/<scenario>/<batch>/
+  - keep: 5
+    since: 7 days
+runs:             # single run files and run batches, state/runs/
+  - keep: 5
+    since: 7 days
+pins:             # relative to the data repo root, the folder holding state/
+  - state/runs/2026-10-17T214106Z_<scenario>_49373e7.sqlite3
+```
+
+- **What is counted.** Items are grouped by scenario and kind — single run files, run batches, intent batches — and ranked newest first by the timestamp in their names. Only names `sim run` writes are recognized (`<stamp>_<scenario>_<version>.sqlite3`, a `<stamp>[-N]` batch folder); anything else in `state/`, including a scenario's own intent file and its `base_case.sqlite3`, is never pruned.
+- **Rules.** An item is kept when any rule in its section keeps it. A rule keeps it when any condition it gives holds: `keep: N` (among its group's N newest) or `since: <duration>` (made within that long; minutes, hours, days or weeks). So the defaults keep each scenario's five newest and everything from the last week, as backup tools combine keep-last and keep-within. A missing or empty section keeps everything of its kind.
+- **Always kept.** Each group's newest item (a failed run's latest attempt included), and each scenario's newest successful run file and newest successful run batch (one with a batch manifest, no recorded failures, and every member `succeeded`), and anything written in the last ten minutes, which a concurrent `sim run` may still be writing.
+- **Batches go whole.** A batch folder is deleted with all its members, never member by member. A pin naming a batch or anything inside it keeps the batch, and keeps both its run folder and its member intents.
+- **Never fatal.** A malformed file is a warning naming the problem and prunes nothing; the load or run itself still succeeds. A run that fails still prunes afterwards, since its run file stays behind. Each prune prints one `pruned …` line when it deleted something.
 
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 
@@ -187,3 +220,17 @@ These amendments to `simulation_run` ([ADR-002](ADR-002-storage-schema.md) §Led
 - Whether `analysis sim verify` should optionally **auto-checkout** the matching `code_version` in a worktree to bridge a `CodeMismatch`. Compelling but adds significant complexity (must trust the runfile, must not touch the user's worktree). Defer to an ADR if the need is concrete.
 - Whether dirty-code runs should also be refused by default under some condition (currently only warned). Will revisit after some real-use experience.
 - Whether to capture `pip freeze` of the venv as part of the stamp set. Strict reproducibility argues yes; cost is a multi-KB JSON blob per run. Defer until a non-stdlib dependency actually affects ledger output (today: only `click`, which is interactive-surface-only).
+
+## Amendments
+
+Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
+
+- [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): an ensemble member's provenance is this ADR's stamps unchanged (`scenario_tree_id` is still the *recipe's*, copied via the intent copy) plus a new `ensemble_manifest` row recording which member and `ensemble_draw` rows recording what it drew — not a new parallel determinism mechanism.
+- [#59](https://github.com/BobKerns/analysis/issues/59): the scenario tree id covers mix-in scenarios' folders too.
+- [#106](https://github.com/BobKerns/analysis/issues/106): `sim check --all`.
+- [#131](https://github.com/BobKerns/analysis/issues/131): `scripts/link-data.sh` links the data repo at `data/shared` or builds template data there, and the user prompt lists the primary persons (§4).
+- [#204](https://github.com/BobKerns/analysis/issues/204): only `sim check` prints defined-but-not-read warnings, and `sim check --all` only with `--verbose` (§6).
+- [#214](https://github.com/BobKerns/analysis/issues/214): every CLI command naming a scenario makes it current, a defaulted one is announced, the CLI no longer falls back past `.current_scenario`, and the prompt shows the current scenario (§4, §4a).
+- [#195](https://github.com/BobKerns/analysis/issues/195): `sim load` and `sim run` prune old runs and batches by the data repo's `.retention.yaml`, written with defaults when missing and kept out of git by `activate` (§10).
+- [#236](https://github.com/BobKerns/analysis/issues/236): `sim switch` shows the current scenario or makes a named one current (§4a).
+- [#233](https://github.com/BobKerns/analysis/issues/233): a command that changes the current scenario, including by renaming or deleting it, says so (§4a).

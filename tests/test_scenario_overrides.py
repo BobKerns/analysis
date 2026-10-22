@@ -3,6 +3,8 @@
 whole-file and via parent_scenario lineage. aux/, prices/ and itemizations/
 also have a shared data repo root default; series/ does not."""
 
+# cspell:ignore NEWFUND
+
 from __future__ import annotations
 
 import csv
@@ -24,12 +26,12 @@ def _derive_empty_child(repo: Path, parent_name: str, child_name: str) -> Path:
     child = repo / "scenarios" / child_name
     child.mkdir()
     (child / "scenario.csv").write_text(
-        "name,description,account_model,start,end,seed,parent_scenario,created_by,meta_json\n"
-        f"{child_name},,,,,,{parent_name},,\n",
+        "name,description,start,end,seed,parent_scenario,created_by,meta_json\n"
+        f"{child_name},,,,,{parent_name},,\n",
         encoding="utf-8",
     )
     for filename in (
-        "accounts.csv", "account_values.csv", "scheduled.csv",
+        "accounts.csv", "account_lots.csv", "scheduled.csv",
         "calendar.csv", "year_to_date.csv",
     ):
         header = (parent / filename).read_text(encoding="utf-8").splitlines()[0]
@@ -78,7 +80,7 @@ def test_a_scenario_can_add_a_series_file_the_shared_dir_does_not_have(
     series_dir = repo / "scenarios" / "retire_alice" / "series"
     series_dir.mkdir(exist_ok=True)
     (series_dir / "rate__NEWFUND.csv").write_text(
-        "effective_date,annual_rate_micros\n2026-01-31,50000\n", encoding="utf-8",
+        "effective_date,annual_rate\n2026-01-31,5%\n", encoding="utf-8",
     )
     result = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "out",
                            allow_dirty_data=True)
@@ -101,7 +103,7 @@ def test_a_shared_series_dir_at_the_data_repo_root_is_not_read(
     series_dir = repo / "series"
     series_dir.mkdir(exist_ok=True)
     (series_dir / "rate__STRAY.csv").write_text(
-        "effective_date,annual_rate_micros\n2026-01-31,50000\n", encoding="utf-8",
+        "effective_date,annual_rate\n2026-01-31,5%\n", encoding="utf-8",
     )
     result = load_scenario(repo, "retire_alice", intent_dir=tmp_path / "out",
                            allow_dirty_data=True)
@@ -159,7 +161,7 @@ def _write_home_basis(path: Path, purchase: str) -> None:
 
 
 def _set_home_basis_reference(repo: Path, scenario: str = "retire_alice") -> None:
-    av = repo / "scenarios" / scenario / "account_values.csv"
+    av = repo / "scenarios" / scenario / "account_lots.csv"
     with av.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
         fields = list(rows[0].keys())
@@ -176,7 +178,7 @@ def _home_basis(intent_path: Path) -> int:
     con = sqlite3.connect(intent_path)
     try:
         return con.execute(
-            "SELECT m.opening_cost_basis FROM account_model_member m "
+            "SELECT m.opening_cost_basis FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = 'Asset_Home'"
         ).fetchone()[0]
     finally:

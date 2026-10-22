@@ -2,13 +2,19 @@
 
 This project provides tools for personal financial analysis and planning, supporting both CLI and Jupyter notebook workflows. It uses Python 3.14+, uv for package management, and modern Python best practices.
 
+To read a formatted `.md` file:
+- In Jupyter: right-click on it and select `Open With / Markdown Preview`
+- In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
+
 ## Directory Structure
 - `src/analysis/` — Core package code
-- `tests/` — Unit tests
 - `notebooks/` — Jupyter notebooks for exploratory analysis
 - `data/` — User input data (ignored in git)
+- `docs/` — Documentation, including `architecture/` and `guides/`
+- `historical_data/` — Downloaded and captured economic data used to derive historical rates
 - `out/` — Output data (ignored in git)
 - `state/` — Persistent state (ignored in git)
+- `tests/` — Unit tests run to verify any changes.
 
 This repository is a single top-level Python project. There are no nested repos or subprojects.
 
@@ -81,6 +87,19 @@ Reload your shell after adding it:
 exec zsh   # or: exec bash
 ```
 
+In `sim`, TAB also completes the names a scenario defines: scenarios,
+ensembles, accounts, lots, chains, scheduled rules, calendar rows, persons,
+series, tags, symbols and itemizations. Names come from the scenario named on
+the line (`--scenario`, or the command's scenario argument), else the current
+scenario, and include what it inherits. A lot completes from the account
+before it (`--to-lot` from TO_ACCOUNT). The data repo is `--data-dir` or
+`$ANALYSIS_DATA_DIR`, which the data repo's `activate-analysis` sets.
+
+A command run without a name it needs asks for it, listing the choices,
+with the same completion at the prompt.
+At a terminal, a name the scenario doesn't have (a typo) is asked for again
+the same way; in a script or pipe the command fails with its usual error.
+
 ### Amazon Expense Categorizer
 
 Run the interactive categorizer on one or more Amazon CSVs covering any date range:
@@ -123,7 +142,7 @@ Outputs:
 - Use `--output-dir` to choose another directory.
 
 Why this exists:
-- These monthly files are designed to align with Amex billing cycles, not strict calendar months.
+- These monthly files are designed to align with credit-card billing cycles, not strict calendar months.
 - This makes reconciliation and statement matching easier.
 
 Monthly files use a billing cutoff on day 3:
@@ -174,6 +193,19 @@ reads Quicken and Amazon inputs from sibling top-level data-repo directories:
 `category,target_account`. If a canonical category already matches a scenario
 expense account, no map row is needed. Supply the funding account explicitly
 with `--from-account`. Invalid target accounts are warned about and skipped.
+
+Two more optional files in `quicken/` hold household-specific choices, so none
+of them live in the code:
+
+- `expense_category_split.csv`, columns `category,account,target_category`:
+  splits one canonical category by the Quicken account that paid. A row with a
+  blank `account` is that category's default, taking every expense no named
+  account claims, including Amazon summaries. For example, `Food,Alice
+  Checking,Alice Food` and `Food,,Bill Food` divide Food between two people.
+- `expense_excluded_payees.csv`, one column `payee_pattern`: case-insensitive
+  regular expressions for payees whose expenses the scenario models separately
+  (an insurer, HOA dues). Amazon and mortgage payees are always excluded.
+
 Amounts are monthly averages over the observed baseline months and use the
 scenario start date by default.
 

@@ -64,7 +64,7 @@ export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
 printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
 	_analysis_fail "unable to write $_ANALYSIS_POINTER_FILE"
 
-for _analysis_ignored in .analysis .current_scenario .analysis_user; do
+for _analysis_ignored in .analysis .current_scenario .analysis_user .retention.yaml; do
 	if [ ! -f "$ANALYSIS_DATA_DIR/.gitignore" ]; then
 		printf '%s\n' "$_analysis_ignored" > "$ANALYSIS_DATA_DIR/.gitignore" || \
 			_analysis_fail "unable to write $ANALYSIS_DATA_DIR/.gitignore"
@@ -91,14 +91,24 @@ if [ -z "${ANALYSIS_USER-}" ] && [ -r "$ANALYSIS_DATA_DIR/.analysis_user" ]; the
 	IFS= read -r ANALYSIS_USER < "$ANALYSIS_DATA_DIR/.analysis_user"
 fi
 
-if [ -z "${ANALYSIS_USER-}" ]; then
-	printf "ANALYSIS_USER: " >&2
-	read -r ANALYSIS_USER
+# A remembered or exported user that persons.csv no longer has is asked
+# again rather than failing, so a renamed person isn't a dead end.
+if [ -n "${ANALYSIS_USER-}" ] && \
+	! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null; then
+	echo "activate-analysis: '$ANALYSIS_USER' is not in $ANALYSIS_DATA_DIR/persons.csv" >&2
+	unset ANALYSIS_USER
 fi
 
-if ! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null; then
-	unset ANALYSIS_USER
-	_analysis_fail "ANALYSIS_USER not found in $ANALYSIS_DATA_DIR/persons.csv"
+if [ -z "${ANALYSIS_USER-}" ]; then
+	# The same prompt scripts/link-data.sh uses: pick a primary person by id
+	# or display name.
+	ANALYSIS_USER="$(python -m analysis.sim.choose_user "$ANALYSIS_DATA_DIR")" || {
+		unset ANALYSIS_USER
+		echo "activate-analysis: no ANALYSIS_USER chosen" >&2
+		# Stop sourcing here: _analysis_fail's return only leaves the function.
+		# shellcheck disable=SC2317
+		return 1 2>/dev/null || exit 1
+	}
 fi
 export ANALYSIS_USER
 
@@ -115,10 +125,21 @@ fi
 
 # Prompt segment, in the style of oh-my-zsh's git_prompt_info: PS1 holds a
 # literal $(analysis_prompt_info) that is expanded at each prompt, so it is
-# added only once no matter how many times this script is sourced.
+# added only once no matter how many times this script is sourced. It reads
+# .current_scenario afresh each time, since any sim command naming a scenario
+# changes it; with no current scenario the segment leaves it out (#214).
 analysis_prompt_info() {
 	[ -n "${ANALYSIS_DATA_REPO_NAME-}" ] && [ -n "${ANALYSIS_USER-}" ] || return 0
-	printf '[analysis:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER"
+	_analysis_scenario=""
+	if [ -r "${ANALYSIS_DATA_DIR-}/.current_scenario" ]; then
+		IFS= read -r _analysis_scenario < "$ANALYSIS_DATA_DIR/.current_scenario"
+	fi
+	if [ -n "$_analysis_scenario" ]; then
+		printf '[analysis:%s:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER" "$_analysis_scenario"
+	else
+		printf '[analysis:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER"
+	fi
+	unset _analysis_scenario
 }
 
 if [ -n "${ZSH_VERSION-}" ]; then

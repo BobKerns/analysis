@@ -39,7 +39,7 @@ Done. Exit: one member intent can be fully resolved from a recipe intent in Pyth
 ## Phase 3 — `sim run` generates the ensemble
 
 1. `cli.py`: after the normal `load_scenario`, check for any unresolved `vary_distribution` row in the loaded intent. If none: `sim run` behaves exactly as today (regression-checked against the existing `test_sim_cli.py` run tests). If any:
-   - Resolve `member_count` (`--ensemble-size N` if given, else `scenario.meta_json.ensemble_size`; a clear error naming which is missing if neither is set) and the ensemble seed (`scenario.seed`; a clear error if unset).
+   - Resolve `member_count` (`--ensemble-size N` if given, else `scenario.meta_json.ensemble_size`; a clear error naming which is missing if neither is set; since #169 neither set means not an ensemble, which runs its base case instead, ADR-006 §7) and the ensemble seed (`scenario.seed`; a clear error if unset).
    - Create `state/intent/<recipe>/` and `state/runs/<recipe>/`.
    - For each member: `resolve_member` (Phase 2), then the ordinary, unmodified `run_scenario(member_intent_path, member_run_path, ...)`. Echo progress.
    - Report a failed member (don't retry, matching `sim all`'s per-scenario tolerance) by index and its intent file path; keep going.
@@ -55,6 +55,15 @@ Done. Exit: `sim run <recipe>` is the whole user-facing entry point for generati
 4. Tests: `summary` on a small fixture ensemble matches a hand-computed mean/median/SD; the CLI command's output includes every expected column and the failure count; the notebook helpers (`*_view` functions) are unit-tested without a kernel, the same way `allocation_view`/`events_view` are.
 
 Done. Exit: mean/median/SD/range are one command or one notebook cell away for any ensemble that's been run.
+
+## Follow-up — year-by-year process paths ([#115](https://github.com/BobKerns/analysis/issues/115))
+
+1. `schema.py`: `calendar_event.vary_process TEXT`, `vary_persistence REAL`, `vary_innovation_sd INTEGER`; `SCHEMA_VERSION` 32 → 33. ADR-002 DDL and ADR-003 §4.8 to match; the columns in the calendar header; `registries.VARY_PROCESSES = {"ar1"}`.
+2. `loader.py`: the §2 checks on a process row, including a level whose lower bound stays above −100%.
+3. `ensemble.py`: after the date pass, each process row's step dates (yearly, to the scenario's end or the next authored `set_rate` for its series); `process_path` turns its level and that year's shocks into yearly rates in growth-factor form; the row takes year 0 and inserts the rest as ordinary `set_rate` rows carrying its payload. `ensemble_draw` records the level.
+4. CLI and guided entry: `--vary-process`, `--vary-persistence`, `--vary-innovation-sd` (in percent) on `set-rate`; `calendar edit` keeps them. The parameters table gains a `process` column.
+5. `analysis historical`: a `Shock SD` column beside Persistence; the calibration guide says how to set a process row from them.
+6. Tests (`tests/test_rate_paths.py`): the path's flat base case, stationary spread, persistence, median compounding to the level and overflow guard; the loader and CLI rejections; step dates and cutoffs; shocks from the keyed streams; the level draw unchanged by adding a process; an end-to-end ensemble.
 
 ## Risks
 

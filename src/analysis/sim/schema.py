@@ -3,8 +3,24 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+from typing import Any
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 43
+
+
+def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
+    """Open an intent or run file, without an fsync on every commit.
+
+    Both are rebuilt from the data repo's CSVs (``sim load``, ``sim run``),
+    so durability across a power loss or OS crash isn't worth the fsync,
+    which was about 30% of an ensemble run's time on a container's disk.
+    An application crash or Ctrl-C still leaves the file intact: the
+    rollback journal stays on disk.
+    """
+    con = sqlite3.connect(path, **kwargs)
+    con.execute("PRAGMA synchronous = OFF")
+    return con
 
 # Shared snapshot tables: present in intent files and copied verbatim into run files.
 INTENT_BASE_DDL = """
@@ -12,6 +28,7 @@ CREATE TABLE person (
     id          TEXT PRIMARY KEY,
     display     TEXT NOT NULL,
     birthdate   TEXT NOT NULL,
+    sex         TEXT,  -- #222: 'f' or 'm', or NULL; a life_table lifespan needs it
     role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}'
 );
@@ -47,15 +64,14 @@ CREATE TABLE account (
     meta_json       TEXT NOT NULL DEFAULT '{}',
     CHECK (
         (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
-            'traditional_ira','roth_ira','traditional_401k','roth_401k','hsa',
-            'real_estate','vehicle','other_asset'))
+            'retirement','hsa','real_estate','vehicle','other_asset','business'))
         OR (kind = 'liability' AND subkind IN ('mortgage','heloc','credit_card',
             'other_liability'))
         OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
             'dividend','capital_gain','rental','other_income'))
         OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
             'interest_expense','taxes_federal','taxes_state','taxes_property',
-            'other_expense'))
+            'business','other_expense'))
     )
 );
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
@@ -65,16 +81,20 @@ CREATE INDEX idx_account_owner ON account(owner);
 -- set: the chain IS that account) or an INTERIOR named chain (account_id NULL,
 -- with >=1 chain_steps rows, walked in step_order until a step's amount need
 -- is satisfied). Every real account gets an implicit leaf chain at load time
--- (name = account.name, kind = account.kind), so `chain.name` is one namespace
--- covering both kinds -- account.refill_chain_id/overflow_chain_id and
+-- (name = account.name), so `chain.name` is one namespace covering both
+-- kinds -- account.refill_chain_id/overflow_chain_id and
 -- chain_steps.draw_from_chain_id always reference `chain(id)`, never
 -- `account(id)` directly, so no union-typed reference column is ever needed.
+-- An interior chain's `role` says which way money moves through it: 'source'
+-- (drawn from) or 'destination' (paid into). A leaf plays either part, so its
+-- role is NULL.
 CREATE TABLE chain (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
-    kind       TEXT NOT NULL,
+    role       TEXT CHECK (role IN ('source', 'destination')),
     account_id INTEGER REFERENCES account(id),
-    lot_id     INTEGER REFERENCES account_model_member(id)
+    lot_id     INTEGER REFERENCES account_lot(id),
+    CHECK ((account_id IS NULL) = (role IS NOT NULL))
 );
 CREATE INDEX idx_chain_account ON chain(account_id);
 
@@ -96,6 +116,12 @@ CREATE TABLE chain_steps (
     percent_micros     INTEGER NOT NULL DEFAULT 1000000,
     series             TEXT,
     cadence            TEXT CHECK (cadence IN ('monthly','annual')),
+    -- #199: the character of the money this step places, and of every later
+    -- step's until another sets one (NULL: inherited).
+    tax_character      TEXT,
+    -- #199: the asset lot whose basis this step recovers (a sale) or adds to
+    -- (a capital improvement), per tax_character.
+    basis_of_lot_id    INTEGER REFERENCES account_lot(id),
     CHECK (maximum_cents IS NULL OR maximum_cents >= 0),
     CHECK (percent_micros >= 0 AND percent_micros <= 1000000),
     CHECK (cadence IS NULL OR series IS NOT NULL),
@@ -103,16 +129,14 @@ CREATE TABLE chain_steps (
     UNIQUE (chain_id, step_order)
 );
 
-CREATE TABLE account_model (
-    id          INTEGER PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
-    description TEXT,
-    created_at  TEXT NOT NULL
-);
-
 -- One row per lot (ADR-005): a lot is a position inside one account, and the
 -- engine keys balances, basis and quantity on `id`. Accounts that are not split
 -- have a single lot labelled 'default'.
+--
+-- `subkind` is set on, and only on, the lots of a `retirement` account (#217):
+-- Roth or traditional, IRA or 401k. `tax_treatment` is the lot's effective
+-- treatment, resolved at load: its subkind's for a retirement lot, else its
+-- account's. The engine and the views read it from here, not from account.
 --
 -- Balance management is per lot (ADR-003 §4.3): a debit that would drop the
 -- lot's balance below minimum_balance_cents triggers a look-ahead draw on
@@ -124,11 +148,14 @@ CREATE TABLE account_model (
 -- refills to that fixed level, the latter by that fixed amount (or enough to
 -- reach minimum_balance_cents if that is greater); neither set means refill
 -- exactly to minimum_balance_cents.
-CREATE TABLE account_model_member (
+CREATE TABLE account_lot (
     id                      INTEGER PRIMARY KEY,
-    model_id                INTEGER NOT NULL REFERENCES account_model(id),
     account_id              INTEGER NOT NULL REFERENCES account(id),
     lot                     TEXT NOT NULL DEFAULT 'default',
+    subkind                 TEXT CHECK (subkind IN
+                                ('traditional_ira','roth_ira','traditional_401k','roth_401k')),
+    tax_treatment           TEXT CHECK (tax_treatment IN
+                                ('taxable','tax_deferred','tax_free','none')),
     symbol                  TEXT,
     acquired                TEXT,
     quantity_micros         INTEGER,
@@ -142,7 +169,7 @@ CREATE TABLE account_model_member (
     refill_amount_cents     INTEGER,
     maximum_balance_cents   INTEGER,
     overflow_chain_id       INTEGER REFERENCES chain(id),
-    UNIQUE (model_id, account_id, lot)
+    UNIQUE (account_id, lot)
 );
 
 CREATE TABLE calendar (
@@ -170,14 +197,17 @@ CREATE TABLE calendar_event (
     -- Ensemble variation (ADR-006): a row with vary_distribution set has this
     -- row's own `amount` or `date` (per vary_target) drawn per member, instead
     -- of using the value above literally -- which is then just a placeholder.
-    -- vary_low/high/mean/sd are in the *target* column's own unit: cents/
+    -- vary_low/high/median/sd/mode are in the *target* column's own unit: cents/
     -- micros for `amount` (whichever this row's own `amount` column would
     -- already mean for its `kind`), an ISO date string for `date`.
-    -- vary_low/vary_high are `uniform`'s own bounds, and also double as
-    -- `truncated_normal`'s optional clip bounds; any one of vary_mean/
-    -- vary_sd/vary_low/vary_high may be inferred from the other three when
-    -- blank (distributions.resolve_truncated_normal_bounds), so
-    -- truncated_normal is never actually unbounded.
+    -- vary_low/vary_high are `uniform`'s and `triangular`'s own bounds, and
+    -- also double as `truncated_normal`'s optional clip bounds; any of
+    -- vary_median/vary_sd/vary_low/vary_high may be inferred from the others
+    -- when blank (distributions.resolve_truncated_normal_bounds), so
+    -- truncated_normal is never actually unbounded. vary_median is the
+    -- *truncated* distribution's median (#31). vary_skew/vary_tailweight are
+    -- unitless sinh-arcsinh shape parameters (defaults 0 and 1: a normal);
+    -- vary_mode is a triangular's peak.
     -- vary_ramp_months is only meaningful for vary_target='amount' on a
     -- kind='set_rate' row: it expands into that many additional set_rate rows,
     -- ramping to the drawn target (ADR-006 §4) instead of jumping to it.
@@ -185,16 +215,35 @@ CREATE TABLE calendar_event (
     vary_distribution  TEXT,
     vary_low           TEXT,
     vary_high          TEXT,
-    vary_mean          TEXT,
+    vary_median        TEXT,
     vary_sd            TEXT,
-    vary_ramp_months   INTEGER
+    vary_skew          REAL,
+    vary_tailweight    REAL,
+    vary_mode          TEXT,
+    vary_ramp_months   INTEGER,
+    -- ADR-008: this row's parent in a correlation tree (another varying
+    -- row's or a latent_factor's name), and rho between their normal scores.
+    vary_correlate_with TEXT,
+    vary_correlation    REAL,
+    -- #68: on a correlation tree's root only, the Student-t copula's degrees
+    -- of freedom nu for the whole tree; NULL is the Gaussian copula.
+    vary_tail_dependence REAL,
+    -- ADR-006 §4a (#115): on a varying set_rate amount row, a year-by-year
+    -- path around the drawn level: vary_process ('ar1'), its persistence phi
+    -- in [0, 1), and the yearly shock size in micros. Expanded into yearly
+    -- set_rate rows by the vary step, as a ramp is.
+    vary_process        TEXT,
+    vary_persistence    REAL,
+    vary_innovation_sd  INTEGER,
+    -- #165: a `discrete` row's weighted outcomes, each a value or a low..high
+    -- range in the target's stored unit ('30%: 0; 25%: 100000..600000').
+    vary_outcomes       TEXT
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
 
 CREATE TABLE scheduled_transaction (
     id                      INTEGER PRIMARY KEY,
-    model_id                INTEGER NOT NULL REFERENCES account_model(id),
     name                    TEXT NOT NULL,
     from_account            INTEGER NOT NULL REFERENCES chain(id),
     to_account              INTEGER NOT NULL REFERENCES chain(id),
@@ -217,7 +266,9 @@ CREATE TABLE scheduled_transaction (
                                  'ss_benefit','tax_free',
                                  'tax_deferred_in','tax_deferred_out',
                                  'return_of_capital','property_tax','none',
-                                 'excluded_gain')),
+                                 'excluded_gain','home_sale',
+                                 'capital_improvement','roth_nonqualified',
+                                 'business_income','business_expense')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
     priority                INTEGER NOT NULL DEFAULT 500,
@@ -228,7 +279,7 @@ CREATE TABLE scheduled_transaction (
     ytd_preroll             INTEGER NOT NULL DEFAULT 0,
     inflation_cadence       TEXT CHECK (inflation_cadence IN ('monthly','annual')),
     tax_year                INTEGER,
-    UNIQUE (model_id, name)
+    UNIQUE (name)
 );
 CREATE INDEX idx_sched_priority ON scheduled_transaction(priority);
 CREATE INDEX idx_sched_created_by ON scheduled_transaction(created_by_event_id);
@@ -247,12 +298,16 @@ CREATE TABLE scenario (
     id                INTEGER PRIMARY KEY,
     name              TEXT NOT NULL UNIQUE,
     description       TEXT,
-    account_model_id  INTEGER NOT NULL REFERENCES account_model(id),
     calendar_id       INTEGER NOT NULL REFERENCES calendar(id),
     start             TEXT NOT NULL,
     "end"             TEXT NOT NULL,
     seed              INTEGER,
-    parent_id         INTEGER REFERENCES scenario(id),
+    -- JSON arrays of scenario names (ADR-003 §4.5): parent_scenario as
+    -- authored (main parent, then mix-ins), and the whole load order, root
+    -- first and this scenario last. Baked in so a run file can say what it
+    -- inherited without the data repo.
+    parents_json      TEXT NOT NULL DEFAULT '[]',
+    load_order_json   TEXT NOT NULL DEFAULT '[]',
     created_at        TEXT NOT NULL,
     created_by        TEXT NOT NULL,
     meta_json         TEXT NOT NULL DEFAULT '{}'
@@ -263,9 +318,22 @@ CREATE TABLE scenario (
 -- associated with this person (explicit `person` column, or owner of
 -- from_account/to_account) stops firing for the remainder of the run.
 CREATE TABLE person_lifespan (
-    scenario_id INTEGER NOT NULL REFERENCES scenario(id),
-    person      TEXT NOT NULL REFERENCES person(id),
-    final_month TEXT NOT NULL,
+    scenario_id  INTEGER NOT NULL REFERENCES scenario(id),
+    person       TEXT NOT NULL REFERENCES person(id),
+    -- #221: the authored age (decimal years); final_month is derived from it
+    -- and the person's birthdate, and is all the engine reads. An ensemble
+    -- member rewrites both with its draw and clears vary_distribution.
+    age_at_death REAL NOT NULL,
+    final_month  TEXT NOT NULL,
+    vary_distribution   TEXT,
+    vary_low            REAL,
+    vary_high           REAL,
+    vary_mode           REAL,
+    vary_correlate_with TEXT,
+    vary_correlation    REAL,
+    -- #222: a life_table lifespan's set-forward in years (negative is a
+    -- set-back), solved at load so the table's median is age_at_death.
+    life_table_set_forward REAL,
     PRIMARY KEY (scenario_id, person)
 );
 
@@ -276,7 +344,7 @@ CREATE TABLE person_lifespan (
 -- `prior_tax_activity`: wages/withholding YTD, loss carryforwards from a
 -- fully-prior tax year). Posted as balance-neutral transfer_event rows
 -- (reason_kind='ytd') so tax/reporting queries see them without double-
--- counting against account_model_member.opening_balance. `year` defaults to
+-- counting against account_lot.opening_balance. `year` defaults to
 -- scenario.start's year (dated the month before start); an explicit
 -- different year is dated that year's Dec 31.
 CREATE TABLE year_to_date (
@@ -285,15 +353,16 @@ CREATE TABLE year_to_date (
     name          TEXT NOT NULL,
     from_account  INTEGER NOT NULL REFERENCES account(id),
     to_account    INTEGER NOT NULL REFERENCES account(id),
-    from_lot_id   INTEGER NOT NULL REFERENCES account_model_member(id),
-    to_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
+    from_lot_id   INTEGER NOT NULL REFERENCES account_lot(id),
+    to_lot_id     INTEGER NOT NULL REFERENCES account_lot(id),
     amount        INTEGER NOT NULL,
     tax_character TEXT NOT NULL CHECK (tax_character IN
                         ('ordinary','ltcg','stcg','gains','deferred',
                          'ss_benefit','tax_free',
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
-                         'excluded_gain')),
+                         'excluded_gain','home_sale','capital_improvement',
+                         'roth_nonqualified','business_income','business_expense')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)
@@ -334,16 +403,64 @@ CREATE TABLE ensemble_manifest (
     ensemble_name   TEXT NOT NULL,
     member_index    INTEGER NOT NULL,
     member_count    INTEGER NOT NULL,
-    seed            INTEGER NOT NULL,
+    -- NULL for a sensitivity member (ADR-007 §5): an OAT batch draws
+    -- nothing, so there is no seed to record.
+    seed            INTEGER,
     recipe_tree_id  TEXT NOT NULL,
-    generated_at    TEXT NOT NULL
+    generated_at    TEXT NOT NULL,
+    -- ADR-007 §5: a random Monte Carlo member, or a deterministic OAT
+    -- sensitivity member.
+    mode            TEXT NOT NULL DEFAULT 'monte_carlo'
+                        CHECK (mode IN ('monte_carlo','sensitivity'))
 );
 
 CREATE TABLE ensemble_draw (
     calendar_event_name TEXT NOT NULL,
     vary_target         TEXT NOT NULL,
     drawn_value         TEXT NOT NULL,
+    -- ADR-007 §5: the OAT override quantile this row was resolved at; NULL
+    -- for a random draw or a row resolved to its central value.
+    quantile            REAL,
+    -- The row's vary_distribution, which resolving clears from calendar_event
+    -- (ADR-007 §5); NULL in files written before schema 28.
+    distribution        TEXT,
+    -- ADR-008 §6: the row's standard normal score in its correlation tree;
+    -- NULL for a row outside every tree.
+    z                   REAL,
+    -- #261: on a random member, a tree node's own independent normal noise,
+    -- before its tree mixes it in (NULL outside every tree, and on member 0
+    -- or an OAT member); and the probability the drawn value sits at in its
+    -- distribution (for a factor, its score's; NULL only for a lifespan's
+    -- authored base age).
+    noise               REAL,
+    u                   REAL,
     PRIMARY KEY (calendar_event_name)
+);
+
+-- #261 (#72): a t-copula tree's scale S on a random member, by its root:
+-- the member's own (year NULL), multiplying every score in the tree, and
+-- each process path year's.
+CREATE TABLE ensemble_tail_scale (
+    tree_root   TEXT NOT NULL,
+    year        INTEGER,
+    scale       REAL NOT NULL,
+    UNIQUE (tree_root, year)
+);
+
+-- #261: each year of a process path (ADR-006 §4a): the node's own noise,
+-- its score after its tree mixes it in, the tree's scale that year (NULL
+-- for a Gaussian tree or a lone row), the shock the path took (score *
+-- scale; 0 on member 0 and OAT members, whose noise and score are NULL),
+-- and the resulting rate in micros.
+CREATE TABLE ensemble_path_shock (
+    node        TEXT NOT NULL,
+    year        INTEGER NOT NULL,
+    noise       REAL,
+    score       REAL,
+    scale       REAL,
+    shock       REAL NOT NULL,
+    rate        INTEGER NOT NULL,
+    PRIMARY KEY (node, year)
 );
 """
 
@@ -405,7 +522,7 @@ CREATE INDEX idx_step_month ON simulation_step(month);
 
 CREATE TABLE lot_state (
     step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
-    lot_id          INTEGER NOT NULL REFERENCES account_model_member(id),
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
     balance         INTEGER NOT NULL,
     cost_basis      INTEGER,
     quantity_micros INTEGER,
@@ -420,7 +537,7 @@ SELECT ls.step_id, m.account_id, SUM(ls.balance) AS balance,
        CASE WHEN COUNT(ls.cost_basis) < COUNT(*) THEN NULL
             ELSE SUM(ls.cost_basis) END AS cost_basis
 FROM lot_state ls
-JOIN account_model_member m ON m.id = ls.lot_id
+JOIN account_lot m ON m.id = ls.lot_id
 GROUP BY ls.step_id, m.account_id;
 
 CREATE TABLE transfer_event (
@@ -444,9 +561,14 @@ CREATE TABLE transfer_event (
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
                         ('rule','initial','ytd','ytd_rule','refill','overflow')),
     reason_id       INTEGER,
+    -- The event this leg derives from: a multi-leg rule's primary leg, a
+    -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
+    -- leg, the debit whose look-ahead refill drew it (a nested refill points
+    -- at the refill leg that triggered it). The refill posts first, so its
+    -- parent has the higher id.
     parent_event_id INTEGER REFERENCES transfer_event(id),
-    from_lot_id     INTEGER NOT NULL REFERENCES account_model_member(id),
-    to_lot_id       INTEGER NOT NULL REFERENCES account_model_member(id),
+    from_lot_id     INTEGER NOT NULL REFERENCES account_lot(id),
+    to_lot_id       INTEGER NOT NULL REFERENCES account_lot(id),
     meta_json       TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
@@ -455,6 +577,22 @@ CREATE INDEX idx_xfer_to       ON transfer_event(to_account);
 CREATE INDEX idx_xfer_reason   ON transfer_event(reason_kind, reason_id);
 CREATE INDEX idx_xfer_parent   ON transfer_event(parent_event_id);
 CREATE INDEX idx_xfer_taxchar  ON transfer_event(tax_character);
+
+-- #199: basis a sale could not recover, from a chain step whose
+-- tax_character is return_of_capital. No money moved, so it is not a
+-- transfer_event; the tax accumulator nets it against the year's capital
+-- gains, deducts up to the capital_loss_limit, and carries the rest forward.
+CREATE TABLE capital_loss (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    date            TEXT NOT NULL,
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
+    amount          INTEGER NOT NULL CHECK (amount > 0),
+    tax_character   TEXT NOT NULL CHECK (tax_character IN ('ltcg','stcg')),
+    tax_year        INTEGER,
+    reason_kind     TEXT NOT NULL,
+    reason_id       INTEGER
+);
 
 CREATE TABLE applied_calendar_event (
     step_id           INTEGER NOT NULL REFERENCES simulation_step(id),
@@ -530,7 +668,7 @@ SELECT s.month, a.id AS account_id, a.name AS account, m.id AS lot_id, m.lot,
        m.symbol, a.kind, a.subkind, ls.balance, ls.cost_basis, ls.quantity_micros
 FROM simulation_step s
 JOIN lot_state ls ON ls.step_id = s.id
-JOIN account_model_member m ON m.id = ls.lot_id
+JOIN account_lot m ON m.id = ls.lot_id
 JOIN account a ON a.id = m.account_id
 WHERE a.kind IN ('asset','liability');
 
@@ -594,8 +732,7 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "account",
     "chain",
     "chain_steps",
-    "account_model",
-    "account_model_member",
+    "account_lot",
     "calendar",
     "calendar_event",
     "scheduled_transaction",
@@ -609,4 +746,16 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "calendar_event_tag",
     "ensemble_manifest",
     "ensemble_draw",
+    "ensemble_tail_scale",
+    "ensemble_path_shock",
 )
+
+
+def inserted_id(cur: sqlite3.Cursor) -> int:
+    """The rowid ``cur``'s INSERT just made.
+
+    ``lastrowid`` is typed ``int | None`` because it is None before any
+    insert; after one it is always set, so None here is a bug."""
+    if cur.lastrowid is None:
+        raise RuntimeError("cursor has not inserted a row")
+    return cur.lastrowid

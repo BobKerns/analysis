@@ -1,0 +1,182 @@
+# The verification gates from .github/copilot-instructions.md, run on GitHub so
+# a commit made without the local hooks (a fresh clone, a web edit,
+# --no-verify) is caught before merge. Mark these jobs as required checks in the
+# ruleset for main; they block merging, not pushing. The sixth gate, loading the
+# real scenarios, needs the private data repo and stays local.
+#
+# Every job skips on a draft pull request, where the gates run locally and
+# Copilot doesn't review: Actions minutes are billed, and a draft can't merge.
+# A skipped job still reports its required check, and marking the pull request
+# ready (ready_for_review) runs everything on that commit.
+name: Gates
+
+on:
+  pull_request:
+    # edited: the title and body are checked too, and can change on their own.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to a pull request supersedes its running check. Pushes to main
+# never cancel each other: each run checks only its own pushed range.
+concurrency:
+  group: gates-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  keywords:
+    name: Blocked keywords
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Every commit in the range, for its message.
+          fetch-depth: 0
+
+      - name: Tracked files
+        run: scripts/check-blocked-keywords.sh --all
+
+      - name: Commit messages
+        # Run every check even after a hit, so one run reports them all.
+        if: ${{ !cancelled() }}
+        env:
+          # Only these SHAs come from the event; never interpolate its text
+          # into the script.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.after }}
+        run: |
+          # A force push (or the first push) leaves no usable base, and the
+          # pushed range is unknown: fail closed by checking the whole history.
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+              range="$BASE..$HEAD"
+          else
+              range="$HEAD"
+          fi
+          status=0
+          for sha in $(git rev-list $range); do
+              git log -1 --format=%B "$sha" > "$RUNNER_TEMP/message.txt"
+              # --text, not --message: a stored message's '#' lines are not
+              # editor comments, and a commit made with -m or -F keeps them.
+              if ! scripts/check-blocked-keywords.sh --text "$RUNNER_TEMP/message.txt"; then
+                  echo "::error::Blocked keyword in the message of $sha"
+                  status=1
+              fi
+          done
+          exit $status
+
+      - name: Pull request title and body
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n\n%s\n' "$TITLE" "$BODY" > "$RUNNER_TEMP/pr.txt"
+          scripts/check-blocked-keywords.sh --text "$RUNNER_TEMP/pr.txt"
+
+  python:
+    name: Tests and lint
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The base commit, to list the changed files.
+          fetch-depth: 0
+
+      # A change that only touches prose or editor settings can't change a
+      # test, lint or type result, so the rest of the job is skipped. The job
+      # itself still runs and passes: it is a required check, and a check
+      # skipped by a workflow-level paths filter never reports at all. The
+      # list names what may skip, not what must run, so a new directory is
+      # tested by default.
+      - name: Changed files
+        id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.after }}
+        run: |
+          needed=false
+          # With no usable base (a force push, the first push) the change is
+          # unknown: run everything.
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+              needed=true
+          else
+              changed=$(git diff --name-only "$BASE...$HEAD")
+              while IFS= read -r path; do
+                  case "$path" in
+                      "") ;;
+                      docs/*|.cspell/*|.vscode/*|.cursor/*|.serena/*) ;;
+                      .github/copilot-instructions.md) ;;
+                      cspell.json|.markdownlint.json|.markdownlintignore) ;;
+                      analysis.code-workspace|LICENSE) ;;
+                      # Markdown elsewhere (a scenario's README.md) is data.
+                      */*) needed=true ;;
+                      *.md) ;;
+                      *) needed=true ;;
+                  esac
+              done <<< "$changed"
+          fi
+          echo "Tests needed: $needed"
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+
+      - uses: astral-sh/setup-uv@v7
+        if: steps.changes.outputs.needed == 'true'
+        with:
+          # Pinned: an unpinned setup asks the GitHub API for the latest
+          # release on every run, and fails the job when that times out.
+          version: "0.12.23"
+
+      - name: Install Python and dependencies
+        if: steps.changes.outputs.needed == 'true'
+        # uv reads the pinned version from .python-version.
+        run: |
+          uv python install
+          uv sync --locked --group dev
+
+      # The same data/shared layout a developer has, from templates/.
+      - name: Template data repo
+        if: steps.changes.outputs.needed == 'true'
+        run: scripts/link-data.sh --template
+
+      - name: Tests
+        if: steps.changes.outputs.needed == 'true'
+        run: uv run --no-sync python -m pytest -q -n auto
+
+      - name: Lint
+        if: steps.changes.outputs.needed == 'true'
+        run: uv run --no-sync ruff check src tests
+
+      - name: Types
+        # Run even when lint fails, so one run reports both.
+        if: ${{ !cancelled() && steps.changes.outputs.needed == 'true' }}
+        run: uv run --no-sync ty check
+
+  docs:
+    name: Spelling and markdown
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      # CI has no data repo, so this builds data/shared from templates/,
+      # including the empty dictionary cspell.json loads. Tracked files never
+      # use the data repo's names, so nothing here needs its words.
+      - name: Template data repo
+        run: scripts/link-data.sh --template
+
+      - name: Spelling
+        run: npm run spell
+
+      - name: Markdown
+        run: npm run markdownlint

@@ -28,11 +28,11 @@ def test_each_lot_keeps_its_own_settings(reserve_lot: None,
     try:
         rows = con.execute(
             "SELECT m.lot, m.minimum_balance_cents, m.refill_chain_id IS NOT NULL "
-            "FROM account_model_member m JOIN account a ON a.id = m.account_id "
+            "FROM account_lot m JOIN account a ON a.id = m.account_id "
             "WHERE a.name = ? ORDER BY m.id", (CHECKING,),
         ).fetchall()
         refill_from = con.execute(
-            "SELECT c.name FROM account_model_member m JOIN chain c ON c.id = m.refill_chain_id "
+            "SELECT c.name FROM account_lot m JOIN chain c ON c.id = m.refill_chain_id "
             "JOIN account a ON a.id = m.account_id WHERE a.name = ? AND m.lot = 'default'",
             (CHECKING,),
         ).fetchone()[0]
@@ -50,11 +50,16 @@ def test_a_lot_is_refilled_from_a_sibling_lot(reserve_lot: None,
     con = sqlite3.connect(run)
     try:
         lots = dict(con.execute(
-            "SELECT m.lot, m.id FROM account_model_member m "
+            "SELECT m.lot, m.id FROM account_lot m "
             "JOIN account a ON a.id = m.account_id WHERE a.name = ?", (CHECKING,)))
         refills = con.execute(
             "SELECT from_lot_id, to_lot_id, SUM(amount) FROM transfer_event "
             "WHERE reason_kind = 'refill' GROUP BY from_lot_id, to_lot_id"
+        ).fetchall()
+        refill_causes = con.execute(
+            "SELECT DISTINCT d.from_lot_id FROM transfer_event r "
+            "LEFT JOIN transfer_event d ON d.id = r.parent_event_id "
+            "WHERE r.reason_kind = 'refill'"
         ).fetchall()
         lowest = con.execute(
             "SELECT MIN(balance) FROM balance_by_lot WHERE lot_id = ? AND month > '2026-06'",
@@ -64,6 +69,7 @@ def test_a_lot_is_refilled_from_a_sibling_lot(reserve_lot: None,
         con.close()
     assert refills and all(r[:2] == (lots["reserve"], lots["default"]) for r in refills)
     assert lowest >= 200_000  # the default lot never drops below its $2,000 minimum
+    assert refill_causes == [(lots["default"],)]  # each refill points at a debit of the lot it refilled
 
 
 def test_cash_management_columns_moved_off_accounts_csv(
@@ -75,7 +81,7 @@ def test_cash_management_columns_moved_off_accounts_csv(
     accounts["minimum_balance"] = ""
     accounts.loc[accounts["name"] == CHECKING, "minimum_balance"] = "5.00"
     accounts.to_csv(path, index=False)
-    with pytest.raises(LoadError, match=r"Asset_Checking\): minimum_balance moved to account_values.csv"):
+    with pytest.raises(LoadError, match=r"Asset_Checking\): minimum_balance moved to account_lots.csv"):
         load_test_copy()
 
 

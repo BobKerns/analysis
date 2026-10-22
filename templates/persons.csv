@@ -1,1 +1,2 @@
-id,display,birthdate,role,meta_json
+id,display,birthdate,sex,role,meta_json
+test,Test Tester,1900-01-01,,primary,{}

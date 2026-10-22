@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from analysis.sim.provenance import code_stamps
-from analysis.sim.schema import SCHEMA_VERSION, SNAPSHOT_TABLES, apply_run_schema
+from analysis.sim.schema import SCHEMA_VERSION, SNAPSHOT_TABLES, apply_run_schema, connect_sim_file
 
 __all__ = ["open_run_file", "finalize_run"]
 
@@ -39,7 +39,7 @@ def open_run_file(
     if run_path.exists():
         raise FileExistsError(f"run file already exists: {run_path}")
 
-    con = sqlite3.connect(run_path)
+    con = connect_sim_file(run_path)
     con.execute("PRAGMA locking_mode = EXCLUSIVE")
     con.execute("PRAGMA foreign_keys = ON")
     apply_run_schema(con)
@@ -83,7 +83,8 @@ def open_run_file(
         data_dirty=data_dirty,
         run_args=run_args,
         engine_options=engine_options,
-        code_repo_path=code.repo_path,
+        # NOT NULL: blank when the code isn't running from a git checkout.
+        code_repo_path=code.repo_path or "",
         code_dirty=code.dirty,
     )
     con.commit()

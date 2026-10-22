@@ -3,6 +3,7 @@ command-line and notebook views (ADR-005 phase 4)."""
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import matplotlib
@@ -17,6 +18,7 @@ from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.holdings import (
     account_holdings,
     holding_accounts,
+    current_month,
     holding_months,
     holding_symbols,
     holdings_totals,
@@ -35,10 +37,11 @@ BROKERAGE = "Asset_Brokerage_Joint"
 
 
 def test_account_holdings_lists_each_lot_at_the_final_month(two_lot_run: RunConnection) -> None:
-    frame = account_holdings(two_lot_run, BROKERAGE)
+    final = holding_months(two_lot_run)[-1]
+    frame = account_holdings(two_lot_run, BROKERAGE, month=final[:7])
     assert list(frame["lot"]) == ["a", "b"]
     assert list(frame["symbol"]) == ["AAA", "BBB"]
-    assert frame["as_of"].nunique() == 1 and frame["as_of"].iloc[0] == holding_months(two_lot_run)[-1]
+    assert frame["as_of"].nunique() == 1 and frame["as_of"].iloc[0] == final
     a = frame.set_index("lot").loc["a"]
     assert a["quantity"] > 1000.0  # the 2029 inheritance bought more shares
     assert a["price"] == pytest.approx(a["balance"] / a["quantity"])
@@ -104,7 +107,7 @@ def test_widgets_offer_every_account_and_the_symbols_of_investment_and_cash_lots
     two_lot_run: RunConnection, test_data_dir: Path, update_account_value,
 ) -> None:
     assert holding_accounts(two_lot_run) == sorted([
-        "Asset_Checking", "Asset_Home", BROKERAGE, "Asset_Roth_Alice", "Asset_Roth_Bob",
+        "Asset_Checking", "Asset_Home", BROKERAGE, "Asset_Roth_Alice", "Asset_Roth_Bill",
         "Asset_Savings", "Asset_TraditionalIRA_Alice", "Liability_Mortgage",
     ])
     assert holding_symbols(two_lot_run) == ["AAA", "BBB"]
@@ -185,7 +188,7 @@ def test_account_holdings_view_has_a_heading_and_a_total_row(two_lot_run: RunCon
 
 
 def test_symbol_holders_view_totals_quantity(two_lot_run: RunConnection) -> None:
-    heading, table = symbol_holders_view(two_lot_run, "AAA")
+    heading, table = symbol_holders_view(two_lot_run, "AAA", month=holding_months(two_lot_run)[-1][:7])
     assert heading.startswith("**AAA** (Alpha Growth Fund) as of ")
     assert table.index[0] == (BROKERAGE, "a")
     assert table.index[-1] == ("Total", "")  # a blank lot, not NaN
@@ -198,10 +201,10 @@ def test_account_holdings_widget_redraws_when_the_account_or_month_changes(
     widget = account_holdings_widget(two_lot_run, BROKERAGE)
     selectors, _out = widget.children
     account_picker, month_picker = selectors.children
-    assert account_picker.value == BROKERAGE and month_picker.value == holding_months(two_lot_run)[-1]
-    account_picker.value = "Asset_Roth_Alice"  # must not raise
+    assert account_picker.account == BROKERAGE and month_picker.value == current_month(holding_months(two_lot_run))
+    account_picker.account_picker.value = "Asset_Roth_Alice"  # must not raise
     month_picker.value = holding_months(two_lot_run)[0]
-    assert (account_picker.value, month_picker.value) == (
+    assert (account_picker.account, month_picker.value) == (
         "Asset_Roth_Alice", holding_months(two_lot_run)[0],
     )
 
@@ -237,3 +240,16 @@ def test_holdings_carry_the_security_name_when_securities_csv_lists_it(
         assert heading.startswith("**ZZZ** as of opening")
         picker = symbol_holders_widget(scenario).children[0].children[0]
         assert ("ZZZ", "ZZZ") in picker.options
+
+
+def test_holdings_default_to_the_current_month_within_the_run() -> None:
+    # #125: a run's last month is decades out and its opening values go stale.
+    months = ["2026-05-31", "2026-06-30", "2026-07-31"]
+    assert current_month(months, today=date(2026, 6, 15)) == "2026-06-30"
+    assert current_month(months, today=date(2020, 1, 1)) == "2026-05-31"
+    assert current_month(months, today=date(2040, 1, 1)) == "2026-07-31"
+
+
+def test_account_holdings_without_a_month_shows_the_current_one(two_lot_run: RunConnection) -> None:
+    frame = account_holdings(two_lot_run, BROKERAGE)
+    assert frame["as_of"].iloc[0] == current_month(holding_months(two_lot_run))

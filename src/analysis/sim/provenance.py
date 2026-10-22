@@ -3,9 +3,10 @@
 Computes ``code_version``, ``data_version``, ``data_dirty``, and
 ``scenario_tree_id`` via GitPython. ``scenario_tree_id`` is a real git tree
 SHA, computed via a sidecar index (the user's index is never touched), over
-exactly the paths the loader read for a scenario: ``scenarios/<name>/`` plus the
-folder of every scenario it inherits from via ``parent_scenario``,
-``persons.csv``, ``aux/``, ``prices/``, and ``itemizations/`` (each also
+the data repo paths a scenario's load can read: ``scenarios/<name>/`` plus the
+folder of every scenario it inherits from via ``parent_scenario`` (mix-ins
+included), ``persons.csv``, ``securities.csv``, ``allocations.csv``, and the
+whole shared ``aux/``, ``prices/``, and ``itemizations/`` folders (each also
 resolved per scenario under ``scenarios/<name>/``, ADR-003 §4.1d; covered
 automatically since that whole folder is already in scope). ``series/`` has no
 shared root tier at all -- only the per-scenario ``scenarios/<name>/series/``
@@ -14,7 +15,6 @@ folders, already covered the same way.
 
 from __future__ import annotations
 
-import csv
 import tempfile
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
@@ -22,6 +22,8 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
+
+from analysis.sim.lineage import load_order
 
 
 class DataDirtyRefused(RuntimeError):
@@ -67,7 +69,7 @@ def code_stamps() -> CodeStamps:
     return CodeStamps(
         version=repo.head.commit.hexsha,
         dirty=repo.is_dirty(untracked_files=True),
-        repo_path=repo.working_tree_dir,
+        repo_path=None if repo.working_tree_dir is None else str(repo.working_tree_dir),
     )
 
 
@@ -102,38 +104,17 @@ def _scoped_paths(data_dir: Path, scenario_name: str) -> list[str]:
 
 
 def _scenario_lineage(data_dir: Path, scenario_name: str) -> list[str]:
-    """``scenario_name`` followed by each ancestor it inherits from.
+    """``scenario_name`` and every scenario it inherits from, main parent's
+    line and mix-ins alike.
 
-    A derived scenario's load reads its parents' folders too (ADR-003 §4.5), so
-    the provenance scope has to cover them or an edit to a parent would leave a
-    child's ``scenario_tree_id`` unchanged and its ``data_dirty`` false.
+    A derived scenario's load reads all of their folders too (ADR-003 §4.5),
+    so the provenance scope has to cover them or an edit to a parent or a
+    mix-in would leave a child's ``scenario_tree_id`` unchanged and its
+    ``data_dirty`` false. Tolerant of a malformed scenario.csv: provenance
+    must not be the thing that reports one -- the loader validates it
+    properly and will raise.
     """
-    lineage: list[str] = []
-    seen: set[str] = set()
-    name = scenario_name
-    while name and name not in seen:
-        lineage.append(name)
-        seen.add(name)
-        name = _parent_of(data_dir, name)
-    return lineage
-
-
-def _parent_of(data_dir: Path, scenario_name: str) -> str:
-    """Read ``parent_scenario`` out of a scenario header, or "" if absent.
-
-    Deliberately tolerant: provenance must not be the thing that reports a
-    malformed scenario.csv — the loader validates it properly and will raise.
-    """
-    path = data_dir / "scenarios" / scenario_name / "scenario.csv"
-    if not path.is_file():
-        return ""
-    try:
-        with path.open(newline="", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
-                return (row.get("parent_scenario") or "").strip()
-    except (OSError, UnicodeDecodeError, csv.Error):
-        return ""
-    return ""
+    return load_order(data_dir / "scenarios", scenario_name)
 
 
 def _compute_tree_id(repo: Repo, scoped_abs: list[str]) -> str:
