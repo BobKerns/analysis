@@ -19,7 +19,8 @@ from analysis.sim.calendar_guide import (
 
 # Every kind's own columns beyond those all rules have, and whether each is
 # required: ADR-003 §2 and §4.6. A column no kind lists here is read by every
-# kind; one that is listed is blanked on a rule of any other kind.
+# kind; one that is listed is blanked on a rule of any other kind, except
+# params_json and person, which any kind may carry.
 KIND_COLUMNS: dict[str, dict[str, bool]] = {
     "fixed_amount": {
         "amount": True, "series": False, "base_date": False, "inflation_cadence": False,
@@ -46,7 +47,9 @@ assert {kind for kind, columns in KIND_COLUMNS.items()
 
 KIND_ONLY_COLUMNS: frozenset[str] = frozenset(
     column for columns in KIND_COLUMNS.values() for column in columns
-    if column != "params_json"  # every kind may carry extension parameters
+    # Every kind may carry extension parameters, and a person whose death
+    # stops the rule (#256); some kinds require one.
+    if column not in ("params_json", "person")
 )
 
 # What the usual rule of each kind is taxed as (ADR-003 §2); on_death must be
@@ -185,7 +188,8 @@ RULE = KindSpec(
             "person", "person", option="--person", strict=True,
             required=needs("person"), applies=reads("person"),
             choices=lambda ctx, answers: list(ctx.persons),  # noqa: ARG005
-            help="Whose age or lifespan the rule follows.",
+            help="Whose age or lifespan the rule follows. On any rule, it stops the rule "
+                 "after that person's final month.",
         ),
         Field(
             "claim_age", "claim age (whole years)", type="integer", option="--claim-age",

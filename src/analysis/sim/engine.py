@@ -109,7 +109,6 @@ def run_scenario(
         account_kinds: dict[int, str] = {r[0]: r[4] for r in lots}
         account_subkind: dict[int, str] = {r[0]: r[5] for r in lots}
         account_tax_treatment: dict[int, str | None] = {r[0]: r[6] for r in lots}
-        account_owner: dict[int, str | None] = {r[0]: r[7] for r in lots}
         quantities: dict[int, int | None] = {r[0]: r[8] for r in lots}
         # A lot declared up front for a future purchase starts with no basis.
         for r in lots:
@@ -315,18 +314,16 @@ def run_scenario(
                     continue
                 if t_end is not None and month_s > t_end:
                     continue
+                # Only a rule's own `person` stops it at a death (#256).
                 # percent_of_balance is asset growth (ADR-003 §2.2: "an asset
                 # account's growth is a property of the account"), never a
-                # personal service tied to the living owner -- an IRA/checking
-                # balance keeps earning interest/appreciating after its owner's
-                # death, so it's exempt from lifespan gating. on_death is the
+                # personal service tied to the living owner, so it's exempt
+                # even with a person. on_death is the
                 # rule kind that FIRES on the death transition itself, so it
                 # must not be suppressed by the very gating it triggers.
                 if (
                     person_lifespan and rule_kind not in ("percent_of_balance", "on_death")
-                    and _past_person_lifespan(
-                        month_s, p_person, from_account or frm, to, account_owner, person_lifespan,
-                    )
+                    and _past_person_lifespan(month_s, p_person, person_lifespan)
                 ):
                     continue
                 fire_count = _cadence_count(
@@ -613,6 +610,17 @@ class RothLot(NamedTuple):
     clock_start: date | None
     """Jan 1 of the five-year clock's first year; None means it has run."""
     birthdate: date | None
+    """Whose 59½ the distribution waits for; None means no age test, as
+    after the owner's death (#256)."""
+    then: tuple[date, RothLot] | None = None
+    """From this date on, the lot follows these rules instead: a death
+    changes the clock or the age test (#256)."""
+
+
+def _earlier_clock(*clocks: date | None) -> date | None:
+    """The earliest of several five-year clocks, where None (a clock that
+    has run) is earliest of all."""
+    return None if None in clocks else min(c for c in clocks if c is not None)
 
 
 def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
@@ -621,7 +629,17 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
     A Roth IRA's clock is the owner's, across all their Roth IRA lots; a Roth
     401k's is the plan's, across that account's Roth lots. It starts on Jan 1
     of the year of the earliest of those lots' ``acquired`` dates, or of the
-    account's ``opened`` when a lot has none. With neither, it has run."""
+    account's ``opened`` when a lot has none. With neither, it has run.
+
+    A death changes the rules from the month after the final month (#256).
+    The two ``primary`` persons are spouses. Under the default
+    ``roth_survivor`` election, ``own``, a surviving spouse treats the
+    decedent's Roth IRAs as their own (Treas. Reg. §1.408A-6 Q&A-7(b)): those
+    lots and the survivor's own Roth IRA lots take the earlier of the two
+    clocks and the survivor's 59½. Otherwise, as for a Roth 401k or a
+    decedent with no surviving spouse, the decedent's lots keep the
+    decedent's clock with no age test, since a distribution after death
+    needs only the five years."""
     rows = con.execute(
         "SELECT m.id, m.subkind, m.acquired, a.opened, a.owner, a.id FROM account_lot m "
         "JOIN account a ON a.id = m.account_id WHERE m.subkind IN ('roth_ira', 'roth_401k')"
@@ -639,14 +657,58 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
             years.setdefault(key, []).append(int(dated[:4]))
         else:
             undated.add(key)
+    clocks: dict[tuple[str, object], date | None] = {
+        key: None if key in undated else date(min(years[key]), 1, 1)
+        for key in years.keys() | undated
+    }
+
+    # The first day each person is dead: the month after their final month.
+    deaths = {
+        person: _parse_date(final_month) + timedelta(days=1)
+        for person, final_month in con.execute("SELECT person, final_month FROM person_lifespan")
+    }
+    primaries = [r[0] for r in con.execute("SELECT id FROM person WHERE role = 'primary' ORDER BY id")]
+    spouses = dict([primaries, primaries[::-1]]) if len(primaries) == 2 else {}
+    meta = json.loads(con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}")
+    treat_as_own = meta.get("roth_survivor", "own") == "own"
+
+    def survives(person: str | None, dies: date) -> bool:
+        return person is not None and (person not in deaths or deaths[person] > dies)
+
+    def phases(subkind: str, owner: str | None, clock: date | None) -> list[tuple[date, date | None, date | None]]:
+        """The lot's rules after each death: (from, clock_start, birthdate)."""
+        born = birthdates.get(owner) if owner else None
+        if owner is None or owner not in deaths and spouses.get(owner) not in deaths:
+            return []
+        spouse = spouses.get(owner) if subkind == "roth_ira" and treat_as_own else None
+        spouse_clock = clocks.get(("ira", spouse), clock) if spouse else clock
+        steps = []
+        if spouse in deaths and survives(owner, deaths[spouse]):
+            # The owner survives and treats the spouse's Roth IRAs as their own.
+            clock = _earlier_clock(clock, spouse_clock)
+            steps.append((deaths[spouse], clock, born))
+        if owner in deaths:
+            dies = deaths[owner]
+            if survives(spouse, dies):
+                clock = _earlier_clock(clock, spouse_clock)
+                steps.append((dies, clock, birthdates.get(spouse)))
+                if spouse in deaths:
+                    steps.append((deaths[spouse], clock, None))
+            else:
+                steps.append((dies, clock, None))
+        return steps
+
     lots: dict[int, RothLot] = {}
     for lot, subkind, _acquired, _opened, owner, account_id in rows:
-        key = clock_key(subkind, owner, account_id)
-        year = None if key in undated else min(years[key])
+        clock = clocks[clock_key(subkind, owner, account_id)]
+        then: tuple[date, RothLot] | None = None
+        for start, step_clock, step_born in reversed(phases(subkind, owner, clock)):
+            then = (start, RothLot(subkind == "roth_ira", step_clock, step_born, then))
         lots[lot] = RothLot(
             basis_first=subkind == "roth_ira",
-            clock_start=None if year is None else date(year, 1, 1),
+            clock_start=clock,
             birthdate=birthdates.get(owner) if owner else None,
+            then=then,
         )
     return lots
 
@@ -654,7 +716,10 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
 def _roth_qualified(roth: RothLot, on: date) -> bool:
     """Whether a distribution on ``on`` is qualified: five tax years since the
     clock started, and the owner 59½. The loader requires a Roth owner's
-    birthdate; with none (a hand-built ``RothLot``) the age test passes."""
+    birthdate; with none (a hand-built ``RothLot``, or a lot whose owner has
+    died) the age test passes."""
+    while roth.then is not None and on >= roth.then[0]:
+        roth = roth.then[1]
     if roth.clock_start is not None and on < roth.clock_start.replace(year=roth.clock_start.year + 5):
         return False
     if roth.birthdate is None:
@@ -1369,24 +1434,12 @@ def _post_ytd_chain(
 
 
 def _past_person_lifespan(
-    month_s: str,
-    p_person: str | None,
-    from_id: int,
-    to_id: int | None,
-    account_owner: dict[int, str | None],
-    person_lifespan: dict[str, str],
+    month_s: str, p_person: str | None, person_lifespan: dict[str, str],
 ) -> bool:
-    """True if this rule is associated with a person whose final_month has
-    passed (ADR-003 §4.9): the rule's explicit ``person`` param, or the
-    owner of either leg's account.
-    """
-    associated = {p_person, account_owner.get(from_id), account_owner.get(to_id)}
-    associated.discard(None)
-    return any(
-        month_s > person_lifespan[person]
-        for person in associated
-        if person in person_lifespan
-    )
+    """True if this rule's ``person`` has died by ``month_s`` (ADR-003 §4.9).
+    Only the rule's own ``person`` column counts, not its accounts' owner: a
+    survivor keeps paying from, and into, a decedent's accounts (#256)."""
+    return p_person in person_lifespan and month_s > person_lifespan[p_person]
 
 
 def _build_cal_payload(

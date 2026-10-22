@@ -273,7 +273,7 @@ met a word gets an answer about how it's used here.
 | **Capital gain/loss** | The sale price minus the cost basis. **Long-term** gains (`ltcg`, held more than a year) usually get a lower tax rate. **Short-term** gains (`stcg`, held a year or less) are taxed as ordinary income. See Part 3. |
 | **RMD (Required Minimum Distribution)** | The smallest amount the IRS requires you to withdraw each year from a pre-tax retirement account, once you reach a certain age. A real tax rule; also the name of a rule kind in this tool (`rmd`). |
 | **Traditional vs. Roth** | Traditional money delays tax until you withdraw it (`tax_deferred_out`). Roth money is already taxed, so withdrawals come out tax-free (`tax_free`). An IRA or 401k is an account of subkind `retirement`, and each of its lots says which it is, with `subkind` in `account_lots.csv` (`traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`). Traditional money moved into a Roth lot is a conversion, taxed as ordinary income; moved into another traditional lot it is an untaxed rollover. |
-| **Roth five-year rule** | Roth earnings come out tax-free only once you are 59½ and five tax years have passed since January 1 of the year of your first Roth contribution or conversion. Until then the simulator taxes the earnings as ordinary income (`roth_nonqualified`), and a chain skips a Roth step that would pay them unless it is the chain's last. Contributions and conversions (the lot's `opening_cost_basis`) always come out tax-free. Give each conversion its own Roth lot with its `acquired` date. |
+| **Roth five-year rule** | Roth earnings come out tax-free only once you are 59½ and five tax years have passed since January 1 of the year of your first Roth contribution or conversion. Until then the simulator taxes the earnings as ordinary income (`roth_nonqualified`), and a chain skips a Roth step that would pay them unless it is the chain's last. Contributions and conversions (the lot's `opening_cost_basis`) always come out tax-free. Give each conversion its own Roth lot with its `acquired` date. After a death, the age test no longer applies to the decedent's Roth, and a surviving spouse who takes it as their own gets the earlier of the two clocks for all their Roth IRAs (`"roth_survivor": "own"` in `scenario.csv` `meta_json`, the default; `"beneficiary"` keeps the clocks apart). |
 | **Filing status** | `MFJ` (married filing jointly), `Single`, or `MFS` (married filing separately). This tool does not model Head of Household. Filing status changes automatically after a spouse's death, based on `lifespan.csv`; see Part 4.7. |
 | **Standard deduction** | A flat amount the IRS lets you subtract from income before tax is calculated. This simulator always uses the standard deduction; it does not yet model choosing to itemize deductions instead. |
 | **Itemized deduction** | An IRS alternative to the standard deduction: instead of the flat amount, you add up specific expenses (mortgage interest, large medical bills, and so on) and use that total if it's bigger. See Part 4.9 for how to add one for a given year. This is a different idea from this tool's *itemization* files, above, which just add up a list of dollar amounts for any purpose — the similar name is confusing, but it predates this guide. |
@@ -599,11 +599,13 @@ together, with worked examples and recipes.
 `lifespan.csv` has one optional row for each person: `person` and
 `age_at_death`, a decimal age in years such as `84.5`. The person's final
 month is their birth month plus that many months (`84` is the month of the
-84th birthday). After that month, every scheduled rule tied to that person
-stops firing — this includes rules where the person is set directly, and
-rules for accounts that person owns (salary, their share of expenses, and so
-on). Growth rules (`percent_of_balance`) are an exception: a balance keeps
-earning interest, or growing in value, after its owner dies.
+84th birthday). After that month, every scheduled rule whose `person`
+column names them stops firing: their Social Security, RMDs, salary, their
+share of expenses, and so on. Who owns an account doesn't matter, so a
+survivor keeps paying from, and into, the decedent's accounts. Give a rule a
+`person` (`sim scheduled add --person`, on any kind of rule) when it should
+end at that death. Growth rules (`percent_of_balance`) never stop: a balance
+keeps earning interest, or growing in value, after its owner dies.
 
 Setting `age_at_death` is also all you need to do for filing status to change
 correctly after a spouse's death: MFJ or MFS automatically becomes Single,

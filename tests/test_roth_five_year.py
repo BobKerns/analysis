@@ -327,3 +327,135 @@ def test_a_basis_step_may_not_name_a_retirement_account(
         "Asset_Checking,,,,,,ltcg,,\n")
     with pytest.raises(LoadError, match=f"basis_of '{ROTH}' is a retirement account"):
         load_test_copy()
+
+
+# A death (#256). Alice's lifespan of 61.5 ends 2026-09-30; Bill's of 59 ends
+# 2026-08-31 and of 60, 2027-08-31. Bill turns 59½ on 2027-02-20. Both Roth
+# IRAs' clocks start 2015 (run) unless ``young_roth`` moves Alice's to 2024.
+BILL_ROTH = "Asset_Roth_Bill"
+
+
+def test_a_lot_follows_its_later_rules_from_their_date() -> None:
+    after = RothLot(basis_first=True, clock_start=None, birthdate=None)
+    roth = RothLot(basis_first=True, clock_start=date(2024, 1, 1), birthdate=date(1950, 1, 1),
+                   then=(date(2026, 1, 1), after))
+    assert not engine._roth_qualified(roth, date(2025, 12, 31))
+    assert engine._roth_qualified(roth, date(2026, 1, 1))
+
+
+@pytest.fixture
+def roth_survivor(retire_alice_csv: Callable[[str], Path]) -> Callable[[str], None]:
+    """Set retire_alice's ``roth_survivor`` election in scenario.csv meta_json."""
+    def _set(election: str) -> None:
+        path = retire_alice_csv("scenario.csv")
+        scenario = pd.read_csv(path, dtype=str, keep_default_na=False)
+        scenario["meta_json"] = f'{{"roth_survivor": "{election}"}}'
+        scenario.to_csv(path, index=False)
+    return _set
+
+
+def _qualified(load: Callable[[], LoadResult], account: str, on: str) -> bool:
+    """Whether a distribution from ``account``'s default lot on ``on`` is qualified."""
+    with sqlite3.connect(load().intent_path) as con:
+        birthdates = {p: date.fromisoformat(b) for p, b in con.execute(
+            "SELECT id, birthdate FROM person WHERE birthdate != ''")}
+        (lot,) = con.execute(
+            "SELECT m.id FROM account_lot m JOIN account a ON a.id = m.account_id "
+            "WHERE a.name = ? AND m.lot = 'default'", (account,)).fetchone()
+        return engine._roth_qualified(engine._roth_lots(con, birthdates)[lot], date.fromisoformat(on))
+
+
+@pytest.mark.parametrize(("election", "on", "qualified"), [
+    ("own", "2027-06-30", False),          # Alice's own clock, from 2024, hasn't run
+    ("own", "2027-09-30", True),           # from Bill's death: the earlier of the two, 2015
+    ("beneficiary", "2027-09-30", False),  # her own clock is untouched
+])
+def test_a_survivor_who_treats_the_roth_as_their_own_takes_the_earlier_clock(
+    election: str, on: str, qualified: bool, young_roth: Callable[..., None],
+    roth_survivor: Callable[[str], None], write_lifespans: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    young_roth()
+    roth_survivor(election)
+    write_lifespans("bill,60,,,,,,")
+    assert _qualified(load_test_copy, ROTH, on) is qualified
+
+
+@pytest.mark.parametrize(("election", "on", "qualified"), [
+    ("own", "2026-09-30", True),            # Alice alive and past 59½
+    ("own", "2026-12-31", False),           # now Bill's, and he isn't 59½ yet
+    ("own", "2027-02-28", True),            # ... until 2027-02-20
+    ("beneficiary", "2026-12-31", True),    # Alice's clock has run; no age test
+])
+def test_the_decedents_roth_follows_the_survivors_election(
+    election: str, on: str, qualified: bool, roth_survivor: Callable[[str], None],
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    roth_survivor(election)
+    write_lifespans("alice,61.5,,,,,,")
+    assert _qualified(load_test_copy, ROTH, on) is qualified
+
+
+@pytest.mark.parametrize("election", ["own", "beneficiary"])
+def test_a_decedent_under_59_and_a_half_leaves_a_qualified_roth(
+    election: str, roth_survivor: Callable[[str], None],
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Bill dies at 59 with a clock that has run: before his death his
+    distributions wait for 59½, after it they don't (Alice is past it)."""
+    roth_survivor(election)
+    write_lifespans("bill,59,,,,,,")
+    assert not _qualified(load_test_copy, BILL_ROTH, "2026-08-31")
+    assert _qualified(load_test_copy, BILL_ROTH, "2026-09-30")
+
+
+def test_after_both_deaths_no_age_test_remains(
+    write_lifespans: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_lifespans("alice,61.5,,,,,,", "bill,60,,,,,,")
+    assert not _qualified(load_test_copy, ROTH, "2026-12-31")  # Bill's, under 59½
+    assert _qualified(load_test_copy, ROTH, "2027-09-30")
+
+
+def test_without_two_primary_persons_a_death_leaves_no_spouse(
+    test_data_dir: Path, write_lifespans: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """Bill made secondary: Alice's Roth passes to a beneficiary, so the
+    under-59½ Bill doesn't hold it back."""
+    persons = test_data_dir / "persons.csv"
+    rows = pd.read_csv(persons, dtype=str, keep_default_na=False)
+    rows.loc[rows["id"] == "bill", "role"] = "secondary"
+    rows.to_csv(persons, index=False)
+    write_lifespans("alice,61.5,,,,,,")
+    assert _qualified(load_test_copy, ROTH, "2026-12-31")
+
+
+def test_a_survivors_earnings_come_out_tax_free_on_the_decedents_clock(
+    young_roth: Callable[..., None], write_lifespans: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+) -> None:
+    """The run itself: Alice's own earnings, taxed before Bill's death, come
+    out tax-free once his older clock is hers."""
+    young_roth("0.00")  # all earnings
+    # Ends before the household, short of Bill's income, runs out of cash.
+    path = retire_alice_csv("scenario.csv")
+    scenario = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scenario["end"] = "2028-12-31"
+    scenario.to_csv(path, index=False)
+    write_lifespans("bill,60,,,,,,")
+    for when in ("2027-06-30", "2027-09-30"):
+        append_calendar_row(date=when, kind="one_off_transfer", account_1=ROTH, lot_1="default",
+                            account_2="Asset_Checking", amount="35000.00")
+    legs = [(d, character) for d, _to, _amount, character in _legs(_run(load_test_copy, runs_dir))]
+    assert ("2027-06-30", "roth_nonqualified") in legs
+    assert [character for d, character in legs if d == "2027-09-30"] == ["tax_free"]
+
+
+def test_roth_survivor_must_be_an_election(
+    roth_survivor: Callable[[str], None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    roth_survivor("spouse")
+    with pytest.raises(LoadError, match="roth_survivor must be one of own, beneficiary"):
+        load_test_copy()
