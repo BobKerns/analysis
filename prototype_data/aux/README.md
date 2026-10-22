@@ -74,6 +74,7 @@ shared default ([ADR-003](../../docs/architecture/ADR-003-registries-and-csv-sch
 | `ltcg_brackets.csv` | Federal long-term capital gain brackets — see "Long-term capital gain rates" below. |
 | `life_table.csv` | SSA's period life table: `q_female` and `q_male`, the chance of dying before the next birthday at each age 0–119. Read only by a lifespan with `vary_distribution` `life_table`, which draws the age at death from it around the median you give. Refresh it from a newer Trustees Report with `scripts/extract_ssa_life_table.py`, keeping the old rows: each vintage is dated December of its year. |
 | `capital_loss_limit.csv` | How much of a year's net capital loss offsets ordinary income, by filing status (IRC §1211(b)): $3,000, or $1,500 married filing separately, not inflation-indexed. The rest carries forward to later years. |
+| `irmaa_tiers.csv` | Medicare's income-related surcharges (IRMAA): for each filing status, the MAGI floor of each tier (the tier applies above it) and its monthly Part B and Part D add-ons, from CMS's fact sheet for the year. Read by an `irmaa` rule, which charges the tier set by MAGI from two years earlier. Each row names optional growth series for its floor and each add-on (`series/inflation__<name>.csv`); blank holds the figure flat. Add the next year's rows each November, when CMS publishes them. |
 
 ### Filing status codes
 
@@ -158,7 +159,8 @@ Worked example, very rough, using the 2026-effective figures in
 Things the simulator should help you check before actually doing this:
 
 - Does the conversion push you over an **IRMAA** Medicare-premium cliff two
-  years later? (Medicare looks back at MAGI from two years prior.)
+  years later? (Medicare looks back at MAGI from two years prior; an `irmaa`
+  rule and `irmaa_tiers.csv` model it.)
 - Does it cost you ACA premium subsidies in any pre-Medicare year?
 - Is there enough cash *outside* the IRA to pay the conversion tax? Paying
   the tax from the IRA itself wipes out most of the benefit.

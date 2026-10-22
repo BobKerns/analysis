@@ -25,7 +25,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd",
-    "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death", "fill_bracket",
+    "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death", "fill_bracket", "irmaa",
 }
 
 # Rule kinds whose catch-up for the months before scenario.start can be
@@ -292,6 +292,9 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     "tax_accumulator": 400,
     "rmd": 500,
     "on_death": 900,
+    # Reads a finished year's MAGI (two years back), so its order in a
+    # month doesn't matter; the band of the premium legs it sits beside.
+    "irmaa": 200,
 }
 """Kinds with no entry here have no priority: a ``fill_bracket`` always runs
 after every other rule of its month (#252)."""
@@ -302,6 +305,13 @@ after every other rule of its month (#252)."""
 # payload JSON.
 STATE_STANDARD_DEDUCTION = "state_standard_deduction"
 """The aux kind of a state's own standard deduction (#248)."""
+
+IRMAA_TIERS = "irmaa_tiers"
+"""The aux kind of the Medicare income-related surcharge tiers (#253)."""
+
+IRMAA_SERIES_COLUMNS: tuple[str, ...] = ("floor_series", "part_b_series", "part_d_series")
+"""The ``irmaa_tiers`` columns naming an optional inflation series that grows
+a row's floor, Part B add-on and Part D add-on (#253)."""
 
 AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     "federal_brackets":
@@ -355,6 +365,12 @@ AUX_KIND_COLUMNS: dict[str, tuple[str, ...]] = {
     # birthday, at each whole age from 0, by sex. Read only at load and when
     # an ensemble member draws a `life_table` lifespan, never monthly.
     "life_table": ("effective_date", "age", "q_female", "q_male"),
+    # Medicare IRMAA (#253): for each filing status, the tiers of MAGI (more
+    # than magi_floor) and each tier's monthly Part B and Part D add-ons.
+    # Each figure grows past effective_date with its own optional inflation
+    # series (IRMAA_SERIES_COLUMNS); blank holds it flat.
+    IRMAA_TIERS: ("effective_date", "filing_status", "tier", "magi_floor",
+                  "part_b", "part_d", *IRMAA_SERIES_COLUMNS),
 }
 
 # Aux kinds that are no longer read, with what replaced them: a file of one
@@ -414,6 +430,7 @@ AUX_MONEY_COLUMNS: dict[str, frozenset[str]] = {
     "ss_taxation_thresholds": frozenset({"tier1_floor", "tier2_floor"}),
     "energy_credits": frozenset({"cap"}),
     "capital_loss_limit": frozenset({"amount"}),
+    IRMAA_TIERS: frozenset({"magi_floor", "part_b", "part_d"}),
 }
 
 

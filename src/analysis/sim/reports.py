@@ -326,7 +326,10 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     11, except that a carried loss comes off taxable income instead and there
     are no adjustments such as half of self-employment tax; state AGI leaves
     out Social Security. The state columns appear only when the run computes
-    state tax. ``effective_rate`` is total tax over federal AGI. Liability
+    state tax. A run that charges IRMAA (#253) adds ``fed_magi`` and
+    ``irmaa_tier``, the tier that year's MAGI set for the premiums two years
+    later (0 below the first), blank for a year whose premiums the run ends
+    before charging. ``effective_rate`` is total tax over federal AGI. Liability
     belongs to the tax year the income was earned in, whatever year it is
     paid or refunded. CPI-constant dollars use each year's year-end CPI, as
     the notebook does; the rate is the same in either.
@@ -344,8 +347,17 @@ def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.
     business = _tax_buckets(rc, list(_BUSINESS_COLUMNS)).rename(columns=_BUSINESS_COLUMNS)
     business = business.reindex(frame.index)
     frame = frame.join(business.loc[:, business.fillna(0).ne(0).any()])
+    irmaa = _tax_buckets(rc, ["federal_magi", "federal_irmaa_tier"]).reindex(frame.index)
+    charged = irmaa["federal_irmaa_tier"].notna().any()
+    if charged:
+        frame.insert(frame.columns.get_loc("fed_agi") + 1, "fed_magi", irmaa["federal_magi"])
     frame.index.name = "year"
     frame = _cpi(rc, frame, mode, annual=True)
+    if charged:
+        # A tier number, not money: _tax_buckets' /100 undone, and after the
+        # CPI conversion so it isn't deflated.
+        frame.insert(frame.columns.get_loc("fed_magi") + 1, "irmaa_tier",
+                     irmaa["federal_irmaa_tier"] * 100)
     agi = frame["fed_agi"].where(frame["fed_agi"] > 0)
     frame.insert(frame.columns.get_loc("total_tax") + 1, "effective_rate",
                  frame["total_tax"] / agi)
@@ -401,6 +413,8 @@ def _cell(value: float, column: str) -> str:
         return ""
     if column in _PERCENT_COLUMNS:
         return f"{value:.1%}"
+    if column == "irmaa_tier":
+        return f"{value:.0f}"
     if column == "quantity":
         return f"{value:,.6f}".rstrip("0").rstrip(".") or "0"
     return f"-${-value:,.0f}" if round(value) < 0 else f"${value:,.0f}"

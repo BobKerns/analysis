@@ -116,7 +116,12 @@ def _trait(descriptor: traitlets.TraitType) -> Any:
     """``descriptor``, typed as the value it holds on an instance.
 
     A trait's class attribute is annotated with that value's type, but a type
-    checker sees the descriptor object assigned to it and rejects the pair."""
+    checker sees the descriptor object assigned to it and rejects the pair.
+
+    A widget subclass redefining an inherited trait (a ToggleButtons'
+    ``value`` or ``label``) leaves the annotation off: the base declares it
+    ``Any | None``, and narrowing a writable attribute is an
+    invalid-mutable-override."""
     return descriptor
 
 
@@ -741,8 +746,8 @@ def multi_scenario_picker(
 
 class DollarModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting nominal vs. CPI-constant dollars."""
-    value: DollarMode = _trait(traitlets.UseEnum(DollarMode))
-    label: str = _trait(traitlets.Unicode("Nominal"))
+    value = _trait(traitlets.UseEnum(DollarMode))
+    label = _trait(traitlets.Unicode("Nominal"))
     def __init__(self, dollar_mode: DollarMode = DollarMode.NOMINAL):
         """
         Initialize the dollar mode picker.
@@ -770,7 +775,7 @@ class AfterTaxPicker(widgets.ToggleButtons):
     """Pre-tax or after-tax net worth (#251): ``value`` is True for after
     tax (the default), which subtracts the tax a drawdown would owe and tax
     due unpaid."""
-    value: bool = _trait(traitlets.Bool(True))
+    value = _trait(traitlets.Bool(True))
 
     def __init__(self, after_tax: bool = True):
         super().__init__(
@@ -785,8 +790,8 @@ class AfterTaxPicker(widgets.ToggleButtons):
 
 class ValuePlotModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting total vs. monthly values."""
-    value: ValuePlotMode = _trait(traitlets.UseEnum(ValuePlotMode))
-    label: str = _trait(traitlets.Unicode("Total"))
+    value = _trait(traitlets.UseEnum(ValuePlotMode))
+    label = _trait(traitlets.Unicode("Total"))
     def __init__(self, value_mode: ValuePlotMode = ValuePlotMode.TOTAL):
         """
         Initialize the value plot mode picker.
@@ -811,8 +816,8 @@ class ValuePlotModePicker(widgets.ToggleButtons):
 
 class YAxisPlotModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting zero-anchored vs. auto-scaled Y-axis."""
-    value: bool = _trait(traitlets.Bool(True))
-    label: str = _trait(traitlets.Unicode("Zero-anchored"))
+    value = _trait(traitlets.Bool(True))
+    label = _trait(traitlets.Unicode("Zero-anchored"))
     def __init__(self, y_axis_mode: bool = True):
         """
         Initialize the Y-axis plot mode picker.
@@ -835,8 +840,8 @@ class YAxisPlotModePicker(widgets.ToggleButtons):
 
 class LogLinearModePicker(widgets.ToggleButtons):
     """A toggle button widget for selecting log vs. linear scale."""
-    value: LogLinearMode = _trait(traitlets.UseEnum(LogLinearMode))
-    label: str = _trait(traitlets.Unicode("Linear"))
+    value = _trait(traitlets.UseEnum(LogLinearMode))
+    label = _trait(traitlets.Unicode("Linear"))
     def __init__(self, log_linear_mode: LogLinearMode = LogLinearMode.LINEAR):
         """
         Initialize the log-linear mode picker.
@@ -867,7 +872,7 @@ class DeltaScalePicker(widgets.ToggleButtons):
     """Sensitivity deltas in dollars or as % of the base (ADR-007 §4).
     Composes with ``DollarModePicker``: the two together give all four of
     nominal/CPI-constant x absolute/relative."""
-    value: DeltaScale = _trait(traitlets.UseEnum(DeltaScale))
+    value = _trait(traitlets.UseEnum(DeltaScale))
 
     def __init__(self, delta_scale: DeltaScale = DeltaScale.ABSOLUTE):
         super().__init__(
@@ -883,7 +888,7 @@ class HeatmapValuePicker(widgets.ToggleButtons):
     impact (the importance measure, which counts the base, so a row moving
     the outcome the same way at both ends still registers), or its signed
     swing, for direction (ADR-007 §6.1, §9)."""
-    value: HeatmapValue = _trait(traitlets.UseEnum(HeatmapValue))
+    value = _trait(traitlets.UseEnum(HeatmapValue))
 
     def __init__(self, heatmap_value: HeatmapValue = HeatmapValue.SHARE):
         super().__init__(
@@ -897,7 +902,7 @@ class HeatmapValuePicker(widgets.ToggleButtons):
 class AttributionPicker(widgets.ToggleButtons):
     """How a sensitivity delta is decomposed (ADR-007 §6.1): by income/
     expense category, by income/expense account, or by holding account."""
-    value: AttributionAxis = _trait(traitlets.UseEnum(AttributionAxis))
+    value = _trait(traitlets.UseEnum(AttributionAxis))
 
     def __init__(self, axis: AttributionAxis = AttributionAxis.CATEGORY):
         super().__init__(

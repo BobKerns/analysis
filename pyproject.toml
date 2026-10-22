@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
   "click>=8.5.0",
-  "gitpython>=3.2.0",
+  "gitpython>=3.2.1",
   "ipywidgets>=8.1.9",
   "matplotlib>=3.11.2",
   "pandas>=3.0.6",
@@ -15,11 +15,11 @@ dependencies = [
   "jupyterlab>=4.6.4",
   # 2.21.0 breaks under tornado >= 6.5.9: every /static request 500s (#62)
   "jupyter-server>=2.21.1",
-  "numpy>=2.5.3",
+  "numpy>=2.5.4",
   "scipy>=1.18.1",
-  "truststore>=0.10.4",
+  "truststore>=0.10.5",
   "markdown-it-py>=4.2.0",
-  "anywidget>=0.9.18",
+  "anywidget>=0.11.0",
   "playwright>=1.64.0",
   "pyyaml>=6.0.3",
 ]
@@ -38,9 +38,9 @@ dev = [
   "nbstripout>=0.9.1",
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
-  "ruff>=0.16.10",
+  "ruff>=0.17.1",
   "pytest-xdist>=3.8.0",
-  "ty>=0.0.85",
+  "ty>=0.0.90",
 ]
 
 [build-system]

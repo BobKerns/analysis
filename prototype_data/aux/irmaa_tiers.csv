@@ -1,0 +1,13 @@
+effective_date,filing_status,tier,magi_floor,part_b,part_d,floor_series,part_b_series,part_d_series
+2026-01-31,Single,1,109000.00,81.20,14.50,irmaa_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,Single,2,137000.00,202.90,37.50,irmaa_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,Single,3,171000.00,324.60,60.40,irmaa_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,Single,4,205000.00,446.30,83.30,irmaa_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,Single,5,500000.00,487.00,91.00,irmaa_top_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,MFJ,1,218000.00,81.20,14.50,irmaa_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,MFJ,2,274000.00,202.90,37.50,irmaa_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,MFJ,3,342000.00,324.60,60.40,irmaa_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,MFJ,4,410000.00,446.30,83.30,irmaa_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,MFJ,5,750000.00,487.00,91.00,irmaa_top_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,MFS,4,109000.00,446.30,83.30,irmaa_floor,irmaa_part_b,irmaa_part_d
+2026-01-31,MFS,5,391000.00,487.00,91.00,irmaa_top_floor,irmaa_part_b,irmaa_part_d
