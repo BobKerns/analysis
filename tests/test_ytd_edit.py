@@ -284,6 +284,23 @@ def test_widening_a_header_keeps_what_the_rows_inherit(
     assert _row(frame, "prior_ordinary_wages")["amount"] == "1.00"
 
 
+def test_editing_an_own_row_of_a_partial_header_keeps_what_it_inherits(
+    test_data_dir: Path, test_child_scenario: Path,
+) -> None:
+    child = test_child_scenario / "year_to_date.csv"
+    child.write_text("name,amount\nprior_ltcg_loss_carryforward,-1000.00\n")
+
+    result = _sim(test_data_dir, "child", "edit", "prior_ltcg_loss_carryforward", "--amount", "-900")
+
+    assert result.exit_code == 0, result.output
+    row = _row(_read(child), "prior_ltcg_loss_carryforward")
+    assert (row["amount"], row["year"], row["tax_character"]) == ("-900.00", "2025", "ltcg")
+
+    deleted = _sim(test_data_dir, "child", "delete", "prior_ltcg_loss_carryforward", "--yes")
+    assert deleted.exit_code == 0, deleted.output
+    assert "inherited from 'retire_alice' again" in deleted.output
+
+
 def test_edit_of_an_unknown_row_says_so(test_data_dir: Path) -> None:
     result = _sim(test_data_dir, "retire_alice", "edit", "no_such_row", "--amount", "1")
 

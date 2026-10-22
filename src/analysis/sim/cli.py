@@ -11066,18 +11066,20 @@ def _write_ytd(
     index = picked.found.index
     with _scenario_edit(data_dir, scenario_name) as edit:
         staged = edit.path(path)
+        if index is not None:
+            # Read inside the staged edit, before widening fills in inherited
+            # cells: the prompts may have taken a while, and the index is only
+            # good if the file still has the row there, as it was read.
+            existing = _read_ytd_rows(staged)
+            if index >= len(existing) or existing[index] != picked.own:
+                raise click.ClickException(
+                    f"{path} changed while this row was being edited. Nothing was written; start again."
+                )
         _widen_ytd_header(staged, path.parent)
         if index is None:
             if row is not None:
                 _append_csv_row(staged, registries.YEAR_TO_DATE_CSV_HEADER, row)
             return
-        # Read inside the staged edit: the prompts may have taken a while,
-        # and the index is only good if the file still has the row there.
-        existing = _read_ytd_rows(staged)
-        if index >= len(existing) or existing[index] != picked.own:
-            raise click.ClickException(
-                f"{path} changed while this row was being edited. Nothing was written; start again."
-            )
         if row is None:
             frame = pd.read_csv(staged, dtype=str, keep_default_na=False)
             frame.drop(index=frame.index[index]).to_csv(staged, index=False)
