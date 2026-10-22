@@ -30,7 +30,7 @@ __all__ = [
     "ACCOUNT", "ACCOUNT_OR_NEW", "ANY_TAG", "AUX_KIND", "CALENDAR_ROW", "CHAIN",
     "CORRELATE_WITH", "ENDPOINT", "ENSEMBLE", "ITEMIZATION", "OWNER", "PERSON", "RULE",
     "SCENARIO", "SCENARIO_OR_RUNFILE", "SCENARIO_PARAMS", "SCHEDULED_SERIES", "SYMBOL", "TAG",
-    "TAG_FILTER", "LotName", "NameType", "SeriesName", "type_for",
+    "TAG_FILTER", "YTD_ROW", "LotName", "NameType", "SeriesName", "type_for",
 ]
 
 # The params, nearest first, whose value is the scenario a name belongs to.
@@ -196,6 +196,7 @@ CHAIN = NameType(_in_scenario(names.chain_names), "chain",
 ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=True)),
                     "account or chain", plural="accounts and chains")
 RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
+YTD_ROW = NameType(_in_scenario(names.ytd_names), "year-to-date row")
 # A row may also be picked by its number or by text in it, so any value goes.
 CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
 CORRELATE_WITH = NameType(_in_scenario(_correlate_with), "calendar row or lifespan",
