@@ -60,7 +60,7 @@ def test_cash_income_leaves_out_growth_and_cash_flow_adds_withdrawals(
 
 
 def test_expenses_by_tag_prefer_the_rules_tag_to_its_accounts(report_run: RunConnection) -> None:
-    expenses = reports.flows_by_year(report_run, "expenses", by="tag:budget")
+    expenses = reports.flows_by_year(report_run, "expenses", by="tag:budget", untagged=True)
     assert list(expenses.columns)[-2:] == [reports.UNTAGGED, "total"]
     assert {"fun", "core", "home"} <= set(expenses.columns)
     by_category = reports.flows_by_year(report_run, "expenses")
@@ -68,6 +68,35 @@ def test_expenses_by_tag_prefer_the_rules_tag_to_its_accounts(report_run: RunCon
     assert expenses["fun"].to_numpy() == pytest.approx(by_category["living"].to_numpy())
     assert expenses["core"].to_numpy() == pytest.approx(by_category["healthcare"].to_numpy())
     assert expenses["total"].to_numpy() == pytest.approx(by_category["total"].to_numpy())
+
+
+def test_by_tag_leaves_untagged_flows_out_of_the_total_unless_asked(
+    report_run: RunConnection,
+) -> None:
+    kept = reports.flows_by_year(report_run, "expenses", by="tag:budget", untagged=True)
+    assert (kept[reports.UNTAGGED] > 0).any()
+    expenses = reports.flows_by_year(report_run, "expenses", by="tag:budget")
+    assert reports.UNTAGGED not in expenses.columns
+    assert expenses["total"].to_numpy() == pytest.approx(
+        (kept["total"] - kept[reports.UNTAGGED]).to_numpy())
+    year = reports.flows_for_year(report_run, "expenses", 2030, by="tag:budget")
+    assert reports.UNTAGGED not in year.index
+    assert year.loc["total", "share"] == pytest.approx(1.0)
+
+
+def test_income_by_tag_counts_only_tagged_cash_income_and_drops_cash_flow(
+    report_run: RunConnection,
+) -> None:
+    kept = reports.flows_by_year(report_run, "income", by="tag:source", untagged=True)
+    assert {reports.UNTAGGED, reports.CASH_INCOME, reports.CASH_FLOW} <= set(kept.columns)
+    income = reports.flows_by_year(report_run, "income", by="tag:source")
+    assert list(income.columns) == ["work", "total", reports.CASH_INCOME]
+    assert income["total"].to_numpy() == pytest.approx(income["work"].to_numpy())
+    # Only Alice's paychecks count as cash income now, not Social Security or interest.
+    paid = income.loc[income["work"] > 0]
+    assert (paid[reports.CASH_INCOME] > 0).all()
+    assert (paid[reports.CASH_INCOME] <= paid["work"] + 0.005).all()
+    assert (paid[reports.CASH_INCOME] < kept.loc[paid.index, reports.CASH_INCOME]).all()
 
 
 def test_one_year_lists_only_the_groups_with_money_largest_first(
@@ -186,8 +215,13 @@ def test_report_commands_print_their_tables(report_run_file: Path) -> None:
     income = run("report", "income")
     assert "income by category, CPI-constant dollars" in income and "social security" in income
     assert "report.sqlite3" in income
-    assert "expenses in 2030 by budget" in run("report", "expenses", "--year", "2030",
-                                               "--by", "tag:budget")
+    by_budget = run("report", "expenses", "--year", "2030", "--by", "tag:budget")
+    assert "expenses in 2030 by budget" in by_budget and reports.UNTAGGED not in by_budget
+    assert reports.UNTAGGED in run("report", "expenses", "--year", "2030",
+                                   "--by", "tag:budget", "--untagged")
+    assert "no income is tagged in role budget" in run("report", "income", "--by", "tag:budget")
+    assert "no income in 2030 is tagged in role budget" in run(
+        "report", "income", "--year", "2030", "--by", "tag:budget")
     assert "gains, nominal dollars" in run("report", "gains", "--dollars", "nominal")
     tax = run("report", "tax")
     assert "tax and taxable income" in tax and "fed_income" in tax
@@ -204,6 +238,7 @@ def test_report_command_errors_are_clear(report_run_file: Path) -> None:
         return result.output
 
     assert "--by must be" in fails("report", "income", "--by", "tag:")
+    assert "--untagged needs --by tag:ROLE" in fails("report", "expenses", "--untagged")
     assert "no expenses in 1999" in fails("report", "expenses", "--year", "1999")
     assert "unknown account in run: 'Nope'" in fails("account", "history", "Nope")
     assert "cannot be combined with --runfile" in fails("report", "gains", "--scenario", "x")

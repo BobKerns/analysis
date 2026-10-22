@@ -211,7 +211,7 @@ def _group_order(side: FlowSide, by: str, totals: pd.Series) -> list[str]:
 
 def flows_by_year(
     rc: RunConnection, side: FlowSide, *, by: str = "category",
-    mode: DollarMode = DollarMode.NOMINAL,
+    mode: DollarMode = DollarMode.NOMINAL, untagged: bool = False,
 ) -> pd.DataFrame:
     """Year x group income (or expense) totals in dollars, plus a ``total`` column
     and, for income, ``cash_income``: the part of the total that was paid
@@ -225,18 +225,35 @@ def flows_by_year(
     else its account). Each event counts in the year of its own date. CPI-constant
     dollars convert each month's flow before summing the year, as the
     notebooks do.
+
+    By tag, flows with no tag in ROLE are left out, of ``total`` and
+    ``cash_income`` too, since they don't belong to anything the tag
+    measures; ``cash_flow`` is dropped, as its withdrawals carry no tag.
+    ``untagged=True`` keeps them as an ``(untagged)`` group, counted in every
+    total.
     """
     events = _flow_events(rc, side)
     events["group"] = _groups(rc, events, side, by)
+    tagged_only = by.startswith("tag:") and not untagged
+    months = pd.Index(events["month"].unique()).sort_values()
+    if tagged_only:
+        events = events[events["group"] != UNTAGGED]
+    # Keep every year with flows, so a year with none tagged reads as zero.
     monthly = (events.groupby(["month", "group"])["amount"].sum()
                .unstack("group", fill_value=0) / 100)
-    cash_columns = [CASH_INCOME, CASH_FLOW] if side == "income" else []
+    monthly = monthly.reindex(monthly.index.union(months), fill_value=0)
+    cash_columns = []
     if side == "income":
+        cash_columns.append(CASH_INCOME)
         cash = events[events["cash"]].groupby("month")["amount"].sum() / 100
-        withdrawn = _withdrawals(rc)
-        monthly = monthly.reindex(monthly.index.union(withdrawn.index), fill_value=0)
+        monthly = monthly.reindex(monthly.index.union(cash.index), fill_value=0)
         monthly[CASH_INCOME] = cash.reindex(monthly.index, fill_value=0)
-        monthly[CASH_FLOW] = monthly[CASH_INCOME] + withdrawn.reindex(monthly.index, fill_value=0)
+        if not tagged_only:
+            cash_columns.append(CASH_FLOW)
+            withdrawn = _withdrawals(rc)
+            monthly = monthly.reindex(monthly.index.union(withdrawn.index), fill_value=0)
+            monthly[CASH_FLOW] = (monthly[CASH_INCOME]
+                                  + withdrawn.reindex(monthly.index, fill_value=0))
     monthly = _cpi(rc, monthly, mode)
     yearly = monthly.groupby(index_years(monthly)).sum()
     yearly.index.name = "year"
@@ -259,16 +276,17 @@ def _withdrawals(rc: RunConnection) -> pd.Series:
 
 def flows_for_year(
     rc: RunConnection, side: FlowSide, year: int, *, by: str = "category",
-    mode: DollarMode = DollarMode.NOMINAL,
+    mode: DollarMode = DollarMode.NOMINAL, untagged: bool = False,
 ) -> pd.DataFrame:
     """One year of ``flows_by_year`` turned on its side: a row per group with
     its ``amount`` and ``share`` of the year's total (0-1), and a total row.
     Accounts and tags are ordered by that year's amounts, and those with none
-    that year are left out; categories keep their fixed rows.
+    that year are left out; categories keep their fixed rows. ``untagged`` is
+    as for ``flows_by_year``.
 
     Raises ``KeyError`` for a year the run doesn't cover.
     """
-    yearly = flows_by_year(rc, side, by=by, mode=mode)
+    yearly = flows_by_year(rc, side, by=by, mode=mode, untagged=untagged)
     if year not in yearly.index:
         years = f"{yearly.index.min()}-{yearly.index.max()}" if len(yearly) else "none"
         raise KeyError(f"the run has no {side} in {year} (years: {years})")
