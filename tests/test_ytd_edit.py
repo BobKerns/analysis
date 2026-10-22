@@ -268,7 +268,7 @@ def test_edit_works_in_a_file_whose_header_left_columns_out(
     assert _row(ytd(), "prior_ordinary_wages")["amount"] == "1.00"
 
 
-def test_widening_a_childs_header_keeps_what_its_rows_inherit(
+def test_widening_a_header_keeps_what_the_rows_inherit(
     test_data_dir: Path, test_child_scenario: Path,
 ) -> None:
     # The child's override leaves `year` out of its header, so it inherits 2025.
