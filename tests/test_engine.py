@@ -1128,10 +1128,83 @@ def test_ytd_amount_from_interior_source_chain_records_first_leaf_account(ledger
         "SELECT from_account, to_account, amount, parent_event_id "
         "FROM transfer_event ORDER BY id"
     ).fetchall()
+    # Split from the Jan 1 balance: the opening 250,000 with the two
+    # payments backed out (#267), so the principal lands on it again.
     assert rows == [
-        (2, 5, 249_700, None),
-        (2, 4, 120_300, 1),
+        (2, 5, 250_893, None),
+        (2, 4, 119_107, 1),
     ]
+
+
+def _mortgage_preroll_txn(ytd_amount: int | None, ytd_preroll: int) -> list[object]:
+    return [
+        9, "mortgage", 1, 4, "monthly", None, "mortgage_payment",
+        "Mortgage Interest", None, None, 60_000, None, 185_000, None, "none",
+        None, "2026-05-31", None, 300, None, ytd_amount, ytd_preroll, None,
+    ]
+
+
+_MORTGAGE_GRAPH_LEAVES = {1: 1, 4: 4, 5: 5}
+
+
+def test_ytd_preroll_splits_each_mortgage_payment_from_the_jan_1_balance(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+
+    graph = ChainGraph(
+        members={}, leaf_lot=_MORTGAGE_GRAPH_LEAVES,
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    _apply_ytd_catchups(
+        ledger_con, 1, date(2026, 5, 31), [_mortgage_preroll_txn(None, 1)], [], graph,
+        account_id_by_name={"Mortgage Interest": 5}, balances={4: 25_000_000},
+    )
+    rows = ledger_con.execute(
+        "SELECT id, date, to_account, amount, parent_event_id FROM transfer_event ORDER BY id"
+    ).fetchall()
+
+    months = ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"]
+    assert [(r[1], r[2]) for r in rows] == [(m, a) for m in months for a in (5, 4)]
+    interest = [r[3] for r in rows if r[2] == 5]
+    principal = [r[3] for r in rows if r[2] == 4]
+    assert [i + p for i, p in zip(interest, principal, strict=True)] == [185_000] * 4
+    # Interest falls and principal grows, as the loan amortizes...
+    assert interest == sorted(interest, reverse=True)
+    assert principal == sorted(principal)
+    # ...each month's interest charged on what was left after the last one,
+    # from a Jan 1 balance that the four payments bring down to the opening one.
+    outstanding = 25_000_000 + sum(principal)
+    for i, p in zip(interest, principal, strict=True):
+        assert i == outstanding * 60_000 // 12_000_000
+        outstanding -= p
+    assert outstanding == 25_000_000
+    # The principal leg hangs off its month's interest leg.
+    assert all(rows[k + 1][4] == rows[k][0] for k in range(0, len(rows), 2))
+
+
+def test_mortgage_ytd_prefers_a_stated_prior_year_end_balance(
+    ledger_con: sqlite3.Connection,
+) -> None:
+    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+
+    graph = ChainGraph(
+        members={}, leaf_lot=_MORTGAGE_GRAPH_LEAVES,
+        minimum_of={}, refill_chain_of={},
+        refill_target_of={}, refill_amount_of={},
+        maximum_of={}, overflow_chain_of={},
+    )
+    _apply_ytd_catchups(
+        ledger_con, 1, date(2026, 2, 28), [_mortgage_preroll_txn(None, 1)], [], graph,
+        account_id_by_name={"Mortgage Interest": 5}, balances={4: 25_000_000},
+        prior_year_end_balances={4: 30_000_000},
+    )
+    rows = ledger_con.execute(
+        "SELECT to_account, amount FROM transfer_event ORDER BY id"
+    ).fetchall()
+    assert rows == [(5, 150_000), (4, 35_000)]
 
 
 def test_settle_order_settles_dependency_before_dependent() -> None:
@@ -1784,6 +1857,44 @@ def test_ytd_preroll_posts_balance_neutral_catchup(test_data_dir: Path, tmp_path
         assert opening_checking == EXPECTED_CHECKING[1]
     finally:
         con.close()
+
+
+def test_mortgage_ytd_preroll_posts_interest_for_each_month_before_start(
+    test_data_dir: Path, tmp_path: Path,
+) -> None:
+    """#267: ytd_preroll on a mortgage_payment row posts each elapsed month's
+    interest to its interest account, balance-neutral like any catch-up."""
+    import pandas as pd
+
+    sched_csv = test_data_dir / "scenarios" / "retire_alice" / "scheduled.csv"
+    df = pd.read_csv(sched_csv, dtype=str, keep_default_na=False)
+    df.loc[df["name"] == "mortgage_pmt", "ytd_preroll"] = "1"
+    df.to_csv(sched_csv, index=False)
+
+    intent_path = load_scenario(
+        test_data_dir, "retire_alice",
+        intent_dir=tmp_path / "intent", loaded_by="test", allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+
+    con = sqlite3.connect(run_path)
+    try:
+        rows = con.execute(
+            "SELECT e.date, a.name, e.amount FROM transfer_event e "
+            "JOIN account a ON a.id = e.to_account "
+            "WHERE e.reason_kind = 'ytd_rule' ORDER BY e.id"
+        ).fetchall()
+    finally:
+        con.close()
+    assert [(d, name) for d, name, _amount in rows] == [
+        (month, name)
+        for month in ("2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30")
+        for name in ("Expense_Interest_Mortgage", "Liability_Mortgage")
+    ]
+    assert sum(amount for _d, _name, amount in rows) == 4 * 185_000
+    assert all(amount > 120_000 for _d, name, amount in rows
+               if name == "Expense_Interest_Mortgage")
 
 
 def test_year_to_date_csv_posts_balance_neutral_catchup(test_data_dir: Path, tmp_path: Path) -> None:

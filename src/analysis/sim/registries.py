@@ -28,6 +28,11 @@ AMOUNT_RULE_KINDS: set[str] = {
     "ss_benefit", "tax_accumulator", "mortgage_payment", "on_death",
 }
 
+# Rule kinds whose catch-up for the months before scenario.start can be
+# replayed from the rule itself (`ytd_preroll`, ADR-003 §4.10); any kind
+# takes an observed `ytd_amount`.
+YTD_PREROLL_KINDS: frozenset[str] = frozenset({"fixed_amount", "mortgage_payment"})
+
 # Canonical scheduled.csv column order (ADR-003 §4.6). `series` and `amount` are
 # each interpreted per amount_rule_kind; see SERIES_RULE_KINDS below.
 SCHEDULED_CSV_HEADER: tuple[str, ...] = (

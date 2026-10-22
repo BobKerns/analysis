@@ -651,7 +651,7 @@ A child row with a new key is appended; one whose key matches the parent replace
 | `meta_json` | json | | default `{}` |
 | `params_json` | json | | nullable; for rare or future extension parameters not covered by the named columns above |
 | `ytd_amount` | dollars | | partial-first-year catch-up (§4.10); hard actual total already paid/received before `scenario.start`; valid for any rule kind; mutually exclusive with `ytd_preroll` |
-| `ytd_preroll` | `0`/`1` | | if `1`, posts one catch-up amount for each time the `fixed_amount` rule would have fired in the calendar months before `scenario.start`; only valid when `amount_rule_kind='fixed_amount'` |
+| `ytd_preroll` | `0`/`1` | | if `1`, posts one catch-up amount for each time the rule would have fired in the calendar months before `scenario.start`; only valid when `amount_rule_kind` is `fixed_amount` or `mortgage_payment` |
 
 Schema v12 merged two pairs of mutually-exclusive columns: `inflation_series` into `series`, and `base_amount` into `amount`. Each is now read per `amount_rule_kind` (see the rows above); the loader rejects a row that still carries a retired column, and rejects `series` on a rule kind that does not read it.
 
@@ -758,11 +758,11 @@ A scenario's first simulated month is rarely January 1: the author needs the run
 
 Two mechanisms cover this, both posting **balance-neutral** `transfer_event` rows — visible to income/expense/tax queries exactly like any other flow, but never mutating account balances, since `account_lot.opening_balance` already reflects the true, post-receipt balance as of `scenario.start`. Both fire once, at step 0 (`step_index=0`).
 
-**On `scheduled.csv`** (§4.6), for a single `fixed_amount` + `cadence='monthly'` row's own catch-up, since the catch-up is directly derived from that row's `amount`:
+**On `scheduled.csv`** (§4.6), for a single row's own catch-up, derived from that row's `amount`:
 
-- `ytd_amount` (dollars) — hard actual total already paid/received this calendar year before `scenario.start`. Valid for any rule kind because it is an observed fact, not derived from the rule's runtime computation. Posted with `reason_kind='ytd_rule'`, `reason_id` = the row's own `scheduled_transaction.id`. Multi-leg rules keep their reporting shape: today, `mortgage_payment` splits the YTD amount into an interest-expense leg and principal-liability leg, linked by `parent_event_id`, so expense charts pick up the interest portion just like ordinary monthly mortgage payments.
-- `ytd_preroll` (`0`/`1`) — auto-computed by replaying the fixed_amount rule's cadence for the calendar months before `scenario.start`, unadjusted for inflation (a same-order approximation, not a substitute for real records). For `monthly`, that is one amount per elapsed month. For `annual`, it posts only if `month_of_year` has already passed (e.g. April property tax is included for a May-start scenario; December property tax is not).
-- Mutually exclusive; loader rejects `ytd_preroll` on a non-`fixed_amount` row.
+- `ytd_amount` (dollars) — hard actual total already paid/received this calendar year before `scenario.start`. Valid for any rule kind because it is an observed fact, not derived from the rule's runtime computation. Posted with `reason_kind='ytd_rule'`, `reason_id` = the row's own `scheduled_transaction.id`. Multi-leg rules keep their reporting shape: today, `mortgage_payment` splits the YTD amount into an interest-expense leg and principal-liability leg, linked by `parent_event_id`, so expense charts pick up the interest portion just like ordinary monthly mortgage payments. The split replays whole payments (then the remainder) from the loan's Jan 1 balance: the lot's `prior_year_end_balance` when it gives one, otherwise the opening balance with those payments backed out by running the amortization in reverse, which is exact for the fixed rate the rule charges.
+- `ytd_preroll` (`0`/`1`) — auto-computed by replaying the rule's cadence for the calendar months before `scenario.start`, so it needs no update when `scenario.start` moves. A `fixed_amount` row posts its amount unadjusted for inflation (a same-order approximation, not a substitute for real records). For `monthly`, that is one amount per elapsed month. For `annual`, it posts only if `month_of_year` has already passed (e.g. April property tax is included for a May-start scenario; December property tax is not). A `mortgage_payment` row posts each elapsed month's payment at that month's end, split into interest and principal as above, from the same Jan 1 balance.
+- Mutually exclusive; loader rejects `ytd_preroll` on any other kind, whose amount isn't the row's own (`YTD_PREROLL_KINDS`).
 - Dated the last day of the month before `scenario.start` (degenerates to `scenario.start` itself when it falls in January).
 
 **`data_repo/scenarios/<name>/year_to_date.csv`** (optional) — for everything else needing a partial-first-year catch-up that isn't one `fixed_amount` monthly rule's own amount (investment growth, Social Security already received, prior withholding, fully-prior-year loss carryforwards, etc.). No `cadence`/`series`/`base_date`: each row is one flat historical fact, not a recurring rule. Posted with `reason_kind='ytd'`, `reason_id` = the row's `year_to_date.id` (a distinct id space from `scheduled_transaction.id`, hence the different `reason_kind`).
@@ -964,7 +964,8 @@ with the whole edited row; its fields are those of §4.6 that the rule's
 columns and blanks those it doesn't read, while a column the kind doesn't
 read and the edit doesn't touch keeps its cell. `scheduled add --kind`
 writes any rule kind, with each kind's columns as options and those it
-requires asked for when left out. `scheduled delete` removes the
+requires asked for when left out. Either one refuses an option the rule's
+kind doesn't read, rather than dropping it. `scheduled delete` removes the
 scenario's own rule with the scenario's calendar rows that name it, after
 listing them; deletes an override, bringing back the inherited rule; and,
 since an overlay can't remove an inherited rule (§4.5), ends one instead:
@@ -1094,3 +1095,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#233](https://github.com/BobKerns/analysis/issues/233): a rejected edit says which errors belong to a scenario built on the edited one, and `lot edit` changes an account's implicit empty `default` lot by adding its row (§7).
 - [#248](https://github.com/BobKerns/analysis/issues/248): aux kind `state_standard_deduction`, keyed by state like `state_brackets`, read by a state `tax_accumulator` rule, falling back to `standard_deduction` with a load warning (§2.6, §4.4).
 - [#251](https://github.com/BobKerns/analysis/issues/251): the tax accumulator records each year's drawdown tax for after-tax net worth; `scenario.meta_json` takes `after_tax` (`drawdown_years`, `step_up`) (§2.6, §4.5).
+- [#267](https://github.com/BobKerns/analysis/issues/267): `ytd_preroll` on `mortgage_payment` rows; a mortgage's YTD split runs from its Jan 1 balance; `scheduled add|edit` refuse an option the kind doesn't read (§4.6, §4.10, §7).

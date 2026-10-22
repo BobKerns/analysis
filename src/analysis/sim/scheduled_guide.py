@@ -29,10 +29,14 @@ KIND_COLUMNS: dict[str, dict[str, bool]] = {
     "rmd": {"person": True},
     "ss_benefit": {"person": True, "claim_age": True, "amount": True, "series": True},
     "tax_accumulator": {"params_json": True},
-    "mortgage_payment": {"amount": True, "rate": True, "interest_account": True},
+    "mortgage_payment": {
+        "amount": True, "rate": True, "interest_account": True, "ytd_preroll": False,
+    },
     "on_death": {"person": True},
 }
 assert set(KIND_COLUMNS) == registries.AMOUNT_RULE_KINDS
+assert {kind for kind, columns in KIND_COLUMNS.items()
+        if "ytd_preroll" in columns} == registries.YTD_PREROLL_KINDS
 
 KIND_ONLY_COLUMNS: frozenset[str] = frozenset(
     column for columns in KIND_COLUMNS.values() for column in columns
