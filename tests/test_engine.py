@@ -1259,33 +1259,12 @@ def test_settle_order_settles_dependency_before_dependent() -> None:
     assert order.index(2) < order.index(1)
 
 
-def test_negative_rate_depreciates_asset_into_expense(test_data_dir: Path, tmp_path: Path) -> None:
+def test_negative_rate_depreciates_asset_into_expense(
+    test_data_dir: Path, tmp_path: Path, depreciating_car: str,
+) -> None:
     """ADR-003 §2.2: a negative rate series swaps the legs, so value leaves the
     asset for the built-in `depreciation` expense account, declining-balance."""
-    import pandas as pd
-
     repo = test_data_dir
-    (repo / "aux" / "rate__jalopy.csv").write_text(
-        "effective_date,annual_rate\n2020-01-31,-12%\n", encoding="utf-8"
-    )
-    accounts_path = repo / "scenarios" / "retire_alice" / "accounts.csv"
-    df = pd.read_csv(accounts_path, dtype=str, keep_default_na=False)
-    row = dict.fromkeys(df.columns, "")
-    row.update(
-        name="Asset_Car", kind="asset", subkind="vehicle", owner="joint",
-        tax_treatment="none", series="jalopy", tax_character="depreciation",
-        meta_json="{}",
-    )
-    df = pd.concat([df, pd.DataFrame([row], columns=df.columns)], ignore_index=True)
-    df.to_csv(accounts_path, index=False)
-
-    values_path = repo / "scenarios" / "retire_alice" / "account_lots.csv"
-    vdf = pd.read_csv(values_path, dtype=str, keep_default_na=False)
-    vrow = dict.fromkeys(vdf.columns, "")
-    vrow.update(account_name="Asset_Car", opening_balance="30000.00")
-    vdf = pd.concat([vdf, pd.DataFrame([vrow], columns=vdf.columns)], ignore_index=True)
-    vdf.to_csv(values_path, index=False)
-
     intent_path = load_scenario(
         repo, "retire_alice",
         intent_dir=tmp_path / "intent", loaded_by="test", allow_dirty_data=True,

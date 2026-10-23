@@ -718,6 +718,28 @@ def scheduled_override(prototype_data: Path) -> Callable[..., str]:
 
 
 @pytest.fixture(scope="function")
+def depreciating_car(test_data_dir: Path, retire_alice_csv: Callable[[str], Path]) -> str:
+    """Add ``Asset_Car`` to the private retire_alice copy: a $30,000 vehicle
+    whose ``jalopy`` rate series is -12% a year, so its value drains into the
+    built-in ``depreciation`` expense account (ADR-003 §2.2). Returns its name."""
+    (test_data_dir / "aux" / "rate__jalopy.csv").write_text(
+        "effective_date,annual_rate\n2020-01-31,-12%\n", encoding="utf-8")
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts.loc[len(accounts)] = {
+        **dict.fromkeys(accounts.columns, ""),
+        "name": "Asset_Car", "kind": "asset", "subkind": "vehicle", "owner": "joint",
+        "tax_treatment": "none", "series": "jalopy", "tax_character": "depreciation",
+        "meta_json": "{}",
+    }
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    lots = pd.read_csv(retire_alice_csv("account_lots.csv"), dtype=str, keep_default_na=False)
+    lots.loc[len(lots)] = {**dict.fromkeys(lots.columns, ""),
+                           "account_name": "Asset_Car", "opening_balance": "30000.00"}
+    lots.to_csv(retire_alice_csv("account_lots.csv"), index=False)
+    return "Asset_Car"
+
+
+@pytest.fixture(scope="function")
 def business_scenarios(test_scenarios_dir: Path, test_data: Path) -> Path:
     """Alice's software business (#231) in the private data copy:
     ``alice_business`` builds on retire_alice, and ``alice_business_hobby`` is
