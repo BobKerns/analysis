@@ -116,7 +116,7 @@ Symbols get names from `securities.csv` (`symbol,name`), at the top of the data 
 
 ### 7. Sales and withdrawals
 
-A Roth lot's distribution splits by its own rules instead: basis first (pro-rata in a Roth 401k), earnings `roth_nonqualified` until the owner's five-year clock has run ([ADR-003](ADR-003-registries-and-csv-schemas.md) §1a).
+A Roth lot's distribution splits by its own rules instead: basis first (pro-rata in a Roth 401k), earnings `roth_nonqualified` until the owner's five-year clock has run ([ADR-003](ADR-003-registries-and-csv-schemas.md) §1a). A death changes the lot's clock or age test from a date on, which the engine works out when the run starts.
 
 A withdrawal from a lot applies the existing pro-rata split (`return_of_capital` + `ltcg`, [ADR-003](ADR-003-registries-and-csv-schemas.md) #8) to that lot's balance and basis, and reduces the lot's quantity proportionally. There is no cross-lot allocation policy in v1; drawing from several lots means a chain listing them explicitly. A `transfer_balance` calendar event (ADR-003 §3.7) names a lot and empties it; emptying an account is one such event per lot.
 
@@ -168,3 +168,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#217](https://github.com/BobKerns/analysis/issues/217): a `retirement` account's lots each carry a subkind (Roth or traditional, IRA or 401k) that sets the lot's tax treatment, and its RMD counts only traditional lots (§1, §3, §8).
 - [#217](https://github.com/BobKerns/analysis/issues/217): a Roth lot tracks basis and splits a distribution by the five-year rule (§7).
 - [#224](https://github.com/BobKerns/analysis/issues/224): a `retirement` lot's growth counterparty follows its subkind, not the account's `tax_character` (§5).
+- [#256](https://github.com/BobKerns/analysis/issues/256): a Roth lot's five-year rules change at a death (§7).

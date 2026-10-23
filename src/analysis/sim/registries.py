@@ -191,6 +191,10 @@ RETIREMENT_LOT_SUBKINDS: dict[str, str] = {
 
 # Lot subkinds an RMD may be drawn from: Roth IRAs never had RMDs, and Roth
 # 401ks have none from 2024 (SECURE 2.0 §325).
+# #256: scenario meta_json "roth_survivor", how a surviving spouse takes the
+# decedent's Roth IRAs: as their own (the earlier of the two five-year clocks,
+# the survivor's 59½) or as a beneficiary (the decedent's clock, no age test).
+ROTH_SURVIVOR_ELECTIONS: tuple[str, ...] = ("own", "beneficiary")
 RMD_LOT_SUBKINDS: frozenset[str] = frozenset({"traditional_ira", "traditional_401k"})
 
 # transfer_event.reason_kind (schema.py CHECK), in a sensible display order:

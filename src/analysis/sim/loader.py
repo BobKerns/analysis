@@ -820,6 +820,11 @@ def _read_scenario_inputs(
         _check_after_tax(meta["after_tax"], scenario_name, issues)
     if "irmaa" in meta:
         _check_irmaa_meta(meta["irmaa"], scenario_name, issues)
+    if meta.get("roth_survivor", "own") not in registries.ROTH_SURVIVOR_ELECTIONS:
+        issues.append(
+            f"{scenario_name}: scenario.csv meta_json roth_survivor must be one of "
+            f"{', '.join(registries.ROTH_SURVIVOR_ELECTIONS)} (got {meta['roth_survivor']!r})"
+        )
     scenario_row["name"] = scenario_name
     scenario_row["meta_json"] = json.dumps(meta, separators=(",", ":"))
     return (

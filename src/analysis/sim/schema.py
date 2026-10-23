@@ -315,8 +315,8 @@ CREATE TABLE scenario (
 
 -- Optional per-scenario lifespan override (ADR-003 §4.9). When the
 -- simulated month exceeds final_month, every scheduled_transaction
--- associated with this person (explicit `person` column, or owner of
--- from_account/to_account) stops firing for the remainder of the run.
+-- whose `person` column names this person stops firing for the remainder
+-- of the run, except percent_of_balance (growth) and on_death rows.
 CREATE TABLE person_lifespan (
     scenario_id  INTEGER NOT NULL REFERENCES scenario(id),
     person       TEXT NOT NULL REFERENCES person(id),
