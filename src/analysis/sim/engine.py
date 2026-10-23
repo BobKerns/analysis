@@ -142,6 +142,7 @@ def run_scenario(
                 "SELECT person, final_month FROM person_lifespan"
             )
         }
+        rule_lifespan = _rule_lifespans(con, person_lifespan)
         # A pseudo-person such as `joint` may have no birthdate (#217).
         person_birthdates: dict[str, date] = {
             r[0]: _parse_date(r[1])
@@ -323,9 +324,10 @@ def run_scenario(
                 # even with a person. on_death is the
                 # rule kind that FIRES on the death transition itself, so it
                 # must not be suppressed by the very gating it triggers.
+                # A `joint` rule stops at the household's last death.
                 if (
-                    person_lifespan and rule_kind not in ("percent_of_balance", "on_death")
-                    and _past_person_lifespan(month_s, p_person, person_lifespan)
+                    rule_lifespan and rule_kind not in ("percent_of_balance", "on_death")
+                    and _past_person_lifespan(month_s, p_person, rule_lifespan)
                 ):
                     continue
                 fire_count = _cadence_count(
@@ -469,7 +471,7 @@ def run_scenario(
                     case "on_death":
                         _apply_on_death(
                             con, balances, account_kinds, step_id, month_s,
-                            params, from_account, to, person_lifespan,
+                            params, from_account, to, rule_lifespan,
                             tax_char, tid, refill_ctx=refill_ctx,
                         )
                     case "tax_accumulator":
@@ -728,6 +730,26 @@ class StepUp(NamedTuple):
     share: int
 
 
+def _household(con) -> list[str]:
+    """The household: the ``primary`` persons, or everyone with a role if
+    none is marked."""
+    primaries = [r[0] for r in con.execute("SELECT id FROM person WHERE role = 'primary' ORDER BY id")]
+    return primaries or [
+        r[0] for r in con.execute("SELECT id FROM person WHERE role IS NOT NULL ORDER BY id")]
+
+
+def _rule_lifespans(con, person_lifespan: Mapping[str, str]) -> dict[str, str]:
+    """The final month each rule ``person`` stops at: a person's own, and for
+    ``joint`` the household's last death, so shared costs end with the second
+    death. ``joint`` gets one only when every household member has a lifespan;
+    while anyone may live on, a joint rule runs to the end."""
+    lifespans = dict(person_lifespan)
+    household = _household(con)
+    if "joint" not in lifespans and household and all(p in lifespans for p in household):
+        lifespans["joint"] = max(lifespans[p] for p in household)
+    return lifespans
+
+
 def _basis_step_ups(con) -> dict[str, list[StepUp]]:
     """The basis step-ups each final month brings (IRC §1014), by month.
 
@@ -744,8 +766,7 @@ def _basis_step_ups(con) -> dict[str, list[StepUp]]:
     if not deaths:
         return {}
     primaries = [r[0] for r in con.execute("SELECT id FROM person WHERE role = 'primary' ORDER BY id")]
-    household = primaries or [
-        r[0] for r in con.execute("SELECT id FROM person WHERE role IS NOT NULL ORDER BY id")]
+    household = _household(con)
     spouses = dict([primaries, primaries[::-1]]) if len(primaries) == 2 else {}
     meta = json.loads(con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}")
     community = bool(meta.get("community_property", False))

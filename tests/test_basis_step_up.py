@@ -310,3 +310,40 @@ def test_a_joint_lot_steps_up_half_however_many_survive(
     assert _plan(load_test_copy) == {
         ALICE_FINAL: {(BROKERAGE, "alice", 2), ("Asset_Home", "alice", 2)},
     }
+
+
+def _living_months(load: Callable[[], LoadResult], runs_dir: Path) -> list[str]:
+    """The months the `living` rule posted."""
+    run = run_scenario(load().intent_path, runs_dir / "joint.sqlite3", run_by="T",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    with sqlite3.connect(run) as con:
+        return [r[0] for r in con.execute(
+            "SELECT DISTINCT s.month FROM transfer_event e "
+            "JOIN simulation_step s ON s.id = e.step_id "
+            "JOIN scheduled_transaction t ON t.id = e.reason_id "
+            "WHERE e.reason_kind = 'rule' AND t.name = 'living' ORDER BY s.month")]
+
+
+def test_a_joint_rule_stops_after_the_second_death(
+    write_lifespans: Callable[..., None], update_scheduled: Callable[..., None],
+    fund_asset_savings: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    fund_asset_savings("500000.00")
+    write_lifespans(ALICE_DIES, BILL_DIES)
+    update_scheduled("living", person="joint")
+    months = _living_months(load_test_copy, runs_dir)
+    assert ALICE_FINAL < months[-1] == BILL_FINAL
+
+
+def test_a_joint_rule_runs_on_while_anyone_has_no_lifespan(
+    write_lifespans: Callable[..., None], update_scheduled: Callable[..., None],
+    fund_asset_savings: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    runs_dir: Path,
+) -> None:
+    fund_asset_savings("500000.00")
+    write_lifespans(ALICE_DIES)
+    update_scheduled("living", person="joint")
+    with sqlite3.connect(load_test_copy().intent_path) as con:
+        end = con.execute('SELECT "end" FROM scenario').fetchone()[0]
+    assert _living_months(load_test_copy, runs_dir)[-1] == end

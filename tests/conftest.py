@@ -920,6 +920,21 @@ def update_account(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Non
 
 
 @pytest.fixture(scope="function")
+def update_scheduled(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Set columns on one existing rule of the private copy's scheduled.csv:
+    ``update_scheduled("living", person="joint")``."""
+    def _update(name: str, **columns: str) -> None:
+        path = retire_alice_csv("scheduled.csv")
+        rules = pd.read_csv(path, dtype=str, keep_default_na=False)
+        row = rules["name"] == name
+        assert row.any(), name
+        for column, value in columns.items():
+            rules.loc[row, column] = value
+        rules.to_csv(path, index=False)
+    return _update
+
+
+@pytest.fixture(scope="function")
 def set_scenario_meta(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Set keys of the private retire_alice copy's scenario.csv ``meta_json``,
     keeping the others: ``set_scenario_meta(community_property=True)``."""
