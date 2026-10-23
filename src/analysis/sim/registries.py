@@ -122,6 +122,11 @@ LATENT_FACTOR_KIND = "latent_factor"
 # carry around its drawn level. Blank is the held draw.
 VARY_PROCESSES: set[str] = {"ar1"}
 
+# #280: where a process path starts. Blank is a stationary draw around the
+# level; `current` starts at the rate in effect just before the row's date
+# and reverts to the level at the row's persistence.
+VARY_PROCESS_STARTS: set[str] = {"current"}
+
 PROCESS_SHOCK_CLAMP = 5.0
 """A process path's log departure from its level is clamped to this, either
 side (ADR-006 §4a): overflow protection for a mistyped shock size, never
@@ -464,8 +469,8 @@ CALENDAR_HEADER: tuple[str, ...] = (
     "vary_outcomes",
     # ADR-006 §4a (#115): a set_rate row's year-by-year path around its drawn
     # level -- the process (`ar1`), its persistence phi, and the yearly shock
-    # size in micros.
-    "vary_process", "vary_persistence", "vary_innovation_sd",
+    # size in micros; #280: where the path starts (blank, or `current`).
+    "vary_process", "vary_persistence", "vary_innovation_sd", "vary_process_start",
     # ADR-008: this row's (or latent factor's) parent in a correlation tree,
     # and the correlation rho between their normal scores; on a tree's root,
     # the Student-t copula's degrees of freedom for the whole tree (#68).

@@ -1128,7 +1128,9 @@ def _describe_process(row: sqlite3.Row) -> str:
     if "vary_process" not in row.keys() or not row["vary_process"]:
         return ""
     shock = _spread(row["kind"], "amount", row["vary_innovation_sd"])
-    return f"{row['vary_process']}, persistence {row['vary_persistence']:g}, shock {shock}"
+    start = (row["vary_process_start"] if "vary_process_start" in row.keys() else None)
+    return (f"{row['vary_process']}, persistence {row['vary_persistence']:g}, shock {shock}"
+            + (f", from the {start} rate" if start else ""))
 
 
 def parameters(batch_dir: Path) -> pd.DataFrame:

@@ -125,6 +125,7 @@ CREATE TABLE node (
     process         TEXT,
     persistence     REAL,
     innovation_sd   REAL,
+    process_start   TEXT,               -- 'current', or NULL for a stationary start
     sex             TEXT,               -- life_table
     set_forward     REAL,               -- life_table, years
     birthdate       TEXT,
@@ -236,7 +237,7 @@ SELECT name, node_kind, calendar_kind, affects, target, {_DISPLAY_UNIT} AS unit,
     {_position('low')} AS low, {_position('high')} AS high, {_position('median')} AS median,
     {_spread('sd')} AS sd, {_position('mode')} AS mode, skew, tailweight, outcomes,
     ramp_months, process, persistence, {_spread('innovation_sd')} AS innovation_sd,
-    sex, set_forward, birthdate, {_position('base_value')} AS base_value,
+    process_start, sex, set_forward, birthdate, {_position('base_value')} AS base_value,
     correlate_with, rho, tree_root, nu,
     {_position('mean')} AS mean, {_spread('dist_sd')} AS dist_sd, skewness, excess_kurtosis,
     description
@@ -457,7 +458,8 @@ def _node_records(
                     affects=_affects(row), outcomes=_get(row, "vary_outcomes"),
                     ramp_months=_get(row, "vary_ramp_months"), process=_get(row, "vary_process"),
                     persistence=_get(row, "vary_persistence"),
-                    innovation_sd=_get(row, "vary_innovation_sd"), description=row["description"],
+                    innovation_sd=_get(row, "vary_innovation_sd"),
+                    process_start=_get(row, "vary_process_start"), description=row["description"],
                 )
                 if distribution:
                     try:

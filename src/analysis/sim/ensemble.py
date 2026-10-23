@@ -185,38 +185,50 @@ def _row_aux_kind(row: sqlite3.Row) -> str:
     return params.get("aux_kind", "rate")
 
 
-def _current_rate_value(con: sqlite3.Connection, row: sqlite3.Row) -> int:
+def _current_rate_value(
+    con: sqlite3.Connection, row: sqlite3.Row, *, before: bool = False, what: str = "ramp",
+) -> int:
     """The series' latest *known* rate as of ``row``'s own date: the later of
     the (not-yet-run) intent's own `aux_table` baseline and any literal
     (already-resolved, non-varying) `set_rate` calendar_event for the same
-    series and aux_kind dated on or before this row's date.
+    series and aux_kind dated on or before this row's date. With
+    ``before``, strictly before it: the rate in effect on the day before,
+    which a process row's ``current`` start reverts from (ADR-006 §4a).
 
     A rate change the recipe itself already authors earlier in the calendar
     is part of "the current rate", not just the load-time snapshot
     underneath it -- otherwise a ramp starting after such a change would
-    reset to the pre-change value before ascending. This still doesn't
-    pre-simulate the calendar in general: an *unresolved* (still-varying)
-    earlier `set_rate` row is excluded, since its value isn't known yet
-    either (ADR-006's open question on cross-variation ordering beyond the
-    two-pass rule).
+    reset to the pre-change value before ascending. An earlier *varying*
+    row counts once resolved: pass 2 resolves amount rows in date order, so
+    by the time this row is reached an earlier row for its series has its
+    value, and its ramp or path rows are written (their last step is what
+    is in effect). A row on the same date as one in the series file
+    replaces it, as the engine applies it after the file's rows.
     """
     aux_kind = _row_aux_kind(row)
     candidates: list[tuple[str, int]] = []
+    cmp = "<" if before else "<="
 
     aux_found = con.execute(
         "SELECT effective_date, payload_json FROM aux_table "
-        "WHERE kind = ? AND series = ? AND effective_date <= ? "
+        f"WHERE kind = ? AND series = ? AND effective_date {cmp} ? "
         "ORDER BY effective_date DESC LIMIT 1",
         (aux_kind, row["series"], row["date"]),
     ).fetchone()
     if aux_found is not None:
-        candidates.append((aux_found[0], json.loads(aux_found[1])["annual_rate_micros"]))
+        rate = json.loads(aux_found[1]).get("annual_rate_micros")
+        if rate is None:
+            raise EnsembleError(
+                f"{what} on row {row['name']!r}: aux_kind {aux_kind!r} series "
+                f"{row['series']!r} holds no annual rate to start from"
+            )
+        candidates.append((aux_found[0], int(rate)))
 
     for ev_date, ev_amount, ev_payload in con.execute(
         "SELECT date, amount, payload_json FROM calendar_event "
-        "WHERE kind = 'set_rate' AND series = ? AND date <= ? AND id != ? "
+        f"WHERE kind = 'set_rate' AND series = ? AND date {cmp} ? AND id != ? "
         "AND vary_distribution IS NULL AND amount IS NOT NULL "
-        "ORDER BY date DESC",
+        "ORDER BY date DESC, id DESC",
         (row["series"], row["date"], row["id"]),
     ).fetchall():
         if (json.loads(ev_payload or "{}").get("aux_kind", "rate")) == aux_kind:
@@ -225,8 +237,9 @@ def _current_rate_value(con: sqlite3.Connection, row: sqlite3.Row) -> int:
 
     if not candidates:
         raise EnsembleError(
-            f"ramp on row {row['name']!r}: no existing {aux_kind!r} row for "
-            f"series {row['series']!r} on or before {row['date']} to ramp from"
+            f"{what} on row {row['name']!r}: no existing {aux_kind!r} row for "
+            f"series {row['series']!r} {'before' if before else 'on or before'} "
+            f"{row['date']} to start from"
         )
     candidates.sort(key=lambda c: c[0])
     return candidates[-1][1]
@@ -259,13 +272,15 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
         )
 
 
-def _process_params(row: sqlite3.Row) -> tuple[float, int] | None:
-    """A process row's ``(phi, innovation SD in micros)`` (ADR-006 §4a), or
-    ``None`` for a held draw. Intent files written before #115 have no
-    process columns at all."""
+def _process_params(row: sqlite3.Row) -> tuple[float, int, str | None] | None:
+    """A process row's ``(phi, innovation SD in micros, start)`` (ADR-006
+    §4a), or ``None`` for a held draw; ``start`` is ``current`` or ``None``
+    for a stationary start. Intent files written before #115 have no
+    process columns at all, nor before #280 a start."""
     if "vary_process" not in row.keys() or not row["vary_process"]:
         return None
-    return float(row["vary_persistence"]), int(row["vary_innovation_sd"])
+    start = row["vary_process_start"] if "vary_process_start" in row.keys() else None
+    return float(row["vary_persistence"]), int(row["vary_innovation_sd"]), start or None
 
 
 def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list[date]:
@@ -297,12 +312,17 @@ def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list
 
 
 def process_path(level_micros: int, persistence: float, innovation_sd_micros: int,
-                 shocks: list[float]) -> list[int]:
+                 shocks: list[float], *, start_micros: int | None = None) -> list[int]:
     """An AR(1) path's yearly rates in micros (ADR-006 §4a), one per shock:
     the log departure ``x`` of a year's growth factor from a held row's
     starts at its stationary spread and carries ``persistence`` of itself
     into each next year, plus that year's shock. All-zero shocks give a flat
     path at the level.
+
+    With ``start_micros`` (a ``current`` start, #280) year 0 is that rate
+    instead, its departure from the level taken whole and year 0's shock
+    unused, so the path reverts from it at ``persistence``; all-zero shocks
+    then give a deterministic decay to the level.
 
     The engine applies a rate ``r`` as ``r/12`` a month, so a year grows by
     ``(1 + r/12)**12``; each rate is chosen so that factor is the level's
@@ -313,6 +333,16 @@ def process_path(level_micros: int, persistence: float, innovation_sd_micros: in
     rates: list[int] = []
     x = 0.0
     for k, eps in enumerate(shocks):
+        if k == 0 and start_micros is not None:
+            ratio = (1 + start_micros / _MICROS / 12) / (1 + level / 12)
+            if ratio <= 0:
+                raise EnsembleError(
+                    f"a process can't start at {start_micros / _MICROS:.2%}: "
+                    "a year's growth factor there isn't positive"
+                )
+            x = max(-PROCESS_SHOCK_CLAMP, min(PROCESS_SHOCK_CLAMP, 12 * math.log(ratio)))
+            rates.append(start_micros)
+            continue
         x = (eps * sigma / math.sqrt(1 - persistence ** 2) if k == 0
              else persistence * x + sigma * eps)
         # Overflow protection only: realistic inputs never come near it.
@@ -837,10 +867,12 @@ def resolve_member(
         # next set_rate for its series), and every yearly shock before the
         # amount pass expands anything.
         end = date.fromisoformat(con.execute('SELECT "end" FROM scenario').fetchone()[0])
+        amount_rows = sorted(
+            (r for r in rows if r["vary_target"] == "amount"), key=lambda r: (r["date"], r["id"]),
+        )
         process_rows = {
             r["name"]: (params, _process_steps(con, r, end))
-            for r in rows if r["vary_target"] == "amount"
-            and (params := _process_params(r)) is not None
+            for r in amount_rows if (params := _process_params(r)) is not None
         }
         shocks, shock_parts, year_scales = _yearly_shocks(
             links, factors, node_tails,
@@ -850,7 +882,10 @@ def resolve_member(
         )
 
         path_shocks: list[tuple[str, int, float | None, float | None, float | None, float, int]] = []
-        for row in [r for r in rows if r["vary_target"] == "amount"]:
+        # In date order (#280): a process row starting from the current rate
+        # reads an earlier row for its series, varying or not, once resolved.
+        # Each row draws on its own stream, so the order moves no draw.
+        for row in amount_rows:
             dist = build_distribution(row, "amount")
             value, quantile, u = _resolve_value(
                 row, dist, as_int=False, overrides=overrides, seed=seed, member_index=member_index,
@@ -875,15 +910,24 @@ def resolve_member(
             if row["vary_ramp_months"]:
                 _apply_ramp(con, row, target, int(row["vary_ramp_months"]))
             elif row["name"] in process_rows:
-                (phi, sd), steps = process_rows[row["name"]]
+                (phi, sd, start), steps = process_rows[row["name"]]
                 yearly = shocks[row["name"]]
-                rates = process_path(target, phi, sd, [yearly[s.year] for s in steps])
+                start_micros = (
+                    _current_rate_value(con, row, before=True, what="process start")
+                    if start == "current" else None
+                )
+                rates = process_path(target, phi, sd, [yearly[s.year] for s in steps],
+                                     start_micros=start_micros)
                 _apply_process(con, row, rates, steps)
                 parts = shock_parts[row["name"]]
                 path_shocks.extend(
                     (row["name"], step.year, parts[step.year].noise, parts[step.year].score,
-                     parts[step.year].scale, parts[step.year].shock, rate)
-                    for step, rate in zip(steps, rates, strict=True)
+                     parts[step.year].scale,
+                     # A current start's year 0 takes no shock; its tree's
+                     # draws for that year still stand for the other rows.
+                     0.0 if k == 0 and start_micros is not None else parts[step.year].shock,
+                     rate)
+                    for k, (step, rate) in enumerate(zip(steps, rates, strict=True))
                 )
             else:
                 con.execute(
