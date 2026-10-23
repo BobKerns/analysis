@@ -386,15 +386,9 @@ def balance_by_month(
 
 
 def scenario_deaths(connections: Mapping[str, RunConnection], scenarios: Sequence[str]) -> list[Death]:
-    """The deaths a comparison chart marks (#255): the scenarios' own when
-    they all agree, which is usual; otherwise each scenario's, named after
-    it, so a variant that moves a death shows both."""
-    by_scenario = {name: connections[name].deaths() for name in scenarios}
-    distinct = {tuple(deaths) for deaths in by_scenario.values()}
-    if len(distinct) <= 1:
-        return list(next(iter(distinct), ()))
+    """The deaths a comparison chart marks (#255): every death in any of the
+    scenarios, once each, so a variant that moves a death shows both."""
     return sorted(
-        {Death(f"{death.person} ({name})", death.month)
-         for name, deaths in by_scenario.items() for death in deaths},
+        {death for name in scenarios for death in connections[name].deaths()},
         key=lambda d: (d.month, d.person),
     )

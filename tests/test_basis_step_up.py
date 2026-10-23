@@ -205,33 +205,28 @@ def test_sim_explain_lists_the_step_ups(
 ALICE, BILL = Death("Alice", date(2035, 3, 31)), Death("Bill", date(2039, 8, 31))
 
 
-def _death_lines(ax) -> list[tuple[float, str, str]]:
-    return [(line.get_xdata()[0], line.get_linestyle(), line.get_label())
+def _death_lines(ax) -> list[tuple[float, str]]:
+    return [(line.get_xdata()[0], line.get_linestyle())
             for line in ax.get_lines() if line.get_color() == "red"]
 
 
-def test_deaths_are_red_lines_dashed_until_the_last() -> None:
+def test_deaths_are_dashed_red_lines_not_in_the_legend() -> None:
     ax = Figure().subplots()
     ax.plot(pd.date_range("2030-01-31", "2040-12-31", freq="ME"), range(132), label="net worth")
-    ax.legend()
     xlim = ax.get_xlim()
     mark_deaths(ax, [BILL, ALICE])
-    assert _death_lines(ax) == [
-        (date2num(ALICE.month), "--", "Alice dies"), (date2num(BILL.month), "-", "Bill dies"),
-    ]
-    legend = ax.get_legend()
-    assert legend is not None
-    assert [t.get_text() for t in legend.get_texts()][-2:] == ["Alice dies", "Bill dies"]
+    assert _death_lines(ax) == [(date2num(BILL.month), "--"), (date2num(ALICE.month), "--")]
+    assert [t.get_text() for t in ax.legend().get_texts()] == ["net worth"]
     assert ax.get_xlim() == xlim
 
 
-def test_a_death_outside_the_chart_is_left_out_but_still_counts() -> None:
+def test_a_death_outside_the_chart_is_left_out() -> None:
     ax = Figure().subplots()
     ax.plot(pd.date_range("2030-01-31", "2040-12-31", freq="ME"), range(132))
     xlim = ax.get_xlim()
-    mark_deaths(ax, [ALICE, Death("Carol", date(2050, 1, 31))], label=False)
-    # Alice's isn't the last death, so it stays dashed; Carol's doesn't widen the axis.
-    assert [(x, style) for x, style, _ in _death_lines(ax)] == [(date2num(ALICE.month), "--")]
+    mark_deaths(ax, [ALICE, Death("Carol", date(2050, 1, 31))])
+    # Carol's, past the end, doesn't widen the axis.
+    assert _death_lines(ax) == [(date2num(ALICE.month), "--")]
     assert ax.get_xlim() == xlim
 
 
@@ -239,10 +234,8 @@ def test_on_a_bar_chart_of_years_a_death_falls_in_its_years_bar() -> None:
     ax = Figure().subplots()
     years = list(range(2033, 2041))
     ax.bar([str(y) for y in years], [1] * len(years))
-    mark_deaths(ax, [ALICE, BILL], years=years, label=False)
-    assert [(x, style) for x, style, _ in _death_lines(ax)] == [
-        (2 + (3 - 6.5) / 12, "--"), (6 + (8 - 6.5) / 12, "-"),
-    ]
+    mark_deaths(ax, [ALICE, BILL], years=years)
+    assert _death_lines(ax) == [(2 + (3 - 6.5) / 12, "--"), (6 + (8 - 6.5) / 12, "--")]
 
 
 def test_a_run_reads_its_deaths(
@@ -264,13 +257,12 @@ def _fake_run(deaths: list[Death], member: int | None = None) -> RunConnection:
         deaths=lambda: deaths, ensemble_member=lambda: None if member is None else (member, 1)))
 
 
-def test_a_comparison_names_the_scenario_only_when_deaths_differ() -> None:
+def test_a_comparison_marks_each_scenarios_deaths_once() -> None:
     same = {"a": _fake_run([ALICE]), "b": _fake_run([ALICE])}
     assert compare.scenario_deaths(same, ["a", "b"]) == [ALICE]
-    moved = {"a": _fake_run([ALICE]), "b": _fake_run([BILL])}
-    assert compare.scenario_deaths(moved, ["a", "b"]) == [
-        Death("Alice (a)", ALICE.month), Death("Bill (b)", BILL.month),
-    ]
+    later = Death("Alice", date(2037, 3, 31))
+    moved = {"a": _fake_run([ALICE, BILL]), "b": _fake_run([later, BILL])}
+    assert compare.scenario_deaths(moved, ["a", "b"]) == [ALICE, later, BILL]
 
 
 def test_an_ensemble_chart_marks_member_0s_deaths() -> None:

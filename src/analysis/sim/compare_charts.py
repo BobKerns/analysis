@@ -59,6 +59,6 @@ def comparison_figure(
         ax.grid(True, axis="y", alpha=0.3)
         include_zero(ax)
     mark_deaths(ax_values, deaths)
-    mark_deaths(ax_delta, deaths, label=False)
+    mark_deaths(ax_delta, deaths)
     fig.tight_layout()
     return fig

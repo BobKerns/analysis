@@ -55,21 +55,19 @@ def include_zero(ax: Axes, *, margin: float = 0.05) -> None:
 
 def mark_deaths(
     ax: Axes, deaths: Sequence[Death], *, years: Sequence[object] | None = None,
-    label: bool = True,
 ) -> None:
-    """A red vertical line at each death (#255), at the end of the final
-    month: dashed for an earlier death, solid for the last (or only) one.
+    """A dashed red vertical line at each death (#255), at the end of the
+    final month; dashed because the date is an assumption, not a fact.
     On a bar chart of years, ``years`` are the bars' labels in order, and a
     death falls within its year's bar. A death outside the axis's range is
-    left out, and the limits stay where the data put them. With ``label``
-    each line joins the legend, which is redrawn if the axes already has one."""
+    left out, and the limits stay where the data put them. The lines stay out
+    of the legend (Bob: a reminder of mortality in every legend is too much);
+    the docs explain them once."""
     if not deaths:
         return
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
     keys = [str(y) for y in years] if years is not None else []
-    ordered = sorted(deaths, key=lambda d: d.month)
-    drawn = False
-    for i, death in enumerate(ordered):
+    for death in deaths:
         if years is None:
             x = float(date2num(death.month))
         elif str(death.month.year) in keys:
@@ -80,15 +78,10 @@ def mark_deaths(
             continue
         ax.axvline(
             x, color="red", linewidth=1.2, zorder=2.6,
-            linestyle="--" if i < len(ordered) - 1 else "-",
-            label=f"{death.person} dies" if label else None,
+            linestyle="--", label="_nolegend_",
         )
-        drawn = True
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
-    legend = ax.get_legend()
-    if drawn and label and legend is not None:
-        ax.legend(title=legend.get_title().get_text() or None, framealpha=FRAME_ALPHA)
 
 
 def _new_axes() -> Axes:

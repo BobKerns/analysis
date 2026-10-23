@@ -151,12 +151,12 @@ def _symlog(ax: Any, values: pd.DataFrame) -> None:
 
 def _delta_lines(
     deltas: pd.DataFrame, columns: list[str], ax: Any, title: str, shares: bool = False,
-    log_scale: bool = False, deaths: Sequence[Death] = (), label_deaths: bool = False,
+    log_scale: bool = False, deaths: Sequence[Death] = (),
 ) -> None:
     """One line per column of ``deltas``, light to dark, labelled at the
     right end, over a zero rule; dollars, or percentage points for
     ``shares``, on a symmetric log scale for ``log_scale`` (dollars only).
-    ``deaths`` are red lines, in the legend with ``label_deaths``."""
+    ``deaths`` are red lines."""
     if log_scale and not shares:
         _symlog(ax, deltas[columns])
     shades = matplotlib.colormaps["Blues"]
@@ -166,7 +166,7 @@ def _delta_lines(
         ax.annotate(column, (deltas.index[-1], deltas[column].iloc[-1]),
                     xytext=(4, 0), textcoords="offset points", va="center", fontsize=8)
     ax.axhline(0, color="gray", linewidth=0.8)
-    mark_deaths(ax, deaths, label=label_deaths)
+    mark_deaths(ax, deaths)
     ax.set_title(title)
     ax.yaxis.set_major_formatter(FuncFormatter(
         (lambda v, _: f"{v * 100:+.0f} pts") if shares else (lambda v, _: f"${v:,.0f}")
@@ -205,7 +205,7 @@ def ensemble_compare_figure(
     _delta_lines(
         deltas, [c for c in deltas.columns if c.startswith("Δp")], axes[0],
         f"{variant} − {baseline}: each percentile vs the same percentile ({mode_label})",
-        log_scale=log_scale, deaths=deaths, label_deaths=True,
+        log_scale=log_scale, deaths=deaths,
     )
     if pairs:
         paired = clip(summary_with_percentiles(
@@ -214,7 +214,7 @@ def ensemble_compare_figure(
         if log_scale:
             _symlog(axes[1], paired)
         ensemble_fan_chart(paired, ax=axes[1])
-        mark_deaths(axes[1], deaths, label=False)
+        mark_deaths(axes[1], deaths)
         axes[1].set_title(
             f"{variant} − {baseline}, future by future ({len(pairs)} paired members)"
         )
