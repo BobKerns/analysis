@@ -157,7 +157,7 @@ around it year by year ([ADR-006
 
 - **`vary_persistence`:** Persistence, or 0 when it's negative. Near 0 for
   returns; a yield or an inflation rate is better held than given a process.
-- **`vary_innovation_sd`:** Shock SD. Since 1948, stocks' is 15.9 and
+- **`vary_innovation_sd`:** [Shock SD](../user-guide.md#g-shock). Since 1948, stocks' is 15.9 and
   T-bonds' 8.2.
 - **The level's `vary_sd`:** only the uncertainty about the long-run rate
   the path compounds to, since the path supplies the yearly spread itself.
