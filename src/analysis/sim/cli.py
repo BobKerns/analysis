@@ -6772,6 +6772,13 @@ def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bo
         click.echo(f"no {side}{period} is tagged in role {role} ({described});"
                    " --untagged shows it all")
         return
+    if year is None:
+        # A column with nothing in any year (no business, no inheritance)
+        # only widens the table; the totals stay, whatever they hold.
+        kept = {"total", reports.ECONOMIC_INCOME, reports.NET_WORTH_CHANGE}
+        empty = [c for c in frame.columns
+                 if c not in kept and frame[c].fillna(0).round(2).eq(0).all()]
+        frame = frame.drop(columns=empty)
     _print_report(frame, f"{side}{period} by {by.removeprefix('tag:')}", described, mode,
                   total_row=year is not None)
 
@@ -6799,21 +6806,22 @@ def report_income_command(
 ) -> None:
     """Show income by year: what each income account paid out, and where it went.
 
-    Categories are salary, social security, investment (interest, dividends,
-    capital gains, including growth that stays invested, less market drops)
-    and other. Their total is economic_income: income plus paper gains, net
-    of losses. The columns after it follow it down to the change in net worth:
+    Categories are salary, soc security, investment (interest, dividends,
+    capital gains, and the growth of what stays invested, a house included,
+    less market drops and a vehicle's depreciation), business (its income less
+    its expenses, the Schedule C net) and other. Their total is
+    economic_income: income plus paper gains, net of losses. The columns
+    after it follow it down to the change in net worth:
 
     \b
-      economic_income - tax - deferred_tax_change = after_tax_income
-      after_tax_income - spending - depreciation - inflation = net_worth_change
+      economic_income - tax - Δdeferred_tax = after_tax_income
+      after_tax_income - spending - inflation = Δnet_worth
 
-    tax is the year's liability, whenever it is paid; deferred_tax_change the
+    tax is the year's liability, whenever it is paid; Δdeferred_tax the
     change in tax still owed on traditional balances and unrealized gains;
-    spending every other expense; depreciation (when there is any) value a
-    vehicle lost; inflation (CPI-constant dollars only) what inflation took
-    from what was held. With --pre-tax the tax line is tax_paid and there is
-    no deferred line.
+    spending every other expense but business costs; inflation (CPI-constant dollars only) what
+    inflation took from what was held. With --pre-tax the tax line is
+    tax_paid and there is no deferred line.
 
     Each year also shows cash_income, the income paid into a cash account
     (no paper growth), and cash_flow, that plus what was withdrawn into cash
@@ -6821,7 +6829,9 @@ def report_income_command(
 
     By tag, flows with no tag in the role are left out (and cash_flow and
     the net worth columns with them, as they aren't tagged) unless
-    --untagged is given; the total is then just total.
+    --untagged is given, and their sum is named total.
+
+    A column that is zero in every year is left out.
     """
     _flow_report("income", year, by, untagged, dollars, runfile, scenario, data_dir,
                  pre_tax=pre_tax)
@@ -6842,7 +6852,7 @@ def report_expenses_command(
     is left out: it records value a vehicle loses, not money spent.
 
     By tag, expenses with no tag in the role are left out unless --untagged
-    is given.
+    is given. A column that is zero in every year is left out.
     """
     _flow_report("expenses", year, by, untagged, dollars, runfile, scenario, data_dir)
 

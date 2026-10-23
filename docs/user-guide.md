@@ -1168,20 +1168,23 @@ CPI-constant (today's) dollars unless you pass `--dollars nominal`.
 
 `sim report income` tells the whole story of each year. Its total,
 `economic_income`, is income plus paper gains, net of losses: what the year
-added before spending (economists call it Haig-Simons income). The columns
+added before spending (economists call it Haig-Simons income). Its
+`investment` column counts the growth of everything invested, a house
+included, less market drops and a vehicle's depreciation; its `business`
+column is the business's income less its expenses, so business costs are not
+spending. The columns
 after it carry it down to the change in net worth, and each row adds up:
 
 ```text
-economic_income - tax - deferred_tax_change = after_tax_income
-after_tax_income - spending - depreciation - inflation = net_worth_change
+economic_income - tax - Δdeferred_tax = after_tax_income
+after_tax_income - spending - inflation = Δnet_worth
 ```
 
 `tax` is the year's tax liability, whenever it is paid, and
-`deferred_tax_change` the change in tax still owed on IRA and 401(k)
-balances and unsold gains, so `net_worth_change` is the change in after-tax
+`Δdeferred_tax` the change in tax still owed on IRA and 401(k)
+balances and unsold gains, so `Δnet_worth` is the change in after-tax
 net worth, as `sim networth` shows it. `inflation` (CPI-constant dollars
-only) is what inflation took from the real value of what you held.
-`depreciation` appears only when a vehicle loses value. With `--pre-tax`,
+only) is what inflation took from the real value of what you held. With `--pre-tax`,
 the tax line is what was paid in the year, and net worth is the plain total
 of the balances.
 

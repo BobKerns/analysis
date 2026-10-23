@@ -30,7 +30,8 @@ def test_income_by_category_keeps_other_and_adds_up(report_run: RunConnection) -
     income = reports.flows_by_year(report_run, "income")
     assert list(income.columns) == [
         *reports.INCOME_REPORT_CATEGORIES, reports.ECONOMIC_INCOME,
-        "tax", "deferred_tax_change", "after_tax_income", "spending", "net_worth_change",
+        "tax", reports.DEFERRED_TAX_CHANGE, "after_tax_income", "spending",
+        reports.NET_WORTH_CHANGE,
         reports.CASH_INCOME, reports.CASH_FLOW]
     events = report_run.items("transfer_event", from_kind="income")
     by_year = events.groupby(pd.to_datetime(events["date"]).dt.year)["amount"].sum() / 100
@@ -195,20 +196,20 @@ def _story(income: pd.DataFrame) -> pd.DataFrame:
     years net worth covers."""
     columns = [reports.ECONOMIC_INCOME,
                *(c for c in reports.NET_WORTH_COLUMNS if c in income.columns)]
-    return income[columns].dropna(subset=["net_worth_change"])
+    return income[columns].dropna(subset=[reports.NET_WORTH_CHANGE])
 
 
 def _assert_rows_add_up(income: pd.DataFrame) -> pd.DataFrame:
     story = _story(income)
     assert not story.empty
     taken = story.drop(columns=[reports.ECONOMIC_INCOME, "after_tax_income",
-                                "net_worth_change"], errors="ignore").sum(axis=1)
-    assert story["net_worth_change"].to_numpy() == pytest.approx(
+                                reports.NET_WORTH_CHANGE], errors="ignore").sum(axis=1)
+    assert story[reports.NET_WORTH_CHANGE].to_numpy() == pytest.approx(
         (story[reports.ECONOMIC_INCOME] - taken).to_numpy(), abs=0.01)
     if "after_tax_income" in story.columns:
         assert story["after_tax_income"].to_numpy() == pytest.approx(
             (story[reports.ECONOMIC_INCOME] - story["tax"]
-             - story["deferred_tax_change"]).to_numpy(), abs=0.01)
+             - story[reports.DEFERRED_TAX_CHANGE]).to_numpy(), abs=0.01)
     return story
 
 
@@ -226,13 +227,13 @@ def test_income_carries_economic_income_down_to_after_tax_net_worth(
     # 2025 holds only a carried-forward record from before the scenario.
     assert story.index[0] == 2026
     later = _year_end_changes(report_run.after_tax_net_worth_frame())
-    assert story.loc[later.index, "net_worth_change"].to_numpy() == pytest.approx(
+    assert story.loc[later.index, reports.NET_WORTH_CHANGE].to_numpy() == pytest.approx(
         later.to_numpy(), abs=0.01)
     liability = report_run.tax_liability_by_year()
     computed = liability.index.intersection(story.index)
     assert story.loc[computed, "tax"].to_numpy() == pytest.approx(
         liability[computed].to_numpy())
-    assert (story["deferred_tax_change"] != 0).any()
+    assert (story[reports.DEFERRED_TAX_CHANGE] != 0).any()
     expenses = reports.flows_by_year(report_run, "expenses")
     assert story["spending"].to_numpy() == pytest.approx(
         (expenses["total"] - expenses["taxes"]).reindex(story.index).to_numpy())
@@ -240,10 +241,10 @@ def test_income_carries_economic_income_down_to_after_tax_net_worth(
 
 def test_pre_tax_income_carries_down_through_the_tax_paid(report_run: RunConnection) -> None:
     income = reports.flows_by_year(report_run, "income", after_tax=False)
-    assert "tax" not in income.columns and "deferred_tax_change" not in income.columns
+    assert "tax" not in income.columns and reports.DEFERRED_TAX_CHANGE not in income.columns
     story = _assert_rows_add_up(income)
     later = _year_end_changes(report_run.net_worth_frame())
-    assert story.loc[later.index, "net_worth_change"].to_numpy() == pytest.approx(
+    assert story.loc[later.index, reports.NET_WORTH_CHANGE].to_numpy() == pytest.approx(
         later.to_numpy(), abs=0.01)
     taxes = reports.flows_by_year(report_run, "expenses")["taxes"]
     assert story["tax_paid"].to_numpy() == pytest.approx(taxes.reindex(story.index).to_numpy())
@@ -265,10 +266,10 @@ def test_income_without_a_tax_rule_counts_the_tax_paid(retire_alice_run: RunConn
     story = _assert_rows_add_up(reports.flows_by_year(retire_alice_run, "income"))
     taxes = reports.flows_by_year(retire_alice_run, "expenses")["taxes"]
     assert story["tax"].to_numpy() == pytest.approx(taxes.reindex(story.index).to_numpy())
-    assert (story["deferred_tax_change"] == 0).all()
+    assert (story[reports.DEFERRED_TAX_CHANGE] == 0).all()
 
 
-def test_depreciation_is_worth_lost_not_spending(
+def test_depreciation_is_an_investment_loss_not_spending(
     depreciating_car: str, load_test_copy: Callable[[], LoadResult], runs_dir: Path,
     test_data_dir: Path,
 ) -> None:
@@ -276,13 +277,39 @@ def test_depreciation_is_worth_lost_not_spending(
                        run_by="TEST", allow_dirty_data=True, allow_dirty_code=True)
     with open_scenario(test_data_dir, "retire_alice") as scenario_conn, \
             open_run(run, scenario_conn, scenarios_dir=test_data_dir / "scenarios") as rc:
-        story = _assert_rows_add_up(reports.flows_by_year(rc, "income"))
+        income = reports.flows_by_year(rc, "income")
+        _assert_rows_add_up(income)
+        by_account = reports.flows_by_year(rc, "income", by="account")
         lost = rc.items("transfer_event", to_name="depreciation")
         expenses = reports.flows_by_year(rc, "expenses")
     by_year = lost.groupby(pd.to_datetime(lost["date"]).dt.year)["amount"].sum() / 100
-    assert story["depreciation"].to_numpy() == pytest.approx(
-        by_year.reindex(story.index).to_numpy())
+    assert (by_year > 0).all()
+    # Counted against economic income like a market drop, not as spending.
+    assert by_account["depreciation"].to_numpy() == pytest.approx(
+        -by_year.reindex(by_account.index).fillna(0).to_numpy())
     assert "depreciation" not in expenses.columns
+    assert "depreciation" not in income.columns
+
+
+def test_business_income_is_net_of_business_expenses(
+    business_scenarios: Path, load_test_scenario: Callable[[str], Path], runs_dir: Path,
+    test_data_dir: Path,
+) -> None:
+    """A business's costs come off its income, not out of spending (#249):
+    the business column is the year's Schedule C net, a loss when negative."""
+    run = run_scenario(load_test_scenario("alice_business"), runs_dir / "business.sqlite3",
+                       run_by="TEST", allow_dirty_data=True, allow_dirty_code=True)
+    with open_scenario(test_data_dir, "alice_business") as scenario_conn, \
+            open_run(run, scenario_conn, scenarios_dir=business_scenarios) as rc:
+        income = reports.flows_by_year(rc, "income", mode=DollarMode.NOMINAL)
+        story = _assert_rows_add_up(income)
+        net = reports.tax_by_year(rc)["business_net"]
+        expenses = reports.flows_by_year(rc, "expenses")
+    assert (net < 0).any()
+    assert income.loc[net.index, "business"].to_numpy() == pytest.approx(net.to_numpy())
+    assert story["spending"].to_numpy() == pytest.approx(
+        (expenses["total"] - expenses["taxes"] - expenses["business"])
+        .reindex(story.index).to_numpy())
 
 
 def test_income_by_tag_leaves_the_net_worth_columns_out_unless_untagged(
@@ -293,8 +320,8 @@ def test_income_by_tag_leaves_the_net_worth_columns_out_unless_untagged(
     assert not set(reports.NET_WORTH_COLUMNS) & set(tagged.columns)
     whole = reports.flows_by_year(report_run, "income", by="tag:source", untagged=True)
     by_category = reports.flows_by_year(report_run, "income")
-    assert whole["net_worth_change"].to_numpy() == pytest.approx(
-        by_category["net_worth_change"].to_numpy(), nan_ok=True)
+    assert whole[reports.NET_WORTH_CHANGE].to_numpy() == pytest.approx(
+        by_category[reports.NET_WORTH_CHANGE].to_numpy(), nan_ok=True)
     year = reports.flows_for_year(report_run, "income", 2030)
     assert not set(reports.NET_WORTH_COLUMNS) & set(year.index)
 
@@ -304,7 +331,7 @@ def test_an_empty_scenario_has_no_net_worth_change(
 ) -> None:
     _, empty = empty_scenario_runs
     income = reports.flows_by_year(empty, "income")
-    assert income.empty or income["net_worth_change"].isna().all()
+    assert income.empty or income[reports.NET_WORTH_CHANGE].isna().all()
 
 
 def test_lot_history_adds_basis_and_quantity(two_lot_run: RunConnection) -> None:
@@ -335,11 +362,14 @@ def test_report_commands_print_their_tables(report_run_file: Path) -> None:
         return result.output
 
     income = run("report", "income")
-    assert "income by category, CPI-constant dollars" in income and "social security" in income
-    assert "economic_income" in income and "net_worth_change" in income
+    assert "income by category, CPI-constant dollars" in income
+    assert "economic_income" in income and reports.NET_WORTH_CHANGE in income
+    assert "soc security" in income
+    # retire_alice's copy runs no business: an all-zero column is left out.
+    assert "business" not in run("report", "expenses")
     assert "inflation" in income and "tax_paid" not in income
     pre_tax = run("report", "income", "--pre-tax", "--dollars", "nominal")
-    assert "tax_paid" in pre_tax and "deferred_tax_change" not in pre_tax
+    assert "tax_paid" in pre_tax and reports.DEFERRED_TAX_CHANGE not in pre_tax
     assert "inflation" not in pre_tax
     assert "report.sqlite3" in income
     by_budget = run("report", "expenses", "--year", "2030", "--by", "tag:budget")

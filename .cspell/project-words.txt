@@ -264,5 +264,7 @@ zorder
 zpln
 Δbelow
 Δcvar
+Δdeferred
 Δever
+Δnet
 Δvariant

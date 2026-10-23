@@ -267,7 +267,7 @@ def economic_income_widget(rc: RunConnection,
         story = time_range.clip(
             income[[reports.ECONOMIC_INCOME,
                     *(c for c in reports.NET_WORTH_COLUMNS if c in income.columns)]]
-            .dropna(subset=["net_worth_change"]))
+            .dropna(subset=[reports.NET_WORTH_CHANGE]))
         kept = "after_tax_income" if taxed else reports.ECONOMIC_INCOME
         tax = "tax" if taxed else "tax_paid"
         with chart_out:
@@ -278,15 +278,14 @@ def economic_income_widget(rc: RunConnection,
                    color="#2ca02c", alpha=0.7)
             # What the year spent or lost, stacked below zero.
             bottom = pd.Series(0.0, index=story.index)
-            for column, color in (("spending", "#d62728"), ("depreciation", "#8c564b"),
-                                  ("inflation", "#ff7f0e")):
+            for column, color in (("spending", "#d62728"), ("inflation", "#ff7f0e")):
                 if column in story.columns:
                     ax.bar(years, -story[column], bottom=bottom,
                            label=column, color=color, alpha=0.7)
                     bottom = bottom - story[column]
             ax.plot(years, story[tax], label=tax.replace("_", " "),
                     color="#9467bd", marker="o", linewidth=2)
-            ax.plot(years, story["net_worth_change"], label="net worth change",
+            ax.plot(years, story[reports.NET_WORTH_CHANGE], label="Δnet worth",
                     color="black", marker="o", linewidth=2)
             ax.axhline(0, color="grey", linewidth=0.8)
             ax.set_title(f"Economic income and net worth change "
