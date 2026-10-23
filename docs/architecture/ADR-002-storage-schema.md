@@ -409,8 +409,8 @@ CREATE TABLE scenario (
 
 -- Optional per-scenario lifespan override ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9). When the
 -- simulated month exceeds final_month, every scheduled_transaction
--- associated with this person (explicit `person` column, or owner of
--- from_account/to_account) stops firing for the remainder of the run.
+-- whose `person` column names this person stops firing for the remainder
+-- of the run, except percent_of_balance (growth) and on_death rows.
 -- final_month is derived from age_at_death and the person's birthdate, and
 -- is all the engine reads. An ensemble member rewrites both with its draw
 -- and clears vary_distribution ([ADR-006](ADR-006-ensemble-scenarios.md) §3a).

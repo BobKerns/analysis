@@ -1558,9 +1558,9 @@ def test_state_tax_reads_its_own_standard_deduction(
 def test_person_lifespan_stops_associated_transfers(
     test_data_dir: Path, tmp_path: Path,
 ) -> None:
-    """A person's final_month stops transfers tied to them (via explicit
-    `person` column or account owner) but leaves joint-account transfers
-    running for the survivor (ADR-003 §4.10)."""
+    """A person's final_month stops the rules whose `person` column names
+    them but leaves joint-account transfers running for the survivor
+    (ADR-003 §4.9)."""
     repo = test_data_dir
     _shorten_scenario_end(repo, "2028-12-31")  # only 2026-2027 events are asserted on
     lifespan_csv = repo / "scenarios" / "retire_alice" / "lifespan.csv"
@@ -1586,7 +1586,7 @@ def test_person_lifespan_stops_associated_transfers(
             for name in ("salary_alice", "ss_alice", growth_rule_name("Asset_Checking", "default"))
         )
 
-        # Alice-owned rule: nothing fires after her final_month.
+        # Alice's salary names her: nothing fires after her final_month.
         after = con.execute(
             "SELECT COUNT(*) FROM transfer_event "
             "WHERE reason_id=? AND date > '2027-01-31'", (salary_alice_id,),
@@ -1613,6 +1613,31 @@ def test_person_lifespan_stops_associated_transfers(
         assert interest_after > 0
     finally:
         con.close()
+
+
+def test_a_dead_owners_account_keeps_its_rules_without_a_person(
+    test_data_dir: Path, tmp_path: Path,
+) -> None:
+    """Only a rule's `person` stops it at a death, not its accounts' owner
+    (#256): with no person, Alice's salary account keeps paying."""
+    repo = test_data_dir
+    _shorten_scenario_end(repo, "2028-12-31")
+    (repo / "scenarios" / "retire_alice" / "lifespan.csv").write_text("person,age_at_death\nalice,61.8333\n")
+    scheduled = repo / "scenarios" / "retire_alice" / "scheduled.csv"
+    text = scheduled.read_text()
+    assert "salary_alice,Income_Salary_Alice,,Asset_Checking,,monthly,,fixed_amount,,alice," in text
+    scheduled.write_text(text.replace("fixed_amount,,alice,", "fixed_amount,,,", 1))
+    intent_path = load_scenario(
+        repo, "retire_alice", intent_dir=tmp_path / "intent", loaded_by="test", allow_dirty_data=True,
+    ).intent_path
+    run_path = tmp_path / "r.sqlite3"
+    run_scenario(intent_path, run_path, run_by="test", allow_dirty_data=True)
+    with sqlite3.connect(run_path) as con:
+        after = con.execute(
+            "SELECT COUNT(*) FROM transfer_event te JOIN scheduled_transaction s ON s.id = te.reason_id "
+            "WHERE s.name = 'salary_alice' AND te.date > '2027-01-31'",
+        ).fetchone()[0]
+    assert after > 0
 
 
 def test_person_lifespan_does_not_stop_solely_owned_asset_growth(

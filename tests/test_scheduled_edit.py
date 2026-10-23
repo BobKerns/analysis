@@ -63,6 +63,20 @@ def test_add_writes_an_ss_benefit_rule_with_its_own_columns(
     assert (row["tax_character"], row["priority"], row["base_date"]) == ("ss_benefit", "200", "")
 
 
+def test_add_takes_a_person_on_any_kind(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
+) -> None:
+    """A person stops any rule at their death (#256), not only the kinds that need one."""
+    result = _sim(
+        test_data_dir, "retire_alice", "add", "2027-01", "Income_Salary_Alice", "Asset_Checking",
+        "500", "--person", "alice", "--name", "side_job",
+    )
+
+    assert result.exit_code == 0, result.output
+    row = _rule(scheduled(), "side_job")
+    assert (row["amount_rule_kind"], row["person"]) == ("fixed_amount", "alice")
+
+
 def test_add_asks_for_what_the_kind_requires_and_was_not_given(
     test_data_dir: Path, scheduled: Callable[[], pd.DataFrame],
 ) -> None:
