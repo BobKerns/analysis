@@ -13,7 +13,8 @@ import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 
-from analysis.sim.plotting import FRAME_ALPHA, include_zero
+from analysis.sim.plotting import FRAME_ALPHA, include_zero, mark_deaths
+from analysis.sim.types import Death
 
 __all__ = ["comparison_figure", "scenario_colors"]
 
@@ -27,11 +28,13 @@ def scenario_colors(scenarios: Sequence[str]) -> dict[str, str]:
 def comparison_figure(
     values: pd.DataFrame, baseline: str, variants: Sequence[str], title: str, *,
     ylabel: str = "net worth (USD)", colors: Mapping[str, str] | None = None,
+    deaths: Sequence[Death] = (),
 ) -> Figure:
     """Two panels sharing the month axis: ``values`` (one column per
     scenario) with the baseline solid and the variants dashed, then each
     variant minus the baseline. Both include zero, so a small difference
-    doesn't look dramatic."""
+    doesn't look dramatic. Each of ``deaths`` is a red line across both
+    (``compare.scenario_deaths``)."""
     colors = colors or scenario_colors([baseline, *variants])
     fig = Figure(figsize=(11, 9))
     ax_values, ax_delta = fig.subplots(2, 1, sharex=True, height_ratios=[2, 1])
@@ -55,5 +58,7 @@ def comparison_figure(
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:,.0f}"))
         ax.grid(True, axis="y", alpha=0.3)
         include_zero(ax)
+    mark_deaths(ax_values, deaths)
+    mark_deaths(ax_delta, deaths, label=False)
     fig.tight_layout()
     return fig

@@ -18,6 +18,7 @@ from analysis.sim import units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
     EnsembleError,
+    base_case_deaths,
     comparison_deltas,
     latest_ensemble_batch,
     load_ensemble,
@@ -506,7 +507,7 @@ def ensemble_widget(*_,
             display(_png(ensemble_fan_figure(
                 monthly_summary, f"{subject} fan chart ({mode_label}) ({recipe})",
                 reserve=reserve if mode == DollarMode.CPI_CONSTANT else None,
-                log_scale=wants_log,
+                log_scale=wants_log, deaths=base_case_deaths(connections),
             )))
             display(yearly.style.format(_share_format(yearly.columns)))
         finally:
@@ -661,6 +662,7 @@ def ensemble_compare_widget(*_,
                 outputs.append(_png(ensemble_compare_figure(
                     baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
                     reserve, cpi_pair, log_scale, clip=time_range.clip,
+                    deaths=base_case_deaths(sides[baseline]),
                 )))
                 table = year_end_values(time_range.clip(comparison_deltas(
                     frames[baseline], frames[variant], pairs, reserve, cpi_pair,
@@ -678,7 +680,7 @@ def ensemble_compare_widget(*_,
                         f"{subject} fan chart ({mode_label}) ({name})",
                         reserve=reserve if mode == DollarMode.CPI_CONSTANT else None,
                         log_scale=log_scale and bool((time_range.clip(frame) > 0).all().all()),
-                        height=4,
+                        height=4, deaths=base_case_deaths(sides[name]),
                     )))
             tails = [risk_summary(frame, reserve, cpi_frames.get(name))
                      for name, frame in frames.items()]

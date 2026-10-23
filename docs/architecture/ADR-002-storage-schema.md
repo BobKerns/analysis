@@ -107,7 +107,7 @@ state/
 | `ensemble_manifest`, `ensemble_draw`, `ensemble_tail_scale`, `ensemble_path_shock` ([ADR-006](ADR-006-ensemble-scenarios.md)) | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state` | — | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `basis_step_up`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state` | — | ✓ |
 | `schema_overview` (planned; not yet created) | ✓ | ✓ |
 | Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 43) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 44) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -683,6 +683,20 @@ CREATE TABLE capital_loss (
     reason_id       INTEGER
 );
 
+-- #255: a lot's basis reset at a death (IRC §1014) to its value at the end
+-- of the person's final month: all of the gain or loss, or the decedent's
+-- half of a joint lot outside community property. No money moves.
+CREATE TABLE basis_step_up (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    date            TEXT NOT NULL,
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
+    person          TEXT NOT NULL,
+    balance         INTEGER NOT NULL,
+    basis_before    INTEGER NOT NULL,
+    basis_after     INTEGER NOT NULL
+);
+
 CREATE TABLE applied_calendar_event (
     step_id           INTEGER NOT NULL REFERENCES simulation_step(id),
     calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
@@ -743,6 +757,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `capital_loss` | Basis a sale through a chain's basis step could not recover: a capital loss with no money moving, which the tax scan nets, limits and carries forward. |
+| `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, and the basis before and after. No money moves. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
 | `inflation_index_state` | Cumulative inflation index per series at the end of each step; the `inflation_index` and constant-dollar views read it. |
@@ -926,3 +941,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#222](https://github.com/BobKerns/analysis/issues/222): `person.sex` and `person_lifespan.life_table_set_forward`, for a lifespan drawn from the new aux kind `life_table` (Intent layer DDL; schema 41).
 - [#231](https://github.com/BobKerns/analysis/issues/231): asset and expense subkinds `business` and tax characters `business_income` and `business_expense` (Intent and Run layer DDL; schema 42).
 - [#261](https://github.com/BobKerns/analysis/issues/261): `ensemble_draw` gains `noise` and `u`; new member tables `ensemble_tail_scale` and `ensemble_path_shock`; a batch's `draws.sqlite3` (Ensemble provenance, placement summary, `schema_overview`; schema 43).
+- [#255](https://github.com/BobKerns/analysis/issues/255): the run table `basis_step_up` (Intent and ledger DDL, glossary; schema 44).

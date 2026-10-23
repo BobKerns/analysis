@@ -17,8 +17,8 @@ import pandas as pd
 from analysis.sim.accounts import CASHFLOW_KINDS, KIND_LABELS, account_summary_by_kind, accounts_dataframe
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.plotting import include_zero
-from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
+from analysis.sim.plotting import include_zero, mark_deaths
+from analysis.sim.types import AccountKind, AccountKindAny, Death, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.pickers import (
     AccountPicker, DollarModePicker, TimeRangePicker, ValuePlotModePicker,
     YAxisPlotModePicker, controls_row, observe_while_shown, run_years,
@@ -46,6 +46,7 @@ def account_balance_history_widget(
     lots_by_account: Mapping[str, Sequence[str]] | None = None,
     lot_balance: Callable[[str, str, DollarMode], pd.Series] | None = None,
     time_range: TimeRangePicker | None = None,
+    deaths: Sequence[Death] = (),
 ) -> widgets.VBox:
     """Build a Kind + Accounts + Output widget set that plots on selection change.
 
@@ -57,7 +58,8 @@ def account_balance_history_widget(
     Given ``lots_by_account`` and ``lot_balance``, a single account with
     several lots can be drilled into: picked lots plot one line apiece in
     place of the account's (#170). ``time_range`` picks the years shown; the
-    caller has already set its ends (``TimeRangePicker.cover``).
+    caller has already set its ends (``TimeRangePicker.cover``). ``deaths``
+    are red lines (#255).
     Returns the combined ``ipywidgets.VBox``; it is not displayed here, because
     ``Connections.show`` displays what a widget function returns.
     """
@@ -114,6 +116,7 @@ def account_balance_history_widget(
             fig = render_balance_history_figure(
                 pivot, selected, f"{title} ({kind_title}) [{mode_title}, {values_title}]",
                 zero_anchor=zero_anchor, value_mode=values, clip=time_range.clip,
+                deaths=deaths,
             )
             if fig is None:
                 print("(pick one or more accounts)")
@@ -167,6 +170,7 @@ def account_history_widget(
         lots_by_account=rc.lots_by_account(),
         lot_balance=rc.lot_balance,
         time_range=time_range,
+        deaths=rc.deaths(),
     )
 
 
@@ -195,6 +199,7 @@ def render_balance_history_figure(
     zero_anchor: bool = True,
     value_mode: ValuePlotMode = ValuePlotMode.TOTAL,
     clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+    deaths: Sequence[Death] = (),
 ) -> None | plt.Figure:
     """Build the matplotlib Figure for selected account balance histories, or
     None if empty.
@@ -211,6 +216,8 @@ def render_balance_history_figure(
 
     ``clip`` cuts the rows to plot (``TimeRangePicker.clip``), after the
     monthly change is taken, so a window's first month keeps its change.
+
+    ``deaths`` are red lines (#255).
     """
     if not selected:
         return None
@@ -231,6 +238,7 @@ def render_balance_history_figure(
     ax.set_ylabel(ylabel)
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"${value:,.0f}"))
     ax.grid(True, alpha=0.3)
+    mark_deaths(ax, deaths)
     ax.legend(loc="best", fontsize="small", framealpha=0.5)
     if zero_anchor:
         include_zero(ax)

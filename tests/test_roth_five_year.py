@@ -344,14 +344,9 @@ def test_a_lot_follows_its_later_rules_from_their_date() -> None:
 
 
 @pytest.fixture
-def roth_survivor(retire_alice_csv: Callable[[str], Path]) -> Callable[[str], None]:
+def roth_survivor(set_scenario_meta: Callable[..., None]) -> Callable[[str], None]:
     """Set retire_alice's ``roth_survivor`` election in scenario.csv meta_json."""
-    def _set(election: str) -> None:
-        path = retire_alice_csv("scenario.csv")
-        scenario = pd.read_csv(path, dtype=str, keep_default_na=False)
-        scenario["meta_json"] = f'{{"roth_survivor": "{election}"}}'
-        scenario.to_csv(path, index=False)
-    return _set
+    return lambda election: set_scenario_meta(roth_survivor=election)
 
 
 def _qualified(load: Callable[[], LoadResult], account: str, on: str) -> bool:

@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -592,6 +592,20 @@ CREATE TABLE capital_loss (
     tax_year        INTEGER,
     reason_kind     TEXT NOT NULL,
     reason_id       INTEGER
+);
+
+-- #255: a lot's basis reset at a death (IRC §1014) to its value at the end
+-- of the person's final month: all of the gain or loss, or the decedent's
+-- half of a joint lot outside community property. No money moves.
+CREATE TABLE basis_step_up (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    date            TEXT NOT NULL,
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
+    person          TEXT NOT NULL,
+    balance         INTEGER NOT NULL,
+    basis_before    INTEGER NOT NULL,
+    basis_after     INTEGER NOT NULL
 );
 
 CREATE TABLE applied_calendar_event (

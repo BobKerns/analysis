@@ -35,8 +35,8 @@ from analysis.sim.notebook_ui.pickers import (
     run_years,
     to_markdown,
 )
-from analysis.sim.plotting import FRAME_ALPHA, include_zero
-from analysis.sim.types import AccountKind, DollarMode, ValuePlotMode
+from analysis.sim.plotting import FRAME_ALPHA, include_zero, mark_deaths
+from analysis.sim.types import AccountKind, Death, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 # ---------- data helpers (pure; unchanged math from the old scenario_compare.py) ----------
@@ -116,6 +116,7 @@ def plot_net_worth_and_delta(
     figure = comparison_figure(
         nw, container.baseline, container.variants, f"Net worth, {mode_label}",
         colors=container.colors,
+        deaths=compare.scenario_deaths(container.connections, container.scenarios),
     )
     display(Image(data=figure_bytes(figure), format="png"))
 
@@ -150,8 +151,12 @@ def plot_horizon_comparisons(compare: pd.DataFrame, comparisons: dict) -> None:
     plt.show()
 
 
-def plot_ss_gross(ss: pd.DataFrame, ss_cumulative: pd.DataFrame, colors: dict[str, str]) -> None:
-    """Monthly and cumulative gross Social Security, one line per scenario."""
+def plot_ss_gross(
+    ss: pd.DataFrame, ss_cumulative: pd.DataFrame, colors: dict[str, str],
+    deaths: Sequence[Death] = (),
+) -> None:
+    """Monthly and cumulative gross Social Security, one line per scenario,
+    with ``deaths`` as red lines (#255)."""
     import matplotlib.pyplot as plt
 
     fig, (ax_month, ax_cum) = plt.subplots(1, 2, figsize=(13, 4))
@@ -163,6 +168,7 @@ def plot_ss_gross(ss: pd.DataFrame, ss_cumulative: pd.DataFrame, colors: dict[st
     for ax in (ax_month, ax_cum):
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
         ax.grid(True, axis="y", alpha=0.3)
+        mark_deaths(ax, deaths)
         ax.legend(framealpha=FRAME_ALPHA)
         include_zero(ax)
     plt.tight_layout()
@@ -366,7 +372,8 @@ def ss_gross_widget(container: MultiScenarioConnections) -> None:
             for name in container.scenarios
         }).fillna(0).sort_index()
         ss_cumulative = ss.cumsum()
-        plot_ss_gross(ss, ss_cumulative, container.colors)
+        plot_ss_gross(ss, ss_cumulative, container.colors,
+                      compare.scenario_deaths(container.connections, container.scenarios))
 
         lifetime_ss = ss_cumulative.iloc[-1]
         display(

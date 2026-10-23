@@ -226,6 +226,8 @@ def run_scenario(
             taxpayers=taxpayers, rules=[r for r in txns if r[6] == "irmaa"],
         )
 
+        step_ups = _basis_step_ups(con)
+
         skipped_counts: dict[str, int] = {}
         applied_event_ids: set[int] = set()
 
@@ -515,6 +517,11 @@ def run_scenario(
                 inflation_factor_cache=inflation_factor_cache, refill_ctx=refill_ctx,
             )
 
+            if month_s in step_ups:
+                _step_up_basis(
+                    con, step_id, month_s, step_ups[month_s], balances, cost_bases, acquired,
+                )
+
             con.executemany(
                 "INSERT INTO lot_state(step_id, lot_id, balance, cost_basis, "
                 "                      quantity_micros) VALUES (?, ?, ?, ?, ?)",
@@ -711,6 +718,93 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
             then=then,
         )
     return lots
+
+
+class StepUp(NamedTuple):
+    """One lot's basis step-up at a death (#255): the lot, whose death it
+    is, and the share of its gain or loss that resets, as ``1 / share``."""
+    lot_id: int
+    person: str
+    share: int
+
+
+def _basis_step_ups(con) -> dict[str, list[StepUp]]:
+    """The basis step-ups each final month brings (IRC §1014), by month.
+
+    Only a non-cash asset lot that tracks a basis steps up (an investment, a
+    home): retirement money and an HSA never do. A lot its account's ``owner`` held alone steps up in full at their
+    death, and again at the death of the spouse who inherited it. A joint
+    lot (owner blank or ``joint``) is the household's: the ``primary``
+    persons, or everyone with a role if none is marked. At one of
+    their deaths it steps up in full if no one else in the household is
+    left alive, or under ``community_property`` (§1014(b)(6): both halves of
+    community property step up). Otherwise only the decedent's half does
+    (§2040(b))."""
+    deaths = dict(con.execute("SELECT person, final_month FROM person_lifespan").fetchall())
+    if not deaths:
+        return {}
+    primaries = [r[0] for r in con.execute("SELECT id FROM person WHERE role = 'primary' ORDER BY id")]
+    household = primaries or [
+        r[0] for r in con.execute("SELECT id FROM person WHERE role IS NOT NULL ORDER BY id")]
+    spouses = dict([primaries, primaries[::-1]]) if len(primaries) == 2 else {}
+    meta = json.loads(con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}")
+    community = bool(meta.get("community_property", False))
+    no_step_up = sorted(registries.CASH_SUBKINDS | {registries.RETIREMENT_SUBKIND, "hsa"})
+    lots = con.execute(
+        "SELECT m.id, a.owner FROM account_lot m JOIN account a ON a.id = m.account_id "
+        "WHERE a.kind = 'asset' AND COALESCE(m.tax_treatment, 'none') IN ('taxable', 'none') "
+        f"AND a.subkind NOT IN ({','.join('?' * len(no_step_up))}) ORDER BY m.id",
+        no_step_up,
+    ).fetchall()
+
+    def alive_after(person: str, month: str) -> bool:
+        return person not in deaths or deaths[person] > month
+
+    plan: dict[str, list[StepUp]] = {}
+    for person, month in sorted(deaths.items(), key=lambda d: (d[1], d[0])):
+        stepped = {s.lot_id for s in plan.get(month, ())}
+        for lot_id, owner in lots:
+            if lot_id in stepped:
+                continue  # two deaths in one month: the first stepped it up in full
+            if owner in (None, "", "joint"):
+                if person not in household:
+                    continue
+                others = [p for p in household if p != person and alive_after(p, month)]
+                share = 1 if community or not others else 1 + len(others)
+            elif owner == person or (
+                spouses.get(owner) == person and deaths.get(owner, month) < month
+            ):
+                share = 1
+            else:
+                continue
+            plan.setdefault(month, []).append(StepUp(lot_id, person, share))
+    return plan
+
+
+def _step_up_basis(
+    con, step_id: int, month_s: str, step_ups: Sequence[StepUp],
+    balances: Mapping[int, int], cost_bases: dict[int, int | None],
+    acquired: dict[int, date | None],
+) -> None:
+    """Reset each lot's basis at a death to its value at the end of the final
+    month, the whole of it or ``1/share`` of the gain or loss, down as well as
+    up (IRC §1014). Inherited property is long-term from then on (§1223(9)).
+    Each step-up is recorded in ``basis_step_up``."""
+    rows = []
+    for lot_id, person, share in step_ups:
+        before = cost_bases.get(lot_id)
+        if before is None:
+            continue  # not tracking a basis
+        value = max(0, balances.get(lot_id, 0))
+        after = before + (value - before) // share
+        cost_bases[lot_id] = after
+        acquired[lot_id] = None
+        rows.append((step_id, month_s, lot_id, person, value, before, after))
+    con.executemany(
+        "INSERT INTO basis_step_up(step_id, date, lot_id, person, balance, "
+        "                          basis_before, basis_after) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
 
 
 def _roth_qualified(roth: RothLot, on: date) -> bool:
