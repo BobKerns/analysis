@@ -296,3 +296,17 @@ def test_the_net_worth_notebook_charts_mark_the_deaths(
     assert len(figures) == 5
     assert all(len(_death_lines(fig.axes[0])) == 2 for fig in figures)
     plt.close("all")
+
+
+def test_a_joint_lot_steps_up_half_however_many_survive(
+    test_data_dir: Path, write_lifespans: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    # No primary persons: the household is everyone with a role, here three.
+    persons = test_data_dir / "persons.csv"
+    persons.write_text(persons.read_text().replace(",primary,", ",secondary,")
+                       + "carol,Carol (fake),1990-01-01,f,secondary,{}\n")
+    write_lifespans(ALICE_DIES)
+    assert _plan(load_test_copy) == {
+        ALICE_FINAL: {(BROKERAGE, "alice", 2), ("Asset_Home", "alice", 2)},
+    }

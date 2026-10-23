@@ -722,7 +722,7 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
 
 class StepUp(NamedTuple):
     """One lot's basis step-up at a death (#255): the lot, whose death it
-    is, and the share of its gain or loss that resets, as ``1 / share``."""
+    is, and the share of its gain or loss that resets: all of it (1) or half (2)."""
     lot_id: int
     person: str
     share: int
@@ -769,8 +769,9 @@ def _basis_step_ups(con) -> dict[str, list[StepUp]]:
             if owner in (None, "", "joint"):
                 if person not in household:
                     continue
-                others = [p for p in household if p != person and alive_after(p, month)]
-                share = 1 if community or not others else 1 + len(others)
+                survivor = any(p != person and alive_after(p, month) for p in household)
+                # A joint tenancy is half each (§2040(b)); other shares are out of scope.
+                share = 2 if survivor and not community else 1
             elif owner == person or (
                 spouses.get(owner) == person and deaths.get(owner, month) < month
             ):
