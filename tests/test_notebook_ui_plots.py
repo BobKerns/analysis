@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import matplotlib
 import numpy as np
 
@@ -91,6 +93,15 @@ def test_economic_income_widget_builds_without_error(retire_alice_run_file: Path
         dollar_mode, after_tax, _time_range = controls.children
         dollar_mode.value = DollarMode.CPI_CONSTANT
         after_tax.value = not after_tax.value
+
+
+def test_economic_income_widget_says_an_empty_run_has_no_net_worth(
+    empty_scenario_runs: tuple[RunConnection, RunConnection], capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, empty = empty_scenario_runs
+    economic_income_widget(empty)
+    # Outside a kernel an Output widget's prints reach stdout.
+    assert "No net worth in this run" in capsys.readouterr().out
 
 
 def test_account_history_widget_defaults_to_kind(retire_alice_run_file: Path,

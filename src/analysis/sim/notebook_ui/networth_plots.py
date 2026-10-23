@@ -262,14 +262,29 @@ def economic_income_widget(rc: RunConnection,
         taxed = after_tax.value
         mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
 
-        reconciliation = time_range.clip(reports.tax_reconciliation(rc, mode))
+        # The reconciliation keeps its reconciliation_year (the April a tax
+        # year settles in), which is a year, not money.
+        reconciliation = rc.tax_reconciliation_by_year()
+        money_columns = [c for c in reconciliation.columns if c != "reconciliation_year"]
+        if mode == DollarMode.CPI_CONSTANT:
+            reconciliation = reconciliation.assign(
+                **rc.to_cpi_constant_annual(reconciliation[money_columns]))
+        reconciliation = time_range.clip(reconciliation)
         income = reports.flows_by_year(rc, "income", mode=mode, after_tax=taxed)
         story = time_range.clip(
-            income[[reports.ECONOMIC_INCOME,
-                    *(c for c in reports.NET_WORTH_COLUMNS if c in income.columns)]]
+            income[[c for c in (reports.ECONOMIC_INCOME, *reports.NET_WORTH_COLUMNS)
+                    if c in income.columns]]
             .dropna(subset=[reports.NET_WORTH_CHANGE]))
         kept = "after_tax_income" if taxed else reports.ECONOMIC_INCOME
         tax = "tax" if taxed else "tax_paid"
+        if story.empty:
+            # An empty scenario (no accounts) has no net worth to follow.
+            for out in (chart_out, table_out):
+                with out:
+                    clear_output(wait=True)
+            with chart_out:
+                print(f"No net worth in this run ({rc.label}).")
+            return
         with chart_out:
             clear_output(wait=True)
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -301,7 +316,7 @@ def economic_income_widget(rc: RunConnection,
         with table_out:
             clear_output(wait=True)
             display(story.style.format("${:,.0f}", na_rep=""))
-            display(reconciliation.style.format("${:,.0f}"))
+            display(reconciliation.style.format({c: "${:,.0f}" for c in money_columns}))
 
     observe_while_shown(dollar_mode, _redraw)
     observe_while_shown(time_range, _redraw)

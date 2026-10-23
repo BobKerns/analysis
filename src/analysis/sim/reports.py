@@ -359,7 +359,9 @@ def net_worth_change_by_year(
     ``Δnet_worth`` is measured from net worth itself, so each row adds
     up only because every change in net worth is a flow on it. The first
     year runs from its Jan 1, worked back from the opening balances and the
-    year-to-date rows dated before the scenario starts. Years before that
+    year-to-date rows dated before the scenario starts. After tax, that
+    opening takes the deferred and unpaid tax of the first month's end:
+    the run figures no deferred tax before its first step. Years before that
     (a prior year's carried-forward record) have no row.
     """
     expenses = rc.items("transfer_event", to_kind="expense").copy()
