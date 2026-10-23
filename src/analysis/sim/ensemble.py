@@ -70,7 +70,7 @@ from analysis.sim.registries import (
     LIFESPAN_TARGET,
     PROCESS_SHOCK_CLAMP,
 )
-from analysis.sim.types import DollarMode
+from analysis.sim.types import Death, DollarMode
 from analysis.sim.schema import connect_sim_file
 
 __all__ = [
@@ -1244,6 +1244,17 @@ def quantile_deltas(
     future on both sides."""
     qs = tuple(sorted(qs))
     return percentiles(variant, qs) - percentiles(baseline, qs)
+
+
+def base_case_deaths(connections: Mapping[str, RunConnection]) -> list[Death]:
+    """The deaths an ensemble chart marks (#255): member 0's, the base case,
+    whose lifespans are the authored ages. Other members' vary. None when
+    member 0 isn't among the succeeded members."""
+    for con in connections.values():
+        member = con.ensemble_member()
+        if member is not None and member[0] == 0:
+            return con.deaths()
+    return []
 
 
 def member_pairs(

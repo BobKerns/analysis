@@ -63,6 +63,7 @@ from analysis.sim.distributions import (
 from analysis.sim.engine import describe_negative_balance_event, run_scenario
 from analysis.sim.ensemble import (
     EnsembleError,
+    base_case_deaths,
     factor_reach,
     latest_ensemble_batch,
     load_ensemble,
@@ -1276,6 +1277,7 @@ def ensemble_summary(
             _draw_figure(ensemble_fan_figure(
                 monthly_summary,
                 f"{_subject(account, lot, after_tax)} fan chart (nominal) ({scenario_name})",
+                deaths=base_case_deaths(connections),
             ), graph_file, "ensemble-")
     finally:
         _close_all(connections)
@@ -1390,12 +1392,14 @@ def ensemble_compare(
                     baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
                     reserve_dollars,
                     (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
+                    deaths=base_case_deaths(base_conns),
                 )
             else:
                 (name, frame), = frames.items()
                 figure = ensemble_fan_figure(
                     summary_with_percentiles(frame), f"{subject} fan chart ({mode_label}) ({name})",
                     reserve=reserve_dollars if mode == DollarMode.CPI_CONSTANT else None,
+                    deaths=base_case_deaths(sides[name]),
                 )
             _draw_figure(figure, graph_file, "ensemble-")
     finally:
@@ -2046,9 +2050,10 @@ def _resolve_run_target(
 def explain(
     target: str | None, runfile: Path | None, data_dir: Path | None, runs_dir: Path | None,
 ) -> None:
-    """Dump scenario name, versions, counts, lots, year-end net worth and
-    negative-balance warnings for a run: the scenario's latest (the current
-    scenario's by default), or a run file. Sanity dump."""
+    """Dump scenario name, versions, counts, lots, year-end net worth,
+    negative-balance warnings and basis step-ups at a death for a run: the
+    scenario's latest (the current scenario's by default), or a run file.
+    Sanity dump."""
     runfile = _resolve_run_target(target, runfile, data_dir, runs_dir)
     con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
     try:
@@ -2120,8 +2125,41 @@ def explain(
 
         click.echo("")
         _echo_negative_balance_warnings(con)
+        _echo_basis_step_ups(con)
     finally:
         con.close()
+
+
+def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
+    """The run's basis step-ups at a death (#255): the month, the lot, whose
+    death, and its basis before and after. A run file from before them has
+    no table, and says nothing."""
+    if con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'basis_step_up'"
+    ).fetchone() is None:
+        return
+    rows = con.execute(
+        "SELECT b.date, a.name, a.subkind, m.lot, b.person, b.balance, "
+        "       b.basis_before, b.basis_after "
+        "FROM basis_step_up b JOIN account_lot m ON m.id = b.lot_id "
+        "JOIN account a ON a.id = m.account_id ORDER BY b.id"
+    ).fetchall()
+    if not rows:
+        click.echo("basis step-ups at a death: none")
+        return
+    click.echo(f"basis step-ups at a death ({len(rows)}):")
+    names = [_account_with_lot(name, subkind, lot) for _d, name, subkind, lot, *_ in rows]
+    width = max(len(n) for n in names)
+    who = max(len(row[4]) for row in rows)
+
+    def money(cents: int) -> str:
+        return f"${cents / 100:,.2f}"
+
+    for name, (month, _a, _s, _l, person, balance, before, after) in zip(names, rows, strict=True):
+        click.echo(
+            f"  {month[:7]}  {name:<{width}}  {person:<{who}}  balance {money(balance)}"
+            f"  basis {money(before)} -> {money(after)}"
+        )
 
 
 def _echo_negative_balance_warnings(con: sqlite3.Connection) -> None:
@@ -2448,13 +2486,14 @@ def compare_command(
         if graphed:
             from analysis.sim.compare_charts import comparison_figure
 
+            deaths = compare.scenario_deaths(connections, scenarios)
             if balances is not None:
                 figure = comparison_figure(
                     balances, baseline, list(variants), f"{subject}, {mode_label}",
-                    ylabel="balance (USD)")
+                    ylabel="balance (USD)", deaths=deaths)
             else:
                 figure = comparison_figure(
-                    nw, baseline, list(variants), f"Net worth, {mode_label}")
+                    nw, baseline, list(variants), f"Net worth, {mode_label}", deaths=deaths)
             _draw_figure(figure, graph_file, "compare-")
 
 

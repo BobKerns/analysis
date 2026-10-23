@@ -9,7 +9,7 @@ backend in a terminal."""
 from __future__ import annotations
 
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import matplotlib
@@ -19,7 +19,8 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 
 from analysis.sim.ensemble import comparison_deltas, paired_deltas, summary_with_percentiles
-from analysis.sim.plotting import FRAME_ALPHA
+from analysis.sim.plotting import FRAME_ALPHA, mark_deaths
+from analysis.sim.types import Death
 
 __all__ = ["band_edges", "ensemble_compare_figure", "ensemble_fan_chart", "ensemble_fan_figure", "figure_bytes"]
 
@@ -108,11 +109,13 @@ def ensemble_fan_chart(monthly_summary: pd.DataFrame, ax: Any = None) -> Any:
 def ensemble_fan_figure(
     monthly_summary: pd.DataFrame, title: str, *,
     reserve: float | None = None, log_scale: bool = False, height: float = 5,
+    deaths: Sequence[Death] = (),
 ) -> Figure:
     """One recipe's fan chart as a whole figure, titled ``title``: on a log
     scale for ``log_scale`` (the caller checks the values are positive), and
     with ``reserve`` as a dashed line when given, which the caller passes
-    only when the chart is in the reserve's own CPI-constant dollars."""
+    only when the chart is in the reserve's own CPI-constant dollars.
+    ``deaths`` are red lines, member 0's (``ensemble.base_case_deaths``)."""
     fig = Figure(figsize=(10, height))
     ax = fig.subplots()
     # Scale before drawing: matplotlib's set_yscale resets the major
@@ -124,6 +127,7 @@ def ensemble_fan_figure(
     if reserve is not None:
         ax.axhline(reserve, color="darkorange", linewidth=1, linestyle="--", label="reserve")
         ax.legend(framealpha=FRAME_ALPHA)
+    mark_deaths(ax, deaths)
     ax.set_title(title)
     ax.tick_params(axis="x", labelrotation=90)
     return fig
@@ -147,11 +151,12 @@ def _symlog(ax: Any, values: pd.DataFrame) -> None:
 
 def _delta_lines(
     deltas: pd.DataFrame, columns: list[str], ax: Any, title: str, shares: bool = False,
-    log_scale: bool = False,
+    log_scale: bool = False, deaths: Sequence[Death] = (),
 ) -> None:
     """One line per column of ``deltas``, light to dark, labelled at the
     right end, over a zero rule; dollars, or percentage points for
-    ``shares``, on a symmetric log scale for ``log_scale`` (dollars only)."""
+    ``shares``, on a symmetric log scale for ``log_scale`` (dollars only).
+    ``deaths`` are red lines."""
     if log_scale and not shares:
         _symlog(ax, deltas[columns])
     shades = matplotlib.colormaps["Blues"]
@@ -161,6 +166,7 @@ def _delta_lines(
         ax.annotate(column, (deltas.index[-1], deltas[column].iloc[-1]),
                     xytext=(4, 0), textcoords="offset points", va="center", fontsize=8)
     ax.axhline(0, color="gray", linewidth=0.8)
+    mark_deaths(ax, deaths)
     ax.set_title(title)
     ax.yaxis.set_major_formatter(FuncFormatter(
         (lambda v, _: f"{v * 100:+.0f} pts") if shares else (lambda v, _: f"${v:,.0f}")
@@ -177,6 +183,7 @@ def ensemble_compare_figure(
     cpi_frames: tuple[pd.DataFrame, pd.DataFrame] | None = None,
     log_scale: bool = False,
     clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+    deaths: Sequence[Death] = (),
 ) -> Figure:
     """The comparison's panels, top to bottom (#163): each percentile
     breakpoint's delta; the fan of paired per-future deltas when the
@@ -186,7 +193,8 @@ def ensemble_compare_figure(
     panels on a symmetric log scale (#171), since deltas run both ways.
     ``clip`` cuts what is drawn to the months shown (#245), after the deltas
     are taken over the whole run: the share ever below the reserve looks
-    back to the start."""
+    back to the start. ``deaths`` are red lines on every panel, the
+    baseline's member 0's (``ensemble.base_case_deaths``)."""
     clip = clip or (lambda frame: frame)
     deltas = clip(comparison_deltas(
         baseline_frame, variant_frame, reserve=reserve, cpi_frames=cpi_frames,
@@ -197,7 +205,7 @@ def ensemble_compare_figure(
     _delta_lines(
         deltas, [c for c in deltas.columns if c.startswith("Δp")], axes[0],
         f"{variant} − {baseline}: each percentile vs the same percentile ({mode_label})",
-        log_scale=log_scale,
+        log_scale=log_scale, deaths=deaths,
     )
     if pairs:
         paired = clip(summary_with_percentiles(
@@ -206,6 +214,7 @@ def ensemble_compare_figure(
         if log_scale:
             _symlog(axes[1], paired)
         ensemble_fan_chart(paired, ax=axes[1])
+        mark_deaths(axes[1], deaths)
         axes[1].set_title(
             f"{variant} − {baseline}, future by future ({len(pairs)} paired members)"
         )
@@ -213,13 +222,13 @@ def ensemble_compare_figure(
     _delta_lines(
         deltas, [c for c in deltas.columns if c.startswith("Δcvar")], axes[1 + bool(pairs)],
         f"{variant} − {baseline}: mean of the worst 5% and 20% (CVaR)",
-        log_scale=log_scale,
+        log_scale=log_scale, deaths=deaths,
     )
     if reserve is not None:
         _delta_lines(
             deltas, ["Δbelow_reserve", "Δever_below_reserve"], axes[-1],
             f"{variant} − {baseline}: share of members below the ${reserve:,.0f} reserve",
-            shares=True,
+            shares=True, deaths=deaths,
         )
     axes[-1].tick_params(axis="x", labelrotation=90)
     fig.tight_layout()

@@ -12,7 +12,7 @@ import pandas as pd
 from IPython.display import clear_output, display
 
 from analysis.sim import reports
-from analysis.sim.plotting import FRAME_ALPHA
+from analysis.sim.plotting import FRAME_ALPHA, mark_deaths
 from analysis.sim.connection import (
     EXPENSE_CATEGORIES,
     GAIN_CATEGORIES,
@@ -62,6 +62,7 @@ def net_worth_widget(rc: RunConnection,
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
             ax.grid(True, axis="y", alpha=0.3)
+            mark_deaths(ax, rc.deaths())
             ax.legend(framealpha=FRAME_ALPHA)
             plt.xticks(rotation=90)
             plt.show()
@@ -112,6 +113,7 @@ def income_widget(rc: RunConnection,
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
             ax.grid(True, axis="y", alpha=0.3)
+            mark_deaths(ax, rc.deaths(), years=chart.index)
             ax.legend(title="category", framealpha=FRAME_ALPHA)
             plt.show()
         with table_out:
@@ -174,6 +176,7 @@ def expenses_widget(rc: RunConnection,
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
             ax.grid(True, axis="y", alpha=0.3)
+            mark_deaths(ax, rc.deaths(), years=chart.index)
             ax.legend(title="category", framealpha=0.5)
             plt.show()
         with table_out:
@@ -227,6 +230,7 @@ def gains_widget(rc: RunConnection,
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
             ax.grid(True, axis="y", alpha=0.3)
+            mark_deaths(ax, rc.deaths(), years=chart.index)
             ax.legend(title="category", framealpha=0.5)
             plt.setp(ax.get_xticklabels(), rotation=90)
             plt.show()
@@ -309,6 +313,7 @@ def economic_income_widget(rc: RunConnection,
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
             ax.grid(True, axis="y", alpha=0.3)
+            mark_deaths(ax, rc.deaths(), years=story.index)
             ax.legend(framealpha=0.5)
             plt.setp(ax.get_xticklabels(), rotation=90)
             plt.show()

@@ -17,7 +17,7 @@ import pandas as pd
 
 from analysis.frames import named_rows
 from analysis.sim.connection import RunConnection, year_end_values
-from analysis.sim.types import DollarMode
+from analysis.sim.types import Death, DollarMode
 
 __all__ = [
     "ABSENT", "META_COLUMNS", "RULE_COMPARE_COLUMNS",
@@ -383,3 +383,12 @@ def balance_by_month(
         if column.empty or column.notna().any():
             frame[name] = frame[name].fillna(0.0)
     return frame
+
+
+def scenario_deaths(connections: Mapping[str, RunConnection], scenarios: Sequence[str]) -> list[Death]:
+    """The deaths a comparison chart marks (#255): every death in any of the
+    scenarios, once each, so a variant that moves a death shows both."""
+    return sorted(
+        {death for name in scenarios for death in connections[name].deaths()},
+        key=lambda d: (d.month, d.person),
+    )

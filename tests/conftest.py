@@ -905,6 +905,49 @@ def update_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..
 
 
 @pytest.fixture(scope="function")
+def update_account(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Set columns on one existing account row of the private copy's
+    accounts.csv: ``update_account("Asset_Brokerage_Joint", owner="alice")``."""
+    def _update(name: str, **columns: str) -> None:
+        path = retire_alice_csv("accounts.csv")
+        accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
+        row = accounts["name"] == name
+        assert row.any(), name
+        for column, value in columns.items():
+            accounts.loc[row, column] = value
+        accounts.to_csv(path, index=False)
+    return _update
+
+
+@pytest.fixture(scope="function")
+def update_scheduled(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Set columns on one existing rule of the private copy's scheduled.csv:
+    ``update_scheduled("living", person="joint")``."""
+    def _update(name: str, **columns: str) -> None:
+        path = retire_alice_csv("scheduled.csv")
+        rules = pd.read_csv(path, dtype=str, keep_default_na=False)
+        row = rules["name"] == name
+        assert row.any(), name
+        for column, value in columns.items():
+            rules.loc[row, column] = value
+        rules.to_csv(path, index=False)
+    return _update
+
+
+@pytest.fixture(scope="function")
+def set_scenario_meta(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Set keys of the private retire_alice copy's scenario.csv ``meta_json``,
+    keeping the others: ``set_scenario_meta(community_property=True)``."""
+    def _set(**keys: object) -> None:
+        path = retire_alice_csv("scenario.csv")
+        scenario = pd.read_csv(path, dtype=str, keep_default_na=False)
+        meta = json.loads(scenario.loc[0, "meta_json"] or "{}")
+        scenario.loc[0, "meta_json"] = json.dumps({**meta, **keys})
+        scenario.to_csv(path, index=False)
+    return _set
+
+
+@pytest.fixture(scope="function")
 def set_brokerage_lots(retire_alice_csv: Callable[[str], Path]) -> Callable[[list[dict[str, str]]], None]:
     """Replace Asset_Brokerage_Joint's account_lots row with the given lots
     (dicts of account_lots.csv columns; ``account_name`` is filled in)."""

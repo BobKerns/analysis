@@ -1,7 +1,8 @@
 # Type definitions for the analysis.sim module.
 
+from datetime import date
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, NamedTuple
 
 
 type AccountKind = Literal["asset", "liability", "income", "expense"]
@@ -15,6 +16,13 @@ type AccountName = str
 
 type ScenarioName = str
 """Scenario name type."""
+
+
+class Death(NamedTuple):
+    """A person's death as a chart marks it (#255): who, and their final
+    month's last day."""
+    person: str
+    month: date
 
 
 class DollarMode(StrEnum):
@@ -89,6 +97,7 @@ type ItemType = Literal[
     "scenario",
     "tax_year_summary",
     "capital_loss",
+    "basis_step_up",
     "year_to_date",
     "person",
     "security",

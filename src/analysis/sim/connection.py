@@ -21,6 +21,7 @@ import threading
 import warnings
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal, overload
 
@@ -29,7 +30,7 @@ import traitlets
 
 from analysis.frames import index_years
 from analysis.sim import accounts
-from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, DollarMode, ItemType
+from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, Death, DollarMode, ItemType
 
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
@@ -269,6 +270,13 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account_lot m ON m.id = cl.lot_id "
         "JOIN account a ON a.id = m.account_id "
         "ORDER BY cl.id"
+    ),
+    "basis_step_up": (
+        "SELECT b.*, a.name AS account, m.lot "
+        "FROM basis_step_up b "
+        "JOIN account_lot m ON m.id = b.lot_id "
+        "JOIN account a ON a.id = m.account_id "
+        "ORDER BY b.id"
     ),
     "account_balance": (
         "SELECT s.month, a.id AS account_id, a.name AS account, "
@@ -875,6 +883,16 @@ class RunConnection(Connection):
             return None
         seed = row["seed"].iloc[0]
         return int(row["member_index"].iloc[0]), None if pd.isna(seed) else int(seed)
+
+    def deaths(self) -> list[Death]:
+        """Each person's death in this run (#255), from ``lifespan.csv``: the
+        display name and the final month, earliest first. A chart marks them."""
+        rows = self._read_sql(
+            "SELECT p.display, l.final_month FROM person_lifespan l "
+            "JOIN person p ON p.id = l.person ORDER BY l.final_month, p.display"
+        )
+        return [Death(str(display), date.fromisoformat(str(month)))
+                for display, month in zip(rows["display"], rows["final_month"], strict=True)]
 
     def scenario_meta(self) -> dict[str, Any]:
         """The run's merged ``scenario.meta_json`` (ADR-003 §4.5)."""
