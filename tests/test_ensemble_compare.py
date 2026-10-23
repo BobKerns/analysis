@@ -298,8 +298,8 @@ def test_sim_ensemble_compare_graph_draws_every_panel_the_options_ask_for(
     (figure,) = figures
     titles = [ax.get_title() for ax in figure.axes]
     assert len(titles) == 4
-    assert "(nominal)" in titles[0] and "3 paired members" in titles[1]
-    assert "CVaR" in titles[2] and "$1,000,000 reserve" in titles[3]
+    assert "3 paired members" in titles[0] and "CVaR" in titles[1]
+    assert "(nominal)" in titles[2] and "$1,000,000 reserve" in titles[3]
     written = next(tmp_path.glob("ensemble-*.png"))
     assert f"wrote {written}" in result.output and written.read_bytes().startswith(PNG_MAGIC)
     assert "can't show images" in result.output
