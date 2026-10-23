@@ -6787,7 +6787,7 @@ def report_group_command() -> None:
 
 def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bool,
                  dollars: str, runfile: Path | None, scenario: str | None,
-                 data_dir: Path | None) -> None:
+                 data_dir: Path | None, *, pre_tax: bool = False) -> None:
     if by not in ("category", "account") and not (by.startswith("tag:") and by != "tag:"):
         raise click.ClickException("--by must be category, account or tag:ROLE")
     if untagged and not by.startswith("tag:"):
@@ -6795,7 +6795,8 @@ def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bo
     mode = DollarMode(dollars)
     with _report_run(scenario, data_dir, runfile) as (rc, described):
         try:
-            frame = (reports.flows_by_year(rc, side, by=by, mode=mode, untagged=untagged)
+            frame = (reports.flows_by_year(rc, side, by=by, mode=mode, untagged=untagged,
+                                           after_tax=not pre_tax)
                      if year is None
                      else reports.flows_for_year(rc, side, year, by=by, mode=mode,
                                                  untagged=untagged))
@@ -6803,12 +6804,20 @@ def _flow_report(side: reports.FlowSide, year: int | None, by: str, untagged: bo
             raise click.ClickException(exc.args[0]) from None
     period = "" if year is None else f" in {year}"
     shown = (frame.index if year is not None
-             else frame.columns).difference(["total", reports.CASH_INCOME, reports.CASH_FLOW])
+             else frame.columns).difference(["total", reports.ECONOMIC_INCOME, reports.CASH_INCOME,
+                                             reports.CASH_FLOW, *reports.NET_WORTH_COLUMNS])
     if by.startswith("tag:") and shown.empty:
         role = by.removeprefix("tag:")
         click.echo(f"no {side}{period} is tagged in role {role} ({described});"
                    " --untagged shows it all")
         return
+    if year is None:
+        # A column with nothing in any year (no business, no inheritance)
+        # only widens the table; the totals stay, whatever they hold.
+        kept = {"total", reports.ECONOMIC_INCOME, reports.NET_WORTH_CHANGE}
+        empty = [c for c in frame.columns
+                 if c not in kept and frame[c].fillna(0).round(2).eq(0).all()]
+        frame = frame.drop(columns=empty)
     _print_report(frame, f"{side}{period} by {by.removeprefix('tag:')}", described, mode,
                   total_row=year is not None)
 
@@ -6823,23 +6832,48 @@ _UNTAGGED_HELP = ("With --by tag:ROLE, also show flows with no tag in ROLE as (u
 @click.option("--year", type=int, default=None, help="One year, a row per group, with shares.")
 @click.option("--by", "by", default="category", show_default=True, help=_BY_HELP)
 @click.option("--untagged", is_flag=True, help=_UNTAGGED_HELP)
+@click.option(
+    "--pre-tax", is_flag=True,
+    help="Carry economic income down to the change in pre-tax net worth, through the tax "
+         "paid in the year. By default it is after tax (#251): the year's tax liability "
+         "and the change in tax owed later.",
+)
 @_report_options
 def report_income_command(
-    year: int | None, by: str, untagged: bool, dollars: str,
+    year: int | None, by: str, untagged: bool, pre_tax: bool, dollars: str,
     runfile: Path | None, scenario: str | None, data_dir: Path | None,
 ) -> None:
-    """Show income by year: what each income account paid out.
+    """Show income by year: what each income account paid out, and where it went.
 
-    Categories are salary, social security, investment (interest, dividends,
-    capital gains, including growth that stays invested, less market drops)
-    and other. Each year also shows cash_income, the income paid into a cash
-    account (no paper growth), and cash_flow, that plus what was withdrawn
-    into cash from investments and retirement accounts.
+    Categories are salary, soc security, investment (interest, dividends,
+    capital gains, and the growth of what stays invested, a house included,
+    less market drops and a vehicle's depreciation), business (its income less
+    its expenses, the Schedule C net) and other. Their total is
+    economic_income: income plus paper gains, net of losses. The columns
+    after it follow it down to the change in net worth:
 
-    By tag, flows with no tag in the role are left out (and cash_flow with
-    them, since withdrawals carry no tag) unless --untagged is given.
+    \b
+      economic_income - tax - Δdeferred_tax = after_tax_income
+      after_tax_income - spending - inflation = Δnet_worth
+
+    tax is the year's liability, whenever it is paid; Δdeferred_tax the
+    change in tax still owed on traditional balances and unrealized gains;
+    spending every other expense but business costs; inflation (CPI-constant dollars only) what
+    inflation took from what was held. With --pre-tax the tax line is
+    tax_paid and there is no deferred line.
+
+    Each year also shows cash_income, the income paid into a cash account
+    (no paper growth), and cash_flow, that plus what was withdrawn into cash
+    from investments and retirement accounts.
+
+    By tag, flows with no tag in the role are left out (and cash_flow and
+    the net worth columns with them, as they aren't tagged) unless
+    --untagged is given, and their sum is named total.
+
+    A column that is zero in every year is left out.
     """
-    _flow_report("income", year, by, untagged, dollars, runfile, scenario, data_dir)
+    _flow_report("income", year, by, untagged, dollars, runfile, scenario, data_dir,
+                 pre_tax=pre_tax)
 
 
 @report_group_command.command("expenses")
@@ -6857,7 +6891,7 @@ def report_expenses_command(
     is left out: it records value a vehicle loses, not money spent.
 
     By tag, expenses with no tag in the role are left out unless --untagged
-    is given.
+    is given. A column that is zero in every year is left out.
     """
     _flow_report("expenses", year, by, untagged, dollars, runfile, scenario, data_dir)
 

@@ -29,15 +29,16 @@ from analysis.sim.connection import (
 from analysis.sim.types import DollarMode
 
 __all__ = [
-    "CASH_FLOW", "CASH_INCOME", "FlowSide", "INCOME_REPORT_CATEGORIES", "UNTAGGED",
-    "account_history", "flows_by_year", "flows_for_year",
+    "CASH_FLOW", "CASH_INCOME", "DEFERRED_TAX_CHANGE", "ECONOMIC_INCOME", "FlowSide",
+    "INCOME_REPORT_CATEGORIES", "NET_WORTH_CHANGE", "NET_WORTH_COLUMNS", "UNTAGGED",
+    "account_history", "flows_by_year", "flows_for_year", "net_worth_change_by_year",
     "gains_by_year", "tax_by_year", "tax_reconciliation",
     "render_report_table",
 ]
 
 type FlowSide = Literal["income", "expenses"]
 
-INCOME_REPORT_CATEGORIES = ["salary", "social security", "investment", "other"]
+INCOME_REPORT_CATEGORIES = ["salary", "soc security", "investment", "business", "other"]
 """Income categories in report order. Unlike ``income_by_category``, which keeps
 only the first three, the report keeps ``other`` (pensions, rentals,
 inheritances): a total that leaves them out doesn't add up to the money that
@@ -146,8 +147,10 @@ def _flow_events(rc: RunConnection, side: FlowSide) -> pd.DataFrame:
     """The run's income (or expense) transfer events with the account each one
     counts against: the income account it is drawn from, or the expense
     account it is paid into. Money paid back into an income account (a
-    market drop's negative growth) counts against it, negative.
-    Depreciation is a book entry, not spending. Income events also say
+    market drop's negative growth) counts against it, negative, and so does
+    a vehicle's depreciation, as an investment loss on the ``depreciation``
+    account. Depreciation is a loss of value, not spending: it is never an
+    expense here. Income events also say
     whether the money landed in (or came back from) a ``cash`` account.
 
     ``month`` is the month end of the event's own date, not of the step that
@@ -158,6 +161,8 @@ def _flow_events(rc: RunConnection, side: FlowSide) -> pd.DataFrame:
     if side == "income":
         received = rc.items("transfer_event", from_kind="income")
         received = _side(received, "from").assign(cash=_is_cash(received, "to"))
+        received.loc[received["tax_character"] == registries.BUSINESS_INCOME,
+                     "subkind"] = registries.BUSINESS_SUBKIND
         # A negative growth rate posts the other way, asset into its growth
         # account (#248): a market drop takes back that year's gains.
         # An income-to-income leg (a year-to-date record) is counted once, above.
@@ -165,7 +170,20 @@ def _flow_events(rc: RunConnection, side: FlowSide) -> pd.DataFrame:
         returned = returned[returned["from_kind"] != "income"]
         returned = _side(returned, "to").assign(cash=_is_cash(returned, "from"))
         returned["amount"] = -returned["amount"]
-        events = pd.concat([received[[*columns, "cash"]], returned[[*columns, "cash"]]],
+        # A vehicle's depreciation is the same loss of value as a market
+        # drop (#249): an investment loss, counted against its own account.
+        lost = rc.items("transfer_event", to_kind="expense")
+        lost = lost[lost["to_name"].isin(NON_CASH_EXPENSE_ACCOUNTS)]
+        lost = _side(lost, "to").assign(subkind="capital_gain", cash=False)
+        lost["amount"] = -lost["amount"]
+        # A business expense is a cost of earning the business's income, not
+        # consumption (#249): it comes off business income, leaving the net.
+        costs = rc.items("transfer_event", to_kind="expense",
+                         to_subkind=registries.BUSINESS_SUBKIND)
+        costs = _side(costs, "to").assign(cash=False)
+        costs["amount"] = -costs["amount"]
+        events = pd.concat([frame[[*columns, "cash"]]
+                            for frame in (received, returned, lost, costs)],
                            ignore_index=True)
     else:
         events = rc.items("transfer_event", to_kind="expense")
@@ -182,8 +200,12 @@ def _groups(rc: RunConnection, events: pd.DataFrame, side: FlowSide, by: str) ->
     its income or expense account, so a rule can refine its account's tag.
     """
     if by == "category":
-        mapping = INCOME_SUBKIND_TO_CATEGORY if side == "income" else EXPENSE_SUBKIND_TO_CATEGORY
-        return events["subkind"].map(mapping).fillna("other")
+        if side == "expenses":
+            return events["subkind"].map(EXPENSE_SUBKIND_TO_CATEGORY).fillna("other")
+        # The report's narrower name for the notebooks' "social security".
+        categories = (events["subkind"].map(INCOME_SUBKIND_TO_CATEGORY).fillna("other")
+                      .replace("social security", "soc security"))
+        return categories.mask(events["subkind"] == registries.BUSINESS_SUBKIND, "business")
     if by == "account":
         return events["account"]
     role = by.removeprefix("tag:")
@@ -211,7 +233,7 @@ def _group_order(side: FlowSide, by: str, totals: pd.Series) -> list[str]:
 
 def flows_by_year(
     rc: RunConnection, side: FlowSide, *, by: str = "category",
-    mode: DollarMode = DollarMode.NOMINAL, untagged: bool = False,
+    mode: DollarMode = DollarMode.NOMINAL, untagged: bool = False, after_tax: bool = True,
 ) -> pd.DataFrame:
     """Year x group income (or expense) totals in dollars, plus a ``total`` column
     and, for income, ``cash_income``: the part of the total that was paid
@@ -231,6 +253,11 @@ def flows_by_year(
     measures; ``cash_flow`` is dropped, as its withdrawals carry no tag.
     ``untagged=True`` keeps them as an ``(untagged)`` group, counted in every
     total.
+
+    Income that tells the whole story (not just the tagged part) names its
+    total ``economic_income`` and follows it, before the cash columns, with
+    :func:`net_worth_change_by_year`'s columns down to ``Δnet_worth``,
+    after tax unless ``after_tax=False``.
     """
     events = _flow_events(rc, side)
     events["group"] = _groups(rc, events, side, by)
@@ -262,6 +289,12 @@ def flows_by_year(
     yearly = yearly.reindex(columns=_group_order(side, by, yearly.sum()), fill_value=0)
     yearly.columns.name = None
     yearly["total"] = yearly.sum(axis=1)
+    if side == "income" and not tagged_only:
+        # The whole story (#249): the total is economic income, carried on
+        # down to the change in net worth.
+        yearly = yearly.rename(columns={"total": ECONOMIC_INCOME})
+        yearly = yearly.join(net_worth_change_by_year(
+            rc, yearly[ECONOMIC_INCOME], mode=mode, after_tax=after_tax))
     return yearly.join(cash_totals)
 
 
@@ -272,6 +305,138 @@ def _withdrawals(rc: RunConnection) -> pd.Series:
     events = rc.items("transfer_event", from_kind="asset", to_kind="asset")
     events = events[_is_cash(events, "to") & ~_is_cash(events, "from")]
     return events.groupby(event_month(events))["amount"].sum() / 100
+
+
+ECONOMIC_INCOME = "economic_income"
+"""The income report's total when it tells the whole story (#249): income plus
+paper gains, net of losses, i.e. Haig-Simons income before tax."""
+
+DEFERRED_TAX_CHANGE = "Δdeferred_tax"
+"""The income report's change in tax still owed on what has grown (#249)."""
+
+NET_WORTH_CHANGE = "Δnet_worth"
+"""The income report's change in net worth over the year (#249)."""
+
+NET_WORTH_COLUMNS = [
+    "tax", "tax_paid", DEFERRED_TAX_CHANGE, "after_tax_income",
+    "spending", "inflation", NET_WORTH_CHANGE,
+]
+"""The income report's columns from economic income down to the change in
+net worth (#249), in order. A report shows only those its mode has: ``tax``
+and ``Δdeferred_tax`` after tax, ``tax_paid`` before it, ``inflation`` in
+CPI-constant dollars."""
+
+
+def net_worth_change_by_year(
+    rc: RunConnection, economic_income: pd.Series, *,
+    mode: DollarMode = DollarMode.NOMINAL, after_tax: bool = True,
+) -> pd.DataFrame:
+    """Year by year, how ``economic_income`` (the income report's total, in
+    ``mode`` dollars) becomes the change in net worth (#249)::
+
+        economic_income - tax - Δdeferred_tax = after_tax_income
+        after_tax_income - spending - inflation = Δnet_worth
+
+    This is Haig-Simons accounting: income is what the year added before
+    spending, gains counted as they accrue and tax as it is owed. After tax
+    (the default, like ``sim networth``), ``tax`` is the year's federal and
+    state liability, whenever it is paid (in a year no tax rule computes, what
+    was paid), and ``Δdeferred_tax`` the
+    change in the tax still owed on traditional balances and unrealized
+    gains; net worth is after-tax net worth (#251). Before tax, the tax line
+    is ``tax_paid`` (what was paid in the year, mostly last year's balance
+    and this year's withholding), there is no deferred line, and net worth is
+    the sum of the balances.
+
+    ``spending`` is every expense but income tax, depreciation and business
+    expenses: a vehicle's lost value is a loss in economic income, like a
+    market drop, and a business's costs come off its income there.
+    ``inflation``, in
+    CPI-constant dollars only, is what inflation took from the real value of
+    what was held: each month's flows are deflated as they happen, while net
+    worth loses value just by sitting still.
+
+    ``Δnet_worth`` is measured from net worth itself, so each row adds
+    up only because every change in net worth is a flow on it. The first
+    year runs from its Jan 1, worked back from the opening balances and the
+    year-to-date rows dated before the scenario starts. After tax, that
+    opening takes the deferred and unpaid tax of the first month's end:
+    the run figures no deferred tax before its first step. Years before that
+    (a prior year's carried-forward record) have no row.
+    """
+    expenses = rc.items("transfer_event", to_kind="expense").copy()
+    expenses["month"] = event_month(expenses)
+    is_depreciation = expenses["to_name"].isin(NON_CASH_EXPENSE_ACCOUNTS)
+    category = expenses["to_subkind"].map(EXPENSE_SUBKIND_TO_CATEGORY)
+    expenses["line"] = "spending"
+    expenses.loc[category == "taxes", "line"] = "tax_paid"
+    # Both are already in economic income, as losses (see _flow_events).
+    expenses.loc[category == "business", "line"] = "economic_income"
+    expenses.loc[is_depreciation, "line"] = "economic_income"
+    monthly = (expenses.groupby(["month", "line"])["amount"].sum()
+               .unstack("line", fill_value=0)
+               .reindex(columns=["tax_paid", "spending"], fill_value=0) / 100)
+    worth = rc.after_tax_net_worth_frame() if after_tax else rc.net_worth_frame()
+    nw = worth["nominal"].astype(float)
+    if nw.empty:
+        # An empty scenario (no accounts) has no net worth to follow.
+        return pd.DataFrame(index=economic_income.index, columns=[NET_WORTH_CHANGE],
+                            dtype=float)
+    first_month = nw.index.min()
+    first_year = first_month.year
+
+    # Net worth before the first step: its month end less what that step
+    # posted, back to Jan 1 of the first year (a year-to-date row dated
+    # before the start posts in the first step). A prior year's record
+    # (income to income, dated an earlier Dec 31) moves no money.
+    first_posted = rc.items("transfer_event")
+    first_posted = first_posted[pd.to_datetime(first_posted["month"]) == first_month]
+    in_year = pd.to_datetime(first_posted["date"]).dt.year == first_year
+    posted_ids = set(first_posted.loc[in_year, "id"])
+    income_rows = rc.items("transfer_event", from_kind="income")
+    income_first = income_rows[income_rows["id"].isin(posted_ids)]["amount"].sum()
+    returned = rc.items("transfer_event", to_kind="income")
+    returned = returned[(returned["from_kind"] != "income") & returned["id"].isin(posted_ids)]
+    spent_first = expenses[expenses["id"].isin(posted_ids)]["amount"].sum()
+    opening = nw.iloc[0] - (income_first - returned["amount"].sum() - spent_first) / 100
+    year_end = year_end_values(nw)
+    if mode == DollarMode.CPI_CONSTANT:
+        monthly = rc.to_cpi_constant(monthly)
+        real = rc.to_cpi_constant(nw)
+        opening = opening * float(rc.to_cpi_constant(pd.Series([1.0], index=[first_month])).iloc[0])
+        year_end = year_end_values(real)
+    years = year_end.index
+    frame = monthly.groupby(index_years(monthly)).sum().reindex(years, fill_value=0)
+    frame.index.name = "year"
+    starts = year_end.shift(1)
+    starts.iloc[0] = opening
+    change = year_end - starts
+
+    income = economic_income.reindex(years).fillna(0)
+    columns: dict[str, pd.Series] = {}
+    if after_tax:
+        # A year no tax rule computes (a scenario without one) owes what it
+        # paid: there is no liability to accrue instead.
+        liability = _cpi(rc, rc.tax_liability_by_year().reindex(years), mode, annual=True)
+        liability = liability.fillna(frame["tax_paid"])
+        deferred = worth["deferred_tax"].astype(float)
+        if mode == DollarMode.CPI_CONSTANT:
+            deferred = rc.to_cpi_constant(deferred)
+        deferred_end = year_end_values(deferred)
+        deferred_start = deferred_end.shift(1)
+        deferred_start.iloc[0] = deferred.iloc[0]
+        columns["tax"] = liability
+        columns[DEFERRED_TAX_CHANGE] = deferred_end - deferred_start
+        columns["after_tax_income"] = income - columns["tax"] - columns[DEFERRED_TAX_CHANGE]
+        kept = columns["after_tax_income"]
+    else:
+        columns["tax_paid"] = frame["tax_paid"]
+        kept = income - frame["tax_paid"]
+    columns["spending"] = frame["spending"]
+    if mode == DollarMode.CPI_CONSTANT:
+        columns["inflation"] = kept - frame["spending"] - change
+    columns[NET_WORTH_CHANGE] = change
+    return pd.DataFrame(columns, index=years).astype(float)
 
 
 def flows_for_year(
@@ -287,10 +452,11 @@ def flows_for_year(
     Raises ``KeyError`` for a year the run doesn't cover.
     """
     yearly = flows_by_year(rc, side, by=by, mode=mode, untagged=untagged)
+    yearly = yearly.rename(columns={ECONOMIC_INCOME: "total"})
     if year not in yearly.index:
         years = f"{yearly.index.min()}-{yearly.index.max()}" if len(yearly) else "none"
         raise KeyError(f"the run has no {side} in {year} (years: {years})")
-    amounts = yearly.loc[year].drop([CASH_INCOME, CASH_FLOW], errors="ignore")
+    amounts = yearly.loc[year].drop([CASH_INCOME, CASH_FLOW, *NET_WORTH_COLUMNS], errors="ignore")
     total = amounts.pop("total")
     if by != "category":
         # This year's own order, and only the groups with money in it.

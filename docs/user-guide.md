@@ -1129,7 +1129,7 @@ None of them need you to write any code.
 | --- | --- |
 | `scenario_overview.ipynb` | The scenario's setup, without needing a run: people, accounts, chains, scheduled rules, calendar events. Good for checking a scenario is set up the way you intended, before running it. |
 | `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, and the portfolio by asset class. |
-| `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, and after-tax income. |
+| `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, and economic income down to the change in net worth. |
 | `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, and where they cross over (break-even). |
 | `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range, with a running balance for one account and each refill linked to the debit that triggered it — good for auditing "why did this happen." |
 | `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median over quintile bands shaded out to the 5th–95th percentiles, plus a year-end table of mean/median/SD and the 5th, 20th, ... 95th percentiles. |
@@ -1161,11 +1161,34 @@ machine too small for a notebook comfortably.
 | net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax]` |
 | one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly]` |
 | income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged]` |
+| economic income (income plus paper gains, net of losses) carried down through tax, spending and inflation to the change in net worth, after tax or pre-tax | `sim report income [--pre-tax]` |
 | realized vs. unrealized gains by year | `sim report gains` |
 | federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation]` |
 
 The result views read the scenario's latest run (or `--runfile`) and show
 CPI-constant (today's) dollars unless you pass `--dollars nominal`.
+
+`sim report income` tells the whole story of each year. Its total,
+`economic_income`, is income plus paper gains, net of losses: what the year
+added before spending (economists call it Haig-Simons income). Its
+`investment` column counts the growth of everything invested, a house
+included, less market drops and a vehicle's depreciation; its `business`
+column is the business's income less its expenses, so business costs are not
+spending. The columns
+after it carry it down to the change in net worth, and each row adds up:
+
+```text
+economic_income - tax - Δdeferred_tax = after_tax_income
+after_tax_income - spending - inflation = Δnet_worth
+```
+
+`tax` is the year's tax liability, whenever it is paid, and
+`Δdeferred_tax` the change in tax still owed on IRA and 401(k)
+balances and unsold gains, so `Δnet_worth` is the change in after-tax
+net worth, as `sim networth` shows it. `inflation` (CPI-constant dollars
+only) is what inflation took from the real value of what you held. With `--pre-tax`,
+the tax line is what was paid in the year, and net worth is the plain total
+of the balances.
 
 [notebooks/README.md](../notebooks/README.md) keeps the full, up-to-date list, including which
 notebook views don't have a terminal command yet.

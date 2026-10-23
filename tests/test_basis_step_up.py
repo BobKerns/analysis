@@ -269,3 +269,30 @@ def test_an_ensemble_chart_marks_member_0s_deaths() -> None:
     members = {"member_0001": _fake_run([BILL], 1), "member_0000": _fake_run([ALICE], 0)}
     assert base_case_deaths(members) == [ALICE]
     assert base_case_deaths({"member_0001": _fake_run([BILL], 1)}) == []
+
+
+@pytest.mark.slow
+def test_the_net_worth_notebook_charts_mark_the_deaths(
+    write_lifespans: Callable[..., None], fund_asset_savings: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    import matplotlib.pyplot as plt
+
+    from analysis.sim.notebook_ui import networth_plots
+
+    fund_asset_savings("500000.00")
+    write_lifespans(ALICE_DIES, BILL_DIES)
+    run = run_scenario(load_test_copy().intent_path, runs_dir / "charts.sqlite3", run_by="T",
+                       allow_dirty_data=True, allow_dirty_code=True)
+    plt.close("all")
+    with RunConnection(run) as rc:
+        for widget in (networth_plots.net_worth_widget, networth_plots.income_widget,
+                       networth_plots.expenses_widget, networth_plots.gains_widget,
+                       networth_plots.economic_income_widget):
+            widget(rc)
+    # An error inside a widget's Output is printed, not raised.
+    assert "Traceback" not in "".join(capsys.readouterr())
+    figures = [plt.figure(n) for n in plt.get_fignums()]
+    assert len(figures) == 5
+    assert all(len(_death_lines(fig.axes[0])) == 2 for fig in figures)
+    plt.close("all")

@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import clear_output, display
 
+from analysis.sim import reports
 from analysis.sim.plotting import FRAME_ALPHA, mark_deaths
 from analysis.sim.connection import (
     EXPENSE_CATEGORIES,
@@ -244,13 +245,17 @@ def gains_widget(rc: RunConnection,
     return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])
 
 
-def after_tax_widget(rc: RunConnection,
-                     dollar_mode: DollarModePicker | None = None,
-                     time_range: TimeRangePicker | None = None,
-                     **_) -> widgets.VBox:
-    """Tax reconciliation table + after-tax income vs. non-tax-expense chart."""
+def economic_income_widget(rc: RunConnection,
+                           dollar_mode: DollarModePicker | None = None,
+                           time_range: TimeRangePicker | None = None,
+                           after_tax: AfterTaxPicker | None = None,
+                           **_) -> widgets.VBox:
+    """Economic income carried down to the change in net worth (#249), as
+    ``sim report income`` shows it: a chart of what each year added and
+    spent, the year's table, and the tax reconciliation."""
     dollar_mode = dollar_mode or DollarModePicker()
     time_range = time_range or TimeRangePicker()
+    after_tax = after_tax or AfterTaxPicker()
     time_range.cover(run_years(rc))
 
     table_out = widgets.Output()
@@ -258,79 +263,68 @@ def after_tax_widget(rc: RunConnection,
 
     def _redraw(*_):
         mode = dollar_mode.value
+        taxed = after_tax.value
         mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
 
-        reconciliation_nominal = rc.tax_reconciliation_by_year()
-        income_yearly_nominal = yearly_totals(rc.income_by_category())
-        expenses_yearly_nominal = yearly_totals(rc.expenses_by_category())
-
-        money_columns = [c for c in reconciliation_nominal.columns if c != "reconciliation_year"]
-        reconciliation = time_range.clip(
-            rc.to_cpi_constant_annual(reconciliation_nominal)
-            if mode == DollarMode.CPI_CONSTANT
-            else reconciliation_nominal
-        )
-        income_yearly = (rc.to_cpi_constant_annual(income_yearly_nominal)
-                         if mode == DollarMode.CPI_CONSTANT
-                         else income_yearly_nominal
-        )
-        expenses_yearly = (rc.to_cpi_constant_annual(expenses_yearly_nominal)
-                           if mode == DollarMode.CPI_CONSTANT
-                           else expenses_yearly_nominal
-        )
-
-        net = pd.DataFrame({
-            "gross_income": income_yearly["total"],
-            "tax_liability": rc.tax_liability_by_year(),
-            "expenses": expenses_yearly["total"],
-            "tax_expenses": expenses_yearly["taxes"],
-        })
-        net[["gross_income", "expenses", "tax_expenses"]] = net[[
-            "gross_income", "expenses", "tax_expenses",
-        ]].fillna(0)
-        net["after_tax_income"] = net["gross_income"] - net["tax_liability"]
-        net["non_tax_expenses"] = net["expenses"] - net["tax_expenses"]
-        net["after_tax_surplus"] = net["after_tax_income"] - net["non_tax_expenses"]
-        net = time_range.clip(net)
-        chart = rc.to_cpi_constant_annual(net) if mode == DollarMode.CPI_CONSTANT else net
+        # The reconciliation keeps its reconciliation_year (the April a tax
+        # year settles in), which is a year, not money.
+        reconciliation = rc.tax_reconciliation_by_year()
+        money_columns = [c for c in reconciliation.columns if c != "reconciliation_year"]
+        if mode == DollarMode.CPI_CONSTANT:
+            reconciliation = reconciliation.assign(
+                **rc.to_cpi_constant_annual(reconciliation[money_columns]))
+        reconciliation = time_range.clip(reconciliation)
+        income = reports.flows_by_year(rc, "income", mode=mode, after_tax=taxed)
+        story = time_range.clip(
+            income[[c for c in (reports.ECONOMIC_INCOME, *reports.NET_WORTH_COLUMNS)
+                    if c in income.columns]]
+            .dropna(subset=[reports.NET_WORTH_CHANGE]))
+        kept = "after_tax_income" if taxed else reports.ECONOMIC_INCOME
+        tax = "tax" if taxed else "tax_paid"
+        if story.empty:
+            # An empty scenario (no accounts) has no net worth to follow.
+            for out in (chart_out, table_out):
+                with out:
+                    clear_output(wait=True)
+            with chart_out:
+                print(f"No net worth in this run ({rc.label}).")
+            return
         with chart_out:
             clear_output(wait=True)
             fig, ax = plt.subplots(figsize=(10, 5))
-            years = chart.index.astype(str)
-            ax.bar(
-                years, chart["after_tax_income"],
-                label="after-tax income", color="#2ca02c", alpha=0.7,
-            )
-            ax.bar(
-                years, -chart["non_tax_expenses"],
-                label="non-tax expenses", color="#d62728", alpha=0.7,
-            )
-            ax.plot(
-                years, chart["tax_liability"],
-                label="tax liability", color="#9467bd", marker="o", linewidth=2,
-            )
-            ax.plot(
-                years, chart["after_tax_surplus"],
-                label="after-tax surplus", color="black", marker="o", linewidth=2,
-            )
+            years = story.index.astype(str)
+            ax.bar(years, story[kept], label=kept.replace("_", " "),
+                   color="#2ca02c", alpha=0.7)
+            # What the year spent or lost, stacked below zero.
+            bottom = pd.Series(0.0, index=story.index)
+            for column, color in (("spending", "#d62728"), ("inflation", "#ff7f0e")):
+                if column in story.columns:
+                    ax.bar(years, -story[column], bottom=bottom,
+                           label=column, color=color, alpha=0.7)
+                    bottom = bottom - story[column]
+            ax.plot(years, story[tax], label=tax.replace("_", " "),
+                    color="#9467bd", marker="o", linewidth=2)
+            ax.plot(years, story[reports.NET_WORTH_CHANGE], label="Δnet worth",
+                    color="black", marker="o", linewidth=2)
             ax.axhline(0, color="grey", linewidth=0.8)
-            ax.set_title(f"Annual after-tax income ({mode_label}) ({rc.label})")
+            ax.set_title(f"Economic income and net worth change "
+                         f"({'after tax' if taxed else 'pre-tax'}, {mode_label}) ({rc.label})")
             ax.set_xlabel("year")
             ax.set_ylabel("USD")
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
             ax.grid(True, axis="y", alpha=0.3)
-            mark_deaths(ax, rc.deaths(), years=chart.index)
+            mark_deaths(ax, rc.deaths(), years=story.index)
             ax.legend(framealpha=0.5)
             plt.setp(ax.get_xticklabels(), rotation=90)
             plt.show()
 
         with table_out:
             clear_output(wait=True)
+            display(story.style.format("${:,.0f}", na_rep=""))
             display(reconciliation.style.format({c: "${:,.0f}" for c in money_columns}))
-            display(net.style.format("${:,.0f}"))
 
     observe_while_shown(dollar_mode, _redraw)
     observe_while_shown(time_range, _redraw)
+    observe_while_shown(after_tax, _redraw)
     _redraw()
-
-    return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])
+    return widgets.VBox([controls_row(dollar_mode, after_tax, time_range), chart_out, table_out])

@@ -39,6 +39,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | net worth by year or month, CPI-constant (default) or nominal | `analysis sim networth [SCENARIO] [--monthly] [--dollars cpi_constant\|nominal]` |
 | balance history of an account or lot (`accounts.ipynb`) | `analysis sim account history ACCOUNT [--lot LOT] [--yearly]` |
 | income and expenses by category (`net_worth.ipynb`) | `analysis sim report income`, `analysis sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE]` |
+| economic income carried down to the change in net worth, after tax or pre-tax (`net_worth.ipynb`) | `analysis sim report income [--pre-tax]` |
 | realized vs. unrealized gains (`net_worth.ipynb`) | `analysis sim report gains` |
 | federal and state tax with their AGI, deduction and taxable income, and tax reconciliation (`net_worth.ipynb`) | `analysis sim report tax [--reconciliation]` |
 | every event, filtered by reason/tax/account/date | none yet ([TODO.md](../TODO.md)) |
