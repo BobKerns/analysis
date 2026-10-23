@@ -76,10 +76,8 @@ def mark_deaths(
             continue
         if not min(xlim) <= x <= max(xlim):
             continue
-        ax.axvline(
-            x, color="red", linewidth=1.2, zorder=2.6,
-            linestyle="--", label="_nolegend_",
-        )
+        # No label: matplotlib's default one starts with "_", which a legend skips.
+        ax.axvline(x, color="red", linewidth=1.2, zorder=2.6, linestyle="--")
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
 
