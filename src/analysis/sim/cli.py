@@ -1056,10 +1056,12 @@ def ensemble_create(
 @click.option("-v", "--verbose", is_flag=True, default=False,
               help="Show a table with each ensemble's parents, dates, seed, "
                    "ensemble size and description.")
-def ensemble_list(data_dir: Path | None, verbose: bool) -> None:
+@click.option("-a", "--all", "all_", is_flag=True, default=False,
+              help="Include the template ensembles (t_ names) read from the code repository.")
+def ensemble_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     """List the data repo's ensembles: ``sim scenario list``, keeping only
     the scenarios whose merged ensemble_size is positive."""
-    _list_scenarios(data_dir, verbose, ensembles_only=True)
+    _list_scenarios(data_dir, verbose, ensembles_only=True, templates=all_)
 
 
 def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -> Path:
@@ -9611,26 +9613,33 @@ def scenario_group_command() -> None:
 @click.option("-v", "--verbose", is_flag=True, default=False,
               help="Show a table with each scenario's parents, dates, seed, "
                    "ensemble size and description.")
-def scenario_list(data_dir: Path | None, verbose: bool) -> None:
+@click.option("-a", "--all", "all_", is_flag=True, default=False,
+              help="Include the template scenarios (t_ names) read from the code repository.")
+def scenario_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     """List the data repo's scenarios.
 
     Plain output is just the names, one per line, for scripts. --verbose adds
     parents, start and end months, seed, ensemble size, and description, and
     marks the current scenario with *. A value in [brackets] is inherited
     from an ancestor; a blank size means the scenario is not an ensemble.
+    --all adds the template scenarios a data repo reads from the code
+    repository when it has no folder of that name.
     """
-    _list_scenarios(data_dir, verbose, ensembles_only=False)
+    _list_scenarios(data_dir, verbose, ensembles_only=False, templates=all_)
 
 
-def _list_scenarios(data_dir: Path | None, verbose: bool, *, ensembles_only: bool) -> None:
-    """``sim scenario list``, or with ``ensembles_only`` ``sim ensemble list``."""
+def _list_scenarios(
+    data_dir: Path | None, verbose: bool, *, ensembles_only: bool, templates: bool = False,
+) -> None:
+    """``sim scenario list``, or with ``ensembles_only`` ``sim ensemble list``;
+    ``templates`` adds the template scenarios (``--all``)."""
     data_dir_p = _resolve_data_dir(data_dir)
     try:
         if not verbose and not ensembles_only:
-            for name in list_scenario_names(data_dir_p):
+            for name in sc.scenario_list_names(data_dir_p, templates=templates):
                 click.echo(name)
             return
-        summaries = sc.scenario_summaries(data_dir_p)
+        summaries = sc.scenario_summaries(data_dir_p, templates=templates)
     except LoadError as exc:
         raise click.ClickException("; ".join(exc.issues)) from None
     if ensembles_only:

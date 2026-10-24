@@ -97,6 +97,7 @@ To see which scenarios the data repo has:
 sim scenario list            # names only, one per line, for scripts
 sim scenario list --verbose  # a table with each one's parents, dates, seed, size and description
 sim ensemble list            # just the ensembles (also takes --verbose)
+sim scenario list --all      # also the t_ template scenarios (ensemble list takes --all too)
 ```
 
 The verbose table marks your current scenario with `*`, and shows each

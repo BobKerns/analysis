@@ -127,12 +127,54 @@ def _content(intent_path: Path) -> dict[str, list[tuple]]:
 
 
 def test_t_empty_adds_nothing_to_a_lineage(
-    test_data_dir: Path, tmp_path: Path, derive_scenario,
+    test_data_dir: Path, tmp_path: Path, derive_scenario, without_prototype_defaults: None,
 ) -> None:
     """Bob: t_empty may be the root, but whether it is in a lineage or not
-    changes nothing a scenario loads."""
+    changes nothing a scenario loads, even mixed in after a scenario that
+    doesn't build on the templates: its dates and seed are fallbacks."""
     derive_scenario("plain", "retire_alice")
     derive_scenario("with_empty", "retire_alice:t_empty")
     loaded = [load_scenario(test_data_dir, name, intent_dir=tmp_path / name, compute_stamps=False,
                             allow_dirty_data=True).intent_path for name in ("plain", "with_empty")]
     assert _content(loaded[0]) == _content(loaded[1])
+    assert _span(loaded[0]) == _span(loaded[1]) == ("2026-05-31", "2040-12-31", 42)
+
+
+def _span(intent_path: Path) -> tuple[str, str, int]:
+    con = sqlite3.connect(intent_path)
+    try:
+        return con.execute('SELECT start, "end", seed FROM scenario').fetchone()
+    finally:
+        con.close()
+
+
+def test_a_mixed_in_template_keeps_the_scenarios_span_and_seed(
+    test_data_dir: Path, tmp_path: Path, derive_scenario, without_prototype_defaults: None,
+) -> None:
+    """Bob: an ensemble template mixed in after a scenario mustn't override
+    its seed (nor, from t_empty, its dates)."""
+    folder = test_data_dir / "scenarios" / "retire_alice" / "scenario.csv"
+    folder.write_text(folder.read_text().replace(",42,", ",7,"))
+    derive_scenario("mixed", "retire_alice:t_market_ensemble")
+    intent = load_scenario(test_data_dir, "mixed", intent_dir=tmp_path / "intent",
+                           compute_stamps=False, allow_dirty_data=True).intent_path
+    assert _span(intent) == ("2026-05-31", "2040-12-31", 7)
+
+
+def test_list_all_includes_the_templates(test_data_dir: Path) -> None:
+    plain = _sim(test_data_dir, "scenario", "list").output.split()
+    every = _sim(test_data_dir, "scenario", "list", "--all").output.split()
+    assert every == sorted([*plain, *TEMPLATES])
+    ensembles = _sim(test_data_dir, "ensemble", "list", "-a").output.split()
+    assert {"t_inflation_ensemble", "t_market_current"} <= set(ensembles)
+    table = _sim(test_data_dir, "scenario", "list", "-a", "-v")
+    assert table.exit_code == 0 and "t_market_series" in table.output, table.output
+
+
+def test_the_ensemble_templates_set_no_seed_of_their_own() -> None:
+    """Bob: an ensemble template as a mix-in after a scenario must not
+    override that scenario's seed; t_empty's 42 is only a fallback."""
+    import csv
+    seeds = {name: next(csv.DictReader((TEMPLATE_SCENARIOS_DIR / name / "scenario.csv").open()))["seed"]
+             for name in TEMPLATES}
+    assert {name for name, seed in seeds.items() if seed} == {"t_empty"}

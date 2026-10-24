@@ -40,6 +40,7 @@ from analysis.sim.distributions import (
 from analysis.sim.lineage import (
     TEMPLATE_SCENARIOS_DIR,
     ScenarioCycleError,
+    is_template,
     load_order,
     parse_parents,
     read_parents,
@@ -641,6 +642,9 @@ def _inherit_unit_context(
                 row[column] = source[column]
 
 
+_TEMPLATE_FALLBACK_COLUMNS = ("start", "end", "seed")
+
+
 def _merge_scenario_rows(
     parent_rows: list[dict[str, str]],
     child_rows: list[dict[str, str]],
@@ -698,6 +702,10 @@ def _read_scenario_inputs(
     lifespan_rows: list[dict[str, str]] = []
     ytd_rows: list[dict[str, str]] = []
     meta: dict[str, Any] = {}
+    # A template's start, end and seed only fill what no data repo scenario
+    # in the lineage sets (ADR-003 §4.5a): a template mixed in after a
+    # scenario mustn't move its span or seed.
+    template_fallbacks: dict[str, str] = {}
     account_from: dict[str, str] = {}  # account name -> the scenario whose row is in force
     for name in _strict_load_order(scenarios_dir, scenario_name):
         scenario_dir = _scenario_dir(scenarios_dir, name)
@@ -749,6 +757,10 @@ def _read_scenario_inputs(
             return rows
 
         own_meta = own_scenario.pop("meta_json", "")
+        if is_template(scenarios_dir, name):
+            template_fallbacks.update(
+                {k: own_scenario.pop(k) for k in _TEMPLATE_FALLBACK_COLUMNS if own_scenario.get(k)}
+            )
         scenario_row.update(
             {k: v for k, v in own_scenario.items() if v != "" and k != ORIGIN}
         )
@@ -808,6 +820,8 @@ def _read_scenario_inputs(
         ytd_rows = _merge_scenario_rows(
             ytd_rows, read_overlay("year_to_date.csv"), ("name",),
         )
+    for col, value in template_fallbacks.items():
+        scenario_row.setdefault(col, value)
     for col in ("start", "end"):
         if not scenario_row.get(col):
             # Blank all the way down (a root scenario's own blank, say): the

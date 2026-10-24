@@ -516,9 +516,11 @@ flowchart TB
 ```
 
 `t_empty` at the root is what its name says: no accounts, rules, rates or
-factors, only a start and end date, since a scenario needs them. It is also
-a starting point for a scenario built from nothing; having it in a lineage
-or not changes nothing else. Each layer below it adds one thing to the one
+factors, only a start and end date and a seed, so every template loads on
+its own. A template's dates and seed are fallbacks that any data repo
+scenario in the lineage overrides, so having `t_empty` in a lineage or not
+changes nothing. It is also a starting point for a scenario built from
+nothing. Each layer below it adds one thing to the one
 above:
 
 - **`_factors`**: the latent factors and their correlations, and nothing
