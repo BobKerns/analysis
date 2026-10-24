@@ -7,9 +7,10 @@ be flushed half-drawn by another notebook thread (#119), and needs no GUI
 backend in a terminal."""
 
 from __future__ import annotations
+from matplotlib.axes import Axes
 
 import io
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Sequence, Iterator
 from typing import Any
 
 import matplotlib
@@ -185,9 +186,9 @@ def ensemble_compare_figure(
     clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     deaths: Sequence[Death] = (),
 ) -> Figure:
-    """The comparison's panels, top to bottom (#163): each percentile
-    breakpoint's delta; the fan of paired per-future deltas when the
-    recipes pair; the delta in each tail mean (CVaR); and, given a
+    """The comparison's panels, top to bottom (#163): the fan of paired
+    per-future deltas when the recipes pair; the delta in each tail mean
+    (CVaR); each percentile breakpoint's delta; and, given a
     ``reserve``, the change in the shares below it (see
     ``comparison_deltas`` for ``cpi_frames``). ``log_scale`` puts the dollar
     panels on a symmetric log scale (#171), since deltas run both ways.
@@ -200,36 +201,44 @@ def ensemble_compare_figure(
         baseline_frame, variant_frame, reserve=reserve, cpi_frames=cpi_frames,
     ))
     panels = 2 + bool(pairs) + (reserve is not None)
-    fig = Figure(figsize=(10, 4 * panels))
-    axes = list(fig.subplots(panels, 1, sharex=True))
-    _delta_lines(
-        deltas, [c for c in deltas.columns if c.startswith("Δp")], axes[0],
-        f"{variant} − {baseline}: each percentile vs the same percentile ({mode_label})",
-        log_scale=log_scale, deaths=deaths,
-    )
+    fig = Figure(figsize=(10, 4 * panels),
+                 layout="tight")
+    all_axes: list[Axes] = list(fig.subplots(panels, 1, sharex=True))
+    axes: Iterator[Axes] = iter(all_axes)
     if pairs:
+        ax = next(axes)
         paired = clip(summary_with_percentiles(
             paired_deltas(baseline_frame, variant_frame, pairs),
         ))
         if log_scale:
-            _symlog(axes[1], paired)
-        ensemble_fan_chart(paired, ax=axes[1])
-        mark_deaths(axes[1], deaths)
-        axes[1].set_title(
+            _symlog(ax, paired)
+        ensemble_fan_chart(paired, ax=ax)
+        mark_deaths(ax, deaths)
+        ax.set_title(
             f"{variant} − {baseline}, future by future ({len(pairs)} paired members)"
         )
-        axes[1].set_xlabel("")
+        ax.set_xlabel("")
+    ax = next(axes)
     _delta_lines(
-        deltas, [c for c in deltas.columns if c.startswith("Δcvar")], axes[1 + bool(pairs)],
+        deltas, [c for c in deltas.columns if c.startswith("Δcvar")], ax,
         f"{variant} − {baseline}: mean of the worst 5% and 20% (CVaR)",
         log_scale=log_scale, deaths=deaths,
     )
+    ax = next(axes)
+    _delta_lines(
+        deltas, [c for c in deltas.columns if c.startswith("Δp")], ax,
+        f"{variant} − {baseline}: each percentile vs the same percentile ({mode_label})",
+        log_scale=log_scale, deaths=deaths,
+    )
     if reserve is not None:
+        ax = next(axes)
         _delta_lines(
-            deltas, ["Δbelow_reserve", "Δever_below_reserve"], axes[-1],
+            deltas, ["Δbelow_reserve", "Δever_below_reserve"], ax,
             f"{variant} − {baseline}: share of members below the ${reserve:,.0f} reserve",
             shares=True, deaths=deaths,
         )
-    axes[-1].tick_params(axis="x", labelrotation=90)
-    fig.tight_layout()
+    # sharex=True hides the x tick labels on all but the bottom panel;
+    # each panel is read on its own, so put them back.
+    for ax in all_axes:
+        ax.tick_params(axis="x", labelbottom=True, labelrotation=90)
     return fig

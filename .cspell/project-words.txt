@@ -90,6 +90,7 @@ kendalltau
 kernelspec
 Kolmogorov
 kstest
+labelbottom
 labelcolor
 labelrotation
 LABSTAT
