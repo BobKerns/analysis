@@ -178,3 +178,14 @@ def test_the_ensemble_templates_set_no_seed_of_their_own() -> None:
     seeds = {name: next(csv.DictReader((TEMPLATE_SCENARIOS_DIR / name / "scenario.csv").open()))["seed"]
              for name in TEMPLATES}
     assert {name for name, seed in seeds.items() if seed} == {"t_empty"}
+
+
+def test_a_scenario_or_ensemble_can_be_created_from_a_template(test_data_dir: Path) -> None:
+    """What the read-only refusal tells you to do must work: building on a
+    template writes only the new scenario's folder."""
+    made = _sim(test_data_dir, "scenario", "create", "kid", "t_inflation_series")
+    assert made.exit_code == 0, made.output
+    ensemble = _sim(test_data_dir, "ensemble", "create", "ens", "retire_alice", "t_market_current")
+    assert ensemble.exit_code == 0, ensemble.output
+    assert {"kid", "ens"} <= set(list_scenario_names(test_data_dir))
+    assert not any((test_data_dir / "scenarios").glob("t_*"))

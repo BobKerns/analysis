@@ -262,7 +262,9 @@ def _commit(real: Path, stage: Path, changed: list[Path], removed: list[Path]) -
 
 
 @contextmanager
-def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedEdit]:
+def staged_edit(
+    data_dir: Path | str, scenario: str | None, *, template_parent: bool = False,
+) -> Generator[StagedEdit]:
     """Stage an edit to the data dir's scenario CSVs; write it only if it loads.
 
     ``scenario`` (or the current scenario) is preflighted: if it does not load
@@ -275,10 +277,15 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedE
     :class:`EditRejected` with nothing written. If a file the edit would write
     changed on disk meanwhile, :class:`ConcurrentEdit` is raised, also with
     nothing written; otherwise the changed files are copied back. If the body raises, nothing is written.
+
+    ``scenario`` may be a template only with ``template_parent``: the
+    preflight of a scenario created from one, which writes only the new
+    scenario's folder. Any edit that writes into a template's folder is
+    still refused.
     """
     real = Path(data_dir).resolve()
     name = resolve_scenario_name(real, scenario).name
-    if is_template(real / SCENARIOS, name):
+    if is_template(real / SCENARIOS, name) and not template_parent:
         raise EditRejected([template_refusal(name)], scenario=name, own=[template_refusal(name)])
     with ExitStack() as stack:
         intent_dir = Path(stack.enter_context(tempfile.TemporaryDirectory()))

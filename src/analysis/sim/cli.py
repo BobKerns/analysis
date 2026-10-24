@@ -1004,7 +1004,7 @@ def ensemble_create(
     data_dir_p = _resolve_data_dir(data_dir)
     name, parent = _ask_new_scenario(data_dir_p, "ensemble", name, parent)
     # Preflights PARENT, then creates and validates the recipe in a staged copy.
-    with _scenario_edit(data_dir_p, parent, remember=False) as edit:
+    with _scenario_edit(data_dir_p, parent, remember=False, template_parent=True) as edit:
         try:
             staged = sc.create_scenario(
                 edit.data_dir, name, parent, description=description, mixins=mixins,
@@ -2949,15 +2949,17 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
 
 @contextmanager
 def _scenario_edit(
-    data_dir: Path, scenario: str | None, *, remember: bool = True,
+    data_dir: Path, scenario: str | None, *, remember: bool = True, template_parent: bool = False,
 ) -> Generator[StagedEdit]:
     """``staged_edit`` for a CLI command: edits land only if every affected
     scenario still loads (issue #44). Issues go to stderr as ``error:`` lines,
     like ``sim check``, and the command fails with nothing written.
-    ``scenario`` and ``remember`` are as for ``_resolve_scenario``."""
+    ``scenario`` and ``remember`` are as for ``_resolve_scenario``;
+    ``template_parent`` lets ``scenario`` be a template, for creating a
+    scenario from one."""
     scenario = _resolve_scenario(data_dir, scenario, remember=remember).name
     try:
-        with staged_edit(data_dir, scenario) as edit:
+        with staged_edit(data_dir, scenario, template_parent=template_parent) as edit:
             yield edit
     except ScenarioAlreadyBroken as exc:
         for issue in exc.issues:
@@ -9730,7 +9732,7 @@ def scenario_create(
         data_dir_p = _resolve_data_dir(data_dir)
         name, parent = _ask_new_scenario(data_dir_p, "scenario", name, parent)
         # Preflights PARENT, then creates and validates NAME in a staged copy.
-        with _scenario_edit(data_dir_p, parent, remember=False) as edit:
+        with _scenario_edit(data_dir_p, parent, remember=False, template_parent=True) as edit:
             sc.create_scenario(
                 edit.data_dir, name, parent, description=description, mixins=mixins,
                 ensemble_size=0,
