@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 47
+SCHEMA_VERSION = 48
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -238,6 +238,11 @@ CREATE TABLE calendar_event (
     -- #280: where the path starts: NULL for a stationary draw around the
     -- level, 'current' for the rate in effect just before the row's date.
     vary_process_start  TEXT,
+    -- #291: on a set_rate row with no amount of its own, a date: the row puts
+    -- back what governed its series the day before it, resuming a process
+    -- (its level, persistence and shocks) or restoring a fixed rate. The
+    -- ensemble step resolves it, as it does a varying row.
+    vary_resume         TEXT,
     -- #165: a `discrete` row's weighted outcomes, each a value or a low..high
     -- range in the target's stored unit ('30%: 0; 25%: 100000..600000').
     vary_outcomes       TEXT,

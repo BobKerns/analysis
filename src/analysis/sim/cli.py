@@ -571,7 +571,7 @@ def _run_loaded(
     """``sim run``'s work once the intent is loaded: a sensitivity batch, an
     ensemble, or a single run."""
     if sensitivity:
-        if not _has_unresolved_vary(intent_path):
+        if not _unresolved_vary_names(intent_path):
             raise click.ClickException(
                 f"{scenario_name}: nothing to perturb -- no calendar row has "
                 "vary_distribution set (ADR-007)"
@@ -651,9 +651,17 @@ def _available_cpus() -> int:
 
 def _has_unresolved_vary(intent_path: Path) -> bool:
     """ADR-006: whether ``intent_path`` still has any calendar_event row or
-    lifespan (#221) with `vary_distribution` set, i.e. is a recipe that
-    hasn't been resolved."""
-    return bool(_unresolved_vary_names(intent_path))
+    lifespan (#221) with `vary_distribution` set, or a `vary_resume` row
+    (#291), i.e. is a recipe that hasn't been resolved."""
+    if _unresolved_vary_names(intent_path):
+        return True
+    con = connect_sim_file(intent_path)
+    try:
+        return con.execute(
+            "SELECT 1 FROM calendar_event WHERE vary_resume IS NOT NULL LIMIT 1"
+        ).fetchone() is not None
+    finally:
+        con.close()
 
 
 def _recorded_ensemble_size(intent_path: Path) -> int:
@@ -2924,6 +2932,7 @@ _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
     "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
     "vary_correlate_with", "vary_correlation", "vary_tail_dependence",
     "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start",
+    "vary_resume",
     "vary_outcomes",
 })
 
@@ -3983,6 +3992,7 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
         "vary_persistence": row["vary_persistence"],
         "vary_shock_sd": row["vary_shock_sd"],
         "vary_process_start": row["vary_process_start"],
+        "vary_resume": row.get("vary_resume", ""),
         "_correlate": "y" if correlated else "n",
         "vary_correlate_with": row["vary_correlate_with"],
         "vary_correlation": row["vary_correlation"],
@@ -4485,10 +4495,18 @@ def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
 @click.option("--description", default="", help="Free-text description.")
 @click.option("--tags", default="",
               help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
+@click.option(
+    "--resume", "vary_resume", type=completion.CALENDAR_DATE, default=None,
+    help="Instead of a rate: from DATE, put SERIES back to whatever governed it the day "
+         "before this date, usually an episode's start marker (#291). A process resumes "
+         "with its own level, persistence and yearly shocks; a fixed rate comes back at "
+         "once. Takes no RATE_PERCENT or --vary-* options.",
+)
 @_vary_row_options
 @_vary_process_options
 def calendar_add_set_rate(
     date: str | None, series: str | None, rate_percent: str | None, aux_kind: str,
+    vary_resume: str | None,
     scenario: str | None, data_dir: Path | None, description: str, tags: str,
     row_name: str | None, vary_target: str | None, vary_distribution: str | None,
     vary_low: str | None, vary_high: str | None, vary_median: str | None, vary_sd: str | None,
@@ -4503,18 +4521,53 @@ def calendar_add_set_rate(
     """Append a set_rate event: SERIES starts earning RATE_PERCENT (e.g. 4.5) from DATE.
 
     RATE_PERCENT is a schema placeholder, ignored, when --vary-target=amount.
-    Arguments left out are asked for.
+    With --resume there is no RATE_PERCENT: the row puts back what governed
+    SERIES before the --resume date. Arguments left out are asked for.
     """
     try:
         registries.parse_tags(tags)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
+    vary_resume = vary_resume or None
+    if vary_resume is not None:
+        given_vary = [
+            name for name, value in (
+                ("--vary-target", vary_target), ("--vary-distribution", vary_distribution),
+                ("--vary-low", vary_low), ("--vary-high", vary_high),
+                ("--vary-median", vary_median), ("--vary-sd", vary_sd),
+                ("--vary-skew", vary_skew), ("--vary-tailweight", vary_tailweight),
+                ("--vary-mode", vary_mode), ("--vary-outcomes", vary_outcomes),
+                ("--vary-correlate-with", vary_correlate_with),
+                ("--vary-correlation", vary_correlation),
+                ("--vary-tail-dependence", vary_tail_dependence),
+                ("--vary-ramp-months", vary_ramp_months), ("--vary-process", vary_process),
+                ("--vary-persistence", vary_persistence), ("--vary-shock-sd", vary_shock_sd),
+                ("--vary-process-start", vary_process_start),
+            ) if value not in (None, "")
+        ]
+        if rate_percent:
+            given_vary.insert(0, "RATE_PERCENT")
+        if given_vary:
+            raise click.ClickException(
+                f"--resume takes no {', '.join(given_vary)}: the row puts back what "
+                "governed the series before the --resume date"
+            )
+        vary_resume = _validate_calendar_date(vary_resume)
     given = _ask_missing_arguments(
         "set-rate", data_dir, scenario,
         date=date, series=series, rate_percent=rate_percent, aux_kind=aux_kind,
+        vary_resume=vary_resume,
     )
-    date, series, rate_percent = given["date"], given["series"], given["rate_percent"]
+    date, series = given["date"], given["series"]
     date = _validate_calendar_date(date)
+    if vary_resume is not None:
+        _write_resume_row(
+            date=date, series=series, aux_kind=aux_kind, vary_resume=vary_resume,
+            row_name=row_name, description=description, tags=tags,
+            scenario=scenario, data_dir=data_dir,
+        )
+        return
+    rate_percent = given["rate_percent"]
     micros = _percent_to_rate_micros(rate_percent)
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
@@ -4543,6 +4596,27 @@ def calendar_add_set_rate(
     click.echo(
         f"{verb} set_rate {series!r} -> {row["amount"]} on {date} "
         f"(aux_kind={aux_kind!r}) to {path}"
+    )
+
+
+def _write_resume_row(
+    *, date: str, series: str, aux_kind: str, vary_resume: str, row_name: str | None,
+    description: str, tags: str, scenario: str | None, data_dir: Path | None,
+) -> None:
+    """``calendar add set-rate --resume``: a set_rate row with no rate (#291)."""
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    row = {
+        "date": date, "kind": "set_rate", "series": series, "amount": "",
+        "params_json": json.dumps({"aux_kind": aux_kind}) if aux_kind != "rate" else "",
+        "description": description, "tags": tags, "name": row_name or "",
+        "vary_resume": vary_resume,
+    }
+    path = scenario_dir / "calendar.csv"
+    verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
+    click.echo(
+        f"{verb} set_rate {series!r} -> resume what governed before {vary_resume} "
+        f"on {date} (aux_kind={aux_kind!r}) to {path}"
     )
 
 

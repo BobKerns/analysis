@@ -41,7 +41,7 @@ def test_guide_writes_a_varying_row_and_shows_the_equivalent_command(
     test_data_dir: Path,
 ) -> None:
     result = calendar_add(answers=[
-        "set-rate", "2027-02", "", "Asset_Checking", "4.5", "", "",   # aux kind, description, tags blank
+        "set-rate", "2027-02", "", "Asset_Checking", "", "4.5", "", "",  # aux kind, resume, description, tags blank
         "y", "checking_vary", "amount", "uniform", "4", "5", "", "",  # ramp, process blank
         "n", "",                                                       # no correlation; write
     ])
@@ -57,9 +57,31 @@ def test_guide_writes_a_varying_row_and_shows_the_equivalent_command(
     assert (row["vary_low"], row["vary_high"]) == ("4%", "5%")
 
 
+def test_guide_writes_a_resume_row_without_asking_a_rate(
+    calendar_add: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+    test_data_dir: Path,
+) -> None:
+    """#291: a resume row puts back what governed the series before its
+    --resume date, so the guide asks no rate and no draw."""
+    result = calendar_add(answers=[
+        "set-rate", "2029-01-31", "", "Asset_Checking", "2028-01-31", "", "",  # description, tags blank
+        "",                                                                    # write
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "rate in percent" not in result.output
+    assert "vary this row" not in result.output
+    assert (
+        "sim calendar add set-rate 2029-01-31 Asset_Checking --resume 2028-01-31 "
+        f"--scenario retire_alice --data-dir {test_data_dir}"
+    ) in result.output
+    row = calendar_rows().query("vary_resume == '2028-01-31'").iloc[0]
+    assert (row["kind"], row["date"], row["amount"]) == ("set_rate", "2029-01-31", "")
+
+
 def test_guide_asks_only_what_the_distribution_uses(calendar_add: Callable[..., Result]) -> None:
     result = calendar_add(answers=[
-        "set-rate", "2027-02", "", "Asset_Checking", "4.5", "", "",
+        "set-rate", "2027-02", "", "Asset_Checking", "", "4.5", "", "",
         "y", "checking_vary", "amount", "uniform", "4", "5", "", "", "n", "",
     ])
 
@@ -75,7 +97,7 @@ def test_guide_writes_a_process_row(
     """ADR-006 §4a: a set-rate amount can move year by year; the shock is
     typed in percent, like the rate, and stored in micros."""
     result = calendar_add(answers=[
-        "set-rate", "2027-02", "", "Asset_Checking", "7", "", "",
+        "set-rate", "2027-02", "", "Asset_Checking", "", "7", "", "",
         "y", "stock_path", "amount", "uniform", "5", "9", "",   # ramp months blank
         "ar1", "0.2", "17", "",                                  # process, persistence, shock, start
         "n", "",
@@ -94,7 +116,7 @@ def test_guide_writes_a_process_that_starts_at_the_current_rate(
 ) -> None:
     """#280: a process may start at the rate in effect and revert from it."""
     result = calendar_add(answers=[
-        "set-rate", "2027-02", "", "Asset_Checking", "3", "", "",
+        "set-rate", "2027-02", "", "Asset_Checking", "", "3", "", "",
         "y", "cash_path", "amount", "uniform", "2", "4", "",
         "ar1", "0.6", "1", "current",
         "n", "",
@@ -157,7 +179,7 @@ def test_guide_returns_to_the_review_when_the_row_is_rejected(
     before = len(calendar_rows())
 
     result = calendar_add(answers=[
-        "set-rate", "2028-01", "", "no such series", "3.5", "", "", "n",
+        "set-rate", "2028-01", "", "no such series", "", "3.5", "", "", "n",
         "",                                   # write: rejected by the validating load
         "series", "Asset_Checking",           # fix it
         "",                                   # write again

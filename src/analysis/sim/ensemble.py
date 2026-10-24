@@ -182,13 +182,13 @@ def _shape(row: Mapping[str, Any], column: str, default: float) -> float:
     return default if value in (None, "") else float(value)
 
 
-def _row_aux_kind(row: sqlite3.Row) -> str:
+def _row_aux_kind(row: sqlite3.Row | dict[str, Any]) -> str:
     params = json.loads(row["payload_json"] or "{}")
     return params.get("aux_kind", "rate")
 
 
 def _current_rate_value(
-    con: sqlite3.Connection, row: sqlite3.Row, *, before: bool = False, what: str = "ramp",
+    con: sqlite3.Connection, row: sqlite3.Row | dict[str, Any], *, before: bool = False, what: str = "ramp",
 ) -> int:
     """The series' latest *known* rate as of ``row``'s own date: the later of
     the (not-yet-run) intent's own `aux_table` baseline and any literal
@@ -439,6 +439,80 @@ def _yearly_shocks(
                         noise[name], scores[name], None if nu is None else scale, scores[name] * scale,
                     )
     return shocks, parts, year_scales
+
+
+def _resume_governors(
+    con: sqlite3.Connection, resume_rows: list[sqlite3.Row],
+    process_names: set[str],
+) -> dict[int, str | None]:
+    """For each ``vary_resume`` row (#291), the process row it continues, or
+    ``None`` when a fixed rate governed its series the day before its
+    ``vary_resume`` date (ADR-006 §4b). Called after the date pass, before
+    any ramp or path expands, so every ``set_rate`` row seen is authored.
+
+    What governed is the latest authored ``set_rate`` row for the same
+    ``(aux_kind, series)`` before that date: a process row (a path runs
+    until the next set_rate row), another resume row (whatever it resumed),
+    or anything else, a fixed rate the amount pass reads when it gets
+    there. A member whose drawn dates put ``vary_resume`` on or after the
+    row's own date is an error: it would put back a rate from its own
+    future."""
+    governors: dict[int, str | None] = {}
+    for row in sorted(resume_rows, key=lambda r: (r["date"], r["id"])):
+        resume = row["vary_resume"]
+        if resume >= row["date"]:
+            raise EnsembleError(
+                f"row {row['name'] or row['id']!r}: its drawn dates put vary_resume "
+                f"{resume} on or after the row's own date {row['date']}; widen the "
+                "markers' gap so the episode always ends after it starts"
+            )
+        aux_kind = _row_aux_kind(row)
+        governor: str | None = None
+        for prior in con.execute(
+            "SELECT id, name, payload_json FROM calendar_event "
+            "WHERE kind = 'set_rate' AND series = ? AND date < ? ORDER BY date DESC, id DESC",
+            (row["series"], resume),
+        ):
+            if json.loads(prior["payload_json"] or "{}").get("aux_kind", "rate") != aux_kind:
+                continue
+            if prior["id"] in governors:
+                governor = governors[prior["id"]]
+            elif prior["name"] in process_names:
+                governor = prior["name"]
+            break
+        governors[row["id"]] = governor
+    return governors
+
+
+def _resolve_resume(
+    con: sqlite3.Connection, row: sqlite3.Row, governor: str | None,
+    process_rows: dict[str, tuple[tuple[float, int, str | None], list[date]]],
+    levels: dict[str, int], shocks: dict[str, dict[int, float]],
+    steps: list[date] | None,
+    record_path: Callable[[str, list[date], list[int], bool], None],
+) -> None:
+    """Resolve one ``vary_resume`` row (#291, ADR-006 §4b) in the amount
+    pass's date order. Continuing a process, it starts from the rate in
+    effect, as a ``current`` start does, and reverts to that process's drawn
+    level at its persistence with its own yearly shocks; the path is
+    recorded under the process's name. Otherwise the fixed rate in effect
+    the day before ``vary_resume`` comes back at once."""
+    if governor is None:
+        before = {**dict(row), "date": row["vary_resume"]}
+        rate = _current_rate_value(con, before, before=True, what="resume")
+        con.execute(
+            "UPDATE calendar_event SET amount = ?, vary_resume = NULL WHERE id = ?",
+            (rate, row["id"]),
+        )
+        return
+    assert steps is not None
+    (phi, sd, _start), _ = process_rows[governor]
+    start_micros = _current_rate_value(con, row, before=True, what="resume")
+    rates = process_path(levels[governor], phi, sd, [shocks[governor][s.year] for s in steps],
+                         start_micros=start_micros)
+    _apply_process(con, row, rates, steps)
+    con.execute("UPDATE calendar_event SET vary_resume = NULL WHERE id = ?", (row["id"],))
+    record_path(governor, steps, rates, True)
 
 
 @dataclass(frozen=True)
@@ -939,18 +1013,57 @@ def resolve_member(
             r["name"]: (params, _process_steps(con, r, end))
             for r in amount_rows if (params := _process_params(r)) is not None
         }
+        process_years = {name: [s.year for s in steps] for name, (_, steps) in process_rows.items()}
+        # #291: a resume row continuing a process takes that process's own
+        # yearly shocks, so a member matches its no-episode twin again once
+        # the episode's effect decays.
+        resume_rows = con.execute(
+            "SELECT * FROM calendar_event WHERE vary_resume IS NOT NULL"
+        ).fetchall()
+        governors = _resume_governors(con, resume_rows, set(process_rows))
+        resume_steps: dict[int, list[date]] = {}
+        for row in resume_rows:
+            if (governor := governors[row["id"]]) is not None:
+                resume_steps[row["id"]] = _process_steps(con, row, end)
+                process_years[governor] = sorted(
+                    set(process_years[governor]) | {s.year for s in resume_steps[row["id"]]}
+                )
         shocks, shock_parts, year_scales = _yearly_shocks(
-            links, factors, node_tails,
-            {name: [s.year for s in steps] for name, (_, steps) in process_rows.items()},
+            links, factors, node_tails, process_years,
             seed=seed, member_index=member_index,
             flat=overrides is not None or member_index == 0,
         )
 
-        path_shocks: list[tuple[str, int, float | None, float | None, float | None, float, int]] = []
+        # (node, year) -> (noise, score, scale, shock, rate)
+        path_shocks: dict[
+            tuple[str, int], tuple[float | None, float | None, float | None, float, int]
+        ] = {}
+        levels: dict[str, int] = {}
+
+        def record_path(name: str, steps: list[date], rates: list[int], current: bool) -> None:
+            parts = shock_parts[name]
+            for k, (step, rate) in enumerate(zip(steps, rates, strict=True)):
+                # A year a resumed path shares with its process's earlier
+                # stretch keeps the earlier entry: that year's rate began there.
+                path_shocks.setdefault((name, step.year), (
+                    parts[step.year].noise, parts[step.year].score, parts[step.year].scale,
+                    # A current start's year 0 takes no shock; its tree's
+                    # draws for that year still stand for the other rows.
+                    0.0 if k == 0 and current else parts[step.year].shock,
+                    rate,
+                ))
+
         # In date order (#280): a process row starting from the current rate
-        # reads an earlier row for its series, varying or not, once resolved.
-        # Each row draws on its own stream, so the order moves no draw.
-        for row in amount_rows:
+        # reads an earlier row for its series, varying or not, once resolved,
+        # and so does a resume row (#291). Each row draws on its own stream,
+        # so the order moves no draw.
+        for row in sorted([*amount_rows, *resume_rows], key=lambda r: (r["date"], r["id"])):
+            if row["vary_resume"] is not None:
+                _resolve_resume(
+                    con, row, governors[row["id"]], process_rows, levels, shocks,
+                    resume_steps.get(row["id"]), record_path,
+                )
+                continue
             dist = build_distribution(row, "amount")
             value, quantile, u = _resolve_value(
                 row, dist, as_int=False, overrides=overrides, seed=seed, member_index=member_index,
@@ -984,16 +1097,8 @@ def resolve_member(
                 rates = process_path(target, phi, sd, [yearly[s.year] for s in steps],
                                      start_micros=start_micros)
                 _apply_process(con, row, rates, steps)
-                parts = shock_parts[row["name"]]
-                path_shocks.extend(
-                    (row["name"], step.year, parts[step.year].noise, parts[step.year].score,
-                     parts[step.year].scale,
-                     # A current start's year 0 takes no shock; its tree's
-                     # draws for that year still stand for the other rows.
-                     0.0 if k == 0 and start_micros is not None else parts[step.year].shock,
-                     rate)
-                    for k, (step, rate) in enumerate(zip(steps, rates, strict=True))
-                )
+                levels[row["name"]] = target
+                record_path(row["name"], steps, rates, start_micros is not None)
             else:
                 con.execute(
                     "UPDATE calendar_event SET amount = ?, vary_distribution = NULL "
@@ -1042,7 +1147,7 @@ def resolve_member(
         con.executemany(
             "INSERT INTO ensemble_path_shock(node, year, noise, score, scale, shock, rate) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            path_shocks,
+            [(node, year, *rest) for (node, year), rest in path_shocks.items()],
         )
         con.commit()
     finally:

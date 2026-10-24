@@ -1255,7 +1255,7 @@ _MONTH_COLUMNS: dict[str, tuple[str, ...]] = {
     "scenario.csv": ("start", "end"),
     "accounts.csv": ("opened", "closed"),
     "scheduled.csv": ("start", "end", "base_date"),
-    "calendar.csv": ("date", "param_date"),
+    "calendar.csv": ("date", "param_date", "vary_resume"),
     "allocations.csv": ("as_of",),
 }
 """Per-file columns that name a month (#34): ``YYYY-MM`` or ``YYYY-MM-DD``,
@@ -1280,7 +1280,8 @@ def _normalize_month_columns(
             raw = row.get(col) or ""
             if not raw:
                 continue
-            if filename == "calendar.csv" and col == "date" and (rel := parse_relative_date(raw)):
+            if (filename == "calendar.csv" and col in registries.RELATIVE_DATE_COLUMNS
+                    and (rel := parse_relative_date(raw))):
                 # Relative to a date_marker (#281), resolved by
                 # _resolve_relative_dates. Canonical here, before the lineage
                 # merge keys rows by date, so start+12m and start+1y are one date.
@@ -3078,6 +3079,8 @@ def _validate_calendar(
             _validate_swap_aux_table_row(row, where, issues)
         elif kind == registries.DATE_MARKER_KIND:
             _validate_date_marker(row, where, issues)
+        if (row.get("vary_resume") or "").strip():
+            _validate_resume(row, where, kind, issues)
         params_json = row.get("params_json") or "{}"
         try:
             if not isinstance(json.loads(params_json), dict):
@@ -3102,10 +3105,43 @@ def _validate_calendar(
         _validate_calendar_vary(row, where, kind, name, issues)
 
 
+_RESUME_FORBIDDEN_COLUMNS: tuple[str, ...] = (
+    "amount", "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_median",
+    "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months", "vary_outcomes",
+    "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start",
+    "vary_correlate_with", "vary_correlation", "vary_tail_dependence",
+)
+"""Columns a ``vary_resume`` row (#291) leaves blank: what it puts back is
+whatever governed its series before, so it has no rate, draw or process of
+its own."""
+
+
+def _validate_resume(row: dict[str, str], where: str, kind: str, issues: list[str]) -> None:
+    """A ``vary_resume`` row (#291) is a ``set_rate`` row with no rate or
+    vary_* values of its own, dated after the date it resumes from. Whether
+    its series has a rate before that date is checked with the series."""
+    where = f"{where} ({(row.get('name') or '').strip() or '?'})"
+    if kind != "set_rate":
+        issues.append(f"{where}: vary_resume is only read on a set_rate row (got kind='{kind}')")
+        return
+    stray = [c for c in _RESUME_FORBIDDEN_COLUMNS if (row.get(c) or "").strip()]
+    if stray:
+        issues.append(
+            f"{where}: a vary_resume row has no {', '.join(stray)} -- it puts back what "
+            "governed its series before vary_resume, so it has no rate or draw of its own"
+        )
+    resume, when = (row.get("vary_resume") or "").strip(), (row.get("date") or "").strip()
+    if resume and when and resume >= when:
+        issues.append(
+            f"{where}: vary_resume {resume} must come before the row's own date {when}: "
+            "the row puts back what was in effect the day before vary_resume"
+        )
+
+
 _MARKER_FORBIDDEN_COLUMNS: tuple[str, ...] = (
     "scheduled_name", "account_1", "lot_1", "account_2", "lot_2", "series", "amount",
     "param_date", "tax_character", "params_json", "vary_ramp_months",
-    "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start",
+    "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start", "vary_resume",
 )
 """Columns a ``date_marker`` row (#281) must leave blank: it is a name and a
 date, which may vary and correlate like any date row's, and nothing else."""
@@ -3877,6 +3913,14 @@ def _validate_series_references(
                 f"{where}: vary_process_start 'current' needs a rate in effect before "
                 f"{row.get('date', '')} -- no series/{aux_kind}__{series}.csv entry before "
                 "it, and no earlier set_rate row with a fixed date for that series"
+            )
+        if ((aux_kind, series) in supplied and (resume := (row.get("vary_resume") or "").strip())
+                and not _rate_in_effect_before({"date": resume}, aux_kind, series,
+                                               aux_rows, calendar_rows)):
+            issues.append(
+                f"{where}: vary_resume {resume} needs a rate in effect before it -- no "
+                f"series/{aux_kind}__{series}.csv entry before it, and no earlier set_rate "
+                "row with a fixed date for that series"
             )
         if (aux_kind, series) in supplied and (aux_kind, series) not in demanded:
             unused_warnings.append(
@@ -4688,9 +4732,9 @@ def _write_intent(
             "vary_target, vary_distribution, vary_low, vary_high, vary_median, "
             "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months, "
             "vary_correlate_with, vary_correlation, vary_tail_dependence, "
-            "vary_process, vary_persistence, vary_shock_sd, vary_process_start, "
+            "vary_process, vary_persistence, vary_shock_sd, vary_process_start, vary_resume, "
             "vary_outcomes, date_refs_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -4719,6 +4763,7 @@ def _write_intent(
                 _opt_float(ce.get("vary_persistence")),
                 _opt_int(ce.get("vary_shock_sd")),
                 ce.get("vary_process_start") or None,
+                ce.get("vary_resume") or None,
                 ce.get("vary_outcomes") or None,
                 ce.get(DATE_REFS) or None,
             ),

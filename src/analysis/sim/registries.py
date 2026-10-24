@@ -131,6 +131,8 @@ INERT_CALENDAR_KINDS: frozenset[str] = frozenset({LATENT_FACTOR_KIND, DATE_MARKE
 RELATIVE_DATE_COLUMNS: dict[str, Literal["low", "high", "point"] | None] = {
     "date": None, "vary_low": "low", "vary_high": "high",
     "vary_median": "point", "vary_mode": "point",
+    # #291: the date before which a return row finds what to resume.
+    "vary_resume": None,
 }
 
 # ADR-006 §4a (#115): the year-by-year processes a varying set_rate row may
@@ -486,6 +488,10 @@ CALENDAR_HEADER: tuple[str, ...] = (
     # level -- the process (`ar1`), its persistence phi, and the yearly shock
     # size in micros; #280: where the path starts (blank, or `current`).
     "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start",
+    # #291: on a set_rate row with no rate of its own, a date: the row puts
+    # back whatever governed its series the day before it (a process resumes,
+    # a fixed rate returns).
+    "vary_resume",
     # ADR-008: this row's (or latent factor's) parent in a correlation tree,
     # and the correlation rho between their normal scores; on a tree's root,
     # the Student-t copula's degrees of freedom for the whole tree (#68).

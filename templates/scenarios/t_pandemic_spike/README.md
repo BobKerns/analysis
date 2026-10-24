@@ -13,7 +13,7 @@ A mix-in for a scenario on the templates (`base:t_pandemic_spike`, or with an en
 - From the start until the end, prices hold at a level drawn once per member: CPI-U at 5.6% (from 3.5% to 8%), shelter 5.9%, food 6.4%, energy 10.8% (up to 25%), services 5.5%, apparel 3.2% and auto insurance 10% (up to 18%). Three years is too short to fit a persistence, so these are held rates, not processes.
 - Medical care, prescriptions, the Part B premium and tuition keep their long-run paths. They ran below core in 2021–2023 (medical care at 2.2%, against 5.0%), which isn't safe to count on, so the template doesn't model it either way.
 - A year after the start, rates rise to meet the spike, held for 12 months: US stocks fall 18% (from −30% to −5%), international stocks 16%, and bonds 12% (from −20% to −3%), together, as in 2022. Cash earns 2.5%.
-- Two years after the start, the market series return to their long-run paths; at the end, the price series do, with values copied from the `_ensemble` templates (until #291).
+- Two years after the start, the market series go back to what governed them before the spike; at the end, the price series do (`vary_resume`): the long-run process, resumed with its own shocks, or the series file's rate.
 - The engine's rates are yearly, so a crash inside one year (2020's −34% in a month, recovered by December) doesn't show.
 
 Place the episode by overriding the markers by name.
