@@ -21,3 +21,9 @@ A template scenario: data repos read it from the analysis code repository's `tem
       - **`t_market_series`** (this one): long-run cash, bond and stock rates
         - [`t_market_ensemble`](../t_market_ensemble/README.md): year-by-year market paths
           - [`t_market_current`](../t_market_current/README.md): today's cash yield, held, then returning
+
+Episodes, each a mix-in building on `t_inflation_series` and `t_market_series`:
+
+- [`t_great_inflation`](../t_great_inflation/README.md): a dysfunction: inflation runs for years (1966–1982)
+- [`t_financial_crisis`](../t_financial_crisis/README.md): a fiscal shock: a crash, then years of near-zero rates (2008–2019)
+- [`t_pandemic_spike`](../t_pandemic_spike/README.md): an external shock: a short price spike, then rate hikes (2021–2023)

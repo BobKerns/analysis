@@ -19,9 +19,11 @@ from analysis.sim.ensemble import process_path, resolve_member
 from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, load_order, scenario_dir
 from analysis.sim.loader import list_scenario_names, load_scenario
 
+EPISODES = ["t_great_inflation", "t_financial_crisis", "t_pandemic_spike"]
 TEMPLATES = [
     "t_empty", "t_inflation_factors", "t_inflation_series", "t_inflation_ensemble", "t_inflation_current",
     "t_market_factors", "t_market_series", "t_market_ensemble", "t_market_current",
+    *EPISODES,
 ]
 
 
@@ -220,3 +222,86 @@ def test_a_scenario_or_ensemble_can_be_created_from_a_template(test_data_dir: Pa
     assert ensemble.exit_code == 0, ensemble.output
     assert {"kid", "ens"} <= set(list_scenario_names(test_data_dir))
     assert not any((test_data_dir / "scenarios").glob("t_*"))
+
+
+def _episode_rows(member: Path) -> tuple[dict[str, str], list[tuple[str, str, str]]]:
+    con = sqlite3.connect(member)
+    try:
+        markers = dict(con.execute("SELECT name, date FROM calendar_event WHERE kind = 'date_marker'"))
+        rows = con.execute("SELECT name, series, date FROM calendar_event WHERE kind = 'set_rate' "
+                           "AND date_refs_json IS NOT NULL").fetchall()
+    finally:
+        con.close()
+    return markers, rows
+
+
+@pytest.mark.parametrize("episode", EPISODES)
+@pytest.mark.parametrize("member_index", [0, 1, 2])
+def test_an_episode_mixed_into_base_moves_with_its_drawn_start(
+    template_data_dir: Path, tmp_path: Path, derive_template_scenario, episode: str, member_index: int,
+) -> None:
+    """#282: every row of an episode is dated from its start marker (drawn
+    from 2031 to 2064, after normalization_start) or its end marker (a
+    range after the start), so one draw places the whole episode."""
+    derive_template_scenario("with_episode", f"base:{episode}")
+    recipe = load_scenario(template_data_dir, "with_episode", intent_dir=tmp_path / "intent",
+                           compute_stamps=False, allow_dirty_data=True).intent_path
+    member = resolve_member(recipe, tmp_path / f"member_{member_index:04d}.sqlite3", seed=42,
+                            member_index=member_index, member_count=20, recipe_tree_id="deadbeef")
+    markers, rows = _episode_rows(member)
+    ep = episode.removeprefix("t_")
+    start, end = date.fromisoformat(markers[f"{ep}_start"]), date.fromisoformat(markers[f"{ep}_end"])
+    assert date(2031, 1, 1) <= start <= date(2064, 12, 31)
+    assert start < end
+    allowed = {place_month(start, months).isoformat() for months in (0, 12, 24)} | {place_month(end, 0).isoformat()}
+    assert rows and {when for _, _, when in rows} <= allowed
+    returns = {series for name, series, _ in rows if name.endswith("_return")}
+    changed = {series for name, series, _ in rows if not name.endswith("_return")}
+    assert returns == changed, "every series an episode changes goes back to its long-run path"
+
+
+def test_the_great_inflation_runs_at_its_episode_level_in_member_zero(
+    template_data_dir: Path, tmp_path: Path, derive_template_scenario,
+) -> None:
+    """Member 0 places the episode at the markers' medians and climbs from
+    the rate in effect toward CPI-U's 1966-1982 rate, 6.8%, until the end."""
+    derive_template_scenario("with_episode", "base:t_great_inflation")
+    recipe = load_scenario(template_data_dir, "with_episode", intent_dir=tmp_path / "intent",
+                           compute_stamps=False, allow_dirty_data=True).intent_path
+    member = resolve_member(recipe, tmp_path / "member_0000.sqlite3", seed=42, member_index=0,
+                            member_count=1, recipe_tree_id="deadbeef")
+    con = sqlite3.connect(member)
+    try:
+        cpi = [(d, int(a)) for d, a in con.execute(
+            "SELECT date, amount FROM calendar_event WHERE kind = 'set_rate' AND series = 'cpi' "
+            "AND date >= '2048-01-31' ORDER BY date, id")]
+    finally:
+        con.close()
+    assert cpi[0] == ("2048-01-31", 30_000), "starts at the long-run series file's 3%"
+    episode = [a for d, a in cpi if d < "2060-04-30"]
+    assert len(episode) == 13, "from January 2048 to the end marker's median, April 2060"
+    assert episode == process_path(68_000, 0.55, 26_000, [0.0] * 13, start_micros=30_000)
+
+
+def test_a_crash_year_lasts_twelve_months(
+    template_data_dir: Path, tmp_path: Path, derive_template_scenario,
+) -> None:
+    """Member 0 crashes at the triangle's median, -34.6%. The recovery after
+    t_financial_crisis's crash year has no persistence, so it starts at its
+    own level: a ``current`` start would repeat the crash rate a second
+    year."""
+    derive_template_scenario("with_episode", "base:t_financial_crisis")
+    recipe = load_scenario(template_data_dir, "with_episode", intent_dir=tmp_path / "intent",
+                           compute_stamps=False, allow_dirty_data=True).intent_path
+    member = resolve_member(recipe, tmp_path / "member_0000.sqlite3", seed=42, member_index=0,
+                            member_count=1, recipe_tree_id="deadbeef")
+    con = sqlite3.connect(member)
+    try:
+        stock = [(d, int(a)) for d, a in con.execute(
+            "SELECT date, amount FROM calendar_event WHERE kind = 'set_rate' AND series = 'stock_us' "
+            "AND date >= '2048-01-31' ORDER BY date, id")]
+    finally:
+        con.close()
+    crash_median = -150_000 - round((0.5 * 350_000 * 220_000) ** 0.5)  # triangular -50% / -37% / -15%
+    assert stock[0][0] == "2048-01-31" and stock[0][1] == pytest.approx(crash_median, abs=1)
+    assert stock[1:3] == [("2049-01-31", 110_000), ("2050-01-31", 110_000)]

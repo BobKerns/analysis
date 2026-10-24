@@ -703,19 +703,14 @@ def guide_chains(
     return test_data_dir
 
 
-@pytest.fixture(scope="function")
-def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
-    """Create a scenario in the private data copy deriving from ``parents``
-    (a ``parent_scenario`` value: one name, or colon-separated mix-ins after
-    it). It overrides nothing beyond ``files``, a {relative path: text} map
-    written into its folder, and ``fields``, its own scenario.csv values."""
+def _deriver(scenarios_dir: Path) -> Callable[..., Path]:
     def _derive(
         name: str, parents: str, files: dict[str, str] | None = None,
         **fields: str,
     ) -> Path:
         unknown = set(fields) - set(SCENARIO_HEADER)
         assert not unknown, f"unknown scenario.csv columns: {sorted(unknown)}"
-        folder = test_scenarios_dir / name
+        folder = scenarios_dir / name
         folder.mkdir()
         row = {**dict.fromkeys(SCENARIO_HEADER, ""), **fields,
                "name": name, "parent_scenario": parents}
@@ -728,6 +723,22 @@ def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
             path.write_text(text, encoding="utf-8")
         return folder
     return _derive
+
+
+@pytest.fixture(scope="function")
+def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
+    """Create a scenario in the private data copy deriving from ``parents``
+    (a ``parent_scenario`` value: one name, or colon-separated mix-ins after
+    it). It overrides nothing beyond ``files``, a {relative path: text} map
+    written into its folder, and ``fields``, its own scenario.csv values."""
+    return _deriver(test_scenarios_dir)
+
+
+@pytest.fixture(scope="function")
+def derive_template_scenario(template_data_dir: Path) -> Callable[..., Path]:
+    """``derive_scenario`` for ``template_data_dir``: a scenario on the
+    template ``base``, with template mix-ins."""
+    return _deriver(template_data_dir / "scenarios")
 
 
 @pytest.fixture(scope="session")
