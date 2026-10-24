@@ -8,4 +8,16 @@ Builds on `t_market_series`.
 
 One `ar1` process row per market series, from 2027-01. Stocks and bonds have no persistence, so each year is a fresh draw around the level; cash yields are persistent. An ensemble of 80 members.
 
-A template scenario: data repos read it from the analysis code repository's `templates/scenarios/` unless they have a scenario of the same name, which replaces it whole. See docs/guides/historical-calibration.md, "Template scenarios".
+A template scenario: data repos read it from the analysis code repository's `templates/scenarios/` unless they have a scenario of the same name, which replaces it whole. See [Template scenarios](../../../docs/guides/historical-calibration.md#template-scenarios) in the historical calibration guide.
+
+## The templates
+
+- [`t_empty`](../t_empty/README.md): nothing; the root
+  - [`t_inflation_factors`](../t_inflation_factors/README.md): inflation's latent factors
+    - [`t_inflation_series`](../t_inflation_series/README.md): long-run inflation rates
+      - [`t_inflation_ensemble`](../t_inflation_ensemble/README.md): year-by-year inflation paths
+        - [`t_inflation_current`](../t_inflation_current/README.md): today's inflation rates, held, then returning
+    - [`t_market_factors`](../t_market_factors/README.md): interest-rate and stock factors
+      - [`t_market_series`](../t_market_series/README.md): long-run cash, bond and stock rates
+        - **`t_market_ensemble`** (this one): year-by-year market paths
+          - [`t_market_current`](../t_market_current/README.md): today's cash yield, held, then returning
