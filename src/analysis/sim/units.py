@@ -139,7 +139,7 @@ def calendar_row_to_storage(row: MutableMapping[str, str]) -> list[str]:
     doesn't parse; that cell is left as it was.
 
     The cells are the row's `amount`, its `vary_*` bounds when it varies its
-    amount, and `vary_innovation_sd` (a yearly rate shock, so a percent)."""
+    amount, and `vary_shock_sd` (a yearly rate shock, so a percent)."""
     kind = (row.get("kind") or "").strip()
     unit = CALENDAR_AMOUNT_UNITS.get(kind)
     cells: list[tuple[str, str]] = []
@@ -147,7 +147,7 @@ def calendar_row_to_storage(row: MutableMapping[str, str]) -> list[str]:
         cells.append(("amount", unit))
         if (row.get("vary_target") or "").strip() == "amount":
             cells.extend((col, unit) for col in _VARY_AMOUNT_COLUMNS)
-    cells.append(("vary_innovation_sd", "percent"))
+    cells.append(("vary_shock_sd", "percent"))
     problems: list[str] = []
     for col, cell_unit in cells:
         raw = (row.get(col) or "").strip()

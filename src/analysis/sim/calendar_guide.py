@@ -292,8 +292,8 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
                      "0 makes every year independent.",
             ),
             Field(
-                "vary_innovation_sd", "yearly shock (sd)", type="value",
-                option="--vary-innovation-sd", applies=process_set,
+                "vary_shock_sd", "yearly shock (sd)", type="value",
+                option="--vary-shock-sd", applies=process_set,
                 help="The size of one year's shock, in the rate's own unit.",
             ),
             Field(

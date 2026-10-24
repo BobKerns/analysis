@@ -2896,7 +2896,7 @@ _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
     "name", "vary_target", "vary_distribution", "vary_low", "vary_high",
     "vary_median", "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months",
     "vary_correlate_with", "vary_correlation", "vary_tail_dependence",
-    "vary_process", "vary_persistence", "vary_innovation_sd", "vary_process_start",
+    "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start",
     "vary_outcomes",
 })
 
@@ -3374,7 +3374,7 @@ def _vary_process_options(f):
              "drawn level at --vary-persistence. Left out, year 0 is already a draw.",
     )(f)
     f = click.option(
-        "--vary-innovation-sd", default=None,
+        "--vary-shock-sd", default=None,
         help="With --vary-process: one year's shock, in percent like the rate (e.g. 17).",
     )(f)
     f = click.option(
@@ -3391,28 +3391,28 @@ def _vary_process_options(f):
 
 
 def _process_fields(
-    vary_process: str | None, vary_persistence: str | None, vary_innovation_sd: str | None,
+    vary_process: str | None, vary_persistence: str | None, vary_shock_sd: str | None,
     *, vary_target: str, vary_ramp_months: int | None,
     amount_unit: str | None, vary_process_start: str | None = None,
 ) -> dict[str, str]:
-    """``vary_process``/``vary_persistence``/``vary_innovation_sd``/
+    """``vary_process``/``vary_persistence``/``vary_shock_sd``/
     ``vary_process_start`` cells (ADR-006 §4a), checked as far as the row
     alone allows; the level's bound, a tree's nu and a rate for a
     ``current`` start to start from are the validating load's job."""
     if vary_process is None:
-        if (vary_persistence is not None or vary_innovation_sd is not None
+        if (vary_persistence is not None or vary_shock_sd is not None
                 or vary_process_start is not None):
             raise click.ClickException(
-                "--vary-persistence, --vary-innovation-sd and --vary-process-start "
+                "--vary-persistence, --vary-shock-sd and --vary-process-start "
                 "go with --vary-process")
         return {}
     if vary_target != "amount" or amount_unit is None:
         raise click.ClickException("--vary-process needs --vary-target amount")
     if vary_ramp_months is not None:
         raise click.ClickException("--vary-process and --vary-ramp-months don't combine")
-    if vary_persistence is None or vary_innovation_sd is None:
+    if vary_persistence is None or vary_shock_sd is None:
         raise click.ClickException(
-            "--vary-process requires --vary-persistence and --vary-innovation-sd")
+            "--vary-process requires --vary-persistence and --vary-shock-sd")
     try:
         phi = float(vary_persistence)
     except ValueError:
@@ -3421,12 +3421,12 @@ def _process_fields(
     if not 0.0 <= phi < 1.0:
         raise click.ClickException(
             f"--vary-persistence must be at least 0 and below 1 (got {vary_persistence})")
-    sd = _AMOUNT_PARSERS[amount_unit](vary_innovation_sd)
+    sd = _AMOUNT_PARSERS[amount_unit](vary_shock_sd)
     if sd <= 0:
         raise click.ClickException(
-            f"--vary-innovation-sd must be positive (got {vary_innovation_sd})")
+            f"--vary-shock-sd must be positive (got {vary_shock_sd})")
     return {"vary_process": vary_process, "vary_persistence": vary_persistence,
-            "vary_innovation_sd": units.format_stored(amount_unit, sd),
+            "vary_shock_sd": units.format_stored(amount_unit, sd),
             "vary_process_start": vary_process_start or ""}
 
 
@@ -3611,7 +3611,7 @@ def _vary_row_fields(
     amount_unit: str | None,
     vary_process: str | None = None,
     vary_persistence: str | None = None,
-    vary_innovation_sd: str | None = None,
+    vary_shock_sd: str | None = None,
     vary_process_start: str | None = None,
 ) -> dict[str, str]:
     """ADR-006: the ``vary_*`` CSV cells for one calendar.csv row, from CLI options.
@@ -3628,7 +3628,7 @@ def _vary_row_fields(
             vary_target, vary_low, vary_high, vary_median, vary_sd,
             vary_skew, vary_tailweight, vary_mode, vary_outcomes, vary_ramp_months is not None,
             vary_correlate_with, vary_correlation, vary_tail_dependence,
-            vary_process, vary_persistence, vary_innovation_sd, vary_process_start,
+            vary_process, vary_persistence, vary_shock_sd, vary_process_start,
         ]):
             raise click.ClickException("--vary-* options require --vary-distribution")
         return {"name": row_name or ""}
@@ -3716,7 +3716,7 @@ def _vary_row_fields(
         **_correlation_fields(vary_correlate_with, vary_correlation, vary_tail_dependence),
         "vary_ramp_months": str(vary_ramp_months) if vary_ramp_months is not None else "",
         **_process_fields(
-            vary_process, vary_persistence, vary_innovation_sd, vary_target=vary_target,
+            vary_process, vary_persistence, vary_shock_sd, vary_target=vary_target,
             vary_ramp_months=vary_ramp_months, amount_unit=amount_unit,
             vary_process_start=vary_process_start,
         ),
@@ -3951,7 +3951,7 @@ def _calendar_row_answers(row: dict[str, str]) -> tuple[calendar_guide.KindSpec,
         "vary_ramp_months": row["vary_ramp_months"],
         "vary_process": row["vary_process"],
         "vary_persistence": row["vary_persistence"],
-        "vary_innovation_sd": row["vary_innovation_sd"],
+        "vary_shock_sd": row["vary_shock_sd"],
         "vary_process_start": row["vary_process_start"],
         "_correlate": "y" if correlated else "n",
         "vary_correlate_with": row["vary_correlate_with"],
@@ -4449,7 +4449,7 @@ def calendar_add_set_rate(
     vary_correlate_with: str | None, vary_correlation: str | None,
     vary_tail_dependence: str | None,
     vary_ramp_months: int | None,
-    vary_process: str | None, vary_persistence: str | None, vary_innovation_sd: str | None,
+    vary_process: str | None, vary_persistence: str | None, vary_shock_sd: str | None,
     vary_process_start: str | None,
 ) -> None:
     """Append a set_rate event: SERIES starts earning RATE_PERCENT (e.g. 4.5) from DATE.
@@ -4477,7 +4477,7 @@ def calendar_add_set_rate(
         vary_tail_dependence=vary_tail_dependence,
         vary_ramp_months=vary_ramp_months, amount_unit="percent",
         vary_process=vary_process, vary_persistence=vary_persistence,
-        vary_innovation_sd=vary_innovation_sd, vary_process_start=vary_process_start,
+        vary_shock_sd=vary_shock_sd, vary_process_start=vary_process_start,
     )
 
     data_dir_p = _resolve_data_dir(data_dir)

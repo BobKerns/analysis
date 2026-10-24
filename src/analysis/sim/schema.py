@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 45
+SCHEMA_VERSION = 46
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -234,7 +234,7 @@ CREATE TABLE calendar_event (
     -- set_rate rows by the vary step, as a ramp is.
     vary_process        TEXT,
     vary_persistence    REAL,
-    vary_innovation_sd  INTEGER,
+    vary_shock_sd  INTEGER,
     -- #280: where the path starts: NULL for a stationary draw around the
     -- level, 'current' for the rate in effect just before the row's date.
     vary_process_start  TEXT,
