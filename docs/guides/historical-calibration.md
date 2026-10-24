@@ -321,10 +321,9 @@ sim calendar add set-rate medical_episode_start+5y medical 4.2 --aux-kind inflat
   on a return row whose date varies), for an episode whose length is
   uncertain as well.
 
-Separate episode scenarios, one per historical pattern (a Great
-Inflation-style stretch, a short post-pandemic spike), can each be a mix-in
-on the same base, so `base:great_inflation` and `base:pandemic_spike` share
-everything else.
+The templates ship three episodes built this way, one per historical
+pattern, each a mix-in on the same base, so `base:t_great_inflation` and
+`base:t_pandemic_spike` share everything else: see [Episodes](#episodes).
 
 ## Inflation metrics compared
 
@@ -517,6 +516,12 @@ flowchart TB
     mf --> ms(["t_market_series"])
     ms --> me(["t_market_ensemble"])
     me --> mc(["t_market_current"])
+    is --> gi(["t_great_inflation"])
+    is --> fc(["t_financial_crisis"])
+    is --> ps(["t_pandemic_spike"])
+    ms -.-> gi
+    ms -.-> fc
+    ms -.-> ps
 ```
 
 `t_empty` at the root is what its name says: no accounts, rules, rates or
@@ -539,6 +544,10 @@ above:
 - **`_current`**: a thin layer that starts the persistent series at
   today's rates, holds them, and then lets each return to its long-run
   level.
+
+Three **episodes** build on both `_series` layers (the dotted lines are
+mix-ins), so mixing one into a scenario on the templates adds only the
+episode: see [Episodes](#episodes).
 
 **The market factors sit under the inflation factors.** `t_market_factors`
 inherits `t_inflation_factors`, so markets and inflation share one
@@ -791,6 +800,51 @@ long run](#todays-rate-returning-to-the-long-run)):
   within a year, and energy's latest 12 months (16%) are a one-year spike
   that holding for three years would turn into a trend. Bonds and stocks
   likewise have no current start.
+
+### Episodes
+
+Three templates add a stretch of trouble on top of the long-run rates.
+Between them they cover three different ways things go wrong, and each is
+a starting point for others:
+
+| Template | Kind | History | Length |
+| --- | --- | --- | --- |
+| [`t_great_inflation`](../../templates/scenarios/t_great_inflation/README.md) | dysfunction: policy lets inflation run | 1966–1982 | 8 to 17 years, most likely 12 |
+| [`t_financial_crisis`](../../templates/scenarios/t_financial_crisis/README.md) | fiscal shock: a crash, then near-zero rates | 2008–2019 | 5 to 10 years, most likely 7 |
+| [`t_pandemic_spike`](../../templates/scenarios/t_pandemic_spike/README.md) | external shock: a price spike, then rate hikes | 2021–2023 | 2 to 4 years, most likely 3 |
+
+Each one's README lists its rates, taken from the
+[historical episodes](#historical-episodes) below, or inferred where a
+series has no history for the period.
+
+- **Placing one.** Each has a `<episode>_start` date marker, uniform from
+  2031 (after `normalization_start`'s latest date, so the `_current`
+  rows never cut an episode short) to 2064, and an `<episode>_end` marker
+  dated from it. Past a scenario's end, the episode drops out of that
+  member, so a scenario ending in 2060 has no episode in about one member
+  in nine. The base case is the markers' medians: an episode starting
+  late 2047. That's a default to drop in. To look at an episode in a
+  particular period, override the start marker by name in the scenario,
+  with a fixed date or a narrower range; every row of the episode moves
+  with it.
+- **What a member runs.** A persistent series starts its episode path
+  from the rate in effect and climbs at its persistence
+  (`vary_process_start` `current`). A series with no persistence (stocks,
+  bonds, energy) starts at its new level at once, so a crash year lasts
+  exactly 12 months. A held row (a crash or rate-shock year, the
+  pandemic's prices) draws one value per member.
+- **The way back.** At the end marker, every series the episode changed
+  returns to its long-run path, with the `_ensemble` templates' values
+  copied in. A scenario that changes a long-run level must change it in the
+  episode too, until a return row can resume the earlier process
+  ([#291](https://github.com/BobKerns/analysis/issues/291)).
+- **More than one.** Two episodes mixed into one scenario work when their
+  markers keep them apart. Where they overlap, each series follows the
+  latest row, so one episode cuts into the other. To compare kinds of
+  trouble, compare `base:t_great_inflation` with
+  `base:t_financial_crisis`.
+- **Within a year.** Rates are yearly, so a crash inside one year (2020's
+  −34% in a month, recovered by December) doesn't show.
 
 ## Historical episodes
 
