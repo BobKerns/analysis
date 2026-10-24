@@ -500,8 +500,8 @@ ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal", "triangular",
 RENAMED_CALENDAR_COLUMNS: dict[str, tuple[str, str]] = {
     "vary_mean": ("vary_median", "now the median of the truncated distribution, so the "
                                  "base case is exactly the authored value"),
-    "vary_innovation_sd": ("vary_shock_sd", "the same yearly shock size, under the name "
-                                            "analysis historical's Shock SD gives it"),
+    "vary_innovation_sd": ("vary_shock_sd", "the same yearly shock size; `analysis historical` "
+                                            "calls it Shock SD"),
 }
 
 # ADR-006 §9: `sim ensemble create`'s default scenario.meta_json.ensemble_size
