@@ -2885,7 +2885,9 @@ _VARY_SHAPE_COLUMNS = ("vary_skew", "vary_tailweight")
 _VARY_OUTCOMES = "vary_outcomes"
 """A `discrete` row's weighted outcomes (#165): parsed whole, not as a bound."""
 
-_VARY_PROCESS_COLUMNS = ("vary_process", "vary_persistence", "vary_shock_sd")
+_VARY_PROCESS_COLUMNS = (
+    "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start",
+)
 """A set_rate row's year-by-year path (ADR-006 §4a, #115)."""
 
 _MINUS_100_PERCENT_MICROS = -1_000_000
@@ -3176,12 +3178,24 @@ def _validate_vary_process(
     process = (row.get("vary_process") or "").strip()
     raw_phi = (row.get("vary_persistence") or "").strip()
     raw_sd = (row.get("vary_shock_sd") or "").strip()
+    start = (row.get("vary_process_start") or "").strip()
     if not process:
-        if raw_phi or raw_sd:
+        given = [column for column, raw in (
+            ("vary_persistence", raw_phi), ("vary_shock_sd", raw_sd),
+            ("vary_process_start", start),
+        ) if raw]
+        if given:
             issues.append(
-                f"{where}: vary_persistence/vary_shock_sd are only read with vary_process"
+                f"{where}: {'/'.join(given)} {'are' if len(given) > 1 else 'is'} "
+                "only read with vary_process"
             )
         return
+    if start and start not in registries.VARY_PROCESS_STARTS:
+        issues.append(
+            f"{where}: unknown vary_process_start '{start}' "
+            f"(one of {sorted(registries.VARY_PROCESS_STARTS)}, or blank for a "
+            "stationary start)"
+        )
     if process not in registries.VARY_PROCESSES:
         issues.append(
             f"{where}: unknown vary_process '{process}' "
@@ -3662,7 +3676,14 @@ def _validate_series_references(
                 "that (aux_kind, series) pair in this scenario or a parent "
                 f"(e.g. series/{aux_kind}__{series}.csv)"
             )
-        elif (aux_kind, series) not in demanded:
+        elif ((row.get("vary_process_start") or "").strip() == "current"
+              and not _rate_in_effect_before(row, aux_kind, series, aux_rows, calendar_rows)):
+            issues.append(
+                f"{where}: vary_process_start 'current' needs a rate in effect before "
+                f"{row.get('date', '')} -- no series/{aux_kind}__{series}.csv entry before "
+                "it, and no earlier set_rate row with a fixed date for that series"
+            )
+        if (aux_kind, series) in supplied and (aux_kind, series) not in demanded:
             unused_warnings.append(
                 f"{where}: set_rate series '{series}' under "
                 f"aux_kind '{aux_kind}' is never read by any scheduled.csv "
@@ -3670,6 +3691,34 @@ def _validate_series_references(
                 "cap or account growth series -- this value has no effect "
                 "here, unless a scenario inheriting from this one reads it"
             )
+
+
+def _rate_in_effect_before(
+    row: dict[str, str], aux_kind: str, series: str,
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    calendar_rows: list[dict[str, str]],
+) -> bool:
+    """Whether something supplies a process row's ``current`` start (#280):
+    an entry of its series file dated before the row, or an earlier
+    ``set_rate`` row for the same series whose date is fixed. A row whose
+    date varies could land after this one, so it doesn't count here; at
+    run time the vary step reads whichever rate is in effect then."""
+    when = row.get("date", "")
+    if not when:
+        return True  # an unreadable date is already reported
+    if any(kind == aux_kind and s == series and effective < when
+           and payload.get("annual_rate_micros") is not None
+           for kind, s, payload, effective in aux_rows):
+        return True
+    for other in calendar_rows:
+        if (other is row or other.get("kind") != "set_rate" or other.get("series") != series
+                or other.get("vary_target") == "date" or not other.get("date")
+                or other["date"] >= when):
+            continue
+        params = _safe_json(other.get("params_json")) or {}
+        if params.get("aux_kind", "rate") == aux_kind:
+            return True
+    return False
 
 
 def _validate_symbol_case(where: str, symbol: str, issues: list[str]) -> None:
@@ -4444,8 +4493,9 @@ def _write_intent(
             "vary_target, vary_distribution, vary_low, vary_high, vary_median, "
             "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months, "
             "vary_correlate_with, vary_correlation, vary_tail_dependence, "
-            "vary_process, vary_persistence, vary_shock_sd, vary_outcomes) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_process, vary_persistence, vary_shock_sd, vary_process_start, "
+            "vary_outcomes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -4473,6 +4523,7 @@ def _write_intent(
                 ce.get("vary_process") or None,
                 _opt_float(ce.get("vary_persistence")),
                 _opt_int(ce.get("vary_shock_sd")),
+                ce.get("vary_process_start") or None,
                 ce.get("vary_outcomes") or None,
             ),
         )

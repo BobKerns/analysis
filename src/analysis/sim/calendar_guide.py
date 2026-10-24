@@ -296,6 +296,14 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
                 option="--vary-shock-sd", applies=process_set,
                 help="The size of one year's shock, in the rate's own unit.",
             ),
+            Field(
+                "vary_process_start", "start", option="--vary-process-start",
+                required=False, applies=process_set, strict=True,
+                choices=lambda ctx, answers: sorted(registries.VARY_PROCESS_STARTS),  # noqa: ARG005
+                help="current: start at the rate in effect just before this date and "
+                     "revert to the drawn level at the persistence above. Blank starts "
+                     "with a year already drawn around the level.",
+            ),
         ]
     fields += [
         Field(

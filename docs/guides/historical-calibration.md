@@ -157,7 +157,7 @@ around it year by year ([ADR-006
 
 - **`vary_persistence`:** Persistence, or 0 when it's negative. Near 0 for
   returns; a yield or an inflation rate is better held than given a process.
-- **`vary_shock_sd`:** Shock SD. Since 1948, stocks' is 15.9 and
+- **`vary_shock_sd`:** [Shock SD](../user-guide.md#g-shock). Since 1948, stocks' is 15.9 and
   T-bonds' 8.2.
 - **The level's `vary_sd`:** only the uncertainty about the long-run rate
   the path compounds to, since the path supplies the yearly spread itself.
@@ -172,7 +172,7 @@ around it year by year ([ADR-006
 
 Each year's shock goes through the row's correlation tree, so two return
 paths under one market factor have correlated years. Member 0's path is
-flat at its level.
+flat at its level, unless it starts at today's rate (next section).
 
 ```sh
 sim ensemble create stock_paths retire_alice
@@ -182,6 +182,56 @@ sim calendar add set-rate 2027-01-31 brokerage_growth 6 --scenario stock_paths \
   --vary-process ar1 --vary-persistence 0 --vary-shock-sd 16 \
   --vary-correlate-with stock_us_factor --vary-correlation 1.0
 ```
+
+### Today's rate, returning to the long run
+
+A process row normally starts with a year already drawn around its level,
+as if today were an ordinary year. When today isn't (inflation running
+above its long-run rate, say), `--vary-process-start current` starts the
+path at the rate in effect instead, and lets it return to the level at the
+row's persistence ([ADR-006
+§4a](../architecture/ADR-006-ensemble-scenarios.md#4a-processes-a-year-by-year-path-from-one-row)).
+The rate in effect is the series file's latest entry before the row's date,
+or an earlier `set-rate` row's value if one comes later, so "now" lives in
+the series file with the rest of the history:
+
+```sh
+sim ensemble create inflation_now retire_alice
+printf 'effective_date,annual_rate\n2025-01-31,2.5%%\n2026-09-30,3.6%%\n' \
+  > "$ANALYSIS_DATA_DIR/scenarios/inflation_now/series/inflation__cpi.csv"
+sim calendar add set-rate 2026-10-31 cpi 3.2 --aux-kind inflation \
+  --scenario inflation_now --name cpi_now \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 3.2 --vary-sd 1.0 \
+  --vary-process ar1 --vary-persistence 0.65 --vary-shock-sd 3.5 \
+  --vary-process-start current \
+  --vary-correlate-with cpi_factor --vary-correlation 1.0
+```
+
+- **Year 0 is September's 3.6%**, exactly, in every member. From the next
+  year on, each year keeps 0.65 of the last one's gap from the level, plus
+  that year's shock. Member 0 has no shocks, so its path closes in on 3.2%:
+  3.46%, 3.37%, 3.31% and so on. The other members spread out around that
+  path as the shocks add up.
+- **Persistence sets how long the return takes.** There is no return date
+  to choose. With persistence near 0 (fuel) the rate is back near its level
+  within a year; at 0.7 (shelter, medical care) the gap takes several years
+  to fade. The extra inflation along the way adds to the price level about
+  as much as the gap held for 1/(1 − persistence) years would: about three
+  years at 0.65.
+- **The row's own date doesn't count.** A series entry dated on the row's
+  date is replaced by the row, so the start is the entry before it. An
+  earlier `set-rate` row for the same series counts, and if it varies, its
+  drawn value counts (for a ramp or a process, its last step).
+- **Something must be in effect before the row.** With no series entry and
+  no fixed-date `set-rate` row before it, the load fails. A row whose date
+  varies doesn't count at load, since it could land after the process row.
+- **`ensemble_draw` still records the level**, 3.2% in member 0, so
+  sensitivity reports read the long-run rate as before.
+
+The numbers here are CPI-U's process row from [Suggested row
+values](#suggested-row-values), over all of history. A postwar period
+gives a smaller shock; run `analysis historical` for the period you trust.
 
 ## A long-run rate with episodes on top
 

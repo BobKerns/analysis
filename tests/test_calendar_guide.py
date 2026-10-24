@@ -77,7 +77,7 @@ def test_guide_writes_a_process_row(
     result = calendar_add(answers=[
         "set-rate", "2027-02", "", "Asset_Checking", "7", "", "",
         "y", "stock_path", "amount", "uniform", "5", "9", "",   # ramp months blank
-        "ar1", "0.2", "17",                                      # process, persistence, shock
+        "ar1", "0.2", "17", "",                                  # process, persistence, shock, start
         "n", "",
     ])
 
@@ -86,6 +86,24 @@ def test_guide_writes_a_process_row(
     row = calendar_rows().query("name == 'stock_path'").iloc[0]
     assert (row["vary_process"], row["vary_persistence"], row["vary_shock_sd"]) == (
         "ar1", "0.2", "17%")
+    assert row["vary_process_start"] == ""
+
+
+def test_guide_writes_a_process_that_starts_at_the_current_rate(
+    calendar_add: Callable[..., Result], calendar_rows: Callable[[], pd.DataFrame],
+) -> None:
+    """#280: a process may start at the rate in effect and revert from it."""
+    result = calendar_add(answers=[
+        "set-rate", "2027-02", "", "Asset_Checking", "3", "", "",
+        "y", "cash_path", "amount", "uniform", "2", "4", "",
+        "ar1", "0.6", "1", "current",
+        "n", "",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "--vary-process-start current" in result.output
+    row = calendar_rows().query("name == 'cash_path'").iloc[0]
+    assert row["vary_process_start"] == "current"
 
 
 def test_guide_asks_again_after_a_bad_answer(
