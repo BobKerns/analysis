@@ -115,7 +115,7 @@ Three `calendar.csv` columns, valid on a varying row and on a `latent_factor` ro
 | `vary_correlation` | ρ, in [-1, 1]; required with `vary_correlate_with` and only with it |
 | `vary_tail_dependence` | `ν` ≥ 1, the Student-t copula's degrees of freedom for the whole tree (§1); only on a tree's root; blank is the Gaussian copula |
 
-A varying lifespan ([ADR-006](ADR-006-ensemble-scenarios.md) §3a) is a node too, named `lifespan:<person>`: `lifespan.csv` has its own `vary_correlate_with`/`vary_correlation` (not `vary_tail_dependence`), so two spouses' ages can move together, and a calendar row or factor can be its parent or its child. A `life_table` lifespan ([#222](https://github.com/BobKerns/analysis/issues/222)) maps its score through its life table's inverse distribution, as any row maps its score through its own. No calendar row may take a name starting `lifespan:`.
+A varying `date_marker` ([#281](https://github.com/BobKerns/analysis/issues/281)) is a node like any date row, so episodes' starts can be correlated; the rows dated from it are not nodes, since the marker decides them. A varying lifespan ([ADR-006](ADR-006-ensemble-scenarios.md) §3a) is a node too, named `lifespan:<person>`: `lifespan.csv` has its own `vary_correlate_with`/`vary_correlation` (not `vary_tail_dependence`), so two spouses' ages can move together, and a calendar row or factor can be its parent or its child. A `life_table` lifespan ([#222](https://github.com/BobKerns/analysis/issues/222)) maps its score through its life table's inverse distribution, as any row maps its score through its own. No calendar row may take a name starting `lifespan:`.
 
 `vary_tail_dependence` is a separate column from `vary_tailweight` on purpose: `vary_tailweight` shapes one row's own marginal (sinh-arcsinh, ADR-006), a different quantity on a different scale. The two compose: tail weight makes a rate's extremes bigger; `ν` makes extremes coincide.
 
@@ -205,3 +205,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#222](https://github.com/BobKerns/analysis/issues/222): a `life_table` lifespan's score maps through its table's inverse distribution (§4).
 - [#261](https://github.com/BobKerns/analysis/issues/261): `ensemble_draw.noise` and `u`, `ensemble_tail_scale` (closing #72) and `ensemble_path_shock`; a batch's `draws.sqlite3` (§6, §7).
 - [#284](https://github.com/BobKerns/analysis/issues/284): `vary_innovation_sd` renamed `vary_shock_sd` (§5).
+- [#281](https://github.com/BobKerns/analysis/issues/281): a varying `date_marker` is a node; rows dated from it are not (§4).

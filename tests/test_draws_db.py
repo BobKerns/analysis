@@ -291,3 +291,18 @@ def test_a_batch_whose_every_member_failed_still_lists_them(tmp_path: Path) -> N
     assert _query(db, "SELECT member_index, status FROM member ORDER BY member_index") == [
         (0, "failed_to_resolve"), (1, "failed_to_resolve")]
     assert _query(db, "SELECT count(*) FROM node") == [(0,)]
+
+
+def test_a_date_marker_is_a_node_that_affects_the_rows_dated_from_it(
+    append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+    resolved_batch: Callable[[Path, int], Path],
+) -> None:
+    """#281: a marker is drawn like a date row, and names the rows it moves."""
+    append_calendar_row(kind="date_marker", name="ep_start", date="2030-06", vary_target="date",
+                        vary_distribution="uniform", vary_low="2029-01", vary_high="2034-12")
+    append_calendar_row(date="ep_start+2y", kind="set_rate", name="ep_off",
+                        series="Asset_Checking", amount="4%")
+    db = resolved_batch(load_test_copy().intent_path, 3)
+    node = _query(db, "SELECT node_kind, calendar_kind, unit, affects FROM node "
+                      "WHERE name = 'ep_start'")
+    assert node == [("row", "date_marker", "day_ordinal", "ep_off")]

@@ -29,6 +29,7 @@ files it was gathered from.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import sqlite3
@@ -55,7 +56,7 @@ from analysis.sim.ensemble import (
 )
 from analysis.sim.life_table import LifeTableAge
 from analysis.sim.registries import (
-    LATENT_FACTOR_KIND, LIFE_TABLE_DISTRIBUTION, LIFESPAN_NODE_PREFIX, LIFESPAN_TARGET,
+    DATE_MARKER_KIND, LATENT_FACTOR_KIND, LIFE_TABLE_DISTRIBUTION, LIFESPAN_NODE_PREFIX, LIFESPAN_TARGET,
     RATE_MICROS_CALENDAR_KINDS,
 )
 from analysis.sim.schema import SCHEMA_VERSION, connect_sim_file
@@ -363,6 +364,19 @@ def _affects(row: sqlite3.Row) -> str:
     return row["series"] or row["scheduled_name"] or ""
 
 
+def _marker_affects(cur: sqlite3.Cursor, marker: str) -> str:
+    """The rows dated from a date marker (#281), by name where they have one."""
+    if "date_refs_json" not in _columns(cur.connection, "calendar_event"):
+        return ""
+    dated = [
+        r["name"] or f"{r['kind']} {r['series'] or r['scheduled_name'] or ''}".strip()
+        for r in cur.execute(
+            "SELECT * FROM calendar_event WHERE date_refs_json IS NOT NULL ORDER BY id").fetchall()
+        if any(anchor == marker for anchor, _ in json.loads(r["date_refs_json"]).values())
+    ]
+    return ", ".join(dated)
+
+
 def _get(row: sqlite3.Row, column: str) -> Any:
     return row[column] if column in row.keys() else None
 
@@ -455,7 +469,8 @@ def _node_records(
             record.update(node_kind="row", calendar_kind=kind, unit=_unit(target, kind))
             if row is not None:
                 record.update(
-                    affects=_affects(row), outcomes=_get(row, "vary_outcomes"),
+                    affects=_marker_affects(cur, name) if kind == DATE_MARKER_KIND else _affects(row),
+                    outcomes=_get(row, "vary_outcomes"),
                     ramp_months=_get(row, "vary_ramp_months"), process=_get(row, "vary_process"),
                     persistence=_get(row, "vary_persistence"),
                     shock_sd=_get(row, "vary_shock_sd"),

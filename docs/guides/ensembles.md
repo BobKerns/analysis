@@ -233,6 +233,43 @@ is negligible next to the sampling noise you'd have anyway. See
 [ADR-006 §9](../architecture/ADR-006-ensemble-scenarios.md) if you want the
 full reasoning.
 
+### Events with an uncertain start (date markers)
+
+An event such as a recession, a market crash or an inflation episode is
+several rows: a rate change, a return, perhaps a transfer. What's uncertain
+is mostly *when* it happens, not its timing inside. A `date_marker` row
+names that date, and the event's rows are dated from it:
+
+```sh
+sim calendar add date-marker crash_start 2032-06 --scenario inflation_1 \
+  --vary-distribution uniform --vary-low 2028-01 --vary-high 2040-12
+sim calendar add set-rate --scenario inflation_1 -- crash_start stock -30
+sim calendar add set-rate crash_start+1y stock 9 --scenario inflation_1
+```
+
+(The `--` lets a negative rate through without reading it as an option.)
+
+- A date is `NAME`, `NAME+Nm` or `NAME-Ny`: the marker's month moved by
+  whole months or years, at that month's end like any other date. A date
+  range can be relative too (`--vary-low crash_start+1y`).
+- Each member draws the marker once, and every row dated from it moves
+  with it, so the event keeps its shape. A row whose amount varies can
+  still move with the marker, so a row in effect varies both.
+- A marker drawn past the scenario's end drops every row dated on or after
+  it for that member, since rows dated after the end do nothing. A row
+  dated before the marker (`NAME-6m`) still runs if its own date falls
+  inside the scenario.
+- The marker is the parameter that sensitivity runs and the draws database
+  report. It can also be correlated with other rows, as below.
+- Changing when the event happens is a one-row edit of the marker; a
+  scenario that uses an episode as a mix-in overrides only the marker, by
+  name. `sim calendar rename` of a marker rewrites the dates that refer to
+  it, and `sim calendar delete` refuses to delete a marker that rows are still
+  dated from.
+
+[Historical calibration](historical-calibration.md#a-long-run-rate-with-episodes-on-top)
+works through an inflation episode built this way.
+
 ## Correlated parameters
 
 By default every varying row is drawn independently. Real uncertainties

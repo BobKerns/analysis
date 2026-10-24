@@ -53,6 +53,8 @@ class GuideContext:
     series: Mapping[str, Sequence[str]] = field(default_factory=dict)
     # named calendar rows and latent factors, for --vary-correlate-with
     row_names: Sequence[str] = ()
+    # date_marker rows, which a date may be written relative to (#281)
+    markers: Sequence[str] = ()
     # The scenario's other calendar rows (when editing, all but the row being
     # edited), as answers, by command: what a row must not duplicate.
     other_rows: Mapping[str, Sequence[Answers]] = field(default_factory=dict)
@@ -333,7 +335,11 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
     return tuple(fields)
 
 
-_DATE = Field("date", "date (YYYY-MM or YYYY-MM-DD)", type="date")
+_DATE = Field(
+    "date", "date (YYYY-MM or YYYY-MM-DD)", type="date",
+    choices=lambda ctx, answers: list(ctx.markers),  # noqa: ARG005
+    help="Or relative to a date_marker: NAME, NAME+2y, NAME-6m.",
+)
 _DESCRIPTION = Field("description", "description", option="--description", required=False)
 _TAX_CHARACTER_HELP = (
     "Leave blank to have it follow from the accounts: a rollover is untaxed, "
@@ -525,6 +531,17 @@ KINDS: tuple[KindSpec, ...] = (
             ),
             _DESCRIPTION, _TAGS,
             *_vary_fields(targets=("date",), ramp=False),
+        ),
+    ),
+    KindSpec(
+        "date-marker", "a named date other rows' dates can be written relative to",
+        fields=(
+            Field("name", "marker name", unique=True),
+            _DATE, _DESCRIPTION, _TAGS,
+            # Its name is NAME, with no other to ask for; and a truncated
+            # normal's fields never apply to a date.
+            *(f for f in _vary_fields(targets=("date",), ramp=False) if f.param not in {
+                "row_name", "vary_median", "vary_sd", "vary_skew", "vary_tailweight"}),
         ),
     ),
     KindSpec(

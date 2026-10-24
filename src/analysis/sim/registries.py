@@ -110,13 +110,28 @@ def withdrawal_tax_character(
 
 CALENDAR_EVENT_KINDS: set[str] = {
     "set_rate", "set_amount", "retire_scheduled", "swap_aux_table",
-    "one_off_transfer", "transfer_balance", "latent_factor",
+    "one_off_transfer", "transfer_balance", "latent_factor", "date_marker",
 }
 
 # ADR-008 §3: a shared influence (an "inflation regime") that rows correlate
 # with but that isn't itself a modeled value. Inert in the engine; only the
 # ensemble's correlated draws read it.
 LATENT_FACTOR_KIND = "latent_factor"
+
+# #281: a named date other rows' dates can be written relative to
+# (`NAME+2y`), drawn like any date row. Inert in the engine.
+DATE_MARKER_KIND = "date_marker"
+
+# The calendar_event kinds the engine skips: they hold something the ensemble
+# step or the loader reads, not an event.
+INERT_CALENDAR_KINDS: frozenset[str] = frozenset({LATENT_FACTOR_KIND, DATE_MARKER_KIND})
+
+# #281: the calendar.csv columns a date may be written relative to a
+# date_marker in, each with where a bare month lands there (None: its end).
+RELATIVE_DATE_COLUMNS: dict[str, Literal["low", "high", "point"] | None] = {
+    "date": None, "vary_low": "low", "vary_high": "high",
+    "vary_median": "point", "vary_mode": "point",
+}
 
 # ADR-006 §4a (#115): the year-by-year processes a varying set_rate row may
 # carry around its drawn level. Blank is the held draw.

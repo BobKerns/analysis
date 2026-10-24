@@ -13,19 +13,26 @@ mid-month then doesn't over-sample that month.
 
 Day-precise inputs (birthdates, lot ``acquired`` dates, prices) keep the
 exact day; ``parse_day`` is the strict ``YYYY-MM-DD`` check for them.
+
+A calendar.csv date may instead be relative to a ``date_marker`` row (#281):
+``NAME``, ``NAME+Nm`` or ``NAME-Ny``, the marker's month moved by whole
+months or years. It names a month like a bare ``YYYY-MM`` does, so it lands
+where that month would: a row's ``date`` on the month's end, a varying
+row's bound per its role.
 """
 
 from __future__ import annotations
 
 import re
 from calendar import monthrange
+from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
 __all__ = [
     "MONTH_FORMAT_HINT", "VaryBoundRole", "parse_day", "parse_month", "month_end_iso",
     "parse_vary_date", "vary_date_iso", "is_full_date", "is_month_or_date",
-    "final_month_for_age",
+    "final_month_for_age", "RelativeDate", "is_marker_name", "parse_relative_date", "place_month",
 ]
 
 MONTH_FORMAT_HINT = "YYYY-MM or YYYY-MM-DD"
@@ -137,3 +144,56 @@ def final_month_for_age(birthdate: str | date, age: float) -> str:
     born = birthdate if isinstance(birthdate, date) else parse_day(birthdate)
     months = born.year * 12 + born.month - 1 + round(age * 12)
     return _month_end(months // 12, months % 12 + 1).isoformat()
+
+
+_RELATIVE_DATE = re.compile(
+    r"(?P<anchor>[A-Za-z_][A-Za-z0-9_.-]*?)(?:(?P<sign>[+-])(?P<n>\d+)(?P<unit>[my]))?"
+)
+
+
+@dataclass(frozen=True)
+class RelativeDate:
+    """A date written relative to a ``date_marker`` row (#281): the marker's
+    month moved by ``months`` (negative for earlier)."""
+
+    anchor: str
+    months: int
+
+    def __str__(self) -> str:
+        if self.months == 0:
+            return self.anchor
+        sign = "+" if self.months > 0 else "-"
+        n = abs(self.months)
+        return f"{self.anchor}{sign}{n // 12}y" if n % 12 == 0 else f"{self.anchor}{sign}{n}m"
+
+
+def parse_relative_date(s: str) -> RelativeDate | None:
+    """``NAME``, ``NAME+Nm``/``NAME-Nm`` or ``NAME+Ny``/``NAME-Ny`` as a
+    :class:`RelativeDate`; ``None`` for anything else, a literal date
+    included (a name starts with a letter or underscore, a date with a digit)."""
+    m = _RELATIVE_DATE.fullmatch(s.strip())
+    if m is None:
+        return None
+    n = int(m["n"] or 0) * (12 if m["unit"] == "y" else 1)
+    return RelativeDate(m["anchor"], -n if m["sign"] == "-" else n)
+
+
+def is_marker_name(name: str) -> bool:
+    """Whether ``name`` can name a ``date_marker`` (#281): a date written from
+    it must read back as that name, so it starts with a letter or underscore,
+    has only letters, digits, ``_``, ``.`` and ``-``, and doesn't end in what
+    reads as an offset (``ep-6m`` would be ``ep`` six months earlier)."""
+    return parse_relative_date(name) == RelativeDate(name, 0)
+
+
+def place_month(anchor: date, months: int, role: VaryBoundRole | None = None) -> date:
+    """The day a relative date lands on: ``anchor``'s month moved by
+    ``months``, at the month's end, or for a varying row's bound where a bare
+    ``YYYY-MM`` in that ``role`` would (``parse_vary_date``)."""
+    total = anchor.year * 12 + anchor.month - 1 + months
+    year, month = total // 12, total % 12 + 1
+    if role == "low":
+        return date(year, month, 1)
+    if role == "point":
+        return date(year, month, _MID_MONTH_DAY)
+    return _month_end(year, month)

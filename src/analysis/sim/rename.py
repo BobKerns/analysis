@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from analysis.sim import chain_edit, registries
+from analysis.sim.dates import RelativeDate, parse_relative_date
 from analysis.sim.lineage import default_description, load_order, parse_parents
 from analysis.sim.lineage import scenario_dir as _folder_of
 from analysis.sim.loader import CURRENT_SCENARIO_FILE, LoadError, load_scenario
@@ -265,7 +266,8 @@ CALENDAR_ROW_COLUMNS: dict[str, tuple[str, ...]] = {
     "calendar.csv": ("name", "vary_correlate_with"),
 }
 """A calendar row's name (how an inheriting scenario overrides it), and the
-rows naming it as their correlation parent (ADR-008)."""
+rows naming it as their correlation parent (ADR-008). Dates written relative
+to a date_marker (#281) follow it too (``_repoint_dates``)."""
 
 
 def calendar_row_defined(name: str) -> Defines:
@@ -273,7 +275,21 @@ def calendar_row_defined(name: str) -> Defines:
 
 
 def rename_calendar_row(scenario_dir: Path, old: str, new: str) -> list[str]:
-    return _rename_in(scenario_dir, CALENDAR_ROW_COLUMNS, old, new)
+    changed = _rename_in(scenario_dir, CALENDAR_ROW_COLUMNS, old, new)
+    if _rewrite_scenario_csv(scenario_dir / "calendar.csv", _repoint_dates(old, new)) \
+            and "calendar.csv" not in changed:
+        changed.append("calendar.csv")
+    return changed
+
+
+def _repoint_dates(old: str, new: str) -> Callable[[dict[str, str]], None]:
+    """Dates written relative to date_marker ``old`` (#281) follow it to ``new``."""
+    def edit(row: dict[str, str]) -> None:
+        for column in registries.RELATIVE_DATE_COLUMNS:
+            rel = parse_relative_date(row.get(column) or "")
+            if rel is not None and rel.anchor == old:
+                row[column] = str(RelativeDate(new, rel.months))
+    return edit
 
 
 # ---------- series ----------
@@ -339,7 +355,7 @@ def rename_series(scenario_dir: Path, old: str, new: str) -> list[str]:
 # ---------- scenarios ----------
 
 def _rewrite_scenario_csv(path: Path, edit: Callable[[dict[str, str]], None]) -> bool:
-    """Apply ``edit`` to each row of a scenario.csv; whether it changed."""
+    """Apply ``edit`` to each row of a scenario folder's CSV; whether it changed."""
     if not path.is_file():
         return False
     with path.open(newline="", encoding="utf-8") as fh:

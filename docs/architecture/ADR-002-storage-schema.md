@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 46) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 47) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -334,7 +334,12 @@ CREATE TABLE calendar_event (
     vary_process_start  TEXT,
     -- #165: a `discrete` row's weighted outcomes, each a value or a low..high
     -- range in the target's stored unit ('30%: 0; 25%: 100000..600000').
-    vary_outcomes       TEXT
+    vary_outcomes       TEXT,
+    -- #281: the columns authored relative to a date_marker row, as a JSON
+    -- object of column -> [marker name, months] ({"date": ["start", 24]}).
+    -- Those columns hold the date against the markers' base case; the
+    -- ensemble step recomputes them from each member's drawn markers.
+    date_refs_json      TEXT
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
@@ -947,3 +952,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#255](https://github.com/BobKerns/analysis/issues/255): the run table `basis_step_up` (Intent and ledger DDL, glossary; schema 44).
 - [#284](https://github.com/BobKerns/analysis/issues/284): `calendar_event.vary_innovation_sd` renamed `vary_shock_sd` (Intent layer DDL; schema 45).
 - [#280](https://github.com/BobKerns/analysis/issues/280): `calendar_event.vary_process_start` (Intent layer DDL; schema 46).
+- [#281](https://github.com/BobKerns/analysis/issues/281): `calendar_event.date_refs_json`, for dates written relative to a `date_marker` (Intent layer DDL; schema 47).

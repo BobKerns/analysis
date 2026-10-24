@@ -118,6 +118,14 @@ def calendar_row_names(data_dir: Path, scenario: str) -> list[str]:
     return _column((d / "calendar.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
 
 
+def date_marker_names(data_dir: Path, scenario: str) -> list[str]:
+    """The names of the scenario's date_marker rows (#281), its own and inherited."""
+    return sorted({
+        row["name"] for d in _lineage_dirs(data_dir, scenario) for row in _rows(d / "calendar.csv")
+        if row.get("kind") == registries.DATE_MARKER_KIND and row.get("name")
+    })
+
+
 def person_ids(data_dir: Path) -> list[str]:
     """The ids in the shared persons.csv."""
     return _column([data_dir / "persons.csv"], "id")
