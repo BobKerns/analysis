@@ -167,7 +167,7 @@ Schema 30:
 
 Schema 32 (#68): `calendar_event` gains `vary_tail_dependence REAL`.
 
-Schema 33 (#115): `calendar_event` gains `vary_process TEXT`, `vary_persistence REAL` and `vary_innovation_sd INTEGER` (ADR-006 §4a). Yearly scores aren't recorded in `ensemble_draw`; `ensemble_path_shock` records each year's noise, score, scale and shock (schema 43, #261), and the path they produce is the member's generated `set_rate` rows.
+`calendar_event` carries a process's `vary_process TEXT`, `vary_persistence REAL` and `vary_shock_sd INTEGER` (ADR-006 §4a; #115, #284). Yearly scores aren't recorded in `ensemble_draw`; `ensemble_path_shock` records each year's noise, score, scale and shock (schema 43, #261), and the path they produce is the member's generated `set_rate` rows.
 
 ## Consequences
 
@@ -204,3 +204,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#221](https://github.com/BobKerns/analysis/issues/221): a varying lifespan joins correlation trees as `lifespan:<person>` (§4).
 - [#222](https://github.com/BobKerns/analysis/issues/222): a `life_table` lifespan's score maps through its table's inverse distribution (§4).
 - [#261](https://github.com/BobKerns/analysis/issues/261): `ensemble_draw.noise` and `u`, `ensemble_tail_scale` (closing #72) and `ensemble_path_shock`; a batch's `draws.sqlite3` (§6, §7).
+- [#284](https://github.com/BobKerns/analysis/issues/284): `vary_innovation_sd` renamed `vary_shock_sd` (§5).

@@ -84,7 +84,7 @@ def test_the_start_loads_and_is_stored(
 
 @pytest.mark.parametrize(("extra", "fragment"), [
     ({"vary_process_start": "later"}, "unknown vary_process_start 'later'"),
-    ({"vary_process": "", "vary_persistence": "", "vary_innovation_sd": "",
+    ({"vary_process": "", "vary_persistence": "", "vary_shock_sd": "",
       "vary_process_start": "current"}, "vary_process_start is only read with vary_process"),
 ])
 def test_bad_starts_are_rejected(
@@ -211,7 +211,7 @@ def test_set_rate_writes_the_start(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
     result = _set_rate(test_data_dir, "--vary-process", "ar1", "--vary-persistence", "0.2",
-                       "--vary-innovation-sd", "17", "--vary-process-start", "current")
+                       "--vary-shock-sd", "17", "--vary-process-start", "current")
     assert result.exit_code == 0, result.output
     rows = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
     assert rows.query("name == 'stock_path'").iloc[0]["vary_process_start"] == "current"
