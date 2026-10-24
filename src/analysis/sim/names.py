@@ -16,7 +16,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from analysis.sim import registries
-from analysis.sim.lineage import load_order
+from analysis.sim.lineage import load_order, scenario_dir, template_names
 
 __all__ = [
     "account_names",
@@ -47,7 +47,7 @@ def _rows(path: Path) -> Iterator[dict[str, str]]:
 def _lineage_dirs(data_dir: Path, scenario: str) -> list[Path]:
     """The scenario's folder and every one it inherits from, root first."""
     scenarios = data_dir / "scenarios"
-    return [scenarios / name for name in load_order(scenarios, scenario)]
+    return [scenario_dir(scenarios, name) for name in load_order(scenarios, scenario)]
 
 
 def _column(paths: Iterable[Path], column: str) -> list[str]:
@@ -67,7 +67,7 @@ def scenario_names(data_dir: Path) -> list[str]:
     scenarios = data_dir / "scenarios"
     if not scenarios.is_dir():
         return []
-    return sorted(p.name for p in scenarios.iterdir() if p.is_dir())
+    return sorted([*(p.name for p in scenarios.iterdir() if p.is_dir()), *template_names(scenarios)])
 
 
 def account_names(data_dir: Path, scenario: str) -> list[str]:

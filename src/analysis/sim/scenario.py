@@ -18,7 +18,15 @@ import pandas as pd
 from analysis.sim.loader import LoadError
 from analysis.sim import chain_edit, registries, units
 from analysis.sim.dates import month_end_iso
-from analysis.sim.lineage import default_description, load_order, parse_parents, read_parents
+from analysis.sim.lineage import (
+    default_description,
+    load_order,
+    parse_parents,
+    is_template,
+    read_parents,
+    scenario_dir,
+    template_names,
+)
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.readme import parse_readme_summary
 from analysis.sim import cli
@@ -211,9 +219,22 @@ class ScenarioSummary:
         return self.ensemble_size is not None
 
 
-def scenario_summaries(data_dir: Path, scenarios_dir: Path | None = None) -> list[ScenarioSummary]:
+def scenario_list_names(
+    data_dir: Path, scenarios_dir: Path | None = None, *, templates: bool = False,
+) -> list[str]:
+    """``sim scenario list``'s names: the data repo's own, and with
+    ``templates`` the template scenarios it has no folder for, sorted."""
+    scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
+    names = list_scenario_names(data_dir, scenarios)
+    return sorted([*names, *template_names(scenarios)]) if templates else names
+
+
+def scenario_summaries(
+    data_dir: Path, scenarios_dir: Path | None = None, *, templates: bool = False,
+) -> list[ScenarioSummary]:
     """Every scenario folder's name, parents, one-line description, and start
-    and end months, sorted.
+    and end months, sorted; with ``templates``, the template scenarios the
+    data repo reads from the code repository too (ADR-003 §4.5a).
 
     Read straight from the folders rather than loaded, so it is quick and
     still lists a scenario that wouldn't load. The description follows the
@@ -224,15 +245,15 @@ def scenario_summaries(data_dir: Path, scenarios_dir: Path | None = None) -> lis
     """
     scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
     summaries = []
-    for name in list_scenario_names(data_dir, scenarios):
-        rows = {n: _scenario_row(scenarios / n) for n in load_order(scenarios, name)}
+    for name in scenario_list_names(data_dir, scenarios, templates=templates):
+        rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in load_order(scenarios, name)}
         summaries.append(ScenarioSummary(
             name=name,
-            parents=read_parents(scenarios / name),
-            description=_one_line_description(scenarios / name, rows[name]),
-            start=_merged_date(rows, name, "start"),
-            end=_merged_date(rows, name, "end"),
-            seed=_merged_seed(rows, name),
+            parents=read_parents(scenario_dir(scenarios, name)),
+            description=_one_line_description(scenario_dir(scenarios, name), rows[name]),
+            start=_merged_date(_templates_first(scenarios, rows), name, "start"),
+            end=_merged_date(_templates_first(scenarios, rows), name, "end"),
+            seed=_merged_seed(_templates_first(scenarios, rows), name),
             ensemble_size=_merged_ensemble_size(rows, name),
         ))
     return summaries
@@ -244,8 +265,16 @@ def ensemble_settings(
     """Scenario ``name``'s merged ``(seed, ensemble_size)``, as
     :func:`scenario_summaries` reports them."""
     scenarios = Path(data_dir) / "scenarios"
-    rows = {n: _scenario_row(scenarios / n) for n in load_order(scenarios, name)}
-    return _merged_seed(rows, name), _merged_ensemble_size(rows, name)
+    rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in load_order(scenarios, name)}
+    return _merged_seed(_templates_first(scenarios, rows), name), _merged_ensemble_size(rows, name)
+
+
+def _templates_first(scenarios: Path, rows: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    """``rows`` with the template scenarios moved ahead of the rest, each
+    group in load order: a template's start, end and seed are fallbacks
+    that any data repo scenario in the lineage overrides (ADR-003 §4.5a), as
+    the loader merges them."""
+    return dict(sorted(rows.items(), key=lambda item: not is_template(scenarios, item[0])))
 
 
 def _scenario_row(scenario_dir: Path) -> dict[str, str]:

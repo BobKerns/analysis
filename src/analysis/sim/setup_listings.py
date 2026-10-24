@@ -24,6 +24,7 @@ import pandas as pd
 from analysis.sim import readme, registries, units
 from analysis.sim.dates import final_month_for_age
 from analysis.sim.lineage import load_order, read_parents
+from analysis.sim.lineage import scenario_dir as _scenario_dir
 from analysis.sim.loader import (
     _MoneyReferenceResolver,
     latest_ensemble_batch,
@@ -276,7 +277,7 @@ class Itemization:
 
 def _lineage_dirs(scenario_dir: Path) -> list[Path]:
     """The scenario's folder and its ancestors', root first (the load order)."""
-    return [scenario_dir.parent / name for name in load_order(scenario_dir.parent, scenario_dir.name)]
+    return [_scenario_dir(scenario_dir.parent, name) for name in load_order(scenario_dir.parent, scenario_dir.name)]
 
 
 def itemizations(data_dir: Path, scenario_dir: Path) -> list[Itemization]:

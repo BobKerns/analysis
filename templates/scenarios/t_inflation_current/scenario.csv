@@ -1,0 +1,2 @@
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+t_inflation_current,"Today's inflation rates, held to the end of 2029, then returning to the long run.",,,,t_inflation_ensemble,,{}

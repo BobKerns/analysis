@@ -64,7 +64,7 @@ def test_verbose_list_shows_parents_and_description(
     derive_scenario("combo", "retire_alice:mix", description="Retire with the mix")
     derive_scenario("mix", "base", description="A mix-in")
     rows = {line.split("│")[2].strip(): line for line in _list(test_data_dir, "-v").splitlines()
-            if line.count("│") == ROW_BARS}
+            if line.count("│") == ROW_BARS and line.split("│")[2].strip()}
     assert set(rows) == {"base", "combo", "mix", "retire_alice"}
     assert "retire_alice + mix" in rows["combo"]
     assert "Retire with the mix" in rows["combo"]
@@ -127,7 +127,7 @@ def test_verbose_list_brackets_inherited_dates(
 ) -> None:
     derive_scenario("longer", "retire_alice", end="2045-06")
     rows = {_cells(line)[1]: _cells(line) for line in _list(test_data_dir, "-v").splitlines()
-            if line.count("│") == ROW_BARS}
+            if line.count("│") == ROW_BARS and line.split("│")[2].strip()}
     assert rows["longer"][3:5] == ["[2026-05]", "2045-06"]
     assert rows["base"][3:5] == ["2026-05", "2040-12"]
 
@@ -162,7 +162,7 @@ def test_verbose_list_brackets_an_inherited_seed_and_size(
     derive_scenario("recipe", "retire_alice", seed="7", meta_json='{"ensemble_size":5}')
     derive_scenario("variant", "recipe")
     rows = {_cells(line)[1]: _cells(line) for line in _list(test_data_dir, "-v").splitlines()
-            if line.count("│") == ROW_BARS}
+            if line.count("│") == ROW_BARS and line.split("│")[2].strip()}
     assert rows["recipe"][5:7] == ["7", "5"]
     assert rows["variant"][5:7] == ["[7]", "[5]"]
     assert rows["retire_alice"][5:7] == ["42", ""]
@@ -176,7 +176,7 @@ def test_ensemble_list_keeps_only_the_ensembles(
     derive_scenario("plain", "recipe", meta_json='{"ensemble_size":0}')
     assert _list(test_data_dir, group="ensemble").splitlines() == ["recipe", "variant"]
     rows = {_cells(line)[1] for line in _list(test_data_dir, "-v", group="ensemble").splitlines()
-            if line.count("│") == ROW_BARS}
+            if line.count("│") == ROW_BARS and line.split("│")[2].strip()}
     assert rows == {"recipe", "variant"}
 
 

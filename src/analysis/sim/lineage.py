@@ -7,12 +7,55 @@ overlays, the aux/series/prices/itemizations override search, staging's
 affected-scenario check and the provenance scope -- goes through
 :func:`load_order`, so they can't disagree about which folders are read or in
 what order.
+
+Template scenarios (``t_`` names) are the exception to "a scenario is a folder
+under the data repo's ``scenarios/``": a ``t_`` name with no folder there is
+read from this code repository's ``templates/scenarios/`` instead, so every
+data repo can build on the vetted templates without a copy to maintain
+(ADR-003 §4.5a). A folder of the same name in the data repo replaces the
+template whole. :func:`scenario_dir` is the one place that decides.
 """
 
 from __future__ import annotations
 
 import csv
 from pathlib import Path
+
+
+TEMPLATE_PREFIX = "t_"
+TEMPLATE_SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "templates" / "scenarios"
+
+
+def is_template_name(name: str) -> bool:
+    """Whether ``name`` is a template scenario's: only these fall back."""
+    return name.startswith(TEMPLATE_PREFIX)
+
+
+def scenario_dir(scenarios_dir: Path, name: str) -> Path:
+    """The folder scenario ``name`` is read from: the data repo's own, else,
+    for a template name, the code repository's; a missing scenario's path is
+    the data repo's, so a message names where it was looked for."""
+    own = Path(scenarios_dir) / name
+    if own.is_dir() or not is_template_name(name) or Path(name).name != name:
+        return own
+    template = TEMPLATE_SCENARIOS_DIR / name
+    return template if template.is_dir() else own
+
+
+def is_template(scenarios_dir: Path, name: str) -> bool:
+    """Whether ``name`` is read from the code repository's templates, so
+    nothing in the data repo can be edited to change it."""
+    return scenario_dir(scenarios_dir, name) != Path(scenarios_dir) / name
+
+
+def template_names(scenarios_dir: Path) -> list[str]:
+    """The template scenarios the data repo doesn't replace, sorted."""
+    if not TEMPLATE_SCENARIOS_DIR.is_dir():
+        return []
+    return sorted(
+        p.name for p in TEMPLATE_SCENARIOS_DIR.iterdir()
+        if p.is_dir() and is_template_name(p.name) and not (Path(scenarios_dir) / p.name).is_dir()
+    )
 
 
 class ScenarioCycleError(ValueError):
@@ -75,7 +118,7 @@ def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False)
         if name in memo:
             return memo[name]
         order: list[str] = []
-        for parent in read_parents(scenarios_dir / name):
+        for parent in read_parents(scenario_dir(scenarios_dir, name)):
             for n in visit(parent, (*path, name)):
                 if n not in order:
                     order.append(n)

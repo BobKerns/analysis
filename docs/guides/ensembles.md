@@ -408,9 +408,9 @@ choices you have for its structure, then shocks and persistence.
 ### The example recipe
 
 Every command in this section runs against the prototype data. Its root
-scenario, `base`, holds only generic defaults: an inflation series and a
-factor for each
-([The prototype's defaults](historical-calibration.md#the-prototypes-defaults)).
+scenario, `base`, holds only generic defaults, from the template scenarios:
+an inflation series and a factor for each
+([Template scenarios](historical-calibration.md#template-scenarios)).
 The household (accounts, salaries, expenses) is in `retire_alice`, which
 derives from `base`, so the recipe derives from `retire_alice` and inherits
 both; with your own data, derive from your main scenario. The recipe
@@ -726,7 +726,7 @@ rate series in the scenario's `series/` folder:
 
 The prototype's root scenario ships a default series for every class, and
 a factor for each to hang a varying row off
-([The prototype's defaults](historical-calibration.md#the-prototypes-defaults)).
+([Template scenarios](historical-calibration.md#template-scenarios)).
 
 A fund with its own `rate__<symbol>.csv`, or a lot with its own `series`,
 keeps using that. The blend applies only when every class the fund holds

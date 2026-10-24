@@ -76,7 +76,7 @@ from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
-    ACCOUNT_LOTS_CSV_HEADER, ASSET_CLASSES, CALENDAR_HEADER, SCENARIO_HEADER,
+    ACCOUNT_LOTS_CSV_HEADER, CALENDAR_HEADER, SCENARIO_HEADER,
     SCHEDULED_CSV_HEADER,
 )
 
@@ -231,6 +231,33 @@ def test_scenarios_dir(test_data_dir: Path) -> Path:
     scenarios_dir = test_data_dir / "scenarios"
     scenarios_dir.mkdir(parents=True, exist_ok=True)
     return scenarios_dir
+
+
+@pytest.fixture(scope="function")
+def template_data_dir(tmp_path: Path, repo_root: Path) -> Path:
+    """A private data repo built as ``scripts/link-data.sh --template``
+    builds one: ``templates/`` copied whole, less its ``t_`` template
+    scenarios, which the loader reads from the code repository instead."""
+    from analysis.sim.lineage import is_template_name
+
+    data_dir = tmp_path / "sim"
+    shutil.copytree(repo_root / "templates", data_dir,
+                    ignore=lambda folder, names: [n for n in names if is_template_name(n)]
+                    if Path(folder).name == "scenarios" else [])
+    return data_dir
+
+
+@pytest.fixture(scope="function")
+def local_templates(test_scenarios_dir: Path) -> Path:
+    """The private data copy with the code repository's template scenarios
+    copied into its own ``scenarios/``, so they're ordinary, editable
+    scenarios there (a data repo's folder replaces a template whole)."""
+    from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, is_template_name
+
+    for folder in TEMPLATE_SCENARIOS_DIR.iterdir():
+        if folder.is_dir() and is_template_name(folder.name):
+            shutil.copytree(folder, test_scenarios_dir / folder.name)
+    return test_scenarios_dir
 
 
 @pytest.fixture(scope="function")
@@ -797,18 +824,16 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
 
 @pytest.fixture(scope="function")
 def without_prototype_defaults(test_data_dir: Path) -> None:
-    """Strip the prototype's default factor structure and default series
-    (#80) from the private copy's ``base`` scenario, which retire_alice
-    inherits them from (#91): its ``latent_factor`` rows, and its class rate
-    and inflation series. For a test whose subject is a tree or series it
-    builds itself, and which asserts on the whole set (no warnings, every
-    factor, a fund with no class series)."""
-    scenario = test_data_dir / "scenarios" / "base"
-    df = pd.read_csv(scenario / "calendar.csv", dtype=str, keep_default_na=False)
-    df[df["kind"] != "latent_factor"].to_csv(scenario / "calendar.csv", index=False)
-    for path in (scenario / "series").glob("*.csv"):
-        if path.stem.startswith("inflation__") or path.stem.removeprefix("rate__") in ASSET_CLASSES:
-            path.unlink()
+    """Cut the private copy's ``base`` scenario, which retire_alice inherits
+    from (#91), loose from the template scenarios it builds on (#282): their
+    default factor structure (#80) and their class rate and inflation series.
+    For a test whose subject is a tree or series it builds itself, and which
+    asserts on the whole set (no warnings, every factor, a fund with no
+    class series)."""
+    path = test_data_dir / "scenarios" / "base" / "scenario.csv"
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df["parent_scenario"] = ""
+    df.to_csv(path, index=False)
 
 
 @pytest.fixture(scope="function")

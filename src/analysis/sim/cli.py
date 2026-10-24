@@ -119,7 +119,14 @@ from analysis.sim.life_table import equivalent_multiplier
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day, parse_vary_date,
 )
-from analysis.sim.lineage import default_description, load_order, parse_parents, read_parents
+from analysis.sim.lineage import (
+    default_description,
+    load_order,
+    parse_parents,
+    read_parents,
+)
+from analysis.sim.lineage import is_template as _is_template
+from analysis.sim.lineage import scenario_dir as _folder_of
 from analysis.sim.overlay import (
     CalendarRow as _CalendarRow,
     Overlaid as _Overlaid,
@@ -997,7 +1004,7 @@ def ensemble_create(
     data_dir_p = _resolve_data_dir(data_dir)
     name, parent = _ask_new_scenario(data_dir_p, "ensemble", name, parent)
     # Preflights PARENT, then creates and validates the recipe in a staged copy.
-    with _scenario_edit(data_dir_p, parent, remember=False) as edit:
+    with _scenario_edit(data_dir_p, parent, remember=False, template_parent=True) as edit:
         try:
             staged = sc.create_scenario(
                 edit.data_dir, name, parent, description=description, mixins=mixins,
@@ -1049,10 +1056,12 @@ def ensemble_create(
 @click.option("-v", "--verbose", is_flag=True, default=False,
               help="Show a table with each ensemble's parents, dates, seed, "
                    "ensemble size and description.")
-def ensemble_list(data_dir: Path | None, verbose: bool) -> None:
+@click.option("-a", "--all", "all_", is_flag=True, default=False,
+              help="Include the template ensembles (t_ names) read from the code repository.")
+def ensemble_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     """List the data repo's ensembles: ``sim scenario list``, keeping only
     the scenarios whose merged ensemble_size is positive."""
-    _list_scenarios(data_dir, verbose, ensembles_only=True)
+    _list_scenarios(data_dir, verbose, ensembles_only=True, templates=all_)
 
 
 def _ensemble_batch_dir(runs_dir: Path, scenario_name: str, batch: str | None) -> Path:
@@ -2940,15 +2949,17 @@ def _append_csv_row(path: Path, header: tuple[str, ...],
 
 @contextmanager
 def _scenario_edit(
-    data_dir: Path, scenario: str | None, *, remember: bool = True,
+    data_dir: Path, scenario: str | None, *, remember: bool = True, template_parent: bool = False,
 ) -> Generator[StagedEdit]:
     """``staged_edit`` for a CLI command: edits land only if every affected
     scenario still loads (issue #44). Issues go to stderr as ``error:`` lines,
     like ``sim check``, and the command fails with nothing written.
-    ``scenario`` and ``remember`` are as for ``_resolve_scenario``."""
+    ``scenario`` and ``remember`` are as for ``_resolve_scenario``;
+    ``template_parent`` lets ``scenario`` be a template, for creating a
+    scenario from one."""
     scenario = _resolve_scenario(data_dir, scenario, remember=remember).name
     try:
-        with staged_edit(data_dir, scenario) as edit:
+        with staged_edit(data_dir, scenario, template_parent=template_parent) as edit:
             yield edit
     except ScenarioAlreadyBroken as exc:
         for issue in exc.issues:
@@ -7080,12 +7091,18 @@ def _read_values_rows(path: Path) -> list[dict[str, str]]:
     return [{str(k): str(v) for k, v in record.items()} for record in frame.to_dict("records")]
 
 
+def _lineage_dir(scenario_dir: Path, name: str) -> Path:
+    """The folder of ``name``, a scenario in ``scenario_dir``'s lineage: a
+    sibling folder, or a template from the code repository."""
+    return _folder_of(scenario_dir.parent, name)
+
+
 def _scenario_lots(scenario_dir: Path, name: str) -> list[_Lot]:
     """Every lot of scenario ``name``, overlaid down its load order as the
     loader overlays them, in the order they first appear."""
     lots: dict[tuple[str, str], _Lot] = {}
     for scenario_name in load_order(scenario_dir.parent, name):
-        rows = _read_values_rows(scenario_dir.parent / scenario_name / "account_lots.csv")
+        rows = _read_values_rows(_lineage_dir(scenario_dir, scenario_name) / "account_lots.csv")
         for index, row in enumerate(rows):
             key = (row["account_name"].strip(), row["lot"].strip() or registries.DEFAULT_LOT)
             prior = lots.get(key)
@@ -7865,7 +7882,7 @@ def lot_delete(
     references = [
         f"  {name}: {line.strip()}"
         for name in family
-        for line in _lot_reference_rows(scenario_dir.parent / name, chosen.account, chosen.lot)
+        for line in _lot_reference_rows(_lineage_dir(scenario_dir, name), chosen.account, chosen.lot)
     ]
     if references:
         click.echo("still named by:")
@@ -8987,7 +9004,7 @@ def _editing_chain(
         owner = chain_edit.defining_scenario(scenarios, edit.name, name)
         if owner is None:
             raise click.ClickException(_no_chain(edit.con, name, edit.name))
-        source = chain_edit.chain_file(scenarios / owner, name)
+        source = chain_edit.chain_file(_folder_of(scenarios, owner), name)
         assert source is not None  # defining_scenario found it
         steps = chain_edit.read_steps(source)
         yield edit, name, steps
@@ -9598,26 +9615,33 @@ def scenario_group_command() -> None:
 @click.option("-v", "--verbose", is_flag=True, default=False,
               help="Show a table with each scenario's parents, dates, seed, "
                    "ensemble size and description.")
-def scenario_list(data_dir: Path | None, verbose: bool) -> None:
+@click.option("-a", "--all", "all_", is_flag=True, default=False,
+              help="Include the template scenarios (t_ names) read from the code repository.")
+def scenario_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     """List the data repo's scenarios.
 
     Plain output is just the names, one per line, for scripts. --verbose adds
     parents, start and end months, seed, ensemble size, and description, and
     marks the current scenario with *. A value in [brackets] is inherited
     from an ancestor; a blank size means the scenario is not an ensemble.
+    --all adds the template scenarios a data repo reads from the code
+    repository when it has no folder of that name.
     """
-    _list_scenarios(data_dir, verbose, ensembles_only=False)
+    _list_scenarios(data_dir, verbose, ensembles_only=False, templates=all_)
 
 
-def _list_scenarios(data_dir: Path | None, verbose: bool, *, ensembles_only: bool) -> None:
-    """``sim scenario list``, or with ``ensembles_only`` ``sim ensemble list``."""
+def _list_scenarios(
+    data_dir: Path | None, verbose: bool, *, ensembles_only: bool, templates: bool = False,
+) -> None:
+    """``sim scenario list``, or with ``ensembles_only`` ``sim ensemble list``;
+    ``templates`` adds the template scenarios (``--all``)."""
     data_dir_p = _resolve_data_dir(data_dir)
     try:
         if not verbose and not ensembles_only:
-            for name in list_scenario_names(data_dir_p):
+            for name in sc.scenario_list_names(data_dir_p, templates=templates):
                 click.echo(name)
             return
-        summaries = sc.scenario_summaries(data_dir_p)
+        summaries = sc.scenario_summaries(data_dir_p, templates=templates)
     except LoadError as exc:
         raise click.ClickException("; ".join(exc.issues)) from None
     if ensembles_only:
@@ -9708,7 +9732,7 @@ def scenario_create(
         data_dir_p = _resolve_data_dir(data_dir)
         name, parent = _ask_new_scenario(data_dir_p, "scenario", name, parent)
         # Preflights PARENT, then creates and validates NAME in a staged copy.
-        with _scenario_edit(data_dir_p, parent, remember=False) as edit:
+        with _scenario_edit(data_dir_p, parent, remember=False, template_parent=True) as edit:
             sc.create_scenario(
                 edit.data_dir, name, parent, description=description, mixins=mixins,
                 ensemble_size=0,
@@ -9882,6 +9906,11 @@ def _rename_across(
     if not affected:
         raise click.ClickException(
             missing() if missing else f"no {what} {old!r} in {edit.name} or the scenarios it builds on")
+    if templates := [each for each in affected if _is_template(scenarios, each)]:
+        raise click.ClickException(
+            f"{what} {old!r} is defined in the template scenario{'s' if len(templates) > 1 else ''} "
+            f"{', '.join(templates)}, which a data repo doesn't change; to use another name, copy "
+            "the template's folder into scenarios/ to replace it whole")
     if found := rename.clashes(scenarios, affected, (taken or defines)(new)):
         raise click.ClickException(
             f"{'an' if what.startswith(('a', 'e', 'i', 'o', 'u')) else 'a'} {what} {new!r} already applies in "

@@ -132,7 +132,11 @@ def test_series_follows_the_aux_kind(data_dir: Path) -> None:
 
 def test_ensemble_commands_complete_only_ensembles(test_data_dir: Path,
                                                    test_ensemble_scenario: str) -> None:
-    assert _complete(test_data_dir, "ensemble summary ") == [test_ensemble_scenario]
+    # The template ensembles (#282) are offered too: they run like any other.
+    assert _complete(test_data_dir, "ensemble summary ") == sorted([
+        test_ensemble_scenario, "t_inflation_current", "t_inflation_ensemble",
+        "t_market_current", "t_market_ensemble",
+    ])
     assert test_ensemble_scenario in _complete(test_data_dir, "run ")
 
 

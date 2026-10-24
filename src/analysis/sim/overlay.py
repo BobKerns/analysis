@@ -15,6 +15,7 @@ import pandas as pd
 
 from analysis.sim import registries
 from analysis.sim.lineage import load_order
+from analysis.sim.lineage import scenario_dir as _scenario_dir
 from analysis.sim.loader import calendar_row_key
 
 __all__ = ["CalendarRow", "Overlaid", "overlay_rows", "scenario_calendar_rows"]
@@ -36,7 +37,7 @@ def overlay_rows(scenario_dir: Path, filename: str, key: str = "name") -> dict[s
     name = scenario_dir.name
     rows: dict[str, Overlaid] = {}
     for scenario_name in load_order(scenario_dir.parent, name):
-        path = scenario_dir.parent / scenario_name / filename
+        path = _scenario_dir(scenario_dir.parent, scenario_name) / filename
         if not path.exists() or path.stat().st_size == 0:
             continue
         frame = pd.read_csv(path, dtype=str, keep_default_na=False)
@@ -78,7 +79,7 @@ def scenario_calendar_rows(scenario_dir: Path) -> list[CalendarRow]:
         return {column: row.get(column, "") for column in registries.CALENDAR_HEADER}
 
     for scenario_name in load_order(scenario_dir.parent, name):
-        path = scenario_dir.parent / scenario_name / "calendar.csv"
+        path = _scenario_dir(scenario_dir.parent, scenario_name) / "calendar.csv"
         if not path.exists() or path.stat().st_size == 0:
             continue
         frame = pd.read_csv(path, dtype=str, keep_default_na=False)

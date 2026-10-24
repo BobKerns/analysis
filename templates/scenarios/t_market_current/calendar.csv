@@ -1,0 +1,2 @@
+date,kind,name,scheduled_name,account_1,lot_1,account_2,lot_2,series,amount,param_date,tax_character,params_json,description,tags,vary_target,vary_distribution,vary_low,vary_high,vary_median,vary_sd,vary_skew,vary_tailweight,vary_mode,vary_ramp_months,vary_outcomes,vary_process,vary_persistence,vary_shock_sd,vary_process_start,vary_correlate_with,vary_correlation,vary_tail_dependence
+2029-12-31,set_rate,cash_path,,,,,,cash,3%,,,,"cash yield's yearly path, back from today's rate after the hold",,amount,truncated_normal,,,3%,1%,,,,,,ar1,0.85,1.3%,current,cash_factor,1.0,
