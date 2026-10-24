@@ -117,7 +117,8 @@ from analysis.sim.staging import (
 )
 from analysis.sim.life_table import equivalent_multiplier
 from analysis.sim.dates import (
-    MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day, parse_vary_date,
+    MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day,
+    parse_relative_date, parse_vary_date,
 )
 from analysis.sim.lineage import (
     default_description,
@@ -2897,6 +2898,20 @@ def _validate_month_date(s: str) -> str:
     return s.strip()
 
 
+def _validate_calendar_date(s: str) -> str:
+    """``_validate_month_date``, or a date relative to a date_marker
+    (``NAME``, ``NAME+2y``, ``NAME-6m``, #281): written as typed, and the
+    marker's existence is the validating load's to check."""
+    if parse_relative_date(s) is not None:
+        return s.strip()
+    if not is_month_or_date(s):
+        raise click.ClickException(
+            f"date must be {MONTH_FORMAT_HINT}, or relative to a date_marker "
+            f"(NAME, NAME+Nm, NAME-Ny): {s!r}"
+        )
+    return s.strip()
+
+
 # calendar.csv columns a file may legitimately lack (ADR-006): optional,
 # nullable additions to an already-established header. Any other missing
 # column, in any CSV kind, is schema drift to report, not paper over --
@@ -3678,7 +3693,7 @@ def _vary_row_fields(
         if raw is None:
             return ""
         if vary_target == "date":
-            return _validate_month_date(raw)
+            return _validate_calendar_date(raw)
         assert amount_unit is not None  # an amount target without one was rejected above
         return units.format_stored(amount_unit, _AMOUNT_PARSERS[amount_unit](raw))
 
@@ -3776,7 +3791,7 @@ def _do_add_transfer(
 
     if not date:
         date = _prompt_with_completion("date (YYYY-MM or YYYY-MM-DD)")
-    date = _validate_month_date(date)
+    date = _validate_calendar_date(date)
 
     from_account, from_lot, to_account, to_lot = _pick_endpoints(
         endpoints, from_account or None, from_lot, to_account or None, to_lot,
@@ -3837,7 +3852,7 @@ def _do_add_transfer(
 
 
 @transfer_group_command.command("add")
-@click.argument("date", required=False)
+@click.argument("date", required=False, type=completion.CALENDAR_DATE)
 @click.argument("from_account", required=False, type=completion.ENDPOINT)
 @click.argument("to_account", required=False, type=completion.ENDPOINT)
 @click.argument("amount", required=False)
@@ -3916,6 +3931,7 @@ _CALENDAR_COMMAND_OF_KIND = {
     "transfer_balance": "transfer-balance",
     "swap_aux_table": "swap-aux-table",
     registries.LATENT_FACTOR_KIND: "latent-factor",
+    registries.DATE_MARKER_KIND: "date-marker",
 }
 
 
@@ -4020,6 +4036,9 @@ def _guide_context(
                     *column(con, "SELECT series FROM scheduled_transaction"),
                 } - {"fixed"}),
             },
+            markers=column(
+                con, "SELECT name FROM calendar_event WHERE kind = ?", registries.DATE_MARKER_KIND,
+            ),
             row_names=[
                 name for name in column(con, "SELECT name FROM calendar_event")
                 if name != own_name
@@ -4045,7 +4064,7 @@ def _calendar_guide() -> calendar_guide.Guide:
             text, choices=choices, default=default,
         ),
         checkers={
-            "date": _validate_month_date,
+            "date": _validate_calendar_date,
             "dollars": _parse_amount_cents,
             "percent": _percent_to_rate_micros,
             "number": float,
@@ -4271,6 +4290,14 @@ def calendar_edit(
         ctx.exit(1)
 
 
+def _dated_from(row: Mapping[str, str], marker: str) -> bool:
+    """Whether any of ``row``'s dates is written relative to ``marker`` (#281)."""
+    return any(
+        (rel := parse_relative_date(row.get(column) or "")) is not None and rel.anchor == marker
+        for column in registries.RELATIVE_DATE_COLUMNS
+    )
+
+
 @calendar_group_command.command("delete")
 @click.argument("row", type=completion.CALENDAR_ROW, required=False)
 @click.option("--yes", is_flag=True, help="Don't ask before deleting.")
@@ -4316,6 +4343,13 @@ def calendar_delete(row: str | None, yes: bool, scenario: str | None, data_dir: 
             raise click.ClickException(
                 f"row {name!r} is correlated with by "
                 + "; ".join(_calendar_row_label(other) for other in dependents)
+                + ". Change or delete those rows first. Nothing was written."
+            )
+        dated = [other for other in rows if other is not chosen.row and _dated_from(other, name)]
+        if dated:
+            raise click.ClickException(
+                f"date_marker {name!r} dates "
+                + "; ".join(_calendar_row_label(other) for other in dated)
                 + ". Change or delete those rows first. Nothing was written."
             )
     own = _read_calendar_rows(path)[chosen.index]
@@ -4431,7 +4465,7 @@ def _scheduled_names(data_dir: Path, scenario: str | None) -> set[str]:
 
 
 @calendar_add_group_command.command("set-rate")
-@click.argument("date", required=False)
+@click.argument("date", required=False, type=completion.CALENDAR_DATE)
 @click.argument("series", type=completion.SeriesName(kind_param="aux_kind"), required=False)
 @click.argument("rate_percent", required=False)
 @click.option(
@@ -4477,7 +4511,7 @@ def calendar_add_set_rate(
         date=date, series=series, rate_percent=rate_percent, aux_kind=aux_kind,
     )
     date, series, rate_percent = given["date"], given["series"], given["rate_percent"]
-    date = _validate_month_date(date)
+    date = _validate_calendar_date(date)
     micros = _percent_to_rate_micros(rate_percent)
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
@@ -4510,7 +4544,7 @@ def calendar_add_set_rate(
 
 
 @calendar_add_group_command.command("set-amount")
-@click.argument("date", required=False)
+@click.argument("date", required=False, type=completion.CALENDAR_DATE)
 @click.argument("scheduled_name", type=completion.RULE, required=False)
 @click.argument("amount", required=False)
 @click.option("--param-date", default="",
@@ -4556,7 +4590,7 @@ def calendar_add_set_amount(
     if scheduled_name not in names:
         raise click.ClickException(f"unknown scheduled_name: {scheduled_name!r}")
 
-    date = _validate_month_date(date)
+    date = _validate_calendar_date(date)
     if param_date:
         param_date = _validate_month_date(param_date)
     cents = _parse_amount_cents(amount)
@@ -4584,7 +4618,7 @@ def calendar_add_set_amount(
 
 
 @calendar_add_group_command.command("retire-scheduled")
-@click.argument("date", required=False)
+@click.argument("date", required=False, type=completion.CALENDAR_DATE)
 @click.argument("scheduled_name", type=completion.RULE, required=False)
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
@@ -4629,7 +4663,7 @@ def calendar_add_retire_scheduled(
     if scheduled_name not in names:
         raise click.ClickException(f"unknown scheduled_name: {scheduled_name!r}")
 
-    date = _validate_month_date(date)
+    date = _validate_calendar_date(date)
     vary_fields = _vary_row_fields(
         row_name=row_name, vary_target=vary_target, vary_distribution=vary_distribution,
         vary_low=vary_low, vary_high=vary_high, vary_median=vary_median, vary_sd=vary_sd,
@@ -4686,8 +4720,82 @@ def calendar_add_latent_factor(
     click.echo(f"{verb} latent_factor {name!r} to {path}")
 
 
+@calendar_add_group_command.command("date-marker")
+@click.argument("name", required=False)
+@click.argument("date", required=False, type=completion.CALENDAR_DATE)
+@click.option("--scenario", type=completion.SCENARIO, default=None,
+              help="Scenario folder name (default: the current scenario).")
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None)
+@click.option("--description", default="", help="What this date stands for.")
+@click.option("--tags", default="",
+              help="Space-separated '<role>:<name>' tokens (e.g. 'expense:discretionary').")
+@click.option("--vary-target", type=click.Choice(["date"]), default=None,
+              help="date, the only thing a marker can vary; implied by --vary-distribution.")
+@click.option("--vary-distribution",
+              type=click.Choice(sorted(registries.ENSEMBLE_DISTRIBUTIONS - {"truncated_normal"})),
+              default=None, help="Draw the date per ensemble member from this distribution.")
+@click.option("--vary-low", default=None,
+              help="The earliest date (a bare month is its first day).")
+@click.option("--vary-high", default=None,
+              help="The latest date (a bare month is its last day).")
+@click.option("--vary-mode", default=None,
+              help="triangular's most likely date (a bare month is mid-month).")
+@click.option("--vary-outcomes", default=None,
+              help="discrete's weighted dates or date ranges, e.g. "
+                   "'60%%: 2030-06; 40%%: 2031-01..2031-12'.")
+@click.option("--vary-correlate-with", type=completion.CORRELATE_WITH, default=None,
+              help="Another varying row's or a latent factor's name: this marker's parent in "
+                   "a correlation tree (ADR-008). Requires --vary-correlation.")
+@click.option("--vary-correlation", default=None,
+              help="rho with --vary-correlate-with, between -1 and 1.")
+@click.option("--vary-tail-dependence", default=None, help=_TAIL_DEPENDENCE_HELP)
+def calendar_add_date_marker(
+    name: str | None, date: str | None, scenario: str | None, data_dir: Path | None,
+    description: str, tags: str, vary_target: str | None, vary_distribution: str | None,
+    vary_low: str | None, vary_high: str | None, vary_mode: str | None,
+    vary_outcomes: str | None, vary_correlate_with: str | None,
+    vary_correlation: str | None, vary_tail_dependence: str | None,
+) -> None:
+    """Append a date marker NAME on DATE (#281): a named date that other rows'
+    dates can be written relative to, as NAME, NAME+2y or NAME-6m. It
+    changes nothing by itself; vary it to move all of them together.
+
+    A date past the scenario's end drops every row dated from it. A marker
+    no row refers to yet affects nothing; `sim check` says so. Arguments
+    left out are asked for.
+    """
+    try:
+        registries.parse_tags(tags)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    given = _ask_missing_arguments("date-marker", data_dir, scenario, name=name, date=date)
+    name, date = given["name"], _validate_calendar_date(given["date"])
+    data_dir_p = _resolve_data_dir(data_dir)
+    scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
+    varies = vary_distribution is not None
+    if vary_target is not None and not varies:
+        raise click.ClickException("--vary-target goes with --vary-distribution")
+    vary_fields = _vary_row_fields(
+        row_name=name, vary_target="date" if varies else None,
+        vary_distribution=vary_distribution, vary_low=vary_low, vary_high=vary_high,
+        vary_median=None, vary_sd=None, vary_skew=None, vary_tailweight=None,
+        vary_mode=vary_mode, vary_outcomes=vary_outcomes,
+        vary_correlate_with=vary_correlate_with, vary_correlation=vary_correlation,
+        vary_tail_dependence=vary_tail_dependence, vary_ramp_months=None, amount_unit=None,
+    )
+    row = {
+        "date": date, "kind": registries.DATE_MARKER_KIND, "description": description,
+        "tags": tags, **vary_fields, "name": name,
+    }
+    path = scenario_dir / "calendar.csv"
+    verb = _write_calendar_row(path, row, data_dir=data_dir_p, scenario_name=scenario_name)
+    click.echo(f"{verb} date_marker {name!r} on {date} to {path}")
+
+
 @calendar_add_group_command.command("transfer")
-@click.argument("date", required=False)
+@click.argument("date", required=False, type=completion.CALENDAR_DATE)
 @click.argument("from_account", required=False, type=completion.ENDPOINT)
 @click.argument("to_account", required=False, type=completion.ENDPOINT)
 @click.argument("amount", required=False)
@@ -4750,7 +4858,7 @@ def calendar_add_transfer(
 
 
 @calendar_add_group_command.command("transfer-balance")
-@click.argument("date", required=False)
+@click.argument("date", required=False, type=completion.CALENDAR_DATE)
 @click.argument("from_account", required=False, type=completion.ENDPOINT)
 @click.argument("to_account", required=False, type=completion.ENDPOINT)
 @click.option("--from-lot", type=completion.LotName("from_account"), default=None,
@@ -4814,7 +4922,7 @@ def calendar_add_transfer_balance(
 
     if not date:
         date = _prompt_with_completion("date (YYYY-MM or YYYY-MM-DD)")
-    date = _validate_month_date(date)
+    date = _validate_calendar_date(date)
     # The source is one lot of an asset: "the balance" means one real balance.
     if not from_account:
         _echo_endpoints(assets, lot_info, [])
@@ -4853,7 +4961,7 @@ def calendar_add_transfer_balance(
 
 
 @calendar_add_group_command.command("swap-aux-table")
-@click.argument("date", required=False)
+@click.argument("date", required=False, type=completion.CALENDAR_DATE)
 @click.argument("aux_kind", type=completion.AUX_KIND, required=False)
 @click.argument("source_series", type=completion.SeriesName(kind_param="aux_kind"), required=False)
 @click.option("--series", type=completion.SeriesName(kind_param="aux_kind"), default="",
@@ -4899,7 +5007,7 @@ def calendar_add_swap_aux_table(
         date=date, aux_kind=aux_kind, source_series=source_series, series=series,
     )
     date, aux_kind, source_series = given["date"], given["aux_kind"], given["source_series"]
-    date = _validate_month_date(date)
+    date = _validate_calendar_date(date)
     if aux_kind not in registries.SWAPPABLE_AUX_KINDS:
         raise click.ClickException(
             f"aux kind {aux_kind!r} can't be swapped; allowed: "
@@ -9962,7 +10070,8 @@ def scheduled_rename(old: str | None, new: str | None, scenario: str | None, dat
 def calendar_rename(old: str | None, new: str | None, scenario: str | None, data_dir: Path | None) -> None:
     """Rename the calendar row (or latent factor) named OLD to NEW, and the
     rows naming it as their correlation parent (vary_correlate_with), in
-    every scenario that shares it.
+    every scenario that shares it. Dates written relative to a date marker
+    (OLD+2y) follow it.
 
     Either name left out is asked for."""
     with _scenario_edit(_resolve_data_dir(data_dir), scenario) as edit:

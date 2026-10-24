@@ -258,9 +258,10 @@ def run_scenario(
                     continue
                 if not (month_start_s <= ev_date <= month_s):
                     continue
-                if ev_kind == registries.LATENT_FACTOR_KIND:
-                    # ADR-008: a correlation anchor for the ensemble's draws,
-                    # with no effect of its own -- not an unsupported kind.
+                if ev_kind in registries.INERT_CALENDAR_KINDS:
+                    # A correlation anchor (ADR-008) or a date marker (#281):
+                    # read by the ensemble step and the loader, with no effect
+                    # of its own -- not an unsupported kind.
                     applied_event_ids.add(ev_id)
                     continue
                 if ev_kind not in SUPPORTED_CALENDAR_KINDS:

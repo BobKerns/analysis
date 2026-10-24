@@ -58,17 +58,19 @@ from analysis.sim.correlation import (
 )
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
 from analysis.sim import units
-from analysis.sim.dates import final_month_for_age
+from analysis.sim.dates import final_month_for_age, place_month
 from analysis.sim.life_table import (
     LifeTableAge, LifeTableError, life_table_in, months_since_birth,
 )
 from analysis.sim.registries import (
+    DATE_MARKER_KIND,
     ENSEMBLE_MODES,
     LATENT_FACTOR_KIND,
     LIFE_TABLE_DISTRIBUTION,
     LIFESPAN_NODE_PREFIX,
     LIFESPAN_TARGET,
     PROCESS_SHOCK_CLAMP,
+    RELATIVE_DATE_COLUMNS,
 )
 from analysis.sim.types import Death, DollarMode
 from analysis.sim.schema import connect_sim_file
@@ -759,6 +761,58 @@ def _member_scores(
     return scores, set(), noise, scale
 
 
+def _place_relative_dates(
+    con: sqlite3.Connection, draw_date: Callable[[Any], date],
+) -> set[str]:
+    """Resolve every ``date_marker`` row (#281), each after the markers its
+    own dates are written from, drawing those that vary with ``draw_date``;
+    then rewrite every date written relative to a marker (``date_refs_json``)
+    from the marker's resolved date. Returns the markers' names.
+
+    The loader wrote those dates against the markers' base case, so on
+    member 0 this changes nothing; on any other member it moves each with
+    its marker's draw."""
+    con.row_factory = sqlite3.Row
+    markers = {
+        r["name"]: r for r in con.execute(
+            "SELECT * FROM calendar_event WHERE kind = ?", (DATE_MARKER_KIND,),
+        )
+    }
+    resolved: dict[str, date] = {}
+
+    def place(row: sqlite3.Row) -> None:
+        refs = json.loads(row["date_refs_json"] or "{}")
+        for column, (anchor, months) in refs.items():
+            day = place_month(resolved[anchor], months, RELATIVE_DATE_COLUMNS[column])
+            # The column names come from the loader's own fixed list.
+            con.execute(
+                f"UPDATE calendar_event SET {column} = ? WHERE id = ?",
+                (day.isoformat(), row["id"]),
+            )
+
+    def resolve(name: str) -> date:
+        if name not in resolved:
+            row = markers[name]
+            for anchor, _months in json.loads(row["date_refs_json"] or "{}").values():
+                resolve(anchor)  # the loader rejects a cycle
+            place(row)
+            row = con.execute("SELECT * FROM calendar_event WHERE id = ?", (row["id"],)).fetchone()
+            resolved[name] = (
+                draw_date(row) if row["vary_distribution"] is not None
+                else date.fromisoformat(row["date"])
+            )
+        return resolved[name]
+
+    for name in markers:
+        resolve(name)
+    for row in con.execute(
+        "SELECT * FROM calendar_event WHERE date_refs_json IS NOT NULL AND kind != ?",
+        (DATE_MARKER_KIND,),
+    ).fetchall():
+        place(row)
+    return set(markers)
+
+
 def resolve_member(
     recipe_intent_path: Path,
     member_path: Path,
@@ -823,7 +877,7 @@ def resolve_member(
             str, str, str, float | None, str | None, float | None, float | None, float | None,
         ]] = []
 
-        for row in [r for r in rows if r["vary_target"] == "date"]:
+        def draw_date(row: Any) -> date:  # a sqlite3.Row
             dist = build_distribution(row, "date")
             if not isinstance(dist, Uniform | Triangular | Discrete):
                 # The loader rejects truncated_normal with a date target (its
@@ -846,6 +900,17 @@ def resolve_member(
             draws.append((row["name"], "date", drawn.isoformat(), quantile,
                           row["vary_distribution"], scores.get(row["name"]),
                           noise.get(row["name"]), u))
+            return drawn
+
+        # #281: date markers first, each after any marker it is dated from,
+        # then every date written relative to one, so a varying row's bounds
+        # have moved with its marker before it is drawn.
+        marked = _place_relative_dates(con, draw_date)
+        rows = con.execute(
+            "SELECT * FROM calendar_event WHERE vary_distribution IS NOT NULL"
+        ).fetchall()
+        for row in [r for r in rows if r["vary_target"] == "date" and r["name"] not in marked]:
+            draw_date(row)
 
         for row in lifespans:
             age, quantile, u = _resolve_lifespan(

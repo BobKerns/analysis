@@ -55,7 +55,7 @@ Instead, each row is perturbed to **quantiles of its own distribution** (p10 and
 
 ### 2. OAT generation reuses `resolve_member`
 
-`resolve_member` today resolves each `vary_*` row to `central()` (member 0) or to a draw from `member_rng` (members 1+). It gains one optional argument, `overrides: dict[str, float] | None`, mapping a row name to a **quantile in [0, 1]**. For a row named in `overrides`, the value is that quantile of the row's distribution (§3); every other row resolves exactly as member 0's does. Nothing else in `resolve_member` changes: dates before amounts, ramp expansion (ADR-006 §4, applied to the perturbed target), `ensemble_manifest`/`ensemble_draw` provenance, and the `one_off_transfer` positivity check.
+`resolve_member` today resolves each `vary_*` row to `central()` (member 0) or to a draw from `member_rng` (members 1+). It gains one optional argument, `overrides: dict[str, float] | None`, mapping a row name to a **quantile in [0, 1]**. For a row named in `overrides`, the value is that quantile of the row's distribution (§3); every other row resolves exactly as member 0's does. A `date_marker` is the parameter for every row dated from it ([#281](https://github.com/BobKerns/analysis/issues/281)): overriding it moves them all, and those rows are not parameters of their own unless they vary too. Nothing else in `resolve_member` changes: dates before amounts, ramp expansion (ADR-006 §4, applied to the perturbed target), `ensemble_manifest`/`ensemble_draw` provenance, and the `one_off_transfer` positivity check.
 
 An OAT batch for rows `r1 … rk` and quantiles `q1 … qm` is:
 
@@ -262,3 +262,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#68](https://github.com/BobKerns/analysis/issues/68): the achieved correlations are read through Kendall's τ, and rows sharing a Student-t copula tree make a batch correlated (§6.2).
 - [#221](https://github.com/BobKerns/analysis/issues/221): a varying lifespan is swept as `lifespan:<person>`, centered on its authored age (§2).
 - [#222](https://github.com/BobKerns/analysis/issues/222): a `life_table` lifespan's parameters row gives its 1st to 99th percentile ages and its set-forward (§2).
+- [#281](https://github.com/BobKerns/analysis/issues/281): a `date_marker` is swept as one parameter, moving the rows dated from it (§2).

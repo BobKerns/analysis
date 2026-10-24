@@ -199,6 +199,9 @@ RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
 YTD_ROW = NameType(_in_scenario(names.ytd_names), "year-to-date row")
 # A row may also be picked by its number or by text in it, so any value goes.
 CALENDAR_ROW = NameType(_in_scenario(names.calendar_row_names), "calendar row", check=False)
+# A calendar date: a literal one, or relative to a date marker (#281), whose
+# names TAB offers.
+CALENDAR_DATE = NameType(_in_scenario(names.date_marker_names), "date", check=False)
 CORRELATE_WITH = NameType(_in_scenario(_correlate_with), "calendar row or lifespan",
                           plural="calendar rows and lifespans")
 # `sim ensemble draws --node`: a batch draws whatever it drew when it ran,

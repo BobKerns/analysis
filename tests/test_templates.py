@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from click.testing import CliRunner, Result
 
 from analysis.cli import main
 from analysis.sim import names
+from analysis.sim.dates import place_month
 from analysis.sim.ensemble import process_path, resolve_member
 from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, load_order, scenario_dir
 from analysis.sim.loader import list_scenario_names, load_scenario
@@ -94,9 +96,12 @@ def _x(rate_micros: int, level_micros: int) -> float:
 def test_member_zero_holds_todays_rate_and_then_returns_to_the_level(
     template_data_dir: Path, tmp_path: Path,
 ) -> None:
-    """CPI-U is 3.4% from the series file until the process row in
-    2029-12, which starts there and decays to the 2.5% level at 0.4 a year;
-    medical care, left out of the hold, runs at its level from 2027."""
+    """CPI-U is 3.4% from the series file until the process row at
+    normalization_start (#281), which starts there and decays to the 2.5%
+    level at 0.4 a year; medical care, left out of the hold, runs at its
+    level from 2027. Member 0's marker is its triangle's median, in October
+    2029, after the mode at the fiscal year's start: the range runs longer
+    after it."""
     recipe = load_scenario(template_data_dir, "t_inflation_current", intent_dir=tmp_path / "intent",
                            compute_stamps=False).intent_path
     member = resolve_member(recipe, tmp_path / "member_0000.sqlite3", seed=42, member_index=0,
@@ -110,11 +115,37 @@ def test_member_zero_holds_todays_rate_and_then_returns_to_the_level(
         cpi, medical = path("cpi"), path("medical")
     finally:
         con.close()
-    assert cpi[0] == ("2029-12-31", 34_000)
+    assert cpi[0] == ("2029-10-31", 34_000)
     assert [a for _, a in cpi] == process_path(25_000, 0.4, 14_000, [0.0] * len(cpi), start_micros=34_000)
     assert _x(cpi[1][1], 25_000) == pytest.approx(0.4 * _x(34_000, 25_000), abs=1e-5)
     assert medical[0] == ("2027-01-31", 35_000)
     assert {a for _, a in medical} == {35_000}
+
+
+@pytest.mark.parametrize("member_index", [1, 2, 3])
+def test_every_held_series_returns_at_the_drawn_normalization_start(
+    template_data_dir: Path, tmp_path: Path, member_index: int,
+) -> None:
+    """#281: one marker moves every held series together, within the fiscal
+    calendar's narrow range (Bob: 3 months before October 2029 to 6 after)."""
+    recipe = load_scenario(template_data_dir, "t_inflation_current", intent_dir=tmp_path / "intent",
+                           compute_stamps=False).intent_path
+    member = resolve_member(recipe, tmp_path / f"member_{member_index:04d}.sqlite3", seed=42,
+                            member_index=member_index, member_count=80, recipe_tree_id="deadbeef")
+    con = sqlite3.connect(member)
+    try:
+        drawn = con.execute("SELECT drawn_value FROM ensemble_draw "
+                            "WHERE calendar_event_name = 'normalization_start'").fetchone()[0]
+        held = ("cpi_path", "cpi_w_path", "cpi_e_path", "chained_cpi_path", "housing_path",
+                "education_path", "services_path")
+        starts = dict(con.execute(
+            f"SELECT name, date FROM calendar_event WHERE name IN ({','.join('?' * len(held))})",
+            held))
+    finally:
+        con.close()
+    assert "2029-06-30" <= drawn <= "2030-03-31"
+    assert len(starts) == 7
+    assert set(starts.values()) == {place_month(date.fromisoformat(drawn), 0).isoformat()}
 
 
 def _content(intent_path: Path) -> dict[str, list[tuple]]:

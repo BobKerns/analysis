@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 47
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -240,7 +240,12 @@ CREATE TABLE calendar_event (
     vary_process_start  TEXT,
     -- #165: a `discrete` row's weighted outcomes, each a value or a low..high
     -- range in the target's stored unit ('30%: 0; 25%: 100000..600000').
-    vary_outcomes       TEXT
+    vary_outcomes       TEXT,
+    -- #281: the columns authored relative to a date_marker row, as a JSON
+    -- object of column -> [marker name, months] ({"date": ["start", 24]}).
+    -- Those columns hold the date against the markers' base case; the
+    -- ensemble step recomputes them from each member's drawn markers.
+    date_refs_json      TEXT
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);

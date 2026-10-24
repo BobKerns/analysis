@@ -279,43 +279,47 @@ bursts (1969–1970, 1973–1975 and 1977–1981) with years of 3% to 5% in
 between, not 17 years at one rate. Medical care was the exception: above 5%
 for 21 straight years, from 1973 to 1993.
 
-A scenario can model that as three rows on the same series: the long-run
-rate, an episode that starts at a varying date, and a return row a fixed
-number of years later. This continues the `inflation_drivers` recipe from
-the ensembles guide, as a separate scenario so it can be compared with the
-recipe, or used as a mix-in:
+A scenario can model that as a date marker for the episode's start, an
+episode row dated from it, and a return row a fixed number of years later.
+This continues the `inflation_drivers` recipe from the ensembles guide, as
+a separate scenario so it can be compared with the recipe, or used as a
+mix-in:
 
 ```sh
 sim ensemble create great_inflation inflation_drivers
-sim calendar add set-rate 2030-01-31 medical 8.2 --aux-kind inflation \
-  --scenario great_inflation --name medical_episode \
-  --vary-target date --vary-distribution uniform \
-  --vary-low 2028-01-31 --vary-high 2036-01-31
-sim calendar add set-rate 2035-01-31 medical 4.2 --aux-kind inflation \
+sim calendar add date-marker medical_episode_start 2032-01 \
+  --scenario great_inflation \
+  --vary-distribution uniform --vary-low 2028-01 --vary-high 2036-01
+sim calendar add set-rate medical_episode_start medical 8.2 --aux-kind inflation \
+  --scenario great_inflation --name medical_episode
+sim calendar add set-rate medical_episode_start+5y medical 4.2 --aux-kind inflation \
   --scenario great_inflation --name medical_return \
-  --vary-target date --vary-distribution uniform \
-  --vary-low 2033-01-31 --vary-high 2041-01-31 \
-  --vary-correlate-with medical_episode --vary-correlation 1.0
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 4.2 --vary-sd 0.5 --vary-process ar1 \
+  --vary-persistence 0.6 --vary-shock-sd 2 --vary-process-start current
 ```
 
 - The episode rate, 8.2%, is medical care's compound rate over the Great
-  Inflation; the return rate, 4.2%, is its long-run rate since 1984.
-- The two date ranges are the same length, five years apart, and
-  correlated at 1.0. Both draws then land at the same point in their
-  ranges, so the episode lasts the same 1,827 days in every member and only
-  its start varies. That is five years to within a day: depending on leap
-  years, the return falls on the fifth anniversary or the day after.
-- The return lands on the long-run median, not on the rate that member drew
-  for `medical_vary`: it reverts toward the middle, as history did. A row
-  varies either its date or its amount, so the episode's rate and the
-  return's rate are fixed here.
-- A date range that runs past the scenario's end makes the episode
-  optional. With `--vary-high 2048-01-31` on a scenario ending in 2040,
-  about 13 of the range's 20 years fall inside the scenario, so the
-  episode starts in about 65% of members; in the rest it never starts. The
-  ranges here were checked on the prototype scenario, where they ran as
-  described. Member 0, the base case, uses the middle of each range, so it
-  has an episode when the middle falls inside the scenario.
+  Inflation; the return level, 4.2%, is its long-run rate since 1984.
+- Both rows are dated from one marker, so the episode lasts exactly five
+  years in every member and only its start varies. Moving the episode is a
+  one-row edit of the marker; `sim calendar rename` of the marker carries
+  the rows with it.
+- The return row starts at the episode's rate and reverts to its level at
+  medical care's persistence, with yearly shocks on top
+  ([Today's rate, returning to the long run](#todays-rate-returning-to-the-long-run)).
+  The marker is what varies, so the return's level can vary too.
+- A marker range that runs past the scenario's end makes the episode
+  optional. With `--vary-high 2048-01` on a scenario ending in 2040, about
+  13 of the range's 20 years fall inside the scenario, so the episode
+  starts in about 65% of members; in the rest, every row dated from the
+  marker falls after the end and does nothing. Member 0, the base case,
+  uses the middle of the range, so it has an episode when the middle falls
+  inside the scenario.
+- A row's own date range can be relative to the marker too
+  (`--vary-low medical_episode_start+4y --vary-high medical_episode_start+7y`
+  on a return row whose date varies), for an episode whose length is
+  uncertain as well.
 
 Separate episode scenarios, one per historical pattern (a Great
 Inflation-style stretch, a short post-pandemic spike), can each be a mix-in
@@ -746,10 +750,10 @@ none, and entered the index only in 2005. The template takes 0.6.
 `t_inflation_current` and `t_market_current` start the persistent series at
 their latest 12-month rates, from the committed data (to August 2026), as
 `series/` files (CPI-U as `aux/inflation__cpi.csv`). They re-date the
-`_ensemble` rows to 2029-12 with `vary_process_start` `current`, so each
-rate holds until then and returns to its level at its own persistence after
-([Today's rate, returning to the long
-run](#todays-rate-returning-to-the-long-run)):
+`_ensemble` rows to a `normalization_start` date marker with
+`vary_process_start` `current`, so each rate holds until then and returns
+to its level at its own persistence after ([Today's rate, returning to the
+long run](#todays-rate-returning-to-the-long-run)):
 
 | Series | Today | Source |
 | --- | --: | --- |
@@ -763,9 +767,16 @@ run](#todays-rate-returning-to-the-long-run)):
 | `cash` | 4.0% | T-bills averaged 4.2% in 2025; a placeholder until a monthly T-bill series is here ([#287](https://github.com/BobKerns/analysis/issues/287)) |
 
 - **The hold is political, not statistical.** Rates hold for about three
-  years, to the end of 2029, on the judgment that no effective policy
-  change comes before then. A different view is a sibling `_current`
-  scenario with other dates or rates.
+  years, on the judgment that no effective policy change comes before
+  then. The budget and the fiscal calendar are the only fixed cues, so the
+  hold ends with federal fiscal year 2030, which starts in October 2029,
+  give or take a few months: `normalization_start` is triangular from
+  June 2029 to March 2030, most likely September 2029 (a rate change at
+  the end of September takes effect in October). The base case, member 0,
+  takes the triangle's median, at the end of October 2029. A different
+  view is a one-row override of the marker, or a sibling `_current`
+  scenario with other rates; a series with less federal influence can be
+  dated earlier, at `normalization_start-3m`.
 - **Medical care isn't held.** Its 1.6% is taken as a short-lived
   correction (falling drug prices and the insurance measure), not a new
   trend. An aging population, new treatments and the continuing vertical

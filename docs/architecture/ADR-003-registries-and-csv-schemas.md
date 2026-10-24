@@ -232,11 +232,11 @@ Medicare's income-related monthly adjustment amount ([#253](https://github.com/B
 
 ### 3. `calendar_event.kind` registry
 
-Seven kinds. Per the §2 invariant, calendar events never write to `transfer_event` directly. They fall into three classes:
+Eight kinds. Per the §2 invariant, calendar events never write to `transfer_event` directly. They fall into three classes:
 
 - **Intent-mutating** (no money moves at expansion time; the event amends the in-memory intent — rates, schedules, aux tables): `set_rate`, `set_amount`, `retire_scheduled`, `swap_aux_table`.
 - **Rule-synthesizing** (the event inserts one or more `cadence='one_off'` scheduled_transactions with `created_by_event_id = calendar_event.id`; those rules then fire on `event.date` through the normal monthly step): `one_off_transfer`, `transfer_balance`.
-- **Inert** (no effect in a run; read only by ensemble resolution): `latent_factor` (§3.6).
+- **Inert** (no effect in a run; read only by the loader and ensemble resolution): `latent_factor` (§3.6), `date_marker` (§3.8).
 
 A synthesized rule fires once, as one row in `transfer_event` (or more, when a chain splits it), traced back to its event through `created_by_event_id` on `scheduled_transaction` and `applied_calendar_event`.
 
@@ -308,6 +308,17 @@ Move one lot's whole balance, with the amount the simulated balance when the eve
 - **Afterwards:** nothing stops the scenario moving money into the emptied lot later; end the rules that do (contributions, or an RMD rule that would otherwise draw on the old prior year-end balance) with `retire_scheduled` (§3.3) at the same date.
 - **Not covered:** an in-kind transfer between taxable accounts that carries the basis over without realizing gains.
 - **Use:** rolling a 401(k) or 401(a) into an IRA; closing an account into another.
+
+#### 3.8 `date_marker` (inert)
+
+A named date that other rows' dates are written relative to, such as the start of an episode ([#281](https://github.com/BobKerns/analysis/issues/281)). Moving the marker moves every row dated from it, so an episode's internal timing stays fixed while its start varies.
+
+- **Columns:** `name` and `date` (required); `description`, `tags`; and the date-varying columns (`vary_target='date'`, `vary_distribution` other than `truncated_normal`, `vary_low`/`vary_high`/`vary_mode`/`vary_outcomes`) and the correlation columns, as on any date row. Every other column must be blank.
+- **Relative dates:** any row's `date`, and a date-varying row's `vary_low`, `vary_high` and `vary_mode`, may be `NAME`, `NAME+Nm`, `NAME-Nm`, `NAME+Ny` or `NAME-Ny`: the marker's month moved by whole months or years, placed as a bare `YYYY-MM` is in that column (month-end for `date`). A marker may itself be relative to another marker. A name that is no `date_marker`, or a cycle of markers, is a load error. `vary_outcomes` and every other date column stay literal.
+- **Resolution:** the loader writes each relative date against the markers' base case (a varying marker's central value, member 0's draw) and records the reference in `calendar_event.date_refs_json`, so a plain run and every report read literal dates. Ensemble resolution draws the markers first, then rewrites every relative date from them ([ADR-006](ADR-006-ensemble-scenarios.md) §5).
+- **Effect:** none in a run (the engine skips it). A row whose resolved date is after the scenario's end does nothing, so a marker drawn there drops every row dated from it.
+- **A marker no row refers to** loads with a warning that only `sim check` prints, as for a factor with no dependents.
+- **CLI:** `sim calendar add date-marker NAME DATE [--vary-…]`. Every `calendar add` date takes the relative forms, and TAB offers marker names. `calendar delete` refuses a marker rows are dated from; `calendar rename` rewrites the dates that refer to it.
 
 ### 4. CSV file layouts
 
@@ -638,7 +649,7 @@ The main parent's whole line comes first; each mix-in then contributes its own l
 | `account_lots.csv` | `account_name` |
 | `scheduled.csv` | `name` |
 | `chains/<role>/<name>.csv` | whole file by chain name, in either role folder |
-| `calendar.csv` | a named row overrides the inherited row with the same `name`, whatever its other fields; any other row matches on (`date`, `kind`, `scheduled_name`, `account_1`, `lot_1`, `account_2`, `lot_2`, `series`, `amount`), so naming an inherited unnamed row (to vary it) still replaces it; two differently named rows sharing all those fields are an error. A `latent_factor` row's key is its `name` alone, since its other key fields are blank |
+| `calendar.csv` | a named row overrides the inherited row with the same `name`, whatever its other fields; any other row matches on (`date`, `kind`, `scheduled_name`, `account_1`, `lot_1`, `account_2`, `lot_2`, `series`, `amount`), so naming an inherited unnamed row (to vary it) still replaces it; two differently named rows sharing all those fields are an error. A `latent_factor` or `date_marker` row's key is its `name` alone |
 | `lifespan.csv` | `person` |
 | `year_to_date.csv` | `name` |
 
@@ -742,7 +753,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 
 | column | type | required | notes |
 | --- | --- | --- | --- |
-| `date` | YYYY-MM | ✓ | month-end at load |
+| `date` | YYYY-MM | ✓ | month-end at load; or relative to a `date_marker` (§3.8): `NAME`, `NAME+Nm`, `NAME-Ny` |
 | `kind` | enum | ✓ | one of §3 |
 | `name` | text | for a row with `vary_distribution` set; optional otherwise | stable identifier, unique within the scenario ([ADR-006](ADR-006-ensemble-scenarios.md); also what calendar-event tagging keys on) |
 | `scheduled_name` | text | | name of target scheduled transaction; required for `retire_scheduled`, `set_amount` |
@@ -759,7 +770,7 @@ Overflow (`maximum_balance`/`overflow_chain`) has no per-transaction analogue --
 | `tags` | text | | see §6 |
 | `vary_target` | enum (`amount`, `date`) | with `vary_distribution` | which of *this row's own* columns is drawn instead of literal; exactly one target per row ([ADR-006](ADR-006-ensemble-scenarios.md) §2) |
 | `vary_distribution` | enum (`uniform`, `truncated_normal`, `triangular`, `discrete`) | to mark this row as varying | blank means an ordinary literal row, unaffected by any of the columns below |
-| `vary_low`, `vary_high` | text | see notes | `uniform`'s and `triangular`'s own bounds (required), in the target column's own unit (a date for `date`; the row's own `amount` unit above for `amount`). A date bound is a draw's exact day: a full `YYYY-MM-DD` is kept as given, and a bare `YYYY-MM` covers the whole month -- its first day as `vary_low`, its last as `vary_high` (#34), so a cutoff known to fall mid-month doesn't over-sample that month. Also `truncated_normal`'s own optional clip bounds (`amount`/rate only) -- for that distribution either may be left blank and inferred (see `vary_median`/`vary_sd`) |
+| `vary_low`, `vary_high` | text | see notes | `uniform`'s and `triangular`'s own bounds (required), in the target column's own unit (a date for `date`; the row's own `amount` unit above for `amount`). A date bound is a draw's exact day: a full `YYYY-MM-DD` is kept as given, and a bare `YYYY-MM` covers the whole month -- its first day as `vary_low`, its last as `vary_high` (#34), so a cutoff known to fall mid-month doesn't over-sample that month. A date bound, or `vary_mode`, may also be relative to a `date_marker` (§3.8), a month placed as a bare `YYYY-MM` would be. Also `truncated_normal`'s own optional clip bounds (`amount`/rate only) -- for that distribution either may be left blank and inferred (see `vary_median`/`vary_sd`) |
 | `vary_median`, `vary_sd` | text | for `truncated_normal` | same unit rule as `vary_low`/`vary_high`. `vary_median` is the *truncated* distribution's median (the exact base case), strictly between the bounds; `vary_sd` the scale before clipping (the SD for the default shape; a scale factor with `vary_skew`/`vary_tailweight` set). Any one of `vary_median`/`vary_sd`/`vary_low`/`vary_high` may be inferred from the others when blank -- `vary_median` defaults to the midpoint of `vary_low`/`vary_high`; `vary_sd` to the distance from `vary_median` to whichever of `vary_low`/`vary_high` is given, divided by 3 (default shape only); a still-missing `vary_low`/`vary_high` to 3 standard-normal-score points out. `truncated_normal` is therefore never actually unbounded (`resolve_truncated_normal_bounds`, ADR-006 §3). Formerly `vary_mean` (#31), now rejected with a rename error |
 | `vary_skew`, `vary_tailweight` | number | optional, `truncated_normal` only | sinh-arcsinh shape (#31): skew 0 symmetric, > 0 longer high tail; tail weight 1 normal, < 1 heavier tails. Either one requires `vary_sd` |
 | `vary_mode` | text | optional, `triangular` only | the most likely value, in the target's unit (a bare `YYYY-MM` date is that month's 15th); defaults to the midpoint of the bounds |
@@ -1148,3 +1159,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#284](https://github.com/BobKerns/analysis/issues/284): `calendar.csv`'s `vary_innovation_sd` renamed `vary_shock_sd`; the old name is a load error naming the new one (§4.8).
 - [#280](https://github.com/BobKerns/analysis/issues/280): `calendar.csv`'s `vary_process_start` column; `current` starts a process at the rate in effect and reverts to the level (§3.1, §4.8).
 - [#282](https://github.com/BobKerns/analysis/issues/282): template scenarios: a missing `t_` scenario is read from the code repository's `templates/scenarios/`, read-only (§4.5a).
+- [#281](https://github.com/BobKerns/analysis/issues/281): the `date_marker` kind, and calendar dates written relative to one (`NAME+2y`); markers merge by name (§3, new §3.8, §4.5, §4.8).

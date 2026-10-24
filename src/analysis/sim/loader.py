@@ -25,7 +25,7 @@ from typing import Any, NamedTuple
 from analysis.sim import life_table, registries, units
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, month_end_iso, parse_day,
-    vary_date_iso,
+    parse_relative_date, place_month, vary_date_iso,
 )
 from analysis.sim.distributions import (
     Discrete,
@@ -33,6 +33,7 @@ from analysis.sim.distributions import (
     OutcomeRole,
     Triangular,
     TruncatedNormal,
+    Uniform,
     parse_outcomes,
     resolve_truncated_normal_bounds,
     rewrite_outcomes,
@@ -506,8 +507,8 @@ def calendar_row_key(row: Mapping[str, str]) -> tuple[str, ...]:
     canonical = {column: (value or "").strip() for column, value in row.items()}
     _normalize_month_columns([canonical], "calendar.csv", [])
     _normalize_units([canonical], "calendar.csv", [])
-    if canonical.get("kind") == registries.LATENT_FACTOR_KIND:
-        return (registries.LATENT_FACTOR_KIND, canonical.get("name", ""))
+    if canonical.get("kind") in registries.INERT_CALENDAR_KINDS:
+        return (canonical["kind"], canonical.get("name", ""))
     return (
         *(canonical.get(column, "") for column in registries.CALENDAR_KEY_COLUMNS),
         *_swapped_aux_kind(canonical),
@@ -551,14 +552,16 @@ def _merge_calendar_rows(
     collide on it (an authoring mistake, not an override), so that
     combination is reported rather than silently collapsed one way.
 
-    A ``latent_factor`` row (ADR-008) is keyed by its name alone.
+    A ``latent_factor`` row (ADR-008) or ``date_marker`` row (#281) is keyed
+    by its name alone.
     """
     def key_of(row: dict[str, str]) -> tuple[str, ...]:
-        # A latent factor (ADR-008) has no date or event fields -- only its
-        # name identifies it, so two factors don't collide on blank fields,
-        # and a child scenario's factor of the same name overrides its parent's.
-        if row.get("kind") == registries.LATENT_FACTOR_KIND:
-            return (registries.LATENT_FACTOR_KIND, (row.get("name") or "").strip())
+        # A latent factor (ADR-008) or a date marker (#281) has no event
+        # fields -- only its name identifies it, so two don't collide on blank
+        # fields, and a child scenario's of the same name overrides its parent's.
+        kind = row.get("kind", "")
+        if kind in registries.INERT_CALENDAR_KINDS:
+            return (kind, (row.get("name") or "").strip())
         return (*(row.get(c, "") for c in key_columns), *_swapped_aux_kind(row))
 
     def name_of(row: dict[str, str]) -> str:
@@ -988,6 +991,7 @@ def load_scenario(
                               scenarios_dir=scenarios_dir,
                               account_clashes=(account_clashes := []))
     _normalize_vary_dates(calendar_rows)
+    _resolve_relative_dates(calendar_rows, issues, unused)
     parents = read_parents(scenario_dir)
     load_order_names = _strict_load_order(scenarios_dir, scenario_name)
     # A scenario folder's own README.md, if there is one, is the scenario's
@@ -1276,6 +1280,8 @@ def _normalize_month_columns(
             raw = row.get(col) or ""
             if not raw:
                 continue
+            if filename == "calendar.csv" and col == "date" and parse_relative_date(raw):
+                continue  # relative to a date_marker (#281): _resolve_relative_dates
             exact = _keeps_exact_day(filename, col, row)
             try:
                 if exact and len(raw) > len("YYYY-MM"):
@@ -1330,6 +1336,128 @@ def _normalize_vary_dates(rows: list[dict[str, str]]) -> None:
                 row["vary_outcomes"] = rewrite_outcomes(raw, vary_date_iso)
             except (ValueError, DistributionError):
                 pass
+
+
+DATE_REFS = "\0date_refs"
+"""The key under which ``_resolve_relative_dates`` records a calendar row's
+relative dates (#281), ``{column: [marker, months]}`` as JSON, for
+``calendar_event.date_refs_json``. Not a column, like ``ORIGIN``."""
+
+
+def _date_central(row: Mapping[str, str]) -> date | None:
+    """A date-varying row's base-case date (member 0's, ADR-006 §9), or
+    ``None`` when its bounds don't parse (``_validate_calendar_vary`` says
+    why)."""
+    def ordinal(text: str, _role: object = None) -> float:
+        return float(date.fromisoformat(text).toordinal())
+    try:
+        distribution = (row.get("vary_distribution") or "").strip()
+        if distribution == "discrete":
+            day = Discrete(parse_outcomes(row.get("vary_outcomes") or "", ordinal)).central_int()
+        elif distribution in ("uniform", "triangular"):
+            low, high = ordinal(row["vary_low"]), ordinal(row["vary_high"])
+            if distribution == "uniform":
+                day = Uniform(low=low, high=high).central_int()
+            else:
+                mode = ordinal(row["vary_mode"]) if row.get("vary_mode") else (low + high) / 2
+                day = Triangular(low, mode, high).central_int()
+        else:
+            return None
+        return date.fromordinal(day)
+    except (KeyError, ValueError, DistributionError):
+        return None
+
+
+def _resolve_relative_dates(
+    rows: list[dict[str, str]], issues: list[str], unused: list[str],
+) -> None:
+    """Rewrite each calendar date written relative to a ``date_marker`` row
+    (``NAME+2y``, #281) to the date it has against the markers' base case,
+    recording the reference under ``DATE_REFS`` for the ensemble step to
+    recompute from each member's drawn markers. So everything after this
+    reads literal dates, and a plain run needs nothing more.
+
+    A marker's base case is its date, or its distribution's central value
+    when it varies, which is member 0's draw. A marker may itself be relative
+    to another marker; a cycle, or a reference to a name that is no marker,
+    is reported. A marker nothing refers to is reported as unused."""
+    located = list(_located(rows, "calendar.csv"))
+    markers = {
+        (row.get("name") or "").strip(): (where, row) for where, row in located
+        if row.get("kind") == registries.DATE_MARKER_KIND and (row.get("name") or "").strip()
+    }
+    names = {(row.get("name") or "").strip() for _, row in located}
+    refs: dict[int, dict[str, Any]] = {}
+    for where, row in located:
+        found = {}
+        for col in registries.RELATIVE_DATE_COLUMNS:
+            raw = (row.get(col) or "").strip()
+            rel = parse_relative_date(raw) if raw else None
+            if rel is None:
+                continue
+            if rel.anchor not in markers:
+                what = (
+                    f"names '{rel.anchor}', which is not a date_marker" if rel.anchor in names
+                    else f"is not a valid {MONTH_FORMAT_HINT}, nor relative to a date_marker "
+                         f"(NAME, NAME+Nm, NAME-Ny): no date_marker is named '{rel.anchor}'"
+                )
+                issues.append(f"{where} ({row.get('name') or '?'}): {col} '{raw}' {what}")
+                row[col] = ""
+                continue
+            found[col] = rel
+        if found:
+            refs[id(row)] = found
+
+    base: dict[str, date | None] = {}
+
+    def place(row: dict[str, str]) -> None:
+        for col, rel in refs.get(id(row), {}).items():
+            anchor = base.get(rel.anchor)
+            role = registries.RELATIVE_DATE_COLUMNS[col]
+            row[col] = "" if anchor is None else place_month(anchor, rel.months, role).isoformat()
+        if id(row) in refs:
+            row[DATE_REFS] = json.dumps(
+                {c: [r.anchor, r.months] for c, r in refs[id(row)].items()}, separators=(",", ":"),
+            )
+
+    def resolve(name: str, path: tuple[str, ...]) -> date | None:
+        if name in base:
+            return base[name]
+        where, row = markers[name]
+        if name in path:
+            cycle = [*path[path.index(name):], name]
+            issues.append(f"{where} ({name}): date_marker cycle {' -> '.join(cycle)}")
+            base[name] = None
+            return None
+        for rel in refs.get(id(row), {}).values():
+            resolve(rel.anchor, (*path, name))
+        place(row)
+        varying = (row.get("vary_distribution") or "").strip() and (
+            (row.get("vary_target") or "").strip() == "date")
+        if varying:
+            central = base[name] = _date_central(row)
+            if not (row.get("date") or "").strip() and central is not None:
+                # The date of a row whose date varies is a placeholder.
+                row["date"] = central.isoformat()
+        else:
+            try:
+                base[name] = date.fromisoformat(month_end_iso(row.get("date") or ""))
+            except ValueError:
+                base[name] = None
+        return base[name]
+
+    for name in markers:
+        resolve(name, ())
+    for _, row in located:
+        if row.get("kind") != registries.DATE_MARKER_KIND:
+            place(row)
+    referenced = {rel.anchor for found in refs.values() for rel in found.values()}
+    for name, (where, _row) in markers.items():
+        if name not in referenced:
+            unused.append(
+                f"{where} ({name}): no row's date refers to this date_marker yet, so it "
+                "affects nothing (fine for work in progress, or a marker for child scenarios)"
+            )
 
 
 def _find_override_file(
@@ -2944,6 +3072,8 @@ def _validate_calendar(
             _validate_transfer_balance(row, where, leaves, chain_names, asset_accounts, issues)
         elif kind == "swap_aux_table":
             _validate_swap_aux_table_row(row, where, issues)
+        elif kind == registries.DATE_MARKER_KIND:
+            _validate_date_marker(row, where, issues)
         params_json = row.get("params_json") or "{}"
         try:
             if not isinstance(json.loads(params_json), dict):
@@ -2966,6 +3096,32 @@ def _validate_calendar(
             else:
                 seen_names[name] = where
         _validate_calendar_vary(row, where, kind, name, issues)
+
+
+_MARKER_FORBIDDEN_COLUMNS: tuple[str, ...] = (
+    "scheduled_name", "account_1", "lot_1", "account_2", "lot_2", "series", "amount",
+    "param_date", "tax_character", "params_json", "vary_ramp_months",
+    "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start",
+)
+"""Columns a ``date_marker`` row (#281) must leave blank: it is a name and a
+date, which may vary and correlate like any date row's, and nothing else."""
+
+
+def _validate_date_marker(row: dict[str, str], where: str, issues: list[str]) -> None:
+    """A ``date_marker`` row (#281) has a name, a date, and nothing an event
+    would read."""
+    name = (row.get("name") or "").strip()
+    where = f"{where} ({name or '?'})"
+    if not name:
+        issues.append(f"{where}: a date_marker row needs a name")
+    if not (row.get("date") or "").strip() and not (row.get("vary_distribution") or "").strip():
+        issues.append(f"{where}: a date_marker row needs a date")
+    stray = [c for c in _MARKER_FORBIDDEN_COLUMNS if (row.get(c) or "").strip()]
+    if stray:
+        issues.append(
+            f"{where}: a date_marker row has no {', '.join(stray)} -- only a name, a date, "
+            "a description, tags, and a date's vary_* and correlation columns"
+        )
 
 
 def _validate_transfer_balance(
@@ -4523,8 +4679,8 @@ def _write_intent(
             "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months, "
             "vary_correlate_with, vary_correlation, vary_tail_dependence, "
             "vary_process, vary_persistence, vary_shock_sd, vary_process_start, "
-            "vary_outcomes) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_outcomes, date_refs_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -4554,6 +4710,7 @@ def _write_intent(
                 _opt_int(ce.get("vary_shock_sd")),
                 ce.get("vary_process_start") or None,
                 ce.get("vary_outcomes") or None,
+                ce.get(DATE_REFS) or None,
             ),
         )
         _insert_tags(con, inserted_id(cur), ce.get("tags", ""),
