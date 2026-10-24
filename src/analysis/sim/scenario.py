@@ -18,7 +18,13 @@ import pandas as pd
 from analysis.sim.loader import LoadError
 from analysis.sim import chain_edit, registries, units
 from analysis.sim.dates import month_end_iso
-from analysis.sim.lineage import default_description, load_order, parse_parents, read_parents
+from analysis.sim.lineage import (
+    default_description,
+    load_order,
+    parse_parents,
+    read_parents,
+    scenario_dir,
+)
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.readme import parse_readme_summary
 from analysis.sim import cli
@@ -225,11 +231,11 @@ def scenario_summaries(data_dir: Path, scenarios_dir: Path | None = None) -> lis
     scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
     summaries = []
     for name in list_scenario_names(data_dir, scenarios):
-        rows = {n: _scenario_row(scenarios / n) for n in load_order(scenarios, name)}
+        rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in load_order(scenarios, name)}
         summaries.append(ScenarioSummary(
             name=name,
-            parents=read_parents(scenarios / name),
-            description=_one_line_description(scenarios / name, rows[name]),
+            parents=read_parents(scenario_dir(scenarios, name)),
+            description=_one_line_description(scenario_dir(scenarios, name), rows[name]),
             start=_merged_date(rows, name, "start"),
             end=_merged_date(rows, name, "end"),
             seed=_merged_seed(rows, name),
@@ -244,7 +250,7 @@ def ensemble_settings(
     """Scenario ``name``'s merged ``(seed, ensemble_size)``, as
     :func:`scenario_summaries` reports them."""
     scenarios = Path(data_dir) / "scenarios"
-    rows = {n: _scenario_row(scenarios / n) for n in load_order(scenarios, name)}
+    rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in load_order(scenarios, name)}
     return _merged_seed(rows, name), _merged_ensemble_size(rows, name)
 
 

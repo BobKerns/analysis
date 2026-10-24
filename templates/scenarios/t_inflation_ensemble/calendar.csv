@@ -1,0 +1,12 @@
+date,kind,name,scheduled_name,account_1,lot_1,account_2,lot_2,series,amount,param_date,tax_character,params_json,description,tags,vary_target,vary_distribution,vary_low,vary_high,vary_median,vary_sd,vary_skew,vary_tailweight,vary_mode,vary_ramp_months,vary_outcomes,vary_process,vary_persistence,vary_innovation_sd,vary_process_start,vary_correlate_with,vary_correlation,vary_tail_dependence
+2027-01-31,set_rate,cpi_path,,,,,,cpi,2.5%,,,"{""aux_kind"": ""inflation""}",CPI-U's yearly path,,amount,truncated_normal,,,2.5%,0.5%,,,,,,ar1,0.4,1.4%,,cpi_factor,1.0,
+2027-01-31,set_rate,cpi_w_path,,,,,,cpi_w,2.5%,,,"{""aux_kind"": ""inflation""}",CPI-W's yearly path,,amount,truncated_normal,,,2.5%,0.5%,,,,,,ar1,0.3,1.5%,,cpi_w_factor,1.0,
+2027-01-31,set_rate,cpi_e_path,,,,,,cpi_e,2.7%,,,"{""aux_kind"": ""inflation""}",R-CPI-E's yearly path,,amount,truncated_normal,,,2.7%,0.5%,,,,,,ar1,0.4,1.2%,,cpi_e_factor,1.0,
+2027-01-31,set_rate,chained_cpi_path,,,,,,chained_cpi,2.2%,,,"{""aux_kind"": ""inflation""}",chained CPI-U's yearly path,,amount,truncated_normal,,,2.2%,0.5%,,,,,,ar1,0.35,1.3%,,chained_cpi_factor,1.0,
+2027-01-31,set_rate,housing_path,,,,,,housing,3.2%,,,"{""aux_kind"": ""inflation""}",shelter's yearly path,,amount,truncated_normal,,,3.2%,0.5%,,,,,,ar1,0.7,1%,,housing_factor,1.0,
+2027-01-31,set_rate,food_path,,,,,,food,2.8%,,,"{""aux_kind"": ""inflation""}",food's yearly path,,amount,truncated_normal,,,2.8%,0.4%,,,,,,ar1,0.3,1.8%,,food_factor,1.0,
+2027-01-31,set_rate,apparel_path,,,,,,apparel,0.5%,,,"{""aux_kind"": ""inflation""}",apparel's yearly path,,amount,truncated_normal,,,0.5%,0.6%,,,,,,ar1,0.3,2.1%,,apparel_factor,1.0,
+2027-01-31,set_rate,fuel_path,,,,,,fuel,2.5%,,,"{""aux_kind"": ""inflation""}",energy's yearly path,,amount,truncated_normal,,,2.5%,2%,,,,,,ar1,0,10%,,fuel_factor,1.0,
+2027-01-31,set_rate,medical_path,,,,,,medical,3.5%,,,"{""aux_kind"": ""inflation""}",medical care's yearly path,,amount,truncated_normal,,,3.5%,0.8%,,,,,,ar1,0.6,1.2%,,medical_factor,1.0,
+2027-01-31,set_rate,education_path,,,,,,education,4%,,,"{""aux_kind"": ""inflation""}",tuition's yearly path,,amount,truncated_normal,,,4%,1%,,,,,,ar1,0.9,0.7%,,education_factor,1.0,
+2027-01-31,set_rate,medicare_part_b_path,,,,,,medicare_part_b,5.5%,,,"{""aux_kind"": ""inflation""}",the Part B premium's yearly path,,amount,truncated_normal,,,5.5%,1.5%,,,,,,ar1,0.1,6.5%,,medicare_part_b_factor,1.0,

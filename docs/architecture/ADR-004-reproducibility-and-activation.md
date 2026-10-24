@@ -58,6 +58,8 @@ The single-row `simulation_run` manifest ([ADR-002](ADR-002-storage-schema.md) �
 
 **Scenario tree id.** Per [ADR-002](ADR-002-storage-schema.md), this is a content-addressed git tree SHA covering the data repo paths the scenario load can read: `scenarios/<name>/`, the folder of every scenario reached through `parent_scenario` (mix-ins included), `persons.csv`, `securities.csv`, `allocations.csv`, `aux/`, `prices/`, and `itemizations/`. Clean repo → use `git ls-tree HEAD -- <paths>` and `git mktree` to assemble the synthetic tree object. Dirty repo → use a sidecar index (`GIT_INDEX_FILE=<tmp> git add -- <paths>; git write-tree`) and optionally pin it under `refs/analysis-dirty/<tree-id>` so the object stays reachable through GC.
 
+A template scenario the data repo doesn't have, read from the code repository's `templates/scenarios/` ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.5a), is left out of that scope: it isn't in the data repo, and `code_version` (with `code_dirty`) already pins it.
+
 This means: edit one comment in an unrelated CSV, `scenario_tree_id` doesn't change. Edit a referenced file, it does. The key tracks what the scenario actually depends on, not the whole repo's state.
 
 ### 3. Gating logic at run start
@@ -234,3 +236,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#195](https://github.com/BobKerns/analysis/issues/195): `sim load` and `sim run` prune old runs and batches by the data repo's `.retention.yaml`, written with defaults when missing and kept out of git by `activate` (§10).
 - [#236](https://github.com/BobKerns/analysis/issues/236): `sim switch` shows the current scenario or makes a named one current (§4a).
 - [#233](https://github.com/BobKerns/analysis/issues/233): a command that changes the current scenario, including by renaming or deleting it, says so (§4a).
+- [#282](https://github.com/BobKerns/analysis/issues/282): a template scenario read from the code repository is covered by `code_version`, not `scenario_tree_id` (§2).

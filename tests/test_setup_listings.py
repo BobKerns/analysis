@@ -63,7 +63,7 @@ def test_calendar_list_numbers_rows_as_edit_does_and_marks_overrides(
     assert by_target["rent"].defined_in == "this scenario"
     assert by_target["salary_alice"].defined_in == "retire_alice"
     factor = next(e for e in listed if e.row["name"] == "core_inflation")
-    assert factor.defined_in == "base"
+    assert factor.defined_in == "t_inflation_factors"
     # Date order, latent factors (no date) first.
     dates = [e.row["date"] for e in listed]
     assert dates == sorted(dates)
@@ -219,7 +219,10 @@ def test_scenario_show_marks_inherited_settings_and_finds_the_latest_run(
     shown = setup_listings.scenario_show(child.parent.parent, child, runs_dir)
 
     assert (shown.parent, shown.mixins) == ("recipe", ["base"])
-    assert shown.load_order == ["base", "retire_alice", "recipe", "child"]
+    assert shown.load_order == [
+        "t_inflation_factors", "t_inflation_series", "t_market_factors", "t_market_series",
+        "base", "retire_alice", "recipe", "child",
+    ]
     assert shown.reserve == ("$250,000.00", True)
     assert shown.ensemble_size is not None and shown.ensemble_size.inherited
     assert shown.seed is not None and (shown.seed.value, shown.seed.inherited) == (7, False)

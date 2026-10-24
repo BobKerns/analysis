@@ -1,0 +1,2 @@
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+t_inflation_factors,"Inflation's latent factors and their correlations, and nothing else.",2026-01-01,2056-12-31,42,,,{}

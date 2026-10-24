@@ -26,6 +26,7 @@ from pathlib import Path
 
 from analysis.sim import chain_edit, registries
 from analysis.sim.lineage import default_description, load_order, parse_parents
+from analysis.sim.lineage import scenario_dir as _folder_of
 from analysis.sim.loader import CURRENT_SCENARIO_FILE, LoadError, load_scenario
 from analysis.sim.schema import connect_sim_file
 
@@ -59,7 +60,7 @@ def scope(scenarios_dir: Path, scenario: str, defines: Defines) -> list[str]:
     separate names, and only ``scenario``'s is renamed.
     """
     orders = {name: load_order(scenarios_dir, name) for name in scenario_folders(scenarios_dir)}
-    pending = [each for each in load_order(scenarios_dir, scenario) if defines(scenarios_dir / each)]
+    pending = [each for each in load_order(scenarios_dir, scenario) if defines(_folder_of(scenarios_dir, each))]
     affected: set[str] = set()
     while pending:
         current = pending.pop()
@@ -68,7 +69,7 @@ def scope(scenarios_dir: Path, scenario: str, defines: Defines) -> list[str]:
         affected.add(current)
         pending += [name for name, order in orders.items() if current in order and name not in affected]
         pending += [each for each in orders.get(current, [current])
-                    if each not in affected and defines(scenarios_dir / each)]
+                    if each not in affected and defines(_folder_of(scenarios_dir, each))]
     return sorted(affected)
 
 
@@ -79,7 +80,7 @@ def clashes(scenarios_dir: Path, affected: Iterable[str], defines: Defines) -> d
     found: dict[str, str] = {}
     for each in affected:
         for source in reversed(load_order(scenarios_dir, each)):
-            if defines(scenarios_dir / source):
+            if defines(_folder_of(scenarios_dir, source)):
                 found[each] = source
                 break
     return found

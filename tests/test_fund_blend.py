@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR
+
 from analysis.sim.engine import _amount_percent_of_balance, _blend_slices_at, run_scenario
 from analysis.sim.loader import LoadResult, growth_rule_name
 
@@ -64,11 +66,12 @@ def test_a_fund_blends_the_prototypes_default_class_series(
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
 ) -> None:
     """#80: the prototype's root scenario ships rate__stock_us (7%) and
-    rate__bond (4%) (in ``base`` since #91), so a fund held in any scenario
-    derived from it blends with no series of its own. (``blended_fund``
-    replaced them in retire_alice; put the defaults back.)"""
+    rate__bond (4%) (from the ``t_market_series`` template since #282), so a
+    fund held in any scenario derived from it blends with no series of its
+    own. (``blended_fund`` replaced them in retire_alice; put the defaults
+    back.)"""
     for name in ("stock_us", "bond"):
-        shutil.copy(prototype_data / "scenarios" / "base" / "series" / f"rate__{name}.csv",
+        shutil.copy(TEMPLATE_SCENARIOS_DIR / "t_market_series" / "series" / f"rate__{name}.csv",
                     retire_alice_csv("series"))
     result = load_test_copy()
     _, params, _ = _growth_rule(result.intent_path)

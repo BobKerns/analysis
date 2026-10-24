@@ -24,7 +24,9 @@ from analysis.sim.staging import _affected_scenarios
 # The scenario the tests derive from, and its own load order: it inherits
 # the prototype's root, `base` (#91).
 PARENT = "retire_alice"
-PARENT_LINE = ["base", PARENT]
+# The prototype's base builds on the inflation and market series templates.
+TEMPLATE_LINE = ["t_inflation_factors", "t_inflation_series", "t_market_factors", "t_market_series"]
+PARENT_LINE = [*TEMPLATE_LINE, "base", PARENT]
 
 
 def _amounts(intent_path: Path) -> dict[str, int]:
@@ -186,7 +188,7 @@ def test_description_view_shows_parents_mixins_and_load_order(
     assert isinstance(md, str)
     assert md.endswith(
         "**Parent:** `main`; **mix-ins:** `mix`  \n"
-        f"**Load order:** `base` → `{PARENT}` → `main` → `mix` → `combo`"
+        "**Load order:** " + " → ".join(f"`{n}`" for n in [*PARENT_LINE, "main", "mix", "combo"])
     )
 
 

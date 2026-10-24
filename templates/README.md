@@ -11,6 +11,16 @@ to `data/shared/sim`, where it loads as is. **Every header row matches the
 corresponding DDL column name exactly** to minimize confusion when reading the
 SQL schema alongside the source CSV.
 
+`scenarios/base` builds on the template scenarios, the `scenarios/t_*`
+folders: inflation and market factors, long-run rates, and year-by-year
+paths (see "Template scenarios" in
+[the calibration guide](../docs/guides/historical-calibration.md#template-scenarios)).
+Don't copy those folders: a `t_` name your data repo has no folder for is
+read from this code repository, so the templates stay current as the code
+changes. `link-data.sh --template` leaves them out of its copy. To change
+one, copy just that folder into your `scenarios/`; it then replaces the
+template whole.
+
 ## Layout
 
 ```text

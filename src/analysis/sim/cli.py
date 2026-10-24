@@ -119,7 +119,14 @@ from analysis.sim.life_table import equivalent_multiplier
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day, parse_vary_date,
 )
-from analysis.sim.lineage import default_description, load_order, parse_parents, read_parents
+from analysis.sim.lineage import (
+    default_description,
+    load_order,
+    parse_parents,
+    read_parents,
+)
+from analysis.sim.lineage import is_template as _is_template
+from analysis.sim.lineage import scenario_dir as _folder_of
 from analysis.sim.overlay import (
     CalendarRow as _CalendarRow,
     Overlaid as _Overlaid,
@@ -7080,12 +7087,18 @@ def _read_values_rows(path: Path) -> list[dict[str, str]]:
     return [{str(k): str(v) for k, v in record.items()} for record in frame.to_dict("records")]
 
 
+def _lineage_dir(scenario_dir: Path, name: str) -> Path:
+    """The folder of ``name``, a scenario in ``scenario_dir``'s lineage: a
+    sibling folder, or a template from the code repository."""
+    return _folder_of(scenario_dir.parent, name)
+
+
 def _scenario_lots(scenario_dir: Path, name: str) -> list[_Lot]:
     """Every lot of scenario ``name``, overlaid down its load order as the
     loader overlays them, in the order they first appear."""
     lots: dict[tuple[str, str], _Lot] = {}
     for scenario_name in load_order(scenario_dir.parent, name):
-        rows = _read_values_rows(scenario_dir.parent / scenario_name / "account_lots.csv")
+        rows = _read_values_rows(_lineage_dir(scenario_dir, scenario_name) / "account_lots.csv")
         for index, row in enumerate(rows):
             key = (row["account_name"].strip(), row["lot"].strip() or registries.DEFAULT_LOT)
             prior = lots.get(key)
@@ -7865,7 +7878,7 @@ def lot_delete(
     references = [
         f"  {name}: {line.strip()}"
         for name in family
-        for line in _lot_reference_rows(scenario_dir.parent / name, chosen.account, chosen.lot)
+        for line in _lot_reference_rows(_lineage_dir(scenario_dir, name), chosen.account, chosen.lot)
     ]
     if references:
         click.echo("still named by:")
@@ -8987,7 +9000,7 @@ def _editing_chain(
         owner = chain_edit.defining_scenario(scenarios, edit.name, name)
         if owner is None:
             raise click.ClickException(_no_chain(edit.con, name, edit.name))
-        source = chain_edit.chain_file(scenarios / owner, name)
+        source = chain_edit.chain_file(_folder_of(scenarios, owner), name)
         assert source is not None  # defining_scenario found it
         steps = chain_edit.read_steps(source)
         yield edit, name, steps
@@ -9882,6 +9895,11 @@ def _rename_across(
     if not affected:
         raise click.ClickException(
             missing() if missing else f"no {what} {old!r} in {edit.name} or the scenarios it builds on")
+    if templates := [each for each in affected if _is_template(scenarios, each)]:
+        raise click.ClickException(
+            f"{what} {old!r} is defined in the template scenario{'s' if len(templates) > 1 else ''} "
+            f"{', '.join(templates)}, which a data repo doesn't change; to use another name, copy "
+            "the template's folder into scenarios/ to replace it whole")
     if found := rename.clashes(scenarios, affected, (taken or defines)(new)):
         raise click.ClickException(
             f"{'an' if what.startswith(('a', 'e', 'i', 'o', 'u')) else 'a'} {what} {new!r} already applies in "

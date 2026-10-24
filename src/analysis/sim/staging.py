@@ -33,6 +33,7 @@ from analysis.sim.loader import (
     load_scenario,
     resolve_scenario_name,
 )
+from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, is_template
 from analysis.sim.schema import connect_sim_file
 
 SCENARIOS = "scenarios"
@@ -44,6 +45,15 @@ class ScenarioAlreadyBroken(LoadError):
     def __init__(self, scenario: str, issues: list[str]) -> None:
         super().__init__(issues)
         self.scenario = scenario
+
+
+def template_refusal(name: str) -> str:
+    """Why an edit can't write to template scenario ``name`` (ADR-003 §4.5a)."""
+    return (
+        f"{name} is a template scenario, read from {TEMPLATE_SCENARIOS_DIR}, and is not "
+        f"edited from a data repo: build on it with 'sim scenario create NEW {name}', "
+        f"or copy its folder into scenarios/ to replace it whole"
+    )
 
 
 class EditRejected(LoadError):
@@ -268,6 +278,8 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedE
     """
     real = Path(data_dir).resolve()
     name = resolve_scenario_name(real, scenario).name
+    if is_template(real / SCENARIOS, name):
+        raise EditRejected([template_refusal(name)], scenario=name, own=[template_refusal(name)])
     with ExitStack() as stack:
         intent_dir = Path(stack.enter_context(tempfile.TemporaryDirectory()))
         try:
@@ -299,6 +311,12 @@ def staged_edit(data_dir: Path | str, scenario: str | None) -> Generator[StagedE
             rel.parts[1] for rel in (*changed, *removed)
             if rel.parts[0] == SCENARIOS and len(rel.parts) > 2
         }
+        # A folder written for a template name would replace the whole
+        # template with just the edited files.
+        templates = sorted(n for n in touched if is_template(real / SCENARIOS, n))
+        if templates:
+            refusals = [template_refusal(n) for n in templates]
+            raise EditRejected(refusals, scenario=name, own=refusals)
         # A top-level file (persons.csv) is shared by every scenario, so
         # every scenario must still load with it.
         if any(rel.parts[0] != SCENARIOS for rel in (*changed, *removed)):

@@ -15,7 +15,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from analysis.sim import registries
-from analysis.sim.lineage import load_order
+from analysis.sim.lineage import load_order, scenario_dir
 
 __all__ = [
     "ACCOUNT_COLUMNS", "CHAIN_COLUMNS", "LOT_COLUMNS", "REFERENCE_COLUMNS", "TAX_COLUMNS", "chain_file",
@@ -87,7 +87,7 @@ def defining_scenario(scenarios_dir: Path, scenario: str, name: str) -> str | No
     chain."""
     found = None
     for each in load_order(scenarios_dir, scenario):
-        if chain_file(scenarios_dir / each, name) is not None:
+        if chain_file(scenario_dir(scenarios_dir, each), name) is not None:
             found = each
     return found
 

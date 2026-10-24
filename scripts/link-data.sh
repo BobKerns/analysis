@@ -52,6 +52,9 @@ if [ "$mode" = template ]; then
     # cspell.json loads this dictionary; the template data adds no words.
     : > "$SHARED/.cspell/data-words.txt"
     cp -R templates "$SHARED/sim"
+    # The t_ template scenarios are read from this repo's templates/ (ADR-003
+    # §4.5a); a copy in the data would replace them and go stale.
+    find "$SHARED/sim/scenarios" -mindepth 1 -maxdepth 1 -name 't_*' -exec rm -r {} +
     printf '%s\n' "$REPO" > "$SHARED/sim/.analysis"
     echo "Built template data in $SHARED, used as 'test'."
     echo "Activate it with: source $SHARED/sim/activate-analysis"

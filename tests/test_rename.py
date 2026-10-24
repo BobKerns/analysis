@@ -233,26 +233,39 @@ def test_scheduled_rename_follows_calendar_rows(test_data_dir: Path, test_scenar
     loads("retire_alice")
 
 
-def test_calendar_rename_follows_correlation_parents(test_data_dir: Path, test_scenarios_dir: Path,
+def test_calendar_rename_follows_correlation_parents(test_data_dir: Path, local_templates: Path,
                                                      loads: Callable[[str], None]) -> None:
     result = _sim(test_data_dir, "calendar", "rename", "core_inflation", "inflation_core")
     assert result.exit_code == 0, result.output
-    assert "base: calendar.csv" in result.output
-    calendar = test_scenarios_dir / "base" / "calendar.csv"
+    assert "t_inflation_factors: calendar.csv" in result.output
+    calendar = local_templates / "t_inflation_factors" / "calendar.csv"
     assert "inflation_core" in _column(calendar, "name")
     assert "core_inflation" not in _column(calendar, "vary_correlate_with")
     assert "inflation_core" in _column(calendar, "vary_correlate_with")
     loads("retire_alice")
 
 
-def test_series_rename_moves_its_file_and_references(test_data_dir: Path, test_scenarios_dir: Path,
+def test_series_rename_moves_its_file_and_references(test_data_dir: Path, local_templates: Path,
                                                      loads: Callable[[str], None]) -> None:
     result = _sim(test_data_dir, "series", "rename", "food", "groceries")
     assert result.exit_code == 0, result.output
-    assert "base: series/inflation__food.csv -> series/inflation__groceries.csv" in result.output
-    assert not (test_scenarios_dir / "base" / "series" / "inflation__food.csv").exists()
-    assert (test_scenarios_dir / "base" / "series" / "inflation__groceries.csv").is_file()
+    assert "t_inflation_series: series/inflation__food.csv -> series/inflation__groceries.csv" in result.output
+    assert not (local_templates / "t_inflation_series" / "series" / "inflation__food.csv").exists()
+    assert (local_templates / "t_inflation_series" / "series" / "inflation__groceries.csv").is_file()
     loads("retire_alice")
+
+
+@pytest.mark.parametrize(("what", "old", "new"), [
+    ("series", "food", "groceries"),
+    ("calendar", "core_inflation", "inflation_core"),
+])
+def test_a_rename_of_what_a_template_defines_is_refused(
+    test_data_dir: Path, what: str, old: str, new: str,
+) -> None:
+    """The code repository's templates aren't the data repo's to change."""
+    result = _sim(test_data_dir, what, "rename", old, new)
+    assert result.exit_code != 0
+    assert "is defined in the template scenario" in result.output, result.output
 
 
 def test_series_rename_leaves_a_same_named_account_alone(test_data_dir: Path, test_scenarios_dir: Path,
@@ -269,7 +282,7 @@ def test_series_rename_leaves_a_same_named_account_alone(test_data_dir: Path, te
 @pytest.mark.parametrize(("old", "new", "message"), [
     ("cpi", "prices", "shared aux/inflation__cpi.csv"),
     ("stock", "equities", "is an asset class"),
-    ("food", "housing", "a series 'housing' already applies in"),
+    ("brokerage_growth", "Asset_Checking", "a series 'Asset_Checking' already applies in"),
     ("food", "two words", "one word, without spaces"),
 ])
 def test_series_rename_refuses(test_data_dir: Path, old: str, new: str, message: str) -> None:
@@ -290,9 +303,9 @@ def test_series_rename_refuses_a_series_read_by_name(test_data_dir: Path, write_
         assert result.exit_code != 0 and message in result.output, result.output
 
 
-def test_series_rename_leaves_other_aux_kinds_alone(test_scenarios_dir: Path) -> None:
+def test_series_rename_leaves_other_aux_kinds_alone(local_templates: Path) -> None:
     # A symbol's prices or a state's brackets end in __<name> too, but aren't a series.
-    folder = test_scenarios_dir / "base"
+    folder = local_templates / "t_inflation_series"
     (folder / "aux").mkdir(exist_ok=True)
     prices = folder / "aux" / "security_price__food.csv"
     prices.write_text("date,price\n")

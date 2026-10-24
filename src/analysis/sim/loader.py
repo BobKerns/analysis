@@ -37,7 +37,14 @@ from analysis.sim.distributions import (
     resolve_truncated_normal_bounds,
     rewrite_outcomes,
 )
-from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents, read_parents
+from analysis.sim.lineage import (
+    TEMPLATE_SCENARIOS_DIR,
+    ScenarioCycleError,
+    load_order,
+    parse_parents,
+    read_parents,
+)
+from analysis.sim.lineage import scenario_dir as _scenario_dir
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -378,7 +385,7 @@ def resolve_scenario_name(
         # A scenario is a folder directly under scenarios/: a path such as
         # "../x" never names one, even when it reaches a folder.
         if (scenario in (".", "..") or Path(scenario).name != scenario
-                or not (scenarios_dir / scenario).is_dir()):
+                or not _scenario_dir(scenarios_dir, scenario).is_dir()):
             raise LoadError([f"scenario not found: {scenarios_dir / scenario}"])
         name = scenario
     else:
@@ -402,7 +409,7 @@ def resolve_scenario_name(
         name=name,
         data_dir=data_dir,
         scenarios_dir=scenarios_dir,
-        path=scenarios_dir / name,
+        path=_scenario_dir(scenarios_dir, name),
         intent_dir=resolved_intent_dir,
         intent_path=resolved_intent_dir / f"{name}.sqlite3",
         runs_dir=resolved_runs_dir,
@@ -415,7 +422,9 @@ def resolve_scenario_name(
 
 
 def list_scenario_names(data_dir: Path, scenarios_dir: Path | None = None) -> list[str]:
-    """Scenario folder names under data_dir/scenarios, sorted."""
+    """Scenario folder names under data_dir/scenarios, sorted. The code
+    repository's template scenarios aren't listed: they're the data repo's
+    to build on, not its own, and ``sim all`` shouldn't run them."""
     scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
     if not scenarios.is_dir():
         raise LoadError([f"no scenarios/ in {data_dir}"])
@@ -425,7 +434,8 @@ def list_scenario_names(data_dir: Path, scenarios_dir: Path | None = None) -> li
 def _default_scenario_name(data_dir: Path, scenarios: Path, scenarios_dir: Path | None = None) -> str:
     recorded = read_current_scenario(data_dir)
     if recorded:
-        if not ((scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios") / recorded).is_dir():
+        if not _scenario_dir(scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios",
+                             recorded).is_dir():
             raise LoadError([
                 f"{current_scenario_path(data_dir)} names a missing scenario: "
                 f"{recorded!r}"
@@ -690,7 +700,7 @@ def _read_scenario_inputs(
     meta: dict[str, Any] = {}
     account_from: dict[str, str] = {}  # account name -> the scenario whose row is in force
     for name in _strict_load_order(scenarios_dir, scenario_name):
-        scenario_dir = scenarios_dir / name
+        scenario_dir = _scenario_dir(scenarios_dir, name)
         if not scenario_dir.is_dir():
             raise LoadError([f"scenario folder not found: {scenario_dir}"])
 
@@ -926,7 +936,7 @@ def load_scenario(
     """
     data_dir = Path(data_dir).resolve()
     scenarios_dir = Path(scenarios_dir or (data_dir / "scenarios"))
-    scenario_dir = scenarios_dir / scenario_name
+    scenario_dir = _scenario_dir(scenarios_dir, scenario_name)
     if not scenario_dir.is_dir():
         raise LoadError([f"scenario folder not found: {scenario_dir}"])
     if intent_dir is None:
@@ -941,7 +951,7 @@ def load_scenario(
         raise LoadError([f"intent_path {intent_path} is not within intent_dir {intent_dir}"])
 
     lineage_names = _scenario_lineage_names(scenarios_dir, scenario_name)
-    scenario_dirs = [scenarios_dir / name for name in lineage_names]
+    scenario_dirs = [_scenario_dir(scenarios_dir, name) for name in lineage_names]
     money_resolver = _MoneyReferenceResolver(data_dir, scenario_dirs)
 
     issues: list[str] = []
@@ -964,7 +974,7 @@ def load_scenario(
                               scenarios_dir=scenarios_dir,
                               account_clashes=(account_clashes := []))
     _normalize_vary_dates(calendar_rows)
-    parents = read_parents(scenarios_dir / scenario_name)
+    parents = read_parents(scenario_dir)
     load_order_names = _strict_load_order(scenarios_dir, scenario_name)
     # A scenario folder's own README.md, if there is one, is the scenario's
     # real description -- scenario.csv's own description column is only the
@@ -1162,9 +1172,14 @@ person would open, not the row's position in the merged list (#136)."""
 
 def _data_label(path: Path, data_dir: Path) -> str:
     """``path`` as a message names it: relative to the data repo when it's
-    inside it, so two scenarios' files of the same name are told apart."""
+    inside it, so two scenarios' files of the same name are told apart, and
+    a template's as ``templates/scenarios/...`` in the code repository."""
     try:
         return path.relative_to(data_dir).as_posix()
+    except ValueError:
+        pass
+    try:
+        return path.relative_to(TEMPLATE_SCENARIOS_DIR.parent.parent).as_posix()
     except ValueError:
         return path.as_posix()
 
@@ -3771,7 +3786,7 @@ def _read_chain_files(
     scenarios_dir = data_dir / "scenarios"
     chains: dict[str, tuple[str, list[dict[str, str]]]] = {}
     for name in _strict_load_order(scenarios_dir, scenario_name):
-        chains_dir = scenarios_dir / name / "chains"
+        chains_dir = _scenario_dir(scenarios_dir, name) / "chains"
         if not chains_dir.is_dir():
             continue
         for path in sorted(chains_dir.glob("*.csv")):
