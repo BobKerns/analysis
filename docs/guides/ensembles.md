@@ -255,14 +255,17 @@ sim calendar add set-rate crash_start+1y stock 9 --scenario inflation_1
 - Each member draws the marker once, and every row dated from it moves
   with it, so the event keeps its shape. A row whose amount varies can
   still move with the marker, so a row in effect varies both.
-- A marker drawn past the scenario's end drops the whole event for that
-  member, since rows dated after the end do nothing.
+- A marker drawn past the scenario's end drops every row dated on or after
+  it for that member, since rows dated after the end do nothing. A row
+  dated before the marker (`NAME-6m`) still runs if its own date falls
+  inside the scenario.
 - The marker is the parameter that sensitivity runs and the draws database
   report. It can also be correlated with other rows, as below.
 - Changing when the event happens is a one-row edit of the marker; a
   scenario that uses an episode as a mix-in overrides only the marker, by
   name. `sim calendar rename` of a marker rewrites the dates that refer to
-  it, and `sim calendar delete` refuses a marker rows are still dated from.
+  it, and `sim calendar delete` refuses to delete a marker that rows are still
+  dated from.
 
 [Historical calibration](historical-calibration.md#a-long-run-rate-with-episodes-on-top)
 works through an inflation episode built this way.

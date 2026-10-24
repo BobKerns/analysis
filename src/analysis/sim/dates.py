@@ -32,7 +32,7 @@ from typing import Literal
 __all__ = [
     "MONTH_FORMAT_HINT", "VaryBoundRole", "parse_day", "parse_month", "month_end_iso",
     "parse_vary_date", "vary_date_iso", "is_full_date", "is_month_or_date",
-    "final_month_for_age", "RelativeDate", "parse_relative_date", "place_month",
+    "final_month_for_age", "RelativeDate", "is_marker_name", "parse_relative_date", "place_month",
 ]
 
 MONTH_FORMAT_HINT = "YYYY-MM or YYYY-MM-DD"
@@ -176,6 +176,14 @@ def parse_relative_date(s: str) -> RelativeDate | None:
         return None
     n = int(m["n"] or 0) * (12 if m["unit"] == "y" else 1)
     return RelativeDate(m["anchor"], -n if m["sign"] == "-" else n)
+
+
+def is_marker_name(name: str) -> bool:
+    """Whether ``name`` can name a ``date_marker`` (#281): a date written from
+    it must read back as that name, so it starts with a letter or underscore,
+    has only letters, digits, ``_``, ``.`` and ``-``, and doesn't end in what
+    reads as an offset (``ep-6m`` would be ``ep`` six months earlier)."""
+    return parse_relative_date(name) == RelativeDate(name, 0)
 
 
 def place_month(anchor: date, months: int, role: VaryBoundRole | None = None) -> date:
