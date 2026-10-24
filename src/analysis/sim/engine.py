@@ -186,12 +186,13 @@ def run_scenario(
         # outside the scenario's range or of an unsupported kind can't slip
         # through unnoticed.
         unresolved = con.execute(
-            "SELECT id, name FROM calendar_event WHERE vary_distribution IS NOT NULL"
+            "SELECT id, name FROM calendar_event "
+            "WHERE vary_distribution IS NOT NULL OR vary_resume IS NOT NULL"
         ).fetchall()
         if unresolved:
             names = ", ".join(repr(name or f"id={ev_id}") for ev_id, name in unresolved)
             raise EngineError(
-                f"calendar_event(s) still have vary_distribution set: {names} -- "
+                f"calendar_event(s) still have vary_distribution or vary_resume set: {names} -- "
                 "an ensemble recipe must be resolved (the 'vary' step) before it can be run"
             )
 

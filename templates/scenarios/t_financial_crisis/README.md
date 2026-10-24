@@ -14,7 +14,7 @@ A mix-in for a scenario on the templates (`base:t_financial_crisis`, or with an 
 - From a year after the start until the end, stocks recover at 11% (international 6%) and bonds earn 3%.
 - From the start until the end, cash earns 0.5%, and prices run low: CPI-U at 1.7%, shelter 2.4%, medical care 3%, and tuition 3.5%. The Part B premium, prescriptions and auto insurance keep their long-run paths.
 - The damage is sequence risk: selling in the crash year, then cash losing about a point a year to inflation. Stocks recover fully, as they did.
-- At the end, every series it changed returns to its long-run path, with values copied from the `_ensemble` templates (until #291).
+- At the end, every series it changed goes back to what governed it before the crash (`vary_resume`): the long-run process, resumed with its own shocks, or the series file's rate.
 
 Place the episode by overriding the markers by name.
 

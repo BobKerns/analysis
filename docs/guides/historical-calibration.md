@@ -834,10 +834,12 @@ series has no history for the period.
   exactly 12 months. A held row (a crash or rate-shock year, the
   pandemic's prices) draws one value per member.
 - **The way back.** At the end marker, every series the episode changed
-  returns to its long-run path, with the `_ensemble` templates' values
-  copied in. A scenario that changes a long-run level must change it in the
-  episode too, until a return row can resume the earlier process
-  ([#291](https://github.com/BobKerns/analysis/issues/291)).
+  goes back to whatever governed it before the episode began (a return row
+  with `vary_resume` set to the start marker). Under the `_ensemble`
+  templates that is the long-run process, resumed from where the episode
+  left it with its own level and yearly shocks, so a scenario's own
+  long-run levels apply and members with and without the episode compare
+  in pairs. Under `base` alone, the series file's rate comes back.
 - **More than one.** Two episodes mixed into one scenario work when their
   markers keep them apart. Where they overlap, each series follows the
   latest row, so one episode cuts into the other. To compare kinds of

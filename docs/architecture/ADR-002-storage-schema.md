@@ -332,6 +332,10 @@ CREATE TABLE calendar_event (
     -- #280: where the path starts: NULL for a stationary draw around the
     -- level, 'current' for the rate in effect just before the row's date.
     vary_process_start  TEXT,
+    -- #291: on a set_rate row with no amount, the date before which it finds
+    -- what to put back: a process it continues, or a fixed rate. Cleared,
+    -- with the amount (and a path) written, by the vary step.
+    vary_resume         TEXT,
     -- #165: a `discrete` row's weighted outcomes, each a value or a low..high
     -- range in the target's stored unit ('30%: 0; 25%: 100000..600000').
     vary_outcomes       TEXT,
@@ -953,3 +957,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#284](https://github.com/BobKerns/analysis/issues/284): `calendar_event.vary_innovation_sd` renamed `vary_shock_sd` (Intent layer DDL; schema 45).
 - [#280](https://github.com/BobKerns/analysis/issues/280): `calendar_event.vary_process_start` (Intent layer DDL; schema 46).
 - [#281](https://github.com/BobKerns/analysis/issues/281): `calendar_event.date_refs_json`, for dates written relative to a `date_marker` (Intent layer DDL; schema 47).
+- [#291](https://github.com/BobKerns/analysis/issues/291): `calendar_event.vary_resume`, for a return row that puts back what governed its series (Intent layer DDL; schema 48).

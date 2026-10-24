@@ -244,10 +244,23 @@ names that date, and the event's rows are dated from it:
 sim calendar add date-marker crash_start 2032-06 --scenario inflation_1 \
   --vary-distribution uniform --vary-low 2028-01 --vary-high 2040-12
 sim calendar add set-rate --scenario inflation_1 -- crash_start stock -30
-sim calendar add set-rate crash_start+1y stock 9 --scenario inflation_1
+sim calendar add set-rate crash_start+1y stock --resume crash_start \
+  --scenario inflation_1
 ```
 
 (The `--` lets a negative rate through without reading it as an option.)
+
+The last row is the return. `--resume crash_start` puts `stock` back to
+whatever governed it the day before the crash, so the event needn't repeat
+the long-run numbers:
+
+- If a process was running (an `ar1` path from `t_market_ensemble`, say),
+  it resumes from the rate in effect, with its own level, persistence and
+  yearly shocks. A member with the crash and the same member without it
+  share every shock after it, so their paths come back together, and the
+  two scenarios compare member by member.
+- If a fixed rate was in effect (a series file, or a plain `set_rate`
+  row), that rate comes back at once.
 
 - A date is `NAME`, `NAME+Nm` or `NAME-Ny`: the marker's month moved by
   whole months or years, at that month's end like any other date. A date

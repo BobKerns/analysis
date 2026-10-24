@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import click
@@ -409,6 +409,15 @@ def from_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noq
     return [*ctx.accounts, *chains_of(ctx, "source")]
 
 
+def _unless_resuming(field_: Field) -> Field:
+    """``field_``, asked only of a set_rate row that sets a rate of its own:
+    a ``--resume`` row (#291) has no rate and no draw."""
+    applies = field_.applies
+    return replace(
+        field_, applies=lambda ctx, answers: not answers.get("vary_resume") and applies(ctx, answers),
+    )
+
+
 KINDS: tuple[KindSpec, ...] = (
     KindSpec(
         "set-rate", "a series starts earning a new rate", amount_unit="percent",
@@ -425,9 +434,16 @@ KINDS: tuple[KindSpec, ...] = (
                 "series", "series",
                 choices=lambda ctx, answers: list(ctx.series.get(answers.get("aux_kind", ""), ())),
             ),
-            Field("rate_percent", "rate in percent (e.g. 4.5)", type="percent"),
+            Field(
+                "vary_resume", "resume what governed before (blank for a new rate)",
+                type="date", option="--resume", required=False,
+                choices=lambda ctx, answers: list(ctx.markers),  # noqa: ARG005
+                help="A date, usually an episode's start marker: from this row's date the "
+                     "series goes back to whatever governed it the day before (#291).",
+            ),
+            _unless_resuming(Field("rate_percent", "rate in percent (e.g. 4.5)", type="percent")),
             _DESCRIPTION, _TAGS,
-            *_vary_fields(targets=("amount", "date"), ramp=True),
+            *map(_unless_resuming, _vary_fields(targets=("amount", "date"), ramp=True)),
         ),
     ),
     KindSpec(
