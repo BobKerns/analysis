@@ -145,6 +145,10 @@ def test_a_varying_marker_loads_at_its_base_case(
     ([{"kind": "date_marker", "name": "a", "date": "b+1y"},
       {"kind": "date_marker", "name": "b", "date": "a-1y"}], "date_marker cycle"),
     ([{"kind": "date_marker", "date": "2030-06"}], "a date_marker row needs a name"),
+    ([{"kind": "date_marker", "name": "ep-6m", "date": "2030-06"}],
+     "(ep-6m): a date_marker's name starts with a letter or '_'"),
+    ([{"kind": "date_marker", "name": "2nd start", "date": "2030-06"}],
+     "(2nd start): a date_marker's name starts with a letter or '_'"),
     ([{**_MARKER}], "a date_marker row needs a date"),
     ([{**_MARKER, "date": "2030-06", "series": "Asset_Checking", "amount": "4%"}],
      "a date_marker row has no series, amount"),
@@ -159,6 +163,35 @@ def test_bad_markers_and_references_are_rejected(
         append_calendar_row(**row)
     issues = _issues(load_test_copy)
     assert any(fragment in issue for issue in issues), issues
+
+
+def test_two_spellings_of_one_relative_date_are_one_row(
+    append_calendar_row: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+    derive_scenario: Callable[..., Path], test_data_dir: Path, tmp_path: Path,
+) -> None:
+    """An unnamed row is keyed by its date (and its other event fields) in the
+    lineage merge, so a child's ``ep_start+12m`` row overrides its parent's
+    same row at ``ep_start+1y`` rather than applying a second time."""
+    from analysis.sim.loader import load_scenario
+
+    append_calendar_row(**_MARKER, date="2030-06")
+    append_calendar_row(date="ep_start+1y", kind="set_rate", series="Asset_Checking", amount="6%")
+    header = retire_alice_csv("calendar.csv").read_text().splitlines()[0]
+    columns = header.split(",")
+    child = dict.fromkeys(columns, "") | {
+        "date": "ep_start+12m", "kind": "set_rate", "series": "Asset_Checking", "amount": "6%",
+        "description": "the child's"}
+    derive_scenario("child", "retire_alice", files={
+        "calendar.csv": header + "\n" + ",".join(child[c] for c in columns) + "\n"})
+    intent = load_scenario(test_data_dir, "child", intent_dir=tmp_path / "intent",
+                           compute_stamps=False, allow_dirty_data=True).intent_path
+    con = sqlite3.connect(intent)
+    try:
+        rates = con.execute("SELECT date, description FROM calendar_event WHERE kind = 'set_rate' "
+                            "AND series = 'Asset_Checking' AND date = '2031-06-30'").fetchall()
+    finally:
+        con.close()
+    assert rates == [("2031-06-30", "the child's")]
 
 
 def test_a_marker_nothing_refers_to_is_reported_as_unused(
@@ -304,6 +337,12 @@ def test_calendar_add_writes_a_marker_and_rows_dated_from_it(
     assert (marker["kind"], marker["date"], marker["vary_target"], marker["vary_distribution"],
             marker["vary_mode"]) == ("date_marker", "2030-06", "date", "triangular", "2030-06")
     assert "ep_start+2y" in rows
+
+
+def test_calendar_add_refuses_a_marker_name_no_date_can_name(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "calendar", "add", "date-marker", "ep-6m", "2030-06")
+    assert result.exit_code != 0
+    assert "date_marker name 'ep-6m' can't be written in a date" in result.output
 
 
 def test_calendar_add_refuses_an_unknown_marker(test_data_dir: Path) -> None:

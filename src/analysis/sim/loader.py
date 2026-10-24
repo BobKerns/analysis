@@ -24,7 +24,7 @@ from typing import Any, NamedTuple
 
 from analysis.sim import life_table, registries, units
 from analysis.sim.dates import (
-    MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, month_end_iso, parse_day,
+    MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, is_marker_name, month_end_iso, parse_day,
     parse_relative_date, place_month, vary_date_iso,
 )
 from analysis.sim.distributions import (
@@ -558,7 +558,7 @@ def _merge_calendar_rows(
     def key_of(row: dict[str, str]) -> tuple[str, ...]:
         # A latent factor (ADR-008) or a date marker (#281) has no event
         # fields -- only its name identifies it, so two don't collide on blank
-        # fields, and a child scenario's of the same name overrides its parent's.
+        # fields, and a child scenario's row of the same name overrides its parent's.
         kind = row.get("kind", "")
         if kind in registries.INERT_CALENDAR_KINDS:
             return (kind, (row.get("name") or "").strip())
@@ -1280,8 +1280,12 @@ def _normalize_month_columns(
             raw = row.get(col) or ""
             if not raw:
                 continue
-            if filename == "calendar.csv" and col == "date" and parse_relative_date(raw):
-                continue  # relative to a date_marker (#281): _resolve_relative_dates
+            if filename == "calendar.csv" and col == "date" and (rel := parse_relative_date(raw)):
+                # Relative to a date_marker (#281), resolved by
+                # _resolve_relative_dates. Canonical here, before the lineage
+                # merge keys rows by date, so start+12m and start+1y are one date.
+                row[col] = str(rel)
+                continue
             exact = _keeps_exact_day(filename, col, row)
             try:
                 if exact and len(raw) > len("YYYY-MM"):
@@ -3114,6 +3118,12 @@ def _validate_date_marker(row: dict[str, str], where: str, issues: list[str]) ->
     where = f"{where} ({name or '?'})"
     if not name:
         issues.append(f"{where}: a date_marker row needs a name")
+    elif not is_marker_name(name):
+        issues.append(
+            f"{where}: a date_marker's name starts with a letter or '_', has only letters, digits, "
+            "'_', '.' and '-', and doesn't end in an offset like '-6m' or '+2y', so dates can be "
+            "written from it"
+        )
     if not (row.get("date") or "").strip() and not (row.get("vary_distribution") or "").strip():
         issues.append(f"{where}: a date_marker row needs a date")
     stray = [c for c in _MARKER_FORBIDDEN_COLUMNS if (row.get(c) or "").strip()]

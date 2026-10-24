@@ -117,7 +117,7 @@ from analysis.sim.staging import (
 )
 from analysis.sim.life_table import equivalent_multiplier
 from analysis.sim.dates import (
-    MONTH_FORMAT_HINT, is_full_date, is_month_or_date, month_end_iso, parse_day,
+    MONTH_FORMAT_HINT, is_full_date, is_marker_name, is_month_or_date, month_end_iso, parse_day,
     parse_relative_date, parse_vary_date,
 )
 from analysis.sim.lineage import (
@@ -2898,6 +2898,9 @@ def _validate_month_date(s: str) -> str:
     return s.strip()
 
 
+_CALENDAR_DATE_PROMPT = "date (YYYY-MM, YYYY-MM-DD, or a date_marker: NAME, NAME+Nm, NAME-Ny)"
+
+
 def _validate_calendar_date(s: str) -> str:
     """``_validate_month_date``, or a date relative to a date_marker
     (``NAME``, ``NAME+2y``, ``NAME-6m``, #281): written as typed, and the
@@ -3790,7 +3793,7 @@ def _do_add_transfer(
         endpoints = _endpoints(con)
 
     if not date:
-        date = _prompt_with_completion("date (YYYY-MM or YYYY-MM-DD)")
+        date = _prompt_with_completion(_CALENDAR_DATE_PROMPT, names.date_marker_names(data_dir_p, scenario_name))
     date = _validate_calendar_date(date)
 
     from_account, from_lot, to_account, to_lot = _pick_endpoints(
@@ -4762,7 +4765,7 @@ def calendar_add_date_marker(
     dates can be written relative to, as NAME, NAME+2y or NAME-6m. It
     changes nothing by itself; vary it to move all of them together.
 
-    A date past the scenario's end drops every row dated from it. A marker
+    A date past the scenario's end drops every row dated on or after it. A marker
     no row refers to yet affects nothing; `sim check` says so. Arguments
     left out are asked for.
     """
@@ -4772,6 +4775,11 @@ def calendar_add_date_marker(
         raise click.ClickException(str(e)) from None
     given = _ask_missing_arguments("date-marker", data_dir, scenario, name=name, date=date)
     name, date = given["name"], _validate_calendar_date(given["date"])
+    if not is_marker_name(name):
+        raise click.ClickException(
+            f"date_marker name {name!r} can't be written in a date: start with a letter or '_', "
+            "use only letters, digits, '_', '.' and '-', and don't end in an offset like '-6m'"
+        )
     data_dir_p = _resolve_data_dir(data_dir)
     scenario_dir, scenario_name = _resolve_scenario_dir(data_dir_p, scenario)
     varies = vary_distribution is not None
@@ -4921,7 +4929,7 @@ def calendar_add_transfer_balance(
         )]
 
     if not date:
-        date = _prompt_with_completion("date (YYYY-MM or YYYY-MM-DD)")
+        date = _prompt_with_completion(_CALENDAR_DATE_PROMPT, names.date_marker_names(data_dir_p, scenario_name))
     date = _validate_calendar_date(date)
     # The source is one lot of an asset: "the balance" means one real balance.
     if not from_account:
