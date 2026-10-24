@@ -115,7 +115,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 44) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next three is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 45) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -328,7 +328,7 @@ CREATE TABLE calendar_event (
     -- set_rate rows by the vary step, as a ramp is.
     vary_process        TEXT,
     vary_persistence    REAL,
-    vary_innovation_sd  INTEGER,
+    vary_shock_sd  INTEGER,
     -- #165: a `discrete` row's weighted outcomes, each a value or a low..high
     -- range in the target's stored unit ('30%: 0; 25%: 100000..600000').
     vary_outcomes       TEXT
@@ -942,3 +942,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#231](https://github.com/BobKerns/analysis/issues/231): asset and expense subkinds `business` and tax characters `business_income` and `business_expense` (Intent and Run layer DDL; schema 42).
 - [#261](https://github.com/BobKerns/analysis/issues/261): `ensemble_draw` gains `noise` and `u`; new member tables `ensemble_tail_scale` and `ensemble_path_shock`; a batch's `draws.sqlite3` (Ensemble provenance, placement summary, `schema_overview`; schema 43).
 - [#255](https://github.com/BobKerns/analysis/issues/255): the run table `basis_step_up` (Intent and ledger DDL, glossary; schema 44).
+- [#284](https://github.com/BobKerns/analysis/issues/284): `calendar_event.vary_innovation_sd` renamed `vary_shock_sd` (Intent layer DDL; schema 45).

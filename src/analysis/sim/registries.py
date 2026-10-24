@@ -465,7 +465,7 @@ CALENDAR_HEADER: tuple[str, ...] = (
     # ADR-006 §4a (#115): a set_rate row's year-by-year path around its drawn
     # level -- the process (`ar1`), its persistence phi, and the yearly shock
     # size in micros.
-    "vary_process", "vary_persistence", "vary_innovation_sd",
+    "vary_process", "vary_persistence", "vary_shock_sd",
     # ADR-008: this row's (or latent factor's) parent in a correlation tree,
     # and the correlation rho between their normal scores; on a tree's root,
     # the Student-t copula's degrees of freedom for the whole tree (#68).
@@ -492,10 +492,17 @@ VARY_TARGETS: set[str] = {"amount", "date"}
 # outcomes are separate cases, an exact zero among them.
 ENSEMBLE_DISTRIBUTIONS: set[str] = {"uniform", "truncated_normal", "triangular", "discrete"}
 
-# #31: `vary_mean` was renamed to `vary_median` (the truncated distribution's
-# median, so the base case is exactly the authored value). Its meaning
-# changed for asymmetric bounds, so the old name is rejected, not aliased.
-RENAMED_CALENDAR_COLUMNS: dict[str, str] = {"vary_mean": "vary_median"}
+# Renamed calendar.csv columns, each with why: the old name is rejected with
+# its new one, not aliased, so a file is converted once (a clean break).
+# #31: `vary_mean` became `vary_median`, the truncated distribution's median,
+# and its meaning changed for asymmetric bounds. #284: `vary_innovation_sd`
+# became `vary_shock_sd`, the name `analysis historical` gives it.
+RENAMED_CALENDAR_COLUMNS: dict[str, tuple[str, str]] = {
+    "vary_mean": ("vary_median", "now the median of the truncated distribution, so the "
+                                 "base case is exactly the authored value"),
+    "vary_innovation_sd": ("vary_shock_sd", "the same yearly shock size, under the name "
+                                            "analysis historical's Shock SD gives it"),
+}
 
 # ADR-006 §9: `sim ensemble create`'s default scenario.meta_json.ensemble_size
 # when --size is omitted, so a recipe always has a member count `sim run`/

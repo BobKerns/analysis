@@ -260,12 +260,12 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
 
 
 def _process_params(row: sqlite3.Row) -> tuple[float, int] | None:
-    """A process row's ``(phi, innovation SD in micros)`` (ADR-006 §4a), or
+    """A process row's ``(phi, shock SD in micros)`` (ADR-006 §4a), or
     ``None`` for a held draw. Intent files written before #115 have no
     process columns at all."""
     if "vary_process" not in row.keys() or not row["vary_process"]:
         return None
-    return float(row["vary_persistence"]), int(row["vary_innovation_sd"])
+    return float(row["vary_persistence"]), int(row["vary_shock_sd"])
 
 
 def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list[date]:
@@ -296,7 +296,7 @@ def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list
         steps.append(step)
 
 
-def process_path(level_micros: int, persistence: float, innovation_sd_micros: int,
+def process_path(level_micros: int, persistence: float, shock_sd_micros: int,
                  shocks: list[float]) -> list[int]:
     """An AR(1) path's yearly rates in micros (ADR-006 §4a), one per shock:
     the log departure ``x`` of a year's growth factor from a held row's
@@ -309,7 +309,7 @@ def process_path(level_micros: int, persistence: float, innovation_sd_micros: in
     times ``exp(x)``, keeping the path's median compound growth a held
     row's and every month's factor positive."""
     level = level_micros / _MICROS
-    sigma = innovation_sd_micros / _MICROS
+    sigma = shock_sd_micros / _MICROS
     rates: list[int] = []
     x = 0.0
     for k, eps in enumerate(shocks):
