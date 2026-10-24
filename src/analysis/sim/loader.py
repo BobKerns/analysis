@@ -2885,7 +2885,7 @@ _VARY_SHAPE_COLUMNS = ("vary_skew", "vary_tailweight")
 _VARY_OUTCOMES = "vary_outcomes"
 """A `discrete` row's weighted outcomes (#165): parsed whole, not as a bound."""
 
-_VARY_PROCESS_COLUMNS = ("vary_process", "vary_persistence", "vary_innovation_sd")
+_VARY_PROCESS_COLUMNS = ("vary_process", "vary_persistence", "vary_shock_sd")
 """A set_rate row's year-by-year path (ADR-006 §4a, #115)."""
 
 _MINUS_100_PERCENT_MICROS = -1_000_000
@@ -3087,13 +3087,9 @@ def _validate_calendar_vary(
     or an optional process (§4a).
     """
     where = f"{location} ({name or '?'})"
-    for old, new in registries.RENAMED_CALENDAR_COLUMNS.items():
+    for old, (new, why) in registries.RENAMED_CALENDAR_COLUMNS.items():
         if (row.get(old) or "").strip():
-            issues.append(
-                f"{where}: {old} was renamed to {new} (now the median of the truncated "
-                f"distribution, so the base case is exactly the authored value); "
-                f"rename the column"
-            )
+            issues.append(f"{where}: {old} was renamed to {new} ({why}); rename the column")
     distribution = (row.get("vary_distribution") or "").strip()
     target = (row.get("vary_target") or "").strip()
     ramp_months = (row.get("vary_ramp_months") or "").strip()
@@ -3179,11 +3175,11 @@ def _validate_vary_process(
     no path of growth around it can mean."""
     process = (row.get("vary_process") or "").strip()
     raw_phi = (row.get("vary_persistence") or "").strip()
-    raw_sd = (row.get("vary_innovation_sd") or "").strip()
+    raw_sd = (row.get("vary_shock_sd") or "").strip()
     if not process:
         if raw_phi or raw_sd:
             issues.append(
-                f"{where}: vary_persistence/vary_innovation_sd are only read with vary_process"
+                f"{where}: vary_persistence/vary_shock_sd are only read with vary_process"
             )
         return
     if process not in registries.VARY_PROCESSES:
@@ -3204,7 +3200,7 @@ def _validate_vary_process(
             "row followed by a later process row for the same series expresses both"
         )
     if not raw_phi or not raw_sd:
-        issues.append(f"{where}: vary_process requires vary_persistence and vary_innovation_sd")
+        issues.append(f"{where}: vary_process requires vary_persistence and vary_shock_sd")
         return
     try:
         phi = float(raw_phi)
@@ -3217,7 +3213,7 @@ def _validate_vary_process(
     # and is already reported.
     if raw_sd.lstrip("-").isdigit() and int(raw_sd) <= 0:
         issues.append(
-            f"{where}: vary_innovation_sd must be positive "
+            f"{where}: vary_shock_sd must be positive "
             f"(got {units.micros_to_percent(int(raw_sd))})"
         )
     if effective_low is not None and effective_low <= _MINUS_100_PERCENT_MICROS:
@@ -4448,7 +4444,7 @@ def _write_intent(
             "vary_target, vary_distribution, vary_low, vary_high, vary_median, "
             "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months, "
             "vary_correlate_with, vary_correlation, vary_tail_dependence, "
-            "vary_process, vary_persistence, vary_innovation_sd, vary_outcomes) "
+            "vary_process, vary_persistence, vary_shock_sd, vary_outcomes) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
@@ -4476,7 +4472,7 @@ def _write_intent(
                 _opt_float(ce.get("vary_tail_dependence")),
                 ce.get("vary_process") or None,
                 _opt_float(ce.get("vary_persistence")),
-                _opt_int(ce.get("vary_innovation_sd")),
+                _opt_int(ce.get("vary_shock_sd")),
                 ce.get("vary_outcomes") or None,
             ),
         )

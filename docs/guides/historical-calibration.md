@@ -56,19 +56,19 @@ For example, stocks and CPI-U over their whole history:
 analysis historical --period "All=1900-" Stocks=damodaran:sp500 CPI-U=CUUR0000SA0
 ```
 
-| Series | Row           | amount, vary_median | vary_sd      | vary_persistence | vary_innovation_sd |
-| ------ | ------------- | ------------------- | ------------ | ---------------: | ------------------ |
-| Stocks | held 30 yr    | 10.0%               | 1.3%         |                — | —                  |
-| Stocks | process (ar1) | 10.0%               | 2.0% to 5.5% |             0.00 | 18.9%              |
-| CPI-U  | held 30 yr    | 3.2%                | 1.3%         |                — | —                  |
-| CPI-U  | process (ar1) | 3.2%                | 0.4% to 2.6% |             0.65 | 3.5%               |
+| Series | Row           | amount, vary_median | vary_sd      | vary_persistence | vary_shock_sd |
+| ------ | ------------- | ------------------- | ------------ | ---------------: | ------------- |
+| Stocks | held 30 yr    | 10.0%               | 1.3%         |                — | —             |
+| Stocks | process (ar1) | 10.0%               | 2.0% to 5.5% |             0.00 | 18.9%         |
+| CPI-U  | held 30 yr    | 3.2%                | 1.3%         |                — | —             |
+| CPI-U  | process (ar1) | 3.2%                | 0.4% to 2.6% |             0.65 | 3.5%          |
 
 The stock row as a process, taking the low end of the level's range, is
 then this `calendar.csv` row (with its `vary_correlate_with` and the rest
 as the recipe needs):
 
 ```csv
-date,kind,name,series,amount,vary_target,vary_distribution,vary_median,vary_sd,vary_process,vary_persistence,vary_innovation_sd
+date,kind,name,series,amount,vary_target,vary_distribution,vary_median,vary_sd,vary_process,vary_persistence,vary_shock_sd
 2026-10,set_rate,vary_stock,stock,10.0%,amount,truncated_normal,10.0%,2.0%,ar1,0,18.9%
 ```
 
@@ -102,7 +102,7 @@ After the tables comes a legend, one line per name a value goes by:
 | `vary_sd` (process row) | `--vary-sd` | uncertainty about the long-run rate | process row's `vary_sd` | SD of the level only; from the standard error of the mean up to the 10-year rolling SD. |
 | `vary_process` | `--vary-process` | year-by-year path | — | `ar1` for a path that moves every year around L; blank to hold one draw. |
 | `vary_persistence` | `--vary-persistence` | persistence (φ) | Persistence | How much of one year's deviation carries into the next; a negative value is entered as 0. |
-| `vary_innovation_sd` | `--vary-innovation-sd` | yearly shock size (σ) | Shock SD | SD of one year's surprise in log growth, as a percent. In a tree with tail dependence ν, divide by √(ν / (ν − 2)). |
+| `vary_shock_sd` | `--vary-shock-sd` | yearly shock size (σ) | Shock SD | SD of one year's surprise in log growth, as a percent. In a tree with tail dependence ν, divide by √(ν / (ν − 2)). |
 | `vary_low`, `vary_high` | `--vary-low`, `--vary-high` | bounds on the draw | — | Bound the drawn rate, or a process's level, not its yearly path. Min % and Max % are single years' extremes. |
 | — | — | single-year spread | SD, Median %, Min %, Max % | For reading history; no column takes the single-year SD directly. |
 
@@ -157,7 +157,7 @@ around it year by year ([ADR-006
 
 - **`vary_persistence`:** Persistence, or 0 when it's negative. Near 0 for
   returns; a yield or an inflation rate is better held than given a process.
-- **`vary_innovation_sd`:** Shock SD. Since 1948, stocks' is 15.9 and
+- **`vary_shock_sd`:** Shock SD. Since 1948, stocks' is 15.9 and
   T-bonds' 8.2.
 - **The level's `vary_sd`:** only the uncertainty about the long-run rate
   the path compounds to, since the path supplies the yearly spread itself.
@@ -179,7 +179,7 @@ sim ensemble create stock_paths retire_alice
 sim calendar add set-rate 2027-01-31 brokerage_growth 6 --scenario stock_paths \
   --name brokerage_path --vary-target amount \
   --vary-distribution truncated_normal --vary-median 6 --vary-sd 2 \
-  --vary-process ar1 --vary-persistence 0 --vary-innovation-sd 16 \
+  --vary-process ar1 --vary-persistence 0 --vary-shock-sd 16 \
   --vary-correlate-with stock_us_factor --vary-correlation 1.0
 ```
 

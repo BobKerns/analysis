@@ -82,9 +82,9 @@ def test_guide_writes_a_process_row(
     ])
 
     assert result.exit_code == 0, result.output
-    assert "--vary-process ar1 --vary-persistence 0.2 --vary-innovation-sd 17" in result.output
+    assert "--vary-process ar1 --vary-persistence 0.2 --vary-shock-sd 17" in result.output
     row = calendar_rows().query("name == 'stock_path'").iloc[0]
-    assert (row["vary_process"], row["vary_persistence"], row["vary_innovation_sd"]) == (
+    assert (row["vary_process"], row["vary_persistence"], row["vary_shock_sd"]) == (
         "ar1", "0.2", "17%")
 
 

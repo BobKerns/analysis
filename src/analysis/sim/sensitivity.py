@@ -1127,7 +1127,7 @@ def _describe_process(row: sqlite3.Row) -> str:
     shock 2.00%``; blank for a held draw, or a file before schema 33."""
     if "vary_process" not in row.keys() or not row["vary_process"]:
         return ""
-    shock = _spread(row["kind"], "amount", row["vary_innovation_sd"])
+    shock = _spread(row["kind"], "amount", row["vary_shock_sd"])
     return f"{row['vary_process']}, persistence {row['vary_persistence']:g}, shock {shock}"
 
 
