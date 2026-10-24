@@ -4,7 +4,7 @@
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`
 > - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
 
-<!-- cspell:ignore CPIAUCSL PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize SASLE SEMF -->
+<!-- cspell:ignore CPIAUCSL PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize SASLE SEMF SETE -->
 
 The [ensembles guide](ensembles.md) explains how a varying rate, a
 correlation and tail dependence work. This guide is about the numbers:
@@ -581,6 +581,7 @@ where it differs, rounded to half a point or so:
 | `inflation__services` | 3.2 | Services less energy: 3.5 since 1984, 3.1 since 2000. About half is shelter, so use `housing` for rent |
 | `inflation__housing` | 3.2 | Shelter, 10-year median since 1984 |
 | `inflation__education` | 4.0 | Tuition: 5.2 since 1984, 3.0 since 2010 |
+| `inflation__auto_insurance` | 4.5 | Motor vehicle insurance: 5.2 since 1984, 4.9 since 2000, 5.7 since 2010 |
 | `inflation__food` | 2.8 | Food, between the 10-year median and the compound rate |
 | `inflation__fuel` | 2.5 | Energy: 1.9 to 2.4 since 1984, with a 10-point single-year SD |
 | `inflation__apparel` | 0.5 | Apparel, 0.6 since 1984 |
@@ -619,6 +620,7 @@ flowchart TB
     core -->|0.6| food(["food_factor"])
     core -->|0.6| apparel(["apparel_factor"])
     core -->|0.3| fuel(["fuel_factor"])
+    core -->|0.3| auto_ins(["auto_insurance_factor"])
     core -->|0.6| services(["services_inflation"])
     services -->|0.9| medical(["medical_factor"])
     services -->|0.9| education(["education_factor"])
@@ -634,7 +636,13 @@ flowchart TB
 
 - **Inflation:** CPI-U follows core at 0.93, shelter at 0.95, food at 0.71
   and apparel at 0.45 (0.83 postwar). Energy's link is the weakest and
-  least stable (−0.23 since 1984, 0.48 postwar), hence 0.3. CPI-W, R-CPI-E
+  least stable (−0.23 since 1984, 0.48 postwar), hence 0.3. Auto
+  insurance, priced from repair costs, claims and litigation, barely
+  follows CPI-U either (0.24 since 1984, 0.31 since 2010): 0.3 too. Rates
+  also need regulators' approval, filed by each company about once a year.
+  The filings are staggered, which smooths the index somewhat, but they
+  arrive late and in steps rather than tracking costs, hence its large
+  shock and its persistence. CPI-W, R-CPI-E
   and chained CPI track CPI-U at 0.97 to 0.99.
 - **Services:** medical care and tuition follow core at about 0.6 over a
   decade, and share labor-heavy costs, so they sit under the ensembles
@@ -703,6 +711,7 @@ judgment from the history beside it:
 | `housing` | 3.2 | 0.5 | 0.7 | 1.0 | 0.71 / 1.0 | 0.76 / 1.9 | 0.66 / 1.1 |
 | `food` | 2.8 | 0.4 | 0.3 | 1.8 | 0.30 / 1.8 | 0.45 / 3.0 | 0.27 / 2.1 |
 | `apparel` | 0.5 | 0.6 | 0.3 | 2.1 | 0.35 / 2.1 | 0.31 / 2.6 | 0.16 / 2.2 |
+| `auto_insurance` | 4.5 | 1.0 | 0.6 | 3.5 | 0.61 / 3.2 | 0.55 / 4.4 since 2010 | 0.57 / 3.7 |
 | `fuel` | 2.5 | 2.0 | 0 | 10 | 0.00 / 10.3 | 0.06 / 9.5 | 0.00 / 11.1 |
 | `medical` | 3.5 | 0.8 | 0.6 | 1.2 | 0.76 / 1.2 | 0.78 / 1.6 | 0.10 / 1.1 |
 | `education` | 4.0 | 1.0 | 0.9 | 0.7 | 0.93 / 0.7 | 0.94 / 0.9 | 0.90 / 0.7 |
@@ -718,7 +727,7 @@ judgment from the history beside it:
 ```sh
 analysis historical --period "Since 1984=1984-" --period "Postwar=1948-" \
   --period "Since 2000=2000-" CPI-U=CUUR0000SA0 Medical=CUUR0000SAM \
-  Rx=CUUR0000SEMF01 Services=CUUR0000SASLE \
+  Rx=CUUR0000SEMF01 Services=CUUR0000SASLE AutoIns=CUUR0000SETE \
   T-bill=damodaran:tbill T-bond=damodaran:tbond Stocks=damodaran:sp500
 ```
 
@@ -762,7 +771,8 @@ run](#todays-rate-returning-to-the-long-run)):
   inflation isn't sustainable without structural change, so it runs at its
   3.5% level from 2027. Prescription drugs (−2.9% over the latest 12
   months, as Medicare's negotiated prices take effect) likewise start at
-  their level.
+  their level, and so does auto insurance, whose 5.1% fall over the
+  latest 12 months follows a 16.5% rise two years earlier.
 - **Series with little persistence keep the ensemble's rows.** Food,
   apparel, energy and the Part B premium would be back near their levels
   within a year, and energy's latest 12 months (16%) are a one-year spike

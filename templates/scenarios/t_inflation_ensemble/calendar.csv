@@ -12,3 +12,4 @@ date,kind,name,scheduled_name,account_1,lot_1,account_2,lot_2,series,amount,para
 2027-01-31,set_rate,medicare_part_b_path,,,,,,medicare_part_b,5.5%,,,"{""aux_kind"": ""inflation""}",the Part B premium's yearly path,,amount,truncated_normal,,,5.5%,1.5%,,,,,,ar1,0.1,6.5%,,medicare_part_b_factor,1.0,
 2027-01-31,set_rate,services_path,,,,,,services,3.2%,,,"{""aux_kind"": ""inflation""}",services' yearly path,,amount,truncated_normal,,,3.2%,0.5%,,,,,,ar1,0.65,0.9%,,services_factor,1.0,
 2027-01-31,set_rate,prescriptions_path,,,,,,prescriptions,3%,,,"{""aux_kind"": ""inflation""}",prescription drugs' yearly path,,amount,truncated_normal,,,3%,0.8%,,,,,,ar1,0.4,2%,,prescriptions_factor,1.0,
+2027-01-31,set_rate,auto_insurance_path,,,,,,auto_insurance,4.5%,,,"{""aux_kind"": ""inflation""}",auto insurance's yearly path,,amount,truncated_normal,,,4.5%,1%,,,,,,ar1,0.6,3.5%,,auto_insurance_factor,1.0,

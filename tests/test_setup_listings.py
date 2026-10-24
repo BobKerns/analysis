@@ -58,7 +58,7 @@ def test_calendar_list_numbers_rows_as_edit_does_and_marks_overrides(
     assert by_target["healthcare"].number == 1
     assert by_target["healthcare"].defined_in == "overrides retire_alice"
     assert by_target["healthcare"].row["description"] == "changed"
-    assert len(listed) == 28  # retire_alice's 27, plus the child's own
+    assert len(listed) == 29  # retire_alice's 28, plus the child's own
     assert by_target["rent"].number == 2
     assert by_target["rent"].defined_in == "this scenario"
     assert by_target["salary_alice"].defined_in == "retire_alice"

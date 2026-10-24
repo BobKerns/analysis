@@ -9,6 +9,7 @@ date,kind,scheduled_name,account_1,lot_1,account_2,lot_2,series,amount,param_dat
 ,latent_factor,,,,,,,,,,,"services less energy, about half of it shelter (inflation__services)",,services_factor,,,,,,,,,,,core_inflation,0.7,
 ,latent_factor,,,,,,,,,,,food (inflation__food),,food_factor,,,,,,,,,,,core_inflation,0.6,
 ,latent_factor,,,,,,,,,,,apparel (inflation__apparel),,apparel_factor,,,,,,,,,,,core_inflation,0.6,
+,latent_factor,,,,,,,,,,,"motor vehicle insurance, driven by repair costs and claims (inflation__auto_insurance)",,auto_insurance_factor,,,,,,,,,,,core_inflation,0.3,
 ,latent_factor,,,,,,,,,,,energy (inflation__fuel),,fuel_factor,,,,,,,,,,,core_inflation,0.3,
 ,latent_factor,,,,,,,,,,,medical care (inflation__medical),,medical_factor,,,,,,,,,,,services_inflation,0.9,
 ,latent_factor,,,,,,,,,,,prescription drugs (inflation__prescriptions),,prescriptions_factor,,,,,,,,,,,medical_factor,0.5,
