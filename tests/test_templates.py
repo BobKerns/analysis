@@ -18,7 +18,7 @@ from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, load_order, scenario_di
 from analysis.sim.loader import list_scenario_names, load_scenario
 
 TEMPLATES = [
-    "t_inflation_factors", "t_inflation_series", "t_inflation_ensemble", "t_inflation_current",
+    "t_empty", "t_inflation_factors", "t_inflation_series", "t_inflation_ensemble", "t_inflation_current",
     "t_market_factors", "t_market_series", "t_market_ensemble", "t_market_current",
 ]
 
@@ -43,7 +43,7 @@ def test_every_template_loads_in_a_data_repo_without_a_copy(
 def test_the_market_templates_build_on_the_inflation_factors(template_data_dir: Path) -> None:
     """One correlation tree: interest rates hang under core inflation."""
     assert load_order(template_data_dir / "scenarios", "t_market_current") == [
-        "t_inflation_factors", "t_market_factors", "t_market_series",
+        "t_empty", "t_inflation_factors", "t_market_factors", "t_market_series",
         "t_market_ensemble", "t_market_current",
     ]
 
@@ -115,3 +115,24 @@ def test_member_zero_holds_todays_rate_and_then_returns_to_the_level(
     assert _x(cpi[1][1], 25_000) == pytest.approx(0.4 * _x(34_000, 25_000), abs=1e-5)
     assert medical[0] == ("2027-01-31", 35_000)
     assert {a for _, a in medical} == {35_000}
+
+
+def _content(intent_path: Path) -> dict[str, list[tuple]]:
+    con = sqlite3.connect(intent_path)
+    try:
+        return {table: sorted(con.execute(f"SELECT * FROM {table}").fetchall(), key=repr)
+                for table in ("account", "scheduled_transaction", "calendar_event", "aux_table")}
+    finally:
+        con.close()
+
+
+def test_t_empty_adds_nothing_to_a_lineage(
+    test_data_dir: Path, tmp_path: Path, derive_scenario,
+) -> None:
+    """Bob: t_empty may be the root, but whether it is in a lineage or not
+    changes nothing a scenario loads."""
+    derive_scenario("plain", "retire_alice")
+    derive_scenario("with_empty", "retire_alice:t_empty")
+    loaded = [load_scenario(test_data_dir, name, intent_dir=tmp_path / name, compute_stamps=False,
+                            allow_dirty_data=True).intent_path for name in ("plain", "with_empty")]
+    assert _content(loaded[0]) == _content(loaded[1])

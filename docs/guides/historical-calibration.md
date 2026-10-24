@@ -4,7 +4,7 @@
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`
 > - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
 
-<!-- cspell:ignore CPIAUCSL PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize -->
+<!-- cspell:ignore CPIAUCSL PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize SASLE SEMF -->
 
 The [ensembles guide](ensembles.md) explains how a varying rate, a
 correlation and tail dependence work. This guide is about the numbers:
@@ -505,7 +505,8 @@ that builds on it.
 
 ```mermaid
 flowchart TB
-    if_(["t_inflation_factors"]) --> is(["t_inflation_series"])
+    empty(["t_empty"]) --> if_(["t_inflation_factors"])
+    if_ --> is(["t_inflation_series"])
     is --> ie(["t_inflation_ensemble"])
     ie --> ic(["t_inflation_current"])
     if_ --> mf(["t_market_factors"])
@@ -514,7 +515,11 @@ flowchart TB
     me --> mc(["t_market_current"])
 ```
 
-Each layer adds one thing to the one above it:
+`t_empty` at the root is what its name says: no accounts, rules, rates or
+factors, only a start and end date, since a scenario needs them. It is also
+a starting point for a scenario built from nothing; having it in a lineage
+or not changes nothing else. Each layer below it adds one thing to the one
+above:
 
 - **`_factors`**: the latent factors and their correlations, and nothing
   else.
@@ -572,6 +577,8 @@ where it differs, rounded to half a point or so:
 | `inflation__chained_cpi` | 2.2 | C-CPI-U, 0.27 below CPI-U since 2000: tax brackets |
 | `inflation__medical` | 3.5 | Medical care: 4.2 since 1984, 3.3 since 2000, 2.8 since 2010 |
 | `inflation__medicare_part_b` | 5.5 | The Part B premium, 1990–2025 |
+| `inflation__prescriptions` | 3.0 | Prescription drugs: 4.1 since 1984, 2.8 since 2000; Medicare's price negotiation pulls down, new drugs push up |
+| `inflation__services` | 3.2 | Services less energy: 3.5 since 1984, 3.1 since 2000. About half is shelter, so use `housing` for rent |
 | `inflation__housing` | 3.2 | Shelter, 10-year median since 1984 |
 | `inflation__education` | 4.0 | Tuition: 5.2 since 1984, 3.0 since 2010 |
 | `inflation__food` | 2.8 | Food, between the 10-year median and the compound rate |
@@ -608,6 +615,7 @@ flowchart TB
     cpi -->|0.95| cpi_e(["cpi_e_factor"])
     cpi -->|0.95| chained(["chained_cpi_factor"])
     core -->|0.9| housing(["housing_factor"])
+    core -->|0.7| services_all(["services_factor"])
     core -->|0.6| food(["food_factor"])
     core -->|0.6| apparel(["apparel_factor"])
     core -->|0.3| fuel(["fuel_factor"])
@@ -615,6 +623,7 @@ flowchart TB
     services -->|0.9| medical(["medical_factor"])
     services -->|0.9| education(["education_factor"])
     medical -->|0.6| part_b(["medicare_part_b_factor"])
+    medical -->|0.5| rx(["prescriptions_factor"])
     core -->|0.9| rates(["interest_rates"])
     rates -->|0.95| cash(["cash_factor"])
     rates -->|0.6| bond(["bond_factor"])
@@ -631,7 +640,11 @@ flowchart TB
   decade, and share labor-heavy costs, so they sit under the ensembles
   guide's `services_inflation` sub-factor: 0.6 × 0.9 = 0.54 to core. The
   Part B premium follows medical prices and also how much care is used;
-  its 0.6 is a judgment, not a measurement.
+  its 0.6 is a judgment, not a measurement. Prescription drugs barely
+  follow CPI-U (ρ 0.36 since 1984, 0.06 since 2000), so they hang under
+  medical care at 0.5, another judgment. Services less energy, a broad
+  aggregate rather than the labor-heavy cluster, follows CPI-U at 0.67
+  since 1984 and sits under core at 0.7.
 - **Interest rates:** T-bill returns follow core at 0.89 over a decade
   (0.94 postwar), and the 10-year Treasury follows T-bills at 0.91 (0.68
   postwar), so both hang off an `interest_rates` factor under core.
@@ -694,6 +707,8 @@ judgment from the history beside it:
 | `medical` | 3.5 | 0.8 | 0.6 | 1.2 | 0.76 / 1.2 | 0.78 / 1.6 | 0.10 / 1.1 |
 | `education` | 4.0 | 1.0 | 0.9 | 0.7 | 0.93 / 0.7 | 0.94 / 0.9 | 0.90 / 0.7 |
 | `medicare_part_b` | 5.5 | 1.5 | 0.1 | 6.5 | 0.12 / 6.5 | from 1990 | 0.08 / 6.6 |
+| `prescriptions` | 3.0 | 0.8 | 0.4 | 2.0 | 0.67 / 2.1 | 0.81 / 2.1 | 0.13 / 2.0 |
+| `services` | 3.2 | 0.5 | 0.65 | 0.9 | 0.73 / 0.8 | 0.78 / 1.6 (from 1958) | 0.59 / 0.9 |
 | `cash` | 3.0 | 1.0 | 0.85 | 1.3 | 0.88 / 1.3 | 0.90 / 1.3 | 0.73 / 1.3 |
 | `bond` | 4.0 | 1.5 | 0 | 8.5 | 0.00 / 9.5 | 0.00 / 8.2 | 0.00 / 8.7 |
 | `stock_us` | 7.0 | 2.5 | 0 | 16 | 0.00 / 16.1 | 0.00 / 15.9 | 0.00 / 18.0 |
@@ -703,6 +718,7 @@ judgment from the history beside it:
 ```sh
 analysis historical --period "Since 1984=1984-" --period "Postwar=1948-" \
   --period "Since 2000=2000-" CPI-U=CUUR0000SA0 Medical=CUUR0000SAM \
+  Rx=CUUR0000SEMF01 Services=CUUR0000SASLE \
   T-bill=damodaran:tbill T-bond=damodaran:tbond Stocks=damodaran:sp500
 ```
 
@@ -732,6 +748,7 @@ run](#todays-rate-returning-to-the-long-run)):
 | `chained_cpi` | 3.4% | CPI-U: C-CPI-U's recent months are preliminary |
 | `housing` | 3.0% | Shelter |
 | `education` | 3.4% | Tuition |
+| `services` | 3.0% | Services less energy |
 | `cash` | 4.0% | T-bills averaged 4.2% in 2025; a placeholder until a monthly T-bill series is here ([#287](https://github.com/BobKerns/analysis/issues/287)) |
 
 - **The hold is political, not statistical.** Rates hold for about three
@@ -743,7 +760,9 @@ run](#todays-rate-returning-to-the-long-run)):
   trend. An aging population, new treatments and the continuing vertical
   integration of care keep pushing costs up, and a rate below core
   inflation isn't sustainable without structural change, so it runs at its
-  3.5% level from 2027.
+  3.5% level from 2027. Prescription drugs (−2.9% over the latest 12
+  months, as Medicare's negotiated prices take effect) likewise start at
+  their level.
 - **Series with little persistence keep the ensemble's rows.** Food,
   apparel, energy and the Part B premium would be back near their levels
   within a year, and energy's latest 12 months (16%) are a one-year spike

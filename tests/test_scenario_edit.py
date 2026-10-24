@@ -155,7 +155,7 @@ def test_blank_description_restores_the_default(test_data_dir: Path, test_child_
 
 
 def test_blank_description_on_a_root_scenario_is_refused(test_data_dir: Path, local_templates: Path) -> None:
-    result = _sim(test_data_dir, "scenario", "edit", "t_inflation_factors", "--description", "")
+    result = _sim(test_data_dir, "scenario", "edit", "t_empty", "--description", "")
     assert result.exit_code != 0 and "no default description" in result.output, result.output
 
 

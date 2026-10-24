@@ -58,7 +58,7 @@ def test_calendar_list_numbers_rows_as_edit_does_and_marks_overrides(
     assert by_target["healthcare"].number == 1
     assert by_target["healthcare"].defined_in == "overrides retire_alice"
     assert by_target["healthcare"].row["description"] == "changed"
-    assert len(listed) == 26  # retire_alice's 25, plus the child's own
+    assert len(listed) == 28  # retire_alice's 27, plus the child's own
     assert by_target["rent"].number == 2
     assert by_target["rent"].defined_in == "this scenario"
     assert by_target["salary_alice"].defined_in == "retire_alice"
@@ -220,7 +220,7 @@ def test_scenario_show_marks_inherited_settings_and_finds_the_latest_run(
 
     assert (shown.parent, shown.mixins) == ("recipe", ["base"])
     assert shown.load_order == [
-        "t_inflation_factors", "t_inflation_series", "t_market_factors", "t_market_series",
+        "t_empty", "t_inflation_factors", "t_inflation_series", "t_market_factors", "t_market_series",
         "base", "retire_alice", "recipe", "child",
     ]
     assert shown.reserve == ("$250,000.00", True)

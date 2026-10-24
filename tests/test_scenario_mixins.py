@@ -25,7 +25,7 @@ from analysis.sim.staging import _affected_scenarios
 # the prototype's root, `base` (#91).
 PARENT = "retire_alice"
 # The prototype's base builds on the inflation and market series templates.
-TEMPLATE_LINE = ["t_inflation_factors", "t_inflation_series", "t_market_factors", "t_market_series"]
+TEMPLATE_LINE = ["t_empty", "t_inflation_factors", "t_inflation_series", "t_market_factors", "t_market_series"]
 PARENT_LINE = [*TEMPLATE_LINE, "base", PARENT]
 
 
