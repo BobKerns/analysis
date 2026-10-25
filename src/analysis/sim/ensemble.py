@@ -1480,21 +1480,13 @@ def member_pairs(
     every row the recipes share (ADR-006 §3). Returns the ``(baseline stem,
     variant stem)`` pairs, or no pairs and the reason they can't be paired."""
 
-    def by_index(connections: dict[str, RunConnection]) -> dict[int, tuple[str, int | None]]:
-        members = {}
-        for stem, con in connections.items():
-            member = con.ensemble_member()
-            if member is not None:
-                members[member[0]] = (stem, member[1])
-        return members
+    from analysis.sim.series_db import pair_members
 
-    left, right = by_index(baseline), by_index(variant)
-    common = sorted(left.keys() & right.keys())
-    if not common:
-        return [], "no member index succeeded in both ensembles"
-    if any(left[i][1] is None or left[i][1] != right[i][1] for i in common):
-        return [], "the recipes have different seeds, so their members drew different futures"
-    return [(left[i][0], right[i][0]) for i in common], None
+    def ids(connections: dict[str, RunConnection]) -> dict[str, tuple[int, int | None]]:
+        return {stem: member for stem, con in connections.items()
+                if (member := con.ensemble_member()) is not None}
+
+    return pair_members(ids(baseline), ids(variant))
 
 
 def paired_deltas(

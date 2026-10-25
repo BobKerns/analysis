@@ -894,8 +894,13 @@ chart to a file instead.
 
 `--lot` narrows an account to one of its lots. In the notebook, a Lot
 dropdown appears under Account when the account has more than one, and
-the browser and the comparison share their scale, dollars, account and
-reserve controls, so a change in one redraws both.
+the widgets share their scale, dollars, account and reserve controls, so
+a change in one redraws them all. Each picks its own recipes: the
+head-to-head comparison a baseline and one recipe to compare it with,
+and the table below it a baseline and any number of recipes, each row
+one year and recipe. Both offer only recipes that pair with the
+baseline (see below). Picking the compared recipe as the baseline swaps
+the two.
 
 It reads in three parts.
 
@@ -914,8 +919,8 @@ what the change did in that one future. The notebook draws a fan of those
 differences, and `P(ahead)` is the share of futures where the variant
 comes out ahead. A plan can lose in most futures and still be the safer
 one, if the futures it wins are the bad ones: compare the low end of the
-fan with the high end. Recipes with their own seeds don't pair, and the
-comparison says so. A row only the variant has is the change you're
+fan with the high end. Recipes with their own seeds don't pair:
+`sim ensemble compare` says so, and the notebook leaves them out. A row only the variant has is the change you're
 measuring, so it doesn't break the pairing.
 
 An account only one recipe has (one the variant opens, say) can't be
@@ -948,6 +953,14 @@ set one for a single report, for whatever is shown.
 With a few dozen members, the low percentiles and their differences are
 noisy. Rerun with more members rather than reading a small difference:
 about 80 is enough for a quick comparison, and 400 to confirm one.
+
+**Loading time.** `sim run` keeps each batch's member series in one file,
+`state/runs/<ensemble>/<batch>/series.sqlite3`, so the notebook and
+`sim ensemble summary|compare` read a recipe in about a second however
+many members it has. A batch run before that file existed (or after the
+code that reads it changed) gets it built the first time it's read: the
+notebook shows a progress bar, `sim ensemble` says it's building it, and
+reads after that are quick. Nothing needs rerunning.
 
 ## Which varying rows matter, and when? (sensitivity)
 

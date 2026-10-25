@@ -7,6 +7,7 @@ AMOLED
 anywidget
 arcsinh
 arctanh
+ascontiguousarray
 autocorr
 autofetch
 autofmt
@@ -67,6 +68,7 @@ figsize
 fontsize
 footgun
 framealpha
+frombuffer
 gethostname
 getpid
 Ghostty
@@ -79,6 +81,7 @@ HIFO
 htmlcov
 huggingface
 IHDR
+iinfo
 imshow
 inspectable
 IRMAA
@@ -218,6 +221,7 @@ textconv
 textcoords
 TIOCGWINSZ
 TLJH
+tobytes
 tolist
 topup
 traditionalira

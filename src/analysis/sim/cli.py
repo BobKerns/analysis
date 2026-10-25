@@ -61,20 +61,23 @@ from analysis.sim.distributions import (
     rewrite_outcomes,
 )
 from analysis.sim.engine import describe_negative_balance_event, run_scenario
+from analysis.sim.series_db import (
+    EnsembleSeries,
+    MemberSeries,
+    member_series,
+    open_series,
+    pair_members,
+    write_series_db,
+)
 from analysis.sim.ensemble import (
     EnsembleError,
-    base_case_deaths,
     factor_reach,
     latest_ensemble_batch,
-    load_ensemble,
     member_run_statuses,
     comparison_deltas,
-    member_pairs,
-    members_balance_by_month,
     oat_plan,
     life_table_age,
     varying_names,
-    recipe_reserve,
     resolve_member,
     risk_summary,
     summary_with_percentiles,
@@ -724,12 +727,13 @@ def _run_ensemble(
     # Provisional, so an interrupted batch is still recognizable; rewritten
     # with the real failures below.
     write_batch_manifest(member_runs_dir, member_count=member_count, failures=[])
+    series: list[MemberSeries] = []
     failures = _run_members(
         recipe_intent_path, member_intent_dir, member_runs_dir,
         [(i, None) for i in range(member_count)],
         seed=seed, recipe_tree_id=recipe_tree_id, mode="monte_carlo",
         run_by=run_by, allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
-        jobs=jobs,
+        jobs=jobs, series=series,
     )
     # A member whose resolve_member call itself raised never got a run file
     # at all -- member_run_statuses can only see files that exist, so this
@@ -738,6 +742,7 @@ def _run_ensemble(
     # to a later `sim ensemble summary`/notebook widget.
     write_batch_manifest(member_runs_dir, member_count=member_count, failures=failures)
     _build_draws_db(member_runs_dir, member_intent_dir)
+    _write_series_db(member_runs_dir, series, member_count - len(failures))
     _report_batch(f"ensemble {scenario_name} ({batch})", member_count, failures)
 
 
@@ -785,6 +790,21 @@ def _run_sensitivity(
     )
     _build_draws_db(member_runs_dir, member_intent_dir)
     _report_batch(f"sensitivity {scenario_name} ({batch})", len(plan), failures)
+
+
+def _write_series_db(member_runs_dir: Path, series: list[MemberSeries], succeeded: int) -> None:
+    """#298: write the batch's series store from its members' rows. Without
+    every succeeded member's rows, or if writing fails, there's no store
+    yet, and the batch's first reader builds one: a warning, not an error."""
+    if len(series) != succeeded:
+        click.echo(f"warning: series store not written ({succeeded - len(series)} member(s) "
+                   "unread); the first notebook or 'sim ensemble' read builds it", err=True)
+        return
+    try:
+        write_series_db(member_runs_dir, series)
+    except (sqlite3.Error, OSError) as exc:
+        click.echo(f"warning: series store not written ({exc}); "
+                   "the first notebook or 'sim ensemble' read builds it", err=True)
 
 
 def _build_draws_db(member_runs_dir: Path, member_intent_dir: Path) -> None:
@@ -864,10 +884,13 @@ def _run_members(
     allow_dirty_data: bool,
     allow_dirty_code: bool,
     jobs: int = 1,
+    series: list[MemberSeries] | None = None,
 ) -> list[tuple[int, Path, str]]:
     """Resolve and run each ``(member index, overrides)`` spec; return the
     failures as ``(index, member intent path, error)``, sorted by index. A
-    failure is reported and skipped, never retried (ADR-006 §7).
+    failure is reported and skipped, never retried (ADR-006 §7). Given a
+    ``series`` list, each succeeded member's series store rows (#298) are
+    read by the process that ran it and appended there.
 
     With ``jobs > 1`` members run in a process pool (ADR-007 §8): they share
     no files, so the only ordering that changes is the progress lines, which
@@ -878,13 +901,17 @@ def _run_members(
             recipe_intent_path, member_intent_dir / f"member_{i:04d}.sqlite3",
             member_runs_dir / f"member_{i:04d}.sqlite3", i, overrides,
             seed, len(specs), recipe_tree_id, mode, run_by, allow_dirty_data, allow_dirty_code,
+            series is not None,
         )
         for i, overrides in specs
     ]
     failures: list[tuple[int, Path, str]] = []
 
     def _report(i: int, overrides: dict[str, float] | None, intent_path: Path,
-                run_path: Path, error: str | None) -> None:
+                run_path: Path, result: tuple[str | None, MemberSeries | None]) -> None:
+        error, rows = result
+        if rows is not None and series is not None:
+            series.append(rows)
         if error is not None:
             failures.append((i, intent_path, error))
             click.echo(f"  member {i}: FAILED ({error}) -- intent: {intent_path}", err=True)
@@ -903,10 +930,10 @@ def _run_members(
             for future in as_completed(futures):
                 task = futures[future]
                 try:
-                    error = future.result()
+                    result = future.result()
                 except Exception as exc:  # the worker process itself died
-                    error = f"worker failed: {exc}"
-                _report(task[3], task[4], task[1], task[2], error)
+                    result = (f"worker failed: {exc}", None)
+                _report(task[3], task[4], task[1], task[2], result)
     return sorted(failures)
 
 
@@ -914,9 +941,13 @@ def _run_one_member(
     recipe_intent_path: Path, member_intent_path: Path, member_run_path: Path,
     member_index: int, overrides: dict[str, float] | None, seed: int | None, member_count: int,
     recipe_tree_id: str, mode: str, run_by: str, allow_dirty_data: bool, allow_dirty_code: bool,
-) -> str | None:
-    """Resolve and run one member; the error text on failure, else ``None``.
-    Module-level (not a closure) so a process pool can pickle it."""
+    with_series: bool = False,
+) -> tuple[str | None, MemberSeries | None]:
+    """Resolve and run one member: the error text on failure, else ``None``,
+    and with ``with_series`` its series store rows (#298), read here so
+    they're read in parallel, or ``None`` if reading them failed (the store
+    is then built when the batch is first opened). Module-level (not a
+    closure) so a process pool can pickle it."""
     try:
         resolve_member(
             recipe_intent_path, member_intent_path,
@@ -929,8 +960,13 @@ def _run_one_member(
             allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
         )
     except Exception as exc:
-        return str(exc)
-    return None
+        return str(exc), None
+    if not with_series:
+        return None, None
+    try:
+        return None, member_series(member_run_path)
+    except Exception:
+        return None, None
 
 
 def _report_batch(label: str, member_count: int, failures: list[tuple[int, Path, str]]) -> None:
@@ -1191,13 +1227,13 @@ def _resolve_runs_dir(runs_dir: Path | None, data_dir: Path | None) -> Path:
 
 
 def _reserve_dollars(
-    reserve: str | None, connections: dict[str, RunConnection], account: str | None,
+    reserve: str | None, store: EnsembleSeries, account: str | None,
 ) -> float | None:
     """``--reserve``, applied to whatever is reported; without it, the
     recipe's own reserve, which is a net-worth floor and so applies to net
     worth only."""
     if reserve is None:
-        return recipe_reserve(connections) if account is None else None
+        return store.reserve() if account is None else None
     try:
         return units.dollars_to_cents(reserve) / 100
     except ValueError as exc:
@@ -1205,11 +1241,25 @@ def _reserve_dollars(
 
 
 def _member_frame(
-    connections: dict[str, RunConnection], account: str | None, mode: DollarMode,
+    store: EnsembleSeries, account: str | None, mode: DollarMode,
     lot: str | None = None, *, after_tax: bool = False,
 ) -> pd.DataFrame:
     try:
-        return members_balance_by_month(connections, account, mode, lot, after_tax=after_tax)
+        return store.frame(account, mode, lot, after_tax=after_tax)
+    except EnsembleError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _open_series(batch_dir: Path) -> EnsembleSeries:
+    """The batch's series store (#298), saying so when it must be built
+    first: a batch run before the store existed, or read by other code."""
+    from analysis.sim.series_db import series_db_current
+
+    if not series_db_current(batch_dir):
+        click.echo(f"building the series store for {batch_dir.parent.name} "
+                   f"({batch_dir.name}); later reads are quick", err=True)
+    try:
+        return open_series(batch_dir)
     except EnsembleError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -1262,43 +1312,40 @@ def ensemble_summary(
     batch_dir = _ensemble_batch_dir(resolved_runs_dir, scenario_name, batch)
     statuses = member_run_statuses(batch_dir)
     failed = sorted(stem for stem, status in statuses.items() if status != "succeeded")
-    connections = load_ensemble(batch_dir)
-    try:
-        frame = _member_frame(connections, account, DollarMode.NOMINAL, lot, after_tax=after_tax)
-        reserve_dollars = _reserve_dollars(reserve, connections, account)
-        cpi_frame = (
-            None if reserve_dollars is None
-            else _member_frame(connections, account, DollarMode.CPI_CONSTANT, lot,
-                               after_tax=after_tax)
-        )
-        monthly_summary = summary_with_percentiles(frame)
-        table = year_end_values(pd.concat(
-            [monthly_summary, risk_summary(frame, reserve_dollars, cpi_frame)], axis=1,
-        ))
-        click.echo(
-            f"ensemble {scenario_name} ({batch_dir.name}): {len(connections)} succeeded "
-            f"member(s), {len(failed)} failed"
-            + (f"; {_subject(account, lot, after_tax)}" if account or after_tax else "")
-            + ("" if reserve_dollars is None
-               else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)")
-        )
-        _echo_year_table(table)
-        if failed:
-            click.echo(f"  {len(failed)} failed member(s), excluded above:")
-            for stem in failed:
-                click.echo(f"    {stem}: {statuses[stem]}")
-        if as_graph or graph_file is not None:
-            from analysis.sim.ensemble_plots import ensemble_fan_figure
+    store = _open_series(batch_dir)
+    frame = _member_frame(store, account, DollarMode.NOMINAL, lot, after_tax=after_tax)
+    reserve_dollars = _reserve_dollars(reserve, store, account)
+    cpi_frame = (
+        None if reserve_dollars is None
+        else _member_frame(store, account, DollarMode.CPI_CONSTANT, lot,
+                           after_tax=after_tax)
+    )
+    monthly_summary = summary_with_percentiles(frame)
+    table = year_end_values(pd.concat(
+        [monthly_summary, risk_summary(frame, reserve_dollars, cpi_frame)], axis=1,
+    ))
+    click.echo(
+        f"ensemble {scenario_name} ({batch_dir.name}): {len(store)} succeeded "
+        f"member(s), {len(failed)} failed"
+        + (f"; {_subject(account, lot, after_tax)}" if account or after_tax else "")
+        + ("" if reserve_dollars is None
+           else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)")
+    )
+    _echo_year_table(table)
+    if failed:
+        click.echo(f"  {len(failed)} failed member(s), excluded above:")
+        for stem in failed:
+            click.echo(f"    {stem}: {statuses[stem]}")
+    if as_graph or graph_file is not None:
+        from analysis.sim.ensemble_plots import ensemble_fan_figure
 
-            # Nominal, as the table is, so no reserve line: the reserve is
-            # in CPI-constant dollars, and the notebook draws it only there.
-            _draw_figure(ensemble_fan_figure(
-                monthly_summary,
-                f"{_subject(account, lot, after_tax)} fan chart (nominal) ({scenario_name})",
-                deaths=base_case_deaths(connections),
-            ), graph_file, "ensemble-")
-    finally:
-        _close_all(connections)
+        # Nominal, as the table is, so no reserve line: the reserve is
+        # in CPI-constant dollars, and the notebook draws it only there.
+        _draw_figure(ensemble_fan_figure(
+            monthly_summary,
+            f"{_subject(account, lot, after_tax)} fan chart (nominal) ({scenario_name})",
+            deaths=store.base_case_deaths(),
+        ), graph_file, "ensemble-")
 
 
 @ensemble_group_command.command("compare")
@@ -1347,82 +1394,76 @@ def ensemble_compare(
         account, lot = known["account"], known["lot"]
     after_tax = not pre_tax and account is None
     mode = DollarMode(dollars)
-    sides: dict[str, dict[str, RunConnection]] = {}
-    try:
-        for name in (baseline, variant):
-            sides[name] = load_ensemble(_ensemble_batch_dir(resolved_runs_dir, name, None))
-        base_conns, variant_conns = sides[baseline], sides[variant]
-        # An account only one recipe has gets that recipe's own tail table
-        # below, with no deltas: there is nothing to subtract it from.
-        frames: dict[str, pd.DataFrame] = {}
-        for name, conns in sides.items():
-            try:
-                frames[name] = members_balance_by_month(
-                    conns, account, mode, lot, after_tax=after_tax)
-            except EnsembleError:
-                pass
-        subject = _subject(account, lot, after_tax)
-        if not frames:
-            raise click.ClickException(f"no {subject} in {baseline} or {variant}")
-        reserve_dollars = _reserve_dollars(reserve, base_conns, account)
-        cpi_frames = {
-            name: (
-                frames[name] if mode == DollarMode.CPI_CONSTANT
-                else members_balance_by_month(sides[name], account, DollarMode.CPI_CONSTANT, lot,
-                                              after_tax=after_tax)
-            )
-            for name in frames
-        } if reserve_dollars is not None else {}
-        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    sides: dict[str, EnsembleSeries] = {}
+    for name in (baseline, variant):
+        sides[name] = _open_series(_ensemble_batch_dir(resolved_runs_dir, name, None))
+    base_conns, variant_conns = sides[baseline], sides[variant]
+    # An account only one recipe has gets that recipe's own tail table
+    # below, with no deltas: there is nothing to subtract it from.
+    frames: dict[str, pd.DataFrame] = {}
+    for name, store in sides.items():
+        try:
+            frames[name] = store.frame(account, mode, lot, after_tax=after_tax)
+        except EnsembleError:
+            pass
+    subject = _subject(account, lot, after_tax)
+    if not frames:
+        raise click.ClickException(f"no {subject} in {baseline} or {variant}")
+    reserve_dollars = _reserve_dollars(reserve, base_conns, account)
+    cpi_frames = {
+        name: (
+            frames[name] if mode == DollarMode.CPI_CONSTANT
+            else sides[name].frame(account, DollarMode.CPI_CONSTANT, lot, after_tax=after_tax)
+        )
+        for name in frames
+    } if reserve_dollars is not None else {}
+    mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+    click.echo(
+        f"{variant} vs {baseline}: {subject}, {mode_label} dollars; "
+        f"{len(base_conns)} and {len(variant_conns)} member(s)"
+    )
+    pairs: list[tuple[str, str]] = []
+    if len(frames) == 2:
+        pairs, unpaired = pair_members(base_conns.member_ids(), variant_conns.member_ids())
         click.echo(
-            f"{variant} vs {baseline}: {subject}, {mode_label} dollars; "
-            f"{len(base_conns)} and {len(variant_conns)} member(s)"
+            f"  paired: {len(pairs)} future(s)" if pairs else f"  not paired: {unpaired}"
         )
-        pairs: list[tuple[str, str]] = []
+        click.echo(f"{variant} − {baseline}, year end:")
+        _echo_year_table(year_end_values(comparison_deltas(
+            frames[baseline], frames[variant], pairs, reserve_dollars,
+            (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
+        )))
+    else:
+        missing = variant if baseline in frames else baseline
+        click.echo(f"  only one side: {missing} has no {subject}")
+
+    reserve_note = (
+        "" if reserve_dollars is None
+        else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)"
+    )
+    for name, frame in frames.items():
+        click.echo(f"{name} tail, year end{reserve_note}:")
+        _echo_year_table(year_end_values(
+            risk_summary(frame, reserve_dollars, cpi_frames.get(name))
+        ))
+    if as_graph or graph_file is not None:
+        from analysis.sim.ensemble_plots import ensemble_compare_figure, ensemble_fan_figure
+
         if len(frames) == 2:
-            pairs, unpaired = member_pairs(base_conns, variant_conns)
-            click.echo(
-                f"  paired: {len(pairs)} future(s)" if pairs else f"  not paired: {unpaired}"
-            )
-            click.echo(f"{variant} − {baseline}, year end:")
-            _echo_year_table(year_end_values(comparison_deltas(
-                frames[baseline], frames[variant], pairs, reserve_dollars,
+            figure = ensemble_compare_figure(
+                baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
+                reserve_dollars,
                 (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
-            )))
+                deaths=base_conns.base_case_deaths(),
+            )
         else:
-            missing = variant if baseline in frames else baseline
-            click.echo(f"  only one side: {missing} has no {subject}")
-
-        reserve_note = (
-            "" if reserve_dollars is None
-            else f"; reserve ${reserve_dollars:,.0f} (CPI-constant)"
-        )
-        for name, frame in frames.items():
-            click.echo(f"{name} tail, year end{reserve_note}:")
-            _echo_year_table(year_end_values(
-                risk_summary(frame, reserve_dollars, cpi_frames.get(name))
-            ))
-        if as_graph or graph_file is not None:
-            from analysis.sim.ensemble_plots import ensemble_compare_figure, ensemble_fan_figure
-
-            if len(frames) == 2:
-                figure = ensemble_compare_figure(
-                    baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
-                    reserve_dollars,
-                    (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None,
-                    deaths=base_case_deaths(base_conns),
-                )
-            else:
-                (name, frame), = frames.items()
-                figure = ensemble_fan_figure(
-                    summary_with_percentiles(frame), f"{subject} fan chart ({mode_label}) ({name})",
-                    reserve=reserve_dollars if mode == DollarMode.CPI_CONSTANT else None,
-                    deaths=base_case_deaths(sides[name]),
-                )
-            _draw_figure(figure, graph_file, "ensemble-")
-    finally:
-        for conns in sides.values():
-            _close_all(conns)
+            (name, frame), = frames.items()
+            figure = ensemble_fan_figure(
+                summary_with_percentiles(frame), f"{subject} fan chart ({mode_label}) ({name})",
+                reserve=reserve_dollars if mode == DollarMode.CPI_CONSTANT else None,
+                deaths=sides[name].base_case_deaths(),
+            )
+        _draw_figure(figure, graph_file, "ensemble-")
 
 
 @ensemble_group_command.command("sensitivity")

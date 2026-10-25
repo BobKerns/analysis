@@ -123,6 +123,24 @@ def _cpi_factor(index: pd.Series, at: pd.Index):
     return pd.Series(1_000_000 / index.reindex(lookup).to_numpy(), index=at)
 
 
+def to_cpi_constant(monthly: pd.DataFrame | pd.Series, cpi_index: pd.Series):
+    """``monthly`` dollars in CPI-constant dollars by ``cpi_index`` (a run's
+    month-indexed cumulative index, micros). ``RunConnection`` converts with
+    this, and so does an ensemble's series store (#298), which keeps each
+    member's index rather than its run file open."""
+    return monthly.mul(_cpi_factor(cpi_index, monthly.index), axis=0)
+
+
+def account_balance_cpi(balance: pd.Series, kind: str | None, cpi_index: pd.Series) -> pd.Series:
+    """One account's nominal balance in CPI-constant dollars: an income or
+    expense account's balance is a running total of flows, so each month's
+    flow is converted before they're summed again (see
+    ``RunConnection.cpi_balance_pivot``)."""
+    if kind not in accounts.CASHFLOW_KINDS:
+        return to_cpi_constant(balance, cpi_index)
+    return to_cpi_constant(balance.diff().fillna(balance), cpi_index).cumsum()
+
+
 def yearly_totals(monthly: pd.DataFrame) -> pd.DataFrame:
     """Sum a month-indexed frame (e.g. from ``income_by_category``) by calendar year."""
     yearly = monthly.groupby(index_years(monthly)).sum()
@@ -747,7 +765,7 @@ class RunConnection(Connection):
         the scenario starts) takes the first month's CPI, and one after its
         last the last's: the run has no index for them.
         """
-        return monthly.mul(_cpi_factor(self.cpi_index(), monthly.index), axis=0)
+        return to_cpi_constant(monthly, self.cpi_index())
 
     def to_cpi_constant_annual(self, yearly: pd.DataFrame | pd.Series):
         """Convert a year-indexed dollar series/frame using each year's year-end CPI,
@@ -831,9 +849,7 @@ class RunConnection(Connection):
             balance = -balance
         if mode != DollarMode.CPI_CONSTANT or balance.empty:
             return balance
-        if kind not in accounts.CASHFLOW_KINDS:
-            return self.to_cpi_constant(balance)
-        return self.to_cpi_constant(balance.diff().fillna(balance)).cumsum()
+        return account_balance_cpi(balance, kind, self.cpi_index())
 
     def lot_balance(
         self, account: str, lot: str, mode: DollarMode = DollarMode.NOMINAL,
@@ -853,7 +869,7 @@ class RunConnection(Connection):
         )
         if mode != DollarMode.CPI_CONSTANT or balance.empty:
             return balance
-        return self.to_cpi_constant(balance)
+        return to_cpi_constant(balance, self.cpi_index())
 
     def lots_by_account(self, *, single: bool = False) -> dict[str, list[str]]:
         """Account name -> its lot labels in definition order, for the asset
