@@ -97,6 +97,11 @@ def scenario_readme(name: str, description: str, parents: list[str]) -> str:
     ))
 
 
+def current_user() -> str:
+    """Who a new scenario's ``created_by`` names."""
+    return os.environ.get("ANALYSIS_USER") or os.environ.get("USER") or "unknown"
+
+
 def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
                     description: str | None = None,
                     intent_dir: Path | None = None,
@@ -167,9 +172,7 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
             "name": name,
             "description": description,
             "parent_scenario": ":".join(parents),
-            "created_by": os.environ.get("ANALYSIS_USER")
-            or os.environ.get("USER")
-            or "unknown",
+            "created_by": current_user(),
             "meta_json": json.dumps(
                 {} if ensemble_size is None else {"ensemble_size": ensemble_size},
                 separators=(",", ":"),

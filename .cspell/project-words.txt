@@ -75,6 +75,7 @@ Ghostty
 gmtoffset
 Gompertz
 gpgsign
+gterm
 heloc
 hexsha
 HIFO
@@ -216,6 +217,7 @@ TCSADRAIN
 TCSANOW
 tcsetattr
 tctronics
+Termius
 testpaths
 textconv
 textcoords
