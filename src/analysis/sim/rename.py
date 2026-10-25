@@ -28,7 +28,7 @@ from pathlib import Path
 
 from analysis.sim import chain_edit, registries
 from analysis.sim.dates import RelativeDate, parse_relative_date
-from analysis.sim.lineage import default_description, load_order, parse_parents
+from analysis.sim.lineage import default_description, is_template, load_order, parse_parents
 from analysis.sim.lineage import scenario_dir as _folder_of
 from analysis.sim.loader import CURRENT_SCENARIO_FILE, LoadError, load_scenario
 from analysis.sim.schema import connect_sim_file
@@ -495,10 +495,11 @@ def copy_scenario(data_dir: Path, old: str, new: str, *, created_by: str | None 
     in the data repo is touched. Returns what was written, as paths
     relative to ``data_dir``."""
     scenarios = data_dir / "scenarios"
-    old_dir = _folder_of(scenarios, old)
-    # Only a folder's own name: a path or '..' could reach outside scenarios/.
-    if Path(old).name != old or not old_dir.is_dir():
+    # Only a folder's own name (or a template's): a path or '..' could reach
+    # outside scenarios/.
+    if old not in scenario_folders(scenarios) and not is_template(scenarios, old):
         raise FileNotFoundError(f"scenario not found: {scenarios / old}")
+    old_dir = _folder_of(scenarios, old)
     new_dir = _check_new_scenario(scenarios, new)
     shutil.copytree(old_dir, new_dir)
     # Links in the copy are worked out from where the original sits, so one

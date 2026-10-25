@@ -96,9 +96,10 @@ def test_scenario_copy_refuses(test_data_dir: Path, test_scenarios_dir: Path,
     assert not (test_scenarios_dir / "Retire Early").exists()
 
 
-def test_copy_scenario_takes_only_a_folder_name(test_data_dir: Path) -> None:
+@pytest.mark.parametrize("old", ["../scenarios/retire_alice", "..", ".", ""])
+def test_copy_scenario_takes_only_a_folder_name(test_data_dir: Path, old: str) -> None:
     with pytest.raises(FileNotFoundError, match="scenario not found"):
-        rename.copy_scenario(test_data_dir, "../scenarios/retire_alice", "somebody")
+        rename.copy_scenario(test_data_dir, old, "somebody")
 
 
 def test_ensemble_copy_keeps_seed_and_size(
