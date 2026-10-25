@@ -159,3 +159,16 @@ def test_an_ensemble_batch_of_another_size_reruns(
     assert "recipe" not in _skipped(sim_all())
     _stamp_runs(runs_dir, code_repo)
     assert _skipped(sim_all()) == ["base", "recipe", "retire_alice"]
+
+
+def test_a_batch_with_unreadable_state_reruns(
+    code_repo: git.Repo, runs_dir: Path, test_data_dir: Path,
+) -> None:
+    """An interrupted batch's half-written manifest or member file makes
+    it not fresh, rather than stopping `sim all`."""
+    batch = runs_dir / "recipe" / "2000-01-01T000000Z"
+    batch.mkdir(parents=True)
+    (batch / "member_0000.sqlite3").write_bytes(b"not a database, cut off")
+    (batch / "batch_manifest.json").write_text('{"member_count": ')
+    code = freshness.code_tree_of(code_repo)
+    assert freshness.unchanged_run(test_data_dir, runs_dir, "recipe", code) is None

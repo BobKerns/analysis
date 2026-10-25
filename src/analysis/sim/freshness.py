@@ -99,17 +99,20 @@ def unchanged_run(
     ran with, all clean then and now. Otherwise None."""
     if code.repo is None or code.trees is None:
         return None
-    latest = _latest(runs_dir, scenario)
-    if latest is None:
-        return None
-    path, files = latest
-    if not files:
+    from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
+
+    try:
+        latest = _latest(runs_dir, scenario)
+        if latest is None or not latest[1]:
+            return None
+        path, files = latest
+        manifest = (read_batch_manifest(path) or {}) if path.is_dir() else {}
+        statuses = member_run_statuses(path) if path.is_dir() else {}
+    except (OSError, ValueError, sqlite3.Error):
+        # A batch interrupted or still being written: not fresh, so
+        # `sim all` reruns it rather than stopping here.
         return None
     if path.is_dir():
-        from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
-
-        manifest = read_batch_manifest(path) or {}
-        statuses = member_run_statuses(path)
         # A batch of another size (`sim run --ensemble-size N`) isn't the
         # one `sim all` would make.
         if not len(statuses) == manifest.get("member_count") == _ensemble_size(files[0]):
