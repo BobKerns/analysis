@@ -348,8 +348,10 @@ def test_ensemble_compare_widget_offers_only_recipes_that_pair_with_the_baseline
 ) -> None:
     """#298: the second dropdown lists the recipes sharing the baseline's
     seed, never the baseline itself, and none is picked to start; picking
-    one draws the head-to-head comparison, paired member by member."""
+    one draws the head-to-head comparison, paired member by member, as
+    charts alone: its tables are the table widget's."""
     from IPython.display import Image
+    from pandas.io.formats.style import Styler
 
     from analysis.sim.notebook_ui import ensemble_widgets
     from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -376,6 +378,7 @@ def test_ensemble_compare_widget_offers_only_recipes_that_pair_with_the_baseline
     headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
     assert any("### child vs baseline" in h and "paired over 3 futures" in h for h in headings)
     assert sum(isinstance(item, Image) for item in shown) == 1
+    assert not any(isinstance(item, Styler) for item in shown)
     assert plt.get_fignums() == []
 
     baseline_picker.value = "child"  # picking the compared recipe swaps the two
@@ -455,7 +458,7 @@ def test_ensemble_compare_widget_says_so_when_no_shown_recipe_has_the_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The shared account list spans every recipe, so the pick can be in
-    none of the compared ones: a note, not an error from an empty tail table."""
+    none of the compared ones: a note, not an error."""
     import sqlite3
 
     from analysis.sim.notebook_ui import ensemble_widgets

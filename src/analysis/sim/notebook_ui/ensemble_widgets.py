@@ -671,8 +671,8 @@ def ensemble_compare_widget(*_,
     recipe and one other that pairs with it (shares its seed, so member
     *i* of each drew the same future), net worth or one account (or one
     lot of it, #170): percentile-breakpoint deltas, paired per-future
-    deltas and tail-mean (CVaR) deltas, with year-end tables of the deltas
-    and of both recipes' tail and reserve shares. ``controls`` shares
+    deltas and tail-mean (CVaR) deltas, as charts; the year-end tables are
+    ``ensemble_table_widget``'s. ``controls`` shares
     scale, dollars, account and reserve with other ensemble widgets (#171);
     ``default`` is the baseline to start on and ``variant`` the recipe to
     compare it with, when they have a batch; with no ``variant`` none is
@@ -748,8 +748,6 @@ def ensemble_compare_widget(*_,
                 sides.mode_label, sides.reserve, sides.cpi_pair(baseline, other), log_scale,
                 clip=time_range.clip, deaths=sides.stores[baseline].base_case_deaths(),
             )))
-            table = sides.deltas(baseline, other, time_range.clip)
-            outputs.append(table.style.format(_share_format(table.columns)))
         else:
             # The shared account list spans every recipe, so a side may lack
             # the pick: a note, and the other side's own spread, not a delta.
@@ -764,10 +762,6 @@ def ensemble_compare_widget(*_,
                     log_scale=log_scale and bool((time_range.clip(frame) > 0).all().all()),
                     height=4, deaths=sides.stores[name].base_case_deaths(),
                 )))
-        if sides.frames:
-            tails = sides.tails(time_range.clip)
-            outputs.append(StyledMarkdown("### Tail and reserve, by recipe"))
-            outputs.append(tails.style.format(_share_format(tails.columns)))
         clear_output(wait=True)
         for item in outputs:
             display(item)

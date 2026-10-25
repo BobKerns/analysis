@@ -897,7 +897,7 @@ dropdown appears under Account when the account has more than one, and
 the widgets share their scale, dollars, account and reserve controls, so
 a change in one redraws them all. Each picks its own recipes: the
 head-to-head comparison a baseline and one recipe to compare it with,
-and the table below it a baseline and any number of recipes, each row
+as charts, and the table below it, with the year-end numbers, a baseline and any number of recipes, each row
 one year and recipe. Both offer only recipes that pair with the
 baseline (see below). Picking the compared recipe as the baseline swaps
 the two.
@@ -924,7 +924,8 @@ fan with the high end. Recipes with their own seeds don't pair:
 measuring, so it doesn't break the pairing.
 
 An account only one recipe has (one the variant opens, say) can't be
-compared; that recipe's own fan and tail table are shown instead.
+compared; that recipe's own fan (or, in the table, tail means) is
+shown instead.
 
 **Tail means.** `cvar05` and `cvar20` are the mean of the worst 5% and the
 worst 20% of members, and `Δcvar05`, `Δcvar20` the variant's change in
