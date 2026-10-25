@@ -10364,6 +10364,77 @@ def ensemble_rename(old: str | None, new: str | None, data_dir: Path | None) -> 
     _rename_scenario(old, new, data_dir, what="ensemble")
 
 
+def _copy_scenario(old: str | None, new: str | None, data_dir: Path | None, *, what: str) -> None:
+    """``sim scenario copy`` and ``sim ensemble copy`` (``what``), issue #295."""
+    data = _resolve_data_dir(data_dir)
+    if old is None:
+        choices = names.scenario_names(data)
+        if what == "ensemble":
+            choices = [n for n in choices if sc.ensemble_settings(data, n)[1] is not None]
+        old = _ask_name(what, choices, prompt=f"{what} to copy")
+    if new is None:
+        new = _ask_new_name(f"name for the copy of {old}")
+    old, new = old.strip(), new.strip()
+    # Only a folder's own name (or a template's): anything else (a path,
+    # '..') could reach outside scenarios/.
+    if old not in names.scenario_names(data):
+        raise click.ClickException(f"scenario not found: {data / 'scenarios' / old}")
+    if what == "ensemble" and sc.ensemble_settings(data, old)[1] is None:
+        raise click.ClickException(f"{old} is not an ensemble; `sim scenario copy` copies it")
+    # Preflights OLD, then copies it and checks the copy loads, in a staged copy.
+    with _scenario_edit(data, old, remember=False, template_parent=True) as edit:
+        try:
+            written = rename.copy_scenario(edit.data_dir, old, new, created_by=sc.current_user())
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(str(exc).replace(str(edit.data_dir), str(data))) from None
+    target = data / "scenarios" / new
+    _make_current(data, new)
+    click.echo(f"copied {what} {old} to {target}")
+    parents = read_parents(target)
+    click.echo(f"  inherits: {' + '.join(parents) if parents else '(nothing)'}")
+    for line in written:
+        click.echo(f"  {line}")
+    if what == "ensemble":
+        click.echo(f"  same seed and size as {old}, so member N of each draws the same future")
+    _suggest_readme(target)
+
+
+@scenario_group_command.command("copy")
+@click.argument("old", required=False, type=completion.SCENARIO)
+@click.argument("new", required=False)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def scenario_copy(old: str | None, new: str | None, data_dir: Path | None) -> None:
+    """Copy scenario OLD to a new scenario NEW, and make NEW current.
+
+    NEW is a sibling of OLD, not built on it: the same parents and mix-ins,
+    and a copy of every file in OLD's folder, so changing one doesn't
+    change the other. Use it to try an alternative, such as a different
+    parent (`sim scenario edit NEW --parents ...`). Only NEW's own name
+    changes: its scenario.csv name and created_by, its README's title, and
+    its markdown's links to itself. OLD may be a template. Runs are not
+    copied. Same as `sim ensemble copy`.
+
+    Either name left out is asked for."""
+    _copy_scenario(old, new, data_dir, what="scenario")
+
+
+@ensemble_group_command.command("copy")
+@click.argument("old", required=False, type=completion.ENSEMBLE)
+@click.argument("new", required=False)
+@click.option("--data-dir",
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+def ensemble_copy(old: str | None, new: str | None, data_dir: Path | None) -> None:
+    """Copy ensemble OLD to a new ensemble NEW; the same as `sim scenario
+    copy`, but OLD must be an ensemble. NEW keeps OLD's seed and size, so
+    the two pair member by member.
+
+    Either name left out is asked for."""
+    _copy_scenario(old, new, data_dir, what="ensemble")
+
+
 # ---------- editing and deleting a scenario (#190) ----------
 
 def _blank_or(value: str, parse: Callable[[str], object], option: str) -> object | None:
