@@ -12,6 +12,7 @@ would leave any scenario unable to load is never written.
 A scenario itself is renamed with :func:`rename_scenario`: its folder, its
 ``scenario.csv`` name, every child's ``parent_scenario``, the data repo's
 ``.current_scenario``, and the links to it in the data repo's README files.
+:func:`copy_scenario` makes a sibling copy under a new name (issue #295).
 """
 
 from __future__ import annotations
@@ -20,13 +21,14 @@ import csv
 import json
 import os
 import re
+import shutil
 import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from analysis.sim import chain_edit, registries
 from analysis.sim.dates import RelativeDate, parse_relative_date
-from analysis.sim.lineage import default_description, load_order, parse_parents
+from analysis.sim.lineage import default_description, is_template, load_order, parse_parents
 from analysis.sim.lineage import scenario_dir as _folder_of
 from analysis.sim.loader import CURRENT_SCENARIO_FILE, LoadError, load_scenario
 from analysis.sim.schema import connect_sim_file
@@ -34,7 +36,7 @@ from analysis.sim.schema import connect_sim_file
 __all__ = [
     "ACCOUNT_COLUMNS", "CALENDAR_ROW_COLUMNS", "RESERVED_ACCOUNTS", "SCHEDULED_COLUMNS",
     "SERIES_COLUMNS", "SERIES_KINDS", "account_defined", "calendar_row_defined",
-    "clashes", "describe_clashes", "generated_growth_rules", "name_problem", "relink_markdown",
+    "clashes", "copy_scenario", "describe_clashes", "generated_growth_rules", "name_problem", "relink_markdown",
     "rename_account", "rename_calendar_row", "rename_growth_rules", "rename_scenario",
     "rename_scheduled", "rename_series", "scenario_folders", "scheduled_defined", "scope",
     "series_mentioned", "shared_series_files", "symbol_series",
@@ -450,21 +452,84 @@ def relink_markdown(text: str, md_path: Path, old_dir: Path, new_dir: Path) -> s
     return text.replace(f"[{old}](", f"[{new}](")
 
 
-def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
-    """Rename scenario ``old`` to ``new`` in data repo ``data_dir`` (a staged
-    copy, in the CLI). Returns what changed, as paths relative to
-    ``data_dir``, named as they are after the rename."""
+def _retitle_readme(folder: Path, old: str, new: str) -> bool:
+    """Retitle ``folder``'s README from ``old`` to ``new``, if its title is
+    the scenario's name, as `scenario create` writes it; whether it did."""
+    readme = folder / "README.md"
+    if not readme.is_file():
+        return False
+    text = readme.read_text(encoding="utf-8")
+    title, sep, rest = text.partition("\n")
+    if title.strip() != f"# {old}":
+        return False
+    readme.write_text(f"# {new}{sep}{rest}", encoding="utf-8")
+    return True
+
+
+def _rename_self(old: str, new: str) -> Callable[[dict[str, str]], None]:
+    def edit(row: dict[str, str]) -> None:
+        if (row.get("name") or "").strip() == old:
+            row["name"] = new
+    return edit
+
+
+def _check_new_scenario(scenarios: Path, new: str) -> Path:
     if not registries.SCENARIO_NAME_RE.match(new):
         raise ValueError(
             f"invalid scenario name: {new!r} (lowercase letters, digits, '_' and '-', "
             "starting with a letter or digit)")
+    new_dir = scenarios / new
+    if new_dir.exists():
+        raise FileExistsError(f"scenario already exists: {new_dir}")
+    return new_dir
+
+
+def copy_scenario(data_dir: Path, old: str, new: str, *, created_by: str | None = None) -> list[str]:
+    """Copy scenario ``old`` to a new scenario ``new`` in data repo
+    ``data_dir`` (a staged copy, in the CLI), issue #295. ``old`` may be a
+    template, read from the code repository. The copy is a sibling: same
+    parents, same rows, same seed and ensemble size, so an ensemble's copy
+    pairs with it member by member. Only the copy's own name changes: its
+    ``scenario.csv`` name (and ``created_by``, when given), its README's
+    title, and its markdown's links and mentions of itself. Nothing else
+    in the data repo is touched. Returns what was written, as paths
+    relative to ``data_dir``."""
     scenarios = data_dir / "scenarios"
-    old_dir, new_dir = scenarios / old, scenarios / new
+    # Only a folder's own name (or a template's): a path or '..' could reach
+    # outside scenarios/.
+    if old not in scenario_folders(scenarios) and not is_template(scenarios, old):
+        raise FileNotFoundError(f"scenario not found: {scenarios / old}")
+    old_dir = _folder_of(scenarios, old)
+    new_dir = _check_new_scenario(scenarios, new)
+    shutil.copytree(old_dir, new_dir)
+    # Links in the copy are worked out from where the original sits, so one
+    # into its own folder now points into the copy's.
+    for path in sorted(new_dir.rglob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        relinked = relink_markdown(text, old_dir / path.relative_to(new_dir), old_dir, new_dir)
+        if relinked != text:
+            path.write_text(relinked, encoding="utf-8")
+    _retitle_readme(new_dir, old, new)
+    stamp = _rename_self(old, new)
+
+    def edit(row: dict[str, str]) -> None:
+        stamp(row)
+        if created_by is not None:
+            row["created_by"] = created_by
+    _rewrite_scenario_csv(new_dir / "scenario.csv", edit)
+    return sorted(path.relative_to(data_dir).as_posix() for path in new_dir.rglob("*") if path.is_file())
+
+
+def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
+    """Rename scenario ``old`` to ``new`` in data repo ``data_dir`` (a staged
+    copy, in the CLI). Returns what changed, as paths relative to
+    ``data_dir``, named as they are after the rename."""
+    scenarios = data_dir / "scenarios"
+    old_dir = scenarios / old
+    new_dir = _check_new_scenario(scenarios, new)
     # Only a folder's own name: a path or '..' could reach outside scenarios/.
     if old not in scenario_folders(scenarios):
         raise FileNotFoundError(f"scenario not found: {old_dir}")
-    if new_dir.exists():
-        raise FileExistsError(f"scenario already exists: {new_dir}")
 
     def after(path: Path) -> str:
         if path == old_dir or old_dir in path.parents:
@@ -481,20 +546,9 @@ def rename_scenario(data_dir: Path, old: str, new: str) -> list[str]:
             changed.append(after(path))
     old_dir.rename(new_dir)
     changed.insert(0, f"scenarios/{old}/ -> scenarios/{new}/")
-    # The title `scenario create` gives its README is the scenario's name.
-    readme = new_dir / "README.md"
-    if readme.is_file():
-        text = readme.read_text(encoding="utf-8")
-        title, sep, rest = text.partition("\n")
-        if title.strip() == f"# {old}":
-            readme.write_text(f"# {new}{sep}{rest}", encoding="utf-8")
-            if f"scenarios/{new}/README.md" not in changed:
-                changed.append(f"scenarios/{new}/README.md")
-
-    def rename_self(row: dict[str, str]) -> None:
-        if (row.get("name") or "").strip() == old:
-            row["name"] = new
-    if _rewrite_scenario_csv(new_dir / "scenario.csv", rename_self):
+    if _retitle_readme(new_dir, old, new) and f"scenarios/{new}/README.md" not in changed:
+        changed.append(f"scenarios/{new}/README.md")
+    if _rewrite_scenario_csv(new_dir / "scenario.csv", _rename_self(old, new)):
         changed.append(f"scenarios/{new}/scenario.csv")
     for each in scenario_folders(scenarios):
         if _rewrite_scenario_csv(scenarios / each / "scenario.csv", _repoint_parents(old, new)):

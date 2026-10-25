@@ -128,6 +128,22 @@ built on it (as parent or mix-in), your current scenario, and links to it
 in the data repo's `README.md` files. Runs you already made keep the old
 name.
 
+To try an alternative next to a scenario rather than on top of it, copy it
+(`sim ensemble copy` is the same, but offers only ensembles):
+
+```sh
+sim scenario copy <old> <new>
+sim scenario edit <new> --parents base:high_inflation   # say, a different parent
+```
+
+The copy gets every file in the old scenario's folder, so it has the same
+parents and rows, and the two change independently from then on. Only the
+copy's own name changes: its `scenario.csv` name and `created_by`, its
+`README.md` title, and its links to itself. A copied ensemble keeps the
+seed and size, so it pairs with the original member by member. The old
+scenario may be a `t_` template. Runs aren't copied, and the copy becomes
+your current scenario.
+
 To change a scenario's own settings (`sim ensemble edit` is the same
 command), run `sim scenario edit <name>` with no options: it shows the
 fields, and you name one to change it, with tab completion, then write.

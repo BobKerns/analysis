@@ -957,6 +957,11 @@ moves the folder and rewrites its `scenario.csv` name, its README's title when t
 it, `.current_scenario`, and the links to it in the data repo's markdown
 files (`scenarios/**` and the top level); runs already made keep the old
 name.
+`scenario copy` (the same as `ensemble copy`, which takes only an
+ensemble) copies a scenario's folder, a template's included, to a new
+sibling: the copy's `scenario.csv` name and `created_by`, its README title
+(as above) and its own markdown's links to itself change; nothing else in the
+data repo does, and the seed and ensemble size carry over.
 
 `calendar edit` chooses its row before its prompts, which can stay open a
 long time, and stages only when the answer is submitted. So inside the staged
@@ -1163,3 +1168,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#282](https://github.com/BobKerns/analysis/issues/282): template scenarios: a missing `t_` scenario is read from the code repository's `templates/scenarios/`, read-only (§4.5a).
 - [#281](https://github.com/BobKerns/analysis/issues/281): the `date_marker` kind, and calendar dates written relative to one (`NAME+2y`); markers merge by name (§3, new §3.8, §4.5, §4.8).
 - [#291](https://github.com/BobKerns/analysis/issues/291): `calendar.csv`'s `vary_resume` column, a `set_rate` row that puts back what governed its series before a date (§3.1, §4.8).
+- [#295](https://github.com/BobKerns/analysis/issues/295): `scenario|ensemble copy`, a sibling copy under a new name (§7).
