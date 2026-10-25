@@ -132,3 +132,30 @@ def test_members_pair_only_on_one_seed(
     assert len(pairs) == 3 and reason is None
     assert pair_members(left, other) == (
         [], "the recipes have different seeds, so their members drew different futures")
+
+
+def test_recipes_pair_though_their_first_succeeded_members_differ(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+) -> None:
+    """A member file records its own seed, derived from the recipe's and its
+    index, so recipes are compared at an index both have succeeded, not at
+    each one's first success."""
+    from analysis.sim.notebook_ui.ensemble_widgets import RecipeSeeds
+
+    seeded_ensemble_batch("baseline", 1)
+    with sqlite3.connect(seeded_ensemble_batch("child", 1) / "member_0000.sqlite3") as con:
+        con.execute("UPDATE simulation_run SET status = 'failed'")
+    seeded_ensemble_batch("other", 2)
+    seeds = RecipeSeeds(runs_dir, ["baseline", "child", "other"])
+    assert seeds.paired_with("baseline") == ["child"]
+    assert seeds.paired_with("other") == []
+
+
+def test_a_batch_with_no_succeeded_member_gets_no_store(tmp_path: Path) -> None:
+    """An empty store would be trusted, and read as an ensemble of no futures."""
+    from analysis.sim.cli import _write_series_db
+
+    _write_series_db(tmp_path, [], 0)
+    assert not series_db_path(tmp_path).exists()
+    with pytest.raises(EnsembleError, match="no succeeded member"):
+        build_series_db(tmp_path)

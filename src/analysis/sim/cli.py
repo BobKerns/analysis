@@ -795,7 +795,11 @@ def _run_sensitivity(
 def _write_series_db(member_runs_dir: Path, series: list[MemberSeries], succeeded: int) -> None:
     """#298: write the batch's series store from its members' rows. Without
     every succeeded member's rows, or if writing fails, there's no store
-    yet, and the batch's first reader builds one: a warning, not an error."""
+    yet, and the batch's first reader builds one: a warning, not an error.
+    A batch where no member succeeded gets none: an empty store would be
+    trusted, and read as an ensemble of no futures."""
+    if succeeded == 0:
+        return
     if len(series) != succeeded:
         click.echo(f"warning: series store not written ({succeeded - len(series)} member(s) "
                    "unread); the first notebook or 'sim ensemble' read builds it", err=True)

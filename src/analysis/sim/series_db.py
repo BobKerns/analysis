@@ -101,10 +101,6 @@ CREATE TABLE series (
 """
 
 
-class SeriesDbError(RuntimeError):
-    pass
-
-
 def series_db_path(batch_dir: Path) -> Path:
     return Path(batch_dir) / SERIES_DB_FILENAME
 
@@ -295,12 +291,13 @@ def write_series_db(batch_dir: Path, members: Iterable[MemberSeries]) -> Path:
 def build_series_db(batch_dir: Path, on_member: Callable[[], None] | None = None) -> Path:
     """Build ``batch_dir``'s store from its succeeded member files, calling
     ``on_member`` after each one is read."""
-    from analysis.sim.ensemble import member_run_statuses
+    from analysis.sim.ensemble import EnsembleError, member_run_statuses
 
     succeeded = [stem for stem, status in member_run_statuses(batch_dir).items()
                  if status == "succeeded"]
     if not succeeded:
-        raise SeriesDbError(f"no succeeded member run files under {batch_dir}")
+        # As `load_ensemble` says it: a batch with nothing to show has no store.
+        raise EnsembleError(f"no succeeded member run files found under {batch_dir}")
 
     def each() -> Iterable[MemberSeries]:
         for stem in succeeded:

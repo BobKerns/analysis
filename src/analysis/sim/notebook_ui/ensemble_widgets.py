@@ -58,7 +58,7 @@ __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
     "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget",
     "ensemble_table_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
-    "recipe_seeds", "LoadingIndicator",
+    "RecipeSeeds", "LoadingIndicator",
 ]
 
 
@@ -138,31 +138,49 @@ def recipe_accounts(
     return sorted(accounts), lots, sorted(years)
 
 
-def recipe_seeds(runs_dir: Path, recipes: Sequence[str]) -> dict[str, int | None]:
-    """Each recipe's seed, from one succeeded member of its latest batch:
-    two recipes' members pair only when they share it (ADR-006 §3), so a
-    comparison offers only those. None for a recipe with no member to read."""
-    seeds: dict[str, int | None] = {}
-    for recipe in recipes:
-        seeds[recipe] = None
-        batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
-        if batch_dir is None:
-            continue
-        for stem, status in member_run_statuses(batch_dir).items():
-            if status == "succeeded":
-                with RunConnection(batch_dir / f"{stem}.sqlite3") as con:
-                    member = con.ensemble_member()
-                seeds[recipe] = None if member is None else member[1]
-                break
-    return seeds
+class RecipeSeeds:
+    """Which recipes' members pair (ADR-006 §3): two recipes pair when they
+    share a seed, but a member file records only its own seed, derived
+    from the recipe's and its index. So two recipes are compared at a
+    member index both have succeeded, each member's seed read once."""
 
+    def __init__(self, runs_dir: Path, recipes: Sequence[str]) -> None:
+        self._batches: dict[str, Path] = {}
+        self._indexes: dict[str, set[int]] = {}
+        self._seeds: dict[tuple[str, int], int | None] = {}
+        for recipe in recipes:
+            batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
+            if batch_dir is None:
+                continue
+            self._batches[recipe] = batch_dir
+            self._indexes[recipe] = {
+                int(stem.removeprefix("member_"))
+                for stem, status in member_run_statuses(batch_dir).items()
+                if status == "succeeded"}
 
-def _paired_with(seeds: Mapping[str, int | None], baseline: str | None) -> list[str]:
-    """The recipes other than ``baseline`` whose members pair with its own."""
-    seed = seeds.get(baseline) if baseline else None
-    if seed is None:
-        return []
-    return [name for name, other in seeds.items() if name != baseline and other == seed]
+    def _seed(self, recipe: str, index: int) -> int | None:
+        key = (recipe, index)
+        if key not in self._seeds:
+            path = self._batches[recipe] / f"member_{index:04d}.sqlite3"
+            with RunConnection(path) as con:
+                member = con.ensemble_member()
+            self._seeds[key] = None if member is None else member[1]
+        return self._seeds[key]
+
+    def pair(self, baseline: str, other: str) -> bool:
+        common = self._indexes.get(baseline, set()) & self._indexes.get(other, set())
+        if not common:
+            return False
+        index = min(common)
+        seed = self._seed(baseline, index)
+        return seed is not None and seed == self._seed(other, index)
+
+    def paired_with(self, baseline: str | None) -> list[str]:
+        """The recipes other than ``baseline`` whose members pair with its own."""
+        if not baseline:
+            return []
+        return [name for name in self._indexes
+                if name != baseline and self.pair(baseline, name)]
 
 
 def _reserve_field() -> widgets.Text:
@@ -679,12 +697,12 @@ def ensemble_compare_widget(*_,
     picked."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
     recipes = list_ensemble_recipes(runs_dir)
-    seeds = recipe_seeds(runs_dir, recipes)
+    seeds = RecipeSeeds(runs_dir, recipes)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
     if _default(recipes, default) is not None:
         baseline_picker.value = default
     variant_picker = widgets.Dropdown(
-        options=_paired_with(seeds, baseline_picker.value), value=None, description="Compare:")
+        options=seeds.paired_with(baseline_picker.value), value=None, description="Compare:")
     if variant in variant_picker.options:
         variant_picker.value = variant
     # Default dollars are CPI-constant here: a comparison over decades, and
@@ -706,7 +724,7 @@ def ensemble_compare_widget(*_,
         swapped = change["old"] if change["new"] == variant_picker.value else None
         holding = True
         try:
-            _offer(variant_picker, _paired_with(seeds, baseline_picker.value))
+            _offer(variant_picker, seeds.paired_with(baseline_picker.value))
             if swapped in variant_picker.options:
                 variant_picker.value = swapped
         finally:
@@ -792,12 +810,12 @@ def ensemble_table_widget(*_,
     is the baseline to start on."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
     recipes = list_ensemble_recipes(runs_dir)
-    seeds = recipe_seeds(runs_dir, recipes)
+    seeds = RecipeSeeds(runs_dir, recipes)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
     if _default(recipes, default) is not None:
         baseline_picker.value = default
     variant_picker = widgets.SelectMultiple(
-        options=_paired_with(seeds, baseline_picker.value), description="Compare:", rows=min(max(len(recipes), 2), 8),
+        options=seeds.paired_with(baseline_picker.value), description="Compare:", rows=min(max(len(recipes), 2), 8),
     )
     controls = controls or EnsembleControls(runs_dir=runs_dir, dollar_mode=DollarMode.CPI_CONSTANT)
     lot_picker = controls.table_lot_picker
@@ -810,7 +828,7 @@ def ensemble_table_widget(*_,
         nonlocal holding
         holding = True
         try:
-            _offer(variant_picker, _paired_with(seeds, baseline_picker.value))
+            _offer(variant_picker, seeds.paired_with(baseline_picker.value))
         finally:
             holding = False
         _redraw()
