@@ -191,6 +191,17 @@ pins:             # relative to the data repo root, the folder holding state/
 - **Batches go whole.** A batch folder is deleted with all its members, never member by member. A pin naming a batch or anything inside it keeps the batch, and keeps both its run folder and its member intents.
 - **Never fatal.** A malformed file is a warning naming the problem and prunes nothing; the load or run itself still succeeds. A run that fails still prunes afterwards, since its run file stays behind. Each prune prints one `pruned …` line when it deleted something.
 
+### 11. `sim all` skips what can't have changed
+
+A run is a function of its code, its Python and its data (§1-2), all recorded in `simulation_run`. So `sim all` skips a scenario when rerunning it couldn't change its numbers: its latest run (or Monte Carlo batch, whichever is newer) finished, and
+
+- the code it ran with and the code now have the same trees for `src/`, `templates/`, `pyproject.toml` and `uv.lock`, the paths results depend on (by tree, not commit: a rebase or a docs-only commit changes nothing), with none of them dirty now and `code_dirty` 0 then;
+- its Python version is the one running now;
+- its `scenario_tree_id` is the scenario's now, with `data_dirty` 0 then and its scope clean now;
+- for a batch, every member reached a final status and the batch has the scenario's own `ensemble_size` members (one made by `sim run --ensemble-size N` at another size isn't what `sim all` would make).
+
+A skipped scenario prints `unchanged since <run>; skipped`, and the summary counts them. `--force` reruns every scenario. A dirty tree is never trusted, on either side: its state is in no tree. A skipped scenario isn't reloaded either, so it doesn't become the current scenario (§4a). (`sim/freshness.py`.)
+
 ## Amendments applied to [ADR-002](ADR-002-storage-schema.md) alongside this ADR
 
 These amendments to `simulation_run` ([ADR-002](ADR-002-storage-schema.md) §Ledger DDL) accommodate the §1 stamp set; all rolled into [ADR-002](ADR-002-storage-schema.md):
@@ -237,3 +248,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#236](https://github.com/BobKerns/analysis/issues/236): `sim switch` shows the current scenario or makes a named one current (§4a).
 - [#233](https://github.com/BobKerns/analysis/issues/233): a command that changes the current scenario, including by renaming or deleting it, says so (§4a).
 - [#282](https://github.com/BobKerns/analysis/issues/282): a template scenario read from the code repository is covered by `code_version`, not `scenario_tree_id` (§2).
+- [#298](https://github.com/BobKerns/analysis/issues/298): `sim all` skips a scenario whose latest run has the same code trees, Python and data tree, all clean, and reruns it with `--force` (new §11).

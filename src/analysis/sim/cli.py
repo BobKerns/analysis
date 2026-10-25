@@ -1924,6 +1924,10 @@ def _report_oat(
     default=None,
     help="Identifier recorded in simulation_run.run_by (default: $USER)",
 )
+@click.option(
+    "--force", is_flag=True, default=False,
+    help="Rerun every scenario, even one whose latest run can't have changed.",
+)
 @click.pass_context
 def all_scenarios(
     ctx: click.Context,
@@ -1933,12 +1937,20 @@ def all_scenarios(
     allow_dirty_data: bool,
     allow_dirty_code: bool,
     run_by: str | None,
+    force: bool,
 ) -> None:
     """Load and run every scenario in the data repo.
+
+    A scenario whose latest run (or ensemble batch) finished with the same
+    code (src/, templates/, pyproject.toml, uv.lock), Python and data tree it would run
+    with now, all committed, is skipped: rerunning it would give the same
+    numbers. --force reruns it anyway.
 
     Reports failures per scenario and keeps going; does not stop or fail the
     command itself.
     """
+    from analysis.sim.freshness import code_tree, unchanged_run
+
     resolved = _resolve_data_dir(data_dir)
     try:
         names = list_scenario_names(resolved)
@@ -1948,8 +1960,16 @@ def all_scenarios(
         raise click.ClickException(f"no scenarios found under {resolved / 'scenarios'}")
 
     failures: list[tuple[str, str]] = []
+    skipped: list[str] = []
+    code = code_tree()
+    resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved)
     for name in names:
         click.echo(f"=== {name} ===")
+        unchanged = None if force else unchanged_run(resolved, resolved_runs_dir, name, code)
+        if unchanged is not None:
+            skipped.append(name)
+            click.echo(f"  unchanged since {unchanged.path.name}; skipped (--force reruns it)")
+            continue
         try:
             ctx.invoke(
                 load,
@@ -1967,12 +1987,13 @@ def all_scenarios(
             click.echo(f"  error: {exc.format_message()}", err=True)
 
     click.echo()
+    unchanged_note = f" ({len(skipped)} unchanged, skipped)" if skipped else ""
     if failures:
-        click.echo(f"{len(failures)} of {len(names)} scenario(s) failed:")
+        click.echo(f"{len(failures)} of {len(names)} scenario(s) failed{unchanged_note}:")
         for name, message in failures:
             click.echo(f"  {name}: {message}")
     else:
-        click.echo(f"all {len(names)} scenario(s) succeeded")
+        click.echo(f"all {len(names)} scenario(s) succeeded{unchanged_note}")
 
 
 def _read_data_version(intent_path: Path) -> str | None:
