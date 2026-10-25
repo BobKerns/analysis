@@ -135,6 +135,14 @@ flowchart work offline, and the chart never leaves your machine.
 - [WezTerm](https://wezterm.org) (macOS, Linux, Windows)
 - VS Code's integrated terminal, with `terminal.integrated.enableImages` on
 
+On an iPad, connecting over SSH to the machine that runs the code, use
+[gterm](https://apps.apple.com/us/app/gterm-ghostty-ssh/id6774837597) from the
+App Store. It is built on Ghostty's terminal library and is the one iPad
+terminal we have found that shows the images. It has far fewer features than
+other SSH apps, but everything this project needs works. Termius has just
+added the same library, but in testing (October 2026) it did not work yet: one
+try gave a blank screen, another hung.
+
 iTerm2 gets its own image protocol. Elsewhere `--graph` asks the terminal
 whether it takes the kitty graphics protocol, and falls back to iTerm2's
 protocol for older VS Code and WezTerm. In any other terminal, including macOS
