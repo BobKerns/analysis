@@ -19,9 +19,11 @@ from analysis.sim.loader import LoadError
 from analysis.sim import chain_edit, registries, units
 from analysis.sim.dates import month_end_iso
 from analysis.sim.lineage import (
+    MIXIN_ONLY_DESCRIPTION,
     default_description,
     load_order,
     parse_parents,
+    is_mixin_only,
     is_template,
     read_parents,
     scenario_dir,
@@ -102,7 +104,7 @@ def current_user() -> str:
     return os.environ.get("ANALYSIS_USER") or os.environ.get("USER") or "unknown"
 
 
-def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
+def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef | None,
                     description: str | None = None,
                     intent_dir: Path | None = None,
                     mixins: Sequence[str] = (),
@@ -111,7 +113,8 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
     Create a new scenario with the given name, parent, and optional description.
 
     ``mixins`` are further parents applied after ``parent``'s line, in order
-    (ADR-003 §4.5); ``parent_scenario`` records them colon-separated.
+    (ADR-003 §4.5); ``parent_scenario`` records them colon-separated. With
+    no ``parent`` (and no mix-ins), it is a mix-in only scenario (#259).
 
     ``ensemble_size`` is written to ``meta_json`` when given; left out, it is
     inherited from the parents (ADR-006 §7), and 0 makes a scenario that is
@@ -124,9 +127,13 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
         raise LoadError(f"invalid scenario name: {name}")
     match parent:
         case ScenarioRef():
-            parent_ref = parent
+            parent_names = [parent.name]
         case str():
-            parent_ref = resolve_scenario_name(data_dir, parent, intent_dir=intent_dir)
+            parent_names = [resolve_scenario_name(data_dir, parent, intent_dir=intent_dir).name]
+        case None if not mixins:
+            parent_names = []
+        case None:
+            raise LoadError("mix-ins need a parent to be mixed into")
         case _:
             raise LoadError(f"invalid parent type: {type(parent)}")
     mixin_names = [
@@ -138,7 +145,7 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
     if target.exists():
         raise LoadError(f"scenario already exists: {target}")
     target.mkdir(parents=True, exist_ok=True)
-    parents = [parent_ref.name, *mixin_names]
+    parents = [*parent_names, *mixin_names]
 
     skeletons: dict[str, tuple[str, ...]] = {
         "accounts.csv": registries.ACCOUNTS_CSV_HEADER,
@@ -157,7 +164,7 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
         role_dir = target / "chains" / role
         role_dir.mkdir(parents=True)
         (role_dir / ".gitignore").write_text("", encoding="utf-8")
-    description = description or default_description(parents)
+    description = description or (default_description(parents) if parents else MIXIN_ONLY_DESCRIPTION)
     (target / "README.md").write_text(scenario_readme(name, description, parents), encoding="utf-8")
 
     pd.DataFrame(columns=[  # the example is a source chain, which takes no tax columns
@@ -216,6 +223,8 @@ class ScenarioSummary:
     ensemble_size: ScenarioValue | None = None
     """``None`` when the merged ``meta_json.ensemble_size`` is absent or 0:
     the scenario is not an ensemble (ADR-006 §7)."""
+    mixin_only: bool = False
+    """No parent, start or end: only for mixing into others (#259)."""
 
     @property
     def is_ensemble(self) -> bool:
@@ -249,8 +258,13 @@ def scenario_summaries(
     scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
     summaries = []
     for name in scenario_list_names(data_dir, scenarios, templates=templates):
-        rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in load_order(scenarios, name)}
+        mixin_only = is_mixin_only(scenarios, name)
+        # A mix-in only scenario's own values, not those of the template it is
+        # checked on: mixed in, only its own apply.
+        order = [name] if mixin_only else load_order(scenarios, name)
+        rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in order}
         summaries.append(ScenarioSummary(
+            mixin_only=mixin_only,
             name=name,
             parents=read_parents(scenario_dir(scenarios, name)),
             description=_one_line_description(scenario_dir(scenarios, name), rows[name]),

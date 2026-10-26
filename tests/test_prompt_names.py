@@ -84,7 +84,7 @@ def test_scheduled_delete_asks_which(sim: Callable[..., Result], test_data_dir: 
 
 
 def test_scenario_create_and_delete_ask(sim: Callable[..., Result], test_data_dir: Path) -> None:
-    created = sim("scenario", "create", input="kid\nretire_alice\n")
+    created = sim("scenario", "create", input="kid\nretire_alice\n\n")
     assert created.exit_code == 0, created.output
     assert _column(test_data_dir / "scenarios" / "kid" / "scenario.csv", "parent_scenario") == ["retire_alice"]
     deleted = sim("scenario", "delete", "--yes", input="kid\n")

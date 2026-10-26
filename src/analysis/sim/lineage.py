@@ -24,6 +24,11 @@ from pathlib import Path
 
 TEMPLATE_PREFIX = "t_"
 TEMPLATE_SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "templates" / "scenarios"
+# What a mix-in only scenario is loaded on top of when loaded by itself
+# (#259): it has nothing, and its dates and seed only fill blanks.
+MIXIN_BASE = "t_empty"
+# What ``scenario create --no-parent`` describes its scenario as.
+MIXIN_ONLY_DESCRIPTION = "A mix-in: it builds on no other scenario."
 
 
 def is_template_name(name: str) -> bool:
@@ -77,8 +82,8 @@ def parse_parents(value: str | None) -> list[str]:
     return [name for name in (part.strip() for part in (value or "").split(":")) if name]
 
 
-def read_parents(scenario_dir: Path) -> list[str]:
-    """``parent_scenario`` out of ``scenario_dir/scenario.csv``, or [] if absent.
+def _first_row(scenario_dir: Path) -> dict[str, str]:
+    """``scenario_dir/scenario.csv``'s data row, or {} if there is none.
 
     Deliberately tolerant: the loader validates scenario.csv properly and
     reports what's wrong with it; working out the order must not be the thing
@@ -86,14 +91,32 @@ def read_parents(scenario_dir: Path) -> list[str]:
     """
     path = scenario_dir / "scenario.csv"
     if not path.is_file():
-        return []
+        return {}
     try:
         with path.open(newline="", encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
-                return parse_parents(row.get("parent_scenario"))
+                return {k: v or "" for k, v in row.items() if k is not None}
     except (OSError, UnicodeDecodeError, csv.Error):
-        return []
-    return []
+        return {}
+    return {}
+
+
+def read_parents(scenario_dir: Path) -> list[str]:
+    """``parent_scenario`` out of ``scenario_dir/scenario.csv``, or [] if absent."""
+    return parse_parents(_first_row(scenario_dir).get("parent_scenario"))
+
+
+def is_mixin_only(scenarios_dir: Path, name: str) -> bool:
+    """Whether ``name`` is a mix-in only scenario (#259, ADR-003 §4.5): one
+    of the data repo's with no parent and no start or end of its own. Mixed
+    in after a scenario, its own dates would move that scenario's span, so it
+    has none, and it can't run by itself; loaded by itself (to check it), it
+    sits on ``MIXIN_BASE``."""
+    if is_template(scenarios_dir, name):
+        return False
+    row = _first_row(Path(scenarios_dir) / name)
+    return bool(row) and not parse_parents(row.get("parent_scenario")) \
+        and not row.get("start", "").strip() and not row.get("end", "").strip()
 
 
 def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False) -> list[str]:
@@ -103,6 +126,9 @@ def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False)
     adds only the part of its own order not already present -- for a mix-in
     deriving from ``base``, just the mix-in. Overlaying the scenarios in this
     order, later winning, is the load.
+
+    A mix-in only scenario (``is_mixin_only``) loaded by itself comes after
+    ``MIXIN_BASE``'s order; as another's parent or mix-in it adds only itself.
 
     A scenario whose folder is missing still appears (with no parents), so the
     loader can report it. With ``strict``, a cycle raises
@@ -127,4 +153,7 @@ def load_order(scenarios_dir: Path, scenario_name: str, *, strict: bool = False)
         memo[name] = order
         return order
 
-    return visit(scenario_name, ())
+    order = visit(scenario_name, ())
+    if is_mixin_only(scenarios_dir, scenario_name):
+        return [*(n for n in visit(MIXIN_BASE, ()) if n not in order), *order]
+    return order

@@ -182,6 +182,25 @@ def _scenarios(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
 
 
 SCENARIO = NameType(_scenarios, "scenario")
+
+
+class ParentList(NameType):
+    """``--parents``' colon-separated names: TAB completes the name after the
+    last ``:`` (#259). Not re-asked as one name, which it isn't."""
+
+    def shell_complete(
+        self, ctx: click.Context, param: click.Parameter, incomplete: str,
+    ) -> list[CompletionItem]:
+        done, colon, last = incomplete.rpartition(":")
+        given = set(done.split(":")) if colon else set()
+        typed = last.lower()
+        return [
+            CompletionItem(f"{done}{colon}{c}") for c in self.choices(ctx)
+            if c.lower().startswith(typed) and c not in given
+        ]
+
+
+PARENTS = ParentList(_scenarios, "scenario", check=False)
 # `sim explain`'s target: a scenario, or a run file's path, which no list holds.
 SCENARIO_OR_RUNFILE = NameType(_scenarios, "scenario", check=False)
 ENSEMBLE = NameType(_ensembles, "ensemble")

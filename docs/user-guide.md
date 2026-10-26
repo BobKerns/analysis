@@ -66,7 +66,25 @@ This creates the new scenario's folder, with empty CSV files ready for you to
 add rows to, and a `series/` folder (with a short `README.md`) for any growth
 or inflation series it changes. It checks that the scenario loads, and makes it your current
 scenario. You then add only the rows that need to be different — the rest of
-this guide shows what to put in them.
+this guide shows what to put in them. The parent and mix-ins may be `t_`
+template scenarios too. Leave the parent off and the command asks for what
+the scenario builds on, one name at a time with tab completion: the parent,
+then any mix-ins, until you press Enter on a blank line.
+
+A scenario meant only for mixing into others needs no parent:
+
+```sh
+sim scenario create <name> --no-parent
+```
+
+Answering the parent question with a blank line does the same, once you
+confirm it. Such a **mix-in only** scenario has no start or end of its own,
+since a mix-in's dates would replace those of the scenario it's mixed into,
+so it can't run by itself: `sim run` refuses it, `sim all` skips it, and
+`sim scenario list --verbose` shows `(mix-in only)` for its parents.
+`sim check` still checks it, on top of the empty `t_empty` template. Give
+it a start and end (`sim scenario edit`) and it's an ordinary scenario that
+runs alone.
 
 You can also start from what the scenario inherits: `sim account edit`,
 `sim account lot edit`, `sim scheduled edit`, `sim calendar edit` and
@@ -147,7 +165,12 @@ your current scenario.
 To change a scenario's own settings (`sim ensemble edit` is the same
 command), run `sim scenario edit <name>` with no options: it shows the
 fields, and you name one to change it, with tab completion, then write.
-Options make the change at once instead:
+Changing `parents` asks for each in turn, offering the current one: press
+Enter to keep it, type `-` to remove it, `+<name>` to insert `<name>` before
+it, or another name to replace it; then add mix-ins at the end until you
+press Enter on a blank line. Removing them all asks you to confirm that the
+scenario builds on nothing. Options make the change at once instead (tab
+completes each name in `--parents`):
 
 ```sh
 sim scenario edit <name> --description "Bill works two more years"

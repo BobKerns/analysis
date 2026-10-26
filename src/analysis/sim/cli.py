@@ -128,7 +128,9 @@ from analysis.sim.dates import (
     parse_relative_date, parse_vary_date,
 )
 from analysis.sim.lineage import (
+    MIXIN_BASE,
     default_description,
+    is_mixin_only,
     load_order,
     parse_parents,
     read_parents,
@@ -554,6 +556,12 @@ def run(
     if resolved_data_dir is not None or scenario_name is None:
         resolved_data_dir = resolved_data_dir or _resolve_data_dir(data_dir)
         scenario_name = _resolve_scenario(resolved_data_dir, scenario_name).name
+        if is_mixin_only(resolved_data_dir / "scenarios", scenario_name):
+            users = sc.dependents(resolved_data_dir / "scenarios", scenario_name)
+            raise click.ClickException(
+                f"{scenario_name} is a mix-in only scenario (no parent, start or end), so it doesn't "
+                f"run by itself; run {', '.join(users) if users else 'a scenario that mixes it in'}, "
+                "or give it --start and --end (`sim scenario edit`)")
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
@@ -1055,6 +1063,8 @@ def ensemble_group_command() -> None:
     "--new-seed", is_flag=True, default=False,
     help="Draw a fresh random seed even when a parent is an ensemble.",
 )
+@click.option("--no-parent", is_flag=True, default=False,
+              help="Build on nothing: a mix-in only recipe, for mixing into others.")
 @click.option(
     "--size", "ensemble_size", type=int, default=None,
     help="Default member count (scenario.meta_json.ensemble_size), so "
@@ -1073,6 +1083,7 @@ def ensemble_create(
     description: str | None,
     seed: int | None,
     new_seed: bool,
+    no_parent: bool,
     ensemble_size: int | None,
 ) -> None:
     """Create ensemble recipe NAME deriving from PARENT, and make it current (ADR-006).
@@ -1088,16 +1099,21 @@ def ensemble_create(
     single run, using the recorded member count unless overridden by
     ``sim run NAME --ensemble-size N``.
 
-    Without NAME or PARENT, they are asked for.
+    With --no-parent, NAME builds on nothing, as for ``sim scenario create``:
+    a mix-in only recipe, with its own seed and member count.
+
+    Without NAME or PARENT, they are asked for; the parents one at a time,
+    and a blank answer, for no parent, must be confirmed.
     """
     if ensemble_size is not None and ensemble_size <= 0:
         raise click.ClickException(f"--size must be a positive integer (got {ensemble_size})")
     if seed is not None and new_seed:
         raise click.UsageError("--seed and --new-seed are exclusive")
     data_dir_p = _resolve_data_dir(data_dir)
-    name, parent = _ask_new_scenario(data_dir_p, "ensemble", name, parent)
+    name, parents = _ask_new_scenario(data_dir_p, "ensemble", name, parent, mixins, no_parent=no_parent)
+    parent, mixins = (parents[0], tuple(parents[1:])) if parents else (None, ())
     # Preflights PARENT, then creates and validates the recipe in a staged copy.
-    with _scenario_edit(data_dir_p, parent, remember=False, template_parent=True) as edit:
+    with _scenario_edit(data_dir_p, parent or MIXIN_BASE, remember=False, template_parent=True) as edit:
         try:
             staged = sc.create_scenario(
                 edit.data_dir, name, parent, description=description, mixins=mixins,
@@ -1124,10 +1140,9 @@ def ensemble_create(
         df.to_csv(scenario_csv, index=False)
     target = data_dir_p / "scenarios" / name
 
-    inherits = [_resolve_scenario(data_dir_p, p, remember=False).name for p in (parent, *mixins)]
     _make_current(data_dir_p, name)
     click.echo(f"created ensemble recipe {target}")
-    click.echo(f"  inherits: {' + '.join(inherits)}")
+    click.echo(f"  inherits: {_inherits_line(data_dir_p, parents)}")
     for label, own, inherited in (
         ("seed", seed, inherited_seed), ("ensemble_size", ensemble_size, inherited_size),
     ):
@@ -2058,6 +2073,9 @@ def all_scenarios(
     if disabled := sorted(set(names) & read_disabled_scenarios(resolved)):
         names = [name for name in names if name not in disabled]
         click.echo(f"disabled, not built: {', '.join(disabled)} (`sim run NAME` builds one)")
+    if mixins := [name for name in names if is_mixin_only(resolved / "scenarios", name)]:
+        names = [name for name in names if name not in mixins]
+        click.echo(f"mix-in only, not run: {', '.join(mixins)}")
     for name in names:
         click.echo(f"=== {name} ===")
         unchanged = None if force else unchanged_run(resolved, resolved_runs_dir, name, code)
@@ -9927,8 +9945,9 @@ def scenario_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
     """List the data repo's scenarios.
 
     Plain output is just the names, one per line, for scripts. --verbose adds
-    parents, start and end months, seed, ensemble size, and description, and
-    marks the current scenario with *, and build "no" for a disabled one
+    parents (or "(mix-in only)" for a scenario with no parent or dates, which
+    `sim all` doesn't run), start and end months, seed, ensemble size, and
+    description, and marks the current scenario with *, and build "no" for a disabled one
     (`sim scenario disable`). A value in [brackets] is inherited
     from an ancestor; a blank size means the scenario is not an ensemble.
     --all adds the template scenarios a data repo reads from the code
@@ -9993,11 +10012,36 @@ def _list_scenarios(
     for s in summaries:
         table.add_row(
             "*" if s.name == current else "",
-            s.name, " + ".join(s.parents), date_cell(s.start), date_cell(s.end),
+            s.name, "(mix-in only)" if s.mixin_only else " + ".join(s.parents),
+            date_cell(s.start), date_cell(s.end),
             value_cell(s.seed), value_cell(s.ensemble_size),
             escape(s.description), "no" if s.name in disabled else "",
         )
     Console().print(table)
+
+
+def _inherits_line(data: Path, parents: Sequence[str]) -> str:
+    """What ``create`` says a new scenario inherits."""
+    if not parents:
+        return "nothing (a mix-in only scenario)"
+    return " + ".join(_resolve_scenario(data, p, remember=False).name for p in parents)
+
+
+def _create_new_scenario(
+    data: Path, name: str, parents: Sequence[str], *, description: str | None, ensemble_size: int,
+) -> str:
+    """Create scenario ``name`` on ``parents`` (none: mix-in only), validated
+    in a staged copy; returns the ``inherits`` line to show."""
+    parent = parents[0] if parents else None
+    mixins = list(parents[1:])
+    # Preflights the parent, or for none the empty template a mix-in only
+    # scenario is checked on, then creates and validates NAME.
+    with _scenario_edit(data, parent or MIXIN_BASE, remember=False, template_parent=True) as edit:
+        sc.create_scenario(
+            edit.data_dir, name, parent, description=description, mixins=mixins,
+            ensemble_size=ensemble_size,
+        )
+    return _inherits_line(data, parents)
 
 
 @scenario_group_command.command("create")
@@ -10009,12 +10053,15 @@ def _list_scenarios(
               default=None)
 @click.option("--description", default=None,
               help="Default: 'Derived from <parent> + <mixin>...'.")
+@click.option("--no-parent", is_flag=True, default=False,
+              help="Build on nothing: a mix-in only scenario, for mixing into others.")
 def scenario_create(
     name: str | None,
     parent: str | None,
     mixins: tuple[str, ...],
     data_dir: Path | None,
     description: str | None,
+    no_parent: bool,
 ) -> None:
     """Create scenario NAME deriving from PARENT, and make it current.
 
@@ -10028,7 +10075,12 @@ def scenario_create(
     ensemble parent ``sim run NAME`` runs the base case, each varying row at
     its central value. Use ``sim ensemble create`` for an ensemble.
 
-    Without NAME or PARENT, they are asked for.
+    With --no-parent, NAME builds on nothing and has no start or end: a
+    mix-in only scenario, which `sim run` and `sim all` skip, for mixing into
+    others (ADR-003 §4.5). Give it dates (`sim scenario edit`) to run it alone.
+
+    Without NAME or PARENT, they are asked for; the parents one at a time,
+    and a blank answer, for no parent, must be confirmed.
     """
 
     skeletons: dict[str, tuple[str, ...]] = {
@@ -10039,19 +10091,12 @@ def scenario_create(
     }
     try:
         data_dir_p = _resolve_data_dir(data_dir)
-        name, parent = _ask_new_scenario(data_dir_p, "scenario", name, parent)
-        # Preflights PARENT, then creates and validates NAME in a staged copy.
-        with _scenario_edit(data_dir_p, parent, remember=False, template_parent=True) as edit:
-            sc.create_scenario(
-                edit.data_dir, name, parent, description=description, mixins=mixins,
-                ensemble_size=0,
-            )
+        name, parents = _ask_new_scenario(data_dir_p, "scenario", name, parent, mixins, no_parent=no_parent)
+        inherits = _create_new_scenario(data_dir_p, name, parents, description=description, ensemble_size=0)
         target = data_dir_p / "scenarios" / name
-
-        inherits = [_resolve_scenario(data_dir_p, p, remember=False).name for p in (parent, *mixins)]
         _make_current(data_dir_p, name)
         click.echo(f"created {target}")
-        click.echo(f"  inherits: {' + '.join(inherits)}")
+        click.echo(f"  inherits: {inherits}")
         for filename in ("scenario.csv", *skeletons):
             click.echo(f"  {filename}")
         click.echo("  chains/source/.gitignore")
@@ -10378,16 +10423,49 @@ def lot_rename(
     _echo_renamed(f"lot of {account}", lot, new_lot, changed)
 
 
+def _parent_choices(data: Path) -> list[str]:
+    """What a scenario can build on: the data repo's scenarios and the
+    templates it doesn't replace."""
+    return names.scenario_names(data)
+
+
+def _walk_parents(data: Path, current: Sequence[str], *, itself: str | None = None) -> list[str]:
+    """``scenario_guide.walk_parents`` at the terminal, with completion."""
+    return scenario_guide.walk_parents(
+        current, _parent_choices(data),
+        lambda text, choices, default: _prompt_with_completion(text, choices=choices, default=default),
+        click.echo, itself=itself,
+    )
+
+
+def _confirm_no_parent(name: str, question: str, *, mixin_only: bool = True) -> bool:
+    """Whether no parent at all is meant (#259): too easy to get by mistake
+    to take a blank answer for it."""
+    why = ", so it can only be mixed into others" if mixin_only else ""
+    return click.confirm(f"{name} will have no parent{why}. {question}", default=False)
+
+
 def _ask_new_scenario(
-    data: Path, what: str, name: str | None, parent: str | None,
-) -> tuple[str, str]:
-    """``scenario|ensemble create``'s NAME and PARENT, each asked for when
-    left out."""
+    data: Path, what: str, name: str | None, parent: str | None, mixins: Sequence[str],
+    *, no_parent: bool,
+) -> tuple[str, list[str]]:
+    """``scenario|ensemble create``'s NAME and what it builds on: PARENT then
+    the MIXINs, or none with ``no_parent``. NAME is asked for when left out;
+    so are the parents, one at a time, when PARENT is, and a blank answer
+    there must be confirmed."""
+    if no_parent and (parent is not None or mixins):
+        raise click.UsageError("--no-parent can't be given with PARENT or MIXIN")
     if name is None:
         name = _ask_new_name(f"name for the new {what}")
-    if parent is None:
-        parent = _ask_name("scenario", list_scenario_names(data), prompt=f"{name} builds on")
-    return name, parent
+    if no_parent:
+        return name, []
+    if parent is not None:
+        return name, [parent, *mixins]
+    click.echo(f"what {name} builds on: a parent, then any mix-ins")
+    while not (parents := _walk_parents(data, [])) and not _confirm_no_parent(
+            name, "Create it with no parent?"):
+        pass
+    return name, parents
 
 
 def _ensemble_names(data: Path) -> list[str]:
@@ -10593,13 +10671,25 @@ def _edit_scenario(name: str | None, data_dir: Path | None, *, new_seed: bool, *
         _apply_scenario_edit(data, name, new_seed=new_seed, **fields)
         return
 
-    spec = scenario_guide.spec([n for n in names if n != name])
+    spec = scenario_guide.spec([n for n in _parent_choices(data) if n != name])
     before = scenario_guide.answers_of(sc._scenario_row(data / "scenarios" / name))
     answers = dict(before)
     _echo_guided_scenario(name, data / "scenarios" / name / "scenario.csv", defaulted=False)
+
+    def ask_parents(current: str | None) -> str:
+        chosen = _walk_parents(data, parse_parents(current), itself=name)
+        if chosen or not current:
+            return ":".join(chosen)
+        dated = bool(answers.get("start", "").strip() or answers.get("end", "").strip())
+        if _confirm_no_parent(name, "Make it build on nothing?", mixin_only=not dated):
+            return ""
+        click.echo("  parents unchanged")
+        return current
+
     guide = calendar_guide.Guide(
         ask=lambda text, choices, default: _prompt_with_completion(text, choices=choices, default=default),
         checkers=_SCENARIO_CHECKERS,
+        askers={"parents": ask_parents},
     )
 
     def submit(_params: dict[str, object]) -> None:
@@ -10630,8 +10720,9 @@ def _apply_scenario_edit(
             values[column] = _validate_month_date(given) if given.strip() else ""
     if parents is not None:
         names = parse_parents(parents)
+        buildable = _parent_choices(data)
         for parent in names:
-            if parent not in list_scenario_names(data):
+            if parent not in buildable:
                 raise click.BadParameter(f"scenario not found: {parent}", param_hint="--parents")
         if name in names:
             raise click.BadParameter(f"{name} can't build on itself", param_hint="--parents")
@@ -10705,7 +10796,7 @@ def _edit_options(command: Callable[..., None]) -> Callable[..., None]:
                      help="The scenario's description; '' restores the default, 'Derived from <parents>'."),
         click.option("--start", default=None, help=f"First month ({MONTH_FORMAT_HINT}); '' inherits."),
         click.option("--end", default=None, help=f"Last month ({MONTH_FORMAT_HINT}); '' inherits."),
-        click.option("--parents", default=None, metavar="PARENT[:MIXIN...]",
+        click.option("--parents", default=None, metavar="PARENT[:MIXIN...]", type=completion.PARENTS,
                      help="What it builds on: its parent, then any mix-ins, colon-separated. "
                           "'' makes it a root scenario."),
         click.option("--seed", default=None, help="Ensemble master seed; '' inherits."),
