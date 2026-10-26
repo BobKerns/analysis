@@ -132,19 +132,19 @@ def test_ensemble_widget_matches_cli_summary_numbers(small_ensemble_runs_dir: Pa
 def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
     small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import ensemble_widgets
     from analysis.sim.notebook_ui.pickers import DollarModePicker
     from analysis.sim.types import DollarMode
 
+    from analysis.sim.series_db import EnsembleSeries
+
     modes_seen: list[DollarMode] = []
-    real = ensemble_widgets.members_balance_by_month
+    real = EnsembleSeries.frame
 
-    def _spy(connections, account=None, mode=DollarMode.NOMINAL, lot=None, on_member=None,
-             *, after_tax=False):
+    def _spy(self, account=None, mode=DollarMode.NOMINAL, lot=None, *, after_tax=False):
         modes_seen.append(mode)
-        return real(connections, account, mode, lot, on_member, after_tax=after_tax)
+        return real(self, account, mode, lot, after_tax=after_tax)
 
-    monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
+    monkeypatch.setattr(EnsembleSeries, "frame", _spy)
     dollar_mode = DollarModePicker()
     box = ensemble_widget(runs_dir=small_ensemble_runs_dir, dollar_mode=dollar_mode)
     _dropdown, row, _loading, _out = box.children
@@ -160,16 +160,17 @@ def test_ensemble_widget_years_redraw_without_reading_members_again(
 ) -> None:
     from analysis.sim.notebook_ui import ensemble_widgets
     from analysis.sim.notebook_ui.pickers import TimeRangePicker
+    from analysis.sim.series_db import EnsembleSeries
 
     reads: list[object] = []
-    real = ensemble_widgets.members_balance_by_month
+    real = EnsembleSeries._nominal
 
-    def _spy(*args, **kwargs):
-        reads.append(args)
-        return real(*args, **kwargs)
+    def _spy(self, key):
+        reads.append(key)
+        return real(self, key)
 
     shown: list[Any] = []
-    monkeypatch.setattr(ensemble_widgets, "members_balance_by_month", _spy)
+    monkeypatch.setattr(EnsembleSeries, "_nominal", _spy)
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
     time_range = TimeRangePicker()
     controls = ensemble_widgets.EnsembleControls(runs_dir=small_ensemble_runs_dir,
@@ -341,13 +342,16 @@ def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
 
 
 @pytest.mark.slow
-def test_ensemble_compare_widget_draws_one_section_per_variant(
+def test_ensemble_compare_widget_offers_only_recipes_that_pair_with_the_baseline(
     seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two recipes from one seed pair member by member, so the paired-fan
-    panel is drawn too; one from another seed is said not to pair."""
+    """#298: the second dropdown lists the recipes sharing the baseline's
+    seed, never the baseline itself, and none is picked to start; picking
+    one draws the head-to-head comparison, paired member by member, as
+    charts alone: its tables are the table widget's."""
     from IPython.display import Image
+    from pandas.io.formats.style import Styler
 
     from analysis.sim.notebook_ui import ensemble_widgets
     from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -362,13 +366,55 @@ def test_ensemble_compare_widget_draws_one_section_per_variant(
     recipe_pickers, _row, _loading, _out = box.children
     baseline_picker, variant_picker = recipe_pickers.children
     baseline_picker.value = "baseline"
+    assert variant_picker.options == ("child",)
+    assert variant_picker.value is None
+    baseline_picker.value = "other"
+    assert variant_picker.options == ()
+    note = shown[-1]
+    assert isinstance(note, StyledMarkdown) and "none shares its seed" in str(note.data)
+    baseline_picker.value = "baseline"
     shown.clear()
-    variant_picker.value = ("child", "other")
+    variant_picker.value = "child"
     headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
     assert any("### child vs baseline" in h and "paired over 3 futures" in h for h in headings)
-    assert any("### other vs baseline" in h and "not paired" in h for h in headings)
-    assert sum(isinstance(item, Image) for item in shown) == 2
+    assert sum(isinstance(item, Image) for item in shown) == 1
+    assert not any(isinstance(item, Styler) for item in shown)
     assert plt.get_fignums() == []
+
+    baseline_picker.value = "child"  # picking the compared recipe swaps the two
+    assert variant_picker.options == ("baseline",)
+    assert variant_picker.value == "baseline"
+
+
+@pytest.mark.slow
+def test_ensemble_table_widget_lists_each_paired_recipe_by_year(
+    seeded_ensemble_batch: Callable[[str, int], Path], runs_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#298: one table of deltas against the baseline and one of tails, both
+    indexed by (year, recipe), for the paired recipes picked."""
+    from pandas.io.formats.style import Styler
+
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    for name in ("baseline", "child", "sibling"):
+        seeded_ensemble_batch(name, 1)
+    seeded_ensemble_batch("other", 2)
+    shown: list[object] = []
+    monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
+    box = ensemble_widgets.ensemble_table_widget(runs_dir=runs_dir)
+    recipe_pickers, _row, _loading, _out = box.children
+    baseline_picker, variant_picker = recipe_pickers.children
+    baseline_picker.value = "baseline"
+    assert variant_picker.options == ("child", "sibling")
+    shown.clear()
+    variant_picker.value = ("child", "sibling")
+    deltas, tails = (item.data for item in shown if isinstance(item, Styler))
+    assert deltas.index.names == ["year", "recipe"]
+    first_year = deltas.index[0][0]
+    assert list(deltas.loc[first_year].index) == ["child", "sibling"]
+    assert "P(ahead)" in deltas.columns
+    assert list(tails.loc[first_year].index) == ["baseline", "child", "sibling"]
 
 
 @pytest.mark.slow
@@ -397,12 +443,12 @@ def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_side
     baseline_picker, variant_picker = recipe_pickers.children
     account_picker = controls.account_picker.account_picker
     baseline_picker.value = "baseline"
-    variant_picker.value = ("child",)
+    variant_picker.value = "child"
     assert {"Asset_Checking", "Asset_Renamed"} <= {label for label, _ in account_picker.options}
     shown.clear()
     account_picker.value = "Asset_Renamed"
     headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
-    assert any("`baseline` has no account Asset_Renamed" in h for h in headings)
+    assert any("No account Asset_Renamed in `baseline`" in h for h in headings)
     assert sum(isinstance(item, Image) for item in shown) == 1  # the child's own fan
 
 
@@ -412,7 +458,7 @@ def test_ensemble_compare_widget_says_so_when_no_shown_recipe_has_the_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The shared account list spans every recipe, so the pick can be in
-    none of the compared ones: a note, not an error from an empty tail table."""
+    none of the compared ones: a note, not an error."""
     import sqlite3
 
     from analysis.sim.notebook_ui import ensemble_widgets
@@ -429,8 +475,8 @@ def test_ensemble_compare_widget_says_so_when_no_shown_recipe_has_the_account(
     recipe_pickers, row, _loading, _out = box.children
     baseline_picker, variant_picker = recipe_pickers.children
     baseline_picker.value = "baseline"
-    variant_picker.value = ("other",)
+    variant_picker.value = "other"
     shown.clear()
     row.controls.account_picker.account_picker.value = "Asset_Renamed"
     headings = [str(item.data) for item in shown if isinstance(item, StyledMarkdown)]
-    assert any("None of these recipes has account Asset_Renamed" in h for h in headings)
+    assert any("No account Asset_Renamed in `baseline`, `other`" in h for h in headings)

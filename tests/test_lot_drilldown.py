@@ -298,7 +298,7 @@ def test_lot_picker_offers_only_the_shown_recipes_lots(
 def test_compare_lots_are_the_baseline_and_variants_own(
     two_lot_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The comparison offers the union of its baseline's and variants' lots,
+    """The comparison offers the union of its baseline's and variant's lots,
     independent of the fan's, and a lot one side lacks gets a note."""
     from analysis.sim.notebook_ui import ensemble_widgets
     from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -319,7 +319,7 @@ def test_compare_lots_are_the_baseline_and_variants_own(
         return [label for label, _ in picker.picker.options]
 
     assert offered(lot_picker) == [ALL_LOTS, "renamed", "b"]  # baseline only
-    recipe_pickers.children[1].value = ("two_lot",)
+    recipe_pickers.children[1].value = "two_lot"
     assert offered(lot_picker) == [ALL_LOTS, "renamed", "b", "a"]
     assert offered(fan.children[1].lot_picker) == [ALL_LOTS, "renamed", "b"]
     assert fan.children[1].lot_picker is controls.recipe_lot_picker
@@ -327,7 +327,7 @@ def test_compare_lots_are_the_baseline_and_variants_own(
     shown.clear()
     lot_picker.picker.value = ("a",)
     assert any(isinstance(item, StyledMarkdown)
-               and f"`base_ensemble` has no account {BROKERAGE} lot a" in str(item.data)
+               and f"No account {BROKERAGE} lot a in `base_ensemble`" in str(item.data)
                for item in shown)
 
 
@@ -369,7 +369,7 @@ def test_compare_widget_log_scale_uses_symlog(
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir, default="baseline")
     recipe_pickers, row, _loading, _out = box.children
     controls = row.controls
-    recipe_pickers.children[1].value = ("child",)
+    recipe_pickers.children[1].value = "child"
     assert figures[-1].axes[0].get_yscale() == "linear"
     controls.log_linear_picker.value = LogLinearMode.LOG
     assert figures[-1].axes[0].get_yscale() == "symlog"

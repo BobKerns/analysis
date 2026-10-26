@@ -156,7 +156,7 @@ def test_sim_ensemble_compare_prints_deltas_and_each_recipes_tail(
         "--runs-dir", str(runs_dir), "--reserve", "1000000",
     ])
     assert result.exit_code == 0, result.output
-    lines = result.output.splitlines()
+    lines = result.stdout.splitlines()  # the series store note goes to stderr
     assert lines[0].startswith("child vs baseline: after-tax net worth, CPI-constant dollars; 3 and 3")
     assert lines[1] == "  paired: 3 future(s)"
     assert lines[3].split() == [
@@ -195,7 +195,7 @@ def test_sim_ensemble_summary_reports_one_account(
     ])
     assert result.exit_code == 0, result.output
     assert "account Asset_Checking; reserve $5,000 (CPI-constant)" in result.output
-    assert result.output.splitlines()[1].split()[-2:] == ["below_reserve", "ever_below_reserve"]
+    assert result.stdout.splitlines()[1].split()[-2:] == ["below_reserve", "ever_below_reserve"]
 
 
 def test_sim_ensemble_compare_rejects_a_reserve_that_is_not_dollars(
@@ -263,8 +263,8 @@ def test_sim_ensemble_summary_graph_file_writes_an_svg_after_the_tables(
         "--graph-file", str(chart),
     ])
     assert result.exit_code == 0, result.output
-    assert result.output.splitlines()[1].split()[0] == "year"  # the table still comes first
-    assert result.output.splitlines()[-1] == f"wrote {chart}"
+    assert result.stdout.splitlines()[1].split()[0] == "year"  # the table still comes first
+    assert result.stdout.splitlines()[-1] == f"wrote {chart}"
     svg = chart.read_text()
     assert "<svg" in svg and "net worth fan chart (nominal) (baseline)" in svg
 

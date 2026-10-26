@@ -5,7 +5,7 @@ breakpoints."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,14 +18,9 @@ from analysis.sim import units
 from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.ensemble import (
     EnsembleError,
-    base_case_deaths,
     comparison_deltas,
     latest_ensemble_batch,
-    load_ensemble,
-    member_pairs,
     member_run_statuses,
-    members_balance_by_month,
-    recipe_reserve,
     risk_summary,
     summary_with_percentiles,
 )
@@ -49,13 +44,21 @@ from analysis.sim.notebook_ui.pickers import (
     run_years,
 )
 from analysis.sim.readme import description_view
+from analysis.sim.series_db import (
+    EnsembleSeries,
+    build_series_db,
+    pair_members,
+    series_db_current,
+    series_db_path,
+)
 from analysis.sim.types import DollarMode, LogLinearMode
 from analysis.sim.notebook_ui.styled import StyledMarkdown
 
 __all__ = [
     "list_ensemble_recipes", "ensemble_summary_view", "ensemble_fan_chart",
-    "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget", "NET_WORTH",
-    "EnsembleControls", "recipe_accounts", "LoadingIndicator",
+    "ensemble_widget", "ensemble_compare_figure", "ensemble_compare_widget",
+    "ensemble_table_widget", "NET_WORTH", "EnsembleControls", "recipe_accounts",
+    "RecipeSeeds", "LoadingIndicator",
 ]
 
 
@@ -135,6 +138,51 @@ def recipe_accounts(
     return sorted(accounts), lots, sorted(years)
 
 
+class RecipeSeeds:
+    """Which recipes' members pair (ADR-006 §3): two recipes pair when they
+    share a seed, but a member file records only its own seed, derived
+    from the recipe's and its index. So two recipes are compared at a
+    member index both have succeeded, each member's seed read once."""
+
+    def __init__(self, runs_dir: Path, recipes: Sequence[str]) -> None:
+        self._batches: dict[str, Path] = {}
+        self._indexes: dict[str, set[int]] = {}
+        self._seeds: dict[tuple[str, int], int | None] = {}
+        for recipe in recipes:
+            batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
+            if batch_dir is None:
+                continue
+            self._batches[recipe] = batch_dir
+            self._indexes[recipe] = {
+                int(stem.removeprefix("member_"))
+                for stem, status in member_run_statuses(batch_dir).items()
+                if status == "succeeded"}
+
+    def _seed(self, recipe: str, index: int) -> int | None:
+        key = (recipe, index)
+        if key not in self._seeds:
+            path = self._batches[recipe] / f"member_{index:04d}.sqlite3"
+            with RunConnection(path) as con:
+                member = con.ensemble_member()
+            self._seeds[key] = None if member is None else member[1]
+        return self._seeds[key]
+
+    def pair(self, baseline: str, other: str) -> bool:
+        common = self._indexes.get(baseline, set()) & self._indexes.get(other, set())
+        if not common:
+            return False
+        index = min(common)
+        seed = self._seed(baseline, index)
+        return seed is not None and seed == self._seed(other, index)
+
+    def paired_with(self, baseline: str | None) -> list[str]:
+        """The recipes other than ``baseline`` whose members pair with its own."""
+        if not baseline:
+            return []
+        return [name for name in self._indexes
+                if name != baseline and self.pair(baseline, name)]
+
+
 def _reserve_field() -> widgets.Text:
     return widgets.Text(
         description="Reserve:", placeholder="recipe's",
@@ -157,11 +205,13 @@ class EnsembleControls:
     and the Years slider spans every year any of them runs over, both
     fixed when built, like the widgets' recipe lists: one recipe may lack
     an account another has, and the widgets say so rather than draw it.
-    The Lot dropdown can't be shared across both kinds of widget, since each
-    offers only the lots of the recipes it shows, so there are two: the
-    single-recipe widgets share ``recipe_lot_picker`` and the comparisons
-    share ``compare_lot_picker``. So each widget lays out its own row of
-    the shared controls (``row``), with its Lot dropdown under Account.
+    The Lot dropdown can't be shared across the kinds of widget, since each
+    offers only the lots of the recipes it shows, so there are three: the
+    single-recipe widgets share ``recipe_lot_picker``, the head-to-head
+    comparisons ``compare_lot_picker`` and the tables ``table_lot_picker``.
+    So each widget lays out its own row of the shared controls (``row``),
+    with its Lot dropdown under Account. The recipes each widget shows are
+    its own to pick, never shared (#298).
     """
 
     def __init__(self, *,
@@ -191,6 +241,7 @@ class EnsembleControls:
         self.reserve_field = _reserve_field()
         self.recipe_lot_picker = self._lot_picker()
         self.compare_lot_picker = self._lot_picker()
+        self.table_lot_picker = self._lot_picker()
 
     @property
     def account(self) -> str | None:
@@ -291,30 +342,51 @@ class LoadingIndicator(widgets.HBox):
         self.layout.display = "none"
 
 
-class _MemberFrames:
-    """The members' balances a widget has read, by batch, account, dollars
-    and lot (#245): a change that needs no new data, such as the years
-    shown, redraws without reading every member again. Holds the last few;
-    a new run of a recipe is a new batch, so it is read afresh."""
+class _Stores:
+    """The ensemble series stores (#298) the kernel's widgets have opened,
+    by batch: every widget reads from the same one, and a store holds the
+    frames it has read, so no widget reads a recipe another already has. A
+    new run of a recipe is a new batch, read afresh; a store rebuilt since
+    (say by ``sim ensemble``) is reopened. Holds the last few."""
 
     def __init__(self, size: int = 8) -> None:
         self._size = size
-        self._frames: dict[tuple[Any, ...], pd.DataFrame] = {}
+        self._stores: dict[Path, tuple[int, EnsembleSeries]] = {}
 
-    def read(
-        self, batch_dir: Path, connections: dict[str, RunConnection],
-        account: str | None, mode: DollarMode, lot: str | None,
-        on_member: Callable[[], None] | None = None, *, after_tax: bool = False,
-    ) -> pd.DataFrame:
-        """``members_balance_by_month``, read once per batch and choice."""
-        key = (batch_dir, account, mode, lot, after_tax)
-        if key not in self._frames:
-            frame = members_balance_by_month(
-                connections, account, mode, lot, on_member, after_tax=after_tax)
-            if len(self._frames) >= self._size:
-                del self._frames[next(iter(self._frames))]
-            self._frames[key] = frame
-        return self._frames[key]
+    def open(self, batch_dir: Path, recipe: str, succeeded: int,
+             loading: LoadingIndicator) -> EnsembleSeries:
+        """``batch_dir``'s store, built first, with ``loading`` counting its
+        ``succeeded`` members, when it's missing or out of date."""
+        key = Path(batch_dir).resolve()
+        if not series_db_current(batch_dir):
+            loading.start(succeeded, f"Loading {recipe}")
+            build_series_db(batch_dir, loading.counter(f"Loading {recipe}", succeeded))
+            self._stores.pop(key, None)
+        path = series_db_path(batch_dir)
+        stamp = path.stat().st_mtime_ns
+        held = self._stores.pop(key, None)
+        store = held[1] if held is not None and held[0] == stamp else EnsembleSeries(path)
+        if len(self._stores) >= self._size:
+            del self._stores[next(iter(self._stores))]
+        self._stores[key] = (stamp, store)
+        return store
+
+
+_STORES = _Stores()
+
+
+def _open_recipe(
+    runs_dir: Path, recipe: str, loading: LoadingIndicator,
+) -> tuple[Path, EnsembleSeries, int] | None:
+    """``recipe``'s latest batch, its store and how many members failed, or
+    None when it has no Monte Carlo batch."""
+    batch_dir = latest_ensemble_batch(runs_dir / recipe, mode="monte_carlo")
+    if batch_dir is None:
+        return None
+    statuses = member_run_statuses(batch_dir)
+    succeeded = sum(1 for status in statuses.values() if status == "succeeded")
+    store = _STORES.open(batch_dir, recipe, succeeded, loading)
+    return batch_dir, store, len(statuses) - succeeded
 
 
 AFTER_TAX_NET_WORTH = "After-tax net worth"
@@ -332,7 +404,7 @@ def _lot(picker: LotPicker) -> str | None:
 
 
 def _reserve(
-    field: widgets.Text, connections: dict[str, RunConnection], account: str | None,
+    field: widgets.Text, store: EnsembleSeries, account: str | None,
 ) -> float | None:
     """The reserve field's dollars, applied to whatever is shown; when it's
     blank, the recipe's own reserve, which is a net-worth floor and so
@@ -340,7 +412,7 @@ def _reserve(
     shows why rather than silently using the recipe's."""
     text = field.value.strip().replace(",", "").lstrip("$")
     if not text:
-        return recipe_reserve(connections) if account is None else None
+        return store.reserve() if account is None else None
     return units.dollars_to_cents(text) / 100
 
 
@@ -402,7 +474,6 @@ def ensemble_widget(*_,
     time_range = controls.time_range
     loading = LoadingIndicator()
     out = widgets.Output()
-    member_frames = _MemberFrames()
 
     def _redraw(*_: object) -> None:
         # Everything runs inside `out` so a load error shows as a traceback
@@ -422,103 +493,185 @@ def ensemble_widget(*_,
                 loading.finish()
 
     def _draw(recipe: str) -> None:
-        batch_dir = latest_ensemble_batch(runs_dir / recipe, mode="monte_carlo")
-        if batch_dir is None:
+        opened = _open_recipe(runs_dir, recipe, loading)
+        if opened is None:
             clear_output(wait=True)
             display(StyledMarkdown(f"**No Monte Carlo batch for {recipe}.**"))
             return
-        statuses = member_run_statuses(batch_dir)
-        failed_count = sum(1 for status in statuses.values() if status != "succeeded")
-        connections = load_ensemble(batch_dir)
+        batch_dir, store, failed_count = opened
+        account, lot = controls.account, _lot(lot_picker)
+        after_tax = controls.after_tax
+        subject = _subject(account, lot, after_tax)
+        mode = dollar_picker.value
+        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        reserve = _reserve(reserve_field, store, account)
+        # Each member's own series is converted before aggregating, not
+        # the aggregate after the fact: a member's CPI-constant series
+        # reflects its own inflation path, which can differ member to
+        # member when the varying row is itself inflation/CPI-linked.
         try:
-            account, lot = controls.account, _lot(lot_picker)
-            after_tax = controls.after_tax
-            subject = _subject(account, lot, after_tax)
-            mode = dollar_picker.value
-            mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-            reserve = _reserve(reserve_field, connections, account)
-            needs_cpi = reserve is not None and mode != DollarMode.CPI_CONSTANT
-            count = len(connections)
-            loading.start(count * (1 + needs_cpi), f"Loading {recipe}")
-            # Each member's own series is converted before aggregating, not
-            # the aggregate after the fact: a member's CPI-constant series
-            # reflects its own inflation path, which can differ member to
-            # member when the varying row is itself inflation/CPI-linked.
-            try:
-                frame = member_frames.read(
-                    batch_dir, connections, account, mode, lot,
-                    loading.counter(f"Loading {recipe}", count), after_tax=after_tax,
-                )
-            except EnsembleError:
-                # The account list spans every recipe; this one lacks it.
-                clear_output(wait=True)
-                display(StyledMarkdown(f"**{recipe} has no {_described(subject)}.**"))
-                return
-            cpi_frame = (
-                member_frames.read(
-                    batch_dir, connections, account, DollarMode.CPI_CONSTANT, lot,
-                    loading.counter(f"{recipe} in CPI-constant dollars", count),
-                    after_tax=after_tax,
-                )
-                if needs_cpi else None
-            )
-            loading.note(f"Summarizing and drawing {recipe}")
-            # Summarized over the whole run, then cut to the years shown:
-            # the share ever below the reserve looks back to the start.
-            whole_run = summary_with_percentiles(frame)
-            monthly_summary = time_range.clip(whole_run)
-            heading, yearly = ensemble_summary_view(
-                time_range.clip(pd.concat(
-                    [whole_run, risk_summary(frame, reserve, cpi_frame)], axis=1,
-                )),
-                len(connections), failed_count,
-            )
-            if reserve is not None:
-                heading += f"; reserve ${reserve:,.0f} (CPI-constant)"
-            description = (
-                description_view(next(iter(connections.values())), data_dir=resolved_data_dir)
-                if show_description else None
-            )
+            frame = store.frame(account, mode, lot, after_tax=after_tax)
+        except EnsembleError:
+            # The account list spans every recipe; this one lacks it.
             clear_output(wait=True)
-            display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
-            if description is not None:
-                display(description)
-            # A pyplot-free Figure, rendered to a PNG here: pyplot's
-            # open-figure list is global to the kernel, and under JupyterLab's
-            # kernel subshells another widget message can run
-            # matplotlib-inline's flush_figures on a second thread while this
-            # one is still drawing. That flush rendered the half-built figure
-            # concurrently and the chart came out blank (#119). A figure
-            # pyplot doesn't know about can't be flushed by anyone else, and
-            # rendering it ourselves doesn't depend on the inline backend
-            # having registered a Figure formatter, which only pyplot use does.
-            wants_log = log_linear_picker.value == LogLinearMode.LOG
-            plotted = [band_edges(monthly_summary)[0], "mean", "median"]
-            if wants_log and (monthly_summary[plotted] <= 0).any().any():
-                # Log scale can't represent zero or negative values --
-                # silently switching to linear would clip exactly the
-                # insolvency tail this chart exists to show, rather than
-                # just rendering it oddly.
-                display(StyledMarkdown(
-                    f"_Log scale can't show {subject.lower() if account is None else subject} "
-                    "that reaches zero or below; showing linear instead._"
-                ))
-                wants_log = False
-            display(_png(ensemble_fan_figure(
-                monthly_summary, f"{subject} fan chart ({mode_label}) ({recipe})",
-                reserve=reserve if mode == DollarMode.CPI_CONSTANT else None,
-                log_scale=wants_log, deaths=base_case_deaths(connections),
-            )))
-            display(yearly.style.format(_share_format(yearly.columns)))
-        finally:
-            for con in connections.values():
-                con.close()
+            display(StyledMarkdown(f"**{recipe} has no {_described(subject)}.**"))
+            return
+        cpi_frame = (
+            store.frame(account, DollarMode.CPI_CONSTANT, lot, after_tax=after_tax)
+            if reserve is not None and mode != DollarMode.CPI_CONSTANT else None
+        )
+        loading.note(f"Summarizing and drawing {recipe}")
+        # Summarized over the whole run, then cut to the years shown:
+        # the share ever below the reserve looks back to the start.
+        whole_run = summary_with_percentiles(frame)
+        monthly_summary = time_range.clip(whole_run)
+        heading, yearly = ensemble_summary_view(
+            time_range.clip(pd.concat(
+                [whole_run, risk_summary(frame, reserve, cpi_frame)], axis=1,
+            )),
+            len(store), failed_count,
+        )
+        if reserve is not None:
+            heading += f"; reserve ${reserve:,.0f} (CPI-constant)"
+        description = None
+        if show_description:
+            with RunConnection(batch_dir / f"{store.stems[0]}.sqlite3") as con:
+                description = description_view(con, data_dir=resolved_data_dir)
+        clear_output(wait=True)
+        display(StyledMarkdown(f"{heading} (batch {batch_dir.name})"))
+        if description is not None:
+            display(description)
+        # A pyplot-free Figure, rendered to a PNG here: pyplot's
+        # open-figure list is global to the kernel, and under JupyterLab's
+        # kernel subshells another widget message can run
+        # matplotlib-inline's flush_figures on a second thread while this
+        # one is still drawing. That flush rendered the half-built figure
+        # concurrently and the chart came out blank (#119). A figure
+        # pyplot doesn't know about can't be flushed by anyone else, and
+        # rendering it ourselves doesn't depend on the inline backend
+        # having registered a Figure formatter, which only pyplot use does.
+        wants_log = log_linear_picker.value == LogLinearMode.LOG
+        plotted = [band_edges(monthly_summary)[0], "mean", "median"]
+        if wants_log and (monthly_summary[plotted] <= 0).any().any():
+            # Log scale can't represent zero or negative values --
+            # silently switching to linear would clip exactly the
+            # insolvency tail this chart exists to show, rather than
+            # just rendering it oddly.
+            display(StyledMarkdown(
+                f"_Log scale can't show {subject.lower() if account is None else subject} "
+                "that reaches zero or below; showing linear instead._"
+            ))
+            wants_log = False
+        display(_png(ensemble_fan_figure(
+            monthly_summary, f"{subject} fan chart ({mode_label}) ({recipe})",
+            reserve=reserve if mode == DollarMode.CPI_CONSTANT else None,
+            log_scale=wants_log, deaths=store.base_case_deaths(),
+        )))
+        display(yearly.style.format(_share_format(yearly.columns)))
 
     dropdown.observe(_redraw, names="value")
     lot_picker.observe(_redraw, names="lots")
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
     return widgets.VBox([dropdown, controls.row(lot_picker), loading, out])
+
+
+class _Sides:
+    """The recipes a comparison shows, opened: each one's store, and its
+    frames in the dollars shown and, for a reserve, CPI-constant. A recipe
+    without the account shown has no frame."""
+
+    def __init__(self, runs_dir: Path, names: Sequence[str], controls: EnsembleControls,
+                 lot: str | None, reserve_field: widgets.Text, loading: LoadingIndicator):
+        self.stores: dict[str, EnsembleSeries] = {}
+        for name in names:
+            opened = _open_recipe(runs_dir, name, loading)
+            assert opened is not None  # listed recipes all have a batch
+            self.stores[name] = opened[1]
+        baseline = names[0]
+        self.account, self.lot = controls.account, lot
+        self.after_tax = controls.after_tax
+        self.subject = _subject(self.account, lot, self.after_tax)
+        self.mode = controls.dollar_picker.value
+        self.mode_label = "CPI-constant" if self.mode == DollarMode.CPI_CONSTANT else "nominal"
+        self.reserve = _reserve(reserve_field, self.stores[baseline], self.account)
+        self.frames: dict[str, pd.DataFrame] = {}
+        for name, store in self.stores.items():
+            try:
+                self.frames[name] = store.frame(
+                    self.account, self.mode, lot, after_tax=self.after_tax)
+            except EnsembleError:
+                pass
+        self.cpi_frames: dict[str, pd.DataFrame] = {
+            name: (
+                frame if self.mode == DollarMode.CPI_CONSTANT
+                else self.stores[name].frame(
+                    self.account, DollarMode.CPI_CONSTANT, lot, after_tax=self.after_tax)
+            )
+            for name, frame in self.frames.items()
+        } if self.reserve is not None else {}
+
+    def heading(self, baseline: str) -> str:
+        heading = (
+            f"**{self.subject}**, {self.mode_label} dollars; baseline "
+            f"`{baseline}` ({len(self.stores[baseline])} members)"
+        )
+        if self.reserve is not None:
+            heading += f"; reserve ${self.reserve:,.0f} (CPI-constant)"
+        return heading
+
+    def pairs(self, baseline: str, variant: str) -> tuple[list[tuple[str, str]], str | None]:
+        return pair_members(self.stores[baseline].member_ids(),
+                            self.stores[variant].member_ids())
+
+    def cpi_pair(self, baseline: str, variant: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+        return (self.cpi_frames[baseline], self.cpi_frames[variant]) if self.cpi_frames else None
+
+    def deltas(self, baseline: str, variant: str, clip: Callable[[pd.DataFrame], pd.DataFrame],
+               ) -> pd.DataFrame:
+        """``variant`` against ``baseline`` by year end, in the years shown."""
+        pairs, _unpaired = self.pairs(baseline, variant)
+        table = year_end_values(clip(comparison_deltas(
+            self.frames[baseline], self.frames[variant], pairs, self.reserve,
+            self.cpi_pair(baseline, variant),
+        )))
+        table.index.name = "year"
+        return table
+
+    def tails(self, clip: Callable[[pd.DataFrame], pd.DataFrame]) -> pd.DataFrame:
+        """Each recipe's tail means and reserve shares, by year end."""
+        return _by_year_and_recipe({
+            name: year_end_values(clip(risk_summary(frame, self.reserve,
+                                                    self.cpi_frames.get(name))))
+            for name, frame in self.frames.items()
+        })
+
+    def missing_note(self, names: Sequence[str]) -> StyledMarkdown | None:
+        """Which of ``names`` lack the account shown, or None."""
+        missing = [name for name in names if name not in self.frames]
+        if not missing:
+            return None
+        return StyledMarkdown(
+            f"_No {_described(self.subject)} in {', '.join(f'`{n}`' for n in missing)}._")
+
+
+def _by_year_and_recipe(tables: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    """Year-indexed ``tables``, one per recipe, as one table indexed by
+    (year, recipe), the recipes in the order given within each year."""
+    combined = pd.concat(dict(tables), names=["recipe", "year"])
+    return combined.swaplevel().sort_index(level="year", sort_remaining=False, kind="stable")
+
+
+def _offer(dropdown: widgets.Dropdown | widgets.SelectMultiple, options: Sequence[str]) -> None:
+    """Change ``dropdown``'s options, keeping what's picked that's still offered."""
+    if isinstance(dropdown, widgets.SelectMultiple):
+        kept = tuple(v for v in dropdown.value if v in options)
+        dropdown.options = list(options)
+        dropdown.value = kept
+    else:
+        kept_value = dropdown.value if dropdown.value in options else None
+        dropdown.options = list(options)
+        dropdown.value = kept_value
 
 
 def ensemble_compare_widget(*_,
@@ -529,177 +682,200 @@ def ensemble_compare_widget(*_,
                             log_linear_mode: LogLinearModePicker | None = None,
                             controls: EnsembleControls | None = None,
                             default: str | None = None,
+                            variant: str | None = None,
                             **__,
                             ) -> widgets.VBox:
-    """Compare ensembles on risk (#163): a baseline recipe and one or more
-    variants, net worth or one account, each variant against the baseline
-    as percentile-breakpoint deltas, paired per-future deltas (when the
-    recipes share a seed), and tail-mean (CVaR) deltas, with year-end
-    tables of the deltas and of each recipe's tail and reserve shares; or
-    one lot of the account (#170). ``controls`` shares scale, dollars,
-    account and reserve with other ensemble widgets (#171); ``default`` is
-    the baseline to start on, when it has a batch."""
+    """Compare two ensembles head to head on risk (#163, #298): a baseline
+    recipe and one other that pairs with it (shares its seed, so member
+    *i* of each drew the same future), net worth or one account (or one
+    lot of it, #170): percentile-breakpoint deltas, paired per-future
+    deltas and tail-mean (CVaR) deltas, as charts; the year-end tables are
+    ``ensemble_table_widget``'s. ``controls`` shares
+    scale, dollars, account and reserve with other ensemble widgets (#171);
+    ``default`` is the baseline to start on and ``variant`` the recipe to
+    compare it with, when they have a batch; with no ``variant`` none is
+    picked."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
     recipes = list_ensemble_recipes(runs_dir)
+    seeds = RecipeSeeds(runs_dir, recipes)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
     if _default(recipes, default) is not None:
         baseline_picker.value = default
-    variant_picker = widgets.SelectMultiple(
-        options=recipes, description="Variants:", rows=min(max(len(recipes), 2), 8),
-    )
+    variant_picker = widgets.Dropdown(
+        options=seeds.paired_with(baseline_picker.value), value=None, description="Compare:")
+    if variant in variant_picker.options:
+        variant_picker.value = variant
     # Default dollars are CPI-constant here: a comparison over decades, and
     # the reserve, are in today's dollars.
     controls = controls or EnsembleControls(
         runs_dir=runs_dir, dollar_mode=DollarMode.CPI_CONSTANT,
         log_linear_picker=log_linear_mode, dollar_picker=dollar_mode,
     )
-    dollar_picker = controls.dollar_picker
-    reserve_field = controls.reserve_field
     lot_picker = controls.compare_lot_picker
     time_range = controls.time_range
     loading = LoadingIndicator()
     out = widgets.Output()
-    member_frames = _MemberFrames()
+    holding = False
+
+    def _new_baseline(change: dict[str, Any]) -> None:
+        # The recipes on offer follow the baseline; redraw once, after.
+        # Picking the compared recipe as the baseline swaps the two.
+        nonlocal holding
+        swapped = change["old"] if change["new"] == variant_picker.value else None
+        holding = True
+        try:
+            _offer(variant_picker, seeds.paired_with(baseline_picker.value))
+            if swapped in variant_picker.options:
+                variant_picker.value = swapped
+        finally:
+            holding = False
+        _redraw()
 
     def _redraw(*_: object) -> None:
+        if holding:
+            return
         with out:
-            baseline = baseline_picker.value
-            variants = [v for v in variant_picker.value if v != baseline]
-            shown = [name for name in (baseline, *variants) if name]
-            if controls.offer_lots(lot_picker, shown):
+            baseline, other = baseline_picker.value, variant_picker.value
+            if controls.offer_lots(lot_picker, [name for name in (baseline, other) if name]):
                 return
-            if not baseline or not variants:
+            if not baseline or not other:
                 clear_output()
-                display(StyledMarkdown("_Pick a baseline and at least one other recipe._"))
+                display(StyledMarkdown(
+                    "_Pick a baseline and a recipe to compare it with._" if variant_picker.options
+                    else f"_No other recipe pairs with `{baseline}`: none shares its seed._"
+                    if baseline else "_Pick a baseline._"))
                 return
             try:
-                _draw(baseline, variants)
+                _draw(baseline, other)
             finally:
                 loading.finish()
 
-    def _draw(baseline: str, variants: list[str]) -> None:
-        sides: dict[str, dict[str, RunConnection]] = {}
-        batches: dict[str, Path] = {}
-        try:
-            for name in (baseline, *variants):
-                batch_dir = latest_ensemble_batch(runs_dir / name, mode="monte_carlo")
-                assert batch_dir is not None  # listed recipes all have a batch
-                batches[name] = batch_dir
-                sides[name] = load_ensemble(batch_dir)
-            account, lot = controls.account, _lot(lot_picker)
-            after_tax = controls.after_tax
-            subject = _subject(account, lot, after_tax)
-            log_scale = controls.log_linear_picker.value == LogLinearMode.LOG
-            mode = dollar_picker.value
-            mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-            reserve = _reserve(reserve_field, sides[baseline], account)
-            needs_cpi = reserve is not None and mode != DollarMode.CPI_CONSTANT
-            loading.start(
-                sum(len(conns) for conns in sides.values()) * (1 + needs_cpi),
-                f"Loading {', '.join(sides)}",
-            )
-            # The picker lists every recipe's accounts, so an account may be
-            # missing on some sides: those get a note, not a delta.
-            frames: dict[str, pd.DataFrame] = {}
-            for name, conns in sides.items():
-                try:
-                    frames[name] = member_frames.read(
-                        batches[name], conns, account, mode, lot,
-                        loading.counter(f"Loading {name}", len(conns)), after_tax=after_tax,
-                    )
-                except EnsembleError:
-                    pass
-            if needs_cpi:
-                # A side without the account skips the CPI pass too.
-                loading.remaining(sum(len(sides[name]) for name in frames))
-            cpi_frames = {
-                name: (
-                    frame if not needs_cpi
-                    else member_frames.read(
-                        batches[name], sides[name], account, DollarMode.CPI_CONSTANT, lot,
-                        loading.counter(f"{name} in CPI-constant dollars", len(sides[name])),
-                        after_tax=after_tax,
-                    )
-                )
-                for name, frame in frames.items()
-            } if reserve is not None else {}
-            loading.note("Comparing and drawing")
-            outputs: list[Any] = []
-            heading = (
-                f"**{subject}**, {mode_label} dollars; baseline "
-                f"`{baseline}` ({len(sides[baseline])} members)"
-            )
-            if reserve is not None:
-                heading += f"; reserve ${reserve:,.0f} (CPI-constant)"
-            outputs.append(StyledMarkdown(heading))
-            if not frames:
-                # The shared account list spans every recipe, so the pick may
-                # be in none of these: nothing to compare and no tails.
-                outputs.append(StyledMarkdown(
-                    f"**None of these recipes has {_described(subject)}.**"
-                ))
-                clear_output(wait=True)
-                for item in outputs:
-                    display(item)
-                return
-            for variant in variants:
-                if baseline not in frames or variant not in frames:
-                    missing = baseline if baseline not in frames else variant
-                    outputs.append(StyledMarkdown(
-                        f"### {variant} vs {baseline}\n\n`{missing}` has no "
-                        f"{_described(subject)}, so there is nothing to compare; its tail is below."
-                    ))
-                    continue
-                pairs, unpaired = member_pairs(sides[baseline], sides[variant])
-                note = (
-                    f"paired over {len(pairs)} futures" if pairs
-                    else f"not paired: {unpaired}"
-                )
-                outputs.append(StyledMarkdown(
-                    f"### {variant} vs {baseline}\n\n{len(sides[variant])} members, {note}."
-                ))
-                cpi_pair = (cpi_frames[baseline], cpi_frames[variant]) if cpi_frames else None
-                outputs.append(_png(ensemble_compare_figure(
-                    baseline, variant, frames[baseline], frames[variant], pairs, mode_label,
-                    reserve, cpi_pair, log_scale, clip=time_range.clip,
-                    deaths=base_case_deaths(sides[baseline]),
+    def _draw(baseline: str, other: str) -> None:
+        sides = _Sides(runs_dir, [baseline, other], controls, _lot(lot_picker),
+                       controls.reserve_field, loading)
+        loading.note("Comparing and drawing")
+        log_scale = controls.log_linear_picker.value == LogLinearMode.LOG
+        outputs: list[Any] = [StyledMarkdown(sides.heading(baseline))]
+        if baseline in sides.frames and other in sides.frames:
+            pairs, unpaired = sides.pairs(baseline, other)
+            note = f"paired over {len(pairs)} futures" if pairs else f"not paired: {unpaired}"
+            outputs.append(StyledMarkdown(
+                f"### {other} vs {baseline}\n\n{len(sides.stores[other])} members, {note}."))
+            outputs.append(_png(ensemble_compare_figure(
+                baseline, other, sides.frames[baseline], sides.frames[other], pairs,
+                sides.mode_label, sides.reserve, sides.cpi_pair(baseline, other), log_scale,
+                clip=time_range.clip, deaths=sides.stores[baseline].base_case_deaths(),
+            )))
+        else:
+            # The shared account list spans every recipe, so a side may lack
+            # the pick: a note, and the other side's own spread, not a delta.
+            note = sides.missing_note([baseline, other])
+            assert note is not None
+            outputs.append(note)
+            for name, frame in sides.frames.items():
+                outputs.append(_png(ensemble_fan_figure(
+                    time_range.clip(summary_with_percentiles(frame)),
+                    f"{sides.subject} fan chart ({sides.mode_label}) ({name})",
+                    reserve=sides.reserve if sides.mode == DollarMode.CPI_CONSTANT else None,
+                    log_scale=log_scale and bool((time_range.clip(frame) > 0).all().all()),
+                    height=4, deaths=sides.stores[name].base_case_deaths(),
                 )))
-                table = year_end_values(time_range.clip(comparison_deltas(
-                    frames[baseline], frames[variant], pairs, reserve, cpi_pair,
-                )))
-                table.index.name = "year"
-                outputs.append(table.style.format(_share_format(table.columns)))
-            # A one-sided account's own spread, where no delta shows it:
-            # each variant that has it when the baseline doesn't, or the
-            # baseline when no variant has it.
-            compared = baseline in frames and any(v in frames for v in variants)
-            if not compared:
-                for name, frame in frames.items():
-                    outputs.append(_png(ensemble_fan_figure(
-                        time_range.clip(summary_with_percentiles(frame)),
-                        f"{subject} fan chart ({mode_label}) ({name})",
-                        reserve=reserve if mode == DollarMode.CPI_CONSTANT else None,
-                        log_scale=log_scale and bool((time_range.clip(frame) > 0).all().all()),
-                        height=4, deaths=base_case_deaths(sides[name]),
-                    )))
-            tails = [risk_summary(frame, reserve, cpi_frames.get(name))
-                     for name, frame in frames.items()]
-            tail_table = year_end_values(
-                time_range.clip(pd.concat(tails, axis=1, keys=list(frames))),
-            )
-            tail_table.index.name = "year"
-            outputs.append(StyledMarkdown("### Tail and reserve, by recipe"))
-            outputs.append(tail_table.style.format(_share_format(tail_table.columns)))
-            clear_output(wait=True)
-            for item in outputs:
-                display(item)
-        finally:
-            for conns in sides.values():
-                for con in conns.values():
-                    con.close()
+        clear_output(wait=True)
+        for item in outputs:
+            display(item)
 
-    for picker in (baseline_picker, variant_picker):
-        picker.observe(_redraw, names="value")
+    baseline_picker.observe(_new_baseline, names="value")
+    variant_picker.observe(_redraw, names="value")
+    lot_picker.observe(_redraw, names="lots")
+    controls.observe_all(_redraw)
+    when_cell_is_done(_redraw)
+    return widgets.VBox([
+        widgets.HBox([baseline_picker, variant_picker]), controls.row(lot_picker), loading, out,
+    ])
+
+
+def ensemble_table_widget(*_,
+                          data_dir: Path | str | None = None,
+                          state_dir: Path | None = None,
+                          runs_dir: Path | str | None = None,
+                          controls: EnsembleControls | None = None,
+                          default: str | None = None,
+                          **__,
+                          ) -> widgets.VBox:
+    """A baseline recipe against any number of others that pair with it
+    (#298), in two year-end tables indexed by (year, recipe): each recipe's
+    deltas against the baseline (as ``ensemble_compare_widget`` shows one),
+    and every recipe's tail means and reserve shares. ``controls`` shares
+    dollars, account and reserve with the other ensemble widgets; ``default``
+    is the baseline to start on."""
+    runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
+    recipes = list_ensemble_recipes(runs_dir)
+    seeds = RecipeSeeds(runs_dir, recipes)
+    baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
+    if _default(recipes, default) is not None:
+        baseline_picker.value = default
+    variant_picker = widgets.SelectMultiple(
+        options=seeds.paired_with(baseline_picker.value), description="Compare:", rows=min(max(len(recipes), 2), 8),
+    )
+    controls = controls or EnsembleControls(runs_dir=runs_dir, dollar_mode=DollarMode.CPI_CONSTANT)
+    lot_picker = controls.table_lot_picker
+    time_range = controls.time_range
+    loading = LoadingIndicator()
+    out = widgets.Output()
+    holding = False
+
+    def _new_baseline(*_: object) -> None:
+        nonlocal holding
+        holding = True
+        try:
+            _offer(variant_picker, seeds.paired_with(baseline_picker.value))
+        finally:
+            holding = False
+        _redraw()
+
+    def _redraw(*_: object) -> None:
+        if holding:
+            return
+        with out:
+            baseline, others = baseline_picker.value, list(variant_picker.value)
+            if controls.offer_lots(lot_picker, [baseline, *others] if baseline else []):
+                return
+            if not baseline or not others:
+                clear_output()
+                display(StyledMarkdown(
+                    "_Pick a baseline and the recipes to compare it with._"
+                    if variant_picker.options or not baseline
+                    else f"_No other recipe pairs with `{baseline}`: none shares its seed._"))
+                return
+            try:
+                _draw(baseline, others)
+            finally:
+                loading.finish()
+
+    def _draw(baseline: str, others: list[str]) -> None:
+        sides = _Sides(runs_dir, [baseline, *others], controls, _lot(lot_picker),
+                       controls.reserve_field, loading)
+        loading.note("Comparing")
+        outputs: list[Any] = [StyledMarkdown(sides.heading(baseline))]
+        note = sides.missing_note([baseline, *others])
+        if note is not None:
+            outputs.append(note)
+        compared = [name for name in others if name in sides.frames]
+        if baseline in sides.frames and compared:
+            deltas = _by_year_and_recipe({
+                name: sides.deltas(baseline, name, time_range.clip) for name in compared})
+            outputs.append(StyledMarkdown(f"### Against {baseline}, by year end"))
+            outputs.append(deltas.style.format(_share_format(deltas.columns)))
+        if sides.frames:
+            tails = sides.tails(time_range.clip)
+            outputs.append(StyledMarkdown("### Tail and reserve, by recipe"))
+            outputs.append(tails.style.format(_share_format(tails.columns)))
+        clear_output(wait=True)
+        for item in outputs:
+            display(item)
+
+    baseline_picker.observe(_new_baseline, names="value")
+    variant_picker.observe(_redraw, names="value")
     lot_picker.observe(_redraw, names="lots")
     controls.observe_all(_redraw)
     when_cell_is_done(_redraw)
