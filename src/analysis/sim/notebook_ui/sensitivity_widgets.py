@@ -59,14 +59,15 @@ _MAX_KEYS = len(CATEGORICAL) - 1  # the last slot is "other"
 
 
 def list_sensitivity_recipes(runs_dir: Path) -> list[str]:
-    """Recipes with at least one generated batch of either mode."""
+    """Recipes with at least one generated batch of either mode. Listing
+    never waits for a background build (#300); opening a batch does."""
     from analysis.sim.ensemble import latest_ensemble_batch
 
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
         return []
     return sorted(p.name for p in runs_dir.iterdir()
-                  if p.is_dir() and latest_ensemble_batch(p) is not None)
+                  if p.is_dir() and latest_ensemble_batch(p, wait=False) is not None)
 
 
 def list_batches(recipe_dir: Path) -> list[tuple[str, Path]]:

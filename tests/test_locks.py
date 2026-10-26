@@ -27,9 +27,14 @@ def test_runs_in_the_same_second_get_numbered_names(runs_dir: Path) -> None:
     assert all(p.is_file() and p.stat().st_size == 0 for p in paths)
 
 
+def _written(path: Path) -> Path:
+    path.write_bytes(b"x")  # a run that has begun writing
+    return path
+
+
 def test_latest_run_is_the_last_numbered_one(runs_dir: Path) -> None:
     for _ in range(3):
-        last = locks.reserve_run_path(runs_dir, "base", "abc1234", now=NOW)
+        last = _written(locks.reserve_run_path(runs_dir, "base", "abc1234", now=NOW))
     # Plain name order would put `…Z-2_` before `…Z_`.
     assert latest_run_path(runs_dir, "base") == last
     assert latest_run_path(runs_dir, "base") != sorted(runs_dir.iterdir())[-1]
@@ -37,9 +42,17 @@ def test_latest_run_is_the_last_numbered_one(runs_dir: Path) -> None:
 
 def test_tenth_run_in_a_second_is_newer_than_the_ninth(runs_dir: Path) -> None:
     for _ in range(10):
-        last = locks.reserve_run_path(runs_dir, "base", "abc1234", now=NOW)
+        last = _written(locks.reserve_run_path(runs_dir, "base", "abc1234", now=NOW))
     assert last.name.startswith("2026-10-26T043000Z-10_")
     assert latest_run_path(runs_dir, "base") == last
+
+
+def test_a_reserved_run_is_not_the_latest_until_written(runs_dir: Path) -> None:
+    first = _written(locks.reserve_run_path(runs_dir, "base", "abc1234", now=NOW))
+    reserved = locks.reserve_run_path(runs_dir, "base", "abc1234", now=NOW)
+    assert latest_run_path(runs_dir, "base") == first
+    _written(reserved)
+    assert latest_run_path(runs_dir, "base") == reserved
 
 
 def test_batches_order_by_their_number(runs_dir: Path) -> None:
@@ -104,3 +117,29 @@ def test_a_second_build_waits_for_the_first(intent_dir: Path, held_elsewhere) ->
     with locks.build_lock(intent_dir, "retire_alice", on_wait=seen.append):
         pass
     assert len(seen) == 1
+
+
+def test_listing_ensembles_never_waits_for_their_builds(
+    runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only opening a recipe's batch waits for its background build; the
+    notebooks' recipe lists and controls read what is on hand."""
+    from analysis.sim import loader
+    from analysis.sim.notebook_ui.ensemble_widgets import (
+        RecipeSeeds, list_ensemble_recipes, recipe_accounts,
+    )
+    from analysis.sim.notebook_ui.sensitivity_widgets import list_sensitivity_recipes
+
+    batch = runs_dir / "base" / "2026-10-26T043000Z"
+    batch.mkdir(parents=True)
+    (batch / "batch_manifest.json").write_text('{"mode": "monte_carlo"}')
+    waited: list[str] = []
+    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name: waited.append(name))
+    assert list_ensemble_recipes(runs_dir) == ["base"]
+    assert list_sensitivity_recipes(runs_dir) == ["base"]
+    recipe_accounts(runs_dir, ["base"])
+    RecipeSeeds(runs_dir, ["base"])
+    assert loader.scenario_run_path(runs_dir, "base", wait=False) is None
+    assert waited == []
+    loader.latest_ensemble_batch(runs_dir / "base")
+    assert waited == ["base"]  # opening one does

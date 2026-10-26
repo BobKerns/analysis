@@ -235,7 +235,7 @@ def test_scenario_ref_locates_paths_and_git_head(tmp_path: Path) -> None:
     ref.runs_dir.mkdir(parents=True)
     for name in ["2026-01-01T000000Z_retire_alice_abc1234.sqlite3",
                  "2026-06-01T000000Z_other_abc1234.sqlite3"]:
-        (ref.runs_dir / name).touch()
+        (ref.runs_dir / name).write_bytes(b"x")
 
     reloaded = resolve_scenario_name(repo, "retire_alice")
     assert reloaded.loaded

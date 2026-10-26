@@ -12,7 +12,7 @@ from pathlib import Path
 import git
 import pytest
 
-from analysis.sim import builder, freshness, provenance
+from analysis.sim import builder, freshness, locks, provenance
 from analysis.sim.builder import BuilderPaths
 
 
@@ -174,6 +174,19 @@ def daemon(
     d.cancel("test over")
 
 
+def test_a_daemon_from_other_code_does_not_start(
+    daemon: builder._Daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder._write_json(daemon.paths.config, {
+        "data_dir": str(daemon.data_dir), "code_dir": str(builder.code_dir())})
+    monkeypatch.setattr(builder, "code_dir", lambda: tmp_path / "another-worktree")
+    lines: list[str] = []
+    daemon.echo = lines.append
+    assert daemon.run() == 1
+    assert any("but the pair's code is" in line for line in lines)
+    assert not builder.daemon_alive(daemon.paths)
+
+
 def _wait_until_done(d: builder._Daemon) -> None:
     assert d.build is not None
     d.build.process.wait(timeout=10)
@@ -281,6 +294,10 @@ def test_readers_dont_wait_where_the_builder_is_off_or_not_installed(
     monkeypatch.setattr(builder, "_pending", lambda *_a: pytest.fail("checked"))
     builder.await_fresh(paths.runs_dir, "base")  # not installed
     builder.install(data_dir)
+    # A build (sim load/run/all) may hold the lock the builder's own build
+    # of the scenario waits for, so it never waits on the builder.
+    with locks.building():
+        builder.await_fresh(paths.runs_dir, "base")
     monkeypatch.setenv("ANALYSIS_BUILDER", "off")
     builder.await_fresh(paths.runs_dir, "base")
 

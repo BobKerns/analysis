@@ -286,10 +286,10 @@ def test_scenario_run_path_matches_the_whole_scenario_name(runs_dir: Path) -> No
 
     runs_dir.mkdir(parents=True, exist_ok=True)
     other = runs_dir / "2030-01-02T000000Z_higher_base_abc1234.sqlite3"
-    other.touch()
+    other.write_bytes(b"x")
     assert scenario_run_path(runs_dir, "base") is None
     own = runs_dir / "2030-01-01T000000Z_base_abc1234.sqlite3"
-    own.touch()
+    own.write_bytes(b"x")
     assert scenario_run_path(runs_dir, "base") == own
     assert scenario_run_path(runs_dir, "higher_base") == other
 

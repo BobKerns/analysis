@@ -172,7 +172,7 @@ def test_find_latest_run_picks_lexicographically_last_file(tmp_path: Path) -> No
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
     for name in ["2026-01-01T000000Z_a.sqlite3", "2026-06-01T000000Z_b.sqlite3"]:
-        (runs_dir / name).touch()
+        (runs_dir / name).write_bytes(b"x")
 
     assert find_latest_run(runs_dir).name == "2026-06-01T000000Z_b.sqlite3"
 
@@ -191,7 +191,7 @@ def test_find_latest_run_filters_by_scenario(tmp_path: Path) -> None:
         "2026-01-01T000000Z_current_abc1234.sqlite3",
         "2026-06-01T000000Z_tight_abc1234.sqlite3",
     ]:
-        (runs_dir / name).touch()
+        (runs_dir / name).write_bytes(b"x")
 
     latest = find_latest_run(runs_dir, "current")
     assert latest.name == "2026-01-01T000000Z_current_abc1234.sqlite3"

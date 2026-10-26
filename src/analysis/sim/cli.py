@@ -69,7 +69,7 @@ from analysis.sim.series_db import (
     pair_members,
     write_series_db,
 )
-from analysis.sim.locks import BUILDER_CHILD_ENV, LockHolder, build_lock, reserve_run_path
+from analysis.sim.locks import BUILDER_CHILD_ENV, LockHolder, build_lock, building, reserve_run_path
 from analysis.sim.ensemble import (
     EnsembleError,
     factor_reach,
@@ -157,6 +157,16 @@ def _resolve_state_dir(
     return find_state_dir(data_dir, DEFAULT_STATE_DIR) / default
 
 
+def _builds(fn):
+    """A command that builds runs: it never waits on the background builder
+    (#300, ``locks.building``), even while resolving its scenario."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with building():
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 @click.group(name="sim")
 def sim_group_command() -> None:
     """Scenario-based finance simulator."""
@@ -203,6 +213,7 @@ def sim_group_command() -> None:
     help="Also run the scenario after loading (default). Use --no-run to only build the intent file.",
 )
 @click.pass_context
+@_builds
 def load(
     ctx: click.Context,
     scenario_name: str | None,
@@ -497,6 +508,7 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
     help="With --sensitivity: quantiles each row is perturbed to "
          "(default 0.1,0.9; e.g. 0.1,0.25,0.4,0.6,0.75,0.9 for a response curve).",
 )
+@_builds
 def run(
     scenario_name: str | None,
     data_dir: Path | None,
@@ -1243,7 +1255,7 @@ def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble"
     def has_runs(recipe: Path) -> bool:
         if batch:
             return is_ensemble_batch(recipe / batch, mode)
-        return latest_ensemble_batch(recipe, mode=mode) is not None
+        return latest_ensemble_batch(recipe, mode=mode, wait=False) is not None
 
     recipes = sorted(
         p.name for p in (runs_dir.iterdir() if runs_dir.is_dir() else ())
@@ -2003,6 +2015,7 @@ def _report_oat(
     help="Rerun every scenario, even one whose latest run can't have changed.",
 )
 @click.pass_context
+@_builds
 def all_scenarios(
     ctx: click.Context,
     data_dir: Path | None,
@@ -2430,7 +2443,7 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
     """A variant to compare ``baseline`` with, asked for from the scenarios
     that have a run."""
     choices = [name for name in list_scenario_names(data)
-               if name != baseline and scenario_run_path(runs_dir, name) is not None]
+               if name != baseline and scenario_run_path(runs_dir, name, wait=False) is not None]
     return [_ask_name("scenario", choices, prompt="variant", plural="scenarios with runs")]
 
 
@@ -10404,7 +10417,7 @@ def _rename_scenario(old: str | None, new: str | None, data_dir: Path | None, *,
     if rename.CURRENT_SCENARIO_FILE in changed:
         _announce_current(new, old)
     runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
-    if latest_run_path(runs, old) or (runs / old).is_dir():
+    if latest_run_path(runs, old, wait=False) or (runs / old).is_dir():
         click.echo(f"  runs already made of {old} keep that name; `sim run {new}` makes new ones")
 
 
@@ -10754,7 +10767,7 @@ def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what
     for path in mentions:
         click.echo(f"  {path.relative_to(data)} still mentions it")
     runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
-    if latest_run_path(runs, name) or (runs / name).is_dir():
+    if latest_run_path(runs, name, wait=False) or (runs / name).is_dir():
         click.echo(f"  runs already made of {name} are kept, under {runs}")
 
 
@@ -12376,7 +12389,9 @@ def builder_status(data_dir: Path | None) -> None:
         return
     if builder.switched_off():
         click.echo("background builds are off here (ANALYSIS_BUILDER=off)")
-    trees, reason = builder.main_check(builder.config_branch(builder.read_config(paths)))
+    config = builder.read_config(paths) or {}
+    code = config.get("code_dir")
+    trees, reason = builder.main_check(builder.config_branch(config), Path(code) if code else None)
     if trees is None:
         click.echo(f"disabled: {reason}")
     status = builder.read_status(paths)

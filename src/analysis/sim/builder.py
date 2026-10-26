@@ -53,7 +53,7 @@ from analysis.sim.loader import (
     list_scenario_names,
     read_current_scenario,
 )
-from analysis.sim.locks import BUILDER_CHILD_ENV, BUILDER_SWITCH_ENV, run_name_key
+from analysis.sim.locks import BUILDER_CHILD_ENV, BUILDER_SWITCH_ENV, is_building, run_name_key
 
 __all__ = [
     "BuilderPaths",
@@ -267,9 +267,14 @@ def spawn_daemon(paths: BuilderPaths, data_dir: Path) -> None:
     the same moment finds the daemon lock taken and exits."""
     paths.dir.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, BUILDER_SWITCH_ENV: "off"}
+    # The pair's own code, whichever checkout asked (a reader, a hook in
+    # another worktree linking the same data).
+    code = (read_config(paths) or {}).get("code_dir")
+    sim = Path(code) / ".venv" / "bin" / "sim" if code else None
+    command = [str(sim)] if sim is not None and sim.exists() else _sim_executable()
     with open(paths.log, "ab") as log:
         subprocess.Popen(
-            [*_sim_executable(), "builder", "run", "--data-dir", str(data_dir)],
+            [*command, "builder", "run", "--data-dir", str(data_dir)],
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True, env=env, close_fds=True,
         )
@@ -465,6 +470,11 @@ class _Daemon:
             os.close(lock)
             return 0  # one is already running; it has the request
         _trim_log(self.paths.log)
+        configured = (read_config(self.paths) or {}).get("code_dir")
+        if configured and code_dir() != Path(configured).resolve():
+            self.log(f"not started: this is {code_dir()}, but the pair's code is {configured}")
+            os.close(lock)
+            return 1
         # This process and its builds must never wait on the builder itself.
         os.environ[BUILDER_SWITCH_ENV] = "off"
 
@@ -592,7 +602,7 @@ def await_fresh(
     pending, move it to the front and wait for it. Does nothing where the
     builder isn't installed, is off or disabled, or the run is current.
     Ctrl-C gives up the wait (the latest existing run is opened)."""
-    if switched_off():
+    if switched_off() or is_building():
         return
     paths = BuilderPaths(Path(runs_dir).resolve().parent)
     config = read_config(paths)
@@ -628,7 +638,9 @@ def _pending(paths: BuilderPaths, data_dir: Path, scenario: str) -> bool:
     from analysis.sim.freshness import code_tree, unchanged_run
     from analysis.sim.provenance import data_stamps
 
-    trees, _reason = main_check(config_branch(read_config(paths)))
+    config = read_config(paths) or {}
+    code = config.get("code_dir")
+    trees, _reason = main_check(config_branch(config), Path(code) if code else None)
     if trees is None or scenario not in list_scenario_names(data_dir):
         return False
     data = data_stamps(data_dir, scenario)

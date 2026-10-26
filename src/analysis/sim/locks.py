@@ -34,6 +34,8 @@ __all__ = [
     "LockHolder",
     "RUN_STAMP_FORMAT",
     "build_lock",
+    "building",
+    "is_building",
     "lock_holder",
     "lock_path",
     "reserve_run_path",
@@ -185,3 +187,25 @@ def build_lock(
     finally:
         os.close(fd)  # releases the lock
 
+
+
+_building = 0
+
+
+@contextmanager
+def building() -> Generator[None]:
+    """Mark this process as building (``sim load``, ``sim run``, ``sim
+    all``) for the block. A build never waits on the background builder
+    (``builder.await_fresh``): it may hold the very lock the builder's own
+    build of that scenario is waiting for, and it is about to make the run
+    a wait would wait for."""
+    global _building
+    _building += 1
+    try:
+        yield
+    finally:
+        _building -= 1
+
+
+def is_building() -> bool:
+    return _building > 0

@@ -205,7 +205,8 @@ def latest_run_path(
     chronologically by ``locks.run_name_key`` and can be filtered by scenario
     by name alone. Neither the timestamp nor the data version has an
     underscore, so the scenario is matched whole: ``base`` doesn't pick up
-    ``higher_base``'s runs.
+    ``higher_base``'s runs. A zero-byte file is a name a run has reserved
+    (``locks.reserve_run_path``) but not begun writing, so it is skipped.
     """
     from analysis.sim.locks import run_name_key
 
@@ -216,9 +217,16 @@ def latest_run_path(
     re_pattern = (re.compile(rf"[^_]+_{re.escape(scenario)}_[^_]*[.]sqlite3") if scenario
                   else re.compile(".*"))
     runs = (r for r in Path(runs_dir).glob(glob_pattern)
-            if re_pattern.fullmatch(r.name))
+            if re_pattern.fullmatch(r.name) and _started(r))
     runs = sorted(runs, key=lambda r: run_name_key(r.name))
     return runs[-1] if runs else None
+
+
+def _started(run: Path) -> bool:
+    try:
+        return run.stat().st_size > 0
+    except OSError:  # pruned between the glob and here
+        return False
 
 
 BATCH_MANIFEST_FILENAME = "batch_manifest.json"
@@ -297,25 +305,31 @@ def is_ensemble_batch(batch_dir: Path, mode: str | None = None) -> bool:
     ) and (mode is None or batch_mode(batch_dir) == mode)
 
 
-def _latest_ensemble_member_zero(runs_dir: Path, name: str) -> Path | None:
+def _latest_ensemble_member_zero(
+    runs_dir: Path, name: str, *, wait: bool = True,
+) -> Path | None:
     """``member_0000.sqlite3`` of ``name``'s most recent ensemble batch, for
     a caller that only knows how to open one run file per scenario (ADR-006
     §8): member 0 is always the recipe's deterministic (non-drawn) member,
     so it stands in for "the" run the same way any other scenario's one run
     file would.
     """
-    batch = latest_ensemble_batch(Path(runs_dir) / name)
+    batch = latest_ensemble_batch(Path(runs_dir) / name, wait=wait)
     if batch is None:
         return None
     member = batch / "member_0000.sqlite3"
     return member if member.exists() else None
 
 
-def scenario_run_path(runs_dir: Path | str, name: str) -> Path | None:
+def scenario_run_path(
+    runs_dir: Path | str, name: str, *, wait: bool = True,
+) -> Path | None:
     """The run file that stands for scenario ``name`` under ``runs_dir``: its
     latest run, else member 0 of its latest ensemble batch; ``None`` when it
-    has neither."""
-    return latest_run_path(runs_dir, name) or _latest_ensemble_member_zero(Path(runs_dir), name)
+    has neither. ``wait=False`` for a listing that only asks whether one
+    exists (#300: only opening a run waits for its build)."""
+    return (latest_run_path(runs_dir, name, wait=wait)
+            or _latest_ensemble_member_zero(Path(runs_dir), name, wait=wait))
 
 
 @dataclass(frozen=True)

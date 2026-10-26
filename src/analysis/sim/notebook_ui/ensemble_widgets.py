@@ -69,9 +69,10 @@ def list_ensemble_recipes(runs_dir: Path) -> list[str]:
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
         return []
+    # Listing never waits for a background build (#300); opening a batch does.
     return sorted(
         p.name for p in runs_dir.iterdir()
-        if p.is_dir() and latest_ensemble_batch(p, mode="monte_carlo") is not None
+        if p.is_dir() and latest_ensemble_batch(p, mode="monte_carlo", wait=False) is not None
     )
 
 
@@ -119,7 +120,10 @@ def recipe_accounts(
     lots: dict[str, dict[str, list[str]]] = {}
     years: set[int] = set()
     for recipe in recipes:
-        batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
+        # Building the controls reads every recipe's latest batch as it is;
+        # only drawing a recipe waits for its background build (#300).
+        batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo",
+                                          wait=False)
         if batch_dir is None:
             continue
         member = next(
@@ -149,7 +153,10 @@ class RecipeSeeds:
         self._indexes: dict[str, set[int]] = {}
         self._seeds: dict[tuple[str, int], int | None] = {}
         for recipe in recipes:
-            batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
+            # Without waiting for builds (#300): a rebuild keeps the
+            # recipe's seed, so pairing read from the batch on hand holds.
+            batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo",
+                                              wait=False)
             if batch_dir is None:
                 continue
             self._batches[recipe] = batch_dir
