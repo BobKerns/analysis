@@ -1098,7 +1098,10 @@ Run a scenario with:
 sim run <scenario>
 ```
 
-or run every scenario in the data repo at once with `sim all`. If you added
+or run every scenario in the data repo at once with `sim all`. It skips a
+scenario whose latest run can't have changed (the code and the scenario's
+data are committed and the same as when it ran) and says so; `sim all
+--force` reruns everything. If you added
 the VS Code tasks (see below), you don't need to type either command: use the
 **Run All Scenarios** task.
 
