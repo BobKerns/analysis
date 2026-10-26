@@ -5,7 +5,7 @@ breakpoints."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,7 @@ from analysis.sim.ensemble import (
     risk_summary,
     summary_with_percentiles,
 )
-from analysis.sim.loader import is_ensemble_batch
+from analysis.sim.loader import is_ensemble_batch, read_disabled_scenarios
 from analysis.sim.ensemble_plots import (
     band_edges,
     ensemble_compare_figure,
@@ -63,17 +63,22 @@ __all__ = [
 ]
 
 
-def list_ensemble_recipes(runs_dir: Path) -> list[str]:
+def list_ensemble_recipes(
+    runs_dir: Path, data_dir: Path | None = None, keep: Iterable[str | None] = (),
+) -> list[str]:
     """Names of every subdirectory of ``runs_dir`` holding at least one
     generated batch (a ``<timestamp>/member_*.sqlite3`` run file) -- the
-    recipes ``sim run --ensemble-size`` has generated and run."""
+    recipes ``sim run --ensemble-size`` has generated and run. Given
+    ``data_dir``, less its disabled scenarios (#300) other than ``keep``."""
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
         return []
+    disabled = read_disabled_scenarios(data_dir) - set(keep) if data_dir else frozenset()
     # Listing never waits for a background build (#300); opening a batch does.
     return sorted(
         p.name for p in runs_dir.iterdir()
-        if p.is_dir() and latest_ensemble_batch(p, mode="monte_carlo", wait=False) is not None
+        if p.is_dir() and p.name not in disabled
+        and latest_ensemble_batch(p, mode="monte_carlo", wait=False) is not None
     )
 
 
@@ -244,7 +249,7 @@ class EnsembleControls:
                  after_tax_picker: AfterTaxPicker | None = None):
         resolved = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
         accounts, self._recipe_lots, years = recipe_accounts(
-            resolved, list_ensemble_recipes(resolved),
+            resolved, list_ensemble_recipes(resolved, find_data_dir(data_dir)),
         )
         # Spanned here, not as each widget draws: the span would otherwise
         # move the slider mid-draw, and that redraws every widget.
@@ -477,7 +482,7 @@ def ensemble_widget(*_,
     when it has a batch."""
     resolved_data_dir = find_data_dir(data_dir)
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipes = list_ensemble_recipes(runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, resolved_data_dir, keep=[default])
     dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
     if _default(recipes, default) is not None:
         dropdown.value = default
@@ -714,7 +719,7 @@ def ensemble_compare_widget(*_,
     compare it with, when they have a batch; with no ``variant`` none is
     picked."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipes = list_ensemble_recipes(runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, find_data_dir(data_dir), keep=[default, variant])
     seeds = RecipeSeeds(runs_dir, recipes)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
     if _default(recipes, default) is not None:
@@ -827,7 +832,7 @@ def ensemble_table_widget(*_,
     dollars, account and reserve with the other ensemble widgets; ``default``
     is the baseline to start on."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipes = list_ensemble_recipes(runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, find_data_dir(data_dir), keep=[default])
     seeds = RecipeSeeds(runs_dir, recipes)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
     if _default(recipes, default) is not None:

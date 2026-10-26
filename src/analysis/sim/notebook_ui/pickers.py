@@ -34,7 +34,9 @@ from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.ensemble import latest_ensemble_batch, member_run_statuses
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
-from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
+from analysis.sim.loader import (
+    ScenarioRef, list_scenario_names, read_disabled_scenarios, resolve_scenario_name,
+)
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.readme import description_view
 from analysis.sim.types import (
@@ -285,6 +287,17 @@ _META_COLS = [
 ]
 
 
+def enabled_scenario_names(
+    data_dir: Path, *, scenarios_dir: Path | None = None, keep: Iterable[str | None] = (),
+) -> list[str]:
+    """The scenarios a picker offers: every one but the disabled ones
+    (`sim scenario disable`, #300), except those in ``keep`` (the ones it
+    starts on)."""
+    disabled = read_disabled_scenarios(data_dir) - set(keep)
+    return [name for name in list_scenario_names(data_dir, scenarios_dir=scenarios_dir)
+            if name not in disabled]
+
+
 def find_data_dir(data_dir: Path | str | None = None) -> Path:
     """
     Find the data directory for the analysis repository. Works from notebook files
@@ -424,7 +437,7 @@ def scenario_picker(
             scenarios_dir=scenarios_dir,
             runs_dir=runs_dir,
         ).name
-    options = list_scenario_names(data_dir, scenarios_dir=scenarios_dir)
+    options = enabled_scenario_names(data_dir, scenarios_dir=scenarios_dir, keep=[default])
     dropdown = widgets.Dropdown(options=options, value=default, description="Scenario:")
     member_dropdown = widgets.Dropdown(description="Member:", layout=widgets.Layout(display="none"))
     ref_out = widgets.Output()
@@ -671,8 +684,6 @@ def multi_scenario_picker(
         REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
         data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data" / "shared" / "sim"))  
     data_dir = Path(data_dir)
-    available = list_scenario_names(data_dir)
-
     if default_baseline is None:
         # Same resolution the CLI uses: $ANALYSIS_SCENARIO, else the data repo's
         # .current_scenario, else "current".
@@ -680,6 +691,7 @@ def multi_scenario_picker(
             data_dir, os.environ.get("ANALYSIS_SCENARIO") or None,
             intent_dir=intent_dir, runs_dir=runs_dir,
         ).name
+    available = enabled_scenario_names(data_dir, keep=[default_baseline, *(default_variants or [])])
 
     baseline_picker = widgets.Dropdown(
         options=available, value=default_baseline, description="Baseline:",

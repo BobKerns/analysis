@@ -93,6 +93,7 @@ from analysis.sim.loader import (
     LoadResult,
     ScenarioRef,
     batch_mode,
+    DISABLE_FILE,
     calendar_row_key,
     current_scenario_path,
     is_ensemble_batch,
@@ -102,7 +103,9 @@ from analysis.sim.loader import (
     find_state_dir,
     latest_run_path,
     read_current_scenario,
+    read_disabled_scenarios,
     scenario_run_path,
+    set_scenario_enabled,
     write_current_scenario,
 )
 from analysis.sim.quicken import (
@@ -2033,6 +2036,8 @@ def all_scenarios(
     with now, all committed, is skipped: rerunning it would give the same
     numbers. --force reruns it anyway.
 
+    A disabled scenario (`sim scenario disable`) isn't built.
+
     Reports failures per scenario and keeps going; does not stop or fail the
     command itself.
     """
@@ -2050,6 +2055,9 @@ def all_scenarios(
     skipped: list[str] = []
     code = code_tree()
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved)
+    if disabled := sorted(set(names) & read_disabled_scenarios(resolved)):
+        names = [name for name in names if name not in disabled]
+        click.echo(f"disabled, not built: {', '.join(disabled)} (`sim run NAME` builds one)")
     for name in names:
         click.echo(f"=== {name} ===")
         unchanged = None if force else unchanged_run(resolved, resolved_runs_dir, name, code)
@@ -9920,7 +9928,8 @@ def scenario_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
 
     Plain output is just the names, one per line, for scripts. --verbose adds
     parents, start and end months, seed, ensemble size, and description, and
-    marks the current scenario with *. A value in [brackets] is inherited
+    marks the current scenario with *, and build "no" for a disabled one
+    (`sim scenario disable`). A value in [brackets] is inherited
     from an ancestor; a blank size means the scenario is not an ensemble.
     --all adds the template scenarios a data repo reads from the code
     repository when it has no folder of that name.
@@ -9969,6 +9978,7 @@ def _list_scenarios(
         return cell(v and v.value, bool(v and v.inherited))
 
     current = read_current_scenario(data_dir_p)
+    disabled = read_disabled_scenarios(data_dir_p)
     table = Table(title=f"{kind} ({data_dir_p.name})",
                   caption=escape("[values] are inherited"))
     table.add_column("", no_wrap=True)
@@ -9979,12 +9989,13 @@ def _list_scenarios(
     table.add_column("seed", no_wrap=True, justify="right")
     table.add_column("size", no_wrap=True, justify="right")
     table.add_column("description")
+    table.add_column("build", no_wrap=True)
     for s in summaries:
         table.add_row(
             "*" if s.name == current else "",
             s.name, " + ".join(s.parents), date_cell(s.start), date_cell(s.end),
             value_cell(s.seed), value_cell(s.ensemble_size),
-            escape(s.description),
+            escape(s.description), "no" if s.name in disabled else "",
         )
     Console().print(table)
 
@@ -10796,6 +10807,65 @@ def ensemble_delete(name: str | None, yes: bool, data_dir: Path | None) -> None:
     Without NAME, it is asked for.
     """
     _delete_scenario(name, data_dir, yes, what="ensemble")
+
+
+def _set_enabled(name: str | None, data_dir: Path | None, *, enabled: bool, what: str) -> None:
+    """``sim scenario|ensemble enable|disable`` (``what``)."""
+    data = _resolve_data_dir(data_dir)
+    disabled = read_disabled_scenarios(data)
+    verb = "enable" if enabled else "disable"
+    if name is None:
+        choices = _ensemble_names(data) if what == "ensemble" else list_scenario_names(data)
+        choices = [n for n in choices if (n in disabled) == enabled]
+        if not choices:
+            raise click.ClickException(f"no {what} to {verb}: every one is already {verb}d")
+        name = _ask_name(what, choices, prompt=f"{what} to {verb}")
+    name = name.strip()
+    # Only a folder's own name: not a template (its folder is in the code
+    # repository), a path, or '..'.
+    if name not in list_scenario_names(data) or not (data / "scenarios" / name).is_dir():
+        raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
+    if what == "ensemble" and sc.ensemble_settings(data, name)[1] is None:
+        raise click.ClickException(f"{name} is not an ensemble; `sim scenario {verb}` takes it")
+    if (name not in disabled) == enabled:
+        click.echo(f"{name} is already {verb}d")
+        return
+    set_scenario_enabled(data, name, enabled)
+    if enabled:
+        click.echo(f"enabled {name}: `sim all` and the background builder build it again")
+    else:
+        click.echo(f"disabled {name}: `sim all`, the background builder and the notebooks' "
+                   f"pickers leave it out; `sim run {name}` still builds it")
+    click.echo(f"  {'removed' if enabled else 'wrote'} "
+               f"{data / 'scenarios' / name / DISABLE_FILE}; commit it to share it")
+
+
+_ENABLE_DOC = """{verb_cap} {what} NAME. A disabled scenario (a mix-in, or a base
+    that only exists to be built on) is never built by `sim all` or the
+    background builder, and the notebooks' pickers leave it out; it still
+    works as a parent or mix-in, and `sim run NAME` still builds it. It is
+    a {file} file in the scenario's folder: not inherited, and not part of
+    any scenario's data, so changing it rebuilds nothing.
+
+    Without NAME, it is asked for."""
+
+
+def _enable_command(group: click.Group, what: str, *, enabled: bool) -> None:
+    verb = "enable" if enabled else "disable"
+
+    @group.command(verb, help=_ENABLE_DOC.format(
+        verb_cap=verb.capitalize(), what=what, file=DISABLE_FILE))
+    @click.argument("name", required=False,
+                    type=completion.ENSEMBLE if what == "ensemble" else completion.SCENARIO)
+    @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+                  default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+    def command(name: str | None, data_dir: Path | None) -> None:
+        _set_enabled(name, data_dir, enabled=enabled, what=what)
+
+
+for _group, _what in ((scenario_group_command, "scenario"), (ensemble_group_command, "ensemble")):
+    _enable_command(_group, _what, enabled=True)
+    _enable_command(_group, _what, enabled=False)
 
 
 # ---------- setup listings (#185) ----------

@@ -340,3 +340,15 @@ def test_a_reader_waits_for_a_queued_build(
         "waiting for the background build of base (Ctrl-C to stop waiting)...",
         "the background build of base is done",
     ]
+
+
+def test_the_builder_never_queues_a_disabled_scenario(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.loader import DISABLE_FILE
+
+    (daemon.data_dir / "scenarios" / "base" / DISABLE_FILE).write_text("")
+    daemon.scan()
+    assert "base" not in daemon.queue and daemon.queue
+    # Nor does a reader wait for it: the builder would never build it.
+    assert not builder._pending(daemon.paths, daemon.data_dir, "base")

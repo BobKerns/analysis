@@ -65,15 +65,19 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 __all__ = [
     "BATCH_MANIFEST_FILENAME",
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
-    "DEFAULT_SCENARIO_NAME",
+    "DEFAULT_SCENARIO_NAME", "DISABLE_FILE",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
     "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
-    "read_current_scenario", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
+    "read_current_scenario", "read_disabled_scenarios", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
-    "write_current_scenario",
+    "set_scenario_enabled", "write_current_scenario",
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
+# In a scenario's folder: the scenario isn't built unless named (#300), as
+# for a mix-in or a base that only exists to be built on. Not inherited, and
+# left out of every data tree (provenance), so it changes no scenario's data.
+DISABLE_FILE = ".disable"
 DEFAULT_SCENARIO_NAME = "base"
 DEFAULT_STATE_DIR = Path("state")
 DEFAULT_INTENT_DIR = Path("intent")
@@ -177,6 +181,27 @@ def read_current_scenario(data_dir: Path | str) -> str | None:
 def write_current_scenario(data_dir: Path | str, scenario: str) -> None:
     """Record ``scenario`` as the data repo's current scenario."""
     current_scenario_path(data_dir).write_text(f"{scenario}\n", encoding="utf-8")
+
+
+def read_disabled_scenarios(data_dir: Path | str) -> frozenset[str]:
+    """The data repo's disabled scenarios (a ``.disable`` file in the
+    folder): never built by `sim all` or the background builder, and left
+    out of the notebooks' pickers. Building one by name still works."""
+    scenarios = Path(data_dir) / "scenarios"
+    if not scenarios.is_dir():
+        return frozenset()
+    return frozenset(p.parent.name for p in scenarios.glob(f"*/{DISABLE_FILE}"))
+
+
+def set_scenario_enabled(data_dir: Path | str, name: str, enabled: bool) -> None:
+    """Enable scenario ``name`` (remove its ``.disable``) or disable it."""
+    path = Path(data_dir) / "scenarios" / name / DISABLE_FILE
+    if enabled:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(
+            "Not built unless named: `sim scenario enable` builds it again (#300).\n",
+            encoding="utf-8")
 
 
 def find_state_dir(data_dir: Path | str | None, default: Path | str) -> Path:

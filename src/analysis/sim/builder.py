@@ -52,6 +52,7 @@ from analysis.sim.loader import (
     find_state_dir,
     list_scenario_names,
     read_current_scenario,
+    read_disabled_scenarios,
 )
 from analysis.sim.locks import BUILDER_CHILD_ENV, BUILDER_SWITCH_ENV, is_building, run_name_key
 
@@ -369,7 +370,10 @@ class _Daemon:
             return
         code = code_tree()
         queue, waiting = [], {}
+        disabled = read_disabled_scenarios(self.data_dir)
         for name in list_scenario_names(self.data_dir):
+            if name in disabled:  # only built when named
+                continue
             data = data_stamps(self.data_dir, name)
             if data.dirty:
                 waiting[name] = "data dirty"
@@ -381,7 +385,9 @@ class _Daemon:
                 queue.append(name)
         self.waiting = waiting
         if self.build is not None:
-            if self.build.key != self.key(self.build.scenario, trees):
+            if self.build.scenario in disabled:
+                self.cancel(f"{self.build.scenario}: disabled")
+            elif self.build.key != self.key(self.build.scenario, trees):
                 self.cancel(f"{self.build.scenario}: its inputs changed")
             if self.build is not None and self.build.scenario in queue:
                 queue.remove(self.build.scenario)
@@ -643,6 +649,8 @@ def _pending(paths: BuilderPaths, data_dir: Path, scenario: str) -> bool:
     trees, _reason = main_check(config_branch(config), Path(code) if code else None)
     if trees is None or scenario not in list_scenario_names(data_dir):
         return False
+    if scenario in read_disabled_scenarios(data_dir):
+        return False  # the builder never builds it, so nothing to wait for
     data = data_stamps(data_dir, scenario)
     if data.dirty:
         return False

@@ -27,7 +27,7 @@ from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
 from analysis.sim import sensitivity
 from analysis.sim.ensemble import EnsembleError, read_batch_manifest
-from analysis.sim.loader import batch_mode
+from analysis.sim.loader import batch_mode, read_disabled_scenarios
 from analysis.sim.notebook_ui.pickers import (
     AttributionPicker,
     DeltaScalePicker,
@@ -35,6 +35,7 @@ from analysis.sim.notebook_ui.pickers import (
     HeatmapValuePicker,
     ParameterPicker,
     ReportYearPicker,
+    find_data_dir,
     find_runs_dir,
 )
 from analysis.sim.plotting import FRAME_ALPHA
@@ -58,16 +59,19 @@ _SWING_CMAP = LinearSegmentedColormap.from_list("swing", [LOSS, NEUTRAL, GAIN])
 _MAX_KEYS = len(CATEGORICAL) - 1  # the last slot is "other"
 
 
-def list_sensitivity_recipes(runs_dir: Path) -> list[str]:
-    """Recipes with at least one generated batch of either mode. Listing
-    never waits for a background build (#300); opening a batch does."""
+def list_sensitivity_recipes(runs_dir: Path, data_dir: Path | None = None) -> list[str]:
+    """Recipes with at least one generated batch of either mode; given
+    ``data_dir``, less its disabled scenarios (#300). Listing never waits
+    for a background build (#300); opening a batch does."""
     from analysis.sim.ensemble import latest_ensemble_batch
 
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
         return []
+    disabled = read_disabled_scenarios(data_dir) if data_dir else frozenset()
     return sorted(p.name for p in runs_dir.iterdir()
-                  if p.is_dir() and latest_ensemble_batch(p, wait=False) is not None)
+                  if p.is_dir() and p.name not in disabled
+                  and latest_ensemble_batch(p, wait=False) is not None)
 
 
 def list_batches(recipe_dir: Path) -> list[tuple[str, Path]]:
@@ -459,7 +463,8 @@ def sensitivity_widget(*,
     the OAT views for a sensitivity batch, the correlation views for a Monte
     Carlo one."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipe = widgets.Dropdown(options=list_sensitivity_recipes(runs_dir), description="Recipe:")
+    recipe = widgets.Dropdown(options=list_sensitivity_recipes(runs_dir, find_data_dir(data_dir)),
+                              description="Recipe:")
     batch = widgets.Dropdown(options=[], description="Batch:", layout=widgets.Layout(width="max-content"))
     dollar_picker = dollar_mode or DollarModePicker(DollarMode.CPI_CONSTANT)
     scale_picker = DeltaScalePicker()
