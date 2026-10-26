@@ -356,3 +356,8 @@ def staged_edit(
             raise EditRejected(issues, scenario=name, own=own, dependents=dependents)
         _check_unchanged(real, baseline, [*changed, *removed])
         edit.written = _commit(real, stage, changed, removed)
+        # A background build of an edited scenario, or of one built on it, is
+        # stale now: have the builder look again, which cancels it (#309).
+        from analysis.sim.builder import notify
+
+        notify(real, start=False)

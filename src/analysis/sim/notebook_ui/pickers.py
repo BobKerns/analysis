@@ -35,7 +35,7 @@ from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.ensemble import latest_ensemble_batch, member_run_statuses
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
 from analysis.sim.loader import (
-    ScenarioRef, list_scenario_names, read_disabled_scenarios, resolve_scenario_name,
+    PendingRun, ScenarioRef, list_scenario_names, read_disabled_scenarios, resolve_scenario_name,
 )
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.readme import description_view
@@ -482,7 +482,7 @@ def scenario_picker(
         container.member = int(member_name.split("_", maxsplit=1)[1])
         # The panel and metadata describe the member actually shown, not
         # the member 0 that resolve_scenario_name picked.
-        container.scenario_ref = replace(ref, run_path=run_path)
+        container.scenario_ref = replace(ref, run=PendingRun(ref.runs_dir, ref.name, run_path))
         if old_run is not None:
             old_run.close()
         _redraw()
