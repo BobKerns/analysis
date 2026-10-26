@@ -170,6 +170,7 @@ recategorize
 recomputable
 reconstructable
 reentrancy
+reflog
 relativedelta
 relevel
 relevels

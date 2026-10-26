@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 import time
 from collections.abc import Callable, Generator
@@ -90,18 +91,43 @@ def test_a_pair_must_name_each_other(pair: tuple[Path, Path], tmp_path: Path) ->
     assert builder.pair_problems(code, data_dir) == [f"{data_dir / '.analysis'} doesn't name {code}"]
 
 
-def test_install_records_the_pair_and_keeps_existing_hooks(pair: tuple[Path, Path]) -> None:
+def test_install_records_the_pair_and_chains_existing_hooks(
+    pair: tuple[Path, Path], tmp_path: Path,
+) -> None:
     _code, data_dir = pair
     hooks = data_dir.parent / ".git" / "hooks"
     hooks.mkdir(exist_ok=True)
-    (hooks / "post-merge").write_text("#!/bin/sh\necho mine\n")
+    seen = tmp_path / "seen"
+    # An early exit: anything appended after it would never run.
+    mine = f'#!/bin/sh\necho "$1" > {seen}\nexit 3\necho never\n'
+    (hooks / "post-merge").write_text(mine)
+    (hooks / "post-merge").chmod(0o755)
     builder.install(data_dir)
     assert builder.read_config(BuilderPaths.for_data(data_dir)) is not None
     assert builder.HOOK_MARKER in (hooks / "post-commit").read_text()
-    merged = (hooks / "post-merge").read_text()
-    assert merged.startswith("#!/bin/sh\necho mine\n") and builder.HOOK_MARKER in merged
-    builder.install(data_dir)  # again: nothing added twice
-    assert (hooks / "post-merge").read_text() == merged
+    assert builder.HOOK_MARKER in (hooks / "post-merge").read_text()
+    assert (hooks / "post-merge.before-builder").read_text() == mine
+    builder.install(data_dir)  # again: nothing moved twice
+    assert (hooks / "post-merge.before-builder").read_text() == mine
+    ran = subprocess.run([str(hooks / "post-merge"), "1"], cwd=data_dir, check=False)
+    assert ran.returncode == 3 and seen.read_text() == "1\n"  # theirs ran, status kept
+
+
+def test_a_reader_asks_again_once_a_repo_changes(
+    pair: tuple[Path, Path], builder_on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _code, data_dir = pair
+    builder.install(data_dir)
+    asked: list[str] = []
+    monkeypatch.setattr(builder, "_pending", lambda _p, _d, name: asked.append(name) or False)
+    runs = BuilderPaths.for_data(data_dir).runs_dir
+    builder.await_fresh(runs, "base")
+    builder.await_fresh(runs, "base")
+    assert asked == ["base"]  # nothing changed in between
+    time.sleep(0.01)
+    _commit(git.Repo(data_dir.parent), {"sim/notes.md": "x\n"}, "a data commit")
+    builder.await_fresh(runs, "base")
+    assert asked == ["base", "base"]
 
 
 def test_install_records_the_branch_every_reader_uses(pair: tuple[Path, Path]) -> None:

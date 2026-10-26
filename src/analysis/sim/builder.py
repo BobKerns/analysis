@@ -53,7 +53,7 @@ from analysis.sim.loader import (
     list_scenario_names,
     read_current_scenario,
 )
-from analysis.sim.locks import BUILDER_CHILD_ENV, BUILDER_SWITCH_ENV
+from analysis.sim.locks import BUILDER_CHILD_ENV, BUILDER_SWITCH_ENV, run_name_key
 
 __all__ = [
     "BuilderPaths",
@@ -73,8 +73,6 @@ DEFAULT_BRANCH = "main"
 IDLE_GRACE_SECONDS = 120.0
 # How often the daemon looks for requests and its build finishing.
 TICK_SECONDS = 0.5
-# A reader that just found a scenario current doesn't ask again this soon.
-_RECHECK_SECONDS = 5.0
 # Hook stubs this module writes into the data repo carry this line.
 HOOK_MARKER = "# analysis sim builder hook (#300)"
 HOOK_NAMES = ("post-commit", "post-checkout", "post-merge", "post-rewrite")
@@ -555,7 +553,36 @@ def run_daemon(data_dir: Path, echo: Callable[[str], None] = print) -> int:
 
 # -- readers wait ----------------------------------------------------------------
 
-_checked: dict[tuple[Path, str], float] = {}
+# What a reader last found, by (state dir, scenario): the signature it was
+# found under (see _signature), so it is asked again only once something
+# that could change the answer has.
+_checked: dict[tuple[Path, str], tuple[int, ...]] = {}
+_git_dirs: dict[Path, list[Path]] = {}
+
+
+def _signature(paths: BuilderPaths, config: dict[str, Any]) -> tuple[int, ...]:
+    """Changes whenever the answer to "is a build pending?" could: the
+    daemon's status, and each repo's reflog (every commit, checkout, merge,
+    reset or rebase in that worktree appends to it) and index (staging)."""
+    dirs = _git_dirs.get(paths.state_dir)
+    if dirs is None:
+        dirs = []
+        for top in (config.get("code_dir"), Path(config["data_dir"]).parent):
+            if not top:
+                continue
+            out = subprocess.run(["git", "-C", str(top), "rev-parse", "--absolute-git-dir"],
+                                 capture_output=True, text=True, check=False).stdout.strip()
+            if out:
+                dirs.append(Path(out))
+        _git_dirs[paths.state_dir] = dirs
+    files = [paths.status, *(d / "logs" / "HEAD" for d in dirs), *(d / "index" for d in dirs)]
+    out = []
+    for f in files:
+        try:
+            out.append(f.stat().st_mtime_ns)
+        except OSError:
+            out.append(0)
+    return tuple(out)
 
 
 def await_fresh(
@@ -572,12 +599,13 @@ def await_fresh(
     if config is None or paths.runs_dir != Path(runs_dir).resolve():
         return
     key = (paths.state_dir, scenario)
-    if time.monotonic() - _checked.get(key, -_RECHECK_SECONDS) < _RECHECK_SECONDS:
+    signature = _signature(paths, config)
+    if _checked.get(key) == signature:
         return
     echo = echo or (lambda text: print(text, file=sys.stderr))
     data_dir = Path(config["data_dir"])
     if not _pending(paths, data_dir, scenario):
-        _checked[key] = time.monotonic()
+        _checked[key] = signature
         return
     made = _request(paths, "first", scenario)
     if not daemon_alive(paths):
@@ -586,7 +614,6 @@ def await_fresh(
         _wait(paths, scenario, made, echo)
     except KeyboardInterrupt:
         echo(f"gave up waiting for {scenario}; opening its latest run, which may be out of date")
-    _checked[key] = time.monotonic()
 
 
 def _pending(paths: BuilderPaths, data_dir: Path, scenario: str) -> bool:
@@ -649,7 +676,8 @@ def _progress(paths: BuilderPaths, scenario: str, status: dict[str, Any]) -> str
         building = current.get("scenario")
         return f"queued behind {building}" + (f" and {ahead} more" if ahead else "") \
             if building else "queued"
-    batches = sorted(p for p in (paths.runs_dir / scenario).glob("*") if p.is_dir())
+    batches = sorted((p for p in (paths.runs_dir / scenario).glob("*") if p.is_dir()),
+                     key=lambda p: run_name_key(p.name))
     if batches and batches[-1].stat().st_mtime >= current.get("started", 0) - 1:
         done = sum(1 for _ in batches[-1].glob("member_*.sqlite3"))
         return f"building, {done} member run(s) so far"
@@ -669,16 +697,21 @@ def _data_hooks_dir(data_repo: Path) -> Path:
     return path if path.is_absolute() else (data_repo / path).resolve()
 
 
+CHAINED_SUFFIX = ".before-builder"
 DATA_HOOK = f"""#!/bin/sh
 {HOOK_MARKER}
-# Tells this data worktree's paired code worktree (named in sim/.analysis)
-# to look for scenarios to rebuild. Never blocks or fails the git command.
-top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
-[ -f "$top/state/builder/config.json" ] || exit 0
-code="$(cat "$top/sim/.analysis" 2>/dev/null)" || exit 0
-[ -x "$code/.venv/bin/sim" ] || exit 0
+# Runs the hook this one displaced ($0{CHAINED_SUFFIX}), if any, with its
+# arguments and input, and exits with its status. Then tells this data
+# worktree's paired code worktree (named in sim/.analysis) to look for
+# scenarios to rebuild, without blocking or failing the git command.
+status=0
+if [ -x "$0{CHAINED_SUFFIX}" ]; then "$0{CHAINED_SUFFIX}" "$@"; status=$?; fi
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit $status
+[ -f "$top/state/builder/config.json" ] || exit $status
+code="$(cat "$top/sim/.analysis" 2>/dev/null)" || exit $status
+[ -x "$code/.venv/bin/sim" ] || exit $status
 "$code/.venv/bin/sim" builder notify --quiet --data-dir "$top/sim" >/dev/null 2>&1 &
-exit 0
+exit $status
 """
 
 
@@ -705,16 +738,19 @@ def install(data_dir: Path, branch: str | None = None) -> list[str]:
     for name in HOOK_NAMES:
         hook = hooks / name
         text = hook.read_text(errors="replace") if hook.exists() else None
-        if text is None or text.split("\n")[1:2] == [HOOK_MARKER]:
-            hook.write_text(DATA_HOOK)  # ours, or none: (re)write it
-            hook.chmod(0o755)
-            done.append(f"installed {hook}")
-        elif HOOK_MARKER not in text:
-            # Someone else's hook: run ours after it, in a subshell so its
-            # exits don't end theirs, rather than replace it.
-            body = DATA_HOOK.split("\n", 1)[1]
-            hook.write_text(f"{text.rstrip(chr(10))}\n\n(\n{body})\n")
-            done.append(f"added the builder to {hook}")
+        if text is not None and text.split("\n")[1:2] != [HOOK_MARKER]:
+            # Someone else's hook, in any language: ours runs it first, under
+            # another name, rather than editing it (an early `exit` in it
+            # would skip anything appended).
+            chained = hook.with_name(hook.name + CHAINED_SUFFIX)
+            if chained.exists():
+                done.append(f"left {hook} alone: {chained.name} is taken")
+                continue
+            hook.rename(chained)
+            done.append(f"moved {hook.name} to {chained.name}; the builder's hook runs it first")
+        hook.write_text(DATA_HOOK)  # ours, or none: (re)write it
+        hook.chmod(0o755)
+        done.append(f"installed {hook}")
     return done
 
 

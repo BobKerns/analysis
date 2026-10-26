@@ -26,6 +26,7 @@ from pathlib import Path
 from git import BadName, Repo
 
 from analysis.sim.loader import latest_ensemble_batch, latest_run_path
+from analysis.sim.locks import run_name_key
 from analysis.sim.provenance import _open_repo, data_stamps
 
 # The code a run's numbers depend on, relative to the code repo's root.
@@ -77,8 +78,10 @@ def _latest(runs_dir: Path, scenario: str) -> tuple[Path, list[Path]] | None:
     # Never waits on the background builder (#300), which asks this itself.
     run = latest_run_path(runs_dir, scenario, wait=False)
     batch = latest_ensemble_batch(runs_dir / scenario, mode="monte_carlo", wait=False)
-    # Both names start with the same UTC timestamp format.
-    if batch is not None and (run is None or batch.name >= run.name.split("_", 1)[0]):
+    # Both names start with `<stamp>[-N]`, ordered by locks.run_name_key.
+    if batch is not None and (
+        run is None or run_name_key(batch.name)[:2] >= run_name_key(run.name)[:2]
+    ):
         return batch, sorted(batch.glob("member_*.sqlite3"))
     if run is not None:
         return run, [run]

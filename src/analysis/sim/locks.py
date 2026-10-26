@@ -45,8 +45,8 @@ RUN_STAMP_FORMAT = "%Y-%m-%dT%H%M%SZ"
 BUILDER_CHILD_ENV = "ANALYSIS_BUILDER_CHILD"
 # "off" turns the background builder off: no daemon starts, nothing waits.
 BUILDER_SWITCH_ENV = "ANALYSIS_BUILDER"
-# A run file's leading `<stamp>[-N]_`; batches use the same `<stamp>[-N]`.
-_RUN_STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d{6}Z)(?:-(\d+))?_")
+# A run file's leading `<stamp>[-N]_`, or a batch folder's whole `<stamp>[-N]`.
+_RUN_STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d{6}Z)(?:-(\d+))?(?:_|$)")
 # Beside the intent files the lock protects. The dot keeps it apart from
 # any scenario's own folder of member intents.
 LOCK_DIR = ".locks"
@@ -78,10 +78,10 @@ def reserve_run_path(
 
 
 def run_name_key(name: str) -> tuple[str, int, str]:
-    """Sort key putting run files in the order they were made: by stamp,
-    then by the ``-N`` collision suffix. Plain name order gets the suffix
-    wrong (``-`` sorts before ``_``, so ``…Z-2_x`` would come before
-    ``…Z_x``)."""
+    """Sort key putting run files and batch folders in the order they were
+    made: by stamp, then by the ``-N`` collision suffix, as a number. Plain
+    name order gets the suffix wrong (``-`` sorts before ``_``, so ``…Z-2_x``
+    would come before ``…Z_x``, and ``…Z-10`` before ``…Z-9``)."""
     match = _RUN_STAMP.match(name)
     if match is None:
         return (name, 0, name)

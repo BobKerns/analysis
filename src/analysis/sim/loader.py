@@ -281,7 +281,10 @@ def latest_ensemble_batch(
         _await_fresh(recipe_dir.parent, recipe_dir.name)
     if not recipe_dir.is_dir():
         return None
-    batches = sorted(p for p in recipe_dir.iterdir() if is_ensemble_batch(p, mode))
+    from analysis.sim.locks import run_name_key
+
+    batches = sorted((p for p in recipe_dir.iterdir() if is_ensemble_batch(p, mode)),
+                     key=lambda p: run_name_key(p.name))
     return batches[-1] if batches else None
 
 

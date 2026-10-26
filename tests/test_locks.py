@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from analysis.sim import locks
-from analysis.sim.loader import latest_run_path
+from analysis.sim.loader import latest_ensemble_batch, latest_run_path
 from analysis.sim.retention import _run_items
 
 NOW = datetime(2026, 10, 26, 4, 30, 0, tzinfo=UTC)
@@ -33,6 +33,21 @@ def test_latest_run_is_the_last_numbered_one(runs_dir: Path) -> None:
     # Plain name order would put `…Z-2_` before `…Z_`.
     assert latest_run_path(runs_dir, "base") == last
     assert latest_run_path(runs_dir, "base") != sorted(runs_dir.iterdir())[-1]
+
+
+def test_tenth_run_in_a_second_is_newer_than_the_ninth(runs_dir: Path) -> None:
+    for _ in range(10):
+        last = locks.reserve_run_path(runs_dir, "base", "abc1234", now=NOW)
+    assert last.name.startswith("2026-10-26T043000Z-10_")
+    assert latest_run_path(runs_dir, "base") == last
+
+
+def test_batches_order_by_their_number(runs_dir: Path) -> None:
+    for name in ("2026-10-26T043000Z-9", "2026-10-26T043000Z-10"):
+        (runs_dir / "base" / name).mkdir(parents=True)
+        (runs_dir / "base" / name / "batch_manifest.json").write_text("{}")
+    batch = latest_ensemble_batch(runs_dir / "base")
+    assert batch is not None and batch.name == "2026-10-26T043000Z-10"
 
 
 def test_retention_reads_a_numbered_run_name(runs_dir: Path) -> None:
