@@ -307,7 +307,7 @@ class _Build:
     key: list[Any]
     process: subprocess.Popen[bytes]
     started: float
-    wanted: bool = False  # someone was waiting for it when it started
+    wanted: bool = False  # someone is waiting for it: never preempted
 
 
 class _Daemon:
@@ -417,7 +417,11 @@ class _Daemon:
         stopped one is requeued right after it."""
         build = self.build
         wanted = next((n for n in self.first if n in self.queue), None)
-        if build is None or build.wanted or wanted is None:
+        if build is None or wanted is None:
+            return
+        if build.wanted or build.scenario in self.first:  # asked for while building
+            build.wanted = True
+            self.first = [n for n in self.first if n != build.scenario]
             return
         self.cancel(f"{wanted} is wanted now")
         self.resume = [build.scenario, *[n for n in self.resume if n != build.scenario]]
@@ -455,10 +459,22 @@ class _Daemon:
         if build is None or build.process.poll() is None:
             return False
         self.build = None
+        from analysis.sim.freshness import code_tree, unchanged_run
+
         code = build.process.returncode
-        if code == 0:
+        still_stale = code == 0 and unchanged_run(
+            self.data_dir, self.paths.runs_dir, build.scenario, code_tree()) is None
+        if code == 0 and not still_stale:
             self.failed.pop(build.scenario, None)
             self.log(f"built {build.scenario}")
+        elif still_stale:
+            # An ensemble with failed members: `sim load` exits 0, but the
+            # batch is incomplete, so it would be queued again at once.
+            self.failed[build.scenario] = {
+                "key": build.key, "exit": 0, "at": time.time(),
+                "message": f"built, but not every member succeeded; see {self.paths.log}",
+            }
+            self.log(f"{build.scenario} built incomplete (failed members)")
         else:
             self.failed[build.scenario] = {
                 "key": build.key, "exit": code, "at": time.time(),
@@ -573,14 +589,16 @@ def run_daemon(data_dir: Path, echo: Callable[[str], None] = print) -> int:
 # found under (see _signature), so it is asked again only once something
 # that could change the answer has.
 _checked: dict[tuple[Path, str], tuple[int, ...]] = {}
-_git_dirs: dict[Path, list[Path]] = {}
+_git_dirs: dict[tuple[Path, tuple[Any, Any]], list[Path]] = {}
 
 
 def _signature(paths: BuilderPaths, config: dict[str, Any]) -> tuple[int, ...]:
     """Changes whenever the answer to "is a build pending?" could: the
-    daemon's status, and each repo's reflog (every commit, checkout, merge,
-    reset or rebase in that worktree appends to it) and index (staging)."""
-    dirs = _git_dirs.get(paths.state_dir)
+    daemon's status, the pair's config (`install BRANCH`), and each repo's
+    reflog (every commit, checkout, merge, reset or rebase in that worktree
+    appends to it) and index (staging)."""
+    pair = (config.get("code_dir"), config.get("data_dir"))
+    dirs = _git_dirs.get((paths.state_dir, pair))
     if dirs is None:
         dirs = []
         for top in (config.get("code_dir"), Path(config["data_dir"]).parent):
@@ -590,8 +608,8 @@ def _signature(paths: BuilderPaths, config: dict[str, Any]) -> tuple[int, ...]:
                                  capture_output=True, text=True, check=False).stdout.strip()
             if out:
                 dirs.append(Path(out))
-        _git_dirs[paths.state_dir] = dirs
-    files = [paths.status, *(d / "logs" / "HEAD" for d in dirs), *(d / "index" for d in dirs)]
+        _git_dirs[(paths.state_dir, pair)] = dirs
+    files = [paths.status, paths.config, *(d / "logs" / "HEAD" for d in dirs), *(d / "index" for d in dirs)]
     out = []
     for f in files:
         try:
@@ -735,6 +753,10 @@ exit $status
 """
 
 
+def _ours(hook: Path) -> bool:
+    return hook.read_text(errors="replace").split("\n")[1:2] == [HOOK_MARKER]
+
+
 def install(data_dir: Path, branch: str | None = None) -> list[str]:
     """Opt this workspace in: check the pair, record it and the branch its
     code must match (``branch``, else the one recorded before, else main),
@@ -745,6 +767,14 @@ def install(data_dir: Path, branch: str | None = None) -> list[str]:
     problems = pair_problems(code, data_dir)
     if problems:
         raise ValueError("; ".join(problems))
+    hooks = _data_hooks_dir(data_dir.parent)
+    for name in HOOK_NAMES:
+        hook, chained = hooks / name, hooks / (name + CHAINED_SUFFIX)
+        if hook.exists() and chained.exists() and not _ours(hook):
+            # Nowhere to move someone else's hook to: refuse rather than
+            # leave one hook unwatched while the pair reads as installed.
+            raise ValueError(f"{hook} and {chained.name} both exist and neither is the "
+                             f"builder's; merge them into {name}, then install again")
     paths = BuilderPaths.for_data(data_dir)
     branch = branch or config_branch(read_config(paths))
     _write_json(paths.config, {
@@ -753,19 +783,14 @@ def install(data_dir: Path, branch: str | None = None) -> list[str]:
     })
     done = [f"recorded the pair in {paths.config}",
             f"builds only from code matching the local {branch} branch"]
-    hooks = _data_hooks_dir(data_dir.parent)
     hooks.mkdir(parents=True, exist_ok=True)
     for name in HOOK_NAMES:
         hook = hooks / name
-        text = hook.read_text(errors="replace") if hook.exists() else None
-        if text is not None and text.split("\n")[1:2] != [HOOK_MARKER]:
+        if hook.exists() and not _ours(hook):
             # Someone else's hook, in any language: ours runs it first, under
             # another name, rather than editing it (an early `exit` in it
             # would skip anything appended).
             chained = hook.with_name(hook.name + CHAINED_SUFFIX)
-            if chained.exists():
-                done.append(f"left {hook} alone: {chained.name} is taken")
-                continue
             hook.rename(chained)
             done.append(f"moved {hook.name} to {chained.name}; the builder's hook runs it first")
         hook.write_text(DATA_HOOK)  # ours, or none: (re)write it

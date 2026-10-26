@@ -113,6 +113,18 @@ def test_install_records_the_pair_and_chains_existing_hooks(
     assert ran.returncode == 3 and seen.read_text() == "1\n"  # theirs ran, status kept
 
 
+def test_install_refuses_when_a_hook_has_nowhere_to_move(pair: tuple[Path, Path]) -> None:
+    """Rather than leave that hook unwatched while the pair reads as installed."""
+    _code, data_dir = pair
+    hooks = data_dir.parent / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "post-merge").write_text("#!/bin/sh\necho one\n")
+    (hooks / "post-merge.before-builder").write_text("#!/bin/sh\necho two\n")
+    with pytest.raises(ValueError, match="post-merge.before-builder both exist"):
+        builder.install(data_dir)
+    assert builder.read_config(BuilderPaths.for_data(data_dir)) is None
+
+
 def test_a_reader_asks_again_once_a_repo_changes(
     pair: tuple[Path, Path], builder_on: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -128,6 +140,10 @@ def test_a_reader_asks_again_once_a_repo_changes(
     _commit(git.Repo(data_dir.parent), {"sim/notes.md": "x\n"}, "a data commit")
     builder.await_fresh(runs, "base")
     assert asked == ["base", "base"]
+    time.sleep(0.01)
+    builder.install(data_dir, "testing")  # another branch's code: ask again
+    builder.await_fresh(runs, "base")
+    assert asked == ["base", "base", "base"]
 
 
 def test_install_records_the_branch_every_reader_uses(pair: tuple[Path, Path]) -> None:
@@ -352,3 +368,32 @@ def test_the_builder_never_queues_a_disabled_scenario(
     assert "base" not in daemon.queue and daemon.queue
     # Nor does a reader wait for it: the builder would never build it.
     assert not builder._pending(daemon.paths, daemon.data_dir, "base")
+
+
+def test_a_build_with_failed_members_waits_for_its_inputs_to_change(
+    daemon: builder._Daemon,
+) -> None:
+    """`sim load` exits 0 when ensemble members fail; the batch stays stale
+    (freshness says so), and building it again at once would loop."""
+    daemon.scan()
+    first = daemon.queue[0]
+    daemon.start_next(("t1",))
+    _wait_until_done(daemon)  # exit 0, but unchanged_run is still None
+    assert daemon.failed[first]["exit"] == 0
+    daemon.scan()
+    assert first not in daemon.queue
+
+
+def test_a_build_a_reader_asks_for_while_it_runs_is_not_preempted(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None and not running.wanted
+    daemon.first = [running.scenario]  # a reader waits on it
+    daemon.scan()
+    daemon.first.append(daemon.queue[0])  # then another, on something else
+    daemon.preempt()
+    assert daemon.build is running and running.wanted

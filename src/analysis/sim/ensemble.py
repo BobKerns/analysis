@@ -1276,8 +1276,10 @@ def member_run_statuses(batch_dir: Path) -> dict[str, str]:
         con = connect_sim_file(p)
         try:
             row = con.execute("SELECT status FROM simulation_run").fetchone()
-        except sqlite3.OperationalError:  # no such table: just created
-            row = ("running",)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            row = ("running",)  # just created; its run hasn't written its tables
         finally:
             con.close()
         statuses[p.stem] = row[0] if row else "unknown"

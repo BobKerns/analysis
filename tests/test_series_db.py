@@ -176,6 +176,16 @@ def test_controls_read_the_last_finished_batch_while_one_builds(
     assert accounts and "child" in lots and years
 
 
+def test_member_statuses_still_raise_on_a_damaged_member(tmp_path: Path) -> None:
+    """Only a member whose tables aren't written yet reads as running."""
+    from analysis.sim.ensemble import member_run_statuses
+
+    with sqlite3.connect(tmp_path / "member_0000.sqlite3") as con:
+        con.execute("CREATE TABLE simulation_run (id INTEGER)")  # no status column
+    with pytest.raises(sqlite3.OperationalError, match="no such column"):
+        member_run_statuses(tmp_path)
+
+
 def test_a_batch_with_no_succeeded_member_gets_no_store(tmp_path: Path) -> None:
     """An empty store would be trusted, and read as an ensemble of no futures."""
     from analysis.sim.cli import _write_series_db
