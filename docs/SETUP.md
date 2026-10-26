@@ -58,7 +58,8 @@ With a data repo linked, it then turns on background scenario builds
 commits, checkouts, merges and rebases in either repo rebuild, in the
 background, every scenario whose results could have changed, and opening a
 scenario's run waits for a pending build of it. It builds only while the code
-is committed and matches your local `main`. Setup skips this under CI or an
+is committed and matches your local `main` (or the branch
+`sim builder install BRANCH` names). Setup skips this under CI or an
 agent (`CI`, `CLAUDECODE`, `CLAUDE_CODE_REMOTE` or `AI_AGENT` set) or with
 `ANALYSIS_NO_BUILDER=1`; `sim builder install` turns it on later, and
 `sim builder uninstall` off. `sim builder status` says what it's doing.

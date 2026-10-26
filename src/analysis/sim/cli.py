@@ -12263,7 +12263,8 @@ def builder_group() -> None:
     either repo start or poke a background builder that rebuilds every
     scenario whose results could have changed. Opening a scenario's run waits
     for a pending build of it. It builds only when the code is committed and
-    matches the local main branch. ANALYSIS_BUILDER=off turns it off.
+    matches the workspace's local branch (main, unless ``install BRANCH``
+    named another). ANALYSIS_BUILDER=off turns it off.
     """
 
 
@@ -12278,14 +12279,21 @@ _BUILDER_DATA_DIR = click.option(
 
 
 @builder_group.command(name="install")
+@click.argument("branch", required=False)
 @_BUILDER_DATA_DIR
-def builder_install(data_dir: Path | None) -> None:
+def builder_install(branch: str | None, data_dir: Path | None) -> None:
     """Opt this workspace pair in: check the code worktree and the data repo
-    name each other, record the pair, and install the data repo's hooks."""
+    name each other, record the pair, and install the data repo's hooks.
+
+    BRANCH is the local branch whose code it builds from (default: the one
+    recorded before, else main). Every shell, notebook and builder of the
+    workspace reads it from there, so they all agree; run this again to
+    change it.
+    """
     from analysis.sim import builder
 
     try:
-        done = builder.install(_builder_data_dir(data_dir))
+        done = builder.install(_builder_data_dir(data_dir), branch)
     except ValueError as exc:
         raise click.ClickException(f"not a workspace pair: {exc}") from None
     for line in done:
@@ -12368,7 +12376,7 @@ def builder_status(data_dir: Path | None) -> None:
         return
     if builder.switched_off():
         click.echo("background builds are off here (ANALYSIS_BUILDER=off)")
-    trees, reason = builder.main_check()
+    trees, reason = builder.main_check(builder.config_branch(builder.read_config(paths)))
     if trees is None:
         click.echo(f"disabled: {reason}")
     status = builder.read_status(paths)

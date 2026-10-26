@@ -10,9 +10,12 @@ pending build of it (:func:`await_fresh`), moving it to the front.
 Rules (Bob, #300):
 
 - It builds only when the code paths (``freshness.CODE_PATHS``) are committed
-  and match the local ``main`` branch. Otherwise it is disabled: it builds
-  nothing and nobody waits. (Local ``main``, not ``origin/main``, so a
-  background fetch, or choosing not to pull, changes nothing.)
+  and match the workspace's branch: local ``main`` unless
+  ``sim builder install BRANCH`` named another. Otherwise it is disabled: it
+  builds nothing and nobody waits. (A local branch, not ``origin/main``, so a
+  background fetch, or choosing not to pull, changes nothing. Recorded in
+  ``config.json``, not an environment variable, so every shell, notebook and
+  daemon of the workspace agrees.)
 - A build whose inputs changed is cancelled and requeued; a change to the
   code restarts the daemon, so it never builds with code it imported earlier.
 - A scenario that failed isn't retried until its inputs change.
@@ -64,9 +67,8 @@ __all__ = [
     "switched_off",
 ]
 
-# The branch the code must match; "main" unless set (a mainline named
-# otherwise, or a test).
-MAIN_BRANCH_ENV = "ANALYSIS_BUILDER_MAIN"
+# The branch the code must match unless `sim builder install BRANCH` names another.
+DEFAULT_BRANCH = "main"
 # How long the daemon lingers with an empty queue before it exits.
 IDLE_GRACE_SECONDS = 120.0
 # How often the daemon looks for requests and its build finishing.
@@ -203,9 +205,17 @@ def pair_problems(code: Path | None, data_dir: Path) -> list[str]:
     return problems
 
 
-def main_check(repo_dir: Path | None = None) -> tuple[tuple[str, ...] | None, str | None]:
+def config_branch(config: dict[str, Any] | None) -> str:
+    """The branch a workspace's code must match (``install``'s BRANCH)."""
+    branch = (config or {}).get("branch")
+    return branch if isinstance(branch, str) and branch else DEFAULT_BRANCH
+
+
+def main_check(
+    branch: str = DEFAULT_BRANCH, repo_dir: Path | None = None,
+) -> tuple[tuple[str, ...] | None, str | None]:
     """The code trees to build with, or None and why the builder is off:
-    the code paths must be committed and match the local ``main``."""
+    the code paths must be committed and match the local ``branch``."""
     from analysis.sim.freshness import CODE_PATHS, _trees, code_tree, code_tree_of
     from analysis.sim.provenance import _open_repo
 
@@ -215,7 +225,6 @@ def main_check(repo_dir: Path | None = None) -> tuple[tuple[str, ...] | None, st
         return None, "the code isn't in a git repo"
     if code.trees is None:
         return None, f"uncommitted code in {paths}"
-    branch = os.environ.get(MAIN_BRANCH_ENV) or "main"
     main = _trees(code.repo, branch)
     if main is None:
         return None, f"no local {branch} branch"
@@ -338,7 +347,8 @@ class _Daemon:
         from analysis.sim.freshness import code_tree, unchanged_run
         from analysis.sim.provenance import data_stamps
 
-        trees, reason = main_check()
+        # Read each time: `sim builder install BRANCH` may have changed it.
+        trees, reason = main_check(config_branch(read_config(self.paths)))
         if trees is not None and self.started_trees is None:
             self.started_trees = trees
         if trees is not None and trees != self.started_trees:
@@ -570,7 +580,7 @@ def _pending(paths: BuilderPaths, data_dir: Path, scenario: str) -> bool:
     from analysis.sim.freshness import code_tree, unchanged_run
     from analysis.sim.provenance import data_stamps
 
-    trees, _reason = main_check()
+    trees, _reason = main_check(config_branch(read_config(paths)))
     if trees is None or scenario not in list_scenario_names(data_dir):
         return False
     data = data_stamps(data_dir, scenario)
@@ -651,19 +661,24 @@ exit 0
 """
 
 
-def install(data_dir: Path) -> list[str]:
-    """Opt this workspace in: check the pair, record it, install the data
-    repo's hooks (the code repo's are in ``.githooks/``). Returns what it did."""
+def install(data_dir: Path, branch: str | None = None) -> list[str]:
+    """Opt this workspace in: check the pair, record it and the branch its
+    code must match (``branch``, else the one recorded before, else main),
+    install the data repo's hooks (the code repo's are in ``.githooks/``).
+    Returns what it did."""
     data_dir = data_dir.resolve()
     code = code_dir()
     problems = pair_problems(code, data_dir)
     if problems:
         raise ValueError("; ".join(problems))
     paths = BuilderPaths.for_data(data_dir)
+    branch = branch or config_branch(read_config(paths))
     _write_json(paths.config, {
-        "data_dir": str(data_dir), "code_dir": str(code), "installed": time.time(),
+        "data_dir": str(data_dir), "code_dir": str(code), "branch": branch,
+        "installed": time.time(),
     })
-    done = [f"recorded the pair in {paths.config}"]
+    done = [f"recorded the pair in {paths.config}",
+            f"builds only from code matching the local {branch} branch"]
     hooks = _data_hooks_dir(data_dir.parent)
     hooks.mkdir(parents=True, exist_ok=True)
     for name in HOOK_NAMES:

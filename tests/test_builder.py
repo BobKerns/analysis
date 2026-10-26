@@ -41,7 +41,6 @@ def code_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> git.Repo:
 @pytest.fixture
 def builder_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANALYSIS_BUILDER", raising=False)
-    monkeypatch.delenv(builder.MAIN_BRANCH_ENV, raising=False)
 
 
 def test_builds_only_from_committed_code_matching_main(
@@ -56,6 +55,8 @@ def test_builds_only_from_committed_code_matching_main(
 
     _commit(code_repo, {"src/engine.py": "v2\n"}, "code")
     assert builder.main_check() == (None, "code (src, templates, pyproject.toml, uv.lock) differs from main")
+    assert builder.main_check("feature")[0] is not None  # the workspace's branch
+    assert builder.main_check("nope") == (None, "no local nope branch")
 
     code_repo.git.checkout("main")
     (Path(str(code_repo.working_tree_dir)) / "src" / "engine.py").write_text("dirty\n")
@@ -103,6 +104,16 @@ def test_install_records_the_pair_and_keeps_existing_hooks(pair: tuple[Path, Pat
     assert (hooks / "post-merge").read_text() == merged
 
 
+def test_install_records_the_branch_every_reader_uses(pair: tuple[Path, Path]) -> None:
+    _code, data_dir = pair
+    paths = BuilderPaths.for_data(data_dir)
+    builder.install(data_dir)
+    assert builder.config_branch(builder.read_config(paths)) == "main"
+    builder.install(data_dir, "testing")
+    builder.install(data_dir)  # reinstalling (setup.sh) keeps it
+    assert builder.config_branch(builder.read_config(paths)) == "testing"
+
+
 def test_notify_starts_the_builder_only_where_installed(
     pair: tuple[Path, Path], builder_on: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -125,7 +136,7 @@ def daemon(
     """A daemon over the pair, its code on main, every scenario stale, its
     builds a stand-in command (FAKE_BUILD: sleep seconds and exit code)."""
     _code, data_dir = pair
-    monkeypatch.setattr(builder, "main_check", lambda: (("t1",), None))
+    monkeypatch.setattr(builder, "main_check", lambda *_a: (("t1",), None))
     monkeypatch.setattr(freshness, "unchanged_run", lambda *_a: None)
     monkeypatch.setattr(freshness, "code_tree", lambda: freshness.CodeTree(None, ("t1",)))
     monkeypatch.setenv("FAKE_BUILD", "0 0")
@@ -187,10 +198,21 @@ def test_a_build_whose_inputs_changed_is_cancelled(
     assert build.scenario in daemon.queue  # requeued
 
 
+def test_the_daemon_checks_the_installed_branch(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder.install(daemon.data_dir, "testing")
+    seen: list[str] = []
+    monkeypatch.setattr(builder, "main_check",
+                        lambda branch, *_a: seen.append(branch) or (("t1",), None))
+    daemon.scan()
+    assert seen == ["testing"]
+
+
 def test_code_off_main_disables_the_builder(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(builder, "main_check", lambda: (None, "code differs from main"))
+    monkeypatch.setattr(builder, "main_check", lambda *_a: (None, "code differs from main"))
     daemon.scan()
     assert (daemon.state, daemon.queue, daemon.reason) == ("disabled", [], "code differs from main")
 
@@ -198,7 +220,7 @@ def test_code_off_main_disables_the_builder(
 def test_a_code_change_restarts_the_builder(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(builder, "main_check", lambda: (("t2",), None))
+    monkeypatch.setattr(builder, "main_check", lambda *_a: (("t2",), None))
     daemon.scan()
     assert daemon.restart
 
