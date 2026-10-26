@@ -86,11 +86,12 @@ runs:
 pins: []
 """
 
-# `sim run` names: `<stamp>_<scenario>_<data version>.sqlite3` for a single
-# run, `<stamp>[-N]` for a batch folder (cli._reserve_batch). Only names that
+# `sim run` names: `<stamp>[-N]_<scenario>_<data version>.sqlite3` for a
+# single run (locks.reserve_run_path), `<stamp>[-N]` for a batch folder
+# (cli._reserve_batch); -N tells apart runs made in the same second. Only names that
 # match are ever pruned, so anything else a user keeps there is left alone.
 _STAMP = r"\d{4}-\d\d-\d\dT\d{6}Z"
-_RUN_FILE = re.compile(rf"^({_STAMP})_(.+)_[^_]+\.sqlite3$")
+_RUN_FILE = re.compile(rf"^({_STAMP})(?:-(\d+))?_(.+)_[^_]+\.sqlite3$")
 _BATCH_DIR = re.compile(rf"^({_STAMP})(?:-(\d+))?$")
 _DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(minute|hour|day|week)s?\s*$", re.IGNORECASE)
 _SECTIONS = ("intents", "runs", "pins")
@@ -308,7 +309,8 @@ def _run_items(runs_dir: Path) -> Iterable[StateItem]:
             continue  # only what `sim run` wrote here, never what a link reaches
         match = _RUN_FILE.match(path.name)
         if match and path.is_file():
-            yield StateItem(path, "run", match[2], _stamp(match[1]), (path.name, 0))
+            yield StateItem(path, "run", match[3], _stamp(match[1]),
+                            (match[1], int(match[2] or 1)))
         elif path.is_dir():
             yield from _batch_items(path, "batch")
 

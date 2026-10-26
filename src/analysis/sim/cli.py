@@ -69,6 +69,7 @@ from analysis.sim.series_db import (
     pair_members,
     write_series_db,
 )
+from analysis.sim.locks import LockHolder, build_lock, reserve_run_path
 from analysis.sim.ensemble import (
     EnsembleError,
     factor_reach,
@@ -223,9 +224,34 @@ def load(
     resolved = _resolve_data_dir(data_dir)
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved)
     ref = _resolve_scenario(resolved, scenario_name, intent_dir=resolved_intent_dir)
+    with _build_lock(resolved_intent_dir, ref.name):
+        _load_locked(
+            ctx, ref.name, resolved, resolved_intent_dir, data_dir=data_dir,
+            intent_dir=intent_dir, runs_dir=runs_dir, allow_dirty_data=allow_dirty_data,
+            allow_dirty_code=allow_dirty_code, run_by=run_by, run_after_load=run_after_load,
+        )
+
+
+def _build_lock(intent_dir: Path, scenario: str):
+    """``scenario``'s build lock (#300), saying so on stderr when another
+    build of it is in progress and this one has to wait."""
+    def on_wait(holder: LockHolder | None) -> None:
+        by = f" by {holder.describe()}" if holder is not None else ""
+        click.echo(f"waiting for {scenario}: being built{by}", err=True)
+
+    return build_lock(intent_dir, scenario, on_wait=on_wait)
+
+
+def _load_locked(
+    ctx: click.Context, name: str, resolved: Path, resolved_intent_dir: Path, *,
+    data_dir: Path | None, intent_dir: Path | None, runs_dir: Path | None,
+    allow_dirty_data: bool, allow_dirty_code: bool, run_by: str | None,
+    run_after_load: bool,
+) -> None:
+    """``sim load``'s work, under the scenario's build lock."""
     try:
         result = load_scenario(
-            resolved, ref.name, intent_dir=resolved_intent_dir,
+            resolved, name, intent_dir=resolved_intent_dir,
             allow_dirty_data=allow_dirty_data,
         )
     except LoadError as exc:
@@ -238,7 +264,7 @@ def load(
     if not run_after_load:
         _echo_load_warnings(result)  # otherwise `run` reloads and prints them, once
     click.echo(f"loaded {result.intent_path}")
-    click.echo(f"  current scenario: {ref.name}")
+    click.echo(f"  current scenario: {name}")
     for table, n in result.counts.items():
         click.echo(f"  {table}: {n}")
     if not run_after_load:
@@ -248,7 +274,7 @@ def load(
     if run_after_load:
         ctx.invoke(
             run,
-            scenario_name=ref.name,
+            scenario_name=name,
             data_dir=data_dir,
             intent_dir=intent_dir,
             runs_dir=runs_dir,
@@ -514,32 +540,33 @@ def run(
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
-    if resolved_data_dir is not None:
-        try:
-            _echo_load_warnings(load_scenario(
-                resolved_data_dir, scenario_name, intent_dir=resolved_intent_dir,
-                allow_dirty_data=allow_dirty_data,
-            ))
-        except LoadError as exc:
-            for issue in exc.issues:
-                click.echo(f"  error: {issue}", err=True)
-            raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
-        except DataDirtyRefused as exc:
-            click.echo(str(exc), err=True)
-            raise click.ClickException("data dirty; refusing to load") from None
-    elif not intent_path.exists():
-        raise click.ClickException(
-            f"intent file not found: {intent_path}\n"
-            f"  run: analysis sim load {scenario_name}"
-        )
-    resolved_by = run_by or os.environ.get("USER") or "unknown"
     try:
-        _run_loaded(
-            scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
-            run_by=resolved_by, allow_dirty_data=allow_dirty_data,
-            allow_dirty_code=allow_dirty_code, ensemble_size=ensemble_size,
-            sensitivity=sensitivity, quantiles=quantiles, only=only_names, jobs=jobs,
-        )
+        with _build_lock(resolved_intent_dir, scenario_name):
+            if resolved_data_dir is not None:
+                try:
+                    _echo_load_warnings(load_scenario(
+                        resolved_data_dir, scenario_name, intent_dir=resolved_intent_dir,
+                        allow_dirty_data=allow_dirty_data,
+                    ))
+                except LoadError as exc:
+                    for issue in exc.issues:
+                        click.echo(f"  error: {issue}", err=True)
+                    raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+                except DataDirtyRefused as exc:
+                    click.echo(str(exc), err=True)
+                    raise click.ClickException("data dirty; refusing to load") from None
+            elif not intent_path.exists():
+                raise click.ClickException(
+                    f"intent file not found: {intent_path}\n"
+                    f"  run: analysis sim load {scenario_name}"
+                )
+            resolved_by = run_by or os.environ.get("USER") or "unknown"
+            _run_loaded(
+                scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
+                run_by=resolved_by, allow_dirty_data=allow_dirty_data,
+                allow_dirty_code=allow_dirty_code, ensemble_size=ensemble_size,
+                sensitivity=sensitivity, quantiles=quantiles, only=only_names, jobs=jobs,
+            )
     finally:
         # A failed run leaves its run file too, so it still gets housekeeping;
         # as its scenario's newest attempt, it is never pruned itself.
@@ -605,8 +632,7 @@ def _run_loaded(
 
     data_version = _read_data_version(intent_path)
     short = data_version[:7] if data_version else "nodata"
-    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-    run_path = runs_dir / f"{stamp}_{scenario_name}_{short}.sqlite3"
+    run_path = reserve_run_path(runs_dir, scenario_name, short)
 
     try:
         out = run_scenario(
@@ -614,6 +640,7 @@ def _run_loaded(
             run_by=run_by,
             allow_dirty_data=allow_dirty_data,
             allow_dirty_code=allow_dirty_code,
+            reserved=True,
         )
     except DataDirtyRefused as exc:
         click.echo(str(exc), err=True)
@@ -12223,3 +12250,4 @@ def _walk_commands(command: click.Command, seen: set[int]) -> Iterable[click.Com
 
 for _command in _walk_commands(sim_group_command, set()):
     _wrap_to_ask_again(_command)
+

@@ -40,8 +40,8 @@ def code_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> git.Repo:
 
 def _stamp_runs(runs_dir: Path, repo: git.Repo) -> None:
     """Record the stand-in repo's HEAD, clean, as the code every run ran,
-    and date the plain runs earlier, in order: a rerun in the same second
-    would otherwise be refused for its file name."""
+    and date the plain runs earlier, in order, so a rerun is always the
+    newest."""
     for n, run_file in enumerate(sorted(runs_dir.glob("*_*.sqlite3"))):
         run_file.rename(run_file.with_name(
             f"2000-01-01T{n:06d}Z_{run_file.name.split('_', 1)[1]}"))
