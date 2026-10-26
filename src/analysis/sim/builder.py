@@ -303,6 +303,7 @@ class _Build:
     key: list[Any]
     process: subprocess.Popen[bytes]
     started: float
+    wanted: bool = False  # someone was waiting for it when it started
 
 
 class _Daemon:
@@ -312,6 +313,8 @@ class _Daemon:
         self.echo = echo
         self.queue: list[str] = []
         self.first: list[str] = []
+        # Builds preempted for a scenario someone is waiting on: next in line.
+        self.resume: list[str] = []
         self.waiting: dict[str, str] = {}
         self.status = read_status(self.paths)
         self.failed: dict[str, dict[str, Any]] = dict(self.status.get("failed") or {})
@@ -383,18 +386,33 @@ class _Daemon:
         self.state = "building" if self.build is not None or self.queue else "idle"
 
     def order(self, queue: list[str]) -> list[str]:
-        """Scenarios someone is waiting on, then the current scenario, then
-        plain runs before ensembles (quick results first), then by name."""
+        """Scenarios someone is waiting on, then builds they preempted, then
+        the current scenario, then plain runs before ensembles (quick results
+        first), then by name."""
         current = read_current_scenario(self.data_dir)
         first = [n for n in self.first if n in queue]
+        resume = [n for n in self.resume if n in queue]
         runs = self.paths.runs_dir
 
-        def rank(name: str) -> tuple[int, int, str]:
+        def rank(name: str) -> tuple[int, int, int, str]:
             pos = first.index(name) if name in first else len(first)
+            again = resume.index(name) if name in resume else len(resume)
             ensemble = (runs / name).is_dir()
-            return (pos, 0 if name == current else 1 + ensemble, name)
+            return (pos, again, 0 if name == current else 1 + ensemble, name)
 
         return sorted(queue, key=rank)
+
+    def preempt(self) -> None:
+        """Stop a build nobody is waiting on when someone is waiting on
+        another scenario (Bob, #300): the wanted one starts at once and the
+        stopped one is requeued right after it."""
+        build = self.build
+        wanted = next((n for n in self.first if n in self.queue), None)
+        if build is None or build.wanted or wanted is None:
+            return
+        self.cancel(f"{wanted} is wanted now")
+        self.resume = [build.scenario, *[n for n in self.resume if n != build.scenario]]
+        self.queue = self.order([*self.queue, build.scenario])
 
     def cancel(self, why: str) -> None:
         build = self.build
@@ -406,7 +424,9 @@ class _Daemon:
 
     def start_next(self, trees: tuple[str, ...]) -> None:
         name = self.queue.pop(0)
+        wanted = name in self.first
         self.first = [n for n in self.first if n != name]
+        self.resume = [n for n in self.resume if n != name]
         key = self.key(name, trees)
         env = {**os.environ, BUILDER_SWITCH_ENV: "off", BUILDER_CHILD_ENV: "1"}
         self.log(f"building {name}")
@@ -417,7 +437,7 @@ class _Daemon:
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True, env=env, close_fds=True,
             )
-        self.build = _Build(name, key, process, time.time())
+        self.build = _Build(name, key, process, time.time(), wanted)
         self.state = "building"
 
     def finished(self) -> bool:
@@ -472,6 +492,7 @@ class _Daemon:
                     self.scan()
                     if self.restart:
                         break
+                    self.preempt()
                     self.write_status()
                 if self.build is None and self.queue and self.started_trees is not None:
                     self.start_next(self.started_trees)

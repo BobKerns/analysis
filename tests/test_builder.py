@@ -209,6 +209,28 @@ def test_the_daemon_checks_the_installed_branch(
     assert seen == ["testing"]
 
 
+def test_a_wanted_scenario_preempts_the_build_in_progress(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None
+    wanted = daemon.queue[0]
+    daemon.first = [wanted]
+    daemon.scan()
+    daemon.preempt()
+    assert daemon.build is None and running.process.poll() is not None
+    assert daemon.queue[:2] == [wanted, running.scenario]  # requeued next
+    daemon.start_next(("t1",))
+    assert daemon.build is not None and daemon.build.wanted
+    # A build someone is waiting on is never preempted in turn.
+    daemon.first = [running.scenario]
+    daemon.preempt()
+    assert daemon.build is not None and daemon.build.scenario == wanted
+
+
 def test_code_off_main_disables_the_builder(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
