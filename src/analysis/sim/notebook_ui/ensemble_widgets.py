@@ -5,7 +5,7 @@ breakpoints."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ from analysis.sim.ensemble import (
     risk_summary,
     summary_with_percentiles,
 )
+from analysis.sim.loader import is_ensemble_batch, read_disabled_scenarios
 from analysis.sim.ensemble_plots import (
     band_edges,
     ensemble_compare_figure,
@@ -62,16 +63,22 @@ __all__ = [
 ]
 
 
-def list_ensemble_recipes(runs_dir: Path) -> list[str]:
+def list_ensemble_recipes(
+    runs_dir: Path, data_dir: Path | None = None, keep: Iterable[str | None] = (),
+) -> list[str]:
     """Names of every subdirectory of ``runs_dir`` holding at least one
     generated batch (a ``<timestamp>/member_*.sqlite3`` run file) -- the
-    recipes ``sim run --ensemble-size`` has generated and run."""
+    recipes ``sim run --ensemble-size`` has generated and run. Given
+    ``data_dir``, less its disabled scenarios (#300) other than ``keep``."""
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
         return []
+    disabled = read_disabled_scenarios(data_dir) - set(keep) if data_dir else frozenset()
+    # Listing never waits for a background build (#300); opening a batch does.
     return sorted(
         p.name for p in runs_dir.iterdir()
-        if p.is_dir() and latest_ensemble_batch(p, mode="monte_carlo") is not None
+        if p.is_dir() and p.name not in disabled
+        and latest_ensemble_batch(p, mode="monte_carlo", wait=False) is not None
     )
 
 
@@ -106,6 +113,28 @@ def _account(choice: object) -> str | None:
     return choice if isinstance(choice, str) else None
 
 
+def settled_batch(runs_dir: Path, recipe: str) -> tuple[Path, list[int]] | None:
+    """``recipe``'s newest Monte Carlo batch with a succeeded member, and
+    the indexes of its succeeded members, without waiting for a background
+    build (#300). Building the controls reads this; only drawing a recipe
+    waits. A batch still being built may have no finished member yet, so
+    an older batch stands in for it."""
+    from analysis.sim.locks import run_name_key
+
+    recipe_dir = Path(runs_dir) / recipe
+    if not recipe_dir.is_dir():
+        return None
+    batches = sorted((p for p in recipe_dir.iterdir() if is_ensemble_batch(p, "monte_carlo")),
+                     key=lambda p: run_name_key(p.name), reverse=True)
+    for batch_dir in batches:
+        indexes = sorted(int(stem.removeprefix("member_"))
+                         for stem, status in member_run_statuses(batch_dir).items()
+                         if status == "succeeded")
+        if indexes:
+            return batch_dir, indexes
+    return None
+
+
 def recipe_accounts(
     runs_dir: Path, recipes: list[str],
 ) -> tuple[list[str], dict[str, dict[str, list[str]]], list[int]]:
@@ -113,22 +142,17 @@ def recipe_accounts(
     accounts and their lots (#170), single-lot ones included so a union
     across recipes misses none (a Lot dropdown shows for two or more), and
     every calendar year any of them runs over (#245), read from one member
-    of each recipe's latest batch, since a recipe's members share their
-    accounts and dates."""
+    of each recipe's latest batch with one (``settled_batch``), since a
+    recipe's members share their accounts and dates."""
     accounts: set[str] = set()
     lots: dict[str, dict[str, list[str]]] = {}
     years: set[int] = set()
     for recipe in recipes:
-        batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
-        if batch_dir is None:
+        settled = settled_batch(runs_dir, recipe)
+        if settled is None:
             continue
-        member = next(
-            (stem for stem, status in member_run_statuses(batch_dir).items()
-             if status == "succeeded"), None,
-        )
-        if member is None:
-            continue
-        con = RunConnection(batch_dir / f"{member}.sqlite3")
+        batch_dir, indexes = settled
+        con = RunConnection(batch_dir / f"member_{indexes[0]:04d}.sqlite3")
         try:
             accounts.update(con.account_kinds().index)
             lots[recipe] = con.lots_by_account(single=True)
@@ -149,14 +173,13 @@ class RecipeSeeds:
         self._indexes: dict[str, set[int]] = {}
         self._seeds: dict[tuple[str, int], int | None] = {}
         for recipe in recipes:
-            batch_dir = latest_ensemble_batch(Path(runs_dir) / recipe, mode="monte_carlo")
-            if batch_dir is None:
+            # A rebuild keeps the recipe's seed, so pairing read from the
+            # batch on hand holds for the one being built (#300).
+            settled = settled_batch(runs_dir, recipe)
+            if settled is None:
                 continue
-            self._batches[recipe] = batch_dir
-            self._indexes[recipe] = {
-                int(stem.removeprefix("member_"))
-                for stem, status in member_run_statuses(batch_dir).items()
-                if status == "succeeded"}
+            self._batches[recipe], indexes = settled
+            self._indexes[recipe] = set(indexes)
 
     def _seed(self, recipe: str, index: int) -> int | None:
         key = (recipe, index)
@@ -226,7 +249,7 @@ class EnsembleControls:
                  after_tax_picker: AfterTaxPicker | None = None):
         resolved = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
         accounts, self._recipe_lots, years = recipe_accounts(
-            resolved, list_ensemble_recipes(resolved),
+            resolved, list_ensemble_recipes(resolved, find_data_dir(data_dir)),
         )
         # Spanned here, not as each widget draws: the span would otherwise
         # move the slider mid-draw, and that redraws every widget.
@@ -459,7 +482,7 @@ def ensemble_widget(*_,
     when it has a batch."""
     resolved_data_dir = find_data_dir(data_dir)
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipes = list_ensemble_recipes(runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, resolved_data_dir, keep=[default])
     dropdown = widgets.Dropdown(options=recipes, description="Recipe:")
     if _default(recipes, default) is not None:
         dropdown.value = default
@@ -696,7 +719,7 @@ def ensemble_compare_widget(*_,
     compare it with, when they have a batch; with no ``variant`` none is
     picked."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipes = list_ensemble_recipes(runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, find_data_dir(data_dir), keep=[default, variant])
     seeds = RecipeSeeds(runs_dir, recipes)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
     if _default(recipes, default) is not None:
@@ -809,7 +832,7 @@ def ensemble_table_widget(*_,
     dollars, account and reserve with the other ensemble widgets; ``default``
     is the baseline to start on."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipes = list_ensemble_recipes(runs_dir)
+    recipes = list_ensemble_recipes(runs_dir, find_data_dir(data_dir), keep=[default])
     seeds = RecipeSeeds(runs_dir, recipes)
     baseline_picker = widgets.Dropdown(options=recipes, description="Baseline:")
     if _default(recipes, default) is not None:

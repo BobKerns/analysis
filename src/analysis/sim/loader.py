@@ -65,15 +65,19 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 __all__ = [
     "BATCH_MANIFEST_FILENAME",
     "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
-    "DEFAULT_SCENARIO_NAME",
+    "DEFAULT_SCENARIO_NAME", "DISABLE_FILE",
     "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
     "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
-    "read_current_scenario", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
+    "read_current_scenario", "read_disabled_scenarios", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
-    "write_current_scenario",
+    "set_scenario_enabled", "write_current_scenario",
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
+# In a scenario's folder: the scenario isn't built unless named (#300), as
+# for a mix-in or a base that only exists to be built on. Not inherited, and
+# left out of every data tree (provenance), so it changes no scenario's data.
+DISABLE_FILE = ".disable"
 DEFAULT_SCENARIO_NAME = "base"
 DEFAULT_STATE_DIR = Path("state")
 DEFAULT_INTENT_DIR = Path("intent")
@@ -179,6 +183,27 @@ def write_current_scenario(data_dir: Path | str, scenario: str) -> None:
     current_scenario_path(data_dir).write_text(f"{scenario}\n", encoding="utf-8")
 
 
+def read_disabled_scenarios(data_dir: Path | str) -> frozenset[str]:
+    """The data repo's disabled scenarios (a ``.disable`` file in the
+    folder): never built by `sim all` or the background builder, and left
+    out of the notebooks' pickers. Building one by name still works."""
+    scenarios = Path(data_dir) / "scenarios"
+    if not scenarios.is_dir():
+        return frozenset()
+    return frozenset(p.parent.name for p in scenarios.glob(f"*/{DISABLE_FILE}"))
+
+
+def set_scenario_enabled(data_dir: Path | str, name: str, enabled: bool) -> None:
+    """Enable scenario ``name`` (remove its ``.disable``) or disable it."""
+    path = Path(data_dir) / "scenarios" / name / DISABLE_FILE
+    if enabled:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(
+            "Not built unless named: `sim scenario enable` builds it again (#300).\n",
+            encoding="utf-8")
+
+
 def find_state_dir(data_dir: Path | str | None, default: Path | str) -> Path:
     """Resolve a data repo's ``state/intent`` or ``state/runs`` dir (ADR-004 §4).
 
@@ -192,21 +217,41 @@ def find_state_dir(data_dir: Path | str | None, default: Path | str) -> Path:
     return (Path(data_dir).resolve().parent / default).resolve()
 
 
-def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path | None:
+def latest_run_path(
+    runs_dir: Path | str, scenario: str | None = None, *, wait: bool = True,
+) -> Path | None:
     """Most recent run file under ``runs_dir``, or ``None`` if there is none.
 
-    Run filenames are ``<timestamp>_<scenario>_<data-version>.sqlite3``, so they
-    sort chronologically and can be filtered by scenario by name alone. Neither
-    the timestamp nor the data version has an underscore, so the scenario is
-    matched whole: ``base`` doesn't pick up ``higher_base``'s runs.
+    For a named ``scenario``, first waits for a pending background build of
+    it (#300, ``builder.await_fresh``) unless ``wait`` is False.
+
+    Run filenames are ``<timestamp>[-N]_<scenario>_<data-version>.sqlite3``
+    (``-N`` when runs collided in one second, #300), so they sort
+    chronologically by ``locks.run_name_key`` and can be filtered by scenario
+    by name alone. Neither the timestamp nor the data version has an
+    underscore, so the scenario is matched whole: ``base`` doesn't pick up
+    ``higher_base``'s runs. A zero-byte file is a name a run has reserved
+    (``locks.reserve_run_path``) but not begun writing, so it is skipped.
     """
+    from analysis.sim.locks import run_name_key
+
+    if scenario and wait:
+        _await_fresh(Path(runs_dir), scenario)
+
     glob_pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
     re_pattern = (re.compile(rf"[^_]+_{re.escape(scenario)}_[^_]*[.]sqlite3") if scenario
                   else re.compile(".*"))
     runs = (r for r in Path(runs_dir).glob(glob_pattern)
-            if re_pattern.fullmatch(r.name))
-    runs = sorted(runs)
+            if re_pattern.fullmatch(r.name) and _started(r))
+    runs = sorted(runs, key=lambda r: run_name_key(r.name))
     return runs[-1] if runs else None
+
+
+def _started(run: Path) -> bool:
+    try:
+        return run.stat().st_size > 0
+    except OSError:  # pruned between the glob and here
+        return False
 
 
 BATCH_MANIFEST_FILENAME = "batch_manifest.json"
@@ -238,7 +283,15 @@ def batch_mode(batch_dir: Path) -> str:
     return "monte_carlo"
 
 
-def latest_ensemble_batch(recipe_dir: Path, mode: str | None = None) -> Path | None:
+def _await_fresh(runs_dir: Path, scenario: str) -> None:
+    from analysis.sim.builder import await_fresh
+
+    await_fresh(runs_dir, scenario)
+
+
+def latest_ensemble_batch(
+    recipe_dir: Path, mode: str | None = None, *, wait: bool = True,
+) -> Path | None:
     """The most recently generated batch subfolder under ``recipe_dir`` that
     holds at least one member run file or a batch manifest, or ``None`` if
     there isn't one.
@@ -253,12 +306,18 @@ def latest_ensemble_batch(recipe_dir: Path, mode: str | None = None) -> Path | N
     invisible.
 
     ``mode`` (ADR-007 §5) restricts the search to ``"monte_carlo"`` or
-    ``"sensitivity"`` batches; ``None`` accepts either.
+    ``"sensitivity"`` batches; ``None`` accepts either. Unless ``wait`` is
+    False, first waits for a pending background build of the recipe (#300).
     """
     recipe_dir = Path(recipe_dir)
+    if wait:
+        _await_fresh(recipe_dir.parent, recipe_dir.name)
     if not recipe_dir.is_dir():
         return None
-    batches = sorted(p for p in recipe_dir.iterdir() if is_ensemble_batch(p, mode))
+    from analysis.sim.locks import run_name_key
+
+    batches = sorted((p for p in recipe_dir.iterdir() if is_ensemble_batch(p, mode)),
+                     key=lambda p: run_name_key(p.name))
     return batches[-1] if batches else None
 
 
@@ -271,25 +330,31 @@ def is_ensemble_batch(batch_dir: Path, mode: str | None = None) -> bool:
     ) and (mode is None or batch_mode(batch_dir) == mode)
 
 
-def _latest_ensemble_member_zero(runs_dir: Path, name: str) -> Path | None:
+def _latest_ensemble_member_zero(
+    runs_dir: Path, name: str, *, wait: bool = True,
+) -> Path | None:
     """``member_0000.sqlite3`` of ``name``'s most recent ensemble batch, for
     a caller that only knows how to open one run file per scenario (ADR-006
     §8): member 0 is always the recipe's deterministic (non-drawn) member,
     so it stands in for "the" run the same way any other scenario's one run
     file would.
     """
-    batch = latest_ensemble_batch(Path(runs_dir) / name)
+    batch = latest_ensemble_batch(Path(runs_dir) / name, wait=wait)
     if batch is None:
         return None
     member = batch / "member_0000.sqlite3"
     return member if member.exists() else None
 
 
-def scenario_run_path(runs_dir: Path | str, name: str) -> Path | None:
+def scenario_run_path(
+    runs_dir: Path | str, name: str, *, wait: bool = True,
+) -> Path | None:
     """The run file that stands for scenario ``name`` under ``runs_dir``: its
     latest run, else member 0 of its latest ensemble batch; ``None`` when it
-    has neither."""
-    return latest_run_path(runs_dir, name) or _latest_ensemble_member_zero(Path(runs_dir), name)
+    has neither. ``wait=False`` for a listing that only asks whether one
+    exists (#300: only opening a run waits for its build)."""
+    return (latest_run_path(runs_dir, name, wait=wait)
+            or _latest_ensemble_member_zero(Path(runs_dir), name, wait=wait))
 
 
 @dataclass(frozen=True)

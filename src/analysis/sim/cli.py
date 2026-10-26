@@ -69,6 +69,7 @@ from analysis.sim.series_db import (
     pair_members,
     write_series_db,
 )
+from analysis.sim.locks import BUILDER_CHILD_ENV, LockHolder, build_lock, building, reserve_run_path
 from analysis.sim.ensemble import (
     EnsembleError,
     factor_reach,
@@ -92,6 +93,7 @@ from analysis.sim.loader import (
     LoadResult,
     ScenarioRef,
     batch_mode,
+    DISABLE_FILE,
     calendar_row_key,
     current_scenario_path,
     is_ensemble_batch,
@@ -101,7 +103,9 @@ from analysis.sim.loader import (
     find_state_dir,
     latest_run_path,
     read_current_scenario,
+    read_disabled_scenarios,
     scenario_run_path,
+    set_scenario_enabled,
     write_current_scenario,
 )
 from analysis.sim.quicken import (
@@ -156,6 +160,16 @@ def _resolve_state_dir(
     return find_state_dir(data_dir, DEFAULT_STATE_DIR) / default
 
 
+def _builds(fn):
+    """A command that builds runs: it never waits on the background builder
+    (#300, ``locks.building``), even while resolving its scenario."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with building():
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 @click.group(name="sim")
 def sim_group_command() -> None:
     """Scenario-based finance simulator."""
@@ -202,6 +216,7 @@ def sim_group_command() -> None:
     help="Also run the scenario after loading (default). Use --no-run to only build the intent file.",
 )
 @click.pass_context
+@_builds
 def load(
     ctx: click.Context,
     scenario_name: str | None,
@@ -223,9 +238,34 @@ def load(
     resolved = _resolve_data_dir(data_dir)
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved)
     ref = _resolve_scenario(resolved, scenario_name, intent_dir=resolved_intent_dir)
+    with _build_lock(resolved_intent_dir, ref.name):
+        _load_locked(
+            ctx, ref.name, resolved, resolved_intent_dir, data_dir=data_dir,
+            intent_dir=intent_dir, runs_dir=runs_dir, allow_dirty_data=allow_dirty_data,
+            allow_dirty_code=allow_dirty_code, run_by=run_by, run_after_load=run_after_load,
+        )
+
+
+def _build_lock(intent_dir: Path, scenario: str):
+    """``scenario``'s build lock (#300), saying so on stderr when another
+    build of it is in progress and this one has to wait."""
+    def on_wait(holder: LockHolder | None) -> None:
+        by = f" by {holder.describe()}" if holder is not None else ""
+        click.echo(f"waiting for {scenario}: being built{by}", err=True)
+
+    return build_lock(intent_dir, scenario, on_wait=on_wait)
+
+
+def _load_locked(
+    ctx: click.Context, name: str, resolved: Path, resolved_intent_dir: Path, *,
+    data_dir: Path | None, intent_dir: Path | None, runs_dir: Path | None,
+    allow_dirty_data: bool, allow_dirty_code: bool, run_by: str | None,
+    run_after_load: bool,
+) -> None:
+    """``sim load``'s work, under the scenario's build lock."""
     try:
         result = load_scenario(
-            resolved, ref.name, intent_dir=resolved_intent_dir,
+            resolved, name, intent_dir=resolved_intent_dir,
             allow_dirty_data=allow_dirty_data,
         )
     except LoadError as exc:
@@ -238,7 +278,7 @@ def load(
     if not run_after_load:
         _echo_load_warnings(result)  # otherwise `run` reloads and prints them, once
     click.echo(f"loaded {result.intent_path}")
-    click.echo(f"  current scenario: {ref.name}")
+    click.echo(f"  current scenario: {name}")
     for table, n in result.counts.items():
         click.echo(f"  {table}: {n}")
     if not run_after_load:
@@ -248,7 +288,7 @@ def load(
     if run_after_load:
         ctx.invoke(
             run,
-            scenario_name=ref.name,
+            scenario_name=name,
             data_dir=data_dir,
             intent_dir=intent_dir,
             runs_dir=runs_dir,
@@ -388,6 +428,8 @@ def _make_current(data_dir: Path, name: str) -> None:
     """Record ``name`` as the current scenario, and say so on stderr when that
     changes it (#233): later commands only say ``Using scenario X``, which is
     easy to miss when X is not the one expected."""
+    if os.environ.get(BUILDER_CHILD_ENV):
+        return  # a background build (#300) never moves the user's current scenario
     previous = read_current_scenario(data_dir)
     if previous == name:
         return
@@ -469,6 +511,7 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
     help="With --sensitivity: quantiles each row is perturbed to "
          "(default 0.1,0.9; e.g. 0.1,0.25,0.4,0.6,0.75,0.9 for a response curve).",
 )
+@_builds
 def run(
     scenario_name: str | None,
     data_dir: Path | None,
@@ -514,32 +557,33 @@ def run(
     resolved_intent_dir = _resolve_state_dir(intent_dir, DEFAULT_INTENT_DIR, resolved_data_dir)
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved_data_dir)
     intent_path = resolved_intent_dir / f"{scenario_name}.sqlite3"
-    if resolved_data_dir is not None:
-        try:
-            _echo_load_warnings(load_scenario(
-                resolved_data_dir, scenario_name, intent_dir=resolved_intent_dir,
-                allow_dirty_data=allow_dirty_data,
-            ))
-        except LoadError as exc:
-            for issue in exc.issues:
-                click.echo(f"  error: {issue}", err=True)
-            raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
-        except DataDirtyRefused as exc:
-            click.echo(str(exc), err=True)
-            raise click.ClickException("data dirty; refusing to load") from None
-    elif not intent_path.exists():
-        raise click.ClickException(
-            f"intent file not found: {intent_path}\n"
-            f"  run: analysis sim load {scenario_name}"
-        )
-    resolved_by = run_by or os.environ.get("USER") or "unknown"
     try:
-        _run_loaded(
-            scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
-            run_by=resolved_by, allow_dirty_data=allow_dirty_data,
-            allow_dirty_code=allow_dirty_code, ensemble_size=ensemble_size,
-            sensitivity=sensitivity, quantiles=quantiles, only=only_names, jobs=jobs,
-        )
+        with _build_lock(resolved_intent_dir, scenario_name):
+            if resolved_data_dir is not None:
+                try:
+                    _echo_load_warnings(load_scenario(
+                        resolved_data_dir, scenario_name, intent_dir=resolved_intent_dir,
+                        allow_dirty_data=allow_dirty_data,
+                    ))
+                except LoadError as exc:
+                    for issue in exc.issues:
+                        click.echo(f"  error: {issue}", err=True)
+                    raise click.ClickException(f"{len(exc.issues)} issue(s)") from None
+                except DataDirtyRefused as exc:
+                    click.echo(str(exc), err=True)
+                    raise click.ClickException("data dirty; refusing to load") from None
+            elif not intent_path.exists():
+                raise click.ClickException(
+                    f"intent file not found: {intent_path}\n"
+                    f"  run: analysis sim load {scenario_name}"
+                )
+            resolved_by = run_by or os.environ.get("USER") or "unknown"
+            _run_loaded(
+                scenario_name, intent_path, resolved_intent_dir, resolved_runs_dir,
+                run_by=resolved_by, allow_dirty_data=allow_dirty_data,
+                allow_dirty_code=allow_dirty_code, ensemble_size=ensemble_size,
+                sensitivity=sensitivity, quantiles=quantiles, only=only_names, jobs=jobs,
+            )
     finally:
         # A failed run leaves its run file too, so it still gets housekeeping;
         # as its scenario's newest attempt, it is never pruned itself.
@@ -605,8 +649,7 @@ def _run_loaded(
 
     data_version = _read_data_version(intent_path)
     short = data_version[:7] if data_version else "nodata"
-    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-    run_path = runs_dir / f"{stamp}_{scenario_name}_{short}.sqlite3"
+    run_path = reserve_run_path(runs_dir, scenario_name, short)
 
     try:
         out = run_scenario(
@@ -614,6 +657,7 @@ def _run_loaded(
             run_by=run_by,
             allow_dirty_data=allow_dirty_data,
             allow_dirty_code=allow_dirty_code,
+            reserved=True,
         )
     except DataDirtyRefused as exc:
         click.echo(str(exc), err=True)
@@ -1214,7 +1258,7 @@ def _ask_ensemble_run(runs_dir: Path, mode: str | None, prompt: str = "ensemble"
     def has_runs(recipe: Path) -> bool:
         if batch:
             return is_ensemble_batch(recipe / batch, mode)
-        return latest_ensemble_batch(recipe, mode=mode) is not None
+        return latest_ensemble_batch(recipe, mode=mode, wait=False) is not None
 
     recipes = sorted(
         p.name for p in (runs_dir.iterdir() if runs_dir.is_dir() else ())
@@ -1974,6 +2018,7 @@ def _report_oat(
     help="Rerun every scenario, even one whose latest run can't have changed.",
 )
 @click.pass_context
+@_builds
 def all_scenarios(
     ctx: click.Context,
     data_dir: Path | None,
@@ -1990,6 +2035,8 @@ def all_scenarios(
     code (src/, templates/, pyproject.toml, uv.lock), Python and data tree it would run
     with now, all committed, is skipped: rerunning it would give the same
     numbers. --force reruns it anyway.
+
+    A disabled scenario (`sim scenario disable`) isn't built.
 
     Reports failures per scenario and keeps going; does not stop or fail the
     command itself.
@@ -2008,6 +2055,9 @@ def all_scenarios(
     skipped: list[str] = []
     code = code_tree()
     resolved_runs_dir = _resolve_state_dir(runs_dir, DEFAULT_RUNS_DIR, resolved)
+    if disabled := sorted(set(names) & read_disabled_scenarios(resolved)):
+        names = [name for name in names if name not in disabled]
+        click.echo(f"disabled, not built: {', '.join(disabled)} (`sim run NAME` builds one)")
     for name in names:
         click.echo(f"=== {name} ===")
         unchanged = None if force else unchanged_run(resolved, resolved_runs_dir, name, code)
@@ -2401,7 +2451,7 @@ def _compare_variants(data: Path, runs_dir: Path, baseline: str) -> list[str]:
     """A variant to compare ``baseline`` with, asked for from the scenarios
     that have a run."""
     choices = [name for name in list_scenario_names(data)
-               if name != baseline and scenario_run_path(runs_dir, name) is not None]
+               if name != baseline and scenario_run_path(runs_dir, name, wait=False) is not None]
     return [_ask_name("scenario", choices, prompt="variant", plural="scenarios with runs")]
 
 
@@ -9878,7 +9928,8 @@ def scenario_list(data_dir: Path | None, verbose: bool, all_: bool) -> None:
 
     Plain output is just the names, one per line, for scripts. --verbose adds
     parents, start and end months, seed, ensemble size, and description, and
-    marks the current scenario with *. A value in [brackets] is inherited
+    marks the current scenario with *, and build "no" for a disabled one
+    (`sim scenario disable`). A value in [brackets] is inherited
     from an ancestor; a blank size means the scenario is not an ensemble.
     --all adds the template scenarios a data repo reads from the code
     repository when it has no folder of that name.
@@ -9927,6 +9978,7 @@ def _list_scenarios(
         return cell(v and v.value, bool(v and v.inherited))
 
     current = read_current_scenario(data_dir_p)
+    disabled = read_disabled_scenarios(data_dir_p)
     table = Table(title=f"{kind} ({data_dir_p.name})",
                   caption=escape("[values] are inherited"))
     table.add_column("", no_wrap=True)
@@ -9937,12 +9989,13 @@ def _list_scenarios(
     table.add_column("seed", no_wrap=True, justify="right")
     table.add_column("size", no_wrap=True, justify="right")
     table.add_column("description")
+    table.add_column("build", no_wrap=True)
     for s in summaries:
         table.add_row(
             "*" if s.name == current else "",
             s.name, " + ".join(s.parents), date_cell(s.start), date_cell(s.end),
             value_cell(s.seed), value_cell(s.ensemble_size),
-            escape(s.description),
+            escape(s.description), "no" if s.name in disabled else "",
         )
     Console().print(table)
 
@@ -10375,7 +10428,7 @@ def _rename_scenario(old: str | None, new: str | None, data_dir: Path | None, *,
     if rename.CURRENT_SCENARIO_FILE in changed:
         _announce_current(new, old)
     runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
-    if latest_run_path(runs, old) or (runs / old).is_dir():
+    if latest_run_path(runs, old, wait=False) or (runs / old).is_dir():
         click.echo(f"  runs already made of {old} keep that name; `sim run {new}` makes new ones")
 
 
@@ -10725,7 +10778,7 @@ def _delete_scenario(name: str | None, data_dir: Path | None, yes: bool, *, what
     for path in mentions:
         click.echo(f"  {path.relative_to(data)} still mentions it")
     runs = find_state_dir(data, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
-    if latest_run_path(runs, name) or (runs / name).is_dir():
+    if latest_run_path(runs, name, wait=False) or (runs / name).is_dir():
         click.echo(f"  runs already made of {name} are kept, under {runs}")
 
 
@@ -10754,6 +10807,65 @@ def ensemble_delete(name: str | None, yes: bool, data_dir: Path | None) -> None:
     Without NAME, it is asked for.
     """
     _delete_scenario(name, data_dir, yes, what="ensemble")
+
+
+def _set_enabled(name: str | None, data_dir: Path | None, *, enabled: bool, what: str) -> None:
+    """``sim scenario|ensemble enable|disable`` (``what``)."""
+    data = _resolve_data_dir(data_dir)
+    disabled = read_disabled_scenarios(data)
+    verb = "enable" if enabled else "disable"
+    if name is None:
+        choices = _ensemble_names(data) if what == "ensemble" else list_scenario_names(data)
+        choices = [n for n in choices if (n in disabled) == enabled]
+        if not choices:
+            raise click.ClickException(f"no {what} to {verb}: every one is already {verb}d")
+        name = _ask_name(what, choices, prompt=f"{what} to {verb}")
+    name = name.strip()
+    # Only a folder's own name: not a template (its folder is in the code
+    # repository), a path, or '..'.
+    if name not in list_scenario_names(data) or not (data / "scenarios" / name).is_dir():
+        raise click.ClickException(f"scenario not found: {data / 'scenarios' / name}")
+    if what == "ensemble" and sc.ensemble_settings(data, name)[1] is None:
+        raise click.ClickException(f"{name} is not an ensemble; `sim scenario {verb}` takes it")
+    if (name not in disabled) == enabled:
+        click.echo(f"{name} is already {verb}d")
+        return
+    set_scenario_enabled(data, name, enabled)
+    if enabled:
+        click.echo(f"enabled {name}: `sim all` and the background builder build it again")
+    else:
+        click.echo(f"disabled {name}: `sim all`, the background builder and the notebooks' "
+                   f"pickers leave it out; `sim run {name}` still builds it")
+    click.echo(f"  {'removed' if enabled else 'wrote'} "
+               f"{data / 'scenarios' / name / DISABLE_FILE}; commit it to share it")
+
+
+_ENABLE_DOC = """{verb_cap} {what} NAME. A disabled scenario (a mix-in, or a base
+    that only exists to be built on) is never built by `sim all` or the
+    background builder, and the notebooks' pickers leave it out; it still
+    works as a parent or mix-in, and `sim run NAME` still builds it. It is
+    a {file} file in the scenario's folder: not inherited, and not part of
+    any scenario's data, so changing it rebuilds nothing.
+
+    Without NAME, it is asked for."""
+
+
+def _enable_command(group: click.Group, what: str, *, enabled: bool) -> None:
+    verb = "enable" if enabled else "disable"
+
+    @group.command(verb, help=_ENABLE_DOC.format(
+        verb_cap=verb.capitalize(), what=what, file=DISABLE_FILE))
+    @click.argument("name", required=False,
+                    type=completion.ENSEMBLE if what == "ensemble" else completion.SCENARIO)
+    @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+                  default=None, help="Data repo (default: $ANALYSIS_DATA_DIR).")
+    def command(name: str | None, data_dir: Path | None) -> None:
+        _set_enabled(name, data_dir, enabled=enabled, what=what)
+
+
+for _group, _what in ((scenario_group_command, "scenario"), (ensemble_group_command, "ensemble")):
+    _enable_command(_group, _what, enabled=True)
+    _enable_command(_group, _what, enabled=False)
 
 
 # ---------- setup listings (#185) ----------
@@ -12223,3 +12335,165 @@ def _walk_commands(command: click.Command, seen: set[int]) -> Iterable[click.Com
 
 for _command in _walk_commands(sim_group_command, set()):
     _wrap_to_ask_again(_command)
+
+
+@sim_group_command.group(name="builder")
+def builder_group() -> None:
+    """Background scenario builds (#300).
+
+    Once a workspace opts in (``sim builder install``, which
+    ``scripts/setup.sh`` runs), commits, checkouts, merges and rebases in
+    either repo start or poke a background builder that rebuilds every
+    scenario whose results could have changed. Opening a scenario's run waits
+    for a pending build of it. It builds only when the code is committed and
+    matches the workspace's local branch (main, unless ``install BRANCH``
+    named another). ANALYSIS_BUILDER=off turns it off.
+    """
+
+
+def _builder_data_dir(data_dir: Path | None) -> Path:
+    return _resolve_data_dir(data_dir).resolve()
+
+
+_BUILDER_DATA_DIR = click.option(
+    "--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)",
+)
+
+
+@builder_group.command(name="install")
+@click.argument("branch", required=False)
+@_BUILDER_DATA_DIR
+def builder_install(branch: str | None, data_dir: Path | None) -> None:
+    """Opt this workspace pair in: check the code worktree and the data repo
+    name each other, record the pair, and install the data repo's hooks.
+
+    BRANCH is the local branch whose code it builds from (default: the one
+    recorded before, else main). Every shell, notebook and builder of the
+    workspace reads it from there, so they all agree; run this again to
+    change it.
+    """
+    from analysis.sim import builder
+
+    try:
+        done = builder.install(_builder_data_dir(data_dir), branch)
+    except ValueError as exc:
+        raise click.ClickException(f"not a workspace pair: {exc}") from None
+    for line in done:
+        click.echo(line)
+    click.echo(builder.notify(_builder_data_dir(data_dir)))
+
+
+@builder_group.command(name="uninstall")
+@_BUILDER_DATA_DIR
+def builder_uninstall(data_dir: Path | None) -> None:
+    """Opt this workspace out and stop its builder."""
+    from analysis.sim import builder
+
+    for line in builder.uninstall(_builder_data_dir(data_dir)):
+        click.echo(line)
+
+
+@builder_group.command(name="notify")
+@_BUILDER_DATA_DIR
+@click.option("--quiet", is_flag=True, default=False, help="Print nothing (for hooks).")
+def builder_notify(data_dir: Path | None, quiet: bool) -> None:
+    """Ask the builder to look for work, starting it if it isn't running.
+    The git hooks call this."""
+    from analysis.sim import builder
+
+    line = builder.notify(_builder_data_dir(data_dir))
+    if not quiet:
+        click.echo(line)
+
+
+@builder_group.command(name="start")
+@_BUILDER_DATA_DIR
+def builder_start(data_dir: Path | None) -> None:
+    """Start the builder now (same as ``notify``)."""
+    from analysis.sim import builder
+
+    click.echo(builder.notify(_builder_data_dir(data_dir)))
+
+
+@builder_group.command(name="stop")
+@_BUILDER_DATA_DIR
+def builder_stop(data_dir: Path | None) -> None:
+    """Stop the builder, cancelling the build in progress. The next commit
+    or opened run starts it again."""
+    import signal as signals
+
+    from analysis.sim import builder
+
+    paths = builder.BuilderPaths.for_data(_builder_data_dir(data_dir))
+    pid = builder.read_status(paths).get("pid")
+    if not builder.daemon_alive(paths) or not isinstance(pid, int):
+        click.echo("the builder isn't running")
+        return
+    os.kill(pid, signals.SIGTERM)
+    click.echo(f"stopping the builder (pid {pid})")
+
+
+@builder_group.command(name="run", hidden=True)
+@_BUILDER_DATA_DIR
+def builder_run(data_dir: Path | None) -> None:
+    """Run the builder in the foreground (what ``start`` launches)."""
+    from analysis.sim import builder
+
+    raise SystemExit(builder.run_daemon(
+        _builder_data_dir(data_dir), echo=lambda text: click.echo(text),
+    ))
+
+
+@builder_group.command(name="status")
+@_BUILDER_DATA_DIR
+def builder_status(data_dir: Path | None) -> None:
+    """What the builder is doing: running or not, why it's off, the build in
+    progress, the queue, what waits on dirty data, and recent failures."""
+    from analysis.sim import builder
+
+    resolved = _builder_data_dir(data_dir)
+    paths = builder.BuilderPaths.for_data(resolved)
+    if builder.read_config(paths) is None:
+        click.echo("background builds aren't installed here (sim builder install)")
+        return
+    if builder.switched_off():
+        click.echo("background builds are off here (ANALYSIS_BUILDER=off)")
+    config = builder.read_config(paths) or {}
+    code = config.get("code_dir")
+    trees, reason = builder.main_check(builder.config_branch(config), Path(code) if code else None)
+    if trees is None:
+        click.echo(f"disabled: {reason}")
+    status = builder.read_status(paths)
+    alive = builder.daemon_alive(paths)
+    state = f"{status.get('state', 'running')}, pid {status.get('pid')}" if alive else "not running"
+    click.echo(f"builder: {state}")
+    if alive:
+        current = status.get("current")
+        if current:
+            started = datetime.fromtimestamp(current["started"], UTC).strftime("%H:%M:%SZ")
+            click.echo(f"building: {current['scenario']} (since {started})")
+        queue = status.get("queue") or []
+        click.echo(f"queue: {', '.join(queue) if queue else '(empty)'}")
+    for name, why in sorted((status.get("waiting") or {}).items()):
+        click.echo(f"waiting: {name} ({why})")
+    for name, failed in sorted((status.get("failed") or {}).items()):
+        click.echo(f"failed: {name}: {failed.get('message')}")
+    click.echo(f"log: {paths.log}")
+
+
+@builder_group.command(name="log")
+@_BUILDER_DATA_DIR
+@click.option("-n", "lines", type=int, default=40, show_default=True, help="Lines to show.")
+def builder_log(data_dir: Path | None, lines: int) -> None:
+    """The end of the builder's log."""
+    from analysis.sim import builder
+
+    log = builder.BuilderPaths.for_data(_builder_data_dir(data_dir)).log
+    try:
+        text = log.read_text(errors="replace").splitlines()
+    except FileNotFoundError:
+        click.echo(f"(no log yet: {log})")
+        return
+    for line in text[-lines:]:
+        click.echo(line)

@@ -174,6 +174,21 @@ and names them. If it was your current scenario, none is current
 afterwards. Runs you already made of it are kept, and any markdown file
 that still mentions it is listed.
 
+A scenario that only exists to be built on, such as a mix-in or an
+abstract base, can be disabled (or `sim ensemble disable`):
+
+```sh
+sim scenario disable <name>   # sim scenario enable <name> undoes it
+```
+
+`sim all` and the background builder then skip it, and the notebooks'
+pickers leave it out. It still works as a parent or mix-in, and
+`sim run <name>` still builds it. The command writes a `.disable` file in
+the scenario's folder; commit it like any other change. It isn't
+inherited, and it isn't part of any scenario's data, so disabling a base
+doesn't make the scenarios built on it rebuild. `sim scenario list -v`
+shows `no` under build for a disabled scenario.
+
 Renaming anything else a scenario can share works the same way: the
 `rename` commands for accounts, chains, scheduled rules, calendar rows,
 series and lots change the name in every scenario that shares it, not just

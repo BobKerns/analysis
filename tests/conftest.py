@@ -90,6 +90,10 @@ _ANALYSIS_ENV_VARS = (
 def _no_ambient_analysis_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _ANALYSIS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    # No test starts or waits on a background builder (#300) unless it
+    # turns the builder back on itself.
+    monkeypatch.setenv("ANALYSIS_BUILDER", "off")
+    monkeypatch.delenv("ANALYSIS_BUILDER_CHILD", raising=False)
 
 
 _STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_REPO")

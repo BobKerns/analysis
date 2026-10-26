@@ -214,7 +214,7 @@ def test_scenario_show_marks_inherited_settings_and_finds_the_latest_run(
     child = derive_scenario("child", "recipe:base", seed="7",
                             description="A child of the recipe.")
     for stamp in ("20260101T000000", "20260201T000000"):
-        (runs_dir / f"{stamp}_child_abc123.sqlite3").write_bytes(b"")
+        (runs_dir / f"{stamp}_child_abc123.sqlite3").write_bytes(b"x")
 
     shown = setup_listings.scenario_show(child.parent.parent, child, runs_dir)
 

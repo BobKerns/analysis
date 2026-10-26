@@ -15,8 +15,8 @@ from analysis.cli import main
 from analysis.sim.loader import write_current_scenario
 from analysis.sim.scenario import ScenarioDate, ScenarioValue, scenario_summaries
 
-# One more than the verbose table's eight columns.
-ROW_BARS = 9
+# One more than the verbose table's nine columns.
+ROW_BARS = 10
 
 
 def _list(data_dir: Path, *args: str, group: str = "scenario") -> str:

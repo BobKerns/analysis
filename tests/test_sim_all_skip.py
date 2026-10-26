@@ -40,8 +40,8 @@ def code_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> git.Repo:
 
 def _stamp_runs(runs_dir: Path, repo: git.Repo) -> None:
     """Record the stand-in repo's HEAD, clean, as the code every run ran,
-    and date the plain runs earlier, in order: a rerun in the same second
-    would otherwise be refused for its file name."""
+    and date the plain runs earlier, in order, so a rerun is always the
+    newest."""
     for n, run_file in enumerate(sorted(runs_dir.glob("*_*.sqlite3"))):
         run_file.rename(run_file.with_name(
             f"2000-01-01T{n:06d}Z_{run_file.name.split('_', 1)[1]}"))
@@ -172,3 +172,21 @@ def test_a_batch_with_unreadable_state_reruns(
     (batch / "batch_manifest.json").write_text('{"member_count": ')
     code = freshness.code_tree_of(code_repo)
     assert freshness.unchanged_run(test_data_dir, runs_dir, "recipe", code) is None
+
+
+def test_a_disabled_scenario_is_not_built_and_changes_no_child(
+    sim_all: Callable[..., str], code_repo: git.Repo, runs_dir: Path, test_data_dir: Path,
+) -> None:
+    """`sim scenario disable` (#300) commits a `.disable` file in the folder.
+    `sim all` leaves the scenario out; its children still build, and since
+    the file isn't part of their data, they stay unchanged."""
+    sim_all()
+    _stamp_runs(runs_dir, code_repo)
+    result = CliRunner().invoke(main, ["sim", "scenario", "disable", "base",
+                                       "--data-dir", str(test_data_dir)])
+    assert result.exit_code == 0, result.output
+    _commit(git.Repo(test_data_dir), {}, "disable base")
+    output = sim_all()
+    assert "disabled, not built: base" in output
+    assert "=== base ===" not in output
+    assert _skipped(output) == ["retire_alice"]

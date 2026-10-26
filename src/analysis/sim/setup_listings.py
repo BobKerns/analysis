@@ -447,9 +447,10 @@ def scenario_show(data_dir: Path, scenario_dir: Path, runs_dir: Path | None) -> 
         )
     latest = latest_batch = None
     if runs_dir is not None:
-        latest = _stamped(latest_run_path(runs_dir, name))
+        # Describing a scenario doesn't open its run, so it never waits (#300).
+        latest = _stamped(latest_run_path(runs_dir, name, wait=False))
         if summary.is_ensemble:
-            latest_batch = _stamped(latest_ensemble_batch(runs_dir / name))
+            latest_batch = _stamped(latest_ensemble_batch(runs_dir / name, wait=False))
     return ScenarioShow(
         name=name, path=scenario_dir, description=description,
         parent=parents[0] if parents else None, mixins=parents[1:],

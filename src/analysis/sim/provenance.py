@@ -79,6 +79,8 @@ def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
     if repo is None:
         return DataStamps(version="unversioned", dirty=True, tree_id="", dirty_paths=())
     scoped_abs = [str(data_dir / p) for p in _scoped_paths(data_dir, scenario_name)]
+    if scoped_abs:  # an exclude alone would mean everything else
+        scoped_abs.append(_NOT_DATA)
     status = repo.git.status("--porcelain", "--", *scoped_abs)
     dirty_paths = tuple(line[3:] for line in status.splitlines()) if status.strip() else ()
     tree_id = _compute_tree_id(repo, scoped_abs)
@@ -88,6 +90,12 @@ def data_stamps(data_dir: Path, scenario_name: str) -> DataStamps:
         tree_id=tree_id,
         dirty_paths=dirty_paths,
     )
+
+
+# A scenario's `.disable` (loader.DISABLE_FILE, #300) says whether to build
+# it, not what it computes: disabling a base must not change its children's
+# tree, nor make them dirty.
+_NOT_DATA = ":(exclude,glob)**/scenarios/*/.disable"
 
 
 def _scoped_paths(data_dir: Path, scenario_name: str) -> list[str]:

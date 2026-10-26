@@ -524,6 +524,18 @@ own `scenario.csv` description, not its parent's `README.md`.
 - Loaded by `_merged_override_files`/`_find_override_file` in `loader.py`; the `series/` call
   passes `include_shared=False`.
 
+#### 4.1f Per-scenario `.disable` (optional)
+
+A `scenarios/<name>/.disable` file (any content; `sim scenario|ensemble disable` writes one,
+`enable` removes it) marks a scenario that is built only when named: a mix-in, or a base that
+only exists to be built on. `sim all` ([ADR-004](ADR-004-reproducibility-and-activation.md)
+§11) and the background builder (ADR-004 §12) leave it out, as do the notebooks' scenario and
+recipe pickers; `sim run`/`sim load` of it by name, its use as a parent or mix-in, and
+`sim check` are unaffected. It is committed like the rest of the folder, so a rename, copy or
+delete carries it along. Not inherited, and not read by the loader: it is left out of
+`scenario_tree_id` and the dirty check (ADR-004 §1), so disabling a base changes none of its
+descendants' data.
+
 #### 4.2 Per-scenario: `data_repo/scenarios/<name>/accounts.csv`
 
 Required in a root scenario; optional in a derived one, where it overlays the parent's rows by `name` (§4.5).
@@ -1169,3 +1181,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#281](https://github.com/BobKerns/analysis/issues/281): the `date_marker` kind, and calendar dates written relative to one (`NAME+2y`); markers merge by name (§3, new §3.8, §4.5, §4.8).
 - [#291](https://github.com/BobKerns/analysis/issues/291): `calendar.csv`'s `vary_resume` column, a `set_rate` row that puts back what governed its series before a date (§3.1, §4.8).
 - [#295](https://github.com/BobKerns/analysis/issues/295): `scenario|ensemble copy`, a sibling copy under a new name (§7).
+- [#300](https://github.com/BobKerns/analysis/issues/300): a scenario folder's `.disable` file, built only when named (new §4.1f).

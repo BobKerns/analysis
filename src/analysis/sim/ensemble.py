@@ -1267,12 +1267,19 @@ def member_run_statuses(batch_dir: Path) -> dict[str, str]:
     than deleting it, so its (partial, not reliably comparable) history
     stays inspectable -- so status has to be checked explicitly rather than
     assuming every file found is a succeeded member.
+
+    A member file whose run hasn't written its tables yet (a batch still
+    being built, read without waiting for it, #300) is ``"running"``.
     """
     statuses: dict[str, str] = {}
     for p in sorted(Path(batch_dir).glob("member_*.sqlite3")):
         con = connect_sim_file(p)
         try:
             row = con.execute("SELECT status FROM simulation_run").fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            row = ("running",)  # just created; its run hasn't written its tables
         finally:
             con.close()
         statuses[p.stem] = row[0] if row else "unknown"

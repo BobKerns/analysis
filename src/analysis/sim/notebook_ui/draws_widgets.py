@@ -23,7 +23,7 @@ from analysis.frames import named_rows
 
 from analysis.sim.draws_db import build_draws_db, draws_db_path, draws_frames
 from analysis.sim.ensemble import EnsembleError
-from analysis.sim.notebook_ui.pickers import find_runs_dir
+from analysis.sim.notebook_ui.pickers import find_data_dir, find_runs_dir
 from analysis.sim.notebook_ui.sensitivity_widgets import (
     CATEGORICAL, GRID, INK, MUTED, list_batches, list_sensitivity_recipes,
 )
@@ -151,7 +151,8 @@ def draws_widget(*,
     node's draws (Node) and one correlated pair's scores (Pair). A batch run
     before draws.sqlite3 existed gets one gathered from its run files."""
     runs_dir = find_runs_dir(data_dir=data_dir, state_dir=state_dir, runs_dir=runs_dir)
-    recipe = widgets.Dropdown(options=list_sensitivity_recipes(runs_dir), description="Recipe:")
+    recipe = widgets.Dropdown(options=list_sensitivity_recipes(runs_dir, find_data_dir(data_dir)),
+                              description="Recipe:")
     batch = widgets.Dropdown(options=[], description="Batch:", layout=widgets.Layout(width="max-content"))
     node = widgets.Dropdown(options=[], description="Node:")
     pair = widgets.Dropdown(options=[], description="Pair:", layout=widgets.Layout(width="max-content"))

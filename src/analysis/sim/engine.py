@@ -72,12 +72,13 @@ def run_scenario(
     allow_dirty_code: bool = False,
     run_args: dict[str, Any] | None = None,
     engine_options: dict[str, Any] | None = None,
+    reserved: bool = False,
 ) -> Path:
     con = open_run_file(
         run_path, intent_path,
         run_by=run_by,
         allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
-        run_args=run_args, engine_options=engine_options,
+        run_args=run_args, engine_options=engine_options, reserved=reserved,
     )
     try:
         scenario = con.execute(
